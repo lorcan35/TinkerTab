@@ -482,15 +482,9 @@ void ui_settings_update(void)
 
     /* WiFi status */
     if (s_lbl_wifi) {
-        /* Use the SSID from config; check connection via wait with 0 timeout */
-        esp_err_t wr = tab5_wifi_wait_connected(0);
-        if (wr == ESP_OK) {
-            char wifi_buf[64];
-            snprintf(wifi_buf, sizeof(wifi_buf), "Connected (%s)", TAB5_WIFI_SSID);
-            lv_label_set_text(s_lbl_wifi, wifi_buf);
-            lv_obj_set_style_text_color(s_lbl_wifi, COL_GREEN, 0);
-        } else {
-            lv_label_set_text(s_lbl_wifi, "Disconnected");
+        /* WiFi disabled — ESP-Hosted SDIO fix pending */
+        {
+            lv_label_set_text(s_lbl_wifi, "Disabled (SDIO fix pending)");
             lv_obj_set_style_text_color(s_lbl_wifi, COL_RED, 0);
         }
     }

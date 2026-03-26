@@ -25,9 +25,10 @@
 #include "io_expander.h"
 #include "display.h"
 #include "touch.h"
-#include "wifi.h"
-#include "mjpeg_stream.h"
-#include "touch_ws.h"
+// WiFi/MJPEG/TouchWS disabled — ESP-Hosted SDIO crashes
+// #include "wifi.h"
+// #include "mjpeg_stream.h"
+// #include "touch_ws.h"
 #include "sdcard.h"
 #include "camera.h"
 #include "audio.h"
@@ -36,13 +37,11 @@
 #include "battery.h"
 #include "bluetooth.h"
 #include "ui_core.h"
-#include "ui_splash.h"
 #include "ui_home.h"
 
 static const char *TAG = "tab5";
 
 static i2c_master_bus_handle_t s_i2c_bus = NULL;
-static bool s_wifi_connected = false;
 static bool s_touch_ok = false;
 static bool s_sd_ok = false;
 static bool s_cam_ok = false;
@@ -71,22 +70,7 @@ static esp_err_t init_i2c(void)
     return i2c_new_master_bus(&bus_cfg, &s_i2c_bus);
 }
 
-// Background task: continuously read touch and forward via WebSocket
-static void touch_poll_task(void *arg)
-{
-    ESP_LOGI(TAG, "Touch poll task started");
-    while (1) {
-        tab5_touch_point_t pts[TAB5_TOUCH_MAX_POINTS];
-        uint8_t cnt = 0;
-        if (tab5_touch_read(pts, &cnt) && cnt > 0) {
-            // Forward to Dragon if WebSocket is connected
-            if (tab5_touch_ws_connected()) {
-                tab5_touch_ws_send(pts, cnt);
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(20));  // 50Hz touch polling
-    }
-}
+// Touch polling handled by LVGL indev driver (no WebSocket forwarding without WiFi)
 
 void app_main(void)
 {
@@ -137,10 +121,8 @@ void app_main(void)
             tab5_reset_display_and_touch();
             vTaskDelay(pdMS_TO_TICKS(300));
 
-            // Enable WiFi power via IO expander (powers up ESP32-C6)
-            tab5_set_wifi_power(true);
-            ESP_LOGI(TAG, "WiFi power enabled (C6 co-processor)");
-            vTaskDelay(pdMS_TO_TICKS(100));
+            // WiFi power off — ESP-Hosted SDIO transport crashes
+            tab5_set_wifi_power(false);
         }
     }
 
@@ -171,27 +153,10 @@ void app_main(void)
         }
     }
 
-    // Initialize LVGL UI layer (display flush + touch input + UI task)
-    ESP_LOGI(TAG, "Initializing LVGL...");
-    ret = tab5_ui_init(tab5_display_get_panel());
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "LVGL init failed: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "LVGL initialized — showing boot splash");
-        tab5_ui_lock();
-        ui_splash_create();
-        ui_splash_set_status("Initializing hardware...");
-        ui_splash_set_progress(10);
-        tab5_ui_unlock();
-    }
-
-    // Update splash progress as peripherals init
-    #define SPLASH_UPDATE(pct, msg) do { \
-        tab5_ui_lock(); ui_splash_set_progress(pct); ui_splash_set_status(msg); tab5_ui_unlock(); \
-    } while(0)
+    // Show blue screen while booting (LVGL init deferred until after WiFi)
+    tab5_display_fill_color(0x001F);
 
     // Initialize SD card
-    SPLASH_UPDATE(20, "Mounting SD card...");
     ESP_LOGI(TAG, "Initializing SD card...");
     ret = tab5_sdcard_init();
     if (ret != ESP_OK) {
@@ -205,7 +170,6 @@ void app_main(void)
     }
 
     // Initialize camera (SC2336 MIPI-CSI)
-    SPLASH_UPDATE(30, "Initializing camera...");
     if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing camera (SC2336)...");
         ret = tab5_camera_init();
@@ -218,7 +182,6 @@ void app_main(void)
     }
 
     // Initialize audio codec (ES8388) and speaker
-    SPLASH_UPDATE(40, "Initializing audio...");
     if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing audio (ES8388)...");
         ret = tab5_audio_init(s_i2c_bus);
@@ -243,7 +206,6 @@ void app_main(void)
     }
 
     // Initialize IMU (BMI270)
-    SPLASH_UPDATE(55, "Initializing sensors...");
     if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing IMU (BMI270)...");
         ret = tab5_imu_init(s_i2c_bus);
@@ -287,64 +249,25 @@ void app_main(void)
         }
     }
 
-    // Initialize BLE (via ESP32-C6 — stub until ESP-Hosted adds BLE forwarding)
-    SPLASH_UPDATE(70, "Initializing wireless...");
-    ESP_LOGI(TAG, "Initializing BLE...");
-    ret = tab5_ble_init();
-    if (ret == ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGW(TAG, "BLE not yet supported via ESP-Hosted (stub driver loaded)");
-    } else if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "BLE init failed: %s", esp_err_to_name(ret));
-    }
+    // BLE + WiFi disabled — ESP-Hosted SDIO transport crashes
+    // TODO: Debug C6 SDIO slave firmware and re-enable
+    ESP_LOGW(TAG, "WiFi/BLE DISABLED — standalone mode (ESP-Hosted SDIO fix pending)");
 
-    // Initialize WiFi (ESP-Hosted → ESP32-C6 over SDIO)
-    SPLASH_UPDATE(80, "Connecting to WiFi...");
-    ESP_LOGI(TAG, "Initializing WiFi (SSID: %s)...", TAB5_WIFI_SSID);
-    ret = tab5_wifi_init();
+    // Initialize LVGL UI layer (deferred until after WiFi to avoid PSRAM contention)
+    ESP_LOGI(TAG, "Initializing LVGL UI...");
+    ret = tab5_ui_init(tab5_display_get_panel());
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "WiFi init failed: %s", esp_err_to_name(ret));
-        SPLASH_UPDATE(80, "WiFi init failed");
+        ESP_LOGE(TAG, "LVGL UI init failed: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "WiFi started, waiting for connection...");
-        ret = tab5_wifi_wait_connected(15000);
-        if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi connected!");
-            SPLASH_UPDATE(95, "WiFi connected!");
-            s_wifi_connected = true;
-            vTaskDelay(pdMS_TO_TICKS(300));
-
-            // Start MJPEG streaming from Dragon (background — doesn't block LVGL)
-            ESP_LOGI(TAG, "Starting MJPEG stream from %s:%d%s",
-                     TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_STREAM_PATH);
-            tab5_mjpeg_start();
-
-            // Start WebSocket touch forwarding
-            ESP_LOGI(TAG, "Starting touch WebSocket to %s:%d%s",
-                     TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_TOUCH_WS_PATH);
-            tab5_touch_ws_start();
-        } else {
-            ESP_LOGW(TAG, "WiFi connect failed/timeout — standalone mode");
-            SPLASH_UPDATE(95, "Offline mode");
-            vTaskDelay(pdMS_TO_TICKS(500));
-        }
+        ESP_LOGI(TAG, "LVGL initialized — loading home screen");
+        tab5_ui_lock();
+        ui_home_create();
+        tab5_ui_unlock();
+        ESP_LOGI(TAG, "Home screen loaded");
     }
 
-    // Transition from splash to home screen
-    SPLASH_UPDATE(100, "Ready!");
-    vTaskDelay(pdMS_TO_TICKS(300));
-    tab5_ui_lock();
-    ui_splash_destroy();
-    ui_home_create();
-    tab5_ui_unlock();
-    ESP_LOGI(TAG, "Home screen loaded");
-
-    // Start touch polling task (forwards to WebSocket when connected)
-    if (s_touch_ok) {
-        xTaskCreatePinnedToCore(touch_poll_task, "touch_poll", 4096, NULL, 3, NULL, 1);
-    }
-
-    ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
-             s_wifi_connected ? "Y" : "N", s_touch_ok ? "Y" : "N",
+    ESP_LOGI(TAG, "TinkerTab v1.0.0 running — Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
+             s_touch_ok ? "Y" : "N",
              s_sd_ok ? "Y" : "N", s_cam_ok ? "Y" : "N",
              s_audio_ok ? "Y" : "N", s_mic_ok ? "Y" : "N",
              s_imu_ok ? "Y" : "N", s_rtc_ok ? "Y" : "N", s_bat_ok ? "Y" : "N");
@@ -367,9 +290,8 @@ void app_main(void)
                         printf("Free heap: %lu\n", (unsigned long)esp_get_free_heap_size());
                         printf("Free PSRAM: %lu\n", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                         printf("Display: 720x1280 MIPI DSI ST7123\n");
-                        printf("WiFi: %s\n", s_wifi_connected ? "connected" : "disconnected");
+                        printf("WiFi: disabled (SDIO fix pending)\n");
                         printf("Touch: %s\n", s_touch_ok ? "active" : "inactive");
-                        printf("WS: %s\n", tab5_touch_ws_connected() ? "connected" : "disconnected");
                         printf("SD: %s\n", s_sd_ok ? "mounted" : "not mounted");
                         printf("Camera: %s\n", s_cam_ok ? "ready" : "not init");
                         printf("Audio: %s\n", s_audio_ok ? "ready" : "not init");
@@ -383,12 +305,7 @@ void app_main(void)
                                (unsigned long)esp_get_free_heap_size(),
                                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                     } else if (strcmp(cmd_buf, "wifi") == 0) {
-                        printf("WiFi: %s, SSID: %s\n",
-                               s_wifi_connected ? "connected" : "disconnected", TAB5_WIFI_SSID);
-                        printf("Dragon: %s:%d\n", TAB5_DRAGON_HOST, TAB5_DRAGON_PORT);
-                        printf("WS touch: %s\n", tab5_touch_ws_connected() ? "connected" : "disconnected");
-                    } else if (strcmp(cmd_buf, "stream") == 0) {
-                        printf("MJPEG FPS: %.1f\n", tab5_mjpeg_get_fps());
+                        printf("WiFi: DISABLED (ESP-Hosted SDIO fix pending)\n");
                     } else if (strcmp(cmd_buf, "red") == 0) {
                         tab5_display_fill_color(0xF800);
                         printf("Display: red\n");
@@ -561,7 +478,7 @@ void app_main(void)
                             printf("RTC: not initialized\n");
                         }
                     } else if (strcmp(cmd_buf, "ntp") == 0) {
-                        if (s_rtc_ok && s_wifi_connected) {
+                        if (s_rtc_ok) {  // NTP needs WiFi — disabled for now
                             printf("Syncing RTC from NTP...\n");
                             if (tab5_rtc_sync_from_ntp() == ESP_OK) {
                                 tab5_rtc_time_t t;

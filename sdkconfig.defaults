@@ -20,14 +20,15 @@ CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_CACHE_L2_CACHE_256KB=y
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
 
-# Larger main task stack (display init needs room)
+# Larger main task stack (display + LVGL + all driver inits need room)
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # FreeRTOS tick rate
 CONFIG_FREERTOS_HZ=1000
 
-# Partition table
-CONFIG_PARTITION_TABLE_SINGLE_APP=y
+# Partition table — custom for 16MB flash (4MB app + 12MB storage)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # USB console (JTAG/serial)
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
@@ -36,41 +37,10 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 
 # ---------------------------------------------------------------------------
-# ESP-Hosted — WiFi via ESP32-C6 co-processor over SDIO
+# ESP-Hosted — DISABLED (SDIO transport crashes — xQueueSemaphoreTake assert)
+# TODO: Debug C6 SDIO slave firmware and re-enable
 # ---------------------------------------------------------------------------
-CONFIG_ESP_HOSTED_ENABLED=y
-CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
-CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
-
-# SDIO bus — 4-bit mode, 40MHz
-CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
-CONFIG_ESP_HOSTED_SDIO_BUS_WIDTH=4
-CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=40000
-
-# SDIO GPIO pins (P4 → C6)
-CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
-CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
-CONFIG_ESP_HOSTED_SDIO_PIN_D0=11
-CONFIG_ESP_HOSTED_SDIO_PIN_D1=10
-CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
-CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
-CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
-
-# C6 reset via GPIO 15 (active-low)
-CONFIG_ESP_HOSTED_GPIO_SLAVE_RESET_SLAVE=15
-CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
-CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_LOW=y
-CONFIG_ESP_HOSTED_RESET_GPIO_ACTIVE_LOW=y
-
-# SDIO optimization
-CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
-CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE=20
-CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=20
-CONFIG_ESP_HOSTED_USE_MEMPOOL=y
-
-# WiFi Remote (bridges esp_wifi API to C6)
-CONFIG_ESP_WIFI_REMOTE_ENABLED=y
-CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
+# CONFIG_ESP_HOSTED_ENABLED is not set
 
 # ---------------------------------------------------------------------------
 # WiFi credentials and Dragon server (overridable via menuconfig)

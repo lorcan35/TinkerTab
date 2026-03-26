@@ -301,15 +301,8 @@ void ui_home_update_status(void)
     }
 #endif
 
-    /* ── WiFi ────────────────────────────────────────────────── */
-#if __has_include("wifi.h")
-    {
-        /* Zero-timeout check: returns ESP_OK if already connected */
-        bool connected = (tab5_wifi_wait_connected(0) == ESP_OK);
-        lv_obj_set_style_text_color(lbl_wifi,
-            connected ? lv_color_hex(COL_GREEN) : lv_color_hex(COL_RED), 0);
-    }
-#endif
+    /* ── WiFi (disabled — ESP-Hosted SDIO fix pending) ──────── */
+    lv_obj_set_style_text_color(lbl_wifi, lv_color_hex(COL_RED), 0);
 
     /* ── RTC time ────────────────────────────────────────────── */
 #if __has_include("rtc.h")
