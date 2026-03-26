@@ -1,9 +1,15 @@
 /**
- * TinkerClaw Tab5 — MJPEG Stream Consumer
+ * TinkerClaw Tab5 — MJPEG Stream Consumer (Optimized)
  *
  * Connects to Dragon's streaming server via HTTP, reads the MJPEG stream
  * (multipart/x-mixed-replace), extracts JPEG frames, and pushes them
  * to the display via hardware JPEG decoder.
+ *
+ * Optimizations:
+ *  - DMA-aligned JPEG buffer in PSRAM
+ *  - 16KB read buffer for fewer syscalls
+ *  - Frame age tracking — skip stale frames (>50ms old)
+ *  - Runs on Core 1 at high priority, separate from LVGL on Core 0
  */
 
 #include "mjpeg_stream.h"
@@ -20,30 +26,56 @@
 
 static const char *TAG = "tab5_mjpeg";
 
+/* Read buffer: larger = fewer read() calls = less overhead */
+#define READ_BUF_SIZE  16384
+
+/* Max frame age before we skip decode (microseconds) */
+#define FRAME_MAX_AGE_US  50000
+
 static float s_fps = 0.0f;
 static uint32_t s_frame_count = 0;
+static uint32_t s_drop_count = 0;
 static int64_t s_last_fps_time = 0;
 static volatile bool s_running = false;
 static volatile bool s_stop_flag = false;
 static TaskHandle_t s_task_handle = NULL;
 static mjpeg_disconnect_cb_t s_disconnect_cb = NULL;
 
-// JPEG frame buffer in PSRAM
+/* JPEG frame buffer in PSRAM (DMA-aligned) */
 static uint8_t *s_jpeg_buf = NULL;
 
 static void mjpeg_stream_task(void *arg)
 {
     ESP_LOGI(TAG, "MJPEG task started");
 
-    s_jpeg_buf = (uint8_t *)heap_caps_malloc(TAB5_JPEG_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    /* Allocate JPEG buffer — DMA-aligned in PSRAM for hardware decoder */
+    s_jpeg_buf = (uint8_t *)heap_caps_aligned_alloc(
+        64,  /* cache line alignment for ESP32-P4 */
+        TAB5_JPEG_BUF_SIZE,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_jpeg_buf) {
-        ESP_LOGE(TAG, "Failed to allocate JPEG buffer");
+        ESP_LOGE(TAG, "Failed to allocate JPEG buffer (%d bytes)", TAB5_JPEG_BUF_SIZE);
         s_running = false;
         vTaskDelete(NULL);
         return;
     }
 
-    // Build URL
+    /* Read buffer — internal RAM for fast access */
+    uint8_t *read_buf = (uint8_t *)heap_caps_malloc(READ_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!read_buf) {
+        /* Fall back to PSRAM */
+        read_buf = (uint8_t *)heap_caps_malloc(READ_BUF_SIZE, MALLOC_CAP_SPIRAM);
+    }
+    if (!read_buf) {
+        ESP_LOGE(TAG, "Failed to allocate read buffer");
+        heap_caps_free(s_jpeg_buf);
+        s_jpeg_buf = NULL;
+        s_running = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Build URL */
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d%s",
              TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_STREAM_PATH);
@@ -54,8 +86,8 @@ static void mjpeg_stream_task(void *arg)
         esp_http_client_config_t config = {
             .url = url,
             .timeout_ms = TAB5_FRAME_TIMEOUT_MS,
-            .buffer_size = 16384,
-            .buffer_size_tx = 1024,
+            .buffer_size = READ_BUF_SIZE,
+            .buffer_size_tx = 512,
         };
 
         esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -82,15 +114,16 @@ static void mjpeg_stream_task(void *arg)
             break;
         }
 
-        // Read stream — find JPEG frames by SOI/EOI markers
+        /* Stream connected — read JPEG frames by SOI/EOI markers */
         size_t jpeg_pos = 0;
         bool in_jpeg = false;
-        uint8_t read_buf[4096];
+        int64_t frame_start_time = 0;
         s_last_fps_time = esp_timer_get_time();
         s_frame_count = 0;
+        s_drop_count = 0;
 
         while (!s_stop_flag) {
-            int read_len = esp_http_client_read(client, (char *)read_buf, sizeof(read_buf));
+            int read_len = esp_http_client_read(client, (char *)read_buf, READ_BUF_SIZE);
             if (read_len <= 0) {
                 if (read_len == 0) {
                     ESP_LOGW(TAG, "Stream ended");
@@ -100,12 +133,13 @@ static void mjpeg_stream_task(void *arg)
                 break;
             }
 
-            // Scan for JPEG SOI (FF D8) and EOI (FF D9)
+            /* Scan for JPEG SOI (FF D8) and EOI (FF D9) */
             for (int i = 0; i < read_len; i++) {
                 if (!in_jpeg) {
                     if (i + 1 < read_len && read_buf[i] == 0xFF && read_buf[i + 1] == 0xD8) {
                         in_jpeg = true;
                         jpeg_pos = 0;
+                        frame_start_time = esp_timer_get_time();
                         s_jpeg_buf[jpeg_pos++] = 0xFF;
                         s_jpeg_buf[jpeg_pos++] = 0xD8;
                         i++;
@@ -115,21 +149,38 @@ static void mjpeg_stream_task(void *arg)
                         s_jpeg_buf[jpeg_pos++] = read_buf[i];
                     }
 
+                    /* Found EOI — complete frame */
                     if (jpeg_pos >= 2 &&
                         s_jpeg_buf[jpeg_pos - 2] == 0xFF &&
                         s_jpeg_buf[jpeg_pos - 1] == 0xD9) {
+
+                        int64_t now = esp_timer_get_time();
+                        int64_t frame_age = now - frame_start_time;
+
+                        /* Skip stale frames — always decode the freshest */
+                        if (frame_age > FRAME_MAX_AGE_US) {
+                            s_drop_count++;
+                            in_jpeg = false;
+                            jpeg_pos = 0;
+                            continue;
+                        }
+
+                        /* Decode and render */
                         esp_err_t ret = tab5_display_draw_jpeg(s_jpeg_buf, jpeg_pos);
                         if (ret == ESP_OK) {
                             s_frame_count++;
-                            int64_t now = esp_timer_get_time();
                             int64_t elapsed = now - s_last_fps_time;
                             if (elapsed >= 1000000) {
                                 s_fps = (float)s_frame_count * 1000000.0f / (float)elapsed;
+                                if (s_drop_count > 0) {
+                                    ESP_LOGI(TAG, "%.1f FPS (dropped %lu stale)", s_fps, (unsigned long)s_drop_count);
+                                    s_drop_count = 0;
+                                }
                                 s_frame_count = 0;
                                 s_last_fps_time = now;
                             }
                         } else {
-                            ESP_LOGW(TAG, "Frame decode failed (size=%zu)", jpeg_pos);
+                            ESP_LOGW(TAG, "Decode failed (size=%zu): %s", jpeg_pos, esp_err_to_name(ret));
                         }
                         in_jpeg = false;
                         jpeg_pos = 0;
@@ -143,12 +194,15 @@ static void mjpeg_stream_task(void *arg)
 
         if (s_stop_flag) break;
 
-        // Stream disconnected — notify dragon_link instead of retrying internally
+        /* Stream disconnected — notify dragon_link */
         ESP_LOGW(TAG, "Stream disconnected");
         break;
     }
 
-    // Cleanup
+    /* Cleanup */
+    if (read_buf) {
+        heap_caps_free(read_buf);
+    }
     if (s_jpeg_buf) {
         heap_caps_free(s_jpeg_buf);
         s_jpeg_buf = NULL;
@@ -157,7 +211,6 @@ static void mjpeg_stream_task(void *arg)
     s_running = false;
     s_task_handle = NULL;
 
-    // Notify dragon_link of disconnect (unless we were told to stop)
     if (!s_stop_flag && s_disconnect_cb) {
         s_disconnect_cb();
     }
@@ -175,11 +228,11 @@ void tab5_mjpeg_start(void)
     xTaskCreatePinnedToCore(
         mjpeg_stream_task,
         "mjpeg",
-        8192,
+        12288,     /* 12KB stack — HTTP client + JPEG parsing */
         NULL,
-        5,
+        configMAX_PRIORITIES - 2,  /* high priority on Core 1 */
         &s_task_handle,
-        1   // Core 1
+        1          /* Core 1 — away from LVGL on Core 0 */
     );
 }
 
@@ -187,7 +240,6 @@ void tab5_mjpeg_stop(void)
 {
     if (!s_running) return;
     s_stop_flag = true;
-    // Task will exit on next read timeout or loop iteration
 }
 
 bool tab5_mjpeg_is_running(void)
