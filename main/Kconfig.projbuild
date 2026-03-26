@@ -1,0 +1,27 @@
+menu "TinkerClaw Tab5 Configuration"
+
+    config TAB5_WIFI_SSID
+        string "WiFi SSID"
+        default "YourWiFi"
+        help
+            WiFi network name (same LAN as Dragon).
+
+    config TAB5_WIFI_PASS
+        string "WiFi Password"
+        default "YourPassword"
+        help
+            WiFi password.
+
+    config TAB5_DRAGON_HOST
+        string "Dragon IP Address"
+        default "192.168.1.89"
+        help
+            IP address of the Dragon Q6A on the local network.
+
+    config TAB5_DRAGON_PORT
+        int "Dragon Streaming Port"
+        default 3501
+        help
+            Port for the streaming server on Dragon.
+
+endmenu
