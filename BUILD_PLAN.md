@@ -111,24 +111,28 @@ Every phase is documented, committed, and pushed chronologically.
 - [x] Documented: ESP-Hosted doesn't forward BLE yet
 - **Commit:** included with Phase 8
 
-### Phase 9 — LVGL Integration 🔲
-- [ ] LVGL v9 integration with MIPI DSI display
-- [ ] Touch input driver for LVGL
-- [ ] Theme setup (dark mode)
-- [ ] Basic screen rendering test
-- [ ] Font setup (optimized for 720px width)
+### Phase 9 — LVGL Integration ✅
+- [x] LVGL v9 with DPI framebuffer flush + cache_msync
+- [x] Touch input driver (ST7123 → LVGL pointer)
+- [x] Dark theme with #3B82F6 accent
+- [x] Montserrat fonts (14/20/28/36)
+- [x] Double-buffered 144KB draw buffers in PSRAM
+- [x] FreeRTOS UI task on core 0 with mutex
+- **Commit:** `feat: Phase 9 — LVGL v9 core integration`
 
-### Phase 10 — Native Launcher UI 🔲
-- [ ] Boot splash screen
-- [ ] Home screen (clock, app grid, status bar)
-- [ ] Settings screen (WiFi, brightness, battery, about)
-- [ ] Camera viewfinder screen
-- [ ] File browser (SD card)
-- [ ] Audio player screen
+### Phase 10 — Native Launcher UI ✅
+- [x] Boot splash (logo, progress bar, status text)
+- [x] Home screen (status bar, clock, 3x3 app grid, dock)
+- [x] Settings screen (brightness, WiFi, BLE, NTP, storage, battery, about)
+- [x] Camera viewfinder (live preview, capture, resolution switch)
+- [x] File browser (SD card directory listing, file type icons)
+- [x] Audio player (WAV playback, play/pause, volume)
+- [x] Splash → home transition with progress during boot
+- **Commits:** `Phase 10a-10e`
 
-### Phase 11 — Dragon Mode 🔲
-- [ ] MJPEG streaming client (already ported from Phase 1)
-- [ ] WebSocket touch forwarding (already ported from Phase 1)
+### Phase 11 — Dragon Mode ✅ (from Phase 1)
+- [x] MJPEG streaming client (ported from pingdev)
+- [x] WebSocket touch forwarding (ported from pingdev)
 - [ ] Auto-detect Dragon on network (mDNS)
 - [ ] Seamless mode switching (LVGL ↔ MJPEG)
 

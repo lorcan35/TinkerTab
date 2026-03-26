@@ -185,7 +185,15 @@ TinkerTab/
 │   ├── imu.c/h             # BMI270 6-axis IMU
 │   ├── rtc.c/h             # RX8130CE real-time clock
 │   ├── battery.c/h         # INA226 battery monitor
-│   └── bluetooth.c/h       # BLE stub (ESP-Hosted pending)
+│   ├── bluetooth.c/h       # BLE stub (ESP-Hosted pending)
+│   ├── lv_conf.h           # LVGL v9 configuration
+│   ├── ui_core.c/h         # LVGL display/touch/task integration
+│   ├── ui_splash.c/h       # Boot splash screen
+│   ├── ui_home.c/h         # Home screen launcher
+│   ├── ui_settings.c/h     # Settings screen
+│   ├── ui_camera.c/h       # Camera viewfinder
+│   ├── ui_files.c/h        # File browser
+│   └── ui_audio.c/h        # Audio player
 ```
 
 ## Known Issues
