@@ -1,10 +1,9 @@
 dependencies:
-  idf: ">=5.3"
+  idf: ">=5.4.3"
   lvgl/lvgl: "~9.2"
   esp_lcd_touch_st7123:
     version: ">=1.0.0"
-  # ESP-Hosted and WiFi Remote disabled — SDIO transport crashes
-  # espressif/esp_hosted:
-  #   version: "1.4.0"
-  # espressif/esp_wifi_remote:
-  #   version: "0.8.5"
+  espressif/esp_hosted:
+    version: "1.4.0"
+  espressif/esp_wifi_remote:
+    version: "0.8.5"

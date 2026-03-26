@@ -37,10 +37,22 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 
 # ---------------------------------------------------------------------------
-# ESP-Hosted — DISABLED (SDIO transport crashes — xQueueSemaphoreTake assert)
-# TODO: Debug C6 SDIO slave firmware and re-enable
+# ESP-Hosted — ESP32-C6 WiFi co-processor via SDIO
+# Requires ESP-IDF v5.4.3+ for PSRAM XIP + TCM stack fixes
 # ---------------------------------------------------------------------------
-# CONFIG_ESP_HOSTED_ENABLED is not set
+# Tab5 SDIO pin mapping (different from P4 EV Board defaults!)
+CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
+CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
+CONFIG_ESP_HOSTED_SDIO_PIN_D0=11
+CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
+CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
+CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
+CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
+# Tab5 C6 reset is active LOW (confirmed from M5Stack UserDemo sdkconfig)
+CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_LOW=y
+# Slave target is ESP32-C6
+CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 
 # ---------------------------------------------------------------------------
 # WiFi credentials and Dragon server (overridable via menuconfig)

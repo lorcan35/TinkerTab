@@ -25,8 +25,8 @@
 #include "io_expander.h"
 #include "display.h"
 #include "touch.h"
-// WiFi/MJPEG/TouchWS disabled — ESP-Hosted SDIO crashes
-// #include "wifi.h"
+#include "wifi.h"
+// MJPEG/TouchWS disabled for now (need WiFi first)
 // #include "mjpeg_stream.h"
 // #include "touch_ws.h"
 #include "sdcard.h"
@@ -121,8 +121,8 @@ void app_main(void)
             tab5_reset_display_and_touch();
             vTaskDelay(pdMS_TO_TICKS(300));
 
-            // WiFi power off — ESP-Hosted SDIO transport crashes
-            tab5_set_wifi_power(false);
+            // WiFi power ON — C6 co-processor needs power before SDIO init
+            tab5_set_wifi_power(true);
         }
     }
 
@@ -249,9 +249,22 @@ void app_main(void)
         }
     }
 
-    // BLE + WiFi disabled — ESP-Hosted SDIO transport crashes
-    // TODO: Debug C6 SDIO slave firmware and re-enable
-    ESP_LOGW(TAG, "WiFi/BLE DISABLED — standalone mode (ESP-Hosted SDIO fix pending)");
+    // Initialize WiFi via ESP-Hosted (ESP32-C6 co-processor over SDIO)
+    static bool s_wifi_ok = false;
+    ESP_LOGI(TAG, "Initializing WiFi (ESP-Hosted SDIO → C6)...");
+    ret = tab5_wifi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi init failed: %s (continuing without WiFi)", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "WiFi connecting to %s...", TAB5_WIFI_SSID);
+        ret = tab5_wifi_wait_connected(15000);
+        if (ret == ESP_OK) {
+            s_wifi_ok = true;
+            ESP_LOGI(TAG, "WiFi connected!");
+        } else {
+            ESP_LOGW(TAG, "WiFi connection failed/timeout: %s", esp_err_to_name(ret));
+        }
+    }
 
     // Initialize LVGL UI layer (deferred until after WiFi to avoid PSRAM contention)
     ESP_LOGI(TAG, "Initializing LVGL UI...");
@@ -266,8 +279,8 @@ void app_main(void)
         ESP_LOGI(TAG, "Home screen loaded");
     }
 
-    ESP_LOGI(TAG, "TinkerTab v1.0.0 running — Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
-             s_touch_ok ? "Y" : "N",
+    ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
+             s_wifi_ok ? "Y" : "N", s_touch_ok ? "Y" : "N",
              s_sd_ok ? "Y" : "N", s_cam_ok ? "Y" : "N",
              s_audio_ok ? "Y" : "N", s_mic_ok ? "Y" : "N",
              s_imu_ok ? "Y" : "N", s_rtc_ok ? "Y" : "N", s_bat_ok ? "Y" : "N");
@@ -290,7 +303,7 @@ void app_main(void)
                         printf("Free heap: %lu\n", (unsigned long)esp_get_free_heap_size());
                         printf("Free PSRAM: %lu\n", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                         printf("Display: 720x1280 MIPI DSI ST7123\n");
-                        printf("WiFi: disabled (SDIO fix pending)\n");
+                        printf("WiFi: %s\n", s_wifi_ok ? "connected" : "not connected");
                         printf("Touch: %s\n", s_touch_ok ? "active" : "inactive");
                         printf("SD: %s\n", s_sd_ok ? "mounted" : "not mounted");
                         printf("Camera: %s\n", s_cam_ok ? "ready" : "not init");
@@ -305,7 +318,7 @@ void app_main(void)
                                (unsigned long)esp_get_free_heap_size(),
                                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                     } else if (strcmp(cmd_buf, "wifi") == 0) {
-                        printf("WiFi: DISABLED (ESP-Hosted SDIO fix pending)\n");
+                        printf("WiFi: %s (SSID: %s)\n", s_wifi_ok ? "connected" : "not connected", TAB5_WIFI_SSID);
                     } else if (strcmp(cmd_buf, "red") == 0) {
                         tab5_display_fill_color(0xF800);
                         printf("Display: red\n");
