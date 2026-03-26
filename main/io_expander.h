@@ -15,4 +15,6 @@ esp_err_t tab5_io_expander_init(i2c_master_bus_handle_t bus);
 void tab5_set_wifi_power(bool en);
 void tab5_set_lcd_reset(bool active);
 void tab5_set_touch_reset(bool active);
+void tab5_set_camera_reset(bool active);
+void tab5_set_speaker_enable(bool en);
 void tab5_reset_display_and_touch(void);

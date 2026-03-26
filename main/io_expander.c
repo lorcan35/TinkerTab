@@ -123,6 +123,21 @@ void tab5_set_touch_reset(bool active)
     pi4io_set_bit(s_pi4ioe1, 5, !active);
 }
 
+void tab5_set_camera_reset(bool active)
+{
+    if (!s_pi4ioe1) return;
+    // P6 = CAM_RST, active low
+    pi4io_set_bit(s_pi4ioe1, 6, !active);
+}
+
+void tab5_set_speaker_enable(bool en)
+{
+    if (!s_pi4ioe1) return;
+    // P1 = SPK_EN
+    pi4io_set_bit(s_pi4ioe1, 1, en);
+    ESP_LOGI(TAG, "Speaker amp: %s", en ? "ON" : "OFF");
+}
+
 void tab5_reset_display_and_touch(void)
 {
     ESP_LOGI(TAG, "Resetting LCD and touch");

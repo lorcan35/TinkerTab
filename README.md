@@ -16,15 +16,15 @@ TinkerTab turns the Tab5 into a full standalone device with a native LVGL UI, ca
 | IO Exp. 2 | PI4IOE5V6416 | I2C 0x44 | ✅ |
 | Backlight | LEDC PWM GPIO 22 | 5kHz | ✅ |
 | HW JPEG | ESP32-P4 built-in | — | ✅ |
-| SD Card | — | SDMMC 4-bit | 🔲 |
-| Camera | SC2356 2MP | MIPI-CSI | 🔲 |
-| Audio Codec | ES8388 | I2S + I2C | 🔲 |
-| Mic ADC | ES7210 (dual, AEC) | I2S + I2C | 🔲 |
-| Speaker | NS4150B 1W | I2S DAC + GPIO enable | 🔲 |
-| IMU | BMI270 6-axis | I2C | 🔲 |
-| RTC | RX8130CE | I2C | 🔲 |
-| Bat Monitor | INA226 | I2C | 🔲 |
-| Charger | IP2326 | IO expander | 🔲 |
+| SD Card | — | SDMMC 4-bit | ✅ |
+| Camera | SC2336 2MP | MIPI-CSI 2-lane | ✅ |
+| Audio Codec | ES8388 | I2S + I2C 0x10 | ✅ |
+| Mic ADC | ES7210 (dual, AEC) | I2S + I2C 0x40 | ✅ |
+| Speaker | NS4150B 1W | I2S DAC + GPIO enable | ✅ |
+| IMU | BMI270 6-axis | I2C 0x68 | ✅ |
+| RTC | RX8130CE | I2C 0x32 | ✅ |
+| Bat Monitor | INA226 | I2C 0x40 | ✅ |
+| Charger | IP2326 | IO expander | ✅ |
 | Battery | NP-F550 7.4V 2000mAh | Removable | — |
 
 ## Architecture
@@ -136,7 +136,7 @@ idf.py -p /dev/ttyACM0 monitor
 
 | Command | Description |
 |---------|-------------|
-| `info` | Chip info, heap, PSRAM, WiFi/touch status |
+| `info` | Chip info, heap, PSRAM, all peripheral status |
 | `heap` | Free heap + PSRAM |
 | `wifi` | WiFi status, Dragon connection |
 | `stream` | MJPEG FPS counter |
@@ -146,9 +146,15 @@ idf.py -p /dev/ttyACM0 monitor
 | `red/green/blue/white/black` | Fill screen |
 | `bright <0-100>` | Backlight brightness |
 | `pattern [0-3]` | Test patterns |
+| `sd` | SD card info (total/free space) |
+| `cam` | Capture frame, save to SD |
+| `audio` | Audio codec info + 440Hz test tone |
+| `mic` | Record 1s, show RMS level |
+| `imu` | Accelerometer + gyroscope + orientation |
+| `rtc` | Current RTC date/time |
+| `ntp` | Sync RTC from NTP server |
+| `bat` | Battery voltage, current, power, % |
 | `reboot` | Restart device |
-
-More commands added as drivers are built (sd, cam, audio, mic, imu, rtc, bat).
 
 ## Project Structure
 
@@ -171,7 +177,15 @@ TinkerTab/
 │   ├── io_expander.c/h     # PI4IOE5V6416 driver
 │   ├── wifi.c/h            # ESP-Hosted WiFi STA
 │   ├── mjpeg_stream.c/h    # MJPEG client (Dragon mode)
-│   └── touch_ws.c/h        # WebSocket touch forwarding
+│   ├── touch_ws.c/h        # WebSocket touch forwarding
+│   ├── sdcard.c/h          # SDMMC 4-bit SD card driver
+│   ├── camera.c/h          # SC2336 MIPI-CSI camera
+│   ├── audio.c/h           # ES8388 codec + NS4150B speaker
+│   ├── mic.c               # ES7210 dual microphone
+│   ├── imu.c/h             # BMI270 6-axis IMU
+│   ├── rtc.c/h             # RX8130CE real-time clock
+│   ├── battery.c/h         # INA226 battery monitor
+│   └── bluetooth.c/h       # BLE stub (ESP-Hosted pending)
 ```
 
 ## Known Issues

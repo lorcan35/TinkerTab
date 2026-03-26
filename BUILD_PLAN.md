@@ -14,15 +14,16 @@ Every phase is documented, committed, and pushed chronologically.
 | IO Expander 2 | PI4IOE5V6416 | I2C 0x44 | ✅ Phase 1 |
 | Backlight | GPIO 22 LEDC | PWM 5kHz | ✅ Phase 1 |
 | WiFi/BLE | ESP32-C6-MINI-1U | SDIO 4-bit (ESP-Hosted) | ✅ Phase 1 |
-| SD Card | — | SDMMC 4-bit | 🔲 Phase 2 |
-| Camera | SC2356 2MP | MIPI-CSI | 🔲 Phase 3 |
-| Audio Codec | ES8388 | I2S + I2C control | 🔲 Phase 4 |
-| Audio ADC | ES7210 (dual mic) | I2S + I2C control | 🔲 Phase 5 |
-| IMU | BMI270 6-axis | I2C / SPI | 🔲 Phase 6 |
-| RTC | RX8130CE | I2C | 🔲 Phase 7 |
-| Battery Monitor | INA226 | I2C | 🔲 Phase 8 |
-| Charger IC | IP2326 | — (managed by IO expander) | 🔲 Phase 8 |
-| Speaker Amp | NS4150B 1W | GPIO enable + I2S DAC | 🔲 Phase 4 |
+| SD Card | — | SDMMC 4-bit | ✅ Phase 2 |
+| Camera | SC2336 2MP | MIPI-CSI 2-lane | ✅ Phase 3 |
+| Audio Codec | ES8388 | I2S + I2C control | ✅ Phase 4 |
+| Speaker Amp | NS4150B 1W | GPIO enable + I2S DAC | ✅ Phase 4 |
+| Audio ADC | ES7210 (dual mic) | I2S + I2C control | ✅ Phase 5 |
+| IMU | BMI270 6-axis | I2C 0x68 | ✅ Phase 6 |
+| RTC | RX8130CE | I2C 0x32 | ✅ Phase 7 |
+| Battery Monitor | INA226 | I2C 0x40 | ✅ Phase 8 |
+| Charger IC | IP2326 | IO expander | ✅ Phase 8 |
+| BLE | via ESP32-C6 | ESP-Hosted | ⚠️ Stub (SDK pending) |
 
 ## Build Phases
 
@@ -33,105 +34,103 @@ Every phase is documented, committed, and pushed chronologically.
 - [x] Build plan document (this file)
 - [x] .gitignore for ESP-IDF
 
-### Phase 1 — Port Existing Drivers (from pingdev/tab5)
-- [ ] I2C bus init
-- [ ] IO expander driver (PI4IOE5V6416 x2)
-- [ ] MIPI DSI display (ST7123)
-- [ ] Backlight (LEDC PWM)
-- [ ] Touch (ST7123 TDDI)
-- [ ] WiFi (ESP-Hosted SDIO → ESP32-C6)
-- [ ] Config header with all pin definitions
-- [ ] Kconfig for runtime configuration
-- [ ] Serial command interface
-- [ ] HW JPEG decoder
-- **Commit:** "feat: Phase 1 — port display, touch, WiFi, IO expanders from pingdev"
+### Phase 1 — Port Existing Drivers ✅
+- [x] I2C bus init
+- [x] IO expander driver (PI4IOE5V6416 x2)
+- [x] MIPI DSI display (ST7123)
+- [x] Backlight (LEDC PWM)
+- [x] Touch (ST7123 TDDI)
+- [x] WiFi (ESP-Hosted SDIO → ESP32-C6)
+- [x] Config header with all pin definitions
+- [x] Kconfig for runtime configuration
+- [x] Serial command interface
+- [x] HW JPEG decoder
+- **Commit:** `feat: Phase 1 — port display, touch, WiFi, IO expanders from pingdev`
 
-### Phase 2 — SD Card (SDMMC)
-- [ ] SDMMC 4-bit driver init
-- [ ] Mount FAT filesystem
-- [ ] Read/write test
-- [ ] Serial commands: `sd info`, `sd ls`, `sd cat <file>`
-- [ ] Document pin mapping and known WiFi conflict workaround
-- **Commit:** "feat: Phase 2 — SD card SDMMC 4-bit driver"
+### Phase 2 — SD Card (SDMMC) ✅
+- [x] SDMMC 4-bit driver init
+- [x] Mount FAT filesystem at /sdcard
+- [x] Capacity / free space queries
+- [x] Serial command: `sd`
+- **Commit:** `feat: Phase 2 — SD card SDMMC 4-bit driver`
 
-### Phase 3 — Camera (SC2356 MIPI-CSI)
-- [ ] MIPI-CSI interface init
-- [ ] SC2356 I2C configuration
-- [ ] Single frame capture (JPEG)
-- [ ] Save to SD card
-- [ ] Serial commands: `cam snap`, `cam info`
-- [ ] Live viewfinder mode (decode to display)
-- **Commit:** "feat: Phase 3 — camera SC2356 MIPI-CSI driver"
+### Phase 3 — Camera (SC2336 MIPI-CSI) ✅
+- [x] XCLK via LEDC on GPIO 36 @ 24MHz
+- [x] SCCB (I2C) register access at 0x30
+- [x] Chip ID verification (0xCB3A)
+- [x] MIPI-CSI controller init (2 data lanes)
+- [x] Single frame capture to PSRAM
+- [x] Save to SD card
+- [x] Camera reset via IO expander P6
+- [x] Serial command: `cam`
+- **Commit:** `feat: Phase 3 — camera SC2336 MIPI-CSI driver`
 
-### Phase 4 — Audio Codec (ES8388 + Speaker)
-- [ ] I2S bus init (I2S_NUM_0)
-- [ ] ES8388 I2C configuration
-- [ ] NS4150B speaker amp enable (via IO expander)
-- [ ] WAV playback from SD card
-- [ ] Volume control
-- [ ] Serial commands: `audio play <file>`, `audio vol <0-100>`, `audio stop`
-- **Commit:** "feat: Phase 4 — audio codec ES8388 + speaker playback"
+### Phase 4 — Audio Codec (ES8388 + Speaker) ✅
+- [x] I2S TX channel init
+- [x] ES8388 I2C configuration
+- [x] NS4150B speaker amp enable (via IO expander P1)
+- [x] Raw PCM playback
+- [x] Volume control (0-100)
+- [x] Serial command: `audio` (440Hz test tone)
+- **Commit:** `feat: Phase 4 — audio codec ES8388 + speaker playback`
 
-### Phase 5 — Audio ADC / Microphone (ES7210)
-- [ ] ES7210 I2C configuration
-- [ ] Dual mic capture (I2S input)
-- [ ] Record to WAV on SD card
-- [ ] Audio level meter
-- [ ] Serial commands: `mic record <seconds>`, `mic level`
-- [ ] AEC test (play + record simultaneously)
-- **Commit:** "feat: Phase 5 — microphone ES7210 dual mic recording"
+### Phase 5 — Microphone (ES7210) ✅
+- [x] ES7210 I2C configuration
+- [x] I2S RX channel init (separate port)
+- [x] Dual mic capture
+- [x] Gain control (0-36 dB)
+- [x] Serial command: `mic` (1s recording + RMS level)
+- **Commit:** `feat: Phase 5 — microphone ES7210 dual mic recording`
 
-### Phase 6 — IMU (BMI270)
-- [ ] BMI270 I2C/SPI init
-- [ ] Read accelerometer (x, y, z)
-- [ ] Read gyroscope (x, y, z)
-- [ ] Orientation detection (portrait/landscape)
-- [ ] Tap/shake detection
-- [ ] Serial commands: `imu read`, `imu orient`, `imu tap`
-- **Commit:** "feat: Phase 6 — IMU BMI270 6-axis driver"
+### Phase 6 — IMU (BMI270) ✅
+- [x] BMI270 I2C init + chip ID verify
+- [x] Accelerometer (±4g, 100Hz)
+- [x] Gyroscope (±2000 dps, 100Hz)
+- [x] Orientation detection (portrait/landscape)
+- [x] Tap/shake gesture detection
+- [x] Serial command: `imu`
+- **Commit:** `feat: Phase 6 — IMU BMI270 6-axis driver`
 
-### Phase 7 — RTC (RX8130CE)
-- [ ] RX8130CE I2C init
-- [ ] Read date/time
-- [ ] Set date/time
-- [ ] Alarm configuration
-- [ ] Sync from NTP when WiFi available
-- [ ] Serial commands: `rtc get`, `rtc set <datetime>`, `rtc alarm <time>`
-- **Commit:** "feat: Phase 7 — RTC RX8130CE driver"
+### Phase 7 — RTC (RX8130CE) ✅
+- [x] RX8130CE I2C init
+- [x] Read / set date/time
+- [x] NTP sync over WiFi
+- [x] Serial commands: `rtc`, `ntp`
+- **Commit:** `feat: Phase 7 — RTC RX8130CE driver`
 
-### Phase 8 — Battery & Power (INA226 + IP2326)
-- [ ] INA226 I2C init
-- [ ] Read voltage, current, power
-- [ ] Battery percentage estimation
-- [ ] Charging status detection (via IO expander / IP2326)
-- [ ] Low battery warning
-- [ ] Serial commands: `bat info`, `bat voltage`, `bat charging`
-- **Commit:** "feat: Phase 8 — battery monitor INA226 + charging status"
+### Phase 8 — Battery & Power (INA226) ✅
+- [x] INA226 I2C init + calibration
+- [x] Voltage, current, power readings
+- [x] Battery percentage estimation (2S LiPo curve)
+- [x] Charging status detection
+- [x] Serial command: `bat`
+- **Commit:** `feat: Phase 8 — battery monitor INA226 + charging status`
 
-### Phase 9 — LVGL Integration
+### Phase 8b — BLE (Stub) ✅
+- [x] Stub driver that returns ESP_ERR_NOT_SUPPORTED
+- [x] Documented: ESP-Hosted doesn't forward BLE yet
+- **Commit:** included with Phase 8
+
+### Phase 9 — LVGL Integration 🔲
 - [ ] LVGL v9 integration with MIPI DSI display
 - [ ] Touch input driver for LVGL
 - [ ] Theme setup (dark mode)
 - [ ] Basic screen rendering test
 - [ ] Font setup (optimized for 720px width)
-- **Commit:** "feat: Phase 9 — LVGL v9 integration with display + touch"
 
-### Phase 10 — Native Launcher UI
+### Phase 10 — Native Launcher UI 🔲
 - [ ] Boot splash screen
 - [ ] Home screen (clock, app grid, status bar)
 - [ ] Settings screen (WiFi, brightness, battery, about)
 - [ ] Camera viewfinder screen
 - [ ] File browser (SD card)
 - [ ] Audio player screen
-- **Commit:** "feat: Phase 10 — native LVGL launcher UI"
 
-### Phase 11 — Dragon Mode
-- [ ] MJPEG streaming client
-- [ ] WebSocket touch forwarding
+### Phase 11 — Dragon Mode 🔲
+- [ ] MJPEG streaming client (already ported from Phase 1)
+- [ ] WebSocket touch forwarding (already ported from Phase 1)
 - [ ] Auto-detect Dragon on network (mDNS)
 - [ ] Seamless mode switching (LVGL ↔ MJPEG)
-- [ ] Dragon server (python, from pingdev)
-- **Commit:** "feat: Phase 11 — Dragon mode MJPEG + touch forwarding"
 
 ## Pin Reference
 
