@@ -245,31 +245,58 @@ esp_err_t tab5_camera_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    /* Camera reset via IO expander (P6 on 0x43) */
-    /* Reset sequence: low → wait → high → wait */
-    tab5_set_camera_reset(false);  /* Assert reset (low) */
-    vTaskDelay(pdMS_TO_TICKS(10));
-    tab5_set_camera_reset(true);   /* Release reset (high) */
-    vTaskDelay(pdMS_TO_TICKS(20));
+    /* Power-on sequence matching BSP: XCLK → reset → SCCB
+     * SC2336 needs clock running before it responds on I2C. */
 
-    /* Start XCLK (24MHz on GPIO 36) */
+    /* 1. Start XCLK (24MHz on GPIO 36) — must be before reset release */
     ESP_RETURN_ON_ERROR(cam_xclk_init(), TAG, "XCLK init failed");
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(5));
 
-    /* Initialize SCCB (I2C) — uses system I2C bus */
-    /* NOTE: Caller must have initialized I2C bus first.
-     * We get the bus handle from the global i2c bus.
-     * TODO: Pass i2c_bus handle as parameter for cleaner API. */
+    /* 2. Camera reset via IO expander (P6 on 0x43, active low) */
+    tab5_set_camera_reset(true);   /* Assert reset (pin LOW) */
+    vTaskDelay(pdMS_TO_TICKS(10));
+    tab5_set_camera_reset(false);  /* Release reset (pin HIGH) */
+    vTaskDelay(pdMS_TO_TICKS(20)); /* SC2336 needs time after reset with XCLK running */
+
+    /* 3. Initialize SCCB (I2C) — uses system I2C bus */
     extern i2c_master_bus_handle_t tab5_get_i2c_bus(void);
     i2c_master_bus_handle_t i2c_bus = tab5_get_i2c_bus();
     if (!i2c_bus) {
         ESP_LOGE(TAG, "I2C bus not available");
         return ESP_ERR_INVALID_STATE;
     }
-    ESP_RETURN_ON_ERROR(cam_sccb_init(i2c_bus), TAG, "SCCB init failed");
 
-    /* Check sensor ID */
-    ESP_RETURN_ON_ERROR(cam_check_sensor_id(), TAG, "Sensor ID check failed");
+    /* Try primary address 0x30, fall back to 0x36 (SID pin variant) */
+    esp_err_t sccb_ret = cam_sccb_init(i2c_bus);
+    if (sccb_ret != ESP_OK) {
+        ESP_LOGE(TAG, "SCCB init failed at 0x%02X", SC2336_SCCB_ADDR);
+        return sccb_ret;
+    }
+
+    /* Probe: try reading chip ID at primary address */
+    esp_err_t probe_ret = cam_check_sensor_id();
+    if (probe_ret != ESP_OK) {
+        ESP_LOGW(TAG, "SC2336 not found at 0x%02X, trying 0x36...", SC2336_SCCB_ADDR);
+        /* Remove old device and try alternate address */
+        i2c_master_bus_rm_device(s_sccb_dev);
+        s_sccb_dev = NULL;
+        i2c_device_config_t alt_cfg = {
+            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+            .device_address = 0x36,
+            .scl_speed_hz = 100000,
+        };
+        sccb_ret = i2c_master_bus_add_device(i2c_bus, &alt_cfg, &s_sccb_dev);
+        if (sccb_ret != ESP_OK) {
+            ESP_LOGE(TAG, "SCCB init at 0x36 also failed");
+            return sccb_ret;
+        }
+        probe_ret = cam_check_sensor_id();
+        if (probe_ret != ESP_OK) {
+            ESP_LOGE(TAG, "SC2336 not found at 0x36 either — camera not responding");
+            return probe_ret;
+        }
+        ESP_LOGI(TAG, "SC2336 found at alternate address 0x36");
+    }
 
     /* Initialize sensor registers (VGA mode for now) */
     ESP_RETURN_ON_ERROR(cam_sensor_init_vga(), TAG, "Sensor init failed");

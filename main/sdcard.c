@@ -37,6 +37,8 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "sd_pwr_ctrl.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
 
 static const char *TAG = "tab5_sd";
 
@@ -64,8 +66,22 @@ esp_err_t tab5_sdcard_init(void)
         .allocation_unit_size   = 16 * 1024,
     };
 
-    /* --- SDMMC host (default = slot 1, 4-bit) --- */
+    /* --- SDMMC host — ESP32-P4 Tab5 uses SLOT 0 (IOMUX pins 39-44) --- */
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+
+    /* --- SD card IO power via on-chip LDO (channel 4, 3.3V) --- */
+    sd_pwr_ctrl_ldo_config_t ldo_config = {
+        .ldo_chan_id = 4,
+    };
+    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
+    esp_err_t pwr_ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
+    if (pwr_ret == ESP_OK) {
+        host.pwr_ctrl_handle = pwr_ctrl_handle;
+        ESP_LOGI(TAG, "SD card LDO power enabled (channel 4)");
+    } else {
+        ESP_LOGW(TAG, "SD LDO power init failed: %s (continuing anyway)", esp_err_to_name(pwr_ret));
+    }
 
     /* --- Slot configuration with Tab5 GPIO mapping --- */
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
