@@ -1,0 +1,51 @@
+server:
+  host: "0.0.0.0"
+  port: 3502
+
+stt:
+  backend: "whisper_cpp"  # moonshine, whisper_cpp, vosk
+  model: "tiny"
+  language: "en"
+  # moonshine-specific
+  moonshine_model_path: ""
+  # whisper_cpp-specific
+  whisper_model_path: ""
+  # vosk-specific
+  vosk_model_path: ""
+
+tts:
+  backend: "piper"  # piper, kokoro, edge_tts
+  # piper-specific
+  piper_model: "en_US-lessac-medium"
+  piper_data_dir: ""
+  # kokoro-specific
+  kokoro_model_path: ""
+  kokoro_voice: "af_heart"
+  # edge_tts-specific
+  edge_voice: "en-US-AriaNeural"
+
+  sample_rate: 22050
+
+llm:
+  backend: "ollama"  # ollama, openrouter, lmstudio
+  # ollama
+  ollama_url: "http://localhost:11434"
+  ollama_model: "gemma3:4b"
+  # openrouter
+  openrouter_api_key: ""
+  openrouter_model: "google/gemma-3-4b-it"
+  openrouter_url: "https://openrouter.ai/api/v1"
+  # lmstudio
+  lmstudio_url: "http://localhost:1234/v1"
+  lmstudio_model: "default"
+
+  system_prompt: "You are Glyph, a helpful AI assistant on a portable device called TinkerClaw. Keep responses concise and conversational — they will be spoken aloud."
+  max_tokens: 256
+  temperature: 0.7
+
+audio:
+  input_sample_rate: 16000
+  input_channels: 1
+  output_sample_rate: 22050
+  vad_enabled: true
+  vad_silence_ms: 600

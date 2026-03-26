@@ -136,6 +136,37 @@ Every phase is documented, committed, and pushed chronologically.
 - [ ] Auto-detect Dragon on network (mDNS)
 - [ ] Seamless mode switching (LVGL ↔ MJPEG)
 
+### Phase 12 — Voice Pipeline (STT/TTS/LLM)
+**Status: IN PROGRESS**
+
+#### 12a: Dragon Voice Server ✅
+- [x] Python WebSocket server on port 3502
+- [x] Swappable STT backends (Moonshine, Whisper.cpp, Vosk)
+- [x] Swappable TTS backends (Piper, Kokoro, Edge TTS)
+- [x] Swappable LLM backends (Ollama, OpenRouter, LM Studio)
+- [x] Config-driven via config.yaml with env var overrides
+- [x] STT backend factory with abstract base class
+- [x] Whisper.cpp backend implementation
+
+#### 12b: Tab5 Voice Streaming ✅
+- [x] WebSocket client connecting to Dragon voice server
+- [x] Mic capture -> PCM 16kHz mono -> WebSocket binary frames
+- [x] Receive TTS audio -> playback via ES8388 codec
+- [x] Push-to-talk state machine
+- [x] Serial commands: voice_start, voice_stop
+
+#### 12c: Streaming Pipeline (Phase 2) ⬜
+- [ ] OPUS encoding/decoding on both ends
+- [ ] Moonshine v2 streaming STT
+- [ ] Sentence-level TTS streaming
+- [ ] VAD on Tab5 (ESP-SR VADNet)
+
+#### 12d: Wake Word + Production (Phase 3) ⬜
+- [ ] ESP-SR WakeNet9 / Porcupine for "Hey Glyph"
+- [ ] Acoustic Echo Cancellation (AEC)
+- [ ] Barge-in support
+- [ ] Kokoro TTS upgrade
+
 ## Pin Reference
 
 See `main/config.h` for complete pin mapping.

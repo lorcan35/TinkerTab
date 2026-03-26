@@ -168,3 +168,12 @@
 #define TAB5_DRAGON_HEALTH_TIMEOUT_MS  3000
 #define TAB5_DRAGON_RECONNECT_BASE_MS  2000
 #define TAB5_DRAGON_RECONNECT_MAX_MS   30000
+
+// ---------------------------------------------------------------------------
+// Voice — Dragon voice server
+// ---------------------------------------------------------------------------
+#define TAB5_VOICE_WS_PATH       "/ws/voice"
+#define TAB5_VOICE_PORT           3502
+#define TAB5_VOICE_CHUNK_MS       20     // Audio chunk size in ms
+#define TAB5_VOICE_SAMPLE_RATE    16000
+#define TAB5_VOICE_PLAYBACK_BUF   4096   // Playback ring buffer bytes

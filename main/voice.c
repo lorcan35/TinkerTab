@@ -1,0 +1,678 @@
+/**
+ * TinkerClaw Tab5 — Voice Streaming Module
+ *
+ * Streams mic audio (PCM 16-bit 16kHz mono) to Dragon voice server via
+ * WebSocket, receives TTS audio and plays it through the speaker.
+ *
+ * Push-to-talk flow:
+ *   1. voice_start_listening() -> sends {"type":"start"} -> starts mic capture
+ *   2. voice_stop_listening()  -> stops mic capture -> sends {"type":"stop"}
+ *   3. Dragon processes audio  -> sends STT text, then TTS audio
+ *   4. Tab5 receives and plays TTS audio
+ *   5. {"type":"tts_end"} received -> back to READY state
+ *
+ * Uses esp_transport_ws (same pattern as touch_ws.c) for the WebSocket layer.
+ * Mic capture task is pinned to core 1 to keep core 0 free for UI/LVGL.
+ */
+
+#include "voice.h"
+#include "audio.h"
+#include "config.h"
+
+#include <string.h>
+#include <stdio.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
+#include "esp_log.h"
+#include "esp_check.h"
+#include "esp_timer.h"
+#include "esp_transport.h"
+#include "esp_transport_tcp.h"
+#include "esp_transport_ws.h"
+#include "cJSON.h"
+
+static const char *TAG = "tab5_voice";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+// 20ms of 16kHz mono = 320 samples = 640 bytes
+#define VOICE_CHUNK_SAMPLES    (TAB5_VOICE_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
+#define VOICE_CHUNK_BYTES      (VOICE_CHUNK_SAMPLES * sizeof(int16_t))
+
+// Stereo mic read: 2 channels x 320 samples = 1280 bytes
+#define MIC_STEREO_SAMPLES     (VOICE_CHUNK_SAMPLES * 2)
+
+// Reconnect parameters
+#define VOICE_RECONNECT_BASE_MS  2000
+#define VOICE_RECONNECT_MAX_MS   15000
+#define VOICE_CONNECT_TIMEOUT_MS 5000
+#define VOICE_RESPONSE_TIMEOUT_MS 30000
+
+// Mic capture task
+#define MIC_TASK_STACK_SIZE    4096
+#define MIC_TASK_PRIORITY      5
+#define MIC_TASK_CORE          1
+
+// WS receive task
+#define WS_TASK_STACK_SIZE     6144
+#define WS_TASK_PRIORITY       4
+#define WS_TASK_CORE           1
+
+// Max transcript length
+#define MAX_TRANSCRIPT_LEN     512
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+static voice_state_t     s_state = VOICE_STATE_IDLE;
+static voice_state_cb_t  s_state_cb = NULL;
+static SemaphoreHandle_t s_state_mutex = NULL;
+
+// WebSocket transport
+static esp_transport_handle_t s_ws = NULL;
+static volatile bool s_ws_connected = false;
+static volatile bool s_stop_flag = false;
+
+// Dragon connection info
+static char     s_dragon_host[64] = {0};
+static uint16_t s_dragon_port = TAB5_VOICE_PORT;
+
+// Mic capture task
+static TaskHandle_t  s_mic_task = NULL;
+static volatile bool s_mic_running = false;
+
+// WS receive task
+static TaskHandle_t  s_ws_task = NULL;
+static volatile bool s_ws_running = false;
+
+// Playback ring buffer (smooths network jitter)
+static int16_t  s_play_buf[TAB5_VOICE_PLAYBACK_BUF / sizeof(int16_t)];
+static size_t   s_play_wr = 0;  // write index (samples)
+static size_t   s_play_rd = 0;  // read index (samples)
+static size_t   s_play_count = 0; // samples available
+static SemaphoreHandle_t s_play_mutex = NULL;
+#define PLAY_BUF_CAPACITY  (TAB5_VOICE_PLAYBACK_BUF / sizeof(int16_t))
+
+// Last transcript from Dragon STT
+static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
+
+static bool s_initialized = false;
+
+// ---------------------------------------------------------------------------
+// Forward declarations
+// ---------------------------------------------------------------------------
+static void voice_set_state(voice_state_t new_state, const char *detail);
+static void mic_capture_task(void *arg);
+static void ws_receive_task(void *arg);
+static void handle_text_message(const char *data, int len);
+static void playback_buf_reset(void);
+static size_t playback_buf_write(const int16_t *data, size_t samples);
+static size_t playback_buf_read(int16_t *data, size_t max_samples);
+static esp_err_t ws_send_text(const char *msg);
+static esp_err_t ws_send_binary(const void *data, size_t len);
+
+// ---------------------------------------------------------------------------
+// State machine
+// ---------------------------------------------------------------------------
+static void voice_set_state(voice_state_t new_state, const char *detail)
+{
+    if (s_state_mutex) {
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    }
+    voice_state_t old = s_state;
+    s_state = new_state;
+    if (s_state_mutex) {
+        xSemaphoreGive(s_state_mutex);
+    }
+
+    if (old != new_state) {
+        ESP_LOGI(TAG, "State: %d -> %d (%s)", old, new_state,
+                 detail ? detail : "");
+        if (s_state_cb) {
+            s_state_cb(new_state, detail);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Playback ring buffer
+// ---------------------------------------------------------------------------
+static void playback_buf_reset(void)
+{
+    xSemaphoreTake(s_play_mutex, portMAX_DELAY);
+    s_play_wr = 0;
+    s_play_rd = 0;
+    s_play_count = 0;
+    xSemaphoreGive(s_play_mutex);
+}
+
+static size_t playback_buf_write(const int16_t *data, size_t samples)
+{
+    xSemaphoreTake(s_play_mutex, portMAX_DELAY);
+
+    size_t written = 0;
+    while (written < samples && s_play_count < PLAY_BUF_CAPACITY) {
+        s_play_buf[s_play_wr] = data[written];
+        s_play_wr = (s_play_wr + 1) % PLAY_BUF_CAPACITY;
+        s_play_count++;
+        written++;
+    }
+
+    xSemaphoreGive(s_play_mutex);
+
+    if (written < samples) {
+        ESP_LOGW(TAG, "Playback buffer overflow, dropped %zu samples",
+                 samples - written);
+    }
+    return written;
+}
+
+static size_t playback_buf_read(int16_t *data, size_t max_samples)
+{
+    xSemaphoreTake(s_play_mutex, portMAX_DELAY);
+
+    size_t read = 0;
+    while (read < max_samples && s_play_count > 0) {
+        data[read] = s_play_buf[s_play_rd];
+        s_play_rd = (s_play_rd + 1) % PLAY_BUF_CAPACITY;
+        s_play_count--;
+        read++;
+    }
+
+    xSemaphoreGive(s_play_mutex);
+    return read;
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket helpers
+// ---------------------------------------------------------------------------
+static esp_err_t ws_send_text(const char *msg)
+{
+    if (!s_ws || !s_ws_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int ret = esp_transport_ws_send_raw(s_ws,
+        WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
+        msg, strlen(msg), 1000);
+
+    if (ret < 0) {
+        ESP_LOGE(TAG, "WS text send failed: %d", ret);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t ws_send_binary(const void *data, size_t len)
+{
+    if (!s_ws || !s_ws_connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    int ret = esp_transport_ws_send_raw(s_ws,
+        WS_TRANSPORT_OPCODES_BINARY | WS_TRANSPORT_OPCODES_FIN,
+        data, len, 1000);
+
+    if (ret < 0) {
+        ESP_LOGE(TAG, "WS binary send failed (%zu bytes): %d", len, ret);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
+// JSON message handling (Dragon -> Tab5)
+// ---------------------------------------------------------------------------
+static void handle_text_message(const char *data, int len)
+{
+    cJSON *root = cJSON_ParseWithLength(data, len);
+    if (!root) {
+        ESP_LOGW(TAG, "Failed to parse JSON: %.*s", len, data);
+        return;
+    }
+
+    cJSON *type = cJSON_GetObjectItem(root, "type");
+    if (!cJSON_IsString(type)) {
+        ESP_LOGW(TAG, "JSON missing 'type': %.*s", len, data);
+        cJSON_Delete(root);
+        return;
+    }
+
+    const char *type_str = type->valuestring;
+
+    if (strcmp(type_str, "stt") == 0) {
+        // Speech-to-text result
+        cJSON *text = cJSON_GetObjectItem(root, "text");
+        if (cJSON_IsString(text) && text->valuestring) {
+            strncpy(s_transcript, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
+            s_transcript[MAX_TRANSCRIPT_LEN - 1] = '\0';
+            ESP_LOGI(TAG, "STT: \"%s\"", s_transcript);
+            voice_set_state(VOICE_STATE_PROCESSING, s_transcript);
+        }
+    } else if (strcmp(type_str, "tts_start") == 0) {
+        // Dragon is about to send TTS audio
+        ESP_LOGI(TAG, "TTS start — preparing playback");
+        playback_buf_reset();
+        voice_set_state(VOICE_STATE_SPEAKING, NULL);
+    } else if (strcmp(type_str, "tts_end") == 0) {
+        // TTS audio stream complete — drain remaining buffer
+        ESP_LOGI(TAG, "TTS end — draining playback buffer");
+
+        // Flush any remaining samples in the ring buffer to the speaker
+        int16_t drain_buf[VOICE_CHUNK_SAMPLES];
+        size_t drained;
+        while ((drained = playback_buf_read(drain_buf, VOICE_CHUNK_SAMPLES)) > 0) {
+            tab5_audio_play_raw(drain_buf, drained);
+        }
+
+        voice_set_state(VOICE_STATE_READY, NULL);
+    } else if (strcmp(type_str, "error") == 0) {
+        cJSON *msg = cJSON_GetObjectItem(root, "message");
+        const char *err_msg = cJSON_IsString(msg) ? msg->valuestring : "unknown";
+        ESP_LOGE(TAG, "Dragon error: %s", err_msg);
+        voice_set_state(VOICE_STATE_READY, err_msg);
+    } else {
+        ESP_LOGD(TAG, "Unknown message type: %s", type_str);
+    }
+
+    cJSON_Delete(root);
+}
+
+// ---------------------------------------------------------------------------
+// Mic capture task — reads stereo I2S, converts to mono, sends via WS
+// ---------------------------------------------------------------------------
+static void mic_capture_task(void *arg)
+{
+    ESP_LOGI(TAG, "Mic capture task started (core %d)", xPortGetCoreID());
+
+    // Stereo buffer: 2 channels interleaved (L, R, L, R, ...)
+    int16_t stereo_buf[MIC_STEREO_SAMPLES];
+    // Mono output buffer
+    int16_t mono_buf[VOICE_CHUNK_SAMPLES];
+
+    s_mic_running = true;
+
+    while (s_mic_running && s_ws_connected) {
+        // Read stereo samples from mic
+        esp_err_t err = tab5_mic_read(stereo_buf, MIC_STEREO_SAMPLES, 100);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        // Convert stereo to mono: average L+R (divide first to avoid overflow)
+        for (int i = 0; i < VOICE_CHUNK_SAMPLES; i++) {
+            int32_t left  = stereo_buf[i * 2];
+            int32_t right = stereo_buf[i * 2 + 1];
+            mono_buf[i] = (int16_t)((left / 2) + (right / 2));
+        }
+
+        // Send mono PCM as binary WS frame
+        err = ws_send_binary(mono_buf, VOICE_CHUNK_BYTES);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to send audio chunk");
+            break;
+        }
+    }
+
+    s_mic_running = false;
+    ESP_LOGI(TAG, "Mic capture task exiting");
+    s_mic_task = NULL;
+    vTaskDelete(NULL);
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket receive task — reads from Dragon, handles text + binary frames
+// ---------------------------------------------------------------------------
+static void ws_receive_task(void *arg)
+{
+    ESP_LOGI(TAG, "WS receive task started (core %d)", xPortGetCoreID());
+
+    // Receive buffer — large enough for audio chunks + JSON messages
+    // Max binary frame: ~640 bytes (20ms mono). JSON frames are small.
+    char rx_buf[1024];
+    int16_t play_chunk[VOICE_CHUNK_SAMPLES];
+
+    s_ws_running = true;
+
+    while (s_ws_connected && !s_stop_flag) {
+        int poll = esp_transport_poll_read(s_ws, 100);
+        if (poll < 0) {
+            ESP_LOGW(TAG, "WS poll error, connection lost");
+            s_ws_connected = false;
+            break;
+        }
+        if (poll == 0) {
+            // No data available — check if we should drain playback buffer
+            if (s_state == VOICE_STATE_SPEAKING) {
+                size_t avail = playback_buf_read(play_chunk, VOICE_CHUNK_SAMPLES);
+                if (avail > 0) {
+                    tab5_audio_play_raw(play_chunk, avail);
+                }
+            }
+            continue;
+        }
+
+        // Data available — read it
+        int len = esp_transport_read(s_ws, rx_buf, sizeof(rx_buf), 1000);
+        if (len <= 0) {
+            ESP_LOGW(TAG, "WS read error (%d), disconnecting", len);
+            s_ws_connected = false;
+            break;
+        }
+
+        // Determine frame type from the WebSocket opcode
+        int opcode = esp_transport_ws_get_read_opcode(s_ws);
+
+        if (opcode == WS_TRANSPORT_OPCODES_TEXT) {
+            // JSON text message from Dragon
+            rx_buf[len] = '\0';
+            handle_text_message(rx_buf, len);
+        } else if (opcode == WS_TRANSPORT_OPCODES_BINARY) {
+            // PCM audio data from Dragon
+            if (s_state == VOICE_STATE_SPEAKING ||
+                s_state == VOICE_STATE_PROCESSING) {
+                // If we get binary before tts_start, switch to speaking
+                if (s_state == VOICE_STATE_PROCESSING) {
+                    playback_buf_reset();
+                    voice_set_state(VOICE_STATE_SPEAKING, NULL);
+                }
+
+                // Write to ring buffer
+                size_t samples = len / sizeof(int16_t);
+                playback_buf_write((const int16_t *)rx_buf, samples);
+
+                // Immediately try to play what we have
+                size_t avail = playback_buf_read(play_chunk, VOICE_CHUNK_SAMPLES);
+                if (avail > 0) {
+                    tab5_audio_play_raw(play_chunk, avail);
+                }
+            }
+        } else if (opcode == WS_TRANSPORT_OPCODES_PING) {
+            // Respond to ping with pong
+            esp_transport_ws_send_raw(s_ws,
+                WS_TRANSPORT_OPCODES_PONG | WS_TRANSPORT_OPCODES_FIN,
+                rx_buf, len, 100);
+        } else if (opcode == WS_TRANSPORT_OPCODES_CLOSE) {
+            ESP_LOGI(TAG, "WS close frame received");
+            s_ws_connected = false;
+            break;
+        }
+    }
+
+    s_ws_running = false;
+    s_ws_task = NULL;
+
+    // If we disconnected unexpectedly, update state
+    if (!s_stop_flag && s_state != VOICE_STATE_IDLE) {
+        voice_set_state(VOICE_STATE_IDLE, "disconnected");
+    }
+
+    ESP_LOGI(TAG, "WS receive task exiting");
+    vTaskDelete(NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+esp_err_t voice_init(voice_state_cb_t state_cb)
+{
+    if (s_initialized) {
+        ESP_LOGW(TAG, "Already initialized");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Initializing voice module");
+
+    s_state_cb = state_cb;
+
+    s_state_mutex = xSemaphoreCreateMutex();
+    if (!s_state_mutex) {
+        ESP_LOGE(TAG, "Failed to create state mutex");
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_play_mutex = xSemaphoreCreateMutex();
+    if (!s_play_mutex) {
+        ESP_LOGE(TAG, "Failed to create playback mutex");
+        vSemaphoreDelete(s_state_mutex);
+        s_state_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    playback_buf_reset();
+    s_transcript[0] = '\0';
+    s_initialized = true;
+
+    voice_set_state(VOICE_STATE_IDLE, NULL);
+    ESP_LOGI(TAG, "Voice module initialized");
+    return ESP_OK;
+}
+
+esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
+{
+    if (!s_initialized) {
+        ESP_LOGE(TAG, "Not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_ws_connected) {
+        ESP_LOGW(TAG, "Already connected");
+        return ESP_OK;
+    }
+
+    // Save connection info
+    strncpy(s_dragon_host, dragon_host, sizeof(s_dragon_host) - 1);
+    s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
+    s_dragon_port = dragon_port;
+
+    voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
+
+    // Create WS transport (same pattern as touch_ws.c)
+    esp_transport_handle_t tcp = esp_transport_tcp_init();
+    if (!tcp) {
+        ESP_LOGE(TAG, "Failed to create TCP transport");
+        voice_set_state(VOICE_STATE_IDLE, "transport error");
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_ws = esp_transport_ws_init(tcp);
+    if (!s_ws) {
+        ESP_LOGE(TAG, "Failed to create WS transport");
+        esp_transport_destroy(tcp);
+        voice_set_state(VOICE_STATE_IDLE, "transport error");
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
+
+    ESP_LOGI(TAG, "Connecting to ws://%s:%d%s",
+             s_dragon_host, s_dragon_port, TAB5_VOICE_WS_PATH);
+
+    int err = esp_transport_connect(s_ws, s_dragon_host, s_dragon_port,
+                                    VOICE_CONNECT_TIMEOUT_MS);
+    if (err < 0) {
+        ESP_LOGW(TAG, "WS connect failed");
+        esp_transport_close(s_ws);
+        esp_transport_destroy(s_ws);
+        s_ws = NULL;
+        voice_set_state(VOICE_STATE_IDLE, "connect failed");
+        return ESP_FAIL;
+    }
+
+    s_ws_connected = true;
+    s_stop_flag = false;
+
+    // Start WS receive task
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        ws_receive_task, "voice_ws", WS_TASK_STACK_SIZE,
+        NULL, WS_TASK_PRIORITY, &s_ws_task, WS_TASK_CORE);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create WS receive task");
+        esp_transport_close(s_ws);
+        esp_transport_destroy(s_ws);
+        s_ws = NULL;
+        s_ws_connected = false;
+        voice_set_state(VOICE_STATE_IDLE, "task create failed");
+        return ESP_ERR_NO_MEM;
+    }
+
+    voice_set_state(VOICE_STATE_READY, NULL);
+    ESP_LOGI(TAG, "Connected to Dragon voice server");
+    return ESP_OK;
+}
+
+esp_err_t voice_start_listening(void)
+{
+    if (!s_initialized || !s_ws_connected) {
+        ESP_LOGE(TAG, "Not connected");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_state != VOICE_STATE_READY) {
+        ESP_LOGW(TAG, "Cannot start listening in state %d", s_state);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Starting push-to-talk");
+
+    // Send start signal to Dragon
+    esp_err_t err = ws_send_text("{\"type\":\"start\"}");
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send start signal");
+        return err;
+    }
+
+    // Clear previous transcript
+    s_transcript[0] = '\0';
+
+    // Start mic capture task on core 1
+    s_mic_running = true;
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
+        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create mic capture task");
+        ws_send_text("{\"type\":\"stop\"}");
+        s_mic_running = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    voice_set_state(VOICE_STATE_LISTENING, NULL);
+    return ESP_OK;
+}
+
+esp_err_t voice_stop_listening(void)
+{
+    if (s_state != VOICE_STATE_LISTENING) {
+        ESP_LOGW(TAG, "Not listening (state=%d)", s_state);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Stopping push-to-talk");
+
+    // Stop mic capture task
+    s_mic_running = false;
+    // Wait briefly for task to finish (it checks s_mic_running each chunk)
+    for (int i = 0; i < 10 && s_mic_task != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Send stop signal to Dragon
+    esp_err_t err = ws_send_text("{\"type\":\"stop\"}");
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to send stop signal");
+    }
+
+    voice_set_state(VOICE_STATE_PROCESSING, NULL);
+    return ESP_OK;
+}
+
+esp_err_t voice_cancel(void)
+{
+    ESP_LOGI(TAG, "Cancelling voice session");
+
+    // Stop mic if running
+    if (s_mic_running) {
+        s_mic_running = false;
+        for (int i = 0; i < 10 && s_mic_task != NULL; i++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+
+    // Clear playback buffer
+    playback_buf_reset();
+
+    // Send cancel to Dragon if connected
+    if (s_ws_connected) {
+        ws_send_text("{\"type\":\"cancel\"}");
+    }
+
+    if (s_ws_connected) {
+        voice_set_state(VOICE_STATE_READY, "cancelled");
+    } else {
+        voice_set_state(VOICE_STATE_IDLE, "cancelled");
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t voice_disconnect(void)
+{
+    ESP_LOGI(TAG, "Disconnecting from Dragon voice server");
+
+    // Signal tasks to stop
+    s_stop_flag = true;
+    s_mic_running = false;
+
+    // Wait for mic task to exit
+    for (int i = 0; i < 20 && s_mic_task != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Close WebSocket (will cause ws_receive_task to exit)
+    s_ws_connected = false;
+    if (s_ws) {
+        esp_transport_close(s_ws);
+    }
+
+    // Wait for WS receive task to exit
+    for (int i = 0; i < 30 && s_ws_task != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // Clean up transport
+    if (s_ws) {
+        esp_transport_destroy(s_ws);
+        s_ws = NULL;
+    }
+
+    playback_buf_reset();
+    voice_set_state(VOICE_STATE_IDLE, NULL);
+
+    ESP_LOGI(TAG, "Disconnected");
+    return ESP_OK;
+}
+
+voice_state_t voice_get_state(void)
+{
+    voice_state_t state;
+    if (s_state_mutex) {
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+        state = s_state;
+        xSemaphoreGive(s_state_mutex);
+    } else {
+        state = s_state;
+    }
+    return state;
+}
+
+const char *voice_get_last_transcript(void)
+{
+    return s_transcript;
+}

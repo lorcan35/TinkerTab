@@ -166,6 +166,16 @@ TinkerTab/
 ├── BUILD_PLAN.md           # Phased build plan with status
 ├── TINKERTAB_OS_SPEC.md    # Full UI/UX design specification
 ├── dragon_server.py        # Dragon-side CDP streaming server
+├── dragon_voice/           # Voice pipeline server (STT/LLM/TTS)
+│   ├── config.yaml         # Voice server configuration
+│   ├── config.py           # Config loader with env overrides
+│   ├── requirements.txt    # Python dependencies
+│   ├── stt/                # Speech-to-text backends
+│   ├── tts/                # Text-to-speech backends
+│   └── llm/                # LLM backends
+├── docs/
+│   ├── stt-tts-research.md # Voice pipeline research notes
+│   └── VOICE_PIPELINE.md   # Voice pipeline documentation
 ├── main/
 │   ├── CMakeLists.txt      # Component build config
 │   ├── idf_component.yml   # Managed dependencies
@@ -195,6 +205,25 @@ TinkerTab/
 │   ├── ui_camera.c/h       # Camera viewfinder
 │   ├── ui_files.c/h        # File browser
 │   └── ui_audio.c/h        # Audio player
+```
+
+## Voice Pipeline
+
+Conversational AI voice: user speaks into the Tab5, Dragon processes STT -> LLM -> TTS, and the spoken response plays back on the Tab5 speaker.
+
+- **Dragon** runs the `dragon_voice` WebSocket server on port 3502
+- **Tab5** streams mic audio (PCM 16kHz mono) and receives spoken responses
+- Configurable backends: STT (Moonshine/Whisper.cpp/Vosk), TTS (Piper/Kokoro/Edge TTS), LLM (Ollama/OpenRouter/LM Studio)
+- All settings in `dragon_voice/config.yaml` with environment variable overrides
+
+See [docs/VOICE_PIPELINE.md](docs/VOICE_PIPELINE.md) for the full architecture, protocol spec, and latency analysis.
+
+**Quick start:**
+```bash
+cd dragon_voice
+pip install -r requirements.txt
+pip install pywhispercpp piper-tts   # install backends
+python -m dragon_voice               # starts ws://0.0.0.0:3502
 ```
 
 ## Known Issues
