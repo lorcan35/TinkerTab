@@ -3,12 +3,13 @@
  * 720x1280 portrait, LVGL v9
  *
  * Uses lv_tileview for vertical page-snap navigation:
- *   Page 0 — AI (brain glyph, status)
- *   Page 1 — Tools (2-column live tiles)
+ *   Page 0 — AI (brain glyph with breathing pulse, status)
+ *   Page 1 — Tools (2-column live tiles with accent bars)
  *   Page 2 — Dragon (MJPEG viewport, connection status)
  *   Page 3 — Settings (hardware info rows)
  *
  * Floating status bar overlays on top.
+ * Page indicator dots on right edge follow scroll position.
  * Amber primary (#FFB800), shifts to cyan (#00B4D8) in Dragon mode.
  */
 
@@ -48,9 +49,14 @@ static const char *TAG = "ui_home";
 #define TILE_H       140
 #define TILE_GAP     14
 #define ROW_H        56
+#define NUM_PAGES    4
+#define PAGE_DOT_SZ  8
+#define PAGE_DOT_GAP 18
 
 /* ── Forward decls ───────────────────────────────────────────── */
 static void update_timer_cb(lv_timer_t *t);
+static void tileview_scroll_cb(lv_event_t *e);
+static void brain_pulse_anim_cb(void *obj, int32_t val);
 
 /* ── State ───────────────────────────────────────────────────── */
 static lv_obj_t   *scr           = NULL;
@@ -64,6 +70,7 @@ static lv_obj_t   *lbl_batt      = NULL;
 static lv_obj_t   *lbl_dragon_dot = NULL;
 
 /* AI page */
+static lv_obj_t   *brain_ring    = NULL;
 static lv_obj_t   *lbl_ai_state  = NULL;
 static lv_obj_t   *lbl_ai_hint   = NULL;
 
@@ -83,6 +90,14 @@ static lv_obj_t   *lbl_dragon_info  = NULL;
 static lv_obj_t   *lbl_set_wifi   = NULL;
 static lv_obj_t   *lbl_set_dragon = NULL;
 static lv_obj_t   *lbl_set_heap   = NULL;
+
+/* Page indicator */
+static lv_obj_t   *page_dots[NUM_PAGES] = {NULL};
+static int         current_page = 0;
+
+/* Animations */
+static lv_anim_t   brain_anim;
+static bool        brain_anim_running = false;
 
 static lv_timer_t *tmr_update     = NULL;
 
@@ -107,7 +122,7 @@ static void add_page_title(lv_obj_t *page, const char *title, uint32_t color)
     lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 }
 
-/* ── Helper: tool tile ───────────────────────────────────────── */
+/* ── Helper: tool tile (with accent bar at top) ─────────────── */
 static lv_obj_t *make_tool_tile(lv_obj_t *parent, int x, int y,
                                 const char *icon, const char *label, uint32_t accent)
 {
@@ -120,6 +135,16 @@ static lv_obj_t *make_tool_tile(lv_obj_t *parent, int x, int y,
     lv_obj_set_style_border_width(tile, 0, 0);
     lv_obj_set_style_pad_all(tile, 16, 0);
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Accent bar — thin colored strip at top of tile */
+    lv_obj_t *bar = lv_obj_create(tile);
+    lv_obj_set_size(bar, TILE_W - 64, 3);
+    lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, -12);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(accent), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_60, 0);
+    lv_obj_set_style_radius(bar, 2, 0);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *ic = lv_label_create(tile);
     lv_label_set_text(ic, icon);
@@ -207,6 +232,17 @@ lv_obj_t *ui_home_create(void)
     {
         add_page_title(pg_ai, "A I", COL_AMBER);
 
+        /* Outer breathing ring — animated opacity */
+        brain_ring = lv_obj_create(pg_ai);
+        lv_obj_set_size(brain_ring, 170, 170);
+        lv_obj_align(brain_ring, LV_ALIGN_CENTER, 0, -120);
+        lv_obj_set_style_bg_opa(brain_ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_radius(brain_ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(brain_ring, 1, 0);
+        lv_obj_set_style_border_color(brain_ring, lv_color_hex(COL_AMBER), 0);
+        lv_obj_set_style_border_opa(brain_ring, LV_OPA_20, 0);
+        lv_obj_clear_flag(brain_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
         /* Brain glyph circle */
         lv_obj_t *brain = lv_obj_create(pg_ai);
         lv_obj_set_size(brain, 140, 140);
@@ -224,6 +260,17 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_text_color(brain_icon, lv_color_hex(COL_AMBER), 0);
         lv_obj_set_style_text_font(brain_icon, &lv_font_montserrat_48, 0);
         lv_obj_center(brain_icon);
+
+        /* Start breathing animation on outer ring */
+        lv_anim_init(&brain_anim);
+        lv_anim_set_var(&brain_anim, brain_ring);
+        lv_anim_set_values(&brain_anim, 10, 60);
+        lv_anim_set_duration(&brain_anim, 2500);
+        lv_anim_set_playback_duration(&brain_anim, 2500);
+        lv_anim_set_repeat_count(&brain_anim, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_exec_cb(&brain_anim, brain_pulse_anim_cb);
+        lv_anim_start(&brain_anim);
+        brain_anim_running = true;
 
         /* State text */
         lbl_ai_state = lv_label_create(pg_ai);
@@ -388,13 +435,72 @@ lv_obj_t *ui_home_create(void)
         lv_obj_align(lbl_batt, LV_ALIGN_RIGHT_MID, -16, 0);
     }
 
+    /* ══════════════════════════════════════════════════════════
+     * PAGE INDICATOR DOTS — right edge, vertically centered
+     * ══════════════════════════════════════════════════════════ */
+    {
+        int total_h = NUM_PAGES * PAGE_DOT_SZ + (NUM_PAGES - 1) * PAGE_DOT_GAP;
+        int start_y = (SH - total_h) / 2;
+        for (int i = 0; i < NUM_PAGES; i++) {
+            page_dots[i] = lv_obj_create(scr);
+            lv_obj_set_size(page_dots[i], PAGE_DOT_SZ, PAGE_DOT_SZ);
+            lv_obj_set_pos(page_dots[i], SW - 20, start_y + i * (PAGE_DOT_SZ + PAGE_DOT_GAP));
+            lv_obj_set_style_radius(page_dots[i], LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_border_width(page_dots[i], 0, 0);
+            lv_obj_set_style_bg_color(page_dots[i],
+                lv_color_hex(i == 0 ? COL_AMBER : COL_DIM), 0);
+            lv_obj_set_style_bg_opa(page_dots[i],
+                i == 0 ? LV_OPA_COVER : LV_OPA_40, 0);
+            lv_obj_clear_flag(page_dots[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        }
+    }
+
+    /* Register scroll event to update page dots */
+    lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
     /* Initial data */
     ui_home_update_status();
     tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
 
     lv_screen_load(scr);
-    ESP_LOGI(TAG, "Glyph home screen created (tileview)");
+    ESP_LOGI(TAG, "Glyph home screen created (tileview + animations)");
     return scr;
+}
+
+/* ── Brain pulse animation callback ──────────────────────────── */
+static void brain_pulse_anim_cb(void *obj, int32_t val)
+{
+    lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
+}
+
+/* ── Tileview scroll — update page indicator dots ────────────── */
+static void tileview_scroll_cb(lv_event_t *e)
+{
+    lv_obj_t *tv = lv_event_get_target(e);
+    lv_obj_t *active = lv_tileview_get_tile_active(tv);
+    if (!active) return;
+
+    int new_page = lv_obj_get_y(active) / SH;
+    if (new_page < 0) new_page = 0;
+    if (new_page >= NUM_PAGES) new_page = NUM_PAGES - 1;
+
+    if (new_page != current_page) {
+        /* Deactivate old dot */
+        if (page_dots[current_page]) {
+            lv_obj_set_style_bg_color(page_dots[current_page], lv_color_hex(COL_DIM), 0);
+            lv_obj_set_style_bg_opa(page_dots[current_page], LV_OPA_40, 0);
+            lv_obj_set_size(page_dots[current_page], PAGE_DOT_SZ, PAGE_DOT_SZ);
+        }
+        /* Activate new dot */
+        if (page_dots[new_page]) {
+            uint32_t dot_col = (new_page == 2) ? COL_CYAN : COL_AMBER;
+            lv_obj_set_style_bg_color(page_dots[new_page], lv_color_hex(dot_col), 0);
+            lv_obj_set_style_bg_opa(page_dots[new_page], LV_OPA_COVER, 0);
+            lv_obj_set_size(page_dots[new_page], PAGE_DOT_SZ, PAGE_DOT_SZ + 8);
+        }
+        current_page = new_page;
+        ESP_LOGI(TAG, "Page → %d", current_page);
+    }
 }
 
 /* ── Timer callback ──────────────────────────────────────────── */
@@ -446,7 +552,17 @@ void ui_home_update_status(void)
         else if (st == DRAGON_STATE_CONNECTED ||
                  st == DRAGON_STATE_HANDSHAKE)             dot_color = COL_AMBER;
         else if (st == DRAGON_STATE_RECONNECTING)          dot_color = COL_CORAL;
-        if (lbl_dragon_dot) lv_obj_set_style_bg_color(lbl_dragon_dot, lv_color_hex(dot_color), 0);
+        if (lbl_dragon_dot) {
+            lv_obj_set_style_bg_color(lbl_dragon_dot, lv_color_hex(dot_color), 0);
+            /* Pulse the dot size when streaming */
+            if (streaming) {
+                static bool dot_big = false;
+                lv_obj_set_size(lbl_dragon_dot, dot_big ? 8 : 10, dot_big ? 8 : 10);
+                dot_big = !dot_big;
+            } else {
+                lv_obj_set_size(lbl_dragon_dot, 8, 8);
+            }
+        }
 
         if (lbl_mode) {
             if (streaming) {
@@ -521,6 +637,10 @@ void ui_home_update_status(void)
 /* ── Destroy ─────────────────────────────────────────────────── */
 void ui_home_destroy(void)
 {
+    if (brain_anim_running) {
+        lv_anim_delete(brain_ring, brain_pulse_anim_cb);
+        brain_anim_running = false;
+    }
     if (tmr_update) {
         lv_timer_delete(tmr_update);
         tmr_update = NULL;
@@ -529,12 +649,15 @@ void ui_home_destroy(void)
         lv_obj_delete(scr);
         scr = NULL;
         tileview = NULL;
+        brain_ring = NULL;
         lbl_time = lbl_mode = lbl_wifi = lbl_batt = lbl_dragon_dot = NULL;
         lbl_ai_state = lbl_ai_hint = NULL;
         lbl_tool_wifi = lbl_tool_batt = lbl_tool_heap = NULL;
         lbl_tool_dragon = lbl_tool_fps = lbl_tool_rtc = NULL;
         lbl_dragon_state = lbl_dragon_info = NULL;
         lbl_set_wifi = lbl_set_dragon = lbl_set_heap = NULL;
+        memset(page_dots, 0, sizeof(page_dots));
+        current_page = 0;
         ESP_LOGI(TAG, "Home screen destroyed");
     }
 }
