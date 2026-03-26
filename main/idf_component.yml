@@ -1,5 +1,6 @@
 dependencies:
   idf: ">=5.3"
+  lvgl/lvgl: "~9.2"
   esp_lcd_touch_st7123:
     version: ">=1.0.0"
   espressif/esp_hosted:

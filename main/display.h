@@ -6,6 +6,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_lcd_panel_ops.h"
 #include <stdint.h>
 #include <stddef.h>
 
@@ -26,6 +27,9 @@ void tab5_display_show_status(const char *msg);
 
 /** Show DSI test pattern (0=off, 1=vertical bars, 2=horizontal bars, 3=color bar). */
 void tab5_display_test_pattern(int type);
+
+/** Get the underlying DPI panel handle (for LVGL integration). */
+esp_lcd_panel_handle_t tab5_display_get_panel(void);
 
 /** Initialize hardware JPEG decoder (call once after display init). */
 esp_err_t tab5_display_jpeg_init(void);

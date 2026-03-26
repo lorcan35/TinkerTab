@@ -297,6 +297,11 @@ void tab5_display_test_pattern(int type)
     ESP_LOGI(TAG, "Test pattern %d: %s", type, esp_err_to_name(ret));
 }
 
+esp_lcd_panel_handle_t tab5_display_get_panel(void)
+{
+    return s_panel;
+}
+
 // ---------------------------------------------------------------------------
 // Hardware JPEG decoder
 // ---------------------------------------------------------------------------
