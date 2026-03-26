@@ -57,6 +57,7 @@ static const char *TAG = "ui_home";
 static void update_timer_cb(lv_timer_t *t);
 static void tileview_scroll_cb(lv_event_t *e);
 static void brain_pulse_anim_cb(void *obj, int32_t val);
+static void nav_click_cb(lv_event_t *e);
 
 /* ── State ───────────────────────────────────────────────────── */
 static lv_obj_t   *scr           = NULL;
@@ -95,9 +96,16 @@ static lv_obj_t   *lbl_set_heap   = NULL;
 static lv_obj_t   *page_dots[NUM_PAGES] = {NULL};
 static int         current_page = 0;
 
+/* Bottom nav */
+#define NAV_H        56
+static lv_obj_t   *nav_icons[NUM_PAGES] = {NULL};
+
 /* Animations */
 static lv_anim_t   brain_anim;
 static bool        brain_anim_running = false;
+
+/* Tile objects for navigation */
+static lv_obj_t   *tiles[NUM_PAGES] = {NULL};
 
 static lv_timer_t *tmr_update     = NULL;
 
@@ -228,6 +236,11 @@ lv_obj_t *ui_home_create(void)
     /* Page 3: Settings — can swipe up only */
     lv_obj_t *pg_settings = lv_tileview_add_tile(tileview, 0, 3, LV_DIR_TOP);
 
+    tiles[0] = pg_ai;
+    tiles[1] = pg_tools;
+    tiles[2] = pg_dragon;
+    tiles[3] = pg_settings;
+
     /* ── PAGE 0: AI ──────────────────────────────────────────── */
     {
         add_page_title(pg_ai, "A I", COL_AMBER);
@@ -243,21 +256,19 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_border_opa(brain_ring, LV_OPA_20, 0);
         lv_obj_clear_flag(brain_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-        /* Brain glyph circle */
+        /* Brain glyph circle — solid amber fill (Stitch "Kinetic Monolith" style) */
         lv_obj_t *brain = lv_obj_create(pg_ai);
-        lv_obj_set_size(brain, 140, 140);
+        lv_obj_set_size(brain, 150, 150);
         lv_obj_align(brain, LV_ALIGN_CENTER, 0, -120);
         lv_obj_set_style_bg_color(brain, lv_color_hex(COL_AMBER), 0);
-        lv_obj_set_style_bg_opa(brain, LV_OPA_10, 0);
+        lv_obj_set_style_bg_opa(brain, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(brain, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(brain, 2, 0);
-        lv_obj_set_style_border_color(brain, lv_color_hex(COL_AMBER), 0);
-        lv_obj_set_style_border_opa(brain, LV_OPA_30, 0);
+        lv_obj_set_style_border_width(brain, 0, 0);
         lv_obj_clear_flag(brain, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *brain_icon = lv_label_create(brain);
         lv_label_set_text(brain_icon, LV_SYMBOL_EYE_OPEN);
-        lv_obj_set_style_text_color(brain_icon, lv_color_hex(COL_AMBER), 0);
+        lv_obj_set_style_text_color(brain_icon, lv_color_hex(COL_BG), 0);
         lv_obj_set_style_text_font(brain_icon, &lv_font_montserrat_48, 0);
         lv_obj_center(brain_icon);
 
@@ -286,12 +297,23 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_text_font(lbl_ai_hint, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_ai_hint, LV_ALIGN_CENTER, 0, 76);
 
+        /* Separator line */
+        lv_obj_t *sep = lv_obj_create(pg_ai);
+        lv_obj_set_size(sep, 32, 1);
+        lv_obj_align(sep, LV_ALIGN_CENTER, 0, 62);
+        lv_obj_set_style_bg_color(sep, lv_color_hex(COL_AMBER), 0);
+        lv_obj_set_style_bg_opa(sep, LV_OPA_30, 0);
+        lv_obj_set_style_border_width(sep, 0, 0);
+        lv_obj_set_style_radius(sep, 0, 0);
+        lv_obj_clear_flag(sep, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
         /* Swipe hint */
         lv_obj_t *swipe = lv_label_create(pg_ai);
-        lv_label_set_text(swipe, LV_SYMBOL_DOWN "  swipe for tools");
+        lv_label_set_text(swipe, LV_SYMBOL_DOWN "  swipe to initialize");
         lv_obj_set_style_text_color(swipe, lv_color_hex(COL_DIM), 0);
         lv_obj_set_style_text_font(swipe, &lv_font_montserrat_12, 0);
-        lv_obj_align(swipe, LV_ALIGN_BOTTOM_MID, 0, -40);
+        lv_obj_set_style_text_letter_space(swipe, 2, 0);
+        lv_obj_align(swipe, LV_ALIGN_BOTTOM_MID, 0, -80);
     }
 
     /* ── PAGE 1: TOOLS ───────────────────────────────────────── */
@@ -455,7 +477,48 @@ lv_obj_t *ui_home_create(void)
         }
     }
 
-    /* Register scroll event to update page dots */
+    /* ══════════════════════════════════════════════════════════
+     * BOTTOM NAV BAR — tap to navigate (Stitch "Kinetic" style)
+     * ══════════════════════════════════════════════════════════ */
+    {
+        lv_obj_t *nav = lv_obj_create(scr);
+        lv_obj_set_size(nav, SW, NAV_H);
+        lv_obj_set_pos(nav, 0, SH - NAV_H);
+        lv_obj_set_style_bg_color(nav, lv_color_hex(COL_BG), 0);
+        lv_obj_set_style_bg_opa(nav, LV_OPA_90, 0);
+        lv_obj_set_style_radius(nav, 0, 0);
+        lv_obj_set_style_border_width(nav, 0, 0);
+        lv_obj_set_style_pad_all(nav, 0, 0);
+        lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
+
+        /* Top accent line */
+        lv_obj_t *nav_line = lv_obj_create(nav);
+        lv_obj_set_size(nav_line, SW, 1);
+        lv_obj_set_pos(nav_line, 0, 0);
+        lv_obj_set_style_bg_color(nav_line, lv_color_hex(COL_AMBER), 0);
+        lv_obj_set_style_bg_opa(nav_line, LV_OPA_10, 0);
+        lv_obj_set_style_border_width(nav_line, 0, 0);
+        lv_obj_set_style_radius(nav_line, 0, 0);
+        lv_obj_clear_flag(nav_line, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+        const char *nav_syms[NUM_PAGES] = {
+            LV_SYMBOL_HOME, LV_SYMBOL_LIST, LV_SYMBOL_UPLOAD, LV_SYMBOL_SETTINGS
+        };
+        int slot_w = SW / NUM_PAGES;
+
+        for (int i = 0; i < NUM_PAGES; i++) {
+            nav_icons[i] = lv_label_create(nav);
+            lv_label_set_text(nav_icons[i], nav_syms[i]);
+            lv_obj_set_style_text_font(nav_icons[i], &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_color(nav_icons[i],
+                lv_color_hex(i == 0 ? COL_AMBER : COL_DIM), 0);
+            lv_obj_set_pos(nav_icons[i], slot_w * i + slot_w / 2 - 10, NAV_H / 2 - 10);
+            lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+    }
+
+    /* Register scroll event to update page dots + nav */
     lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* Initial data */
@@ -463,7 +526,7 @@ lv_obj_t *ui_home_create(void)
     tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
 
     lv_screen_load(scr);
-    ESP_LOGI(TAG, "Glyph home screen created (tileview + animations)");
+    ESP_LOGI(TAG, "Glyph home screen created (tileview + nav + animations)");
     return scr;
 }
 
@@ -473,7 +536,45 @@ static void brain_pulse_anim_cb(void *obj, int32_t val)
     lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 }
 
-/* ── Tileview scroll — update page indicator dots ────────────── */
+/* ── Update all navigation indicators for a given page ────────── */
+static void update_nav_state(int page)
+{
+    for (int i = 0; i < NUM_PAGES; i++) {
+        /* Page dots */
+        if (page_dots[i]) {
+            if (i == page) {
+                uint32_t col = (page == 2) ? COL_CYAN : COL_AMBER;
+                lv_obj_set_style_bg_color(page_dots[i], lv_color_hex(col), 0);
+                lv_obj_set_style_bg_opa(page_dots[i], LV_OPA_COVER, 0);
+                lv_obj_set_size(page_dots[i], PAGE_DOT_SZ, PAGE_DOT_SZ + 8);
+            } else {
+                lv_obj_set_style_bg_color(page_dots[i], lv_color_hex(COL_DIM), 0);
+                lv_obj_set_style_bg_opa(page_dots[i], LV_OPA_40, 0);
+                lv_obj_set_size(page_dots[i], PAGE_DOT_SZ, PAGE_DOT_SZ);
+            }
+        }
+        /* Nav bar icons */
+        if (nav_icons[i]) {
+            if (i == page) {
+                uint32_t col = (page == 2) ? COL_CYAN : COL_AMBER;
+                lv_obj_set_style_text_color(nav_icons[i], lv_color_hex(col), 0);
+            } else {
+                lv_obj_set_style_text_color(nav_icons[i], lv_color_hex(COL_DIM), 0);
+            }
+        }
+    }
+}
+
+/* ── Nav bar tap — jump to page ──────────────────────────────── */
+static void nav_click_cb(lv_event_t *e)
+{
+    int page = (int)(intptr_t)lv_event_get_user_data(e);
+    if (page >= 0 && page < NUM_PAGES && tiles[page] && tileview) {
+        lv_tileview_set_tile(tileview, tiles[page], LV_ANIM_ON);
+    }
+}
+
+/* ── Tileview scroll — update page indicator dots + nav ──────── */
 static void tileview_scroll_cb(lv_event_t *e)
 {
     lv_obj_t *tv = lv_event_get_target(e);
@@ -485,20 +586,8 @@ static void tileview_scroll_cb(lv_event_t *e)
     if (new_page >= NUM_PAGES) new_page = NUM_PAGES - 1;
 
     if (new_page != current_page) {
-        /* Deactivate old dot */
-        if (page_dots[current_page]) {
-            lv_obj_set_style_bg_color(page_dots[current_page], lv_color_hex(COL_DIM), 0);
-            lv_obj_set_style_bg_opa(page_dots[current_page], LV_OPA_40, 0);
-            lv_obj_set_size(page_dots[current_page], PAGE_DOT_SZ, PAGE_DOT_SZ);
-        }
-        /* Activate new dot */
-        if (page_dots[new_page]) {
-            uint32_t dot_col = (new_page == 2) ? COL_CYAN : COL_AMBER;
-            lv_obj_set_style_bg_color(page_dots[new_page], lv_color_hex(dot_col), 0);
-            lv_obj_set_style_bg_opa(page_dots[new_page], LV_OPA_COVER, 0);
-            lv_obj_set_size(page_dots[new_page], PAGE_DOT_SZ, PAGE_DOT_SZ + 8);
-        }
         current_page = new_page;
+        update_nav_state(current_page);
         ESP_LOGI(TAG, "Page → %d", current_page);
     }
 }
@@ -650,6 +739,8 @@ void ui_home_destroy(void)
         scr = NULL;
         tileview = NULL;
         brain_ring = NULL;
+        memset(nav_icons, 0, sizeof(nav_icons));
+        memset(tiles, 0, sizeof(tiles));
         lbl_time = lbl_mode = lbl_wifi = lbl_batt = lbl_dragon_dot = NULL;
         lbl_ai_state = lbl_ai_hint = NULL;
         lbl_tool_wifi = lbl_tool_batt = lbl_tool_heap = NULL;
