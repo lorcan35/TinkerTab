@@ -130,9 +130,7 @@ static lv_obj_t *make_app_icon(lv_obj_t *parent, int col, int row, int y_off,
     lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(icon, ICON_RAD, 0);
     lv_obj_set_style_border_width(icon, 0, 0);
-    lv_obj_set_style_shadow_width(icon, 20, 0);
-    lv_obj_set_style_shadow_color(icon, lv_color_hex(bg_col), 0);
-    lv_obj_set_style_shadow_opa(icon, LV_OPA_20, 0);
+    /* no shadows — ESP32-P4 draw budget */
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *ic = lv_label_create(icon);
@@ -278,9 +276,10 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_bg_opa(orb, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(orb, 0, 0);
-        lv_obj_set_style_shadow_width(orb, 60, 0);
-        lv_obj_set_style_shadow_color(orb, lv_color_hex(COL_AMBER), 0);
-        lv_obj_set_style_shadow_opa(orb, LV_OPA_30, 0);
+        /* no shadow — use border glow instead */
+        lv_obj_set_style_border_width(orb, 2, 0);
+        lv_obj_set_style_border_color(orb, lv_color_hex(COL_AMBER_SOFT), 0);
+        lv_obj_set_style_border_opa(orb, LV_OPA_40, 0);
         lv_obj_clear_flag(orb, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *orb_icon = lv_label_create(orb);
@@ -413,7 +412,7 @@ lv_obj_t *ui_home_create(void)
         /* Group 2: System */
         lv_obj_t *g2 = make_set_group(pg, y, 3);
         lbl_set_mem = make_set_row(g2, LV_SYMBOL_LIST,     COL_ORANGE, "Memory",  "---");
-        make_set_row(g2, LV_SYMBOL_SETTINGS, COL_LABEL2,   "Display", "720\xc3\x971280");
+        make_set_row(g2, LV_SYMBOL_SETTINGS, COL_LABEL2,   "Display", "720x1280");
         make_set_row(g2, LV_SYMBOL_CHARGE,   COL_MINT,     "Battery", "---");
         y += 3 * SET_ROW_H + 8 + 16;
 
