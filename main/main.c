@@ -37,6 +37,7 @@
 #include "battery.h"
 #include "bluetooth.h"
 #include "ui_core.h"
+#include "ui_splash.h"
 #include "ui_home.h"
 
 static const char *TAG = "tab5";
@@ -274,11 +275,40 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "LVGL UI init failed: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "LVGL initialized — loading home screen");
+        ESP_LOGI(TAG, "LVGL initialized — showing Glyph splash");
+
+        // Show Glyph OS splash screen
         tab5_ui_lock();
+        ui_splash_create();
+        ui_splash_set_status("Hardware OK");
+        ui_splash_set_progress(30);
+        tab5_ui_unlock();
+        vTaskDelay(pdMS_TO_TICKS(400));
+
+        tab5_ui_lock();
+        ui_splash_set_status(s_wifi_ok ? "WiFi connected" : "WiFi offline");
+        ui_splash_set_progress(60);
+        tab5_ui_unlock();
+        vTaskDelay(pdMS_TO_TICKS(400));
+
+        tab5_ui_lock();
+        ui_splash_set_status("Dragon link started");
+        ui_splash_set_progress(85);
+        tab5_ui_unlock();
+        vTaskDelay(pdMS_TO_TICKS(400));
+
+        tab5_ui_lock();
+        ui_splash_set_status("Glyph OS ready");
+        ui_splash_set_progress(100);
+        tab5_ui_unlock();
+        vTaskDelay(pdMS_TO_TICKS(600));
+
+        // Transition to Glyph home screen
+        tab5_ui_lock();
+        ui_splash_destroy();
         ui_home_create();
         tab5_ui_unlock();
-        ESP_LOGI(TAG, "Home screen loaded");
+        ESP_LOGI(TAG, "Glyph home screen loaded");
     }
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
