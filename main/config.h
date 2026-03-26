@@ -158,3 +158,13 @@
 // ---------------------------------------------------------------------------
 #define TAB5_JPEG_BUF_SIZE    (100 * 1024)
 #define TAB5_FRAME_TIMEOUT_MS 5000
+
+// ---------------------------------------------------------------------------
+// Dragon Link — connection lifecycle
+// ---------------------------------------------------------------------------
+#define TAB5_DRAGON_HEALTH_PATH        "/health"
+#define TAB5_DRAGON_HANDSHAKE_PATH     "/api/handshake"
+#define TAB5_DRAGON_HEARTBEAT_MS       5000
+#define TAB5_DRAGON_HEALTH_TIMEOUT_MS  3000
+#define TAB5_DRAGON_RECONNECT_BASE_MS  2000
+#define TAB5_DRAGON_RECONNECT_MAX_MS   30000

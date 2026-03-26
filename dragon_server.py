@@ -36,6 +36,7 @@ frame_metadata = None        # {offsetTop, pageScaleFactor, deviceWidth, deviceH
 browser_size = (720, 1280)   # Actual browser viewport size for coordinate mapping
 frame_count = 0
 fps = 0.0
+server_start_time = time.time()
 
 
 async def get_cdp_target():
@@ -243,10 +244,26 @@ async def touch_ws_handler(request):
             print(f"[TOUCH] Auto-release at ({last_touch[0]},{last_touch[1]})")
             last_touch = None
 
+    # Start heartbeat ping task
+    async def heartbeat_ping():
+        """Ping Tab5 every 10 seconds to keep connection alive."""
+        while not ws.closed:
+            await asyncio.sleep(10)
+            try:
+                await ws.send_json({"ping": True})
+            except Exception:
+                break
+    ping_task = asyncio.create_task(heartbeat_ping())
+
     async for msg in ws:
         if msg.type == aiohttp.WSMsgType.TEXT:
             try:
                 data = json.loads(msg.data)
+
+                # Handle heartbeat responses
+                if data.get('pong') or data.get('heartbeat'):
+                    continue
+
                 touches = data.get('t', [])
                 if not touches:
                     # Explicit touch release
@@ -288,6 +305,9 @@ async def touch_ws_handler(request):
         elif msg.type == aiohttp.WSMsgType.ERROR:
             print(f"[WS] Error: {ws.exception()}")
 
+    # Cleanup
+    ping_task.cancel()
+
     # Touch release on disconnect
     if last_touch:
         await dispatch_mouse(last_touch[0], last_touch[1], "mouseReleased")
@@ -309,6 +329,36 @@ async def index_handler(request):
         content_type='text/plain')
 
 
+async def health_handler(request):
+    """Health check endpoint for Tab5 discovery."""
+    cdp_status = "connected" if cdp_ws and not cdp_ws.closed else "disconnected"
+    return web.json_response({
+        "status": "ok",
+        "cdp": cdp_status,
+        "fps": round(fps, 1),
+        "uptime": int(time.time() - server_start_time),
+        "frames": frame_count,
+    })
+
+
+async def handshake_handler(request):
+    """Handshake endpoint — Tab5 sends identity, Dragon returns stream params."""
+    device = request.query.get("device", "unknown")
+    fw = request.query.get("fw", "unknown")
+    w = int(request.query.get("w", 720))
+    h = int(request.query.get("h", 1280))
+
+    print(f"[HANDSHAKE] Device: {device}, FW: {fw}, Display: {w}x{h}")
+
+    return web.json_response({
+        "stream": "/stream",
+        "touch": "/ws/touch",
+        "viewport": [SCREENCAST_MAX_W, SCREENCAST_MAX_H],
+        "quality": SCREENCAST_QUALITY,
+        "fps": SCREENCAST_FPS,
+    })
+
+
 async def on_startup(app):
     """Connect to CDP on server start."""
     for attempt in range(10):
@@ -325,6 +375,8 @@ async def on_startup(app):
 
 app = web.Application()
 app.router.add_get('/', index_handler)
+app.router.add_get('/health', health_handler)
+app.router.add_get('/api/handshake', handshake_handler)
 app.router.add_get('/stream', mjpeg_handler)
 app.router.add_get('/ws/touch', touch_ws_handler)
 app.on_startup.append(on_startup)

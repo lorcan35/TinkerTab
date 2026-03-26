@@ -26,9 +26,9 @@
 #include "display.h"
 #include "touch.h"
 #include "wifi.h"
-// MJPEG/TouchWS disabled for now (need WiFi first)
-// #include "mjpeg_stream.h"
-// #include "touch_ws.h"
+#include "dragon_link.h"
+#include "mjpeg_stream.h"
+#include "touch_ws.h"
 #include "sdcard.h"
 #include "camera.h"
 #include "audio.h"
@@ -261,6 +261,8 @@ void app_main(void)
         if (ret == ESP_OK) {
             s_wifi_ok = true;
             ESP_LOGI(TAG, "WiFi connected!");
+            // Start Dragon link (discovers and connects to Dragon Q6A)
+            tab5_dragon_link_init();
         } else {
             ESP_LOGW(TAG, "WiFi connection failed/timeout: %s", esp_err_to_name(ret));
         }
@@ -284,7 +286,7 @@ void app_main(void)
              s_sd_ok ? "Y" : "N", s_cam_ok ? "Y" : "N",
              s_audio_ok ? "Y" : "N", s_mic_ok ? "Y" : "N",
              s_imu_ok ? "Y" : "N", s_rtc_ok ? "Y" : "N", s_bat_ok ? "Y" : "N");
-    printf("\nTinkerTab ready. Commands: info, heap, wifi, stream, scan,\n"
+    printf("\nTinkerTab ready. Commands: info, heap, wifi, dragon, stream, scan,\n"
            "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
            "  touch, touchdiag, sd, cam, audio, mic, imu, rtc, bat, reboot\n\n");
 
@@ -319,6 +321,13 @@ void app_main(void)
                                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                     } else if (strcmp(cmd_buf, "wifi") == 0) {
                         printf("WiFi: %s (SSID: %s)\n", s_wifi_ok ? "connected" : "not connected", TAB5_WIFI_SSID);
+                    } else if (strcmp(cmd_buf, "dragon") == 0) {
+                        printf("Dragon: %s (target: %s:%d)\n",
+                               tab5_dragon_state_str(), TAB5_DRAGON_HOST, TAB5_DRAGON_PORT);
+                        if (tab5_dragon_is_streaming()) {
+                            printf("  MJPEG: %.1f FPS\n", tab5_dragon_get_fps());
+                            printf("  Touch WS: %s\n", tab5_touch_ws_connected() ? "connected" : "disconnected");
+                        }
                     } else if (strcmp(cmd_buf, "red") == 0) {
                         tab5_display_fill_color(0xF800);
                         printf("Display: red\n");
