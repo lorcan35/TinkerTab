@@ -93,3 +93,9 @@ esp_err_t tab5_wifi_wait_connected(int timeout_ms)
     }
     return ESP_ERR_TIMEOUT;
 }
+
+bool tab5_wifi_connected(void)
+{
+    if (!s_wifi_event_group) return false;
+    return (xEventGroupGetBits(s_wifi_event_group) & WIFI_CONNECTED_BIT) != 0;
+}

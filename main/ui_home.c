@@ -299,8 +299,19 @@ void ui_home_update_status(void)
     }
 #endif
 
-    /* WiFi — always red (disabled) */
+    /* WiFi status — green if connected, red if not */
+#if __has_include("wifi.h")
+    {
+        extern bool tab5_wifi_connected(void);
+        if (tab5_wifi_connected()) {
+            lv_obj_set_style_text_color(lbl_wifi_sb, lv_color_hex(COL_GREEN), 0);
+        } else {
+            lv_obj_set_style_text_color(lbl_wifi_sb, lv_color_hex(COL_RED), 0);
+        }
+    }
+#else
     lv_obj_set_style_text_color(lbl_wifi_sb, lv_color_hex(COL_RED), 0);
+#endif
 
     /* RTC time */
 #if __has_include("rtc.h")

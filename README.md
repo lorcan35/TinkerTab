@@ -17,7 +17,7 @@ TinkerTab turns the Tab5 into a full standalone device with a native LVGL UI, ca
 | Backlight | LEDC PWM GPIO 22 | 5kHz | ✅ |
 | HW JPEG | ESP32-P4 built-in | — | ✅ |
 | SD Card | — | SDMMC 4-bit | ✅ |
-| Camera | SC2336 2MP | MIPI-CSI 2-lane | ✅ |
+| Camera | SC202CS (SC2356) 2MP | MIPI-CSI 2-lane | ✅ |
 | Audio Codec | ES8388 | I2S + I2C 0x10 | ✅ |
 | Mic ADC | ES7210 (dual, AEC) | I2S + I2C 0x40 | ✅ |
 | Speaker | NS4150B 1W | I2S DAC + GPIO enable | ✅ |
@@ -51,9 +51,10 @@ Auto-switches: boots standalone, upgrades to Dragon mode when available.
 ## Prerequisites
 
 ```bash
-# ESP-IDF v5.4.2 (v5.5.x has DSI bug — do NOT use)
+# ESP-IDF v5.4.3 (v5.5.x has DSI bug — do NOT use)
+# v5.4.3 required for PSRAM XIP + TCM stack fixes needed by ESP-Hosted
 mkdir -p ~/esp && cd ~/esp
-git clone --recursive https://github.com/espressif/esp-idf.git -b v5.4.2
+git clone --recursive https://github.com/espressif/esp-idf.git -b v5.4.3
 cd esp-idf && ./install.sh esp32p4
 source export.sh
 ```
@@ -179,7 +180,7 @@ TinkerTab/
 │   ├── mjpeg_stream.c/h    # MJPEG client (Dragon mode)
 │   ├── touch_ws.c/h        # WebSocket touch forwarding
 │   ├── sdcard.c/h          # SDMMC 4-bit SD card driver
-│   ├── camera.c/h          # SC2336 MIPI-CSI camera
+│   ├── camera.c/h          # SC202CS MIPI-CSI camera
 │   ├── audio.c/h           # ES8388 codec + NS4150B speaker
 │   ├── mic.c               # ES7210 dual microphone
 │   ├── imu.c/h             # BMI270 6-axis IMU
@@ -198,8 +199,11 @@ TinkerTab/
 
 ## Known Issues
 
-- **ESP-IDF v5.5.x** breaks DSI display (stripes/empty). Use v5.4.2.
-- **SD Card + WiFi conflict**: SD uses SPI which can conflict. Power-cycle workaround needed.
+- **ESP-IDF v5.5.x** breaks DSI display (stripes/empty). Use v5.4.3.
+- **ESP-IDF v5.4.2** missing PSRAM XIP + TCM stack fixes needed for ESP-Hosted. Use v5.4.3.
+- **Camera is SC202CS** (SC2356), NOT SC2336 as M5Stack docs claim. SCCB address 0x36, chip ID 0xEB52.
+- **SD Card slot**: Uses SDMMC SLOT_0 (IOMUX pins 39-44), not default SLOT_1. Needs LDO channel 4.
+- **ESP-Hosted SDIO**: Slave target must be ESP32C6, reset is active LOW. Default Kconfig targets P4 EV Board pins.
 - **Double boot**: Normal on first flash — PSRAM timing calibration triggers reset.
 - **Arduino v3.3.x**: Inherits IDF v5.5 DSI bug. Use v3.2.1.
 

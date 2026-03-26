@@ -482,10 +482,15 @@ void ui_settings_update(void)
 
     /* WiFi status */
     if (s_lbl_wifi) {
-        /* WiFi disabled — ESP-Hosted SDIO fix pending */
         {
-            lv_label_set_text(s_lbl_wifi, "Disabled (SDIO fix pending)");
-            lv_obj_set_style_text_color(s_lbl_wifi, COL_RED, 0);
+            extern bool tab5_wifi_connected(void);
+            if (tab5_wifi_connected()) {
+                lv_label_set_text(s_lbl_wifi, "Connected");
+                lv_obj_set_style_text_color(s_lbl_wifi, COL_GREEN, 0);
+            } else {
+                lv_label_set_text(s_lbl_wifi, "Not connected");
+                lv_obj_set_style_text_color(s_lbl_wifi, COL_RED, 0);
+            }
         }
     }
 

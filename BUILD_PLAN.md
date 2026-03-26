@@ -15,7 +15,7 @@ Every phase is documented, committed, and pushed chronologically.
 | Backlight | GPIO 22 LEDC | PWM 5kHz | ✅ Phase 1 |
 | WiFi/BLE | ESP32-C6-MINI-1U | SDIO 4-bit (ESP-Hosted) | ✅ Phase 1 |
 | SD Card | — | SDMMC 4-bit | ✅ Phase 2 |
-| Camera | SC2336 2MP | MIPI-CSI 2-lane | ✅ Phase 3 |
+| Camera | SC202CS (SC2356) 2MP | MIPI-CSI 2-lane | ✅ Phase 3 |
 | Audio Codec | ES8388 | I2S + I2C control | ✅ Phase 4 |
 | Speaker Amp | NS4150B 1W | GPIO enable + I2S DAC | ✅ Phase 4 |
 | Audio ADC | ES7210 (dual mic) | I2S + I2C control | ✅ Phase 5 |
@@ -54,10 +54,10 @@ Every phase is documented, committed, and pushed chronologically.
 - [x] Serial command: `sd`
 - **Commit:** `feat: Phase 2 — SD card SDMMC 4-bit driver`
 
-### Phase 3 — Camera (SC2336 MIPI-CSI) ✅
+### Phase 3 — Camera (SC202CS MIPI-CSI) ✅
 - [x] XCLK via LEDC on GPIO 36 @ 24MHz
-- [x] SCCB (I2C) register access at 0x30
-- [x] Chip ID verification (0xCB3A)
+- [x] SCCB (I2C) register access at 0x36 (SC202CS, NOT SC2336)
+- [x] Chip ID verification (0xEB52)
 - [x] MIPI-CSI controller init (2 data lanes)
 - [x] Single frame capture to PSRAM
 - [x] Save to SD card
@@ -142,7 +142,7 @@ See `main/config.h` for complete pin mapping.
 
 ## Dependencies
 
-- ESP-IDF v5.4.2 (v5.5.x has DSI display bug #18083)
+- ESP-IDF v5.4.3 (v5.4.2 missing PSRAM XIP/TCM fixes; v5.5.x has DSI bug #18083)
 - esp_lcd_touch_st7123 ≥1.0.0
 - espressif/esp_hosted 1.4.0
 - espressif/esp_wifi_remote 0.8.5
