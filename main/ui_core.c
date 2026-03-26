@@ -87,6 +87,8 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 /* ========================================================================= */
 /*  Touch input callback                                                      */
 /* ========================================================================= */
+static uint32_t s_touch_debug_counter = 0;
+
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
@@ -99,6 +101,11 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         data->point.x = points[0].x;
         data->point.y = points[0].y;
         data->state = LV_INDEV_STATE_PRESSED;
+        /* Log first 20 touches for debug */
+        if (s_touch_debug_counter < 20) {
+            ESP_LOGI(TAG, "TOUCH: x=%d y=%d s=%d", points[0].x, points[0].y, points[0].strength);
+            s_touch_debug_counter++;
+        }
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
