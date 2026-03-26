@@ -17,6 +17,7 @@
 #include "rtc.h"
 #include "dragon_link.h"
 #include "wifi.h"
+#include "display.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -562,6 +563,8 @@ static void tileview_scroll_cb(lv_event_t *e)
     if (pg != cur_page) {
         cur_page = pg;
         update_nav_ui(cur_page);
+        /* Gate JPEG rendering — only on Dragon page (2) */
+        tab5_display_set_jpeg_enabled(cur_page == 2);
     }
 }
 

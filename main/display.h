@@ -36,3 +36,6 @@ esp_err_t tab5_display_jpeg_init(void);
 
 /** Decode a JPEG buffer and draw it to the DPI framebuffer. */
 esp_err_t tab5_display_draw_jpeg(const uint8_t *jpeg_data, uint32_t jpeg_size);
+
+/** Enable/disable JPEG rendering (gate for LVGL coexistence). */
+void tab5_display_set_jpeg_enabled(bool enabled);

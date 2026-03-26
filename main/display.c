@@ -38,6 +38,7 @@ static esp_lcd_panel_io_handle_t s_panel_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static bool s_initialized = false;
 static jpeg_decoder_handle_t s_jpeg_decoder = NULL;
+static volatile bool s_jpeg_enabled = false;
 
 #define LCD_LEDC_CH LEDC_CHANNEL_1
 
@@ -315,8 +316,15 @@ esp_err_t tab5_display_jpeg_init(void)
     return ESP_OK;
 }
 
+void tab5_display_set_jpeg_enabled(bool enabled)
+{
+    s_jpeg_enabled = enabled;
+    ESP_LOGI(TAG, "JPEG rendering %s", enabled ? "enabled" : "disabled");
+}
+
 esp_err_t tab5_display_draw_jpeg(const uint8_t *jpeg_data, uint32_t jpeg_size)
 {
+    if (!s_jpeg_enabled) return ESP_ERR_NOT_ALLOWED;
     if (!s_initialized || !s_panel || !s_jpeg_decoder) return ESP_ERR_INVALID_STATE;
 
     // Get DPI framebuffer — decode directly into it
