@@ -121,11 +121,11 @@
 #define TAB5_I2S_MIC_MCLK_GPIO  0  // TODO: Verify; may share with codec MCLK
 
 // ---------------------------------------------------------------------------
-// Camera — SC2336 via MIPI-CSI
+// Camera — SC202CS (SC2356) via MIPI-CSI
 // ---------------------------------------------------------------------------
 #define TAB5_CAM_XCLK_GPIO      36
 #define TAB5_CAM_XCLK_FREQ_HZ   24000000
-#define TAB5_CAM_SCCB_ADDR      0x30
+#define TAB5_CAM_SCCB_ADDR      0x36   // SC202CS at 0x36 (NOT 0x30)
 #define TAB5_CAM_CSI_LANES       2
 
 // ---------------------------------------------------------------------------

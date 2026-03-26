@@ -61,7 +61,7 @@ esp_err_t tab5_sdcard_init(void)
 
     /* --- VFS FAT mount configuration --- */
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = true,   /* Auto-format if no FAT partition found */
         .max_files              = 5,
         .allocation_unit_size   = 16 * 1024,
     };
@@ -69,6 +69,7 @@ esp_err_t tab5_sdcard_init(void)
     /* --- SDMMC host — ESP32-P4 Tab5 uses SLOT 0 (IOMUX pins 39-44) --- */
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
 
     /* --- SD card IO power via on-chip LDO (channel 4, 3.3V) --- */
     sd_pwr_ctrl_ldo_config_t ldo_config = {
@@ -94,8 +95,7 @@ esp_err_t tab5_sdcard_init(void)
     slot_config.d3  = TAB5_SD_D3;    // GPIO 42
     slot_config.width = 4;           // 4-bit bus
 
-    /* Internal pull-ups are sufficient for short PCB traces on the Tab5 */
-    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    /* Tab5 BSP does NOT use internal pullups — board has external pull-ups */
 
     /* --- Mount --- */
     esp_err_t ret = esp_vfs_fat_sdmmc_mount(

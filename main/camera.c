@@ -1,17 +1,19 @@
 /**
- * TinkerTab — Camera Driver (SC2336 2MP MIPI-CSI)
+ * TinkerTab — Camera Driver (SC202CS / SC2356 2MP MIPI-CSI)
  *
  * Hardware:
- *   - Sensor: SmartSens SC2336 (2MP, 1920x1080)
+ *   - Sensor: SmartSens SC202CS (SC2356) — 2MP, 1600x1200
+ *     (M5Stack Tab5 docs say "SC2336" but the actual chip is SC2356/SC202CS)
  *   - Interface: MIPI-CSI 2 data lanes (hardware-fixed pins on ESP32-P4)
- *   - XCLK: GPIO 36 via LEDC @ 24MHz
- *   - Control: SCCB (I2C-like) at address 0x30
+ *   - XCLK: 24MHz from fixed crystal oscillator (X2), NOT GPIO36
+ *     (GPIO36 LEDC is kept for compatibility but the crystal provides the clock)
+ *   - Control: SCCB (I2C-like) at address 0x36
  *   - Reset: IO expander PI4IOE5V6416 (0x43) pin P6 (active low)
- *   - PID: 0xCB3A
+ *   - PID: 0xEB52
  *
  * Uses ESP-IDF esp_driver_cam CSI controller API.
  *
- * Reference: M5Tab5-UserDemo/platforms/tab5/components/esp_cam_sensor/sensors/sc2336/
+ * Reference: espressif/esp-video-components — esp_cam_sensor/sensors/sc202cs/
  */
 
 #include "camera.h"
@@ -33,13 +35,13 @@
 
 static const char *TAG = "tab5_cam";
 
-/* SC2336 SCCB (I2C) address */
-#define SC2336_SCCB_ADDR        0x30
+/* SC202CS (SC2356) SCCB (I2C) address — 0x36 on Tab5 (SID pin high) */
+#define SC202CS_SCCB_ADDR       0x36
 
-/* SC2336 chip ID registers */
-#define SC2336_REG_CHIP_ID_H    0x3107
-#define SC2336_REG_CHIP_ID_L    0x3108
-#define SC2336_CHIP_ID          0xCB3A
+/* SC202CS chip ID registers (same register layout as SC2336 family) */
+#define SC202CS_REG_CHIP_ID_H   0x3107
+#define SC202CS_REG_CHIP_ID_L   0x3108
+#define SC202CS_CHIP_ID         0xEB52
 
 /* Camera XCLK */
 #define CAM_XCLK_GPIO           36
@@ -101,7 +103,7 @@ static esp_err_t cam_sccb_init(i2c_master_bus_handle_t i2c_bus)
 {
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = SC2336_SCCB_ADDR,
+        .device_address = SC202CS_SCCB_ADDR,
         .scl_speed_hz = 100000,
     };
     return i2c_master_bus_add_device(i2c_bus, &dev_cfg, &s_sccb_dev);
@@ -126,19 +128,19 @@ static esp_err_t cam_sccb_read_reg(uint16_t reg, uint8_t *val)
 static esp_err_t cam_check_sensor_id(void)
 {
     uint8_t id_h = 0, id_l = 0;
-    ESP_RETURN_ON_ERROR(cam_sccb_read_reg(SC2336_REG_CHIP_ID_H, &id_h), TAG, "Read chip ID H failed");
-    ESP_RETURN_ON_ERROR(cam_sccb_read_reg(SC2336_REG_CHIP_ID_L, &id_l), TAG, "Read chip ID L failed");
+    ESP_RETURN_ON_ERROR(cam_sccb_read_reg(SC202CS_REG_CHIP_ID_H, &id_h), TAG, "Read chip ID H failed");
+    ESP_RETURN_ON_ERROR(cam_sccb_read_reg(SC202CS_REG_CHIP_ID_L, &id_l), TAG, "Read chip ID L failed");
 
     uint16_t chip_id = ((uint16_t)id_h << 8) | id_l;
-    ESP_LOGI(TAG, "SC2336 chip ID: 0x%04X (expected 0x%04X)", chip_id, SC2336_CHIP_ID);
+    ESP_LOGI(TAG, "SC202CS chip ID: 0x%04X (expected 0x%04X)", chip_id, SC202CS_CHIP_ID);
 
-    if (chip_id != SC2336_CHIP_ID) {
+    if (chip_id != SC202CS_CHIP_ID) {
         ESP_LOGW(TAG, "Unexpected chip ID — may be a different sensor revision");
     }
     return ESP_OK;
 }
 
-/* --- SC2336 sensor init (basic VGA mode) --- */
+/* --- SC202CS sensor init (basic VGA mode) --- */
 
 /**
  * Minimal SC2336 register init for 640x480 output.
@@ -188,7 +190,7 @@ static esp_err_t cam_sensor_init_vga(void)
     /* Stream on */
     cam_sccb_write_reg(0x0100, 0x01);
 
-    ESP_LOGI(TAG, "SC2336 initialized (640x480 basic mode)");
+    ESP_LOGI(TAG, "SC202CS initialized (640x480 basic mode)");
     return ESP_OK;
 }
 
@@ -236,7 +238,7 @@ esp_err_t tab5_camera_init(void)
 {
     if (s_initialized) return ESP_OK;
 
-    ESP_LOGI(TAG, "Initializing camera (SC2336 MIPI-CSI)...");
+    ESP_LOGI(TAG, "Initializing camera (SC202CS MIPI-CSI)...");
 
     /* Allocate frame buffer in PSRAM */
     s_frame_buf = heap_caps_calloc(1, CAM_FB_MAX_SIZE, MALLOC_CAP_SPIRAM);
@@ -246,7 +248,8 @@ esp_err_t tab5_camera_init(void)
     }
 
     /* Power-on sequence matching BSP: XCLK → reset → SCCB
-     * SC2336 needs clock running before it responds on I2C. */
+     * The Tab5 has a fixed 24MHz crystal (X2) for camera MCLK, but we also
+     * drive GPIO36 via LEDC for compatibility. */
 
     /* 1. Start XCLK (24MHz on GPIO 36) — must be before reset release */
     ESP_RETURN_ON_ERROR(cam_xclk_init(), TAG, "XCLK init failed");
@@ -256,47 +259,19 @@ esp_err_t tab5_camera_init(void)
     tab5_set_camera_reset(true);   /* Assert reset (pin LOW) */
     vTaskDelay(pdMS_TO_TICKS(10));
     tab5_set_camera_reset(false);  /* Release reset (pin HIGH) */
-    vTaskDelay(pdMS_TO_TICKS(20)); /* SC2336 needs time after reset with XCLK running */
+    vTaskDelay(pdMS_TO_TICKS(20)); /* Sensor needs time to boot after reset */
 
-    /* 3. Initialize SCCB (I2C) — uses system I2C bus */
+    /* 3. Initialize SCCB (I2C) at 0x36 (SC202CS address) */
     extern i2c_master_bus_handle_t tab5_get_i2c_bus(void);
     i2c_master_bus_handle_t i2c_bus = tab5_get_i2c_bus();
     if (!i2c_bus) {
         ESP_LOGE(TAG, "I2C bus not available");
         return ESP_ERR_INVALID_STATE;
     }
+    ESP_RETURN_ON_ERROR(cam_sccb_init(i2c_bus), TAG, "SCCB init failed");
 
-    /* Try primary address 0x30, fall back to 0x36 (SID pin variant) */
-    esp_err_t sccb_ret = cam_sccb_init(i2c_bus);
-    if (sccb_ret != ESP_OK) {
-        ESP_LOGE(TAG, "SCCB init failed at 0x%02X", SC2336_SCCB_ADDR);
-        return sccb_ret;
-    }
-
-    /* Probe: try reading chip ID at primary address */
-    esp_err_t probe_ret = cam_check_sensor_id();
-    if (probe_ret != ESP_OK) {
-        ESP_LOGW(TAG, "SC2336 not found at 0x%02X, trying 0x36...", SC2336_SCCB_ADDR);
-        /* Remove old device and try alternate address */
-        i2c_master_bus_rm_device(s_sccb_dev);
-        s_sccb_dev = NULL;
-        i2c_device_config_t alt_cfg = {
-            .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-            .device_address = 0x36,
-            .scl_speed_hz = 100000,
-        };
-        sccb_ret = i2c_master_bus_add_device(i2c_bus, &alt_cfg, &s_sccb_dev);
-        if (sccb_ret != ESP_OK) {
-            ESP_LOGE(TAG, "SCCB init at 0x36 also failed");
-            return sccb_ret;
-        }
-        probe_ret = cam_check_sensor_id();
-        if (probe_ret != ESP_OK) {
-            ESP_LOGE(TAG, "SC2336 not found at 0x36 either — camera not responding");
-            return probe_ret;
-        }
-        ESP_LOGI(TAG, "SC2336 found at alternate address 0x36");
-    }
+    /* Check sensor ID */
+    ESP_RETURN_ON_ERROR(cam_check_sensor_id(), TAG, "Sensor ID check failed");
 
     /* Initialize sensor registers (VGA mode for now) */
     ESP_RETURN_ON_ERROR(cam_sensor_init_vga(), TAG, "Sensor init failed");
@@ -305,7 +280,7 @@ esp_err_t tab5_camera_init(void)
     ESP_RETURN_ON_ERROR(cam_csi_init(), TAG, "CSI init failed");
 
     s_initialized = true;
-    ESP_LOGI(TAG, "Camera initialized! SC2336 @ %dx%d", s_width, s_height);
+    ESP_LOGI(TAG, "Camera initialized! SC202CS @ %dx%d", s_width, s_height);
     return ESP_OK;
 }
 
@@ -421,8 +396,8 @@ const char* tab5_camera_info(void)
 {
     static char info[128];
     snprintf(info, sizeof(info),
-             "SC2336 %dx%d MIPI-CSI %d-lane, XCLK=%dMHz, SCCB=0x%02X",
+             "SC202CS %dx%d MIPI-CSI %d-lane, XCLK=%dMHz, SCCB=0x%02X",
              s_width, s_height, CAM_CSI_LANE_NUM,
-             CAM_XCLK_FREQ_HZ / 1000000, SC2336_SCCB_ADDR);
+             CAM_XCLK_FREQ_HZ / 1000000, SC202CS_SCCB_ADDR);
     return info;
 }
