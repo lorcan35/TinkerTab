@@ -106,12 +106,10 @@ static void build_keyboard_panel(void);
 static void build_trigger_button(void);
 static void build_letter_rows(lv_obj_t *parent);
 static void build_number_rows(lv_obj_t *parent);
-static lv_obj_t *build_key_row(lv_obj_t *parent, const char **keys, int pad_left, int pad_right);
 static lv_obj_t *make_key(lv_obj_t *row, const char *label, int w, int h,
                            uint32_t bg_col, uint32_t txt_col, const lv_font_t *font,
                            key_type_t type);
 static void key_press_cb(lv_event_t *e);
-static void key_release_cb(lv_event_t *e);
 static void trigger_click_cb(lv_event_t *e);
 static void slide_anim_cb(void *obj, int32_t val);
 static void hide_anim_ready_cb(lv_anim_t *a);
