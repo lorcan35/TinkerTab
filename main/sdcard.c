@@ -105,7 +105,7 @@ esp_err_t tab5_sdcard_init(void)
     ESP_LOGI(TAG, "SD card mounted successfully");
     sdmmc_card_print_info(stdout, s_card);
 
-    const char *type_str = (s_card->ocr & SD_OCR_SDHC_CAP) ? "SDHC/SDXC" : "SDSC";
+    const char *type_str = (s_card->ocr & (1 << 30)) ? "SDHC/SDXC" : "SDSC";
     uint64_t capacity = (uint64_t)s_card->csd.capacity * s_card->csd.sector_size;
 
     ESP_LOGI(TAG, "  Name     : %s", s_card->cid.name);

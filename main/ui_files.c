@@ -7,6 +7,8 @@
  * Long-press → file info popup.
  */
 
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include "ui_files.h"
 #include "ui_audio.h"
 #include "ui_core.h"

@@ -288,7 +288,7 @@ esp_err_t tab5_camera_deinit(void)
 
     if (s_cam_ctrl) {
         esp_cam_ctlr_disable(s_cam_ctrl);
-        esp_cam_del_ctlr(s_cam_ctrl);
+        esp_cam_ctlr_del(s_cam_ctrl);
         s_cam_ctrl = NULL;
     }
 

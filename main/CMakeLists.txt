@@ -7,5 +7,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer
              esp_wifi esp_netif esp_event esp_http_client tcp_transport json
-             esp_driver_jpeg fatfs sdmmc esp_driver_i2s lvgl
+             esp_driver_jpeg fatfs sdmmc esp_driver_i2s esp_driver_cam lvgl
 )
