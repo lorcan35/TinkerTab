@@ -90,7 +90,8 @@ static void touch_ws_task(void *arg)
 
             // Check for heartbeat ping from Dragon
             if (strstr(buf, "\"ping\"")) {
-                const char *pong = "{\"pong\":true}";
+                char pong[32];
+                strcpy(pong, "{\"pong\":true}");
                 esp_transport_ws_send_raw(s_ws,
                     WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
                     pong, strlen(pong), 100);
@@ -103,7 +104,8 @@ static void touch_ws_task(void *arg)
         // Send proactive heartbeat if no server ping in a while
         int64_t now = esp_timer_get_time();
         if ((now - last_heartbeat) > (TAB5_DRAGON_HEARTBEAT_MS * 1000LL * 2)) {
-            const char *hb = "{\"heartbeat\":true}";
+            char hb[32];
+            strcpy(hb, "{\"heartbeat\":true}");
             int sent = esp_transport_ws_send_raw(s_ws,
                 WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
                 hb, strlen(hb), 100);
@@ -137,7 +139,7 @@ void tab5_touch_ws_start(void)
     s_stop_flag = false;
     s_running = true;
 
-    xTaskCreatePinnedToCore(touch_ws_task, "touch_ws", 4096, NULL, 4, &s_task_handle, 0);
+    xTaskCreatePinnedToCore(touch_ws_task, "touch_ws", 8192, NULL, 4, &s_task_handle, 1);
 }
 
 void tab5_touch_ws_stop(void)
