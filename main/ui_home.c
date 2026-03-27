@@ -76,6 +76,7 @@ static void nav_click_cb(lv_event_t *e);
 static void brain_pulse_cb(void *obj, int32_t val);
 static void app_icon_click_cb(lv_event_t *e);
 static void dragon_toggle_cb(lv_event_t *e);
+static void show_toast(const char *text);
 
 /* ── State ───────────────────────────────────────────────────── */
 static lv_obj_t  *scr        = NULL;
@@ -147,6 +148,8 @@ static lv_obj_t *make_app_icon(lv_obj_t *parent, int col, int row, int y_off,
     /* no shadows — ESP32-P4 draw budget */
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_opa(icon, LV_OPA_60, LV_STATE_PRESSED);
+    lv_obj_set_style_transform_scale(icon, 230, LV_STATE_PRESSED);
     lv_obj_add_event_cb(icon, app_icon_click_cb, LV_EVENT_CLICKED,
                         (void *)(intptr_t)app_id);
 
@@ -522,6 +525,7 @@ lv_obj_t *ui_home_create(void)
             lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID, slot * i + slot / 2 - 12, 0);
             lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
             lv_obj_set_ext_click_area(nav_icons[i], 10);
+            lv_obj_set_style_text_color(nav_icons[i], lv_color_hex(COL_AMBER), LV_STATE_PRESSED);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                 (void *)(intptr_t)i);
         }
@@ -566,6 +570,36 @@ static void brain_pulse_cb(void *obj, int32_t val)
     lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 }
 
+/* ── Toast helper (auto-dismiss on lv_layer_top) ─────────────── */
+static void toast_timer_cb(lv_timer_t *t)
+{
+    lv_obj_t *toast = (lv_obj_t *)lv_timer_get_user_data(t);
+    if (toast) lv_obj_delete(toast);
+}
+
+static void show_toast(const char *text)
+{
+    lv_obj_t *toast = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_align(toast, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(toast, lv_color_hex(0x1C1C1E), 0);
+    lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
+    lv_obj_set_style_radius(toast, 16, 0);
+    lv_obj_set_style_border_width(toast, 0, 0);
+    lv_obj_set_style_pad_hor(toast, 32, 0);
+    lv_obj_set_style_pad_ver(toast, 16, 0);
+    lv_obj_clear_flag(toast, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *lbl = lv_label_create(toast);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(lbl);
+
+    lv_timer_t *tmr = lv_timer_create(toast_timer_cb, 1500, toast);
+    lv_timer_set_repeat_count(tmr, 1);
+}
+
 static void app_icon_click_cb(lv_event_t *e)
 {
     intptr_t app_id = (intptr_t)lv_event_get_user_data(e);
@@ -574,10 +608,10 @@ static void app_icon_click_cb(lv_event_t *e)
     case 0: /* WiFi */    ui_wifi_create(); break;
     case 1: /* Dragon */  lv_tileview_set_tile(tileview, tiles[2], LV_ANIM_ON); break;
     case 2: /* Camera */  ui_camera_create(); break;
-    case 3: /* Audio */   break; /* TODO: audio player */
+    case 3: /* Audio */   show_toast("Coming Soon"); break;
     case 4: /* Files */   ui_files_create(); break;
     case 5: /* Battery */ lv_tileview_set_tile(tileview, tiles[3], LV_ANIM_ON); break;
-    case 6: /* AI Chat */ break; /* TODO: chat screen */
+    case 6: /* AI Chat */ show_toast("Coming Soon"); break;
     case 7: /* Settings */ui_settings_create(); break;
     default: break;
     }
@@ -769,4 +803,9 @@ void ui_home_destroy(void)
         cur_page = 0;
         ESP_LOGI(TAG, "Home destroyed");
     }
+}
+
+lv_obj_t *ui_home_get_screen(void)
+{
+    return scr;
 }

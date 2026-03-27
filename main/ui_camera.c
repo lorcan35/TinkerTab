@@ -8,6 +8,7 @@
  */
 
 #include "ui_camera.h"
+#include "ui_home.h"
 #include "camera.h"
 #include "sdcard.h"
 #include "config.h"
@@ -65,6 +66,7 @@ static uint32_t    capture_counter = 0;
 static tab5_cam_resolution_t current_res = TAB5_CAM_RES_VGA;
 
 /* ── Forward declarations ────────────────────────────────────── */
+static void cb_back_btn(lv_event_t *e);
 static void preview_timer_cb(lv_timer_t *t);
 static void capture_btn_cb(lv_event_t *e);
 static void resolution_dd_cb(lv_event_t *e);
@@ -126,6 +128,15 @@ static void free_canvas_buffer(void)
     }
 }
 
+/* ── Back button callback ────────────────────────────────────── */
+static void cb_back_btn(lv_event_t *e)
+{
+    (void)e;
+    ui_camera_destroy();
+    lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+                        200, 0, false);
+}
+
 /* ================================================================
  * ui_camera_create
  * ================================================================ */
@@ -140,6 +151,29 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_bg_opa(scr_camera, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(scr_camera, 0, 0);
+
+    /* ── Top bar with back button ────────────────────────────── */
+    {
+        lv_obj_t *topbar = lv_obj_create(scr_camera);
+        lv_obj_remove_style_all(topbar);
+        lv_obj_set_size(topbar, SCREEN_W, 48);
+        lv_obj_set_style_bg_color(topbar, lv_color_hex(COL_BAR_BG), 0);
+        lv_obj_set_style_bg_opa(topbar, LV_OPA_80, 0);
+        lv_obj_align(topbar, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        lv_obj_t *btn_back = lv_button_create(topbar);
+        lv_obj_remove_style_all(btn_back);
+        lv_obj_set_size(btn_back, 48, 48);
+        lv_obj_set_style_bg_opa(btn_back, LV_OPA_TRANSP, 0);
+        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_add_event_cb(btn_back, cb_back_btn, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *arrow = lv_label_create(btn_back);
+        lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+        lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
+        lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
+        lv_obj_center(arrow);
+    }
 
     /* ── Viewfinder area (top 960px) ─────────────────────────── */
     lv_obj_t *vf_area = lv_obj_create(scr_camera);
@@ -287,7 +321,7 @@ lv_obj_t *ui_camera_create(void)
     update_sd_state();
 
     /* ── Load the screen ─────────────────────────────────────── */
-    lv_screen_load(scr_camera);
+    lv_screen_load_anim(scr_camera, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
     ESP_LOGI(TAG, "Camera screen created");
 
     return scr_camera;

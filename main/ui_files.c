@@ -10,6 +10,7 @@
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #include "ui_files.h"
+#include "ui_home.h"
 #include "ui_audio.h"
 #include "ui_core.h"
 #include "sdcard.h"
@@ -88,6 +89,8 @@ static void cb_back_btn(lv_event_t *e)
     /* At root → destroy screen (go back to home) */
     if (strcmp(current_path, ROOT_PATH) == 0) {
         ui_files_destroy();
+        lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+                            200, 0, false);
         return;
     }
     /* Go up one directory */
@@ -653,7 +656,7 @@ lv_obj_t *ui_files_create(void)
     }
 
     /* ── Load the screen ─────────────────────────────────────── */
-    lv_screen_load(scr_files);
+    lv_screen_load_anim(scr_files, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
     ESP_LOGI(TAG, "File browser created");
 
     return scr_files;

@@ -84,6 +84,9 @@ static uint16_t s_ap_count = 0;
 static char s_selected_ssid[33];
 static int  s_row_idx = 0;
 
+/* Guard flag for background tasks during destroy */
+static volatile bool s_destroying = false;
+
 /* ── Forward declarations ──────────────────────────────────────────── */
 static lv_obj_t *make_topbar(lv_obj_t *parent);
 static void      create_status_card(lv_obj_t *parent);
@@ -113,6 +116,8 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_wifi_destroy();
+    lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+                        200, 0, false);
 }
 
 static void cb_scan_btn(lv_event_t *e)
@@ -195,6 +200,8 @@ static void wifi_scan_task(void *arg)
 {
     (void)arg;
 
+    if (s_destroying) { vTaskDelete(NULL); return; }
+
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
@@ -224,7 +231,10 @@ static void wifi_scan_task(void *arg)
     s_ap_count = count;
     ESP_LOGI(TAG, "Scan found %d networks", s_ap_count);
 
+    if (s_destroying) { vTaskDelete(NULL); return; }
+
     tab5_ui_lock();
+    if (s_destroying) { tab5_ui_unlock(); vTaskDelete(NULL); return; }
     populate_scan_list();
     if (s_scan_btn_label) {
         char buf[32];
@@ -241,6 +251,8 @@ static void wifi_scan_task(void *arg)
 static void wifi_connect_task(void *arg)
 {
     char *password = (char *)arg;
+
+    if (s_destroying) { free(password); vTaskDelete(NULL); return; }
 
     ESP_LOGI(TAG, "Connecting to '%s'...", s_selected_ssid);
 
@@ -762,8 +774,10 @@ lv_obj_t *ui_wifi_create(void)
     /* ── Initial data refresh ──────────────────────────────────────── */
     ui_wifi_update();
 
+    s_destroying = false;
+
     /* ── Load the screen ───────────────────────────────────────────── */
-    lv_screen_load(s_screen);
+    lv_screen_load_anim(s_screen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
 
     ESP_LOGI(TAG, "WiFi screen created");
     return s_screen;
@@ -824,11 +838,10 @@ void ui_wifi_destroy(void)
 {
     if (!s_screen) return;
 
+    s_destroying = true;
+
     ui_keyboard_hide();
     hide_password_dialog();
-
-    /* Return to home screen */
-    ui_home_create();
 
     lv_obj_delete(s_screen);
 

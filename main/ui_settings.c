@@ -6,6 +6,7 @@
  */
 
 #include "ui_settings.h"
+#include "ui_home.h"
 #include "ui_core.h"
 #include "display.h"
 #include "battery.h"
@@ -79,6 +80,9 @@ static lv_obj_t *s_sw_autorot     = NULL;
 /* Row index counter for alternating colours */
 static int s_row_idx = 0;
 
+/* Guard flag for background tasks during destroy */
+static volatile bool s_destroying = false;
+
 /* ── Forward declarations ───────────────────────────────────────────── */
 static lv_obj_t *make_topbar(lv_obj_t *parent);
 static lv_obj_t *make_section(lv_obj_t *parent, const char *title);
@@ -93,6 +97,8 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_settings_destroy();
+    lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+                        200, 0, false);
 }
 
 static void cb_brightness(lv_event_t *e)
@@ -152,8 +158,11 @@ static void ntp_sync_task(void *arg)
     (void)arg;
     esp_err_t ret = tab5_rtc_sync_from_ntp();
 
+    if (s_destroying) { vTaskDelete(NULL); return; }
+
     /* Thread-safe UI update via ui_core mutex */
     tab5_ui_lock();
+    if (s_destroying || !s_ntp_btn_label) { tab5_ui_unlock(); vTaskDelete(NULL); return; }
     if (s_ntp_btn_label) {
         if (ret == ESP_OK) {
             lv_label_set_text(s_ntp_btn_label, "Synced!");
@@ -498,8 +507,10 @@ lv_obj_t *ui_settings_create(void)
     /* ── Initial data refresh ───────────────────────────────────────── */
     ui_settings_update();
 
+    s_destroying = false;
+
     /* ── Load the screen ────────────────────────────────────────────── */
-    lv_screen_load(s_screen);
+    lv_screen_load_anim(s_screen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
 
     ESP_LOGI(TAG, "Settings screen created");
     return s_screen;
@@ -590,6 +601,8 @@ void ui_settings_update(void)
 void ui_settings_destroy(void)
 {
     if (!s_screen) return;
+
+    s_destroying = true;
 
     lv_obj_delete(s_screen);
 

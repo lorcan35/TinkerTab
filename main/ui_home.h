@@ -9,3 +9,6 @@ void ui_home_update_status(void);
 
 /** Delete the home screen. */
 void ui_home_destroy(void);
+
+/** Return the existing home screen object (for navigation back). */
+lv_obj_t *ui_home_get_screen(void);
