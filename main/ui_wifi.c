@@ -99,7 +99,6 @@ static void      show_password_dialog(const char *ssid);
 static void      hide_password_dialog(void);
 static void      scan_done_handler(void *arg, esp_event_base_t event_base,
                                    int32_t event_id, void *event_data);
-static void      wifi_scan_task(void *arg);
 static void      wifi_connect_task(void *arg);
 static const char *rssi_to_bars(int rssi);
 static const char *auth_to_str(wifi_auth_mode_t auth);
@@ -217,7 +216,28 @@ static void cb_pwd_ta_clicked(lv_event_t *e)
 
 /* ── WiFi scan background task ─────────────────────────────────────── */
 
-/* Called on the default event loop task when scan completes */
+/* Deferred UI update — runs in LVGL timer context where the lock is safe */
+static void scan_done_update_ui(void *arg)
+{
+    (void)arg;
+    if (s_destroying || !s_screen) return;
+
+    populate_scan_list();
+    if (s_scan_btn_label) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Scan (%d found)", s_ap_count);
+        lv_label_set_text(s_scan_btn_label, buf);
+    }
+}
+
+/* Called on the system event loop task when scan completes.
+ *
+ * CRITICAL FIX (issue #8): Must NOT call tab5_ui_lock() (portMAX_DELAY)
+ * here — that blocks the event loop forever if LVGL holds the mutex,
+ * which starves the HTTP debug server and WiFi driver, causing the
+ * permanent hang reported in #8.
+ *
+ * Fix: try_lock with a short timeout, fall back to lv_async_call. */
 static void scan_done_handler(void *arg, esp_event_base_t event_base,
                               int32_t event_id, void *event_data)
 {
@@ -225,6 +245,7 @@ static void scan_done_handler(void *arg, esp_event_base_t event_base,
 
     if (s_destroying || !s_screen) return;
 
+    /* Fetch scan results — safe on event loop, no LVGL involved */
     uint16_t count = MAX_SCAN_APS;
     esp_err_t ret = esp_wifi_scan_get_ap_records(&count, s_ap_records);
     if (ret != ESP_OK) {
@@ -234,22 +255,20 @@ static void scan_done_handler(void *arg, esp_event_base_t event_base,
     s_ap_count = count;
     ESP_LOGI(TAG, "Scan found %d networks", s_ap_count);
 
-    tab5_ui_lock();
-    if (s_destroying || !s_screen) { tab5_ui_unlock(); return; }
-    populate_scan_list();
-    if (s_scan_btn_label) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Scan (%d found)", s_ap_count);
-        lv_label_set_text(s_scan_btn_label, buf);
+    /* Try short lock; on failure defer to LVGL task via async call */
+    if (tab5_ui_try_lock(200)) {
+        if (s_destroying || !s_screen) { tab5_ui_unlock(); return; }
+        populate_scan_list();
+        if (s_scan_btn_label) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Scan (%d found)", s_ap_count);
+            lv_label_set_text(s_scan_btn_label, buf);
+        }
+        tab5_ui_unlock();
+    } else {
+        ESP_LOGW(TAG, "LVGL lock busy in scan_done — deferring to LVGL task");
+        lv_async_call(scan_done_update_ui, NULL);
     }
-    tab5_ui_unlock();
-}
-
-/* Legacy scan task — no longer used for scanning, kept as stub */
-static void wifi_scan_task(void *arg)
-{
-    (void)arg;
-    vTaskDelete(NULL);
 }
 
 /* ── WiFi connect background task ──────────────────────────────────── */
@@ -286,13 +305,14 @@ static void wifi_connect_task(void *arg)
     esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Set config failed: %s", esp_err_to_name(ret));
-        tab5_ui_lock();
-        if (s_pwd_status_lbl) {
-            lv_label_set_text(s_pwd_status_lbl, "Config error");
-            lv_obj_set_style_text_color(s_pwd_status_lbl, COL_RED, 0);
+        if (tab5_ui_try_lock(2000)) {
+            if (s_pwd_status_lbl) {
+                lv_label_set_text(s_pwd_status_lbl, "Config error");
+                lv_obj_set_style_text_color(s_pwd_status_lbl, COL_RED, 0);
+            }
+            if (s_pwd_connect_btn) lv_obj_clear_state(s_pwd_connect_btn, LV_STATE_DISABLED);
+            tab5_ui_unlock();
         }
-        if (s_pwd_connect_btn) lv_obj_clear_state(s_pwd_connect_btn, LV_STATE_DISABLED);
-        tab5_ui_unlock();
         free(password);
         vTaskDelete(NULL);
         return;
@@ -301,13 +321,14 @@ static void wifi_connect_task(void *arg)
     ret = esp_wifi_connect();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Connect failed: %s", esp_err_to_name(ret));
-        tab5_ui_lock();
-        if (s_pwd_status_lbl) {
-            lv_label_set_text(s_pwd_status_lbl, "Connection failed");
-            lv_obj_set_style_text_color(s_pwd_status_lbl, COL_RED, 0);
+        if (tab5_ui_try_lock(2000)) {
+            if (s_pwd_status_lbl) {
+                lv_label_set_text(s_pwd_status_lbl, "Connection failed");
+                lv_obj_set_style_text_color(s_pwd_status_lbl, COL_RED, 0);
+            }
+            if (s_pwd_connect_btn) lv_obj_clear_state(s_pwd_connect_btn, LV_STATE_DISABLED);
+            tab5_ui_unlock();
         }
-        if (s_pwd_connect_btn) lv_obj_clear_state(s_pwd_connect_btn, LV_STATE_DISABLED);
-        tab5_ui_unlock();
         free(password);
         vTaskDelete(NULL);
         return;
@@ -323,32 +344,39 @@ static void wifi_connect_task(void *arg)
         }
     }
 
-    tab5_ui_lock();
     if (connected) {
         ESP_LOGI(TAG, "Connected to %s!", s_selected_ssid);
-
-        /* Save to NVS */
+        /* Save to NVS — no lock needed */
         wifi_nvs_save(s_selected_ssid, password ? password : "");
-
-        if (s_pwd_status_lbl) {
-            lv_label_set_text(s_pwd_status_lbl, "Connected!");
-            lv_obj_set_style_text_color(s_pwd_status_lbl, COL_GREEN, 0);
-        }
-
-        /* Update status card */
-        ui_wifi_update();
-
-        /* Auto-dismiss password dialog after 1 second */
-        /* (we set a flag and the timer handler will dismiss) */
     } else {
         ESP_LOGW(TAG, "Connection to %s timed out", s_selected_ssid);
-        if (s_pwd_status_lbl) {
-            lv_label_set_text(s_pwd_status_lbl, "Connection timed out");
-            lv_obj_set_style_text_color(s_pwd_status_lbl, COL_RED, 0);
-        }
     }
-    if (s_pwd_connect_btn) lv_obj_clear_state(s_pwd_connect_btn, LV_STATE_DISABLED);
-    tab5_ui_unlock();
+
+    /* Update password dialog UI — use try_lock to avoid deadlock */
+    if (tab5_ui_try_lock(2000)) {
+        if (!s_destroying && s_screen) {
+            if (connected) {
+                if (s_pwd_status_lbl) {
+                    lv_label_set_text(s_pwd_status_lbl, "Connected!");
+                    lv_obj_set_style_text_color(s_pwd_status_lbl, COL_GREEN, 0);
+                }
+            } else {
+                if (s_pwd_status_lbl) {
+                    lv_label_set_text(s_pwd_status_lbl, "Connection timed out");
+                    lv_obj_set_style_text_color(s_pwd_status_lbl, COL_RED, 0);
+                }
+            }
+            if (s_pwd_connect_btn) lv_obj_clear_state(s_pwd_connect_btn, LV_STATE_DISABLED);
+        }
+        tab5_ui_unlock();
+    } else {
+        ESP_LOGW(TAG, "wifi_connect_task: LVGL lock timeout, skipping dialog update");
+    }
+
+    /* Update status card — ui_wifi_update manages its own lock */
+    if (!s_destroying && s_screen) {
+        ui_wifi_update();
+    }
 
     free(password);
     vTaskDelete(NULL);
@@ -800,17 +828,45 @@ void ui_wifi_update(void)
 {
     if (!s_screen) return;
 
-    if (tab5_wifi_connected()) {
-        /* Get current connection info */
-        wifi_ap_record_t ap_info;
-        esp_err_t ret = esp_wifi_sta_get_ap_info(&ap_info);
+    /* Phase 1: Query WiFi state OUTSIDE the LVGL lock.
+     * Calling esp_wifi_sta_get_ap_info / esp_netif_get_ip_info while
+     * holding the LVGL mutex deadlocks: the WiFi driver may post to
+     * the system event loop, which can be blocked in scan_done_handler
+     * waiting for the same mutex.  This was the root cause of #8. */
+    bool connected = tab5_wifi_connected();
+    wifi_ap_record_t ap_info = {0};
+    bool have_ap_info = false;
+    char ip_buf[32] = "IP: --";
 
+    if (connected) {
+        have_ap_info = (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
+
+        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (netif) {
+            esp_netif_ip_info_t ip_info;
+            if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+                snprintf(ip_buf, sizeof(ip_buf), "IP: " IPSTR, IP2STR(&ip_info.ip));
+            }
+        }
+    }
+
+    /* Phase 2: Update LVGL widgets under the lock.
+     * Recursive mutex so safe if caller already holds it (e.g. ui_wifi_create).
+     * Uses try_lock so we never block forever. */
+    if (!tab5_ui_try_lock(1000)) {
+        ESP_LOGW(TAG, "ui_wifi_update: LVGL lock timeout — skipping UI refresh");
+        return;
+    }
+
+    if (!s_screen) { tab5_ui_unlock(); return; }
+
+    if (connected) {
         if (s_lbl_status) {
             lv_label_set_text(s_lbl_status, "Connected");
             lv_obj_set_style_text_color(s_lbl_status, COL_GREEN, 0);
         }
 
-        if (ret == ESP_OK) {
+        if (have_ap_info) {
             if (s_lbl_ssid) {
                 char buf[48];
                 snprintf(buf, sizeof(buf), "SSID: %s", (char *)ap_info.ssid);
@@ -826,15 +882,8 @@ void ui_wifi_update(void)
             }
         }
 
-        /* Get IP address */
-        esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        if (netif && s_lbl_ip) {
-            esp_netif_ip_info_t ip_info;
-            if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
-                char buf[32];
-                snprintf(buf, sizeof(buf), "IP: " IPSTR, IP2STR(&ip_info.ip));
-                lv_label_set_text(s_lbl_ip, buf);
-            }
+        if (s_lbl_ip) {
+            lv_label_set_text(s_lbl_ip, ip_buf);
         }
     } else {
         if (s_lbl_status) {
@@ -845,6 +894,8 @@ void ui_wifi_update(void)
         if (s_lbl_signal)  lv_label_set_text(s_lbl_signal, "Signal: --");
         if (s_lbl_ip)      lv_label_set_text(s_lbl_ip, "IP: --");
     }
+
+    tab5_ui_unlock();
 }
 
 void ui_wifi_destroy(void)
