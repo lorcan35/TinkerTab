@@ -47,7 +47,7 @@ static const char *TAG = "ui_kbd";
 #define ROW_PAD_X       6      /* horizontal padding inside keyboard */
 #define ROW_GAP_Y       4
 
-#define TRIGGER_SZ      44
+#define TRIGGER_SZ      56
 #define TRIGGER_MARGIN  20
 
 /* ── Key definitions ───────────────────────────────────────────── */
@@ -80,6 +80,7 @@ typedef enum {
 static lv_obj_t  *s_kb_panel      = NULL;   /* main keyboard panel */
 static lv_obj_t  *s_trigger_btn   = NULL;   /* floating trigger */
 static lv_obj_t  *s_target_ta     = NULL;   /* textarea receiving input */
+static lv_obj_t  *s_default_ta    = NULL;   /* fallback textarea when no target exists */
 static bool       s_visible       = false;
 static bool       s_shifted       = false;  /* shift state */
 static bool       s_caps_lock     = false;  /* double-tap shift */
@@ -743,6 +744,28 @@ static void key_press_cb(lv_event_t *e)
 static void trigger_click_cb(lv_event_t *e)
 {
     (void)e;
+
+    /* If no external textarea is set, create a floating default one so
+       keystrokes are not silently dropped. */
+    if (s_target_ta == NULL && s_default_ta == NULL) {
+        s_default_ta = lv_textarea_create(lv_layer_top());
+        lv_obj_set_size(s_default_ta, SW - 40, 80);
+        lv_obj_align(s_default_ta, LV_ALIGN_BOTTOM_LEFT, 20, -(KB_HEIGHT + 10));
+        lv_obj_set_style_bg_color(s_default_ta, lv_color_hex(KB_KEY_BG), 0);
+        lv_obj_set_style_text_color(s_default_ta, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_default_ta, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_border_color(s_default_ta, lv_color_hex(KB_CYAN), 0);
+        lv_obj_set_style_border_width(s_default_ta, 1, 0);
+        lv_obj_set_style_radius(s_default_ta, 12, 0);
+        lv_obj_set_style_pad_all(s_default_ta, 12, 0);
+        lv_textarea_set_placeholder_text(s_default_ta, "Type something...");
+        lv_textarea_set_one_line(s_default_ta, false);
+        lv_textarea_set_max_length(s_default_ta, 256);
+    }
+    if (s_target_ta == NULL) {
+        s_target_ta = s_default_ta;
+    }
+
     ui_keyboard_toggle(s_target_ta);
 }
 
@@ -761,6 +784,12 @@ static void hide_anim_ready_cb(lv_anim_t *a)
     lv_obj_add_flag(s_kb_panel, LV_OBJ_FLAG_HIDDEN);
     /* Re-show trigger button */
     lv_obj_clear_flag(s_trigger_btn, LV_OBJ_FLAG_HIDDEN);
+
+    /* Clean up the fallback textarea if we created one */
+    if (s_default_ta) {
+        lv_obj_delete(s_default_ta);
+        s_default_ta = NULL;
+    }
     s_target_ta = NULL;
 }
 

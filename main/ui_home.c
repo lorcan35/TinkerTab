@@ -13,6 +13,9 @@
  */
 
 #include "ui_home.h"
+#include "ui_settings.h"
+#include "ui_camera.h"
+#include "ui_files.h"
 #include "battery.h"
 #include "rtc.h"
 #include "dragon_link.h"
@@ -23,6 +26,7 @@
 #include "esp_system.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 static const char *TAG = "ui_home";
 
@@ -69,6 +73,8 @@ static void update_timer_cb(lv_timer_t *t);
 static void tileview_scroll_cb(lv_event_t *e);
 static void nav_click_cb(lv_event_t *e);
 static void brain_pulse_cb(void *obj, int32_t val);
+static void app_icon_click_cb(lv_event_t *e);
+static void dragon_toggle_cb(lv_event_t *e);
 
 /* ── State ───────────────────────────────────────────────────── */
 static lv_obj_t  *scr        = NULL;
@@ -98,6 +104,11 @@ static lv_obj_t  *lbl_dragon_fps = NULL;
 static lv_obj_t  *lbl_set_wifi  = NULL;
 static lv_obj_t  *lbl_set_dragon = NULL;
 static lv_obj_t  *lbl_set_mem   = NULL;
+static lv_obj_t  *lbl_set_batt  = NULL;
+
+/* Dragon stream toggle */
+static lv_obj_t  *btn_dragon_toggle = NULL;
+static lv_obj_t  *lbl_dragon_toggle = NULL;
 
 /* Nav bar */
 static lv_obj_t  *nav_icons[NUM_PAGES] = {NULL};
@@ -116,7 +127,8 @@ static lv_timer_t *tmr_update  = NULL;
 
 /* Make a rounded-square app icon with symbol + label below */
 static lv_obj_t *make_app_icon(lv_obj_t *parent, int col, int row, int y_off,
-                               const char *sym, const char *name, uint32_t bg_col)
+                               const char *sym, const char *name, uint32_t bg_col,
+                               int app_id)
 {
     int grid_w = ICON_COLS * ICON_SZ + (ICON_COLS - 1) * ICON_GAP;
     int x0 = (SW - grid_w) / 2;
@@ -133,6 +145,9 @@ static lv_obj_t *make_app_icon(lv_obj_t *parent, int col, int row, int y_off,
     lv_obj_set_style_border_width(icon, 0, 0);
     /* no shadows — ESP32-P4 draw budget */
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(icon, app_icon_click_cb, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)app_id);
 
     lv_obj_t *ic = lv_label_create(icon);
     lv_label_set_text(ic, sym);
@@ -330,16 +345,16 @@ lv_obj_t *ui_home_create(void)
         int gy = y0 + 56;
 
         /* Row 0 */
-        lbl_app_wifi = make_app_icon(pg, 0, 0, gy, LV_SYMBOL_WIFI,    "WiFi",    COL_BLUE);
-        make_app_icon(pg, 1, 0, gy, LV_SYMBOL_UPLOAD,  "Dragon",  COL_CYAN);
-        make_app_icon(pg, 2, 0, gy, LV_SYMBOL_IMAGE,   "Camera",  COL_PURPLE);
-        make_app_icon(pg, 3, 0, gy, LV_SYMBOL_AUDIO,   "Audio",   COL_PINK);
+        lbl_app_wifi = make_app_icon(pg, 0, 0, gy, LV_SYMBOL_WIFI,    "WiFi",    COL_BLUE,   0);
+        make_app_icon(pg, 1, 0, gy, LV_SYMBOL_UPLOAD,  "Dragon",  COL_CYAN,   1);
+        make_app_icon(pg, 2, 0, gy, LV_SYMBOL_IMAGE,   "Camera",  COL_PURPLE, 2);
+        make_app_icon(pg, 3, 0, gy, LV_SYMBOL_AUDIO,   "Audio",   COL_PINK,   3);
 
         /* Row 1 */
-        lbl_app_mem = make_app_icon(pg, 0, 1, gy, LV_SYMBOL_LIST,     "Files",   COL_ORANGE);
-        make_app_icon(pg, 1, 1, gy, LV_SYMBOL_CHARGE,  "Battery", COL_MINT);
-        make_app_icon(pg, 2, 1, gy, LV_SYMBOL_EYE_OPEN,"AI Chat", COL_AMBER);
-        make_app_icon(pg, 3, 1, gy, LV_SYMBOL_SETTINGS,"Settings",COL_LABEL2);
+        lbl_app_mem = make_app_icon(pg, 0, 1, gy, LV_SYMBOL_LIST,     "Files",   COL_ORANGE, 4);
+        make_app_icon(pg, 1, 1, gy, LV_SYMBOL_CHARGE,  "Battery", COL_MINT,   5);
+        make_app_icon(pg, 2, 1, gy, LV_SYMBOL_EYE_OPEN,"AI Chat", COL_AMBER,  6);
+        make_app_icon(pg, 3, 1, gy, LV_SYMBOL_SETTINGS,"Settings",COL_LABEL2, 7);
     }
 
     /* ── PAGE 2: DRAGON (streaming viewport) ─────────────────── */
@@ -390,6 +405,24 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_text_color(lbl_dragon_fps, lv_color_hex(COL_LABEL3), 0);
         lv_obj_set_style_text_font(lbl_dragon_fps, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl_dragon_fps, LV_ALIGN_RIGHT_MID, 0, 0);
+
+        /* Stream toggle button */
+        btn_dragon_toggle = lv_obj_create(pg);
+        lv_obj_set_size(btn_dragon_toggle, 180, 48);
+        lv_obj_align(btn_dragon_toggle, LV_ALIGN_TOP_MID, 0, SBAR_H + 840);
+        lv_obj_set_style_bg_color(btn_dragon_toggle, lv_color_hex(COL_CARD2), 0);
+        lv_obj_set_style_bg_opa(btn_dragon_toggle, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(btn_dragon_toggle, 12, 0);
+        lv_obj_set_style_border_width(btn_dragon_toggle, 0, 0);
+        lv_obj_add_flag(btn_dragon_toggle, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(btn_dragon_toggle, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(btn_dragon_toggle, dragon_toggle_cb, LV_EVENT_CLICKED, NULL);
+
+        lbl_dragon_toggle = lv_label_create(btn_dragon_toggle);
+        lv_label_set_text(lbl_dragon_toggle, "Stream: OFF");
+        lv_obj_set_style_text_color(lbl_dragon_toggle, lv_color_hex(COL_LABEL), 0);
+        lv_obj_set_style_text_font(lbl_dragon_toggle, &lv_font_montserrat_16, 0);
+        lv_obj_center(lbl_dragon_toggle);
     }
 
     /* ── PAGE 3: SETTINGS (iOS grouped list) ─────────────────── */
@@ -414,7 +447,7 @@ lv_obj_t *ui_home_create(void)
         lv_obj_t *g2 = make_set_group(pg, y, 3);
         lbl_set_mem = make_set_row(g2, LV_SYMBOL_LIST,     COL_ORANGE, "Memory",  "---");
         make_set_row(g2, LV_SYMBOL_SETTINGS, COL_LABEL2,   "Display", "720x1280");
-        make_set_row(g2, LV_SYMBOL_CHARGE,   COL_MINT,     "Battery", "---");
+        lbl_set_batt = make_set_row(g2, LV_SYMBOL_CHARGE,   COL_MINT,     "Battery", "---");
         y += 3 * SET_ROW_H + 8 + 16;
 
         /* Group 3: Hardware */
@@ -531,6 +564,36 @@ static void brain_pulse_cb(void *obj, int32_t val)
     lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 }
 
+static void app_icon_click_cb(lv_event_t *e)
+{
+    intptr_t app_id = (intptr_t)lv_event_get_user_data(e);
+    ESP_LOGI(TAG, "App icon tapped: %d", (int)app_id);
+    switch (app_id) {
+    case 0: /* WiFi */    break; /* TODO: wifi config screen */
+    case 1: /* Dragon */  lv_tileview_set_tile(tileview, tiles[2], LV_ANIM_ON); break;
+    case 2: /* Camera */  ui_camera_create(); break;
+    case 3: /* Audio */   break; /* TODO: audio player */
+    case 4: /* Files */   ui_files_create(); break;
+    case 5: /* Battery */ lv_tileview_set_tile(tileview, tiles[3], LV_ANIM_ON); break;
+    case 6: /* AI Chat */ break; /* TODO: chat screen */
+    case 7: /* Settings */ui_settings_create(); break;
+    default: break;
+    }
+}
+
+static void dragon_toggle_cb(lv_event_t *e)
+{
+    (void)e;
+    bool streaming = tab5_dragon_is_streaming();
+    if (streaming) {
+        tab5_dragon_request_stop();
+        ESP_LOGI(TAG, "Dragon stream stop requested");
+    } else {
+        tab5_dragon_request_start();
+        ESP_LOGI(TAG, "Dragon stream start requested");
+    }
+}
+
 static void update_nav_ui(int page)
 {
     for (int i = 0; i < NUM_PAGES; i++) {
@@ -581,13 +644,29 @@ void ui_home_update_status(void)
 {
     if (!scr) return;
 
-    /* Time */
+    /* Time + Date */
     tab5_rtc_time_t rtc = {0};
     if (tab5_rtc_get_time(&rtc) == ESP_OK) {
         char tb[8];
         snprintf(tb, sizeof(tb), "%02d:%02d", rtc.hour, rtc.minute);
         if (lbl_clock) lv_label_set_text(lbl_clock, tb);
         if (lbl_sbar_time) lv_label_set_text(lbl_sbar_time, tb);
+
+        /* Dynamic date from RTC */
+        if (lbl_date) {
+            static const char *day_names[] = {
+                "Sunday","Monday","Tuesday","Wednesday",
+                "Thursday","Friday","Saturday"
+            };
+            static const char *month_names[] = {
+                "January","February","March","April","May","June",
+                "July","August","September","October","November","December"
+            };
+            if (rtc.weekday < 7 && rtc.month >= 1 && rtc.month <= 12) {
+                lv_label_set_text_fmt(lbl_date, "%s, %s %d",
+                    day_names[rtc.weekday], month_names[rtc.month - 1], rtc.day);
+            }
+        }
     }
 
     /* Battery */
@@ -596,6 +675,7 @@ void ui_home_update_status(void)
         char bb[8];
         snprintf(bb, sizeof(bb), "%u%%", bpct);
         if (lbl_sbar_batt) lv_label_set_text(lbl_sbar_batt, bb);
+        if (lbl_set_batt) lv_label_set_text(lbl_set_batt, bb);
     }
 
     /* WiFi */
@@ -629,6 +709,15 @@ void ui_home_update_status(void)
             }
         }
         if (lbl_set_dragon) lv_label_set_text(lbl_set_dragon, st_str);
+
+        /* Update stream toggle button */
+        if (lbl_dragon_toggle) {
+            lv_label_set_text(lbl_dragon_toggle, streaming ? "Stream: ON" : "Stream: OFF");
+        }
+        if (btn_dragon_toggle) {
+            lv_obj_set_style_bg_color(btn_dragon_toggle,
+                lv_color_hex(streaming ? COL_CYAN : COL_CARD2), 0);
+        }
 
         /* Greeting changes with state */
         if (lbl_greeting) {
@@ -670,7 +759,8 @@ void ui_home_destroy(void)
         lbl_sbar_time = lbl_sbar_wifi = lbl_sbar_batt = NULL;
         lbl_app_wifi = lbl_app_mem = NULL;
         lbl_dragon_st = lbl_dragon_fps = NULL;
-        lbl_set_wifi = lbl_set_dragon = lbl_set_mem = NULL;
+        lbl_set_wifi = lbl_set_dragon = lbl_set_mem = lbl_set_batt = NULL;
+        btn_dragon_toggle = lbl_dragon_toggle = NULL;
         memset(nav_icons, 0, sizeof(nav_icons));
         memset(page_dots, 0, sizeof(page_dots));
         memset(tiles, 0, sizeof(tiles));

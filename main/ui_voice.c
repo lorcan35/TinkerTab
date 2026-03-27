@@ -51,24 +51,24 @@ static const char *TAG = "ui_voice";
 #define SW                 720
 #define SH                 1280
 
-#define MIC_BTN_SZ         56
+#define MIC_BTN_SZ         72
 #define MIC_BTN_MARGIN     20
 #define MIC_BTN_BOTTOM     84        /* above nav dots */
-#define MIC_DOT_SZ         8         /* inner dot indicator */
+#define MIC_DOT_SZ         12        /* inner dot indicator */
 
 #define ORB_SZ_LISTEN      200
 #define ORB_SZ_SPEAK       220
 #define ORB_RING_W         2
 #define ORB_GLOW_LAYERS    4         /* concentric circles for radial gradient */
 
-#define CLOSE_BTN_SZ       48
+#define CLOSE_BTN_SZ       56
 #define CLOSE_BTN_MARGIN   16
 
 #define WAVE_BARS          5
-#define WAVE_BAR_W         4
-#define WAVE_BAR_GAP       8
-#define WAVE_BAR_MAX_H     40
-#define WAVE_BAR_MIN_H     8
+#define WAVE_BAR_W         6
+#define WAVE_BAR_GAP       10
+#define WAVE_BAR_MAX_H     48
+#define WAVE_BAR_MIN_H     10
 
 /* Animation timing */
 #define ANIM_FADE_IN_MS    200
@@ -187,16 +187,44 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 
     switch (state) {
     case VOICE_STATE_IDLE:
-        show_state_idle();
+        if (detail && s_visible) {
+            /* Show error briefly before hiding (e.g. "connect failed") */
+            stop_all_anims();
+            if (detail && strstr(detail, "disconnect")) {
+                lv_label_set_text(s_lbl_status, "Disconnected");
+            } else if (detail && strstr(detail, "timeout")) {
+                lv_label_set_text(s_lbl_status, "Response timed out");
+            } else {
+                lv_label_set_text(s_lbl_status, "Connection failed");
+            }
+            lv_obj_set_style_text_color(s_lbl_status,
+                lv_color_hex(0xFF4444), 0);
+            lv_obj_set_style_text_font(s_lbl_status,
+                &lv_font_montserrat_20, 0);
+            lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 40);
+            /* Auto-hide after 2s */
+            s_hide_timer = lv_timer_create(auto_hide_timer_cb, 2000, NULL);
+            lv_timer_set_repeat_count(s_hide_timer, 1);
+        } else {
+            show_state_idle();
+        }
         break;
     case VOICE_STATE_CONNECTING:
         /* Show overlay immediately with "Connecting..." */
         if (!s_visible) {
             ui_voice_show();
         }
+        stop_all_anims();
         lv_label_set_text(s_lbl_status, "Connecting...");
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(s_lbl_status,
             lv_color_hex(VO_TEXT_DIM), 0);
+        lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
+                     ORB_SZ_LISTEN / 2 + 40);
+        /* Show orb in dim cyan during connect */
+        set_orb_color(VO_CYAN, VO_CYAN_DIM, LV_OPA_30);
+        set_orb_size(ORB_SZ_LISTEN);
+        start_pulse_anim();
         break;
     case VOICE_STATE_READY:
         if (s_visible) {
@@ -223,6 +251,10 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 void ui_voice_show(void)
 {
     if (s_visible) return;
+
+    /* Cancel any in-flight fade-out animation */
+    lv_anim_delete(s_overlay, fade_overlay_cb);
+
     s_visible = true;
 
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
@@ -345,7 +377,7 @@ static void build_overlay(void)
     /* Status label — below orb */
     s_lbl_status = lv_label_create(s_overlay);
     lv_label_set_text(s_lbl_status, "");
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
     lv_obj_set_style_text_letter_space(s_lbl_status, 3, 0);
     lv_obj_set_width(s_lbl_status, SW - 80);
@@ -355,7 +387,7 @@ static void build_overlay(void)
     /* Transcript label — below status */
     s_lbl_transcript = lv_label_create(s_overlay);
     lv_label_set_text(s_lbl_transcript, "");
-    lv_obj_set_style_text_font(s_lbl_transcript, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_lbl_transcript, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_lbl_transcript, lv_color_hex(VO_TEXT_MID), 0);
     lv_obj_set_width(s_lbl_transcript, SW - 100);
     lv_obj_set_style_text_align(s_lbl_transcript, LV_TEXT_ALIGN_CENTER, 0);
@@ -365,7 +397,7 @@ static void build_overlay(void)
     /* Thinking dots label — below transcript */
     s_lbl_dots = lv_label_create(s_overlay);
     lv_label_set_text(s_lbl_dots, "");
-    lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE_DIM), 0);
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 100);
@@ -475,7 +507,7 @@ static void build_close_button(lv_obj_t *parent)
     lv_obj_t *x_lbl = lv_label_create(s_close_btn);
     lv_label_set_text(x_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(x_lbl, lv_color_hex(VO_CLOSE_TEXT), 0);
-    lv_obj_set_style_text_font(x_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(x_lbl, &lv_font_montserrat_24, 0);
     lv_obj_center(x_lbl);
 
     /* Pressed feedback */
@@ -499,6 +531,7 @@ static void show_state_listening(void)
 
     /* Status text */
     lv_label_set_text(s_lbl_status, "Listening...");
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 40);
 
@@ -534,7 +567,7 @@ static void show_state_processing(const char *transcript)
         lv_label_set_text(s_lbl_status, "Thinking...");
         lv_obj_set_style_text_color(s_lbl_status,
             lv_color_hex(VO_PURPLE_DIM), 0);
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + 80);
     } else {
@@ -832,8 +865,9 @@ static void dot_timer_cb(lv_timer_t *t)
 static void auto_hide_timer_cb(lv_timer_t *t)
 {
     s_hide_timer = NULL;
-    if (s_visible && s_cur_state == VOICE_STATE_READY) {
-        ESP_LOGI(TAG, "Auto-hiding after speaking complete");
+    if (s_visible && (s_cur_state == VOICE_STATE_READY ||
+                      s_cur_state == VOICE_STATE_IDLE)) {
+        ESP_LOGI(TAG, "Auto-hiding overlay");
         ui_voice_hide();
     }
 }
@@ -851,11 +885,9 @@ static void mic_click_cb(lv_event_t *e)
 
     switch (state) {
     case VOICE_STATE_IDLE:
-        /* Not connected — connect and start listening */
-        ESP_LOGI(TAG, "Connecting to Dragon voice server...");
-        if (voice_connect(TAB5_DRAGON_HOST, TAB5_VOICE_PORT) == ESP_OK) {
-            voice_start_listening();
-        }
+        /* Not connected — async connect + auto-listen (non-blocking) */
+        ESP_LOGI(TAG, "Connecting to Dragon voice server (async)...");
+        voice_connect_async(TAB5_DRAGON_HOST, TAB5_VOICE_PORT, true);
         break;
     case VOICE_STATE_READY:
         /* Connected, idle — start listening */

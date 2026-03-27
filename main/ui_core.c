@@ -129,9 +129,9 @@ static void ui_task(void *arg)
     ESP_LOGI(TAG, "UI task started on core %d", xPortGetCoreID());
 
     while (1) {
-        if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             uint32_t time_till_next = lv_timer_handler();
-            xSemaphoreGive(s_lvgl_mutex);
+            xSemaphoreGiveRecursive(s_lvgl_mutex);
             /* Sleep for the time LVGL suggests, clamped to 5-50ms */
             if (time_till_next < 5) time_till_next = 5;
             if (time_till_next > 50) time_till_next = 50;
@@ -155,7 +155,7 @@ esp_err_t tab5_ui_init(esp_lcd_panel_handle_t panel)
     s_panel = panel;
 
     /* Create mutex */
-    s_lvgl_mutex = xSemaphoreCreateMutex();
+    s_lvgl_mutex = xSemaphoreCreateRecursiveMutex();
     if (s_lvgl_mutex == NULL) {
         ESP_LOGE(TAG, "Failed to create LVGL mutex");
         return ESP_ERR_NO_MEM;
@@ -247,9 +247,9 @@ esp_err_t tab5_ui_init(esp_lcd_panel_handle_t panel)
 void tab5_ui_tick(void)
 {
     if (s_lvgl_mutex == NULL) return;
-    if (xSemaphoreTake(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         lv_timer_handler();
-        xSemaphoreGive(s_lvgl_mutex);
+        xSemaphoreGiveRecursive(s_lvgl_mutex);
     }
 }
 
@@ -261,13 +261,13 @@ lv_display_t *tab5_ui_get_display(void)
 void tab5_ui_lock(void)
 {
     if (s_lvgl_mutex) {
-        xSemaphoreTake(s_lvgl_mutex, portMAX_DELAY);
+        xSemaphoreTakeRecursive(s_lvgl_mutex, portMAX_DELAY);
     }
 }
 
 void tab5_ui_unlock(void)
 {
     if (s_lvgl_mutex) {
-        xSemaphoreGive(s_lvgl_mutex);
+        xSemaphoreGiveRecursive(s_lvgl_mutex);
     }
 }

@@ -33,8 +33,13 @@ typedef void (*voice_state_cb_t)(voice_state_t new_state, const char *detail);
 // Initialize voice module (call after WiFi and Dragon link are up)
 esp_err_t voice_init(voice_state_cb_t state_cb);
 
-// Start voice session — connect WebSocket to Dragon voice server
+// Start voice session — connect WebSocket to Dragon voice server (blocking)
 esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port);
+
+// Non-blocking connect — spawns a FreeRTOS task, calls state_cb on result.
+// If auto_listen is true, automatically starts listening on success.
+esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
+                               bool auto_listen);
 
 // Push-to-talk: start listening (mic -> Dragon)
 esp_err_t voice_start_listening(void);
