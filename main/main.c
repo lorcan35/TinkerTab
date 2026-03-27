@@ -75,6 +75,16 @@ static esp_err_t init_i2c(void)
 
 // Touch polling handled by LVGL indev driver (no WebSocket forwarding without WiFi)
 
+// Deferred overlay init — runs on LVGL timer task to avoid main stack overflow
+static void deferred_overlay_init_cb(lv_timer_t *t)
+{
+    lv_timer_delete(t);
+    ESP_LOGI(TAG, "Creating overlays (deferred)...");
+    ui_keyboard_init(NULL);
+    ui_voice_init();
+    ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
+}
+
 void app_main(void)
 {
     printf("\n\n");
@@ -312,12 +322,12 @@ void app_main(void)
         tab5_ui_unlock();
         ESP_LOGI(TAG, "Glyph home screen loaded");
 
-        // Initialize global overlays (keyboard + voice)
+        // Defer overlay creation — runs on the LVGL timer task stack
+        // (main task stack is too small for all the LVGL object creation)
         tab5_ui_lock();
-        ui_keyboard_init(NULL);
-        ui_voice_init();
+        lv_timer_create(deferred_overlay_init_cb, 100, NULL);
         tab5_ui_unlock();
-        ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
+        ESP_LOGI(TAG, "Overlay init deferred to LVGL timer");
     }
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",

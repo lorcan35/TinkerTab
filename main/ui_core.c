@@ -229,7 +229,7 @@ esp_err_t tab5_ui_init(esp_lcd_panel_handle_t panel)
     BaseType_t xret = xTaskCreatePinnedToCore(
         ui_task,
         "ui_task",
-        8192,       /* 8KB stack */
+        32768,      /* 32KB stack (PSRAM) — overlays + LVGL timer callbacks */
         NULL,
         5,          /* priority */
         &s_ui_task_handle,

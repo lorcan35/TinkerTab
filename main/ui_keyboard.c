@@ -84,10 +84,12 @@ static bool       s_visible       = false;
 static bool       s_shifted       = false;  /* shift state */
 static bool       s_caps_lock     = false;  /* double-tap shift */
 static bool       s_num_layer     = false;  /* numbers/symbols layer */
+static bool       s_num_built     = false;  /* lazy: number rows created? */
 
 /* Key rows — containers for easy show/hide on layer switch */
 static lv_obj_t  *s_letter_rows[4] = {NULL}; /* row0..row3 (letters + bottom) */
 static lv_obj_t  *s_num_rows[4]    = {NULL}; /* row0..row3 (numbers + bottom) */
+static lv_obj_t  *s_key_area       = NULL;   /* saved for lazy num row creation */
 
 /* Labels on letter keys that need updating on shift */
 static lv_obj_t  *s_letter_labels[26]; /* a-z labels for shift toggle */
@@ -269,13 +271,12 @@ static void build_keyboard_panel(void)
 
     /* Build both layers inside key_area */
     build_letter_rows(key_area);
-    build_number_rows(key_area);
 
-    /* Start on letter layer */
+    /* Number rows built lazily on first switch_layer(true) to avoid
+       LVGL crash from too many objects created in one batch on layer_top */
+    s_key_area = key_area;
+    s_num_built = false;
     s_num_layer = false;
-    for (int i = 0; i < 4; i++) {
-        if (s_num_rows[i]) lv_obj_add_flag(s_num_rows[i], LV_OBJ_FLAG_HIDDEN);
-    }
 }
 
 /* ========================================================================= */
@@ -481,6 +482,7 @@ static void build_number_rows(lv_obj_t *parent)
             lv_obj_set_pos(key, x, 0);
         }
     }
+
     y += KEY_H + ROW_GAP_Y;
 
     /* ── Row 1: @#$&*()-'" (10 keys) ─────────────────────────── */
@@ -506,6 +508,7 @@ static void build_number_rows(lv_obj_t *parent)
             lv_obj_set_pos(key, x, 0);
         }
     }
+
     y += KEY_H + ROW_GAP_Y;
 
     /* ── Row 2: #+=%_\|~<> (9 keys, centered) + backspace ───── */
@@ -539,6 +542,7 @@ static void build_number_rows(lv_obj_t *parent)
                                    KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_18, KEY_BACKSPACE);
         lv_obj_set_pos(bksp, SW - ROW_PAD_X - special_w, 0);
     }
+
     y += KEY_H + ROW_GAP_Y;
 
     /* ── Row 3: ABC + "," + space + "." + enter ───────────────── */
@@ -811,6 +815,13 @@ static void apply_shift_state(void)
 static void switch_layer(bool to_numbers)
 {
     s_num_layer = to_numbers;
+
+    /* Lazy-build number rows on first switch */
+    if (to_numbers && !s_num_built && s_key_area) {
+        ESP_LOGI(TAG, "Lazy-building number rows...");
+        build_number_rows(s_key_area);
+        s_num_built = true;
+    }
 
     for (int i = 0; i < 4; i++) {
         if (to_numbers) {
