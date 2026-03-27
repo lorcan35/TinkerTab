@@ -133,11 +133,11 @@ Every phase is documented, committed, and pushed chronologically.
 ### Phase 11 — Dragon Mode ✅ (from Phase 1)
 - [x] MJPEG streaming client (ported from pingdev)
 - [x] WebSocket touch forwarding (ported from pingdev)
-- [ ] Auto-detect Dragon on network (mDNS)
+- [x] Auto-detect Dragon on network (mDNS `_tinkerclaw._tcp`)
 - [ ] Seamless mode switching (LVGL ↔ MJPEG)
 
 ### Phase 12 — Voice Pipeline (STT/TTS/LLM)
-**Status: IN PROGRESS**
+**Status: Core pipeline working (Whisper.cpp + Ollama + Piper)**
 
 #### 12a: Dragon Voice Server ✅
 - [x] Python WebSocket server on port 3502
@@ -166,6 +166,28 @@ Every phase is documented, committed, and pushed chronologically.
 - [ ] Acoustic Echo Cancellation (AEC)
 - [ ] Barge-in support
 - [ ] Kokoro TTS upgrade
+
+### Phase 13 — WiFi Config + NVS Settings ✅
+- [x] WiFi config screen (scan networks, tap to connect, on-screen keyboard)
+- [x] NVS settings persistence (WiFi, Dragon host, brightness, volume)
+- [x] Settings loaded at boot, applied before UI starts
+- [x] On-screen keyboard with lazy-loaded number row
+- **Commit:** `feat: Phase 1 — mDNS discovery, WiFi config screen, NVS settings persistence`
+
+### Phase 14 — Debug Server ✅
+- [x] HTTP server on port 8080
+- [x] Endpoints: `/screenshot`, `/info`, `/touch`, `/reboot`, `/log`, `/` (dashboard)
+- [x] Remote screenshot capture (JPEG from framebuffer)
+- [x] Remote touch injection
+- [x] mDNS hostname: `tinkertab.local`
+- **Commit:** `feat: add HTTP debug server — screenshots, device info, remote touch`
+
+### Phase 15 — UI Sizing + Bug Fixes ✅
+- [x] All fonts/buttons/touch targets scaled for 720x1280 DPI
+- [x] 17 bug fixes: LVGL thread safety, voice pipeline hardening, app grid wiring
+- [x] LVGL overlay crash fix (deferred + lazy number rows)
+- [x] MJPEG flickering fix (gate decode to Dragon page only)
+- **Commits:** `fix: comprehensive UI sizing overhaul`, `fix: 17 bug fixes`
 
 ## Pin Reference
 

@@ -4,6 +4,17 @@ Standalone AI device firmware for the **M5Stack Tab5** (ESP32-P4).
 
 TinkerTab turns the Tab5 into a full standalone device with a native LVGL UI, camera, audio, voice input, IMU, battery management, and optional Dragon mode for browser streaming.
 
+## Features
+
+- **Native LVGL UI** — home launcher, settings, camera, file browser, audio player, all sized for 720x1280 DPI
+- **Voice AI Pipeline** — speak into Tab5, Dragon processes STT→LLM→TTS, response plays back on speaker (Whisper.cpp + Ollama + Piper)
+- **Dragon Mode** — live MJPEG browser streaming + touch forwarding from Dragon Q6A
+- **mDNS Auto-Discovery** — Tab5 finds Dragon via `_tinkerclaw._tcp` service, no hardcoded IPs
+- **WiFi Config Screen** — scan networks, tap to connect, on-screen keyboard for password entry
+- **NVS Settings Persistence** — WiFi credentials, Dragon host, brightness, volume survive power cycles
+- **Debug Server** — HTTP dashboard on port 8080 with remote screenshots, touch injection, device info
+- **Full Hardware Support** — all Tab5 peripherals: display, touch, WiFi, camera, audio, mic, IMU, RTC, battery, SD card
+
 ## Hardware
 
 | Component | IC | Interface | Status |
@@ -36,7 +47,7 @@ Native UI running directly on ESP32-P4. No external dependencies.
 - Clock, weather, camera viewfinder
 - Voice recorder, music player
 - Settings, file browser
-- BLE smart home control
+- WiFi configuration with network scanning
 - Basic AI via WiFi → OpenRouter API
 
 ### Dragon Mode (MJPEG)
@@ -46,7 +57,7 @@ When connected to a Dragon Q6A, Tab5 becomes a browser remote.
 - Full TinkerTab OS (React web app on Dragon)
 - PingApp ecosystem, local Ollama AI
 
-Auto-switches: boots standalone, upgrades to Dragon mode when available.
+Auto-switches: boots standalone, discovers Dragon via mDNS, upgrades to Dragon mode when available.
 
 ## Prerequisites
 
@@ -81,6 +92,167 @@ python -m esptool --chip esp32p4 -p /dev/ttyACM0 -b 460800 \
 
 # Monitor
 idf.py -p /dev/ttyACM0 monitor
+```
+
+## Debug Server
+
+TinkerTab runs an HTTP debug server on **port 8080** once WiFi is connected. Useful for remote development.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | HTML dashboard with live device info |
+| `/screenshot` | GET | Returns current framebuffer as JPEG |
+| `/info` | GET | JSON: heap, PSRAM, WiFi, battery, uptime |
+| `/touch` | POST | Inject touch event (`?x=360&y=640`) |
+| `/reboot` | POST | Restart the device |
+| `/log` | GET | Recent log output |
+
+**Grab a screenshot:**
+```bash
+# Find the Tab5 on your network (mDNS name: tinkertab.local)
+curl http://tinkertab.local:8080/screenshot -o screen.jpg
+
+# Or by IP
+curl http://192.168.1.X:8080/screenshot -o screen.jpg
+```
+
+**Inject a touch:**
+```bash
+curl -X POST "http://tinkertab.local:8080/touch?x=360&y=640"
+```
+
+## Dragon Setup
+
+The Dragon Q6A runs three systemd services for TinkerTab integration:
+
+| Service | Port | Purpose |
+|---------|------|---------|
+| `tinkerclaw-stream` | 3501 | CDP browser screencast → MJPEG stream |
+| `tinkerclaw-voice` | 3502 | Voice pipeline (STT/LLM/TTS) WebSocket |
+| `tinkerclaw-mdns` | — | Publishes `_tinkerclaw._tcp` for auto-discovery |
+
+```bash
+# Enable and start all services
+sudo systemctl enable --now tinkerclaw-stream tinkerclaw-voice tinkerclaw-mdns
+
+# Check status
+sudo systemctl status tinkerclaw-stream tinkerclaw-voice tinkerclaw-mdns
+```
+
+The Tab5 discovers Dragon automatically via mDNS — no hardcoded IP needed. The `_tinkerclaw._tcp` service record advertises the Dragon's IP and ports.
+
+## Voice Pipeline
+
+Full conversational AI: user speaks into Tab5 mic → Dragon processes STT → LLM → TTS → spoken response plays on Tab5 speaker.
+
+**Stack:**
+- **STT:** Whisper.cpp (runs on Dragon CPU/GPU)
+- **LLM:** Ollama with local models (e.g. llama3, mistral)
+- **TTS:** Piper (fast local neural TTS)
+
+**Protocol:** Tab5 streams PCM 16kHz mono over WebSocket to Dragon port 3502. Dragon returns TTS audio as PCM frames.
+
+**Quick start:**
+```bash
+cd dragon_voice
+pip install -r requirements.txt
+pip install pywhispercpp piper-tts
+python -m dragon_voice   # starts ws://0.0.0.0:3502
+```
+
+See [docs/VOICE_PIPELINE.md](docs/VOICE_PIPELINE.md) for the full architecture, protocol spec, and latency analysis.
+
+## NVS Settings
+
+Settings are persisted to NVS (non-volatile storage) and survive power cycles:
+
+- **WiFi SSID & password** — set via the WiFi config screen or serial
+- **Dragon host** — auto-populated from mDNS discovery, or set manually
+- **Brightness** — backlight level (0-100)
+- **Volume** — speaker volume (0-100)
+
+Settings are loaded at boot and applied before the UI starts. The WiFi config screen (`Settings → WiFi`) scans for networks, lets you tap to select, and enter passwords with the on-screen keyboard.
+
+## Serial Commands
+
+| Command | Description |
+|---------|-------------|
+| `info` | Chip info, heap, PSRAM, all peripheral status |
+| `heap` | Free heap + PSRAM |
+| `wifi` | WiFi status, Dragon connection |
+| `stream` | MJPEG FPS counter |
+| `touch` | 5-second touch test |
+| `touchdiag` | Raw register diagnostics |
+| `scan` | I2C bus scan |
+| `red/green/blue/white/black` | Fill screen |
+| `bright <0-100>` | Backlight brightness |
+| `pattern [0-3]` | Test patterns |
+| `sd` | SD card info (total/free space) |
+| `cam` | Capture frame, save to SD |
+| `audio` | Audio codec info + 440Hz test tone |
+| `mic` | Record 1s, show RMS level |
+| `imu` | Accelerometer + gyroscope + orientation |
+| `rtc` | Current RTC date/time |
+| `ntp` | Sync RTC from NTP server |
+| `bat` | Battery voltage, current, power, % |
+| `voice_start` | Start voice capture + pipeline |
+| `voice_stop` | Stop voice capture |
+| `reboot` | Restart device |
+
+## Project Structure
+
+```
+TinkerTab/
+├── CMakeLists.txt          # ESP-IDF project
+├── sdkconfig.defaults      # Default config (ESP32-P4 + ESP-Hosted)
+├── BUILD_PLAN.md           # Phased build plan with status
+├── TINKERTAB_OS_SPEC.md    # Full UI/UX design specification
+├── dragon_server.py        # Dragon-side CDP streaming server
+├── dragon_voice/           # Voice pipeline server (STT/LLM/TTS)
+│   ├── config.yaml         # Voice server configuration
+│   ├── config.py           # Config loader with env overrides
+│   ├── requirements.txt    # Python dependencies
+│   ├── stt/                # Speech-to-text backends
+│   ├── tts/                # Text-to-speech backends
+│   └── llm/                # LLM backends
+├── docs/
+│   ├── stt-tts-research.md # Voice pipeline research notes
+│   └── VOICE_PIPELINE.md   # Voice pipeline documentation
+├── main/
+│   ├── CMakeLists.txt      # Component build config
+│   ├── idf_component.yml   # Managed dependencies
+│   ├── Kconfig.projbuild   # menuconfig entries
+│   ├── config.h            # Pin definitions & constants
+│   ├── main.c              # Boot sequence, command loop
+│   ├── display.c/h         # MIPI DSI ST7123 + HW JPEG
+│   ├── esp_lcd_st7123.c/h  # ST7123 panel driver
+│   ├── touch.c/h           # ST7123 TDDI touch
+│   ├── io_expander.c/h     # PI4IOE5V6416 driver
+│   ├── wifi.c/h            # ESP-Hosted WiFi STA
+│   ├── settings.c/h        # NVS settings persistence
+│   ├── mdns_discovery.c/h  # mDNS Dragon auto-discovery
+│   ├── debug_server.c/h    # HTTP debug server (port 8080)
+│   ├── mjpeg_stream.c/h    # MJPEG client (Dragon mode)
+│   ├── touch_ws.c/h        # WebSocket touch forwarding
+│   ├── sdcard.c/h          # SDMMC 4-bit SD card driver
+│   ├── camera.c/h          # SC202CS MIPI-CSI camera
+│   ├── audio.c/h           # ES8388 codec + NS4150B speaker
+│   ├── mic.c               # ES7210 dual microphone
+│   ├── imu.c/h             # BMI270 6-axis IMU
+│   ├── rtc.c/h             # RX8130CE real-time clock
+│   ├── battery.c/h         # INA226 battery monitor
+│   ├── bluetooth.c/h       # BLE stub (ESP-Hosted pending)
+│   ├── lv_conf.h           # LVGL v9 configuration
+│   ├── ui_core.c/h         # LVGL display/touch/task integration
+│   ├── ui_splash.c/h       # Boot splash screen
+│   ├── ui_home.c/h         # Home screen launcher
+│   ├── ui_settings.c/h     # Settings screen
+│   ├── ui_wifi.c/h         # WiFi config screen
+│   ├── ui_camera.c/h       # Camera viewfinder
+│   ├── ui_files.c/h        # File browser
+│   ├── ui_audio.c/h        # Audio player
+│   ├── ui_keyboard.c/h     # On-screen keyboard
+│   └── ui_voice.c/h        # Voice UI overlay
 ```
 
 ## Pin Mapping
@@ -133,108 +305,16 @@ idf.py -p /dev/ttyACM0 monitor
 | RTC (RX8130CE) | 0x32 |
 | Bat Monitor (INA226) | 0x40/0x41 |
 
-## Serial Commands
-
-| Command | Description |
-|---------|-------------|
-| `info` | Chip info, heap, PSRAM, all peripheral status |
-| `heap` | Free heap + PSRAM |
-| `wifi` | WiFi status, Dragon connection |
-| `stream` | MJPEG FPS counter |
-| `touch` | 5-second touch test |
-| `touchdiag` | Raw register diagnostics |
-| `scan` | I2C bus scan |
-| `red/green/blue/white/black` | Fill screen |
-| `bright <0-100>` | Backlight brightness |
-| `pattern [0-3]` | Test patterns |
-| `sd` | SD card info (total/free space) |
-| `cam` | Capture frame, save to SD |
-| `audio` | Audio codec info + 440Hz test tone |
-| `mic` | Record 1s, show RMS level |
-| `imu` | Accelerometer + gyroscope + orientation |
-| `rtc` | Current RTC date/time |
-| `ntp` | Sync RTC from NTP server |
-| `bat` | Battery voltage, current, power, % |
-| `reboot` | Restart device |
-
-## Project Structure
-
-```
-TinkerTab/
-├── CMakeLists.txt          # ESP-IDF project
-├── sdkconfig.defaults      # Default config (ESP32-P4 + ESP-Hosted)
-├── BUILD_PLAN.md           # Phased build plan with status
-├── TINKERTAB_OS_SPEC.md    # Full UI/UX design specification
-├── dragon_server.py        # Dragon-side CDP streaming server
-├── dragon_voice/           # Voice pipeline server (STT/LLM/TTS)
-│   ├── config.yaml         # Voice server configuration
-│   ├── config.py           # Config loader with env overrides
-│   ├── requirements.txt    # Python dependencies
-│   ├── stt/                # Speech-to-text backends
-│   ├── tts/                # Text-to-speech backends
-│   └── llm/                # LLM backends
-├── docs/
-│   ├── stt-tts-research.md # Voice pipeline research notes
-│   └── VOICE_PIPELINE.md   # Voice pipeline documentation
-├── main/
-│   ├── CMakeLists.txt      # Component build config
-│   ├── idf_component.yml   # Managed dependencies
-│   ├── Kconfig.projbuild   # menuconfig entries
-│   ├── config.h            # Pin definitions & constants
-│   ├── main.c              # Boot sequence, command loop
-│   ├── display.c/h         # MIPI DSI ST7123 + HW JPEG
-│   ├── esp_lcd_st7123.c/h  # ST7123 panel driver
-│   ├── touch.c/h           # ST7123 TDDI touch
-│   ├── io_expander.c/h     # PI4IOE5V6416 driver
-│   ├── wifi.c/h            # ESP-Hosted WiFi STA
-│   ├── mjpeg_stream.c/h    # MJPEG client (Dragon mode)
-│   ├── touch_ws.c/h        # WebSocket touch forwarding
-│   ├── sdcard.c/h          # SDMMC 4-bit SD card driver
-│   ├── camera.c/h          # SC202CS MIPI-CSI camera
-│   ├── audio.c/h           # ES8388 codec + NS4150B speaker
-│   ├── mic.c               # ES7210 dual microphone
-│   ├── imu.c/h             # BMI270 6-axis IMU
-│   ├── rtc.c/h             # RX8130CE real-time clock
-│   ├── battery.c/h         # INA226 battery monitor
-│   ├── bluetooth.c/h       # BLE stub (ESP-Hosted pending)
-│   ├── lv_conf.h           # LVGL v9 configuration
-│   ├── ui_core.c/h         # LVGL display/touch/task integration
-│   ├── ui_splash.c/h       # Boot splash screen
-│   ├── ui_home.c/h         # Home screen launcher
-│   ├── ui_settings.c/h     # Settings screen
-│   ├── ui_camera.c/h       # Camera viewfinder
-│   ├── ui_files.c/h        # File browser
-│   └── ui_audio.c/h        # Audio player
-```
-
-## Voice Pipeline
-
-Conversational AI voice: user speaks into the Tab5, Dragon processes STT -> LLM -> TTS, and the spoken response plays back on the Tab5 speaker.
-
-- **Dragon** runs the `dragon_voice` WebSocket server on port 3502
-- **Tab5** streams mic audio (PCM 16kHz mono) and receives spoken responses
-- Configurable backends: STT (Moonshine/Whisper.cpp/Vosk), TTS (Piper/Kokoro/Edge TTS), LLM (Ollama/OpenRouter/LM Studio)
-- All settings in `dragon_voice/config.yaml` with environment variable overrides
-
-See [docs/VOICE_PIPELINE.md](docs/VOICE_PIPELINE.md) for the full architecture, protocol spec, and latency analysis.
-
-**Quick start:**
-```bash
-cd dragon_voice
-pip install -r requirements.txt
-pip install pywhispercpp piper-tts   # install backends
-python -m dragon_voice               # starts ws://0.0.0.0:3502
-```
-
 ## Known Issues
 
+- **MJPEG DMA decode** — HW JPEG decoder + DPI framebuffer in PSRAM needs `esp_cache_msync()` after every frame or DMA sees stale data. Currently working but adds ~2ms per frame.
 - **ESP-IDF v5.5.x** breaks DSI display (stripes/empty). Use v5.4.3.
 - **ESP-IDF v5.4.2** missing PSRAM XIP + TCM stack fixes needed for ESP-Hosted. Use v5.4.3.
 - **Camera is SC202CS** (SC2356), NOT SC2336 as M5Stack docs claim. SCCB address 0x36, chip ID 0xEB52.
 - **SD Card slot**: Uses SDMMC SLOT_0 (IOMUX pins 39-44), not default SLOT_1. Needs LDO channel 4.
 - **ESP-Hosted SDIO**: Slave target must be ESP32C6, reset is active LOW. Default Kconfig targets P4 EV Board pins.
 - **Double boot**: Normal on first flash — PSRAM timing calibration triggers reset.
-- **Arduino v3.3.x**: Inherits IDF v5.5 DSI bug. Use v3.2.1.
+- **BLE**: ESP-Hosted doesn't forward BLE yet — stub driver returns `ESP_ERR_NOT_SUPPORTED`.
 
 ## Resources
 
