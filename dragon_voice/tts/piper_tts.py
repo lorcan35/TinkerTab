@@ -159,9 +159,9 @@ class PiperBackend(TTSBackend):
         """Synthesize using piper-tts Python package."""
         audio_buffer = io.BytesIO()
         try:
-            # PiperVoice.synthesize_stream_raw yields PCM chunks
-            for audio_chunk in self._voice.synthesize_stream_raw(text):
-                audio_buffer.write(audio_chunk)
+            # PiperVoice.synthesize yields AudioChunk objects with audio_int16_bytes
+            for chunk in self._voice.synthesize(text):
+                audio_buffer.write(chunk.audio_int16_bytes)
         except Exception:
             logger.exception("Piper Python synthesis failed")
             return b""
