@@ -170,6 +170,14 @@ static void mjpeg_stream_task(void *arg)
                             continue;
                         }
 
+                        /* Skip decode when JPEG rendering is disabled (avoids log spam) */
+                        if (!tab5_display_is_jpeg_enabled()) {
+                            s_drop_count++;
+                            in_jpeg = false;
+                            jpeg_pos = 0;
+                            continue;
+                        }
+
                         /* Decode and render */
                         esp_err_t ret = tab5_display_draw_jpeg(s_jpeg_buf, jpeg_pos);
                         if (ret == ESP_OK) {

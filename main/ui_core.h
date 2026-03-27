@@ -31,5 +31,8 @@ lv_display_t *tab5_ui_get_display(void);
 /** Lock the LVGL mutex (for thread-safe UI updates from other tasks). */
 void tab5_ui_lock(void);
 
+/** Try to lock the LVGL mutex with timeout (ms). Returns true if locked. */
+bool tab5_ui_try_lock(uint32_t timeout_ms);
+
 /** Unlock the LVGL mutex. */
 void tab5_ui_unlock(void);

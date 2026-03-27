@@ -139,15 +139,26 @@ static void ui_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "UI task started on core %d", xPortGetCoreID());
 
+    static int64_t last_heartbeat = 0;
+
     while (1) {
         if (xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             uint32_t time_till_next = lv_timer_handler();
             xSemaphoreGiveRecursive(s_lvgl_mutex);
+
+            /* Heartbeat log every 5 seconds to detect if task is alive */
+            int64_t now = esp_timer_get_time();
+            if (now - last_heartbeat > 5000000) {
+                ESP_LOGI(TAG, "UI task alive, next=%lu ms", (unsigned long)time_till_next);
+                last_heartbeat = now;
+            }
+
             /* Sleep for the time LVGL suggests, clamped to 5-50ms */
             if (time_till_next < 5) time_till_next = 5;
             if (time_till_next > 50) time_till_next = 50;
             vTaskDelay(pdMS_TO_TICKS(time_till_next));
         } else {
+            ESP_LOGW(TAG, "UI task: mutex timeout");
             vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
@@ -274,6 +285,12 @@ void tab5_ui_lock(void)
     if (s_lvgl_mutex) {
         xSemaphoreTakeRecursive(s_lvgl_mutex, portMAX_DELAY);
     }
+}
+
+bool tab5_ui_try_lock(uint32_t timeout_ms)
+{
+    if (!s_lvgl_mutex) return false;
+    return xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
 }
 
 void tab5_ui_unlock(void)

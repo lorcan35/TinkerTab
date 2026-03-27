@@ -322,6 +322,11 @@ void tab5_display_set_jpeg_enabled(bool enabled)
     ESP_LOGI(TAG, "JPEG rendering %s", enabled ? "enabled" : "disabled");
 }
 
+bool tab5_display_is_jpeg_enabled(void)
+{
+    return s_jpeg_enabled;
+}
+
 esp_err_t tab5_display_draw_jpeg(const uint8_t *jpeg_data, uint32_t jpeg_size)
 {
     if (!s_jpeg_enabled) return ESP_ERR_NOT_ALLOWED;

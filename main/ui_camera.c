@@ -133,8 +133,7 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_camera_destroy();
-    lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
-                        200, 0, false);
+    lv_screen_load(ui_home_get_screen());
 }
 
 /* ================================================================
@@ -321,7 +320,7 @@ lv_obj_t *ui_camera_create(void)
     update_sd_state();
 
     /* ── Load the screen ─────────────────────────────────────── */
-    lv_screen_load_anim(scr_camera, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
+    lv_screen_load(scr_camera);
     ESP_LOGI(TAG, "Camera screen created");
 
     return scr_camera;

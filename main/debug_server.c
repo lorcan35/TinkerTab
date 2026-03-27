@@ -13,6 +13,11 @@
 #include "config.h"
 #include "display.h"
 #include "ui_core.h"
+#include "ui_wifi.h"
+#include "ui_camera.h"
+#include "ui_settings.h"
+#include "ui_files.h"
+#include "ui_home.h"
 #include "wifi.h"
 #include "battery.h"
 #include "dragon_link.h"
@@ -133,11 +138,17 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Lock LVGL, flush cache, copy framebuffer, unlock immediately */
-    tab5_ui_lock();
-    esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-    memcpy(fb_copy, fb, fb_size);
-    tab5_ui_unlock();
+    /* Try to lock LVGL with timeout — don't block the HTTP server forever */
+    if (!tab5_ui_try_lock(2000)) {
+        ESP_LOGW(TAG, "Screenshot: LVGL lock timeout (2s) — copying without lock");
+        /* Still copy the framebuffer but without lock (may have tearing) */
+        esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        memcpy(fb_copy, fb, fb_size);
+    } else {
+        esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        memcpy(fb_copy, fb, fb_size);
+        tab5_ui_unlock();
+    }
 
     /* Build BMP header */
     uint8_t hdr[BMP_HEADER_SIZE];
@@ -484,6 +495,62 @@ static esp_err_t index_handler(httpd_req_t *req)
 }
 
 /* ======================================================================== */
+/*  POST /open?screen=wifi  — open a screen directly for testing             */
+/* ======================================================================== */
+
+/* Deferred screen open — runs on the LVGL timer task */
+static volatile int s_pending_screen = -1;
+
+static void deferred_open_cb(lv_timer_t *t)
+{
+    int scr_id = s_pending_screen;
+    s_pending_screen = -1;
+    lv_timer_delete(t);
+
+    switch (scr_id) {
+    case 0: ui_wifi_create(); break;
+    case 1: ui_camera_create(); break;
+    case 2: ui_settings_create(); break;
+    case 3: ui_files_create(); break;
+    case 4: lv_screen_load(ui_home_get_screen()); break;
+    default: break;
+    }
+}
+
+static esp_err_t open_handler(httpd_req_t *req)
+{
+    char query[64] = {0};
+    httpd_req_get_url_query_str(req, query, sizeof(query));
+    char screen[32] = {0};
+    httpd_query_key_value(query, "screen", screen, sizeof(screen));
+    ESP_LOGI(TAG, "Open screen: %s", screen);
+
+    int scr_id = -1;
+    if (strcmp(screen, "wifi") == 0) scr_id = 0;
+    else if (strcmp(screen, "camera") == 0) scr_id = 1;
+    else if (strcmp(screen, "settings") == 0) scr_id = 2;
+    else if (strcmp(screen, "files") == 0) scr_id = 3;
+    else if (strcmp(screen, "home") == 0) scr_id = 4;
+    else {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unknown screen");
+        return ESP_FAIL;
+    }
+
+    /* Defer to LVGL timer task — animations require LVGL thread context */
+    s_pending_screen = scr_id;
+    if (!tab5_ui_try_lock(2000)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "LVGL lock timeout");
+        return ESP_FAIL;
+    }
+    lv_timer_create(deferred_open_cb, 10, NULL);
+    tab5_ui_unlock();
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
+/* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
 
@@ -530,6 +597,10 @@ esp_err_t tab5_debug_server_init(void)
         .uri = "/log", .method = HTTP_GET, .handler = log_handler
     };
 
+    const httpd_uri_t uri_open = {
+        .uri = "/open", .method = HTTP_POST, .handler = open_handler
+    };
+
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
     httpd_register_uri_handler(server, &uri_screenshot_bmp);
@@ -537,6 +608,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_touch);
     httpd_register_uri_handler(server, &uri_reboot);
     httpd_register_uri_handler(server, &uri_log);
+    httpd_register_uri_handler(server, &uri_open);
 
     /* Log the URL */
     char ip[20];

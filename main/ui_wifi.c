@@ -87,6 +87,9 @@ static int  s_row_idx = 0;
 /* Guard flag for background tasks during destroy */
 static volatile bool s_destroying = false;
 
+/* Event handler for non-blocking scan completion */
+static esp_event_handler_instance_t s_scan_done_handler = NULL;
+
 /* ── Forward declarations ──────────────────────────────────────────── */
 static lv_obj_t *make_topbar(lv_obj_t *parent);
 static void      create_status_card(lv_obj_t *parent);
@@ -94,6 +97,8 @@ static void      create_scan_section(lv_obj_t *parent);
 static void      populate_scan_list(void);
 static void      show_password_dialog(const char *ssid);
 static void      hide_password_dialog(void);
+static void      scan_done_handler(void *arg, esp_event_base_t event_base,
+                                   int32_t event_id, void *event_data);
 static void      wifi_scan_task(void *arg);
 static void      wifi_connect_task(void *arg);
 static const char *rssi_to_bars(int rssi);
@@ -116,8 +121,7 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_wifi_destroy();
-    lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
-                        200, 0, false);
+    lv_screen_load(ui_home_get_screen());
 }
 
 static void cb_scan_btn(lv_event_t *e)
@@ -129,7 +133,24 @@ static void cb_scan_btn(lv_event_t *e)
         lv_label_set_text(s_scan_btn_label, "Scanning...");
     }
 
-    xTaskCreate(wifi_scan_task, "wifi_scan", 4096, NULL, 5, NULL);
+    /* Non-blocking scan — results arrive via WIFI_EVENT_SCAN_DONE */
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = 100,
+        .scan_time.active.max = 300,
+    };
+
+    esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);  /* non-blocking */
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Scan start failed: %s", esp_err_to_name(ret));
+        if (s_scan_btn_label) lv_label_set_text(s_scan_btn_label, "Scan Failed");
+    } else {
+        ESP_LOGI(TAG, "WiFi scan started (non-blocking)");
+    }
 }
 
 static void cb_network_row(lv_event_t *e)
@@ -145,7 +166,7 @@ static void cb_network_row(lv_event_t *e)
         strncpy(s_selected_ssid, ssid, sizeof(s_selected_ssid) - 1);
         s_selected_ssid[sizeof(s_selected_ssid) - 1] = '\0';
         /* Connect with empty password */
-        xTaskCreate(wifi_connect_task, "wifi_conn", 4096, strdup(""), 5, NULL);
+        xTaskCreate(wifi_connect_task, "wifi_conn", 8192, strdup(""), 5, NULL);
     } else {
         show_password_dialog(ssid);
     }
@@ -178,7 +199,7 @@ static void cb_pwd_connect(lv_event_t *e)
     ui_keyboard_hide();
 
     char *pwd_copy = strdup(pwd);
-    xTaskCreate(wifi_connect_task, "wifi_conn", 4096, pwd_copy, 5, NULL);
+    xTaskCreate(wifi_connect_task, "wifi_conn", 8192, pwd_copy, 5, NULL);
 }
 
 static void cb_pwd_cancel(lv_event_t *e)
@@ -196,34 +217,16 @@ static void cb_pwd_ta_clicked(lv_event_t *e)
 
 /* ── WiFi scan background task ─────────────────────────────────────── */
 
-static void wifi_scan_task(void *arg)
+/* Called on the default event loop task when scan completes */
+static void scan_done_handler(void *arg, esp_event_base_t event_base,
+                              int32_t event_id, void *event_data)
 {
-    (void)arg;
+    (void)arg; (void)event_base; (void)event_id; (void)event_data;
 
-    if (s_destroying) { vTaskDelete(NULL); return; }
-
-    wifi_scan_config_t scan_cfg = {
-        .ssid = NULL,
-        .bssid = NULL,
-        .channel = 0,
-        .show_hidden = false,
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active.min = 100,
-        .scan_time.active.max = 300,
-    };
-
-    esp_err_t ret = esp_wifi_scan_start(&scan_cfg, true);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Scan start failed: %s", esp_err_to_name(ret));
-        tab5_ui_lock();
-        if (s_scan_btn_label) lv_label_set_text(s_scan_btn_label, "Scan Failed");
-        tab5_ui_unlock();
-        vTaskDelete(NULL);
-        return;
-    }
+    if (s_destroying || !s_screen) return;
 
     uint16_t count = MAX_SCAN_APS;
-    ret = esp_wifi_scan_get_ap_records(&count, s_ap_records);
+    esp_err_t ret = esp_wifi_scan_get_ap_records(&count, s_ap_records);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Scan get records failed: %s", esp_err_to_name(ret));
         count = 0;
@@ -231,10 +234,8 @@ static void wifi_scan_task(void *arg)
     s_ap_count = count;
     ESP_LOGI(TAG, "Scan found %d networks", s_ap_count);
 
-    if (s_destroying) { vTaskDelete(NULL); return; }
-
     tab5_ui_lock();
-    if (s_destroying) { tab5_ui_unlock(); vTaskDelete(NULL); return; }
+    if (s_destroying || !s_screen) { tab5_ui_unlock(); return; }
     populate_scan_list();
     if (s_scan_btn_label) {
         char buf[32];
@@ -242,7 +243,12 @@ static void wifi_scan_task(void *arg)
         lv_label_set_text(s_scan_btn_label, buf);
     }
     tab5_ui_unlock();
+}
 
+/* Legacy scan task — no longer used for scanning, kept as stub */
+static void wifi_scan_task(void *arg)
+{
+    (void)arg;
     vTaskDelete(NULL);
 }
 
@@ -776,8 +782,15 @@ lv_obj_t *ui_wifi_create(void)
 
     s_destroying = false;
 
+    /* Register scan-done event handler (non-blocking scan) */
+    esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
+                                        scan_done_handler, NULL,
+                                        &s_scan_done_handler);
+
     /* ── Load the screen ───────────────────────────────────────────── */
-    lv_screen_load_anim(s_screen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
+    /* NOTE: lv_screen_load_anim(MOVE_LEFT) causes infinite loop in LVGL
+     * when transitioning from tileview. Use direct load instead. */
+    lv_screen_load(s_screen);
 
     ESP_LOGI(TAG, "WiFi screen created");
     return s_screen;
@@ -839,6 +852,13 @@ void ui_wifi_destroy(void)
     if (!s_screen) return;
 
     s_destroying = true;
+
+    /* Unregister scan-done event before destroying UI */
+    if (s_scan_done_handler) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
+                                              s_scan_done_handler);
+        s_scan_done_handler = NULL;
+    }
 
     ui_keyboard_hide();
     hide_password_dialog();

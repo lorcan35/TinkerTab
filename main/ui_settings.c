@@ -97,8 +97,7 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_settings_destroy();
-    lv_screen_load_anim(ui_home_get_screen(), LV_SCR_LOAD_ANIM_MOVE_RIGHT,
-                        200, 0, false);
+    lv_screen_load(ui_home_get_screen());
 }
 
 static void cb_brightness(lv_event_t *e)
@@ -510,7 +509,7 @@ lv_obj_t *ui_settings_create(void)
     s_destroying = false;
 
     /* ── Load the screen ────────────────────────────────────────────── */
-    lv_screen_load_anim(s_screen, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
+    lv_screen_load(s_screen);
 
     ESP_LOGI(TAG, "Settings screen created");
     return s_screen;
