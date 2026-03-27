@@ -213,9 +213,14 @@ static esp_err_t ws_send_text(const char *msg)
     memcpy(buf, msg, len + 1);
 
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    int ret = esp_transport_ws_send_raw(s_ws,
-        WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
-        buf, len, 1000);
+    int ret;
+    if (s_ws && s_ws_connected) {
+        ret = esp_transport_ws_send_raw(s_ws,
+            WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
+            buf, len, 1000);
+    } else {
+        ret = -1;  // disconnected between check and mutex acquire
+    }
     xSemaphoreGive(s_ws_mutex);
 
     free(buf);
@@ -233,11 +238,28 @@ static esp_err_t ws_send_binary(const void *data, size_t len)
         return ESP_ERR_INVALID_STATE;
     }
 
+    // Copy to mutable heap buffer — ESP-IDF WS transport masks in-place.
+    // Callers may pass stack buffers (OK) but this future-proofs against
+    // any caller passing const/flash data.
+    void *buf = malloc(len);
+    if (!buf) {
+        ESP_LOGE(TAG, "WS binary send: OOM for %zu bytes", len);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(buf, data, len);
+
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    int ret = esp_transport_ws_send_raw(s_ws,
-        WS_TRANSPORT_OPCODES_BINARY | WS_TRANSPORT_OPCODES_FIN,
-        data, len, 1000);
+    int ret;
+    if (s_ws && s_ws_connected) {
+        ret = esp_transport_ws_send_raw(s_ws,
+            WS_TRANSPORT_OPCODES_BINARY | WS_TRANSPORT_OPCODES_FIN,
+            buf, len, 1000);
+    } else {
+        ret = -1;  // disconnected between check and mutex acquire
+    }
     xSemaphoreGive(s_ws_mutex);
+
+    free(buf);
 
     if (ret < 0) {
         ESP_LOGE(TAG, "WS binary send failed (%zu bytes): %d", len, ret);
@@ -298,9 +320,14 @@ static void handle_text_message(const char *data, int len)
         voice_set_state(VOICE_STATE_READY, NULL);
     } else if (strcmp(type_str, "error") == 0) {
         cJSON *msg = cJSON_GetObjectItem(root, "message");
-        const char *err_msg = cJSON_IsString(msg) ? msg->valuestring : "unknown";
-        ESP_LOGE(TAG, "Dragon error: %s", err_msg);
-        voice_set_state(VOICE_STATE_READY, err_msg);
+        const char *err_src = cJSON_IsString(msg) ? msg->valuestring : "unknown";
+        ESP_LOGE(TAG, "Dragon error: %s", err_src);
+        // Copy to local buffer — err_src points into cJSON tree that we free below.
+        // voice_set_state callback must not hold a dangling pointer.
+        char err_buf[128];
+        strncpy(err_buf, err_src, sizeof(err_buf) - 1);
+        err_buf[sizeof(err_buf) - 1] = '\0';
+        voice_set_state(VOICE_STATE_READY, err_buf);
     } else if (strcmp(type_str, "session_start") == 0) {
         ESP_LOGI(TAG, "Dragon session_start received (state=%d)", s_state);
         /* Dragon is ready — no state change needed, voice_connect()
@@ -444,10 +471,20 @@ static void ws_receive_task(void *arg)
                 }
             }
         } else if (opcode == WS_TRANSPORT_OPCODES_PING) {
-            // Respond to ping with pong
-            esp_transport_ws_send_raw(s_ws,
-                WS_TRANSPORT_OPCODES_PONG | WS_TRANSPORT_OPCODES_FIN,
-                rx_buf, len, 100);
+            // Respond to ping with pong — rx_buf is stack (mutable), safe for masking.
+            // But masking mutates it, so copy to heap to keep rx_buf clean for reuse.
+            if (s_ws && s_ws_connected) {
+                char *pong_buf = malloc(len);
+                if (pong_buf) {
+                    memcpy(pong_buf, rx_buf, len);
+                    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+                    esp_transport_ws_send_raw(s_ws,
+                        WS_TRANSPORT_OPCODES_PONG | WS_TRANSPORT_OPCODES_FIN,
+                        pong_buf, len, 100);
+                    xSemaphoreGive(s_ws_mutex);
+                    free(pong_buf);
+                }
+            }
         } else if (opcode == WS_TRANSPORT_OPCODES_CLOSE) {
             ESP_LOGI(TAG, "WS close frame received");
             s_ws_connected = false;
@@ -458,11 +495,16 @@ static void ws_receive_task(void *arg)
     s_ws_running = false;
     s_ws_task = NULL;
 
-    // Clean up transport on unexpected disconnect
+    // Clean up transport on unexpected disconnect.
+    // Take WS mutex to ensure mic task isn't mid-send when we destroy.
     if (!s_stop_flag && s_ws) {
-        esp_transport_close(s_ws);
-        esp_transport_destroy(s_ws);
-        s_ws = NULL;
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        esp_transport_handle_t ws_tmp = s_ws;
+        s_ws = NULL;  // prevent any new sends
+        xSemaphoreGive(s_ws_mutex);
+
+        esp_transport_close(ws_tmp);
+        esp_transport_destroy(ws_tmp);
     }
 
     // If we disconnected unexpectedly, update state
@@ -788,22 +830,27 @@ esp_err_t voice_disconnect(void)
 
     tab5_audio_speaker_enable(false);
 
-    // Signal tasks to stop
+    // Signal tasks to stop — order matters:
+    // 1. Stop mic first (it uses ws_send_binary)
     s_stop_flag = true;
     s_mic_running = false;
 
-    // Wait for mic task to exit
+    // Wait for mic task to exit so it's no longer sending on the WS
     for (int i = 0; i < 20 && s_mic_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    // Close WebSocket (will cause ws_receive_task to exit)
+    // 2. Mark disconnected so no new sends can start
     s_ws_connected = false;
+
+    // 3. Close WS under mutex so we don't race with any in-flight send/recv
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     if (s_ws) {
         esp_transport_close(s_ws);
     }
+    xSemaphoreGive(s_ws_mutex);
 
-    // Wait for WS receive task to exit
+    // 4. Wait for WS receive task to exit (it checks s_ws_connected + s_stop_flag)
     for (int i = 0; i < 150 && s_ws_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -811,11 +858,13 @@ esp_err_t voice_disconnect(void)
         ESP_LOGW(TAG, "WS receive task did not exit in time");
     }
 
-    // Clean up transport
+    // 5. Destroy transport — safe now that all tasks have exited
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     if (s_ws) {
         esp_transport_destroy(s_ws);
         s_ws = NULL;
     }
+    xSemaphoreGive(s_ws_mutex);
 
     playback_buf_reset();
     voice_set_state(VOICE_STATE_IDLE, NULL);
