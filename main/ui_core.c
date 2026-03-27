@@ -16,6 +16,7 @@
 #include "ui_core.h"
 #include "config.h"
 #include "touch.h"
+#include "debug_server.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -92,6 +93,16 @@ static uint32_t s_touch_debug_counter = 0;
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
+
+    /* Check for debug server touch injection first */
+    int32_t inj_x, inj_y;
+    bool inj_pressed;
+    if (tab5_debug_touch_override(&inj_x, &inj_y, &inj_pressed)) {
+        data->point.x = inj_x;
+        data->point.y = inj_y;
+        data->state = inj_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+        return;
+    }
 
     tab5_touch_point_t points[TAB5_TOUCH_MAX_POINTS];
     uint8_t count = 0;

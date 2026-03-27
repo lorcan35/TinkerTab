@@ -42,6 +42,7 @@
 #include "ui_keyboard.h"
 #include "ui_voice.h"
 #include "settings.h"
+#include "debug_server.h"
 
 static const char *TAG = "tab5";
 
@@ -344,6 +345,14 @@ void app_main(void)
         lv_timer_create(deferred_overlay_init_cb, 100, NULL);
         tab5_ui_unlock();
         ESP_LOGI(TAG, "Overlay init deferred to LVGL timer");
+    }
+
+    // Start debug HTTP server (needs WiFi + display)
+    if (s_wifi_ok) {
+        ret = tab5_debug_server_init();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Debug server init failed: %s", esp_err_to_name(ret));
+        }
     }
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
