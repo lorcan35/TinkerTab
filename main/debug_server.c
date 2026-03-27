@@ -125,11 +125,19 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
 
     size_t fb_size = FB_W * FB_H * FB_BPP;
 
-    /* Lock LVGL so the framebuffer is stable while we read it */
-    tab5_ui_lock();
+    /* Allocate a temporary copy buffer in PSRAM so we don't hold the LVGL
+     * lock during the (slow) HTTP chunked streaming. */
+    uint8_t *fb_copy = heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
+    if (!fb_copy) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "PSRAM alloc failed for screenshot");
+        return ESP_FAIL;
+    }
 
-    /* Flush PSRAM cache: DMA may have written pixels that CPU cache hasn't seen */
+    /* Lock LVGL, flush cache, copy framebuffer, unlock immediately */
+    tab5_ui_lock();
     esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    memcpy(fb_copy, fb, fb_size);
+    tab5_ui_unlock();
 
     /* Build BMP header */
     uint8_t hdr[BMP_HEADER_SIZE];
@@ -141,24 +149,22 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
     /* Send header */
     ret = httpd_resp_send_chunk(req, (const char *)hdr, BMP_HEADER_SIZE);
     if (ret != ESP_OK) {
-        tab5_ui_unlock();
+        free(fb_copy);
         return ret;
     }
 
-    /* Send pixel rows bottom-up (BMP convention).
-     * Stream in chunks of 8 rows to avoid needing a full copy buffer. */
-    uint8_t *fb8 = (uint8_t *)fb;
+    /* Send pixel rows bottom-up (BMP convention) from the copy. */
     uint32_t row_bytes = FB_W * FB_BPP;
 
     for (int y = FB_H - 1; y >= 0; y--) {
-        ret = httpd_resp_send_chunk(req, (const char *)(fb8 + y * row_bytes), row_bytes);
+        ret = httpd_resp_send_chunk(req, (const char *)(fb_copy + y * row_bytes), row_bytes);
         if (ret != ESP_OK) {
-            tab5_ui_unlock();
+            free(fb_copy);
             return ret;
         }
     }
 
-    tab5_ui_unlock();
+    free(fb_copy);
 
     /* End chunked response */
     httpd_resp_send_chunk(req, NULL, 0);
@@ -219,6 +225,10 @@ static esp_err_t info_handler(httpd_req_t *req)
 
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     cJSON_AddNumberToObject(root, "tasks", (double)task_count);
+
+    const char *reset_reasons[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO","USB","JTAG","EFUSE","PWR_GLITCH","CPU_LOCKUP"};
+    esp_reset_reason_t reason = esp_reset_reason();
+    cJSON_AddStringToObject(root, "reset_reason", reason < sizeof(reset_reasons)/sizeof(reset_reasons[0]) ? reset_reasons[reason] : "UNKNOWN");
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

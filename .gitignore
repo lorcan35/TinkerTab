@@ -1,8 +1,36 @@
+# ESP-IDF build artifacts
 build/
 sdkconfig
 sdkconfig.old
 managed_components/
 dependencies.lock
+
+# Python
 *.pyc
 __pycache__/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+
+# Editor / IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+*.env
+
+# Node.js (stitch-designs tooling)
+node_modules/
+
+# Binaries
+*.bin
+*.elf

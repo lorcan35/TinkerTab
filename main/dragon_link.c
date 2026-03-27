@@ -357,7 +357,7 @@ esp_err_t tab5_dragon_link_init(void)
     xTaskCreatePinnedToCore(
         dragon_link_task,
         "dragon_link",
-        4096,
+        8192,
         NULL,
         3,      // Below WiFi (5), below MJPEG (5), below touch WS (4)
         NULL,

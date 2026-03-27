@@ -100,8 +100,8 @@ void app_main(void)
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
     ESP_LOGI(TAG, "ESP32-P4 rev %d.%d, %d cores", chip_info.revision / 100, chip_info.revision % 100, chip_info.cores);
-    ESP_LOGI(TAG, "Free heap: %lu bytes", (unsigned long)esp_get_free_heap_size());
-    ESP_LOGI(TAG, "Free PSRAM: %lu bytes", (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    ESP_LOGI(TAG, "Reset reason: %d", (int)esp_reset_reason());
+    ESP_LOGI(TAG, "Free heap: %lu, PSRAM free: %lu", (unsigned long)esp_get_free_heap_size(), (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
@@ -608,6 +608,14 @@ void app_main(void)
                         } else {
                             printf("Battery: not initialized\n");
                         }
+                    } else if (strcmp(cmd_buf, "tasks") == 0) {
+                        ESP_LOGI(TAG, "Free heap: %lu, min: %lu",
+                                 (unsigned long)esp_get_free_heap_size(),
+                                 (unsigned long)esp_get_minimum_free_heap_size());
+                        ESP_LOGI(TAG, "PSRAM free: %lu",
+                                 (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+                        ESP_LOGI(TAG, "Reset reason: %d", (int)esp_reset_reason());
+                        printf("Task count: %lu\n", (unsigned long)uxTaskGetNumberOfTasks());
                     } else if (strcmp(cmd_buf, "reboot") == 0) {
                         printf("Rebooting...\n");
                         vTaskDelay(pdMS_TO_TICKS(100));

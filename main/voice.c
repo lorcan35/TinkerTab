@@ -55,12 +55,12 @@ static const char *TAG = "tab5_voice";
 #define VOICE_RESPONSE_TIMEOUT_MS 30000
 
 // Mic capture task
-#define MIC_TASK_STACK_SIZE    4096
+#define MIC_TASK_STACK_SIZE    8192
 #define MIC_TASK_PRIORITY      5
 #define MIC_TASK_CORE          1
 
 // WS receive task
-#define WS_TASK_STACK_SIZE     6144
+#define WS_TASK_STACK_SIZE     8192
 #define WS_TASK_PRIORITY       4
 #define WS_TASK_CORE           1
 
@@ -78,6 +78,7 @@ static SemaphoreHandle_t s_state_mutex = NULL;
 static esp_transport_handle_t s_ws = NULL;
 static volatile bool s_ws_connected = false;
 static volatile bool s_stop_flag = false;
+static SemaphoreHandle_t s_ws_mutex = NULL;  // protects s_ws send/recv from concurrent access
 
 // Dragon connection info
 static char     s_dragon_host[64] = {0};
@@ -201,9 +202,23 @@ static esp_err_t ws_send_text(const char *msg)
         return ESP_ERR_INVALID_STATE;
     }
 
+    // Copy to mutable buffer — ESP-IDF WS transport masks frames in-place,
+    // so passing a string literal (in flash/rodata) causes a store fault.
+    size_t len = strlen(msg);
+    char *buf = malloc(len + 1);
+    if (!buf) {
+        ESP_LOGE(TAG, "WS send: OOM for %zu bytes", len);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(buf, msg, len + 1);
+
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = esp_transport_ws_send_raw(s_ws,
         WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
-        msg, strlen(msg), 1000);
+        buf, len, 1000);
+    xSemaphoreGive(s_ws_mutex);
+
+    free(buf);
 
     if (ret < 0) {
         ESP_LOGE(TAG, "WS text send failed: %d", ret);
@@ -218,9 +233,11 @@ static esp_err_t ws_send_binary(const void *data, size_t len)
         return ESP_ERR_INVALID_STATE;
     }
 
+    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     int ret = esp_transport_ws_send_raw(s_ws,
         WS_TRANSPORT_OPCODES_BINARY | WS_TRANSPORT_OPCODES_FIN,
         data, len, 1000);
+    xSemaphoreGive(s_ws_mutex);
 
     if (ret < 0) {
         ESP_LOGE(TAG, "WS binary send failed (%zu bytes): %d", len, ret);
@@ -284,8 +301,12 @@ static void handle_text_message(const char *data, int len)
         const char *err_msg = cJSON_IsString(msg) ? msg->valuestring : "unknown";
         ESP_LOGE(TAG, "Dragon error: %s", err_msg);
         voice_set_state(VOICE_STATE_READY, err_msg);
+    } else if (strcmp(type_str, "session_start") == 0) {
+        ESP_LOGI(TAG, "Dragon session_start received (state=%d)", s_state);
+        /* Dragon is ready — no state change needed, voice_connect()
+           already set READY when the WS connection succeeded. */
     } else {
-        ESP_LOGD(TAG, "Unknown message type: %s", type_str);
+        ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
 
     cJSON_Delete(root);
@@ -383,8 +404,12 @@ static void ws_receive_task(void *arg)
             continue;
         }
 
-        // Data available — read it
+        // Data available — read it (mutex protects WS framing state shared with send)
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
         int len = esp_transport_read(s_ws, rx_buf, sizeof(rx_buf), 1000);
+        int opcode = (len > 0) ? esp_transport_ws_get_read_opcode(s_ws) : -1;
+        xSemaphoreGive(s_ws_mutex);
+
         if (len <= 0) {
             ESP_LOGW(TAG, "WS read error (%d), disconnecting", len);
             s_ws_connected = false;
@@ -392,12 +417,11 @@ static void ws_receive_task(void *arg)
         }
         last_activity_us = esp_timer_get_time();
 
-        // Determine frame type from the WebSocket opcode
-        int opcode = esp_transport_ws_get_read_opcode(s_ws);
-
         if (opcode == WS_TRANSPORT_OPCODES_TEXT) {
             // JSON text message from Dragon
             rx_buf[len] = '\0';
+            ESP_LOGI(TAG, "WS recv text (%d bytes): %.*s", len,
+                     len > 200 ? 200 : len, rx_buf);
             handle_text_message(rx_buf, len);
         } else if (opcode == WS_TRANSPORT_OPCODES_BINARY) {
             // PCM audio data from Dragon
@@ -479,6 +503,16 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         return ESP_ERR_NO_MEM;
     }
 
+    s_ws_mutex = xSemaphoreCreateMutex();
+    if (!s_ws_mutex) {
+        ESP_LOGE(TAG, "Failed to create WS mutex");
+        vSemaphoreDelete(s_play_mutex);
+        vSemaphoreDelete(s_state_mutex);
+        s_play_mutex = NULL;
+        s_state_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     playback_buf_reset();
     s_transcript[0] = '\0';
     s_initialized = true;
@@ -504,7 +538,11 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
     s_dragon_port = dragon_port;
 
-    voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
+    // Only set CONNECTING if not already in that state (voice_connect_async
+    // already sets it before spawning the task — avoid duplicate UI callback)
+    if (s_state != VOICE_STATE_CONNECTING) {
+        voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
+    }
 
     // Create WS transport (same pattern as touch_ws.c)
     esp_transport_handle_t tcp = esp_transport_tcp_init();
@@ -573,9 +611,19 @@ static void async_connect_task(void *arg)
 {
     async_connect_args_t *args = (async_connect_args_t *)arg;
 
+    ESP_LOGI(TAG, "async_connect_task: starting (stack free: %u, host=%s:%d, auto_listen=%d)",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL),
+             args->host, args->port, args->auto_listen);
+
     esp_err_t ret = voice_connect(args->host, args->port);
+    ESP_LOGI(TAG, "async_connect_task: voice_connect returned %s (stack free: %u)",
+             esp_err_to_name(ret), (unsigned)uxTaskGetStackHighWaterMark(NULL));
+
     if (ret == ESP_OK && args->auto_listen) {
-        voice_start_listening();
+        ESP_LOGI(TAG, "async_connect_task: calling voice_start_listening (auto_listen)");
+        esp_err_t listen_ret = voice_start_listening();
+        ESP_LOGI(TAG, "async_connect_task: voice_start_listening returned %s (stack free: %u)",
+                 esp_err_to_name(listen_ret), (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
 
     s_connect_in_progress = false;
@@ -618,7 +666,7 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
     s_connect_in_progress = true;
 
     BaseType_t xret = xTaskCreatePinnedToCore(
-        async_connect_task, "voice_conn", 4096,
+        async_connect_task, "voice_conn", 8192,
         args, 4, NULL, 1);
     if (xret != pdPASS) {
         s_connect_in_progress = false;
@@ -632,8 +680,12 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
 
 esp_err_t voice_start_listening(void)
 {
+    ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_connected=%d, state=%d",
+             s_initialized, s_ws_connected, s_state);
+
     if (!s_initialized || !s_ws_connected) {
-        ESP_LOGE(TAG, "Not connected");
+        ESP_LOGE(TAG, "Not connected (initialized=%d, ws_connected=%d)",
+                 s_initialized, s_ws_connected);
         return ESP_ERR_INVALID_STATE;
     }
     if (s_state != VOICE_STATE_READY) {
@@ -644,11 +696,13 @@ esp_err_t voice_start_listening(void)
     ESP_LOGI(TAG, "Starting push-to-talk");
 
     // Send start signal to Dragon
+    ESP_LOGI(TAG, "Sending {\"type\":\"start\"} to Dragon...");
     esp_err_t err = ws_send_text("{\"type\":\"start\"}");
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to send start signal");
         return err;
     }
+    ESP_LOGI(TAG, "Start signal sent OK");
 
     // Clear previous transcript
     s_transcript[0] = '\0';

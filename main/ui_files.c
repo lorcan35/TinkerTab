@@ -387,7 +387,7 @@ static void rebuild_list(void)
             lv_obj_t *lbl_size = lv_label_create(row);
             lv_label_set_text(lbl_size, size_str);
             lv_obj_set_style_text_color(lbl_size, lv_color_hex(COL_GRAY), 0);
-            lv_obj_set_style_text_font(lbl_size, &lv_font_montserrat_16, 0);
+            lv_obj_set_style_text_font(lbl_size, &lv_font_montserrat_18, 0);
         } else {
             /* Chevron for directories */
             lv_obj_t *lbl_chev = lv_label_create(row);

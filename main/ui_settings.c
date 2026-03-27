@@ -363,7 +363,7 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_font(s_lbl_orient, &lv_font_montserrat_18, 0);
 
         s_sw_autorot = lv_switch_create(rot_right);
-        lv_obj_set_size(s_sw_autorot, 56, 32);
+        lv_obj_set_size(s_sw_autorot, 60, 36);
         lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0x334155), LV_PART_MAIN);
         lv_obj_set_style_bg_color(s_sw_autorot, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
@@ -405,7 +405,7 @@ lv_obj_t *ui_settings_create(void)
         s_ntp_btn_label = lv_label_create(ntp_btn);
         lv_label_set_text(s_ntp_btn_label, "Sync NTP");
         lv_obj_set_style_text_color(s_ntp_btn_label, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_18, 0);
         lv_obj_center(s_ntp_btn_label);
     }
 

@@ -266,7 +266,7 @@ With 12 GB, there is room to run a larger LLM (e.g., Gemma3 8B Q4 at ~5 GB) or r
 
 ## Phase Roadmap
 
-### Phase 1: Basic Pipeline (Current) -- IN PROGRESS
+### Phase 1: Basic Pipeline -- COMPLETE
 
 - Push-to-talk from Tab5 (serial commands `voice_start`, `voice_stop`)
 - Raw PCM 16kHz mono over WebSocket (no OPUS)

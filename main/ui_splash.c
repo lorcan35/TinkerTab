@@ -128,7 +128,7 @@ void ui_splash_set_status(const char *text)
         snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", text);
         lv_label_set_text(lbl, buf);
         lv_obj_set_style_text_color(lbl, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
         lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, CHECK_Y0 + check_count * CHECK_GAP);
         lbl_checks[check_count] = lbl;
         check_count++;

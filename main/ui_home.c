@@ -65,7 +65,7 @@ static const char *TAG = "ui_home";
 #define ICON_LBL_GAP 8
 
 /* Settings */
-#define SET_ROW_H   56
+#define SET_ROW_H   60
 #define SET_RAD     14
 #define SET_PAD     20
 
@@ -160,7 +160,7 @@ static lv_obj_t *make_app_icon(lv_obj_t *parent, int col, int row, int y_off,
     lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, name);
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(lbl, ICON_SZ);
     lv_obj_set_pos(lbl, x, y + ICON_SZ + ICON_LBL_GAP);
@@ -271,7 +271,7 @@ lv_obj_t *ui_home_create(void)
         lbl_date = lv_label_create(pg);
         lv_label_set_text(lbl_date, "Wednesday, March 26");
         lv_obj_set_style_text_color(lbl_date, lv_color_hex(COL_LABEL2), 0);
-        lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_20, 0);
         lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 245);
 
         /* Glyph AI orb — outer ring (breathing) */
@@ -521,6 +521,7 @@ lv_obj_t *ui_home_create(void)
                 lv_color_hex(i == 0 ? COL_WHITE : COL_LABEL3), 0);
             lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID, slot * i + slot / 2 - 12, 0);
             lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(nav_icons[i], 10);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                 (void *)(intptr_t)i);
         }
@@ -528,7 +529,7 @@ lv_obj_t *ui_home_create(void)
 
     /* ── PAGE DOTS ───────────────────────────────────────────── */
     {
-        int dot_sz = 6;
+        int dot_sz = 10;
         int dot_gap = 10;
         int total = NUM_PAGES * dot_sz + (NUM_PAGES - 1) * dot_gap;
         int x0 = (SW - total) / 2;

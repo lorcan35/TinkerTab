@@ -475,7 +475,7 @@ static void create_scan_section(lv_obj_t *parent)
     lv_obj_t *hdr_lbl = lv_label_create(hdr_row);
     lv_label_set_text(hdr_lbl, "Available Networks");
     lv_obj_set_style_text_color(hdr_lbl, COL_ACCENT, 0);
-    lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_20, 0);
 
     /* Scan button */
     lv_obj_t *scan_btn = lv_button_create(hdr_row);

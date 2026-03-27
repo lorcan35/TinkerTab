@@ -137,7 +137,7 @@ Every phase is documented, committed, and pushed chronologically.
 - [ ] Seamless mode switching (LVGL ↔ MJPEG)
 
 ### Phase 12 — Voice Pipeline (STT/TTS/LLM)
-**Status: Core pipeline working (Whisper.cpp + Ollama + Piper)**
+**Status: Phase 1 complete (Whisper.cpp + Ollama + Piper). Streaming pipeline (12c) and wake word (12d) pending.**
 
 #### 12a: Dragon Voice Server ✅
 - [x] Python WebSocket server on port 3502

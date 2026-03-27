@@ -218,6 +218,8 @@ TinkerTab/
 ├── docs/
 │   ├── stt-tts-research.md # Voice pipeline research notes
 │   └── VOICE_PIPELINE.md   # Voice pipeline documentation
+├── stitch-designs/          # UI/UX design assets and generation scripts
+├── UI_AUDIT.md              # UI gap analysis and priority backlog
 ├── main/
 │   ├── CMakeLists.txt      # Component build config
 │   ├── idf_component.yml   # Managed dependencies
@@ -315,6 +317,29 @@ TinkerTab/
 - **ESP-Hosted SDIO**: Slave target must be ESP32C6, reset is active LOW. Default Kconfig targets P4 EV Board pins.
 - **Double boot**: Normal on first flash — PSRAM timing calibration triggers reset.
 - **BLE**: ESP-Hosted doesn't forward BLE yet — stub driver returns `ESP_ERR_NOT_SUPPORTED`.
+- **App grid icons not clickable** — most app grid icons on the home screen are wired but Audio and AI Chat still need target screens. See `UI_AUDIT.md` for the full gap analysis.
+
+## Code TODOs
+
+These are unverified hardware details that need schematic confirmation:
+
+- **Audio I2S GPIOs** (MCLK, BCK, WS, DOUT) — hardcoded in `config.h`, marked as unverified against Tab5 schematic
+- **Mic I2S GPIOs** (MCLK, BCK, WS, DIN) — same, need schematic verification
+- **INA226 shunt resistor** — `battery.c` uses assumed value; measure actual shunt on Tab5 board
+- **Camera HD/Full register tables** — `camera.c` uses VGA registers for all modes; full SC202CS register tables needed for higher resolutions
+- **BMI270 config blob** — `imu.c` uses a placeholder; needs the real config binary from Bosch
+
+## Additional Documentation
+
+| Document | Description |
+|----------|-------------|
+| [BUILD_PLAN.md](BUILD_PLAN.md) | Phased build plan with per-phase status and commit history |
+| [STREAMING_ARCHITECTURE.md](STREAMING_ARCHITECTURE.md) | MJPEG streaming research — protocol, memory, FPS analysis |
+| [TINKERTAB_OS_SPEC.md](TINKERTAB_OS_SPEC.md) | Full UI/UX design specification for Glyph OS |
+| [UI_AUDIT.md](UI_AUDIT.md) | Comprehensive UI audit — what works, what is broken, priority backlog |
+| [docs/VOICE_PIPELINE.md](docs/VOICE_PIPELINE.md) | Voice pipeline architecture, protocol spec, latency budget |
+| [docs/stt-tts-research.md](docs/stt-tts-research.md) | STT/TTS engine research and benchmarks |
+| [dragon_voice/README.md](dragon_voice/README.md) | Dragon voice server quick start and backend reference |
 
 ## Resources
 

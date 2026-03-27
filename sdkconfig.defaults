@@ -78,3 +78,13 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
+
+# ---------------------------------------------------------------------------
+# Crash diagnostics and stability
+# ---------------------------------------------------------------------------
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_HEAP_POISONING_LIGHT=y
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096

@@ -35,11 +35,11 @@ static const char *TAG = "ui_voice";
 
 /* Purple — processing / thinking */
 #define VO_PURPLE          0xB388FF
-#define VO_PURPLE_DIM      0x2D2240   /* rgba(179,136,255,0.15) on black */
+#define VO_PURPLE_DIM      0x5A4580   /* brighter purple dim for visibility */
 
 /* Green — speaking */
 #define VO_GREEN           0x34D399
-#define VO_GREEN_DIM       0x0F2E22   /* rgba(52,211,153,0.15) on black */
+#define VO_GREEN_DIM       0x1E5C44   /* brighter green dim for visibility */
 
 /* Text */
 #define VO_TEXT_BRIGHT     0xFFFFFF
