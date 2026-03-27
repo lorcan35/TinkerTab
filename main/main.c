@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <stdlib.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -110,6 +112,10 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    // Set timezone to UAE (Gulf Standard Time, UTC+4)
+    setenv("TZ", "GST-4", 1);
+    tzset();
 
     // Initialize persistent settings (NVS-backed)
     ret = tab5_settings_init();

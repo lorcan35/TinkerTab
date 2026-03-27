@@ -204,8 +204,12 @@ esp_err_t tab5_rtc_sync_from_ntp(void)
         return ESP_ERR_TIMEOUT;
     }
 
-    // Convert system time → RTC struct (UTC)
-    gmtime_r(&now, &tm_info);
+    // Set timezone to UAE (Gulf Standard Time, UTC+4)
+    setenv("TZ", "GST-4", 1);
+    tzset();
+
+    // Convert system time → RTC struct (local time, UAE)
+    localtime_r(&now, &tm_info);
     tab5_rtc_time_t rtc_time = {
         .year    = (uint8_t)(tm_info.tm_year - 100),  // tm_year is years since 1900
         .month   = (uint8_t)(tm_info.tm_mon + 1),
@@ -218,7 +222,7 @@ esp_err_t tab5_rtc_sync_from_ntp(void)
 
     esp_err_t ret = tab5_rtc_set_time(&rtc_time);
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "RTC synced from NTP: 20%02u-%02u-%02u %02u:%02u:%02u UTC",
+        ESP_LOGI(TAG, "RTC synced from NTP: 20%02u-%02u-%02u %02u:%02u:%02u GST (UTC+4)",
                  rtc_time.year, rtc_time.month, rtc_time.day,
                  rtc_time.hour, rtc_time.minute, rtc_time.second);
     }
