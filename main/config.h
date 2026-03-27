@@ -154,10 +154,11 @@
 #define TAB5_ES7210_I2C_ADDR     0x40
 
 // ---------------------------------------------------------------------------
-// MJPEG
+// MJPEG / JPEG streaming
 // ---------------------------------------------------------------------------
 #define TAB5_JPEG_BUF_SIZE    (100 * 1024)
 #define TAB5_FRAME_TIMEOUT_MS 5000
+#define TAB5_UDP_STREAM_PORT  5000
 
 // ---------------------------------------------------------------------------
 // Dragon Link — connection lifecycle

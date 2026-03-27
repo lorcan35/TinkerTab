@@ -84,7 +84,16 @@ CONFIG_LV_THEME_DEFAULT_DARK=y
 # ---------------------------------------------------------------------------
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_HEAP_POISONING_LIGHT=y
+CONFIG_HEAP_POISONING_DISABLED=
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+
+# ---------------------------------------------------------------------------
+# lwIP — IP reassembly for UDP JPEG streaming (large datagrams)
+# ---------------------------------------------------------------------------
+CONFIG_LWIP_IP_REASSEMBLY=y
+CONFIG_LWIP_IP_REASS_MAX_PBUFS=64

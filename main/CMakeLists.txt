@@ -2,7 +2,7 @@ idf_component_register(
     SRCS "main.c" "display.c" "io_expander.c" "esp_lcd_st7123.c" "touch.c"
          "sdcard.c" "camera.c" "wifi.c"
          "audio.c" "mic.c" "imu.c" "rtc.c" "battery.c" "bluetooth.c"
-         "dragon_link.c" "mjpeg_stream.c" "touch_ws.c" "voice.c"
+         "dragon_link.c" "mjpeg_stream.c" "udp_stream.c" "touch_ws.c" "voice.c"
          "mdns_discovery.c" "debug_server.c"
          "ui_core.c" "ui_splash.c" "ui_home.c" "ui_settings.c"
          "ui_camera.c" "ui_files.c" "ui_audio.c" "ui_keyboard.c" "ui_voice.c" "ui_wifi.c"

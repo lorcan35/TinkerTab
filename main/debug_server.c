@@ -635,7 +635,7 @@ esp_err_t tab5_debug_server_init(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
-    config.stack_size  = 8192;
+    config.stack_size  = 12288;  /* 12 KB — 8 KB was tight with WiFi scan concurrent */
     config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
 

@@ -11,6 +11,7 @@
 #include "config.h"
 #include "wifi.h"
 #include "mjpeg_stream.h"
+#include "udp_stream.h"
 #include "touch_ws.h"
 #include "mdns_discovery.h"
 
@@ -38,6 +39,7 @@ static uint16_t s_dragon_port = 0;
 // Negotiated params from handshake
 static int s_stream_quality = 60;
 static int s_stream_fps = 15;
+static bool s_udp_supported = false;  // Dragon reports UDP streaming capability
 
 // Disconnect tracking
 static volatile bool s_mjpeg_disconnected = false;
@@ -51,6 +53,12 @@ static void on_mjpeg_disconnect(void)
 {
     ESP_LOGW(TAG, "MJPEG stream disconnected");
     s_mjpeg_disconnected = true;
+}
+
+static void on_udp_disconnect(void)
+{
+    ESP_LOGW(TAG, "UDP stream disconnected");
+    s_mjpeg_disconnected = true;  /* Reuse same flag — triggers reconnect */
 }
 
 static void on_touch_disconnect(void)
@@ -177,10 +185,13 @@ static bool do_handshake(void)
 
     cJSON *q = cJSON_GetObjectItem(root, "quality");
     cJSON *f = cJSON_GetObjectItem(root, "fps");
+    cJSON *udp = cJSON_GetObjectItem(root, "udp_stream");
     if (q && cJSON_IsNumber(q)) s_stream_quality = q->valueint;
     if (f && cJSON_IsNumber(f)) s_stream_fps = f->valueint;
+    s_udp_supported = (udp && cJSON_IsBool(udp) && cJSON_IsTrue(udp));
 
-    ESP_LOGI(TAG, "Handshake OK — quality=%d, fps=%d", s_stream_quality, s_stream_fps);
+    ESP_LOGI(TAG, "Handshake OK — quality=%d, fps=%d, udp=%s",
+             s_stream_quality, s_stream_fps, s_udp_supported ? "yes" : "no");
     cJSON_Delete(root);
     return true;
 }
@@ -191,19 +202,30 @@ static void start_streams(void)
     s_touch_disconnected = false;
 
     // Register disconnect callbacks
-    tab5_mjpeg_set_disconnect_cb(on_mjpeg_disconnect);
     tab5_touch_ws_set_disconnect_cb(on_touch_disconnect);
 
-    // Start both tasks
-    tab5_mjpeg_start();
-    tab5_touch_ws_start();
+    // Prefer UDP streaming when Dragon supports it
+    if (s_udp_supported) {
+        udp_stream_set_disconnect_cb(on_udp_disconnect);
+        udp_stream_start();
+        ESP_LOGI(TAG, "UDP stream + touch WS started (low-latency mode)");
+    } else {
+        tab5_mjpeg_set_disconnect_cb(on_mjpeg_disconnect);
+        tab5_mjpeg_start();
+        ESP_LOGI(TAG, "MJPEG + touch WS started (HTTP fallback)");
+    }
 
-    ESP_LOGI(TAG, "MJPEG + touch WS streams started");
+    tab5_touch_ws_start();
 }
 
 static void stop_streams(void)
 {
-    tab5_mjpeg_stop();
+    if (udp_stream_is_active()) {
+        udp_stream_stop();
+    }
+    if (tab5_mjpeg_is_running()) {
+        tab5_mjpeg_stop();
+    }
     tab5_touch_ws_stop();
 
     // Wait briefly for tasks to wind down
@@ -388,6 +410,9 @@ const char *tab5_dragon_state_str(void)
 float tab5_dragon_get_fps(void)
 {
     if (s_state == DRAGON_STATE_STREAMING) {
+        if (udp_stream_is_active()) {
+            return udp_stream_get_fps();
+        }
         return tab5_mjpeg_get_fps();
     }
     return 0.0f;
