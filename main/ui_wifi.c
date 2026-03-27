@@ -52,7 +52,7 @@ static const char *TAG = "ui_wifi";
 #define STATUS_CARD_H   120
 #define SIDE_PAD        16
 #define CORNER_R        8
-#define ROW_H           56
+#define ROW_H           60
 #define MAX_SCAN_APS    20
 
 /* NVS persistence uses settings.h API (tab5_settings_set_wifi_ssid/pass) */
@@ -384,14 +384,14 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_t *arrow = lv_label_create(btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(arrow, COL_TEXT, 0);
-    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
     lv_obj_center(arrow);
 
     /* Title */
     lv_obj_t *title = lv_label_create(bar);
     lv_label_set_text(title, "WiFi Settings");
     lv_obj_set_style_text_color(title, COL_TEXT, 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_set_flex_grow(title, 1);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -435,13 +435,13 @@ static void create_status_card(lv_obj_t *parent)
     s_lbl_status = lv_label_create(status_row);
     lv_label_set_text(s_lbl_status, "Checking...");
     lv_obj_set_style_text_color(s_lbl_status, COL_TEXT, 0);
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
 
     /* SSID */
     s_lbl_ssid = lv_label_create(card);
     lv_label_set_text(s_lbl_ssid, "SSID: --");
     lv_obj_set_style_text_color(s_lbl_ssid, COL_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(s_lbl_ssid, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_lbl_ssid, &lv_font_montserrat_18, 0);
 
     /* Signal + IP row */
     lv_obj_t *info_row = lv_obj_create(card);
@@ -453,12 +453,12 @@ static void create_status_card(lv_obj_t *parent)
     s_lbl_signal = lv_label_create(info_row);
     lv_label_set_text(s_lbl_signal, "Signal: --");
     lv_obj_set_style_text_color(s_lbl_signal, COL_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(s_lbl_signal, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_lbl_signal, &lv_font_montserrat_18, 0);
 
     s_lbl_ip = lv_label_create(info_row);
     lv_label_set_text(s_lbl_ip, "IP: --");
     lv_obj_set_style_text_color(s_lbl_ip, COL_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(s_lbl_ip, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_lbl_ip, &lv_font_montserrat_18, 0);
 }
 
 /* ── Helper: scan section ──────────────────────────────────────────── */
@@ -475,11 +475,11 @@ static void create_scan_section(lv_obj_t *parent)
     lv_obj_t *hdr_lbl = lv_label_create(hdr_row);
     lv_label_set_text(hdr_lbl, "Available Networks");
     lv_obj_set_style_text_color(hdr_lbl, COL_ACCENT, 0);
-    lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(hdr_lbl, &lv_font_montserrat_18, 0);
 
     /* Scan button */
     lv_obj_t *scan_btn = lv_button_create(hdr_row);
-    lv_obj_set_size(scan_btn, 140, 36);
+    lv_obj_set_size(scan_btn, 160, 48);
     lv_obj_set_style_bg_color(scan_btn, COL_ACCENT, 0);
     lv_obj_set_style_radius(scan_btn, 6, 0);
     lv_obj_add_event_cb(scan_btn, cb_scan_btn, LV_EVENT_CLICKED, NULL);
@@ -487,7 +487,7 @@ static void create_scan_section(lv_obj_t *parent)
     s_scan_btn_label = lv_label_create(scan_btn);
     lv_label_set_text(s_scan_btn_label, "Scan");
     lv_obj_set_style_text_color(s_scan_btn_label, COL_WHITE, 0);
-    lv_obj_set_style_text_font(s_scan_btn_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_scan_btn_label, &lv_font_montserrat_18, 0);
     lv_obj_center(s_scan_btn_label);
 
     /* Scan results list container */
@@ -502,7 +502,7 @@ static void create_scan_section(lv_obj_t *parent)
     lv_obj_t *placeholder = lv_label_create(s_scan_list);
     lv_label_set_text(placeholder, "Tap Scan to find networks");
     lv_obj_set_style_text_color(placeholder, COL_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(placeholder, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(placeholder, &lv_font_montserrat_18, 0);
     lv_obj_set_style_pad_top(placeholder, 20, 0);
 }
 
@@ -520,7 +520,7 @@ static void populate_scan_list(void)
         lv_obj_t *empty = lv_label_create(s_scan_list);
         lv_label_set_text(empty, "No networks found");
         lv_obj_set_style_text_color(empty, COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(empty, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_18, 0);
         lv_obj_set_style_pad_top(empty, 20, 0);
         return;
     }
@@ -558,13 +558,13 @@ static void populate_scan_list(void)
         lv_color_t sig_col = (ap->rssi >= -50) ? COL_GREEN :
                              (ap->rssi >= -70) ? COL_YELLOW : COL_RED;
         lv_obj_set_style_text_color(sig, sig_col, 0);
-        lv_obj_set_style_text_font(sig, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(sig, &lv_font_montserrat_18, 0);
 
         /* SSID */
         lv_obj_t *ssid_lbl = lv_label_create(left);
         lv_label_set_text(ssid_lbl, (char *)ap->ssid);
         lv_obj_set_style_text_color(ssid_lbl, COL_TEXT, 0);
-        lv_obj_set_style_text_font(ssid_lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(ssid_lbl, &lv_font_montserrat_18, 0);
         lv_label_set_long_mode(ssid_lbl, LV_LABEL_LONG_CLIP);
         lv_obj_set_width(ssid_lbl, 360);
 
@@ -581,18 +581,18 @@ static void populate_scan_list(void)
         lv_obj_t *rssi_lbl = lv_label_create(right);
         lv_label_set_text(rssi_lbl, rssi_buf);
         lv_obj_set_style_text_color(rssi_lbl, COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(rssi_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(rssi_lbl, &lv_font_montserrat_16, 0);
 
         if (ap->authmode != WIFI_AUTH_OPEN) {
             lv_obj_t *auth_lbl = lv_label_create(right);
             lv_label_set_text(auth_lbl, auth_to_str(ap->authmode));
             lv_obj_set_style_text_color(auth_lbl, COL_TEXT_DIM, 0);
-            lv_obj_set_style_text_font(auth_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(auth_lbl, &lv_font_montserrat_16, 0);
 
             lv_obj_t *lock_lbl = lv_label_create(right);
             lv_label_set_text(lock_lbl, LV_SYMBOL_EYE_CLOSE);
             lv_obj_set_style_text_color(lock_lbl, COL_TEXT_DIM, 0);
-            lv_obj_set_style_text_font(lock_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(lock_lbl, &lv_font_montserrat_16, 0);
         }
 
         s_row_idx++;
@@ -640,7 +640,7 @@ static void show_password_dialog(const char *ssid)
     snprintf(title_buf, sizeof(title_buf), "Connect to %s", ssid);
     lv_label_set_text(s_pwd_title, title_buf);
     lv_obj_set_style_text_color(s_pwd_title, COL_TEXT, 0);
-    lv_obj_set_style_text_font(s_pwd_title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_pwd_title, &lv_font_montserrat_20, 0);
     lv_label_set_long_mode(s_pwd_title, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_pwd_title, 580);
 
@@ -654,7 +654,7 @@ static void show_password_dialog(const char *ssid)
     lv_obj_set_style_bg_color(s_pwd_ta, lv_color_hex(0x0F172A), 0);
     lv_obj_set_style_bg_opa(s_pwd_ta, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(s_pwd_ta, COL_TEXT, 0);
-    lv_obj_set_style_text_font(s_pwd_ta, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_pwd_ta, &lv_font_montserrat_20, 0);
     lv_obj_set_style_border_color(s_pwd_ta, COL_ACCENT, 0);
     lv_obj_set_style_border_width(s_pwd_ta, 2, 0);
     lv_obj_set_style_radius(s_pwd_ta, 8, 0);
@@ -671,7 +671,7 @@ static void show_password_dialog(const char *ssid)
 
     /* Cancel button */
     lv_obj_t *cancel_btn = lv_button_create(btn_row);
-    lv_obj_set_size(cancel_btn, 120, 44);
+    lv_obj_set_size(cancel_btn, 140, 48);
     lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x334155), 0);
     lv_obj_set_style_radius(cancel_btn, 8, 0);
     lv_obj_add_event_cb(cancel_btn, cb_pwd_cancel, LV_EVENT_CLICKED, NULL);
@@ -679,12 +679,12 @@ static void show_password_dialog(const char *ssid)
     lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
     lv_label_set_text(cancel_lbl, "Cancel");
     lv_obj_set_style_text_color(cancel_lbl, COL_TEXT, 0);
-    lv_obj_set_style_text_font(cancel_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(cancel_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(cancel_lbl);
 
     /* Connect button */
     s_pwd_connect_btn = lv_button_create(btn_row);
-    lv_obj_set_size(s_pwd_connect_btn, 140, 44);
+    lv_obj_set_size(s_pwd_connect_btn, 160, 48);
     lv_obj_set_style_bg_color(s_pwd_connect_btn, COL_ACCENT, 0);
     lv_obj_set_style_radius(s_pwd_connect_btn, 8, 0);
     lv_obj_add_event_cb(s_pwd_connect_btn, cb_pwd_connect, LV_EVENT_CLICKED, NULL);
@@ -692,14 +692,14 @@ static void show_password_dialog(const char *ssid)
     lv_obj_t *connect_lbl = lv_label_create(s_pwd_connect_btn);
     lv_label_set_text(connect_lbl, "Connect");
     lv_obj_set_style_text_color(connect_lbl, COL_WHITE, 0);
-    lv_obj_set_style_text_font(connect_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(connect_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(connect_lbl);
 
     /* Status label */
     s_pwd_status_lbl = lv_label_create(s_pwd_dialog);
     lv_label_set_text(s_pwd_status_lbl, "");
     lv_obj_set_style_text_color(s_pwd_status_lbl, COL_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(s_pwd_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_pwd_status_lbl, &lv_font_montserrat_16, 0);
 
     /* Auto-open keyboard targeting the textarea */
     ui_keyboard_show(s_pwd_ta);

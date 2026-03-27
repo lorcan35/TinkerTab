@@ -225,7 +225,7 @@ lv_obj_t *ui_camera_create(void)
     lbl_no_sd = lv_label_create(bar);
     lv_label_set_text(lbl_no_sd, "No SD");
     lv_obj_set_style_text_color(lbl_no_sd, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_text_font(lbl_no_sd, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_no_sd, &lv_font_montserrat_18, 0);
     lv_obj_align(lbl_no_sd, LV_ALIGN_CENTER, 0, 40);
 
     /* ── Resolution dropdown (left side) ─────────────────────── */
@@ -236,14 +236,14 @@ lv_obj_t *ui_camera_create(void)
                             "HD 1280x720\n"
                             "Full 1920x1080");
     lv_dropdown_set_selected(dd_resolution, (uint32_t)current_res);
-    lv_obj_set_size(dd_resolution, 180, 48);
+    lv_obj_set_size(dd_resolution, 200, 56);
     lv_obj_align(dd_resolution, LV_ALIGN_LEFT_MID, 24, -20);
 
     /* Dropdown styling */
     lv_obj_set_style_bg_color(dd_resolution, lv_color_hex(0x1E293B), 0);
     lv_obj_set_style_bg_opa(dd_resolution, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(dd_resolution, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(dd_resolution, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(dd_resolution, &lv_font_montserrat_18, 0);
     lv_obj_set_style_border_color(dd_resolution, lv_color_hex(COL_ACCENT), 0);
     lv_obj_set_style_border_width(dd_resolution, 1, 0);
     lv_obj_set_style_radius(dd_resolution, 8, 0);
@@ -255,7 +255,7 @@ lv_obj_t *ui_camera_create(void)
         lv_obj_set_style_bg_color(dd_list, lv_color_hex(0x1E293B),   0);
         lv_obj_set_style_bg_opa(dd_list, LV_OPA_COVER, 0);
         lv_obj_set_style_text_color(dd_list, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(dd_list, &lv_font_montserrat_14,  0);
+        lv_obj_set_style_text_font(dd_list, &lv_font_montserrat_18,  0);
         lv_obj_set_style_border_color(dd_list,
                                       lv_color_hex(COL_ACCENT), 0);
         lv_obj_set_style_border_width(dd_list, 1, 0);
@@ -266,7 +266,7 @@ lv_obj_t *ui_camera_create(void)
 
     /* ── Gallery button (right side) ─────────────────────────── */
     btn_gallery = lv_obj_create(bar);
-    lv_obj_set_size(btn_gallery, 120, 48);
+    lv_obj_set_size(btn_gallery, 140, 56);
     lv_obj_align(btn_gallery, LV_ALIGN_RIGHT_MID, -24, -20);
     lv_obj_set_style_bg_color(btn_gallery, lv_color_hex(0x1E293B), 0);
     lv_obj_set_style_bg_opa(btn_gallery, LV_OPA_COVER, 0);
@@ -280,7 +280,7 @@ lv_obj_t *ui_camera_create(void)
     lbl_gallery = lv_label_create(btn_gallery);
     lv_label_set_text(lbl_gallery, "Gallery");
     lv_obj_set_style_text_color(lbl_gallery, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_gallery, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_gallery, &lv_font_montserrat_18, 0);
     lv_obj_center(lbl_gallery);
 
     /* ── Update SD card state ────────────────────────────────── */
@@ -473,7 +473,7 @@ static void toast_show(const char *text)
     lv_obj_t *lbl = lv_label_create(toast_obj);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(lbl);
 
     /* Auto-dismiss timer */

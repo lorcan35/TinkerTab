@@ -194,7 +194,7 @@ esp_err_t tab5_ui_init(esp_lcd_panel_handle_t panel)
         lv_color_hex(0xFFB800),  /* primary: amber */
         lv_color_hex(0x00B4D8),  /* secondary: cyan (dragon mode) */
         true,                    /* dark mode */
-        &lv_font_montserrat_14
+        &lv_font_montserrat_18
     );
     lv_display_set_theme(s_display, theme);
 

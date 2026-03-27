@@ -42,7 +42,7 @@ static const char *TAG = "ui_files";
 #define SCREEN_H        1280
 #define TOPBAR_H        48
 #define ROW_H           64
-#define BOTTOMBAR_H     40
+#define BOTTOMBAR_H     44
 #define LIST_H          (SCREEN_H - TOPBAR_H - BOTTOMBAR_H)
 #define MAX_PATH_LEN    256
 #define MAX_ENTRIES     256
@@ -334,7 +334,7 @@ static void rebuild_list(void)
         lv_obj_t *lbl_empty = lv_label_create(file_list);
         lv_label_set_text(lbl_empty, "Empty folder");
         lv_obj_set_style_text_color(lbl_empty, lv_color_hex(COL_GRAY), 0);
-        lv_obj_set_style_text_font(lbl_empty, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl_empty, &lv_font_montserrat_18, 0);
         lv_obj_align(lbl_empty, LV_ALIGN_CENTER, 0, 0);
         return;
     }
@@ -368,7 +368,7 @@ static void rebuild_list(void)
         lv_label_set_text(lbl_icon, get_file_icon(ent->name, ent->is_dir));
         lv_obj_set_style_text_color(lbl_icon,
             ent->is_dir ? lv_color_hex(COL_ACCENT) : lv_color_hex(COL_GRAY), 0);
-        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(lbl_icon, &lv_font_montserrat_24, 0);
         lv_obj_set_style_min_width(lbl_icon, 28, 0);
 
         /* Filename */
@@ -376,7 +376,7 @@ static void rebuild_list(void)
         lv_label_set_text(lbl_name, ent->name);
         lv_label_set_long_mode(lbl_name, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(lbl_name, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_18, 0);
         lv_obj_set_flex_grow(lbl_name, 1);
         lv_obj_set_style_max_width(lbl_name, SCREEN_W - 160, 0);
 
@@ -387,13 +387,13 @@ static void rebuild_list(void)
             lv_obj_t *lbl_size = lv_label_create(row);
             lv_label_set_text(lbl_size, size_str);
             lv_obj_set_style_text_color(lbl_size, lv_color_hex(COL_GRAY), 0);
-            lv_obj_set_style_text_font(lbl_size, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(lbl_size, &lv_font_montserrat_16, 0);
         } else {
             /* Chevron for directories */
             lv_obj_t *lbl_chev = lv_label_create(row);
             lv_label_set_text(lbl_chev, LV_SYMBOL_RIGHT);
             lv_obj_set_style_text_color(lbl_chev, lv_color_hex(COL_GRAY), 0);
-            lv_obj_set_style_text_font(lbl_chev, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(lbl_chev, &lv_font_montserrat_16, 0);
         }
 
         /* Click handler */
@@ -441,7 +441,7 @@ static void show_no_sd(void)
     lv_obj_t *lbl_sub = lv_label_create(no_sd_panel);
     lv_label_set_text(lbl_sub, "Insert a micro-SD card and tap Retry");
     lv_obj_set_style_text_color(lbl_sub, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_18, 0);
     lv_obj_align(lbl_sub, LV_ALIGN_CENTER, 0, 20);
 
     /* Retry button */
@@ -454,7 +454,7 @@ static void show_no_sd(void)
     lv_obj_t *lbl_retry = lv_label_create(btn_retry);
     lv_label_set_text(lbl_retry, "Retry");
     lv_obj_set_style_text_color(lbl_retry, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_retry, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl_retry, &lv_font_montserrat_20, 0);
     lv_obj_center(lbl_retry);
 
     lv_obj_add_event_cb(btn_retry, cb_retry_sd, LV_EVENT_CLICKED, NULL);
@@ -524,7 +524,7 @@ static void show_file_info(const char *filepath, off_t size)
     lv_obj_t *lbl_title = lv_label_create(panel);
     lv_label_set_text(lbl_title, "File Info");
     lv_obj_set_style_text_color(lbl_title, lv_color_hex(COL_ACCENT), 0);
-    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_20, 0);
     lv_obj_align(lbl_title, LV_ALIGN_TOP_LEFT, 0, 0);
 
     /* Path */
@@ -533,7 +533,7 @@ static void show_file_info(const char *filepath, off_t size)
     lv_obj_set_width(lbl_fpath, SCREEN_W - 120);
     lv_label_set_text(lbl_fpath, filepath);
     lv_obj_set_style_text_color(lbl_fpath, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_fpath, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_fpath, &lv_font_montserrat_16, 0);
     lv_obj_align(lbl_fpath, LV_ALIGN_TOP_LEFT, 0, 30);
 
     /* Size */
@@ -545,12 +545,12 @@ static void show_file_info(const char *filepath, off_t size)
     lv_obj_t *lbl_fsize = lv_label_create(panel);
     lv_label_set_text(lbl_fsize, size_line);
     lv_obj_set_style_text_color(lbl_fsize, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_fsize, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_fsize, &lv_font_montserrat_16, 0);
     lv_obj_align(lbl_fsize, LV_ALIGN_TOP_LEFT, 0, 70);
 
     /* Close button */
     lv_obj_t *btn_close = lv_button_create(panel);
-    lv_obj_set_size(btn_close, 100, 36);
+    lv_obj_set_size(btn_close, 120, 48);
     lv_obj_align(btn_close, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_set_style_bg_color(btn_close, lv_color_hex(COL_ACCENT), 0);
     lv_obj_set_style_radius(btn_close, 8, 0);
@@ -558,7 +558,7 @@ static void show_file_info(const char *filepath, off_t size)
     lv_obj_t *lbl_ok = lv_label_create(btn_close);
     lv_label_set_text(lbl_ok, "OK");
     lv_obj_set_style_text_color(lbl_ok, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_ok, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_ok, &lv_font_montserrat_18, 0);
     lv_obj_center(lbl_ok);
 
     lv_obj_add_event_cb(btn_close, cb_close_info, LV_EVENT_CLICKED, panel);
@@ -593,7 +593,7 @@ lv_obj_t *ui_files_create(void)
 
     /* Back button */
     lv_obj_t *btn_back = lv_button_create(topbar);
-    lv_obj_set_size(btn_back, 44, 36);
+    lv_obj_set_size(btn_back, 56, 48);
     lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_opa(btn_back, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(btn_back, 0, 0);
@@ -612,7 +612,7 @@ lv_obj_t *ui_files_create(void)
     lv_label_set_long_mode(lbl_path, LV_LABEL_LONG_DOT);
     lv_obj_set_width(lbl_path, SCREEN_W - 80);
     lv_obj_set_style_text_color(lbl_path, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_path, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_path, &lv_font_montserrat_18, 0);
     lv_obj_align(lbl_path, LV_ALIGN_LEFT_MID, 52, 0);
 
     /* ── File list (scrollable) ──────────────────────────────── */
@@ -642,7 +642,7 @@ lv_obj_t *ui_files_create(void)
     lbl_storage = lv_label_create(bottombar);
     lv_label_set_text(lbl_storage, "");
     lv_obj_set_style_text_color(lbl_storage, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_storage, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_storage, &lv_font_montserrat_16, 0);
     lv_obj_center(lbl_storage);
 
     /* ── Check SD and populate ───────────────────────────────── */

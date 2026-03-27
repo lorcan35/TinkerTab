@@ -65,7 +65,7 @@ static const char *TAG = "ui_home";
 #define ICON_LBL_GAP 8
 
 /* Settings */
-#define SET_ROW_H   52
+#define SET_ROW_H   56
 #define SET_RAD     14
 #define SET_PAD     20
 
@@ -160,7 +160,7 @@ static lv_obj_t *make_app_icon(lv_obj_t *parent, int col, int row, int y_off,
     lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, name);
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(lbl, ICON_SZ);
     lv_obj_set_pos(lbl, x, y + ICON_SZ + ICON_LBL_GAP);
@@ -193,21 +193,21 @@ static lv_obj_t *make_set_row(lv_obj_t *group, const char *icon,
     lv_obj_t *ic = lv_label_create(badge);
     lv_label_set_text(ic, icon);
     lv_obj_set_style_text_color(ic, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(ic, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(ic, &lv_font_montserrat_16, 0);
     lv_obj_center(ic);
 
     /* Label */
     lv_obj_t *lbl = lv_label_create(row);
     lv_label_set_text(lbl, label);
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 40, 0);
 
     /* Value */
     lv_obj_t *v = lv_label_create(row);
     lv_label_set_text(v, val);
     lv_obj_set_style_text_color(v, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(v, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(v, &lv_font_montserrat_18, 0);
     lv_obj_align(v, LV_ALIGN_RIGHT_MID, 0, 0);
 
     return v;
@@ -381,7 +381,7 @@ lv_obj_t *ui_home_create(void)
         lv_obj_t *vp_lbl = lv_label_create(vp);
         lv_label_set_text(vp_lbl, "Dragon Remote");
         lv_obj_set_style_text_color(vp_lbl, lv_color_hex(COL_LABEL2), 0);
-        lv_obj_set_style_text_font(vp_lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(vp_lbl, &lv_font_montserrat_18, 0);
         lv_obj_align(vp_lbl, LV_ALIGN_CENTER, 0, 30);
 
         /* Status card below */
@@ -398,13 +398,13 @@ lv_obj_t *ui_home_create(void)
         lbl_dragon_st = lv_label_create(card);
         lv_label_set_text(lbl_dragon_st, "Disconnected");
         lv_obj_set_style_text_color(lbl_dragon_st, lv_color_hex(COL_LABEL2), 0);
-        lv_obj_set_style_text_font(lbl_dragon_st, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl_dragon_st, &lv_font_montserrat_18, 0);
         lv_obj_align(lbl_dragon_st, LV_ALIGN_LEFT_MID, 0, 0);
 
         lbl_dragon_fps = lv_label_create(card);
         lv_label_set_text(lbl_dragon_fps, "---");
         lv_obj_set_style_text_color(lbl_dragon_fps, lv_color_hex(COL_LABEL3), 0);
-        lv_obj_set_style_text_font(lbl_dragon_fps, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl_dragon_fps, &lv_font_montserrat_18, 0);
         lv_obj_align(lbl_dragon_fps, LV_ALIGN_RIGHT_MID, 0, 0);
 
         /* Stream toggle button */
@@ -422,7 +422,7 @@ lv_obj_t *ui_home_create(void)
         lbl_dragon_toggle = lv_label_create(btn_dragon_toggle);
         lv_label_set_text(lbl_dragon_toggle, "Stream: OFF");
         lv_obj_set_style_text_color(lbl_dragon_toggle, lv_color_hex(COL_LABEL), 0);
-        lv_obj_set_style_text_font(lbl_dragon_toggle, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl_dragon_toggle, &lv_font_montserrat_18, 0);
         lv_obj_center(lbl_dragon_toggle);
     }
 
@@ -462,7 +462,7 @@ lv_obj_t *ui_home_create(void)
         lv_obj_t *about = lv_label_create(pg);
         lv_label_set_text(about, "Glyph OS v1.0.0\nTinkerTab \xC2\xB7 ESP32-P4");
         lv_obj_set_style_text_color(about, lv_color_hex(COL_LABEL3), 0);
-        lv_obj_set_style_text_font(about, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(about, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_align(about, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_width(about, SW);
         lv_obj_set_pos(about, 0, y + 8);
@@ -482,19 +482,19 @@ lv_obj_t *ui_home_create(void)
         lbl_sbar_time = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_time, "00:00");
         lv_obj_set_style_text_color(lbl_sbar_time, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_time, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl_sbar_time, &lv_font_montserrat_16, 0);
         lv_obj_align(lbl_sbar_time, LV_ALIGN_LEFT_MID, 16, 0);
 
         lbl_sbar_wifi = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_wifi, LV_SYMBOL_WIFI);
         lv_obj_set_style_text_color(lbl_sbar_wifi, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_wifi, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl_sbar_wifi, &lv_font_montserrat_16, 0);
         lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -60, 0);
 
         lbl_sbar_batt = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_batt, "100%");
         lv_obj_set_style_text_color(lbl_sbar_batt, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_batt, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl_sbar_batt, &lv_font_montserrat_16, 0);
         lv_obj_align(lbl_sbar_batt, LV_ALIGN_RIGHT_MID, -16, 0);
     }
 

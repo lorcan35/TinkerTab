@@ -398,7 +398,7 @@ static void build_overlay(void)
     /* Thinking dots label — below transcript */
     s_lbl_dots = lv_label_create(s_overlay);
     lv_label_set_text(s_lbl_dots, "");
-    lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE_DIM), 0);
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 100);
@@ -568,14 +568,14 @@ static void show_state_processing(const char *transcript)
         lv_label_set_text(s_lbl_status, "Thinking...");
         lv_obj_set_style_text_color(s_lbl_status,
             lv_color_hex(VO_PURPLE_DIM), 0);
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + 80);
     } else {
         lv_label_set_text(s_lbl_status, "Thinking...");
         lv_obj_set_style_text_color(s_lbl_status,
             lv_color_hex(VO_PURPLE_DIM), 0);
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + 40);
         lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
@@ -606,7 +606,7 @@ static void show_state_speaking(void)
     /* Status text */
     lv_label_set_text(s_lbl_status, "Speaking...");
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_GREEN_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_SPEAK / 2 + 70);
 
     /* Keep transcript visible if it has content */

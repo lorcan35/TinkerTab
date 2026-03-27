@@ -192,14 +192,14 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_t *arrow = lv_label_create(btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(arrow, COL_TEXT, 0);
-    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
     lv_obj_center(arrow);
 
     /* Title */
     lv_obj_t *title = lv_label_create(bar);
     lv_label_set_text(title, "Settings");
     lv_obj_set_style_text_color(title, COL_TEXT, 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_set_flex_grow(title, 1);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -231,7 +231,7 @@ static lv_obj_t *make_section(lv_obj_t *parent, const char *title)
     lv_obj_t *hdr = lv_label_create(cont);
     lv_label_set_text(hdr, title);
     lv_obj_set_style_text_color(hdr, COL_ACCENT, 0);
-    lv_obj_set_style_text_font(hdr, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(hdr, &lv_font_montserrat_20, 0);
     lv_obj_set_style_pad_left(hdr, 4, 0);
     lv_obj_set_style_pad_bottom(hdr, 4, 0);
 
@@ -263,7 +263,7 @@ static void add_row_label(lv_obj_t *row, const char *text)
     lv_obj_t *lbl = lv_label_create(row);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
 }
 
 /* ── Helper: add value label on right side of a row ─────────────────── */
@@ -273,7 +273,7 @@ static lv_obj_t *add_row_value(lv_obj_t *row, const char *text)
     lv_obj_t *lbl = lv_label_create(row);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, COL_TEXT_DIM, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     return lbl;
 }
 
@@ -360,10 +360,10 @@ lv_obj_t *ui_settings_create(void)
         s_lbl_orient = lv_label_create(rot_right);
         lv_label_set_text(s_lbl_orient, "Off");
         lv_obj_set_style_text_color(s_lbl_orient, COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(s_lbl_orient, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(s_lbl_orient, &lv_font_montserrat_18, 0);
 
         s_sw_autorot = lv_switch_create(rot_right);
-        lv_obj_set_size(s_sw_autorot, 50, 26);
+        lv_obj_set_size(s_sw_autorot, 56, 32);
         lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0x334155), LV_PART_MAIN);
         lv_obj_set_style_bg_color(s_sw_autorot, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
         lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
@@ -397,7 +397,7 @@ lv_obj_t *ui_settings_create(void)
         add_row_label(row_ntp, "Sync Time");
 
         lv_obj_t *ntp_btn = lv_button_create(row_ntp);
-        lv_obj_set_size(ntp_btn, 120, 36);
+        lv_obj_set_size(ntp_btn, 140, 48);
         lv_obj_set_style_bg_color(ntp_btn, COL_ACCENT, 0);
         lv_obj_set_style_radius(ntp_btn, 6, 0);
         lv_obj_add_event_cb(ntp_btn, cb_ntp_sync, LV_EVENT_CLICKED, NULL);
@@ -405,7 +405,7 @@ lv_obj_t *ui_settings_create(void)
         s_ntp_btn_label = lv_label_create(ntp_btn);
         lv_label_set_text(s_ntp_btn_label, "Sync NTP");
         lv_obj_set_style_text_color(s_ntp_btn_label, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_16, 0);
         lv_obj_center(s_ntp_btn_label);
     }
 
@@ -460,7 +460,7 @@ lv_obj_t *ui_settings_create(void)
         s_lbl_bat_pct = lv_label_create(lvl_right);
         lv_label_set_text(s_lbl_bat_pct, "0%");
         lv_obj_set_style_text_color(s_lbl_bat_pct, COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(s_lbl_bat_pct, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(s_lbl_bat_pct, &lv_font_montserrat_18, 0);
     }
 
     /* ────────────────────────────────────────────────────────────────

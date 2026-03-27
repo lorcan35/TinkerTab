@@ -38,7 +38,7 @@ static const char *TAG = "ui_audio";
 #define PANEL_RADIUS    16
 #define PLAY_BTN_SIZE   100
 #define SLIDER_W        (SCREEN_W - 120)
-#define CLOSE_BTN_SIZE  40
+#define CLOSE_BTN_SIZE  48
 
 /* ── Audio buffer ────────────────────────────────────────────── */
 #define AUDIO_CHUNK_SAMPLES  8192
@@ -356,7 +356,7 @@ lv_obj_t *ui_audio_create(const char *wav_path)
     lv_label_set_long_mode(lbl_filename, LV_LABEL_LONG_DOT);
     lv_obj_set_width(lbl_filename, SCREEN_W - 120);
     lv_obj_set_style_text_color(lbl_filename, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_filename, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(lbl_filename, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_align(lbl_filename, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(lbl_filename, LV_ALIGN_TOP_MID, 0, 110);
 
@@ -364,7 +364,7 @@ lv_obj_t *ui_audio_create(const char *wav_path)
     lbl_status = lv_label_create(panel);
     lv_label_set_text(lbl_status, "Ready");
     lv_obj_set_style_text_color(lbl_status, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_status, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_align(lbl_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(lbl_status, LV_ALIGN_TOP_MID, 0, 145);
 
@@ -390,7 +390,7 @@ lv_obj_t *ui_audio_create(const char *wav_path)
     lv_obj_t *lbl_vol_icon = lv_label_create(panel);
     lv_label_set_text(lbl_vol_icon, LV_SYMBOL_VOLUME_MAX);
     lv_obj_set_style_text_color(lbl_vol_icon, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_vol_icon, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_vol_icon, &lv_font_montserrat_20, 0);
     lv_obj_align(lbl_vol_icon, LV_ALIGN_TOP_MID, 0, 340);
 
     /* Volume slider */
@@ -424,7 +424,7 @@ lv_obj_t *ui_audio_create(const char *wav_path)
     lv_obj_t *lbl_vol_pct = lv_label_create(panel);
     lv_label_set_text(lbl_vol_pct, vol_text);
     lv_obj_set_style_text_color(lbl_vol_pct, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_vol_pct, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_vol_pct, &lv_font_montserrat_18, 0);
     lv_obj_align(lbl_vol_pct, LV_ALIGN_TOP_MID, 0, 410);
 
     ESP_LOGI(TAG, "Audio player overlay created for: %s", basename);

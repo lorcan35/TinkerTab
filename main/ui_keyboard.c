@@ -41,7 +41,7 @@ static const char *TAG = "ui_kbd";
 #define KB_ANIM_SHOW_MS 300
 #define KB_ANIM_HIDE_MS 250
 
-#define KEY_H           48
+#define KEY_H           52
 #define KEY_GAP         4
 #define KEY_RAD         8
 #define ROW_PAD_X       6      /* horizontal padding inside keyboard */
@@ -310,7 +310,7 @@ static void build_letter_rows(lv_obj_t *parent)
         for (int i = 0; s_row0_lower[i] != NULL; i++) {
             int x = ROW_PAD_X + i * (key_w + KEY_GAP);
             lv_obj_t *key = make_key(row, s_row0_lower[i], key_w, KEY_H,
-                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_18, KEY_CHAR);
+                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_20, KEY_CHAR);
             lv_obj_set_pos(key, x, 0);
             /* Store label for shift toggling */
             lv_obj_t *lbl = lv_obj_get_child(key, 0);
@@ -342,7 +342,7 @@ static void build_letter_rows(lv_obj_t *parent)
         for (int i = 0; s_row1_lower[i] != NULL; i++) {
             int x = row_x + i * (key_w + KEY_GAP);
             lv_obj_t *key = make_key(row, s_row1_lower[i], key_w, KEY_H,
-                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_18, KEY_CHAR);
+                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_20, KEY_CHAR);
             lv_obj_set_pos(key, x, 0);
             lv_obj_t *lbl = lv_obj_get_child(key, 0);
             if (lbl && s_letter_label_count < 26) {
@@ -374,7 +374,7 @@ static void build_letter_rows(lv_obj_t *parent)
 
         /* Shift key */
         s_shift_key = make_key(row, LV_SYMBOL_UP, special_w, KEY_H,
-                                KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_18, KEY_SHIFT);
+                                KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_20, KEY_SHIFT);
         lv_obj_set_pos(s_shift_key, x, 0);
         s_shift_lbl = lv_obj_get_child(s_shift_key, 0);
         x += special_w + KEY_GAP;
@@ -382,7 +382,7 @@ static void build_letter_rows(lv_obj_t *parent)
         /* Letter keys */
         for (int i = 0; s_row2_lower[i] != NULL; i++) {
             lv_obj_t *key = make_key(row, s_row2_lower[i], key_w, KEY_H,
-                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_18, KEY_CHAR);
+                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_20, KEY_CHAR);
             lv_obj_set_pos(key, x, 0);
             lv_obj_t *lbl = lv_obj_get_child(key, 0);
             if (lbl && s_letter_label_count < 26) {
@@ -393,7 +393,7 @@ static void build_letter_rows(lv_obj_t *parent)
 
         /* Backspace key */
         lv_obj_t *bksp = make_key(row, LV_SYMBOL_BACKSPACE, special_w, KEY_H,
-                                   KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_18, KEY_BACKSPACE);
+                                   KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_20, KEY_BACKSPACE);
         lv_obj_set_pos(bksp, SW - ROW_PAD_X - special_w, 0);
     }
     y += KEY_H + ROW_GAP_Y;
@@ -421,32 +421,32 @@ static void build_letter_rows(lv_obj_t *parent)
 
         /* "123" layer toggle */
         lv_obj_t *layer_key = make_key(row, "123", layer_w, KEY_H,
-                                        KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_16, KEY_LAYER);
+                                        KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_18, KEY_LAYER);
         lv_obj_set_pos(layer_key, x, 0);
         s_layer_lbl_letters = lv_obj_get_child(layer_key, 0);
         x += layer_w + KEY_GAP;
 
         /* comma */
         lv_obj_t *comma = make_key(row, ",", comma_w, KEY_H,
-                                    KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_18, KEY_CHAR);
+                                    KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_20, KEY_CHAR);
         lv_obj_set_pos(comma, x, 0);
         x += comma_w + KEY_GAP;
 
         /* space bar */
         lv_obj_t *space = make_key(row, " ", space_w, KEY_H,
-                                    KB_SPACE_BG, KB_TEXT, &lv_font_montserrat_18, KEY_SPACE);
+                                    KB_SPACE_BG, KB_TEXT, &lv_font_montserrat_20, KEY_SPACE);
         lv_obj_set_pos(space, x, 0);
         x += space_w + KEY_GAP;
 
         /* period */
         lv_obj_t *dot = make_key(row, ".", dot_w, KEY_H,
-                                  KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_18, KEY_CHAR);
+                                  KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_20, KEY_CHAR);
         lv_obj_set_pos(dot, x, 0);
         x += dot_w + KEY_GAP;
 
         /* enter/done */
         lv_obj_t *enter = make_key(row, "Done", enter_w, KEY_H,
-                                    KB_KEY_ENTER, KB_CYAN, &lv_font_montserrat_16, KEY_ENTER);
+                                    KB_KEY_ENTER, KB_CYAN, &lv_font_montserrat_18, KEY_ENTER);
         lv_obj_set_pos(enter, x, 0);
     }
 }
@@ -479,7 +479,7 @@ static void build_number_rows(lv_obj_t *parent)
         for (int i = 0; s_num_row0[i] != NULL; i++) {
             int x = ROW_PAD_X + i * (key_w + KEY_GAP);
             lv_obj_t *key = make_key(row, s_num_row0[i], key_w, KEY_H,
-                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_18, KEY_CHAR);
+                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_20, KEY_CHAR);
             lv_obj_set_pos(key, x, 0);
         }
     }
@@ -505,7 +505,7 @@ static void build_number_rows(lv_obj_t *parent)
         for (int i = 0; s_num_row1[i] != NULL; i++) {
             int x = ROW_PAD_X + i * (key_w + KEY_GAP);
             lv_obj_t *key = make_key(row, s_num_row1[i], key_w, KEY_H,
-                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_18, KEY_CHAR);
+                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_20, KEY_CHAR);
             lv_obj_set_pos(key, x, 0);
         }
     }
@@ -533,14 +533,14 @@ static void build_number_rows(lv_obj_t *parent)
         int x = ROW_PAD_X;
         for (int i = 0; s_num_row2[i] != NULL; i++) {
             lv_obj_t *key = make_key(row, s_num_row2[i], key_w, KEY_H,
-                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_18, KEY_CHAR);
+                                      KB_KEY_BG, KB_TEXT, &lv_font_montserrat_20, KEY_CHAR);
             lv_obj_set_pos(key, x, 0);
             x += key_w + KEY_GAP;
         }
 
         /* Backspace */
         lv_obj_t *bksp = make_key(row, LV_SYMBOL_BACKSPACE, special_w, KEY_H,
-                                   KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_18, KEY_BACKSPACE);
+                                   KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_20, KEY_BACKSPACE);
         lv_obj_set_pos(bksp, SW - ROW_PAD_X - special_w, 0);
     }
 
@@ -569,32 +569,32 @@ static void build_number_rows(lv_obj_t *parent)
 
         /* "ABC" layer toggle */
         lv_obj_t *layer_key = make_key(row, "ABC", layer_w, KEY_H,
-                                        KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_16, KEY_LAYER);
+                                        KB_KEY_SPECIAL, KB_TEXT, &lv_font_montserrat_18, KEY_LAYER);
         lv_obj_set_pos(layer_key, x, 0);
         s_layer_lbl_nums = lv_obj_get_child(layer_key, 0);
         x += layer_w + KEY_GAP;
 
         /* comma */
         lv_obj_t *comma = make_key(row, ",", comma_w, KEY_H,
-                                    KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_18, KEY_CHAR);
+                                    KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_20, KEY_CHAR);
         lv_obj_set_pos(comma, x, 0);
         x += comma_w + KEY_GAP;
 
         /* space bar */
         lv_obj_t *space = make_key(row, " ", space_w, KEY_H,
-                                    KB_SPACE_BG, KB_TEXT, &lv_font_montserrat_18, KEY_SPACE);
+                                    KB_SPACE_BG, KB_TEXT, &lv_font_montserrat_20, KEY_SPACE);
         lv_obj_set_pos(space, x, 0);
         x += space_w + KEY_GAP;
 
         /* period */
         lv_obj_t *dot = make_key(row, ".", dot_w, KEY_H,
-                                  KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_18, KEY_CHAR);
+                                  KB_KEY_BG, KB_TEXT_DIM, &lv_font_montserrat_20, KEY_CHAR);
         lv_obj_set_pos(dot, x, 0);
         x += dot_w + KEY_GAP;
 
         /* enter/done */
         lv_obj_t *enter = make_key(row, "Done", enter_w, KEY_H,
-                                    KB_KEY_ENTER, KB_CYAN, &lv_font_montserrat_16, KEY_ENTER);
+                                    KB_KEY_ENTER, KB_CYAN, &lv_font_montserrat_18, KEY_ENTER);
         lv_obj_set_pos(enter, x, 0);
     }
 }

@@ -107,7 +107,7 @@ lv_obj_t *ui_splash_create(void)
     lv_obj_t *lbl_ver = lv_label_create(scr_splash);
     lv_label_set_text(lbl_ver, "v1.0.0");
     lv_obj_set_style_text_color(lbl_ver, lv_color_hex(COL_GRAY), 0);
-    lv_obj_set_style_text_font(lbl_ver, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lbl_ver, &lv_font_montserrat_16, 0);
     lv_obj_align(lbl_ver, LV_ALIGN_BOTTOM_MID, 0, -24);
 
     lv_screen_load(scr_splash);
@@ -128,7 +128,7 @@ void ui_splash_set_status(const char *text)
         snprintf(buf, sizeof(buf), LV_SYMBOL_OK "  %s", text);
         lv_label_set_text(lbl, buf);
         lv_obj_set_style_text_color(lbl, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
         lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, CHECK_Y0 + check_count * CHECK_GAP);
         lbl_checks[check_count] = lbl;
         check_count++;
