@@ -7,6 +7,7 @@
  */
 
 #include "touch_ws.h"
+#include "touch.h"
 #include "config.h"
 #include "settings.h"
 
@@ -74,10 +75,26 @@ static void touch_ws_task(void *arg)
     ESP_LOGI(TAG, "WebSocket connected to Dragon!");
 
     int64_t last_heartbeat = esp_timer_get_time();
+    bool was_touching = false;  // Track previous touch state for release detection
 
-    // Keep connection alive — read for server messages, respond to pings
+    // Keep connection alive — poll touch, read server messages, respond to pings
     while (s_connected && !s_stop_flag) {
-        int poll = esp_transport_poll_read(s_ws, 1000);
+        // --- Poll touch and forward to Dragon ---
+        tab5_touch_point_t points[TAB5_TOUCH_MAX_POINTS];
+        uint8_t count = 0;
+        bool touching = tab5_touch_read(points, &count);
+
+        if (touching && count > 0) {
+            tab5_touch_ws_send(points, count);
+            was_touching = true;
+        } else if (was_touching) {
+            // Transition: touching → not touching — send release event once
+            tab5_touch_ws_send_release();
+            was_touching = false;
+        }
+
+        // --- Check for incoming messages (non-blocking, short timeout) ---
+        int poll = esp_transport_poll_read(s_ws, 20);
         if (poll < 0) {
             ESP_LOGW(TAG, "WS connection lost");
             s_connected = false;
@@ -121,6 +138,9 @@ static void touch_ws_task(void *arg)
             }
             last_heartbeat = now;
         }
+
+        // ~20ms poll interval for responsive touch forwarding
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 
     esp_transport_close(s_ws);
@@ -174,6 +194,17 @@ void tab5_touch_ws_send(const tab5_touch_point_t *points, uint8_t count)
     esp_transport_ws_send_raw(s_ws,
         WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
         buf, pos, 100);
+}
+
+void tab5_touch_ws_send_release(void)
+{
+    if (!s_connected || !s_ws) return;
+
+    // Send empty touch array to signal release: {"t":[]}
+    const char *msg = "{\"t\":[]}";
+    esp_transport_ws_send_raw(s_ws,
+        WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
+        msg, strlen(msg), 100);
 }
 
 bool tab5_touch_ws_connected(void)

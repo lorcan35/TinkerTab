@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_chip_info.h"
+#include "esp_task_wdt.h"
 #include "nvs_flash.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -102,8 +103,33 @@ void app_main(void)
     esp_chip_info_t chip_info;
     esp_chip_info(&chip_info);
     ESP_LOGI(TAG, "ESP32-P4 rev %d.%d, %d cores", chip_info.revision / 100, chip_info.revision % 100, chip_info.cores);
-    ESP_LOGI(TAG, "Reset reason: %d", (int)esp_reset_reason());
-    ESP_LOGI(TAG, "Free heap: %lu, PSRAM free: %lu", (unsigned long)esp_get_free_heap_size(), (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    // Log human-readable reset reason for crash diagnostics
+    static const char *reset_reason_str[] = {
+        [ESP_RST_UNKNOWN]   = "UNKNOWN",
+        [ESP_RST_POWERON]   = "POWERON",
+        [ESP_RST_EXT]       = "EXTERNAL",
+        [ESP_RST_SW]        = "SOFTWARE",
+        [ESP_RST_PANIC]     = "PANIC (crash!)",
+        [ESP_RST_INT_WDT]   = "INTERRUPT_WDT (crash!)",
+        [ESP_RST_TASK_WDT]  = "TASK_WDT (crash!)",
+        [ESP_RST_WDT]       = "OTHER_WDT (crash!)",
+        [ESP_RST_DEEPSLEEP] = "DEEPSLEEP",
+        [ESP_RST_BROWNOUT]  = "BROWNOUT",
+        [ESP_RST_SDIO]      = "SDIO",
+    };
+    esp_reset_reason_t rst = esp_reset_reason();
+    const char *rst_str = (rst < sizeof(reset_reason_str)/sizeof(reset_reason_str[0]) && reset_reason_str[rst])
+                          ? reset_reason_str[rst] : "UNKNOWN";
+    ESP_LOGW(TAG, "Reset reason: %s (%d)", rst_str, (int)rst);
+    if (rst == ESP_RST_PANIC || rst == ESP_RST_INT_WDT || rst == ESP_RST_TASK_WDT || rst == ESP_RST_WDT) {
+        ESP_LOGE(TAG, "*** PREVIOUS BOOT CRASHED! Check core dump with: espcoredump.py info_corefile ***");
+    }
+
+    ESP_LOGI(TAG, "Free heap: %lu, min heap: %lu, PSRAM free: %lu",
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)esp_get_minimum_free_heap_size(),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();

@@ -19,6 +19,9 @@ void tab5_touch_ws_stop(void);
 /** Send a touch event to Dragon. Thread-safe. */
 void tab5_touch_ws_send(const tab5_touch_point_t *points, uint8_t count);
 
+/** Send a touch release event to Dragon (empty touch array). */
+void tab5_touch_ws_send_release(void);
+
 /** Check if WebSocket is connected. */
 bool tab5_touch_ws_connected(void);
 
