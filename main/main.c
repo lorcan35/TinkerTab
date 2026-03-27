@@ -39,6 +39,8 @@
 #include "ui_core.h"
 #include "ui_splash.h"
 #include "ui_home.h"
+#include "ui_keyboard.h"
+#include "ui_voice.h"
 
 static const char *TAG = "tab5";
 
@@ -309,6 +311,13 @@ void app_main(void)
         ui_home_create();
         tab5_ui_unlock();
         ESP_LOGI(TAG, "Glyph home screen loaded");
+
+        // Initialize global overlays (keyboard + voice)
+        tab5_ui_lock();
+        ui_keyboard_init(NULL);
+        ui_voice_init();
+        tab5_ui_unlock();
+        ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
     }
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
