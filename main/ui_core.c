@@ -24,6 +24,7 @@
 #include "esp_cache.h"
 #include "esp_timer.h"
 #include "esp_lcd_mipi_dsi.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -139,12 +140,25 @@ static void ui_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "UI task started on core %d", xPortGetCoreID());
 
+    /* Register this task with the Task Watchdog Timer.
+     * If the LVGL loop gets stuck (deadlock, infinite loop), the WDT
+     * will fire a panic with a backtrace — captured in the core dump. */
+    esp_err_t wdt_ret = esp_task_wdt_add(NULL);
+    if (wdt_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to add UI task to WDT: %s", esp_err_to_name(wdt_ret));
+    } else {
+        ESP_LOGI(TAG, "UI task registered with Task Watchdog");
+    }
+
     static int64_t last_heartbeat = 0;
 
     while (1) {
         if (xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             uint32_t time_till_next = lv_timer_handler();
             xSemaphoreGiveRecursive(s_lvgl_mutex);
+
+            /* Feed the watchdog — proves this task is alive and not stuck */
+            esp_task_wdt_reset();
 
             /* Heartbeat log every 5 seconds to detect if task is alive */
             int64_t now = esp_timer_get_time();
@@ -158,6 +172,9 @@ static void ui_task(void *arg)
             if (time_till_next > 50) time_till_next = 50;
             vTaskDelay(pdMS_TO_TICKS(time_till_next));
         } else {
+            /* Still feed WDT even on mutex timeout — the task isn't stuck,
+             * it just couldn't acquire the lock this iteration */
+            esp_task_wdt_reset();
             ESP_LOGW(TAG, "UI task: mutex timeout");
             vTaskDelay(pdMS_TO_TICKS(5));
         }

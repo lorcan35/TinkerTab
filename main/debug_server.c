@@ -32,6 +32,7 @@
 #include "esp_cache.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_netif.h"
+#include "esp_core_dump.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "cJSON.h"
@@ -551,6 +552,73 @@ static esp_err_t open_handler(httpd_req_t *req)
 }
 
 /* ======================================================================== */
+/*  GET /crashlog — last core dump summary                                   */
+/* ======================================================================== */
+
+static esp_err_t crashlog_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "alloc");
+        return ESP_FAIL;
+    }
+
+    /* Reset reason */
+    const char *reset_reasons[] = {"UNKNOWN","POWERON","EXT","SW","PANIC",
+        "INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO","USB",
+        "JTAG","EFUSE","PWR_GLITCH","CPU_LOCKUP"};
+    esp_reset_reason_t reason = esp_reset_reason();
+    cJSON_AddStringToObject(root, "reset_reason",
+        reason < sizeof(reset_reasons)/sizeof(reset_reasons[0])
+        ? reset_reasons[reason] : "UNKNOWN");
+    cJSON_AddBoolToObject(root, "was_crash",
+        reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
+        reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT);
+
+    /* Check if a core dump exists in flash */
+    esp_core_dump_summary_t summary;
+    esp_err_t cd_ret = esp_core_dump_get_summary(&summary);
+    if (cd_ret == ESP_OK) {
+        cJSON_AddBoolToObject(root, "coredump_present", true);
+        cJSON_AddNumberToObject(root, "exc_pc", (double)summary.exc_pc);
+        cJSON_AddStringToObject(root, "exc_task", summary.exc_task);
+
+        cJSON *bt = cJSON_CreateArray();
+        if (bt) {
+            for (int i = 0; i < summary.exc_bt_info.depth && i < 32; i++) {
+                cJSON_AddItemToArray(bt,
+                    cJSON_CreateNumber((double)summary.exc_bt_info.bt[i]));
+            }
+            cJSON_AddItemToObject(root, "backtrace", bt);
+        }
+        cJSON_AddStringToObject(root, "hint",
+            "Use 'espcoredump.py info_corefile' on host for full decode");
+    } else {
+        cJSON_AddBoolToObject(root, "coredump_present", false);
+        cJSON_AddStringToObject(root, "note",
+            cd_ret == ESP_ERR_NOT_FOUND
+            ? "No core dump in flash"
+            : "Core dump read error");
+    }
+
+    cJSON_AddNumberToObject(root, "heap_free", (double)esp_get_free_heap_size());
+    cJSON_AddNumberToObject(root, "heap_min", (double)esp_get_minimum_free_heap_size());
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "print");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+/* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
 
@@ -563,8 +631,8 @@ esp_err_t tab5_debug_server_init(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
-    config.stack_size  = 8192;
-    config.max_uri_handlers = 8;
+    config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
+    config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -600,6 +668,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_open = {
         .uri = "/open", .method = HTTP_POST, .handler = open_handler
     };
+    const httpd_uri_t uri_crashlog = {
+        .uri = "/crashlog", .method = HTTP_GET, .handler = crashlog_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -609,6 +680,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_reboot);
     httpd_register_uri_handler(server, &uri_log);
     httpd_register_uri_handler(server, &uri_open);
+    httpd_register_uri_handler(server, &uri_crashlog);
 
     /* Log the URL */
     char ip[20];
