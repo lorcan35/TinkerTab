@@ -12,6 +12,7 @@
 #include "wifi.h"
 #include "mjpeg_stream.h"
 #include "touch_ws.h"
+#include "mdns_discovery.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -28,6 +29,11 @@ static dragon_state_t s_state = DRAGON_STATE_IDLE;
 static volatile bool s_stop_requested = false;
 static volatile bool s_start_requested = false;
 static uint32_t s_backoff_ms = TAB5_DRAGON_RECONNECT_BASE_MS;
+
+// Active Dragon endpoint (populated by mDNS discovery or fallback)
+#define MDNS_DISCOVERY_TIMEOUT_MS 5000
+static char s_dragon_host[64] = {0};
+static uint16_t s_dragon_port = 0;
 
 // Negotiated params from handshake
 static int s_stream_quality = 60;
@@ -117,7 +123,7 @@ static bool do_health_check(void)
 {
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d%s",
-             TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_DRAGON_HEALTH_PATH);
+             s_dragon_host, s_dragon_port, TAB5_DRAGON_HEALTH_PATH);
 
     char body[256] = {0};
     http_response_t resp = { .buf = body, .len = 0, .cap = sizeof(body) };
@@ -150,7 +156,7 @@ static bool do_handshake(void)
     char url[256];
     snprintf(url, sizeof(url),
              "http://%s:%d%s?device=tab5&fw=1.0.0&w=%d&h=%d",
-             TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_DRAGON_HANDSHAKE_PATH,
+             s_dragon_host, s_dragon_port, TAB5_DRAGON_HANDSHAKE_PATH,
              TAB5_DISPLAY_WIDTH, TAB5_DISPLAY_HEIGHT);
 
     char body[512] = {0};
@@ -209,10 +215,32 @@ static void stop_streams(void)
 // Main task
 // -------------------------------------------------------------------------
 
+static void do_mdns_discovery(void)
+{
+    mdns_discovery_result_t disc = {0};
+    tab5_mdns_discover_dragon(&disc, MDNS_DISCOVERY_TIMEOUT_MS);
+
+    strncpy(s_dragon_host, disc.host, sizeof(s_dragon_host) - 1);
+    s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
+    s_dragon_port = disc.port;
+
+    if (disc.from_mdns) {
+        ESP_LOGI(TAG, "Using mDNS-discovered Dragon: %s:%d", s_dragon_host, s_dragon_port);
+    } else {
+        ESP_LOGI(TAG, "Using hardcoded fallback Dragon: %s:%d", s_dragon_host, s_dragon_port);
+    }
+}
+
 static void dragon_link_task(void *arg)
 {
+    // Initialize mDNS and register Tab5 service
+    tab5_mdns_init();
+
+    // Discover Dragon via mDNS (falls back to config if not found)
+    do_mdns_discovery();
+
     ESP_LOGI(TAG, "Dragon link task started (target: %s:%d)",
-             TAB5_DRAGON_HOST, TAB5_DRAGON_PORT);
+             s_dragon_host, s_dragon_port);
 
     s_state = DRAGON_STATE_DISCOVERING;
 
@@ -245,6 +273,8 @@ static void dragon_link_task(void *arg)
             while (!tab5_wifi_connected()) {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
+            // Re-discover Dragon — IP may have changed
+            do_mdns_discovery();
             s_state = DRAGON_STATE_DISCOVERING;
             s_backoff_ms = TAB5_DRAGON_RECONNECT_BASE_MS;
         }
@@ -305,6 +335,8 @@ static void dragon_link_task(void *arg)
                     s_backoff_ms = TAB5_DRAGON_RECONNECT_MAX_MS;
                 }
             }
+            // Re-discover in case Dragon moved IPs
+            do_mdns_discovery();
             s_state = DRAGON_STATE_DISCOVERING;
             break;
 

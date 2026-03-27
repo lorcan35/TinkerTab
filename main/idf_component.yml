@@ -1,9 +1,10 @@
 dependencies:
-  idf: ">=5.4.3"
-  lvgl/lvgl: "~9.2"
+  idf: '>=5.4.3'
+  lvgl/lvgl: ~9.2
   esp_lcd_touch_st7123:
-    version: ">=1.0.0"
+    version: '>=1.0.0'
   espressif/esp_hosted:
-    version: "1.4.0"
+    version: 1.4.0
   espressif/esp_wifi_remote:
-    version: "0.8.5"
+    version: 0.8.5
+  espressif/mdns: '*'

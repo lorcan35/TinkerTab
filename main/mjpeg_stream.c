@@ -14,6 +14,7 @@
 
 #include "mjpeg_stream.h"
 #include "config.h"
+#include "settings.h"
 #include "display.h"
 
 #include <string.h>
@@ -75,10 +76,14 @@ static void mjpeg_stream_task(void *arg)
         return;
     }
 
-    /* Build URL */
+    /* Build URL from NVS-backed settings */
+    char dragon_host[64];
+    tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
+    uint16_t dragon_port = tab5_settings_get_dragon_port();
+
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d%s",
-             TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_STREAM_PATH);
+             dragon_host, dragon_port, TAB5_STREAM_PATH);
 
     while (!s_stop_flag) {
         ESP_LOGI(TAG, "Connecting to %s", url);

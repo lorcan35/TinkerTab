@@ -8,6 +8,7 @@
 
 #include "touch_ws.h"
 #include "config.h"
+#include "settings.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -38,8 +39,12 @@ static esp_transport_handle_t ws_create(void)
 
 static void touch_ws_task(void *arg)
 {
+    char dragon_host[64];
+    tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
+    uint16_t dragon_port = tab5_settings_get_dragon_port();
+
     ESP_LOGI(TAG, "Touch WS task started (target: %s:%d%s)",
-             TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, TAB5_TOUCH_WS_PATH);
+             dragon_host, dragon_port, TAB5_TOUCH_WS_PATH);
 
     s_ws = ws_create();
     if (!s_ws) {
@@ -50,7 +55,7 @@ static void touch_ws_task(void *arg)
     }
 
     ESP_LOGI(TAG, "Connecting to Dragon WebSocket...");
-    int err = esp_transport_connect(s_ws, TAB5_DRAGON_HOST, TAB5_DRAGON_PORT, 5000);
+    int err = esp_transport_connect(s_ws, dragon_host, dragon_port, 5000);
     if (err < 0) {
         ESP_LOGW(TAG, "WS connect failed");
         esp_transport_close(s_ws);

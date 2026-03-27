@@ -15,6 +15,7 @@
 
 #include "ui_voice.h"
 #include "config.h"
+#include "settings.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <string.h>
@@ -887,7 +888,11 @@ static void mic_click_cb(lv_event_t *e)
     case VOICE_STATE_IDLE:
         /* Not connected — async connect + auto-listen (non-blocking) */
         ESP_LOGI(TAG, "Connecting to Dragon voice server (async)...");
-        voice_connect_async(TAB5_DRAGON_HOST, TAB5_VOICE_PORT, true);
+        {
+            char dhost[64];
+            tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+            voice_connect_async(dhost, TAB5_VOICE_PORT, true);
+        }
         break;
     case VOICE_STATE_READY:
         /* Connected, idle — start listening */

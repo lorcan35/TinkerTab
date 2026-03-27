@@ -41,6 +41,7 @@
 #include "ui_home.h"
 #include "ui_keyboard.h"
 #include "ui_voice.h"
+#include "settings.h"
 
 static const char *TAG = "tab5";
 
@@ -109,6 +110,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    // Initialize persistent settings (NVS-backed)
+    ret = tab5_settings_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Settings init failed: %s (using compile-time defaults)", esp_err_to_name(ret));
+    }
+
     // Initialize I2C bus
     ESP_LOGI(TAG, "Initializing I2C (SDA=%d, SCL=%d)...", TAB5_I2C_SDA, TAB5_I2C_SCL);
     ret = init_i2c();
@@ -146,6 +153,9 @@ void app_main(void)
         ESP_LOGE(TAG, "Display init failed: %s", esp_err_to_name(ret));
     } else {
         ESP_LOGI(TAG, "Display initialized!");
+
+        // Apply stored brightness
+        tab5_display_set_brightness(tab5_settings_get_brightness());
 
         // Initialize hardware JPEG decoder
         ret = tab5_display_jpeg_init();
@@ -202,7 +212,9 @@ void app_main(void)
             ESP_LOGW(TAG, "Audio init failed: %s", esp_err_to_name(ret));
         } else {
             s_audio_ok = true;
-            ESP_LOGI(TAG, "Audio codec initialized");
+            // Apply stored volume
+            tab5_audio_set_volume(tab5_settings_get_volume());
+            ESP_LOGI(TAG, "Audio codec initialized (volume %d%%)", tab5_settings_get_volume());
         }
     }
 
@@ -269,7 +281,11 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "WiFi init failed: %s (continuing without WiFi)", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "WiFi connecting to %s...", TAB5_WIFI_SSID);
+        {
+            char ssid_buf[33];
+            tab5_settings_get_wifi_ssid(ssid_buf, sizeof(ssid_buf));
+            ESP_LOGI(TAG, "WiFi connecting to %s...", ssid_buf);
+        }
         ret = tab5_wifi_wait_connected(15000);
         if (ret == ESP_OK) {
             s_wifi_ok = true;
@@ -369,10 +385,18 @@ void app_main(void)
                                (unsigned long)esp_get_free_heap_size(),
                                (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                     } else if (strcmp(cmd_buf, "wifi") == 0) {
-                        printf("WiFi: %s (SSID: %s)\n", s_wifi_ok ? "connected" : "not connected", TAB5_WIFI_SSID);
+                        {
+                            char ssid_tmp[33];
+                            tab5_settings_get_wifi_ssid(ssid_tmp, sizeof(ssid_tmp));
+                            printf("WiFi: %s (SSID: %s)\n", s_wifi_ok ? "connected" : "not connected", ssid_tmp);
+                        }
                     } else if (strcmp(cmd_buf, "dragon") == 0) {
-                        printf("Dragon: %s (target: %s:%d)\n",
-                               tab5_dragon_state_str(), TAB5_DRAGON_HOST, TAB5_DRAGON_PORT);
+                        {
+                            char dhost[64];
+                            tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+                            printf("Dragon: %s (target: %s:%d)\n",
+                                   tab5_dragon_state_str(), dhost, tab5_settings_get_dragon_port());
+                        }
                         if (tab5_dragon_is_streaming()) {
                             printf("  MJPEG: %.1f FPS\n", tab5_dragon_get_fps());
                             printf("  Touch WS: %s\n", tab5_touch_ws_connected() ? "connected" : "disconnected");

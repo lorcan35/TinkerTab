@@ -15,6 +15,8 @@
 #include "sdcard.h"
 #include "imu.h"
 #include "config.h"
+#include "settings.h"
+#include "audio.h"
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -68,6 +70,9 @@ static lv_obj_t *s_ntp_btn_label  = NULL;
 /* Brightness slider tracks the current value */
 static lv_obj_t *s_slider_bright  = NULL;
 
+/* Volume slider */
+static lv_obj_t *s_slider_volume  = NULL;
+
 /* Auto-rotate switch */
 static lv_obj_t *s_sw_autorot     = NULL;
 
@@ -95,7 +100,17 @@ static void cb_brightness(lv_event_t *e)
     lv_obj_t *slider = lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
     tab5_display_set_brightness(val);
-    ESP_LOGI(TAG, "Brightness set to %d%%", val);
+    tab5_settings_set_brightness((uint8_t)val);
+    ESP_LOGI(TAG, "Brightness set to %d%% (saved)", val);
+}
+
+static void cb_volume(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    int val = lv_slider_get_value(slider);
+    tab5_audio_set_volume((uint8_t)val);
+    tab5_settings_set_volume((uint8_t)val);
+    ESP_LOGI(TAG, "Volume set to %d%% (saved)", val);
 }
 
 static void cb_autorotate(lv_event_t *e)
@@ -309,12 +324,26 @@ lv_obj_t *ui_settings_create(void)
         s_slider_bright = lv_slider_create(row_bright);
         lv_obj_set_width(s_slider_bright, 280);
         lv_slider_set_range(s_slider_bright, 0, 100);
-        lv_slider_set_value(s_slider_bright, 80, LV_ANIM_OFF);
+        lv_slider_set_value(s_slider_bright, tab5_settings_get_brightness(), LV_ANIM_OFF);
         lv_obj_set_style_bg_color(s_slider_bright, lv_color_hex(0x334155), LV_PART_MAIN);
         lv_obj_set_style_bg_color(s_slider_bright, COL_ACCENT, LV_PART_INDICATOR);
         lv_obj_set_style_bg_color(s_slider_bright, COL_ACCENT, LV_PART_KNOB);
         lv_obj_set_style_pad_all(s_slider_bright, 4, LV_PART_KNOB);
         lv_obj_add_event_cb(s_slider_bright, cb_brightness, LV_EVENT_VALUE_CHANGED, NULL);
+
+        /* Volume row */
+        lv_obj_t *row_vol = make_row(sec);
+        add_row_label(row_vol, "Volume");
+
+        s_slider_volume = lv_slider_create(row_vol);
+        lv_obj_set_width(s_slider_volume, 280);
+        lv_slider_set_range(s_slider_volume, 0, 100);
+        lv_slider_set_value(s_slider_volume, tab5_settings_get_volume(), LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(s_slider_volume, lv_color_hex(0x334155), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(s_slider_volume, COL_ACCENT, LV_PART_INDICATOR);
+        lv_obj_set_style_bg_color(s_slider_volume, COL_ACCENT, LV_PART_KNOB);
+        lv_obj_set_style_pad_all(s_slider_volume, 4, LV_PART_KNOB);
+        lv_obj_add_event_cb(s_slider_volume, cb_volume, LV_EVENT_VALUE_CHANGED, NULL);
 
         /* Auto-rotate row */
         lv_obj_t *row_rot = make_row(sec);
@@ -578,6 +607,7 @@ void ui_settings_destroy(void)
     s_ntp_spinner   = NULL;
     s_ntp_btn_label = NULL;
     s_slider_bright = NULL;
+    s_slider_volume = NULL;
     s_sw_autorot    = NULL;
 
     ESP_LOGI(TAG, "Settings screen destroyed");

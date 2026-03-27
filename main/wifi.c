@@ -5,6 +5,7 @@
 
 #include "wifi.h"
 #include "config.h"
+#include "settings.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -64,17 +65,20 @@ esp_err_t tab5_wifi_init(void)
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = TAB5_WIFI_SSID,
-            .password = TAB5_WIFI_PASS,
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
+    /* Load SSID/password from NVS (falls back to compile-time defaults) */
+    tab5_settings_get_wifi_ssid((char *)wifi_config.sta.ssid,
+                                sizeof(wifi_config.sta.ssid));
+    tab5_settings_get_wifi_pass((char *)wifi_config.sta.password,
+                                sizeof(wifi_config.sta.password));
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi init done, connecting to %s...", TAB5_WIFI_SSID);
+    ESP_LOGI(TAG, "WiFi init done, connecting to %s...", (char *)wifi_config.sta.ssid);
     return ESP_OK;
 }
 

@@ -14,6 +14,7 @@
 
 #include "ui_home.h"
 #include "ui_settings.h"
+#include "ui_wifi.h"
 #include "ui_camera.h"
 #include "ui_files.h"
 #include "battery.h"
@@ -569,7 +570,7 @@ static void app_icon_click_cb(lv_event_t *e)
     intptr_t app_id = (intptr_t)lv_event_get_user_data(e);
     ESP_LOGI(TAG, "App icon tapped: %d", (int)app_id);
     switch (app_id) {
-    case 0: /* WiFi */    break; /* TODO: wifi config screen */
+    case 0: /* WiFi */    ui_wifi_create(); break;
     case 1: /* Dragon */  lv_tileview_set_tile(tileview, tiles[2], LV_ANIM_ON); break;
     case 2: /* Camera */  ui_camera_create(); break;
     case 3: /* Audio */   break; /* TODO: audio player */
