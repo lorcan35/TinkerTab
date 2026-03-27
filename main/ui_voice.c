@@ -46,7 +46,7 @@ static const char *TAG = "ui_voice";
 #define VO_TEXT_MID        0xB3B3B3   /* rgba(255,255,255,0.7) */
 #define VO_TEXT_DIM        0x808080   /* rgba(255,255,255,0.5) */
 #define VO_TEXT_FAINT      0x404040   /* rgba(255,255,255,0.25) */
-#define VO_CLOSE_TEXT      0x262626   /* rgba(255,255,255,0.15) */
+#define VO_CLOSE_TEXT      0x808080   /* rgba(255,255,255,0.5) — visible */
 
 /* ── Layout constants ─────────────────────────────────────────── */
 #define SW                 720
@@ -71,6 +71,14 @@ static const char *TAG = "ui_voice";
 #define WAVE_BAR_MAX_H     48
 #define WAVE_BAR_MIN_H     10
 
+/* Send/Stop button (shown during LISTENING) */
+#define SEND_BTN_SZ        80
+#define SEND_BTN_Y         1050      /* y-center from top */
+#define SEND_ICON_SZ       24        /* inner square "stop" icon */
+
+/* Mic dot pulse animation */
+#define MIC_DOT_PULSE_MS   800       /* mic dot pulse cycle */
+
 /* Animation timing */
 #define ANIM_FADE_IN_MS    200
 #define ANIM_FADE_OUT_MS   150
@@ -87,10 +95,13 @@ static void build_overlay(void);
 static void build_orb(lv_obj_t *parent);
 static void build_wave_bars(lv_obj_t *parent);
 static void build_close_button(lv_obj_t *parent);
+static void build_send_button(lv_obj_t *parent);
 
 static void mic_click_cb(lv_event_t *e);
 static void close_click_cb(lv_event_t *e);
-static void overlay_click_cb(lv_event_t *e);
+static void send_click_cb(lv_event_t *e);
+static void orb_speak_click_cb(lv_event_t *e);
+static void mic_dot_pulse_cb(void *obj, int32_t val);
 
 static void start_breathe_anim(void);
 static void start_pulse_anim(void);
@@ -104,6 +115,7 @@ static void fade_overlay_cb(void *obj, int32_t val);
 static void fade_done_hide_cb(lv_anim_t *a);
 static void dot_timer_cb(lv_timer_t *t);
 static void auto_hide_timer_cb(lv_timer_t *t);
+static void rec_timer_cb(lv_timer_t *t);
 
 static void set_orb_color(uint32_t ring_hex, uint32_t glow_hex, lv_opa_t ring_opa);
 static void set_orb_size(int32_t sz);
@@ -139,6 +151,14 @@ static lv_obj_t  *s_wave_bars[WAVE_BARS];
 
 /* Close button */
 static lv_obj_t  *s_close_btn     = NULL;
+
+/* Send/Stop button (LISTENING state) */
+static lv_obj_t  *s_send_btn      = NULL;
+
+/* Recording duration label + timer */
+static lv_obj_t   *s_lbl_rec_time = NULL;
+static lv_timer_t *s_rec_timer    = NULL;
+static int         s_rec_seconds  = 0;
 
 /* Timers */
 static lv_timer_t *s_dot_timer    = NULL;
@@ -365,15 +385,16 @@ static void build_overlay(void)
     lv_obj_set_style_border_width(s_overlay, 0, 0);
     lv_obj_set_style_pad_all(s_overlay, 0, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE); /* catch taps outside orb */
-
-    /* Tap outside orb = cancel */
-    lv_obj_add_event_cb(s_overlay, overlay_click_cb, LV_EVENT_CLICKED, NULL);
+    /* Fix #6: background taps no longer cancel — only X button cancels.
+     * Overlay still needs CLICKABLE to absorb taps (prevent pass-through
+     * to widgets below), but no event handler attached. */
+    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     /* Build child elements */
     build_orb(s_overlay);
     build_wave_bars(s_overlay);
     build_close_button(s_overlay);
+    build_send_button(s_overlay);
 
     /* Status label — below orb */
     s_lbl_status = lv_label_create(s_overlay);
@@ -403,6 +424,15 @@ static void build_overlay(void)
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 100);
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+
+    /* Recording duration label — shown during LISTENING below status */
+    s_lbl_rec_time = lv_label_create(s_overlay);
+    lv_label_set_text(s_lbl_rec_time, "0:00");
+    lv_obj_set_style_text_font(s_lbl_rec_time, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_TEXT_FAINT), 0);
+    lv_obj_set_style_text_align(s_lbl_rec_time, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 70);
+    lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
 
     /* Start hidden */
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
@@ -518,6 +548,44 @@ static void build_close_button(lv_obj_t *parent)
     lv_obj_add_event_cb(s_close_btn, close_click_cb, LV_EVENT_CLICKED, NULL);
 }
 
+/* ── Send/Stop button — visible during LISTENING ──────────────── */
+
+static void build_send_button(lv_obj_t *parent)
+{
+    s_send_btn = lv_obj_create(parent);
+    lv_obj_set_size(s_send_btn, SEND_BTN_SZ, SEND_BTN_SZ);
+    lv_obj_set_style_radius(s_send_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_send_btn, lv_color_hex(0xFF5252), 0); /* coral-red */
+    lv_obj_set_style_bg_opa(s_send_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_send_btn, 2, 0);
+    lv_obj_set_style_border_color(s_send_btn, lv_color_hex(0xFF8A80), 0);
+    lv_obj_set_style_border_opa(s_send_btn, LV_OPA_60, 0);
+    lv_obj_set_style_pad_all(s_send_btn, 0, 0);
+    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(s_send_btn, (SW - SEND_BTN_SZ) / 2, SEND_BTN_Y - SEND_BTN_SZ / 2);
+
+    /* Inner square "stop" icon */
+    lv_obj_t *stop_icon = lv_obj_create(s_send_btn);
+    lv_obj_set_size(stop_icon, SEND_ICON_SZ, SEND_ICON_SZ);
+    lv_obj_set_style_radius(stop_icon, 4, 0);
+    lv_obj_set_style_bg_color(stop_icon, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(stop_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(stop_icon, 0, 0);
+    lv_obj_set_style_pad_all(stop_icon, 0, 0);
+    lv_obj_center(stop_icon);
+    lv_obj_clear_flag(stop_icon, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Pressed feedback */
+    lv_obj_set_style_bg_color(s_send_btn, lv_color_hex(0xD32F2F),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+
+    lv_obj_add_event_cb(s_send_btn, send_click_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Start hidden — only shown during LISTENING */
+    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
 /* ================================================================
  *  State visuals
  * ================================================================ */
@@ -541,12 +609,26 @@ static void show_state_listening(void)
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
 
+    /* Show recording duration timer (Fix #5) */
+    s_rec_seconds = 0;
+    lv_label_set_text(s_lbl_rec_time, "0:00");
+    lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 70);
+    lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+    s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
+
+    /* Show send/stop button (Fix #1) */
+    lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+
     start_breathe_anim();
 }
 
 static void show_state_processing(const char *transcript)
 {
     stop_all_anims();
+
+    /* Hide listening-only elements */
+    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
 
     /* Orb: purple tint, faster pulse */
     set_orb_color(VO_PURPLE, VO_PURPLE, LV_OPA_50);
@@ -599,14 +681,22 @@ static void show_state_speaking(void)
 {
     stop_all_anims();
 
+    /* Hide listening-only elements */
+    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+
     /* Orb: green, slightly larger */
     set_orb_color(VO_GREEN, VO_GREEN, LV_OPA_50);
     set_orb_size(ORB_SZ_SPEAK);
 
-    /* Status text */
+    /* Make orb tappable to interrupt TTS (Fix #4) */
+    lv_obj_add_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_orb_container, orb_speak_click_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Status text — 20px to match "Thinking..." (Fix #3) */
     lv_label_set_text(s_lbl_status, "Speaking...");
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_GREEN_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_SPEAK / 2 + 70);
 
     /* Keep transcript visible if it has content */
@@ -631,6 +721,13 @@ static void show_state_speaking(void)
 static void show_state_idle(void)
 {
     stop_all_anims();
+
+    /* Clean up listening/speaking elements */
+    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_event_cb(s_orb_container, orb_speak_click_cb);
+
     if (s_visible) {
         ui_voice_hide();
     }
@@ -665,39 +762,77 @@ static void set_orb_size(int32_t sz)
 
 static void update_mic_button_state(voice_state_t state)
 {
+    /* Stop any existing mic dot pulse animation */
+    lv_anim_delete(s_mic_dot, mic_dot_pulse_cb);
+
     switch (state) {
     case VOICE_STATE_IDLE:
     case VOICE_STATE_READY:
-        /* Default: small cyan dot */
+        /* Default: small cyan dot, static */
         lv_obj_set_size(s_mic_dot, MIC_DOT_SZ, MIC_DOT_SZ);
         lv_obj_set_style_radius(s_mic_dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(s_mic_dot, lv_color_hex(VO_CYAN), 0);
         lv_obj_set_style_bg_opa(s_mic_dot, LV_OPA_60, 0);
-        break;
-    case VOICE_STATE_CONNECTING:
-        /* Pulsing dot */
-        lv_obj_set_style_bg_color(s_mic_dot, lv_color_hex(VO_CYAN), 0);
-        lv_obj_set_style_bg_opa(s_mic_dot, LV_OPA_30, 0);
-        break;
-    case VOICE_STATE_LISTENING:
-        /* Bright cyan, larger = "recording" */
-        lv_obj_set_size(s_mic_dot, MIC_DOT_SZ + 4, MIC_DOT_SZ + 4);
-        lv_obj_set_style_bg_color(s_mic_dot, lv_color_hex(VO_CYAN), 0);
-        lv_obj_set_style_bg_opa(s_mic_dot, LV_OPA_COVER, 0);
         lv_obj_center(s_mic_dot);
         break;
-    case VOICE_STATE_PROCESSING:
-        /* Purple dot */
+    case VOICE_STATE_CONNECTING:
+    case VOICE_STATE_LISTENING: {
+        /* Pulsing red dot — recording indicator (Fix #2) */
+        lv_obj_set_size(s_mic_dot, MIC_DOT_SZ + 4, MIC_DOT_SZ + 4);
+        lv_obj_set_style_bg_color(s_mic_dot, lv_color_hex(0xFF5252), 0);
+        lv_obj_set_style_bg_opa(s_mic_dot, LV_OPA_COVER, 0);
+        lv_obj_center(s_mic_dot);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s_mic_dot);
+        lv_anim_set_values(&a, LV_OPA_40, LV_OPA_COVER);
+        lv_anim_set_duration(&a, MIC_DOT_PULSE_MS);
+        lv_anim_set_playback_duration(&a, MIC_DOT_PULSE_MS);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_exec_cb(&a, mic_dot_pulse_cb);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_start(&a);
+        break;
+    }
+    case VOICE_STATE_PROCESSING: {
+        /* Pulsing purple dot (Fix #2) */
         lv_obj_set_size(s_mic_dot, MIC_DOT_SZ, MIC_DOT_SZ);
         lv_obj_set_style_bg_color(s_mic_dot, lv_color_hex(VO_PURPLE), 0);
         lv_obj_set_style_bg_opa(s_mic_dot, LV_OPA_70, 0);
+        lv_obj_center(s_mic_dot);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s_mic_dot);
+        lv_anim_set_values(&a, LV_OPA_30, LV_OPA_80);
+        lv_anim_set_duration(&a, MIC_DOT_PULSE_MS);
+        lv_anim_set_playback_duration(&a, MIC_DOT_PULSE_MS);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_exec_cb(&a, mic_dot_pulse_cb);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_start(&a);
         break;
-    case VOICE_STATE_SPEAKING:
-        /* Green dot */
+    }
+    case VOICE_STATE_SPEAKING: {
+        /* Pulsing green dot (Fix #2) */
         lv_obj_set_size(s_mic_dot, MIC_DOT_SZ, MIC_DOT_SZ);
         lv_obj_set_style_bg_color(s_mic_dot, lv_color_hex(VO_GREEN), 0);
         lv_obj_set_style_bg_opa(s_mic_dot, LV_OPA_70, 0);
+        lv_obj_center(s_mic_dot);
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, s_mic_dot);
+        lv_anim_set_values(&a, LV_OPA_30, LV_OPA_80);
+        lv_anim_set_duration(&a, MIC_DOT_PULSE_MS);
+        lv_anim_set_playback_duration(&a, MIC_DOT_PULSE_MS);
+        lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_set_exec_cb(&a, mic_dot_pulse_cb);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_start(&a);
         break;
+    }
     }
 }
 
@@ -818,6 +953,16 @@ static void stop_all_anims(void)
         lv_timer_delete(s_dot_timer);
         s_dot_timer = NULL;
     }
+
+    /* Stop recording duration timer (Fix #5) */
+    if (s_rec_timer) {
+        lv_timer_delete(s_rec_timer);
+        s_rec_timer = NULL;
+    }
+
+    /* Remove orb click handler if set (Fix #4 cleanup) */
+    lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_event_cb(s_orb_container, orb_speak_click_cb);
 }
 
 /* ── Animation callbacks ──────────────────────────────────────── */
@@ -835,6 +980,11 @@ static void orb_ring_opa_cb(void *obj, int32_t val)
 static void wave_bar_cb(void *obj, int32_t val)
 {
     lv_obj_set_height((lv_obj_t *)obj, val);
+}
+
+static void mic_dot_pulse_cb(void *obj, int32_t val)
+{
+    lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 }
 
 static void fade_overlay_cb(void *obj, int32_t val)
@@ -871,6 +1021,14 @@ static void auto_hide_timer_cb(lv_timer_t *t)
         ESP_LOGI(TAG, "Auto-hiding overlay");
         ui_voice_hide();
     }
+}
+
+static void rec_timer_cb(lv_timer_t *t)
+{
+    s_rec_seconds++;
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d:%02d", s_rec_seconds / 60, s_rec_seconds % 60);
+    lv_label_set_text(s_lbl_rec_time, buf);
 }
 
 /* ================================================================
@@ -921,14 +1079,16 @@ static void close_click_cb(lv_event_t *e)
     ui_voice_hide();
 }
 
-static void overlay_click_cb(lv_event_t *e)
+static void send_click_cb(lv_event_t *e)
 {
-    /* Only cancel if the tap was on the overlay background itself,
-     * not on a child element (orb, buttons, etc.) */
-    lv_obj_t *target = lv_event_get_target(e);
-    if (target == s_overlay) {
-        ESP_LOGI(TAG, "Overlay background tapped — cancelling");
-        voice_cancel();
-        ui_voice_hide();
-    }
+    (void)e;
+    ESP_LOGI(TAG, "Send/stop button tapped — submitting recording");
+    voice_stop_listening();
+}
+
+static void orb_speak_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Orb tapped during speaking — interrupting TTS");
+    voice_cancel();
 }
