@@ -207,12 +207,15 @@ static void mjpeg_stream_task(void *arg)
         if (s_stop_flag) break;
 
         /* Stream disconnected — retry after delay instead of exiting.
-         * vTaskDelete from Core 1 can crash IDLE1 if heap is fragmented (#18). */
+         * vTaskDelete from Core 1 can crash IDLE1 if heap is fragmented (#18).
+         * Break delay into 100ms chunks so s_stop_flag is checked promptly. */
         ESP_LOGW(TAG, "Stream disconnected, retrying in 2s...");
         if (s_disconnect_cb) {
             s_disconnect_cb();
         }
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        for (int r = 0; r < 20 && !s_stop_flag; r++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
         continue;  /* Retry connection */
     }
 

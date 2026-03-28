@@ -53,11 +53,15 @@ static void stop_voice(void)
     }
 }
 
-// Wait for MJPEG task to actually exit (it sets s_running = false)
+// Wait for MJPEG task to actually exit (it sets s_running = false).
+// HTTP read can block up to 5s + retry delay, so wait up to 8s.
 static void wait_streams_stopped(void)
 {
-    for (int i = 0; i < 20 && tab5_mjpeg_is_running(); i++) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+    for (int i = 0; i < 80 && tab5_mjpeg_is_running(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (tab5_mjpeg_is_running()) {
+        ESP_LOGW(TAG, "MJPEG task did not exit in 8s");
     }
 }
 
