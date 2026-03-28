@@ -22,6 +22,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -402,13 +403,32 @@ static void mic_capture_task(void *arg)
             continue;
         }
 
-        // Extract MIC1 (slot 0) and MIC2 (slot 2), average to mono,
-        // then downsample 48kHz -> 16kHz (take every 3rd frame)
+        // Extract MIC1 (slot 0) and downsample 48kHz -> 16kHz with box filter.
+        // Using MIC1 only — averaging MIC1+MIC2 causes phase cancellation.
+        // Box filter (average of DOWNSAMPLE_RATIO frames) provides anti-alias
+        // rejection vs point-sampling which creates "[MUSIC PLAYING]" artifacts.
         int out_idx = 0;
-        for (int i = 0; i < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
-            int32_t mic1 = tdm_buf[i * MIC_TDM_CHANNELS + 0];  // Slot 0: MIC1
-            int32_t mic2 = tdm_buf[i * MIC_TDM_CHANNELS + 2];  // Slot 2: MIC2
-            mono_buf[out_idx++] = (int16_t)((mic1 + mic2) / 2);
+        for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
+            int32_t sum = 0;
+            for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
+                sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + 0];  // Slot 0: MIC1
+            }
+            mono_buf[out_idx++] = (int16_t)(sum / DOWNSAMPLE_RATIO);
+        }
+
+        // Log audio levels every 50 chunks (~1 second) for debug
+        if (frames_sent % 50 == 0) {
+            int16_t mn = 0, mx = 0;
+            int64_t sqsum = 0;
+            for (int k = 0; k < out_idx; k++) {
+                int16_t v = mono_buf[k];
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+                sqsum += (int64_t)v * v;
+            }
+            float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
+            ESP_LOGI(TAG, "Mic chunk #%d: min=%d max=%d rms=%.0f samples=%d",
+                     frames_sent, mn, mx, rms, out_idx);
         }
 
         // Send 16kHz mono PCM as binary WS frame

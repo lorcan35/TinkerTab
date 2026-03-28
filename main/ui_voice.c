@@ -220,7 +220,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         if (tab5_mode_get() == MODE_VOICE) {
             ESP_LOGI(TAG, "Voice ended, scheduling switch back to STREAMING");
             xTaskCreatePinnedToCore(
-                mode_switch_streaming_task, "mode_stream", 4096, NULL, 5, NULL, 1);
+                mode_switch_streaming_task, "mode_stream", 8192, NULL, 5, NULL, 1);
         }
         if (detail && s_visible) {
             /* Show error briefly before hiding (e.g. "connect failed") */
@@ -1077,7 +1077,7 @@ static void mic_click_cb(lv_event_t *e)
          * (mode_switch blocks 200ms+ which would trip the LVGL watchdog) */
         ESP_LOGI(TAG, "Requesting VOICE mode...");
         xTaskCreatePinnedToCore(
-            mode_switch_voice_task, "mode_voice", 4096, NULL, 5, NULL, 1);
+            mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
         break;
     case VOICE_STATE_READY:
         /* Connected, idle — start listening */

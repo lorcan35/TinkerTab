@@ -75,8 +75,8 @@ static void start_voice(void)
 {
     char dhost[64];
     tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-    // Async connect with auto-listen so UI gets state callbacks
-    voice_connect_async(dhost, TAB5_VOICE_PORT, true);
+    // Connect without auto-listen — user taps mic button again to start recording
+    voice_connect_async(dhost, TAB5_VOICE_PORT, false);
 }
 
 // -------------------------------------------------------------------------
