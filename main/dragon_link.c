@@ -14,6 +14,7 @@
 #include "udp_stream.h"
 #include "touch_ws.h"
 #include "mdns_discovery.h"
+#include "mode_manager.h"
 
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -270,9 +271,7 @@ static void dragon_link_task(void *arg)
         // Check for manual stop
         if (s_stop_requested) {
             s_stop_requested = false;
-            if (s_state == DRAGON_STATE_STREAMING) {
-                stop_streams();
-            }
+            tab5_mode_switch(MODE_IDLE);
             s_state = DRAGON_STATE_IDLE;
             ESP_LOGI(TAG, "Stopped by request");
 
@@ -287,9 +286,7 @@ static void dragon_link_task(void *arg)
 
         // Check WiFi
         if (!tab5_wifi_connected()) {
-            if (s_state == DRAGON_STATE_STREAMING) {
-                stop_streams();
-            }
+            tab5_mode_switch(MODE_IDLE);
             s_state = DRAGON_STATE_IDLE;
             ESP_LOGW(TAG, "WiFi lost, waiting...");
             while (!tab5_wifi_connected()) {
@@ -330,16 +327,19 @@ static void dragon_link_task(void *arg)
             break;
 
         case DRAGON_STATE_CONNECTED:
-            start_streams();
+            tab5_mode_switch(MODE_STREAMING);
             s_state = DRAGON_STATE_STREAMING;
             break;
 
         case DRAGON_STATE_STREAMING:
-            // Monitor for disconnects
-            if (s_mjpeg_disconnected || s_touch_disconnected) {
+            // Monitor for disconnects (only when we're still in STREAMING mode)
+            if (tab5_mode_get() == MODE_VOICE) {
+                // Mode manager switched us to VOICE — don't treat as disconnect
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            } else if (s_mjpeg_disconnected || s_touch_disconnected) {
                 ESP_LOGW(TAG, "Stream lost (mjpeg=%d, touch=%d), reconnecting...",
                          s_mjpeg_disconnected, s_touch_disconnected);
-                stop_streams();
+                tab5_mode_switch(MODE_IDLE);
                 s_state = DRAGON_STATE_RECONNECTING;
                 s_backoff_ms = TAB5_DRAGON_RECONNECT_BASE_MS;
             } else {

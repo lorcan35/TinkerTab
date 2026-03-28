@@ -14,14 +14,21 @@
  */
 
 #include "ui_voice.h"
+#include "mode_manager.h"
 #include "config.h"
 #include "settings.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
 
 static const char *TAG = "ui_voice";
+
+/* Forward declarations for mode switch helper tasks */
+static void mode_switch_voice_task(void *arg);
+static void mode_switch_streaming_task(void *arg);
 
 /* ── Palette — Voice overlay ──────────────────────────────────── */
 #define VO_BG              0x000000
@@ -208,6 +215,13 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 
     switch (state) {
     case VOICE_STATE_IDLE:
+        /* Voice session ended — restore streaming if we were in VOICE mode.
+         * Must defer to a task because we're inside the LVGL mutex here. */
+        if (tab5_mode_get() == MODE_VOICE) {
+            ESP_LOGI(TAG, "Voice ended, scheduling switch back to STREAMING");
+            xTaskCreatePinnedToCore(
+                mode_switch_streaming_task, "mode_stream", 4096, NULL, 5, NULL, 1);
+        }
         if (detail && s_visible) {
             /* Show error briefly before hiding (e.g. "connect failed") */
             stop_all_anims();
@@ -1032,6 +1046,21 @@ static void rec_timer_cb(lv_timer_t *t)
 }
 
 /* ================================================================
+ *  Mode switch helper (runs outside LVGL context to avoid watchdog)
+ * ================================================================ */
+static void mode_switch_voice_task(void *arg)
+{
+    tab5_mode_switch(MODE_VOICE);
+    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
+}
+
+static void mode_switch_streaming_task(void *arg)
+{
+    tab5_mode_switch(MODE_STREAMING);
+    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
+}
+
+/* ================================================================
  *  Click handlers
  * ================================================================ */
 
@@ -1044,13 +1073,11 @@ static void mic_click_cb(lv_event_t *e)
 
     switch (state) {
     case VOICE_STATE_IDLE:
-        /* Not connected — async connect + auto-listen (non-blocking) */
-        ESP_LOGI(TAG, "Connecting to Dragon voice server (async)...");
-        {
-            char dhost[64];
-            tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-            voice_connect_async(dhost, TAB5_VOICE_PORT, true);
-        }
+        /* Not connected — switch to VOICE mode in a separate task
+         * (mode_switch blocks 200ms+ which would trip the LVGL watchdog) */
+        ESP_LOGI(TAG, "Requesting VOICE mode...");
+        xTaskCreatePinnedToCore(
+            mode_switch_voice_task, "mode_voice", 4096, NULL, 5, NULL, 1);
         break;
     case VOICE_STATE_READY:
         /* Connected, idle — start listening */

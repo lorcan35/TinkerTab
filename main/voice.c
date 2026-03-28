@@ -385,7 +385,8 @@ static void mic_capture_task(void *arg)
         heap_caps_free(tdm_buf);
         heap_caps_free(mono_buf);
         s_mic_task = NULL;
-        vTaskDelete(NULL);
+        /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
+    vTaskSuspend(NULL);
         return;
     }
 
@@ -430,7 +431,8 @@ static void mic_capture_task(void *arg)
     heap_caps_free(mono_buf);
     ESP_LOGI(TAG, "Mic capture task exiting");
     s_mic_task = NULL;
-    vTaskDelete(NULL);
+    /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
+    vTaskSuspend(NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +557,8 @@ static void ws_receive_task(void *arg)
     }
 
     ESP_LOGI(TAG, "WS receive task exiting");
-    vTaskDelete(NULL);
+    /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
+    vTaskSuspend(NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +715,8 @@ static void async_connect_task(void *arg)
 
     s_connect_in_progress = false;
     free(args);
-    vTaskDelete(NULL);
+    /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
+    vTaskSuspend(NULL);
 }
 
 esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,

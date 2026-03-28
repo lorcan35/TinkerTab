@@ -205,7 +205,9 @@ static void touch_ws_task(void *arg)
     s_running = false;
     s_task_handle = NULL;
     ESP_LOGI(TAG, "Touch WS task exiting (stop requested)");
-    vTaskDelete(NULL);
+    /* Do NOT call vTaskDelete(NULL) — TLSP cleanup crashes IDLE task on P4 (#18).
+     * Instead, suspend forever. Task handle is NULL so it won't be re-stopped. */
+    vTaskSuspend(NULL);
 }
 
 void tab5_touch_ws_start(void)

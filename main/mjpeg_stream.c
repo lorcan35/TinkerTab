@@ -57,7 +57,7 @@ static void mjpeg_stream_task(void *arg)
     if (!s_jpeg_buf) {
         ESP_LOGE(TAG, "Failed to allocate JPEG buffer (%d bytes)", TAB5_JPEG_BUF_SIZE);
         s_running = false;
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
         return;
     }
 
@@ -68,7 +68,7 @@ static void mjpeg_stream_task(void *arg)
         heap_caps_free(s_jpeg_buf);
         s_jpeg_buf = NULL;
         s_running = false;
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
         return;
     }
 
@@ -232,7 +232,9 @@ static void mjpeg_stream_task(void *arg)
      * Only call here if we're stopping cleanly without prior disconnect. */
 
     ESP_LOGI(TAG, "MJPEG task exiting");
-    vTaskDelete(NULL);
+    /* Do NOT call vTaskDelete(NULL) — TLSP cleanup crashes IDLE task on P4 (#18).
+     * Suspend forever instead. */
+    vTaskSuspend(NULL);
 }
 
 void tab5_mjpeg_start(void)

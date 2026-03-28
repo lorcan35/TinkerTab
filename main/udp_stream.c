@@ -365,7 +365,7 @@ exit_task:
     }
 
     ESP_LOGI(TAG, "UDP stream task exiting");
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
 }
 
 /* ---------------------------------------------------------------------- */

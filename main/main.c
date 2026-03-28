@@ -46,6 +46,8 @@
 #include "ui_voice.h"
 #include "settings.h"
 #include "debug_server.h"
+#include "voice.h"
+#include "mode_manager.h"
 
 static const char *TAG = "tab5";
 
@@ -88,6 +90,69 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
     ui_keyboard_init(NULL);
     ui_voice_init();
     ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
+}
+
+// Voice E2E test task — uses mode manager for clean MJPEG↔voice switching
+static void voice_test_task(void *arg)
+{
+    printf("[voice_test] Mode: %s, heap: %lu\n",
+           tab5_mode_str(), (unsigned long)esp_get_free_heap_size());
+
+    // Switch to VOICE mode — stops MJPEG, starts voice connect
+    printf("[voice_test] Switching to VOICE mode...\n");
+    esp_err_t mr = tab5_mode_switch(MODE_VOICE);
+    if (mr != ESP_OK) {
+        printf("[voice_test] Mode switch failed: %s\n", esp_err_to_name(mr));
+        vTaskSuspend(NULL);
+        return;
+    }
+    printf("[voice_test] Now in %s mode, heap: %lu\n",
+           tab5_mode_str(), (unsigned long)esp_get_free_heap_size());
+
+    // voice_connect_async was called by mode_switch — wait for connection
+    for (int w = 0; w < 20; w++) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        voice_state_t vs = voice_get_state();
+        if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_READY) {
+            printf("[voice_test] Voice connected! state=%d\n", vs);
+            break;
+        }
+        if (vs == VOICE_STATE_IDLE && w > 4) {
+            printf("[voice_test] Voice failed to connect\n");
+            goto done;
+        }
+    }
+
+    // Record for 3 seconds
+    voice_state_t vs = voice_get_state();
+    if (vs == VOICE_STATE_READY) {
+        voice_start_listening();
+    }
+    if (voice_get_state() == VOICE_STATE_LISTENING) {
+        printf("[voice_test] Recording 3s...\n");
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        voice_stop_listening();
+        printf("[voice_test] Stopped, waiting for Dragon response...\n");
+
+        // Wait for processing + playback to complete
+        for (int w = 0; w < 60; w++) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            vs = voice_get_state();
+            if (vs == VOICE_STATE_READY || vs == VOICE_STATE_IDLE) {
+                printf("[voice_test] Done! Transcript: %s\n",
+                       voice_get_last_transcript());
+                break;
+            }
+            if (w % 4 == 0) printf("[voice_test] waiting... state=%d\n", vs);
+        }
+    }
+
+done:
+    // Switch back to STREAMING — stops voice, resumes MJPEG
+    printf("[voice_test] Switching back to STREAMING...\n");
+    tab5_mode_switch(MODE_STREAMING);
+    printf("[voice_test] Complete. Mode: %s\n", tab5_mode_str());
+    vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
 }
 
 void app_main(void)
@@ -323,6 +388,8 @@ void app_main(void)
         if (ret == ESP_OK) {
             s_wifi_ok = true;
             ESP_LOGI(TAG, "WiFi connected!");
+            // Init mode manager (must be before dragon_link)
+            tab5_mode_init();
             // Start Dragon link (discovers and connects to Dragon Q6A)
             tab5_dragon_link_init();
         } else {
@@ -421,6 +488,9 @@ void app_main(void)
                         printf("RTC: %s\n", s_rtc_ok ? "ready" : "not init");
                         printf("Battery: %s\n", s_bat_ok ? "ready" : "not init");
                         printf("BLE: stub (waiting for ESP-Hosted support)\n");
+                        printf("Mode: %s\n", tab5_mode_str());
+                    } else if (strcmp(cmd_buf, "mode") == 0) {
+                        printf("Mode: %s\n", tab5_mode_str());
                     } else if (strcmp(cmd_buf, "heap") == 0) {
                         printf("Heap: %lu / PSRAM: %lu\n",
                                (unsigned long)esp_get_free_heap_size(),
@@ -648,6 +718,14 @@ void app_main(void)
                                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                         ESP_LOGI(TAG, "Reset reason: %d", (int)esp_reset_reason());
                         printf("Task count: %lu\n", (unsigned long)uxTaskGetNumberOfTasks());
+                    } else if (strcmp(cmd_buf, "voice") == 0) {
+                        if (!s_mic_ok || !s_audio_ok) {
+                            printf("Voice: audio/mic not initialized\n");
+                        } else {
+                            printf("Spawning voice test task...\n");
+                            xTaskCreatePinnedToCore(voice_test_task, "voice_test",
+                                                    16384, NULL, 5, NULL, 1);
+                        }
                     } else if (strcmp(cmd_buf, "reboot") == 0) {
                         printf("Rebooting...\n");
                         vTaskDelay(pdMS_TO_TICKS(100));
@@ -656,7 +734,7 @@ void app_main(void)
                         printf("Unknown: %s\n", cmd_buf);
                         printf("Commands: info, heap, wifi, stream, scan,\n"
                                "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
-                               "  touch, touchdiag, sd, cam, audio, mic, imu, rtc, ntp, bat, reboot\n");
+                               "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat, reboot\n");
                     }
                 }
                 pos = 0;
