@@ -146,8 +146,10 @@ esp_err_t tab5_mode_switch(tab5_mode_t new_mode)
     // --- Phase 3: Start services for new mode ---
     switch (new_mode) {
     case MODE_STREAMING:
-    case MODE_BROWSING:
         start_streaming();
+        break;
+    case MODE_BROWSING:
+        // Connected to Dragon but no active streaming — don't start MJPEG
         break;
     case MODE_VOICE:
         start_voice();

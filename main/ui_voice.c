@@ -28,7 +28,7 @@ static const char *TAG = "ui_voice";
 
 /* Forward declarations for mode switch helper tasks */
 static void mode_switch_voice_task(void *arg);
-static void mode_switch_streaming_task(void *arg);
+static void mode_switch_idle_task(void *arg);
 
 /* ── Palette — Voice overlay ──────────────────────────────────── */
 #define VO_BG              0x000000
@@ -216,12 +216,12 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 
     switch (state) {
     case VOICE_STATE_IDLE:
-        /* Voice session ended — restore streaming if we were in VOICE mode.
+        /* Voice session ended — return to IDLE (no auto-streaming).
          * Must defer to a task because we're inside the LVGL mutex here. */
         if (tab5_mode_get() == MODE_VOICE) {
-            ESP_LOGI(TAG, "Voice ended, scheduling switch back to STREAMING");
+            ESP_LOGI(TAG, "Voice ended, scheduling switch to IDLE");
             xTaskCreatePinnedToCore(
-                mode_switch_streaming_task, "mode_stream", 8192, NULL, 5, NULL, 1);
+                mode_switch_idle_task, "mode_idle", 8192, NULL, 5, NULL, 1);
         }
         if (detail && s_visible) {
             /* Show error briefly before hiding (e.g. "connect failed") */
@@ -1078,9 +1078,9 @@ static void mode_switch_voice_task(void *arg)
     vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
 }
 
-static void mode_switch_streaming_task(void *arg)
+static void mode_switch_idle_task(void *arg)
 {
-    tab5_mode_switch(MODE_STREAMING);
+    tab5_mode_switch(MODE_IDLE);
     vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
 }
 

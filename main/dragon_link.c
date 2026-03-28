@@ -47,20 +47,8 @@ static volatile bool s_mjpeg_disconnected = false;
 static volatile bool s_touch_disconnected = false;
 
 // -------------------------------------------------------------------------
-// Callbacks from MJPEG and touch WS tasks
+// Callbacks from MJPEG and touch WS tasks — passed to stream start APIs
 // -------------------------------------------------------------------------
-
-static void on_mjpeg_disconnect(void)
-{
-    ESP_LOGW(TAG, "MJPEG stream disconnected");
-    s_mjpeg_disconnected = true;
-}
-
-static void on_udp_disconnect(void)
-{
-    ESP_LOGW(TAG, "UDP stream disconnected");
-    s_mjpeg_disconnected = true;  /* Reuse same flag — triggers reconnect */
-}
 
 static void on_touch_disconnect(void)
 {
@@ -290,24 +278,26 @@ static void dragon_link_task(void *arg)
             break;
 
         case DRAGON_STATE_CONNECTED:
-            tab5_mode_switch(MODE_STREAMING);
-            s_state = DRAGON_STATE_STREAMING;
+            // Dragon is reachable — don't auto-start MJPEG streaming.
+            // User explicitly starts streaming from the UI when they want it.
+            ESP_LOGI(TAG, "Dragon connected (idle — no auto-stream)");
+            s_state = DRAGON_STATE_STREAMING;  // reuse state for "connected" monitoring
             break;
 
         case DRAGON_STATE_STREAMING:
-            // Monitor for disconnects (only when we're still in STREAMING mode)
-            if (tab5_mode_get() == MODE_VOICE) {
-                // Mode manager switched us to VOICE — don't treat as disconnect
-                vTaskDelay(pdMS_TO_TICKS(1000));
-            } else if (s_mjpeg_disconnected || s_touch_disconnected) {
-                ESP_LOGW(TAG, "Stream lost (mjpeg=%d, touch=%d), reconnecting...",
-                         s_mjpeg_disconnected, s_touch_disconnected);
-                tab5_mode_switch(MODE_IDLE);
-                s_state = DRAGON_STATE_RECONNECTING;
-                s_backoff_ms = TAB5_DRAGON_RECONNECT_BASE_MS;
-            } else {
-                // All good — just check periodically
-                vTaskDelay(pdMS_TO_TICKS(1000));
+            // Monitor Dragon connectivity. MJPEG only runs if user started it.
+            {
+                tab5_mode_t cur = tab5_mode_get();
+                if (cur == MODE_STREAMING && (s_mjpeg_disconnected || s_touch_disconnected)) {
+                    // Only reconnect streams if user explicitly started streaming
+                    ESP_LOGW(TAG, "Stream lost (mjpeg=%d, touch=%d), reconnecting...",
+                             s_mjpeg_disconnected, s_touch_disconnected);
+                    tab5_mode_switch(MODE_IDLE);
+                    s_state = DRAGON_STATE_RECONNECTING;
+                    s_backoff_ms = TAB5_DRAGON_RECONNECT_BASE_MS;
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                }
             }
             break;
 
