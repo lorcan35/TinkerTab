@@ -632,6 +632,12 @@ void app_main(void)
                                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                         ESP_LOGI(TAG, "Reset reason: %d", (int)esp_reset_reason());
                         printf("Task count: %lu\n", (unsigned long)uxTaskGetNumberOfTasks());
+                    } else if (strcmp(cmd_buf, "micdiag") == 0) {
+                        if (s_mic_ok) {
+                            tab5_mic_diag();
+                        } else {
+                            printf("Mic: not initialized\n");
+                        }
                     } else if (strcmp(cmd_buf, "services") == 0) {
                         tab5_services_print_status();
                     } else if (strcmp(cmd_buf, "voice") == 0) {

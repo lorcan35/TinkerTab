@@ -54,3 +54,6 @@ esp_err_t tab5_mic_read(int16_t *buf, size_t samples, uint32_t timeout_ms);
 
 /** Set microphone gain in dB (0-36). */
 esp_err_t tab5_mic_set_gain(uint8_t gain_db);
+
+/** Print ES7210 register dump + raw TDM data diagnostic. */
+void tab5_mic_diag(void);
