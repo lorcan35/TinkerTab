@@ -48,6 +48,7 @@
 #include "debug_server.h"
 #include "voice.h"
 #include "mode_manager.h"
+#include "service_registry.h"
 
 static const char *TAG = "tab5";
 
@@ -196,25 +197,18 @@ void app_main(void)
              (unsigned long)esp_get_minimum_free_heap_size(),
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    // Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
     // Set timezone to UAE (Gulf Standard Time, UTC+4)
     setenv("TZ", "GST-4", 1);
     tzset();
 
-    // Initialize persistent settings (NVS-backed)
-    ret = tab5_settings_init();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Settings init failed: %s (using compile-time defaults)", esp_err_to_name(ret));
-    }
+    // Register all services (no init yet — just populate the registry)
+    tab5_services_register_all();
+
+    // --- Layer 0: Platform init (I2C bus, IO expanders) ---
+    // Services need the I2C bus to exist before their init() runs.
 
     // Initialize I2C bus
+    esp_err_t ret;
     ESP_LOGI(TAG, "Initializing I2C (SDA=%d, SCL=%d)...", TAB5_I2C_SDA, TAB5_I2C_SCL);
     ret = init_i2c();
     if (ret != ESP_OK) {
@@ -244,53 +238,13 @@ void app_main(void)
         }
     }
 
-    // Initialize MIPI DSI display
-    ESP_LOGI(TAG, "Initializing display...");
-    ret = tab5_display_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Display init failed: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "Display initialized!");
-
-        // Apply stored brightness
-        tab5_display_set_brightness(tab5_settings_get_brightness());
-
-        // Initialize hardware JPEG decoder
-        ret = tab5_display_jpeg_init();
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "JPEG decoder init failed: %s (MJPEG streaming will not work)", esp_err_to_name(ret));
-        }
-    }
-
-    // Initialize touch
-    if (s_i2c_bus) {
-        ESP_LOGI(TAG, "Initializing touch...");
-        ret = tab5_touch_init(s_i2c_bus);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Touch init failed: %s", esp_err_to_name(ret));
-        } else {
-            ESP_LOGI(TAG, "Touch initialized!");
-            s_touch_ok = true;
-        }
-    }
+    // --- Layer 1: Init all services (allocate, configure hardware) ---
+    tab5_services_init_all();
 
     // Show blue screen while booting (LVGL init deferred until after WiFi)
     tab5_display_fill_color(0x001F);
 
-    // Initialize SD card
-    ESP_LOGI(TAG, "Initializing SD card...");
-    ret = tab5_sdcard_init();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "SD card init failed: %s (continuing without SD)", esp_err_to_name(ret));
-    } else {
-        s_sd_ok = true;
-        ESP_LOGI(TAG, "SD card mounted at %s (%.1f GB total, %.1f GB free)",
-                 tab5_sdcard_mount_point(),
-                 tab5_sdcard_total_bytes() / 1073741824.0,
-                 tab5_sdcard_free_bytes() / 1073741824.0);
-    }
-
-    // Initialize camera (SC2336 MIPI-CSI)
+    // Peripheral drivers not yet wrapped as services (camera, IMU, RTC, battery)
     if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing camera (SC2336)...");
         ret = tab5_camera_init();
@@ -298,50 +252,16 @@ void app_main(void)
             ESP_LOGW(TAG, "Camera init failed: %s", esp_err_to_name(ret));
         } else {
             s_cam_ok = true;
-            ESP_LOGI(TAG, "Camera initialized: %s", tab5_camera_info());
         }
-    }
 
-    // Initialize audio codec (ES8388) and speaker
-    if (s_i2c_bus) {
-        ESP_LOGI(TAG, "Initializing audio (ES8388)...");
-        ret = tab5_audio_init(s_i2c_bus);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Audio init failed: %s", esp_err_to_name(ret));
-        } else {
-            s_audio_ok = true;
-            // Apply stored volume
-            tab5_audio_set_volume(tab5_settings_get_volume());
-            ESP_LOGI(TAG, "Audio codec initialized (volume %d%%)", tab5_settings_get_volume());
-        }
-    }
-
-    // Initialize dual microphone (ES7210)
-    if (s_i2c_bus) {
-        ESP_LOGI(TAG, "Initializing mic (ES7210)...");
-        ret = tab5_mic_init(s_i2c_bus);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Mic init failed: %s", esp_err_to_name(ret));
-        } else {
-            s_mic_ok = true;
-            ESP_LOGI(TAG, "Dual mic initialized");
-        }
-    }
-
-    // Initialize IMU (BMI270)
-    if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing IMU (BMI270)...");
         ret = tab5_imu_init(s_i2c_bus);
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "IMU init failed: %s", esp_err_to_name(ret));
         } else {
             s_imu_ok = true;
-            ESP_LOGI(TAG, "IMU initialized");
         }
-    }
 
-    // Initialize RTC (RX8130CE)
-    if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing RTC (RX8130CE)...");
         ret = tab5_rtc_init(s_i2c_bus);
         if (ret != ESP_OK) {
@@ -354,10 +274,7 @@ void app_main(void)
                          t.year, t.month, t.day, t.hour, t.minute, t.second);
             }
         }
-    }
 
-    // Initialize battery monitor (INA226)
-    if (s_i2c_bus) {
         ESP_LOGI(TAG, "Initializing battery monitor (INA226)...");
         ret = tab5_battery_init(s_i2c_bus);
         if (ret != ESP_OK) {
@@ -372,29 +289,23 @@ void app_main(void)
         }
     }
 
-    // Initialize WiFi via ESP-Hosted (ESP32-C6 co-processor over SDIO)
+    // --- Layer 2: Start core services ---
+    tab5_services_start(SERVICE_STORAGE);
+    tab5_services_start(SERVICE_DISPLAY);
+    tab5_services_start(SERVICE_AUDIO);
+    tab5_services_start(SERVICE_NETWORK);
+
+    // Derive convenience flags from service state
     static bool s_wifi_ok = false;
-    ESP_LOGI(TAG, "Initializing WiFi (ESP-Hosted SDIO → C6)...");
-    ret = tab5_wifi_init();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "WiFi init failed: %s (continuing without WiFi)", esp_err_to_name(ret));
-    } else {
-        {
-            char ssid_buf[33];
-            tab5_settings_get_wifi_ssid(ssid_buf, sizeof(ssid_buf));
-            ESP_LOGI(TAG, "WiFi connecting to %s...", ssid_buf);
-        }
-        ret = tab5_wifi_wait_connected(15000);
-        if (ret == ESP_OK) {
-            s_wifi_ok = true;
-            ESP_LOGI(TAG, "WiFi connected!");
-            // Init mode manager (must be before dragon_link)
-            tab5_mode_init();
-            // Start Dragon link (discovers and connects to Dragon Q6A)
-            tab5_dragon_link_init();
-        } else {
-            ESP_LOGW(TAG, "WiFi connection failed/timeout: %s", esp_err_to_name(ret));
-        }
+    s_wifi_ok = tab5_services_is_running(SERVICE_NETWORK);
+    s_touch_ok = (tab5_services_get_state(SERVICE_DISPLAY) != SERVICE_STATE_ERROR);
+    s_sd_ok = (tab5_services_get_state(SERVICE_STORAGE) != SERVICE_STATE_ERROR);
+    s_audio_ok = (tab5_services_get_state(SERVICE_AUDIO) != SERVICE_STATE_ERROR);
+    s_mic_ok = s_audio_ok; /* mic init is part of audio service */
+
+    // --- Layer 3: Start Dragon (needs WiFi) ---
+    if (s_wifi_ok) {
+        tab5_services_start(SERVICE_DRAGON);
     }
 
     // Initialize LVGL UI layer (deferred until after WiFi to avoid PSRAM contention)
@@ -454,6 +365,9 @@ void app_main(void)
         }
     }
 
+    // Print service status table
+    tab5_services_print_status();
+
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
              s_wifi_ok ? "Y" : "N", s_touch_ok ? "Y" : "N",
              s_sd_ok ? "Y" : "N", s_cam_ok ? "Y" : "N",
@@ -461,7 +375,7 @@ void app_main(void)
              s_imu_ok ? "Y" : "N", s_rtc_ok ? "Y" : "N", s_bat_ok ? "Y" : "N");
     printf("\nTinkerTab ready. Commands: info, heap, wifi, dragon, stream, scan,\n"
            "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
-           "  touch, touchdiag, sd, cam, audio, mic, imu, rtc, bat, reboot\n\n");
+           "  touch, touchdiag, sd, cam, audio, mic, imu, rtc, bat, services, reboot\n\n");
 
     // Serial command loop
     char cmd_buf[128];
@@ -718,6 +632,8 @@ void app_main(void)
                                  (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
                         ESP_LOGI(TAG, "Reset reason: %d", (int)esp_reset_reason());
                         printf("Task count: %lu\n", (unsigned long)uxTaskGetNumberOfTasks());
+                    } else if (strcmp(cmd_buf, "services") == 0) {
+                        tab5_services_print_status();
                     } else if (strcmp(cmd_buf, "voice") == 0) {
                         if (!s_mic_ok || !s_audio_ok) {
                             printf("Voice: audio/mic not initialized\n");

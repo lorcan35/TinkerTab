@@ -197,43 +197,6 @@ static bool do_handshake(void)
     return true;
 }
 
-static void start_streams(void)
-{
-    s_mjpeg_disconnected = false;
-    s_touch_disconnected = false;
-
-    // Register disconnect callbacks
-    tab5_touch_ws_set_disconnect_cb(on_touch_disconnect);
-
-    // Prefer UDP streaming when Dragon supports it
-    if (s_udp_supported) {
-        udp_stream_set_disconnect_cb(on_udp_disconnect);
-        udp_stream_start();
-        ESP_LOGI(TAG, "UDP stream + touch WS started (low-latency mode)");
-    } else {
-        tab5_mjpeg_set_disconnect_cb(on_mjpeg_disconnect);
-        tab5_mjpeg_start();
-        ESP_LOGI(TAG, "MJPEG + touch WS started (HTTP fallback)");
-    }
-
-    tab5_touch_ws_start();
-}
-
-static void stop_streams(void)
-{
-    if (udp_stream_is_active()) {
-        udp_stream_stop();
-    }
-    if (tab5_mjpeg_is_running()) {
-        tab5_mjpeg_stop();
-    }
-    tab5_touch_ws_stop();
-
-    // Wait briefly for tasks to wind down
-    vTaskDelay(pdMS_TO_TICKS(500));
-    ESP_LOGI(TAG, "Streams stopped");
-}
-
 // -------------------------------------------------------------------------
 // Main task
 // -------------------------------------------------------------------------

@@ -4,6 +4,8 @@ idf_component_register(
          "audio.c" "mic.c" "imu.c" "rtc.c" "battery.c" "bluetooth.c"
          "dragon_link.c" "mjpeg_stream.c" "udp_stream.c" "touch_ws.c" "voice.c" "mode_manager.c"
          "mdns_discovery.c" "debug_server.c"
+         "service_registry.c" "service_storage.c" "service_display.c"
+         "service_audio.c" "service_network.c" "service_dragon.c"
          "ui_core.c" "ui_splash.c" "ui_home.c" "ui_settings.c"
          "ui_camera.c" "ui_files.c" "ui_audio.c" "ui_keyboard.c" "ui_voice.c" "ui_wifi.c"
          "settings.c"
