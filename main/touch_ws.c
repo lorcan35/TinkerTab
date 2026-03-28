@@ -229,11 +229,25 @@ void tab5_touch_ws_stop(void)
 {
     if (!s_running) return;
 
+    /* Close and destroy the transport under mutex so no in-flight send
+     * can use a stale handle.  The task will see s_ws==NULL and exit. */
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     s_stop_flag = true;
     s_connected = false;
+    if (s_ws) {
+        esp_transport_close(s_ws);
+        esp_transport_destroy(s_ws);
+        s_ws = NULL;
+    }
     xSemaphoreGive(s_ws_mutex);
-    // Task will exit on next loop iteration
+
+    // Wait for task to actually exit
+    for (int i = 0; i < 40 && s_running; i++) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (s_running) {
+        ESP_LOGW("touch_ws", "Touch WS task did not exit in 2s");
+    }
 }
 
 void tab5_touch_ws_send(const tab5_touch_point_t *points, uint8_t count)
