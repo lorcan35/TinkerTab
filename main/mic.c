@@ -93,8 +93,8 @@ static esp_err_t es7210_read(uint8_t reg, uint8_t *val)
 static void es7210_dump_regs(void)
 {
     static const uint8_t regs[] = {
-        0x00, 0x01, 0x02, 0x03, 0x06, 0x07, 0x08,
-        0x11, 0x12, 0x14, 0x15,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x11, 0x12, 0x14, 0x15,
         0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
         0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C
     };
@@ -151,25 +151,58 @@ static esp_err_t es7210_adc_init(void)
     // TDM mode ENABLED (0x02)
     ESP_RETURN_ON_ERROR(es7210_write(ES7210_SDP_INT2_CFG, 0x02), TAG, "sdp2 TDM failed");
 
-    // --- Step 7: Mic gain — PGA enable (bit4) + gain value ---
+    // --- Step 7: Mic select — follows reference driver es7210_mic_select() ---
+    // Must power-down then power-up each mic pair, and set clock gates per-pair.
     uint8_t gain_val = (s_mic_gain > 37) ? 0x0E : (s_mic_gain * 2 / 5);
-    uint8_t gain_reg = 0x10 | gain_val;  // bit4 = PGA enable
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC1_GAIN, gain_reg), TAG, "mic1 gain failed");
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC2_GAIN, gain_reg), TAG, "mic2 gain failed");
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC3_GAIN, gain_reg), TAG, "mic3 gain failed");
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC4_GAIN, gain_reg), TAG, "mic4 gain failed");
 
-    // --- Step 8: Power up all 4 mics ---
+    // First: disable PGA on all channels, power down mic pairs
+    for (int i = 0; i < 4; i++) {
+        uint8_t reg = ES7210_MIC1_GAIN + i;
+        uint8_t cur = 0;
+        es7210_read(reg, &cur);
+        ESP_RETURN_ON_ERROR(es7210_write(reg, cur & ~0x10), TAG, "pga disable failed");
+    }
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC12_POWER, 0xFF), TAG, "mic12 pwr down failed");
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC34_POWER, 0xFF), TAG, "mic34 pwr down failed");
+
+    // MIC1+MIC2: enable clock bits 0,1,3 (mask 0x0b) via read-modify-write
+    {
+        uint8_t clk = 0;
+        es7210_read(ES7210_CLK_ON_OFF, &clk);
+        clk = (clk & ~0x0b) | (0x0b & 0x00);  // Clear bits 0,1,3
+        ESP_RETURN_ON_ERROR(es7210_write(ES7210_CLK_ON_OFF, clk), TAG, "clk mic12 failed");
+    }
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC12_POWER, 0x00), TAG, "mic12 pwr up failed");
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC1_GAIN, 0x10 | gain_val), TAG, "mic1 gain failed");
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC2_GAIN, 0x10 | gain_val), TAG, "mic2 gain failed");
+
+    // MIC3+MIC4: enable clock bits 0,2,4 (mask 0x15) via read-modify-write
+    {
+        uint8_t clk = 0;
+        es7210_read(ES7210_CLK_ON_OFF, &clk);
+        clk = (clk & ~0x15) | (0x15 & 0x00);  // Clear bits 0,2,4
+        ESP_RETURN_ON_ERROR(es7210_write(ES7210_CLK_ON_OFF, clk), TAG, "clk mic34 failed");
+    }
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC34_POWER, 0x00), TAG, "mic34 pwr up failed");
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC3_GAIN, 0x10 | gain_val), TAG, "mic3 gain failed");
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC4_GAIN, 0x10 | gain_val), TAG, "mic4 gain failed");
+
+    // --- Step 8: Power up individual mic channels ---
     ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC1_POWER, 0x08), TAG, "mic1 pwr failed");
     ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC2_POWER, 0x08), TAG, "mic2 pwr failed");
     ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC3_POWER, 0x08), TAG, "mic3 pwr failed");
     ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC4_POWER, 0x08), TAG, "mic4 pwr failed");
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC12_POWER, 0x00), TAG, "mic12 bias pwr failed");
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_MIC34_POWER, 0x00), TAG, "mic34 bias pwr failed");
 
-    // Enable clocks for all 4 mics: clear bits 0-3 of CLK_ON_OFF
-    // 0x3F & ~0x0F = 0x30 (bits 4-5 stay set, bits 0-3 cleared = clocks ON)
-    ESP_RETURN_ON_ERROR(es7210_write(ES7210_CLK_ON_OFF, 0x30), TAG, "clk enable failed");
+    // After mic select: CLK_ON_OFF = 0x20 (bit 5 = MCLK gated).
+    // With MONO TDM, ESP32-P4 generates correct MCLK=12.288MHz.
+    // Enable ALL clocks including MCLK (bit 5=0) so ES7210 uses external MCLK
+    // directly instead of DLL from BCLK, which may cause 25% duty cycle.
+    ESP_RETURN_ON_ERROR(es7210_write(ES7210_CLK_ON_OFF, 0x00), TAG, "clk all-on failed");
+    {
+        uint8_t clk_verify = 0xFF;
+        es7210_read(ES7210_CLK_ON_OFF, &clk_verify);
+        ESP_LOGI(TAG, "CLK_ON_OFF final = 0x%02X (expect 0x00)", clk_verify);
+    }
 
     // --- Step 9: Enable digital, unmute ---
     ESP_RETURN_ON_ERROR(es7210_write(ES7210_DIGITAL_PDN, 0x00), TAG, "digital pdn failed");
@@ -182,8 +215,8 @@ static esp_err_t es7210_adc_init(void)
 
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    ESP_LOGI(TAG, "ES7210 initialized (4-ch TDM slave, gain=%ddB reg=0x%02X)",
-             s_mic_gain, gain_reg);
+    ESP_LOGI(TAG, "ES7210 initialized (4-ch TDM slave, gain=%ddB pga=0x%02X)",
+             s_mic_gain, (uint8_t)(0x10 | gain_val));
     return ESP_OK;
 }
 

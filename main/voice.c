@@ -47,7 +47,7 @@ static const char *TAG = "tab5_voice";
 #define VOICE_CHUNK_SAMPLES    (TAB5_VOICE_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define VOICE_CHUNK_BYTES      (VOICE_CHUNK_SAMPLES * sizeof(int16_t))
 
-// Input: 20ms of 48kHz, 4 TDM channels = 960 frames x 4 ch = 3840 samples
+// Input: 20ms of 48kHz, 4 TDM channels = 960 frames × 4 ch = 3840 samples
 #define MIC_48K_FRAMES         (TAB5_AUDIO_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define MIC_TDM_CHANNELS       4
 #define MIC_TDM_SAMPLES        (MIC_48K_FRAMES * MIC_TDM_CHANNELS)
