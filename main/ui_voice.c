@@ -281,8 +281,10 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
-        /* Make orb tappable to start recording */
+        /* Make orb tappable to start recording.
+         * Remove first to avoid stacking duplicate callbacks on re-entry. */
         lv_obj_add_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
         lv_obj_add_event_cb(s_orb_container, orb_ready_click_cb, LV_EVENT_CLICKED, NULL);
         break;
     case VOICE_STATE_LISTENING:
