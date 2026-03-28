@@ -581,11 +581,8 @@ static esp_err_t crashlog_handler(httpd_req_t *req)
     if (cd_ret == ESP_OK) {
         cJSON_AddBoolToObject(root, "coredump_present", true);
         cJSON_AddNumberToObject(root, "exc_pc", (double)summary.exc_pc);
-
-        /* exc_task is a char array — the task name that crashed */
         cJSON_AddStringToObject(root, "exc_task", summary.exc_task);
 
-        /* Backtrace addresses */
         cJSON *bt = cJSON_CreateArray();
         if (bt) {
             for (int i = 0; i < summary.exc_bt_info.depth && i < 32; i++) {
@@ -604,7 +601,6 @@ static esp_err_t crashlog_handler(httpd_req_t *req)
             : "Core dump read error");
     }
 
-    /* Heap stats for context */
     cJSON_AddNumberToObject(root, "heap_free", (double)esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "heap_min", (double)esp_get_minimum_free_heap_size());
 
@@ -635,7 +631,7 @@ esp_err_t tab5_debug_server_init(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
-    config.stack_size  = 12288;  /* 12 KB — 8 KB was tight with WiFi scan concurrent */
+    config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
     config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
 
