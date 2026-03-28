@@ -1102,8 +1102,8 @@ static void mic_click_cb(lv_event_t *e)
             mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
         break;
     case VOICE_STATE_READY:
-        /* Connected, idle — start listening */
-        voice_start_listening();
+        /* Connected — show overlay with "Tap to Record" prompt.
+         * Do NOT auto-start listening; user must tap the orb. */
         break;
     case VOICE_STATE_LISTENING:
         /* Recording — stop and send for processing */
