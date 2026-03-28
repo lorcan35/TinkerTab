@@ -260,6 +260,8 @@ class VoiceServer:
             async for msg in ws:
                 if msg.type == WSMsgType.BINARY:
                     # Raw PCM audio data
+                    logger.debug("Session %s: binary frame %d bytes (buf=%d)",
+                                 session_id, len(msg.data), len(pipeline._audio_buffer))
                     await pipeline.feed_audio(msg.data)
 
                 elif msg.type == WSMsgType.TEXT:
@@ -277,7 +279,9 @@ class VoiceServer:
                         logger.info("Session %s: start (history cleared)", session_id)
 
                     elif cmd_type == "stop":
-                        logger.info("Session %s: stop (processing buffered audio)", session_id)
+                        buf_size = len(pipeline._audio_buffer)
+                        logger.info("Session %s: stop (buffer=%d bytes, processing=%s)",
+                                    session_id, buf_size, pipeline._processing)
                         await pipeline.start_processing()
 
                     elif cmd_type == "cancel":
