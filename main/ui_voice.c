@@ -108,6 +108,7 @@ static void mic_click_cb(lv_event_t *e);
 static void close_click_cb(lv_event_t *e);
 static void send_click_cb(lv_event_t *e);
 static void orb_speak_click_cb(lv_event_t *e);
+static void orb_ready_click_cb(lv_event_t *e);
 static void mic_dot_pulse_cb(void *obj, int32_t val);
 
 static void start_breathe_anim(void);
@@ -262,11 +263,27 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         start_pulse_anim();
         break;
     case VOICE_STATE_READY:
-        if (s_visible) {
-            /* Just finished speaking — auto-hide after delay */
-            s_hide_timer = lv_timer_create(auto_hide_timer_cb, ANIM_HIDE_DELAY_MS, NULL);
-            lv_timer_set_repeat_count(s_hide_timer, 1);
+        /* Show "Tap to Record" prompt — user must explicitly tap to start */
+        if (!s_visible) {
+            ui_voice_show();
         }
+        stop_all_anims();
+        lv_label_set_text(s_lbl_status, "Tap to Record");
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
+        lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + 40);
+        set_orb_color(VO_CYAN, VO_CYAN_DIM, LV_OPA_50);
+        set_orb_size(ORB_SZ_LISTEN);
+        start_breathe_anim();
+        /* Hide elements from other states */
+        lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+        /* Make orb tappable to start recording */
+        lv_obj_add_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_orb_container, orb_ready_click_cb, LV_EVENT_CLICKED, NULL);
         break;
     case VOICE_STATE_LISTENING:
         if (!s_visible) {
@@ -608,6 +625,10 @@ static void show_state_listening(void)
 {
     stop_all_anims();
 
+    /* Clean up READY-state orb click handler if still attached */
+    lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
+
     /* Orb: cyan, 200px, breathing */
     set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_60);
     set_orb_size(ORB_SZ_LISTEN);
@@ -736,11 +757,12 @@ static void show_state_idle(void)
 {
     stop_all_anims();
 
-    /* Clean up listening/speaking elements */
+    /* Clean up listening/speaking/ready elements */
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_event_cb(s_orb_container, orb_speak_click_cb);
+    lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
 
     if (s_visible) {
         ui_voice_hide();
@@ -1111,6 +1133,16 @@ static void send_click_cb(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Send/stop button tapped — submitting recording");
     voice_stop_listening();
+}
+
+static void orb_ready_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Orb tapped in READY state — starting recording");
+    /* Remove this handler before starting (listening state has its own UI) */
+    lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
+    voice_start_listening();
 }
 
 static void orb_speak_click_cb(lv_event_t *e)
