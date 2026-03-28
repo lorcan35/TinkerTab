@@ -149,6 +149,19 @@ class VoicePipeline:
 
         audio_data = bytes(self._audio_buffer)
         self._audio_buffer.clear()
+
+        # Debug: save incoming audio as WAV for inspection
+        import wave, os
+        wav_path = "/tmp/tab5_mic_debug.wav"
+        try:
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(self._config.audio.input_sample_rate)
+                wf.writeframes(audio_data)
+            logger.info("DEBUG: saved %d bytes mic audio to %s", len(audio_data), wav_path)
+        except Exception as e:
+            logger.warning("DEBUG: failed to save WAV: %s", e)
         self._is_speaking = False
         self._process_task = asyncio.create_task(
             self._process_utterance(audio_data)
@@ -174,6 +187,19 @@ class VoicePipeline:
         self._cancelled = False
 
         try:
+            # Debug: save incoming audio as WAV for inspection
+            import wave
+            wav_path = "/tmp/tab5_mic_debug.wav"
+            try:
+                with wave.open(wav_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)  # 16-bit
+                    wf.setframerate(self._config.audio.input_sample_rate)
+                    wf.writeframes(audio_data)
+                logger.info("DEBUG: saved %d bytes mic audio to %s", len(audio_data), wav_path)
+            except Exception as e:
+                logger.warning("DEBUG: failed to save WAV: %s", e)
+
             # --- STT ---
             t0 = time.monotonic()
             transcript = await self._stt.transcribe(
