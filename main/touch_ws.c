@@ -49,27 +49,25 @@ static void touch_ws_task(void *arg)
     ESP_LOGI(TAG, "Touch WS task started (target: %s:%d%s)",
              dragon_host, dragon_port, TAB5_TOUCH_WS_PATH);
 
+    /* Outer retry loop — avoids vTaskDelete which causes TLSP crash on P4 (#18) */
+    while (!s_stop_flag) {
+
     esp_transport_handle_t ws = ws_create();
     if (!ws) {
         ESP_LOGE(TAG, "Failed to create WS transport");
-        s_running = false;
-        vTaskDelete(NULL);
-        return;
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        continue;
     }
 
     ESP_LOGI(TAG, "Connecting to Dragon WebSocket...");
     int err = esp_transport_connect(ws, dragon_host, dragon_port, 5000);
     if (err < 0) {
-        ESP_LOGW(TAG, "WS connect failed");
+        ESP_LOGW(TAG, "WS connect failed, retrying in 2s...");
         esp_transport_close(ws);
         esp_transport_destroy(ws);
-        s_running = false;
-
-        if (!s_stop_flag && s_disconnect_cb) {
-            s_disconnect_cb();
-        }
-        vTaskDelete(NULL);
-        return;
+        if (s_disconnect_cb) s_disconnect_cb();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        continue;
     }
 
     /* Publish transport under mutex */
@@ -196,14 +194,17 @@ static void touch_ws_task(void *arg)
     s_connected = false;
     xSemaphoreGive(s_ws_mutex);
 
+    if (s_stop_flag) break;
+
+    ESP_LOGW(TAG, "Touch WS disconnected, retrying in 2s...");
+    if (s_disconnect_cb) s_disconnect_cb();
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    } /* end outer retry loop */
+
     s_running = false;
     s_task_handle = NULL;
-
-    if (!s_stop_flag && s_disconnect_cb) {
-        s_disconnect_cb();
-    }
-
-    ESP_LOGI(TAG, "Touch WS task exiting");
+    ESP_LOGI(TAG, "Touch WS task exiting (stop requested)");
     vTaskDelete(NULL);
 }
 

@@ -30,6 +30,7 @@
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 #include "esp_transport.h"
 #include "esp_transport_tcp.h"
 #include "esp_transport_ws.h"
@@ -59,7 +60,7 @@ static const char *TAG = "tab5_voice";
 #define VOICE_RESPONSE_TIMEOUT_MS 30000
 
 // Mic capture task (needs room for 3840-sample TDM buffer on stack)
-#define MIC_TASK_STACK_SIZE    12288
+#define MIC_TASK_STACK_SIZE    4096  /* Reduced: tdm_buf moved to PSRAM heap (#18) */
 #define MIC_TASK_PRIORITY      5
 #define MIC_TASK_CORE          1
 
@@ -374,10 +375,19 @@ static void mic_capture_task(void *arg)
 {
     ESP_LOGI(TAG, "Mic capture task started (core %d)", xPortGetCoreID());
 
-    // TDM buffer: 4 channels x 960 frames = 3840 samples
-    int16_t tdm_buf[MIC_TDM_SAMPLES];
-    // Output: 16kHz mono = 320 samples
-    int16_t mono_buf[VOICE_CHUNK_SAMPLES];
+    // TDM buffer in PSRAM — saves 7.7KB internal RAM for SDIO DMA (#18)
+    int16_t *tdm_buf = (int16_t *)heap_caps_malloc(
+        MIC_TDM_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t *mono_buf = (int16_t *)heap_caps_malloc(
+        VOICE_CHUNK_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tdm_buf || !mono_buf) {
+        ESP_LOGE(TAG, "Failed to allocate mic buffers");
+        heap_caps_free(tdm_buf);
+        heap_caps_free(mono_buf);
+        s_mic_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     s_mic_running = true;
     int frames_sent = 0;
@@ -416,6 +426,8 @@ static void mic_capture_task(void *arg)
     }
 
     s_mic_running = false;
+    heap_caps_free(tdm_buf);
+    heap_caps_free(mono_buf);
     ESP_LOGI(TAG, "Mic capture task exiting");
     s_mic_task = NULL;
     vTaskDelete(NULL);

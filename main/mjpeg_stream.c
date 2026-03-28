@@ -61,12 +61,8 @@ static void mjpeg_stream_task(void *arg)
         return;
     }
 
-    /* Read buffer — internal RAM for fast access */
-    uint8_t *read_buf = (uint8_t *)heap_caps_malloc(READ_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!read_buf) {
-        /* Fall back to PSRAM */
-        read_buf = (uint8_t *)heap_caps_malloc(READ_BUF_SIZE, MALLOC_CAP_SPIRAM);
-    }
+    /* Read buffer — PSRAM to preserve internal DMA RAM for SDIO WiFi (#18) */
+    uint8_t *read_buf = (uint8_t *)heap_caps_malloc(READ_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!read_buf) {
         ESP_LOGE(TAG, "Failed to allocate read buffer");
         heap_caps_free(s_jpeg_buf);
@@ -91,8 +87,8 @@ static void mjpeg_stream_task(void *arg)
         esp_http_client_config_t config = {
             .url = url,
             .timeout_ms = TAB5_FRAME_TIMEOUT_MS,
-            .buffer_size = READ_BUF_SIZE,
-            .buffer_size_tx = 512,
+            .buffer_size = 4096,   /* Smaller HTTP buffer to save internal DMA RAM (#18) */
+            .buffer_size_tx = 256,
         };
 
         esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -210,9 +206,14 @@ static void mjpeg_stream_task(void *arg)
 
         if (s_stop_flag) break;
 
-        /* Stream disconnected — notify dragon_link */
-        ESP_LOGW(TAG, "Stream disconnected");
-        break;
+        /* Stream disconnected — retry after delay instead of exiting.
+         * vTaskDelete from Core 1 can crash IDLE1 if heap is fragmented (#18). */
+        ESP_LOGW(TAG, "Stream disconnected, retrying in 2s...");
+        if (s_disconnect_cb) {
+            s_disconnect_cb();
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        continue;  /* Retry connection */
     }
 
     /* Cleanup */
@@ -227,9 +228,8 @@ static void mjpeg_stream_task(void *arg)
     s_running = false;
     s_task_handle = NULL;
 
-    if (!s_stop_flag && s_disconnect_cb) {
-        s_disconnect_cb();
-    }
+    /* Disconnect callback already called in retry loop if stream dropped.
+     * Only call here if we're stopping cleanly without prior disconnect. */
 
     ESP_LOGI(TAG, "MJPEG task exiting");
     vTaskDelete(NULL);
@@ -244,7 +244,7 @@ void tab5_mjpeg_start(void)
     xTaskCreatePinnedToCore(
         mjpeg_stream_task,
         "mjpeg",
-        12288,     /* 12KB stack — HTTP client + JPEG parsing */
+        16384,     /* 16KB stack — HTTP client + JPEG parsing + retry loop (#18) */
         NULL,
         configMAX_PRIORITIES - 2,  /* high priority on Core 1 */
         &s_task_handle,

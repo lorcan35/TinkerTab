@@ -88,9 +88,14 @@ CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=64
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=
 CONFIG_ESP_TASK_WDT_PANIC=y
-CONFIG_HEAP_POISONING_LIGHT=y
-CONFIG_HEAP_POISONING_DISABLED=
+CONFIG_HEAP_POISONING_DISABLED=y
+CONFIG_HEAP_POISONING_LIGHT=
+# IDLE task needs more stack for vTaskDelete cleanup on Core 1 (#18)
+CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=4096
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+# Disable TLSP deletion callbacks — esp_ptr_executable() false positive on P4
+# with PSRAM XIP (.text at 0x4800xxxx not recognized as executable) (#18)
+CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=n
 
 # ---------------------------------------------------------------------------
 # lwIP — IP reassembly for UDP JPEG streaming (large datagrams)
@@ -102,4 +107,9 @@ CONFIG_LWIP_IP_REASS_MAX_PBUFS=64
 # Memory — reserve more internal RAM for DMA (SDIO WiFi needs it)
 # Default 32KB is too little when voice + streaming run concurrently
 # ---------------------------------------------------------------------------
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=131072
+# SDIO stability fix — bigger stacks and buffers (issue #15, #18)
+CONFIG_ESP_HOSTED_DFLT_TASK_STACK=12288
+CONFIG_ESP_HOSTED_RPC_TASK_STACK=12288
+CONFIG_ESP_HOSTED_SDIO_RX_Q_SIZE=40
+CONFIG_ESP_SDIO_RX_Q_SIZE=40
