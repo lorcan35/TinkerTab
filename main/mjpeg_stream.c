@@ -145,6 +145,16 @@ static void mjpeg_stream_task(void *arg)
                         in_jpeg = true;
                         jpeg_pos = 0;
                         frame_start_time = esp_timer_get_time();
+
+                        /* Count every detected frame for FPS (regardless of decode) */
+                        s_frame_count++;
+                        int64_t now_soi = esp_timer_get_time();
+                        int64_t elapsed_soi = now_soi - s_last_fps_time;
+                        if (elapsed_soi >= 1000000) {
+                            s_fps = (float)s_frame_count * 1000000.0f / (float)elapsed_soi;
+                            s_frame_count = 0;
+                            s_last_fps_time = now_soi;
+                        }
                         s_jpeg_buf[jpeg_pos++] = 0xFF;
                         s_jpeg_buf[jpeg_pos++] = 0xD8;
                         i++;
@@ -181,16 +191,9 @@ static void mjpeg_stream_task(void *arg)
                         /* Decode and render */
                         esp_err_t ret = tab5_display_draw_jpeg(s_jpeg_buf, jpeg_pos);
                         if (ret == ESP_OK) {
-                            s_frame_count++;
-                            int64_t elapsed = now - s_last_fps_time;
-                            if (elapsed >= 1000000) {
-                                s_fps = (float)s_frame_count * 1000000.0f / (float)elapsed;
-                                if (s_drop_count > 0) {
-                                    ESP_LOGI(TAG, "%.1f FPS (dropped %lu stale)", s_fps, (unsigned long)s_drop_count);
-                                    s_drop_count = 0;
-                                }
-                                s_frame_count = 0;
-                                s_last_fps_time = now;
+                            if (s_drop_count > 0) {
+                                ESP_LOGI(TAG, "%.1f FPS (dropped %lu stale)", s_fps, (unsigned long)s_drop_count);
+                                s_drop_count = 0;
                             }
                         } else {
                             ESP_LOGW(TAG, "Decode failed (size=%zu): %s", jpeg_pos, esp_err_to_name(ret));
