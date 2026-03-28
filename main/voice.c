@@ -58,7 +58,7 @@ static const char *TAG = "tab5_voice";
 #define VOICE_RECONNECT_BASE_MS  2000
 #define VOICE_RECONNECT_MAX_MS   15000
 #define VOICE_CONNECT_TIMEOUT_MS 5000
-#define VOICE_RESPONSE_TIMEOUT_MS 30000
+#define VOICE_RESPONSE_TIMEOUT_MS 120000
 
 // Mic capture task (needs room for 3840-sample TDM buffer on stack)
 #define MIC_TASK_STACK_SIZE    4096  /* Reduced: tdm_buf moved to PSRAM heap (#18) */
