@@ -16,7 +16,7 @@
 
 #include "esp_log.h"
 #include "esp_check.h"
-#include "driver/i2s_tdm.h"
+#include "driver/i2s_common.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -134,65 +134,17 @@ static esp_err_t es7210_adc_init(void)
 }
 
 // ---------------------------------------------------------------------------
-// I2S RX init — TDM mode on shared bus from audio.c
+// I2S RX handle — already initialized+enabled by audio.c (TX+RX together)
 // ---------------------------------------------------------------------------
-static esp_err_t i2s_rx_tdm_init(void)
+static esp_err_t i2s_rx_acquire(void)
 {
-    ESP_LOGI(TAG, "I2S RX TDM init on shared bus");
-
     s_i2s_rx = tab5_audio_get_i2s_rx();
     if (!s_i2s_rx) {
         ESP_LOGE(TAG, "I2S RX handle is NULL — call tab5_audio_init() first!");
         return ESP_ERR_INVALID_STATE;
     }
 
-    i2s_tdm_config_t tdm_cfg = {
-        .clk_cfg = {
-            .sample_rate_hz  = TAB5_AUDIO_SAMPLE_RATE,
-            .clk_src         = I2S_CLK_SRC_DEFAULT,
-            .ext_clk_freq_hz = 0,
-            .mclk_multiple   = I2S_MCLK_MULTIPLE_256,
-            .bclk_div        = 8,
-        },
-        .slot_cfg = {
-            .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode       = I2S_SLOT_MODE_STEREO,
-            .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
-            .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
-            .ws_pol          = false,
-            .bit_shift       = true,
-            .left_align      = false,
-            .big_endian      = false,
-            .bit_order_lsb   = false,
-            .skip_mask       = false,
-            .total_slot      = I2S_TDM_AUTO_SLOT_NUM,
-        },
-        .gpio_cfg = {
-            .mclk = TAB5_I2S_MCLK_GPIO,
-            .bclk = TAB5_I2S_BCK_GPIO,
-            .ws   = TAB5_I2S_WS_GPIO,
-            .dout = TAB5_I2S_DOUT_GPIO,
-            .din  = TAB5_I2S_DIN_GPIO,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv   = false,
-            },
-        },
-    };
-
-    ESP_RETURN_ON_ERROR(
-        i2s_channel_init_tdm_mode(s_i2s_rx, &tdm_cfg),
-        TAG, "i2s RX TDM init failed"
-    );
-
-    ESP_RETURN_ON_ERROR(
-        i2s_channel_enable(s_i2s_rx),
-        TAG, "i2s RX enable failed"
-    );
-
-    ESP_LOGI(TAG, "I2S RX enabled (TDM 4-slot, %dHz 16-bit)", TAB5_AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S RX acquired (already running from audio.c)");
     return ESP_OK;
 }
 
@@ -223,8 +175,8 @@ esp_err_t tab5_mic_init(i2c_master_bus_handle_t i2c_bus)
     // Init ADC registers (4-channel TDM)
     ESP_RETURN_ON_ERROR(es7210_adc_init(), TAG, "adc init failed");
 
-    // Init I2S RX in TDM mode on shared bus
-    ESP_RETURN_ON_ERROR(i2s_rx_tdm_init(), TAG, "i2s rx tdm init failed");
+    // Acquire I2S RX handle (already initialized+enabled by audio.c)
+    ESP_RETURN_ON_ERROR(i2s_rx_acquire(), TAG, "i2s rx acquire failed");
 
     s_mic_initialized = true;
     ESP_LOGI(TAG, "Mic initialized (4-ch TDM @ %dHz)", TAB5_AUDIO_SAMPLE_RATE);
@@ -240,11 +192,13 @@ esp_err_t tab5_mic_read(int16_t *buf, size_t samples, uint32_t timeout_ms)
     size_t bytes_to_read = samples * sizeof(int16_t);
     size_t bytes_read = 0;
 
-    ESP_RETURN_ON_ERROR(
-        i2s_channel_read(s_i2s_rx, buf, bytes_to_read, &bytes_read,
-                         pdMS_TO_TICKS(timeout_ms)),
-        TAG, "i2s read failed"
-    );
+    esp_err_t err = i2s_channel_read(s_i2s_rx, buf, bytes_to_read, &bytes_read,
+                                     pdMS_TO_TICKS(timeout_ms));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "i2s_channel_read failed: %s (0x%x), requested %zu bytes, got %zu, timeout=%lums",
+                 esp_err_to_name(err), err, bytes_to_read, bytes_read, (unsigned long)timeout_ms);
+        return err;
+    }
 
     if (bytes_read != bytes_to_read) {
         ESP_LOGW(TAG, "Partial read: %zu/%zu bytes", bytes_read, bytes_to_read);

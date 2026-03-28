@@ -15,7 +15,6 @@
 
 #include "esp_log.h"
 #include "esp_check.h"
-#include "driver/i2s_std.h"
 #include "driver/i2s_tdm.h"
 #include "driver/i2c_master.h"
 #include "freertos/FreeRTOS.h"
@@ -135,17 +134,24 @@ static esp_err_t es8388_codec_init(void)
 
 // ---------------------------------------------------------------------------
 // Shared I2S bus init — creates both TX and RX channels on I2S_NUM_1
-// TX: Standard mode for ES8388 DAC
-// RX: TDM mode for ES7210 4-channel ADC (configured in mic.c)
+// BOTH TX and RX use TDM mode with 4 slots.
+//
+// ROOT CAUSE of mic failure (#19): In full-duplex mode, BCK/WS are shared
+// and TX is the clock master. TX in STD mode (2-slot) generates
+// BCLK=1.536MHz, but RX TDM (4-slot) needs BCLK=3.072MHz. Since RX is
+// forced to slave mode, it gets the wrong clock → ES7210 never receives
+// proper TDM framing → i2s_channel_read() timeout.
+//
+// FIX: Both TX and RX use TDM 4-slot so BCK=3.072MHz for both.
+// ES8388 DAC (speaker) still works — it reads slot 0 data and ignores
+// the extra TDM slots. WS frequency = 3,072,000/(4×16) = 48kHz. ✓
 // ---------------------------------------------------------------------------
 static esp_err_t i2s_bus_init(void)
 {
-    ESP_LOGI(TAG, "I2S bus init (I2S_NUM_%d, shared TX+RX)", TAB5_I2S_NUM);
+    ESP_LOGI(TAG, "I2S bus init (I2S_NUM_%d, TDM 4-slot TX+RX)", TAB5_I2S_NUM);
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(TAB5_I2S_NUM, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
-    chan_cfg.dma_desc_num  = 6;
-    chan_cfg.dma_frame_num = 240;
 
     // Create BOTH TX and RX on same I2S port
     ESP_RETURN_ON_ERROR(
@@ -153,38 +159,91 @@ static esp_err_t i2s_bus_init(void)
         TAG, "i2s new channel failed"
     );
 
-    // TX: Standard Philips I2S mode at 48kHz
-    i2s_std_config_t std_cfg = {
-        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(TAB5_AUDIO_SAMPLE_RATE),
-        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                         I2S_SLOT_MODE_MONO),
-        .gpio_cfg = {
-            .mclk = TAB5_I2S_MCLK_GPIO,
-            .bclk = TAB5_I2S_BCK_GPIO,
-            .ws   = TAB5_I2S_WS_GPIO,
-            .dout = TAB5_I2S_DOUT_GPIO,
-            .din  = TAB5_I2S_DIN_GPIO,
-            .invert_flags = {
-                .mclk_inv = false,
-                .bclk_inv = false,
-                .ws_inv   = false,
-            },
+    // Shared GPIO config for both TX and RX
+    i2s_tdm_gpio_config_t gpio_cfg = {
+        .mclk = TAB5_I2S_MCLK_GPIO,
+        .bclk = TAB5_I2S_BCK_GPIO,
+        .ws   = TAB5_I2S_WS_GPIO,
+        .dout = TAB5_I2S_DOUT_GPIO,
+        .din  = TAB5_I2S_DIN_GPIO,
+        .invert_flags = {
+            .mclk_inv = false,
+            .bclk_inv = false,
+            .ws_inv   = false,
         },
     };
 
+    // Shared clock config — identical for TX and RX
+    i2s_tdm_clk_config_t clk_cfg = {
+        .sample_rate_hz  = TAB5_AUDIO_SAMPLE_RATE,
+        .clk_src         = I2S_CLK_SRC_DEFAULT,
+        .ext_clk_freq_hz = 0,
+        .mclk_multiple   = I2S_MCLK_MULTIPLE_256,
+        .bclk_div        = 8,
+    };
+
+    // --- TX: TDM 4-slot for ES8388 DAC (speaker data in slot 0) ---
+    i2s_tdm_config_t tx_tdm_cfg = {
+        .clk_cfg  = clk_cfg,
+        .slot_cfg = {
+            .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode       = I2S_SLOT_MODE_MONO,
+            .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
+            .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
+            .ws_pol          = false,
+            .bit_shift       = true,
+            .left_align      = false,
+            .big_endian      = false,
+            .bit_order_lsb   = false,
+            .skip_mask       = false,
+            .total_slot      = I2S_TDM_AUTO_SLOT_NUM,
+        },
+        .gpio_cfg = gpio_cfg,
+    };
+
     ESP_RETURN_ON_ERROR(
-        i2s_channel_init_std_mode(s_i2s_tx, &std_cfg),
-        TAG, "i2s TX std init failed"
+        i2s_channel_init_tdm_mode(s_i2s_tx, &tx_tdm_cfg),
+        TAG, "i2s TX TDM init failed"
     );
 
+    // --- RX: TDM 4-slot for ES7210 quad-mic ADC ---
+    i2s_tdm_config_t rx_tdm_cfg = {
+        .clk_cfg  = clk_cfg,
+        .slot_cfg = {
+            .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode       = I2S_SLOT_MODE_STEREO,
+            .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
+            .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
+            .ws_pol          = false,
+            .bit_shift       = true,
+            .left_align      = false,
+            .big_endian      = false,
+            .bit_order_lsb   = false,
+            .skip_mask       = false,
+            .total_slot      = I2S_TDM_AUTO_SLOT_NUM,
+        },
+        .gpio_cfg = gpio_cfg,
+    };
+
+    ESP_RETURN_ON_ERROR(
+        i2s_channel_init_tdm_mode(s_i2s_rx, &rx_tdm_cfg),
+        TAG, "i2s RX TDM init failed"
+    );
+
+    // --- Enable both channels (TX first, then RX) ---
     ESP_RETURN_ON_ERROR(
         i2s_channel_enable(s_i2s_tx),
         TAG, "i2s TX enable failed"
     );
 
-    // RX channel is created but NOT initialized here —
-    // mic.c calls tab5_audio_get_i2s_rx() and initializes it in TDM mode
-    ESP_LOGI(TAG, "I2S TX enabled (%dHz 16-bit)", TAB5_AUDIO_SAMPLE_RATE);
+    ESP_RETURN_ON_ERROR(
+        i2s_channel_enable(s_i2s_rx),
+        TAG, "i2s RX enable failed"
+    );
+
+    ESP_LOGI(TAG, "I2S TX+RX enabled (%dHz 16-bit, TDM 4-slot both)", TAB5_AUDIO_SAMPLE_RATE);
     return ESP_OK;
 }
 
