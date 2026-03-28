@@ -583,16 +583,11 @@ static esp_err_t crashlog_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(root, "exc_pc", (double)summary.exc_pc);
         cJSON_AddStringToObject(root, "exc_task", summary.exc_task);
 
-        cJSON *bt = cJSON_CreateArray();
-        if (bt) {
-            for (int i = 0; i < summary.exc_bt_info.depth && i < 32; i++) {
-                cJSON_AddItemToArray(bt,
-                    cJSON_CreateNumber((double)summary.exc_bt_info.bt[i]));
-            }
-            cJSON_AddItemToObject(root, "backtrace", bt);
-        }
+        /* RISC-V: no on-device backtrace, provide stack dump size */
+        cJSON_AddNumberToObject(root, "stackdump_size",
+            (double)summary.exc_bt_info.dump_size);
         cJSON_AddStringToObject(root, "hint",
-            "Use 'espcoredump.py info_corefile' on host for full decode");
+            "Use 'espcoredump.py info_corefile' on host for full backtrace");
     } else {
         cJSON_AddBoolToObject(root, "coredump_present", false);
         cJSON_AddStringToObject(root, "note",

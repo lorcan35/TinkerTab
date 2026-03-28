@@ -11,4 +11,5 @@ idf_component_register(
     REQUIRES esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer
              json esp_driver_jpeg fatfs sdmmc esp_driver_i2s esp_driver_cam lvgl
              esp_wifi esp_netif esp_event esp_http_client esp_http_server tcp_transport mdns
+             espcoredump
 )
