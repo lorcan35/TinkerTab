@@ -193,6 +193,14 @@ static size_t playback_buf_read(int16_t *data, size_t max_samples)
     return read;
 }
 
+// Activity timestamp for response timeout — shared between stop_listening and ws_receive_task
+static volatile int64_t s_last_activity_us = 0;
+
+void voice_reset_activity_timestamp(void)
+{
+    s_last_activity_us = esp_timer_get_time();
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket helpers
 // ---------------------------------------------------------------------------
@@ -318,6 +326,21 @@ static void handle_text_message(const char *data, int len)
 
         tab5_audio_speaker_enable(false);
         voice_set_state(VOICE_STATE_READY, NULL);
+    } else if (strcmp(type_str, "llm") == 0) {
+        // Streaming LLM response token — append to transcript
+        cJSON *text = cJSON_GetObjectItem(root, "text");
+        if (cJSON_IsString(text) && text->valuestring) {
+            if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+            size_t cur_len = strlen(s_transcript);
+            size_t add_len = strlen(text->valuestring);
+            if (cur_len + add_len < MAX_TRANSCRIPT_LEN - 1) {
+                strcat(s_transcript, text->valuestring);
+            }
+            if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+            ESP_LOGD(TAG, "LLM token: \"%s\"", text->valuestring);
+            // Update UI with streaming response
+            voice_set_state(VOICE_STATE_PROCESSING, s_transcript);
+        }
     } else if (strcmp(type_str, "error") == 0) {
         cJSON *msg = cJSON_GetObjectItem(root, "message");
         const char *err_src = cJSON_IsString(msg) ? msg->valuestring : "unknown";
@@ -403,7 +426,7 @@ static void ws_receive_task(void *arg)
     int16_t play_chunk[VOICE_CHUNK_SAMPLES];
 
     s_ws_running = true;
-    int64_t last_activity_us = esp_timer_get_time();
+    s_last_activity_us = esp_timer_get_time();
 
     while (s_ws_connected && !s_stop_flag) {
         int poll = esp_transport_poll_read(s_ws, 100);
@@ -421,11 +444,11 @@ static void ws_receive_task(void *arg)
                 }
             }
             if (s_state == VOICE_STATE_PROCESSING) {
-                int64_t elapsed_us = esp_timer_get_time() - last_activity_us;
+                int64_t elapsed_us = esp_timer_get_time() - s_last_activity_us;
                 if (elapsed_us > (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000) {
                     ESP_LOGW(TAG, "Response timeout (%d ms)", VOICE_RESPONSE_TIMEOUT_MS);
                     voice_set_state(VOICE_STATE_READY, "timeout");
-                    last_activity_us = esp_timer_get_time();
+                    s_last_activity_us = esp_timer_get_time();
                 }
             }
             continue;
@@ -442,7 +465,7 @@ static void ws_receive_task(void *arg)
             s_ws_connected = false;
             break;
         }
-        last_activity_us = esp_timer_get_time();
+        s_last_activity_us = esp_timer_get_time();
 
         if (opcode == WS_TRANSPORT_OPCODES_TEXT) {
             // JSON text message from Dragon
@@ -786,6 +809,12 @@ esp_err_t voice_stop_listening(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to send stop signal");
     }
+
+    // Reset the activity timestamp so the response timeout starts NOW,
+    // not from when the last WS frame was received (which could be 30s ago
+    // during recording when Tab5 was only sending, not receiving).
+    extern void voice_reset_activity_timestamp(void);
+    voice_reset_activity_timestamp();
 
     voice_set_state(VOICE_STATE_PROCESSING, NULL);
     return ESP_OK;

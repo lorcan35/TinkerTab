@@ -97,3 +97,9 @@ CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 # ---------------------------------------------------------------------------
 CONFIG_LWIP_IP_REASSEMBLY=y
 CONFIG_LWIP_IP_REASS_MAX_PBUFS=64
+
+# ---------------------------------------------------------------------------
+# Memory — reserve more internal RAM for DMA (SDIO WiFi needs it)
+# Default 32KB is too little when voice + streaming run concurrently
+# ---------------------------------------------------------------------------
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
