@@ -10,17 +10,21 @@
 
 #include "esp_err.h"
 #include "driver/i2c_master.h"
+#include "driver/i2s_types.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
-// ---- ES8388 Codec (Playback) ----
+// ---- ES8388 Codec (Playback) + Shared I2S Bus ----
 
 /**
- * Initialize ES8388 codec and I2S TX channel for audio playback.
- * Must be called after tab5_io_expander_init().
+ * Initialize ES8388 codec and shared I2S bus (TX + RX on I2S_NUM_1).
+ * Must be called BEFORE tab5_mic_init() as it creates the I2S channels.
  */
 esp_err_t tab5_audio_init(i2c_master_bus_handle_t i2c_bus);
+
+/** Get the I2S RX channel handle (created by audio_init, used by mic_init). */
+i2s_chan_handle_t tab5_audio_get_i2s_rx(void);
 
 /** Play raw 16-bit PCM samples through the speaker. Blocks until complete. */
 esp_err_t tab5_audio_play_raw(const int16_t *data, size_t samples);
@@ -37,12 +41,15 @@ esp_err_t tab5_audio_speaker_enable(bool enable);
 // ---- ES7210 Dual Mic (Recording) ----
 
 /**
- * Initialize ES7210 ADC and I2S RX channel for microphone input.
- * Uses a separate I2S port from the codec.
+ * Initialize ES7210 ADC and configure I2S RX in TDM mode.
+ * Must be called AFTER tab5_audio_init() (uses shared I2S RX channel).
  */
 esp_err_t tab5_mic_init(i2c_master_bus_handle_t i2c_bus);
 
-/** Read mic samples into buf. Returns actual samples read. Blocks up to timeout_ms. */
+/**
+ * Read mic samples into buf (4-channel TDM interleaved at 48kHz).
+ * Each "sample" is 4 int16_t values: [MIC1, AEC, MIC2, MIC_HP].
+ */
 esp_err_t tab5_mic_read(int16_t *buf, size_t samples, uint32_t timeout_ms);
 
 /** Set microphone gain in dB (0-36). */

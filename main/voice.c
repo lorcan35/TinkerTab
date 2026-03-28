@@ -41,12 +41,16 @@ static const char *TAG = "tab5_voice";
 // Constants
 // ---------------------------------------------------------------------------
 
-// 20ms of 16kHz mono = 320 samples = 640 bytes
+// Output: 20ms of 16kHz mono = 320 samples = 640 bytes (sent to Dragon)
 #define VOICE_CHUNK_SAMPLES    (TAB5_VOICE_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define VOICE_CHUNK_BYTES      (VOICE_CHUNK_SAMPLES * sizeof(int16_t))
 
-// Stereo mic read: 2 channels x 320 samples = 1280 bytes
-#define MIC_STEREO_SAMPLES     (VOICE_CHUNK_SAMPLES * 2)
+// Input: 20ms of 48kHz, 4 TDM channels = 960 frames x 4 ch = 3840 samples
+#define MIC_48K_FRAMES         (TAB5_AUDIO_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
+#define MIC_TDM_CHANNELS       4
+#define MIC_TDM_SAMPLES        (MIC_48K_FRAMES * MIC_TDM_CHANNELS)
+// Downsample ratio: 48kHz -> 16kHz = 3:1
+#define DOWNSAMPLE_RATIO       (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
 
 // Reconnect parameters
 #define VOICE_RECONNECT_BASE_MS  2000
@@ -54,8 +58,8 @@ static const char *TAG = "tab5_voice";
 #define VOICE_CONNECT_TIMEOUT_MS 5000
 #define VOICE_RESPONSE_TIMEOUT_MS 30000
 
-// Mic capture task
-#define MIC_TASK_STACK_SIZE    8192
+// Mic capture task (needs room for 3840-sample TDM buffer on stack)
+#define MIC_TASK_STACK_SIZE    12288
 #define MIC_TASK_PRIORITY      5
 #define MIC_TASK_CORE          1
 
@@ -363,38 +367,42 @@ static void handle_text_message(const char *data, int len)
 }
 
 // ---------------------------------------------------------------------------
-// Mic capture task — reads stereo I2S, converts to mono, sends via WS
+// Mic capture task — reads 4-ch TDM at 48kHz, extracts MIC1, downsamples
+// to 16kHz mono, sends via WS to Dragon
 // ---------------------------------------------------------------------------
 static void mic_capture_task(void *arg)
 {
     ESP_LOGI(TAG, "Mic capture task started (core %d)", xPortGetCoreID());
 
-    // Stereo buffer: 2 channels interleaved (L, R, L, R, ...)
-    int16_t stereo_buf[MIC_STEREO_SAMPLES];
-    // Mono output buffer
+    // TDM buffer: 4 channels x 960 frames = 3840 samples
+    int16_t tdm_buf[MIC_TDM_SAMPLES];
+    // Output: 16kHz mono = 320 samples
     int16_t mono_buf[VOICE_CHUNK_SAMPLES];
 
     s_mic_running = true;
     int frames_sent = 0;
 
     while (s_mic_running && s_ws_connected) {
-        // Read stereo samples from mic
-        esp_err_t err = tab5_mic_read(stereo_buf, MIC_STEREO_SAMPLES, 100);
+        // Read 4-channel TDM data at 48kHz
+        esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
 
-        // Convert stereo to mono: average L+R (divide first to avoid overflow)
-        for (int i = 0; i < VOICE_CHUNK_SAMPLES; i++) {
-            int32_t left  = stereo_buf[i * 2];
-            int32_t right = stereo_buf[i * 2 + 1];
-            mono_buf[i] = (int16_t)((left + right) / 2);
+        // Extract MIC1 (slot 0) and MIC2 (slot 2), average to mono,
+        // then downsample 48kHz -> 16kHz (take every 3rd frame)
+        int out_idx = 0;
+        for (int i = 0; i < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
+            int32_t mic1 = tdm_buf[i * MIC_TDM_CHANNELS + 0];  // Slot 0: MIC1
+            int32_t mic2 = tdm_buf[i * MIC_TDM_CHANNELS + 2];  // Slot 2: MIC2
+            mono_buf[out_idx++] = (int16_t)((mic1 + mic2) / 2);
         }
 
-        // Send mono PCM as binary WS frame
-        err = ws_send_binary(mono_buf, VOICE_CHUNK_BYTES);
+        // Send 16kHz mono PCM as binary WS frame
+        size_t send_bytes = out_idx * sizeof(int16_t);
+        err = ws_send_binary(mono_buf, send_bytes);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to send audio chunk");
             break;
@@ -420,9 +428,8 @@ static void ws_receive_task(void *arg)
 {
     ESP_LOGI(TAG, "WS receive task started (core %d)", xPortGetCoreID());
 
-    // Receive buffer — large enough for audio chunks + JSON messages
-    // Max binary frame: ~640 bytes (20ms mono). JSON frames are small.
-    char rx_buf[1025];
+    // Receive buffer — Dragon sends TTS audio in 4096-byte chunks
+    char rx_buf[4100];
     int16_t play_chunk[VOICE_CHUNK_SAMPLES];
 
     s_ws_running = true;

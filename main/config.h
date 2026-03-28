@@ -103,22 +103,16 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Audio — ES8388 codec (I2S TX on I2S_NUM_0)
+// Audio — Shared I2S bus for ES8388 (DAC) + ES7210 (ADC)
+// Verified against M5Stack Tab5 BSP: single I2S_NUM_1, shared clock lines
 // ---------------------------------------------------------------------------
-// TODO: Verify all audio GPIOs against M5Stack Tab5 schematic
-#define TAB5_I2S_BCK_GPIO    34
-#define TAB5_I2S_WS_GPIO     33
-#define TAB5_I2S_DOUT_GPIO   35
-#define TAB5_I2S_MCLK_GPIO   0    // TODO: Verify; set -1 if no MCLK wired
-
-// ---------------------------------------------------------------------------
-// Microphone — ES7210 dual mic (I2S RX on I2S_NUM_1)
-// ---------------------------------------------------------------------------
-// TODO: Verify all mic GPIOs against M5Stack Tab5 schematic
-#define TAB5_I2S_MIC_BCK_GPIO   36
-#define TAB5_I2S_MIC_WS_GPIO    37
-#define TAB5_I2S_MIC_DIN_GPIO   38
-#define TAB5_I2S_MIC_MCLK_GPIO  0  // TODO: Verify; may share with codec MCLK
+#define TAB5_I2S_NUM          1     // Both TX and RX on I2S_NUM_1
+#define TAB5_I2S_MCLK_GPIO   30    // Master clock (shared)
+#define TAB5_I2S_BCK_GPIO    27    // Bit clock (shared)
+#define TAB5_I2S_WS_GPIO     29    // Word select / LRCK (shared)
+#define TAB5_I2S_DOUT_GPIO   26    // Data out -> ES8388 DSIN
+#define TAB5_I2S_DIN_GPIO    28    // Data in  <- ES7210 DOUT
+#define TAB5_AUDIO_SAMPLE_RATE 48000  // ES7210/ES8388 native rate
 
 // ---------------------------------------------------------------------------
 // Camera — SC202CS (SC2356) via MIPI-CSI
@@ -176,5 +170,5 @@
 #define TAB5_VOICE_WS_PATH       "/ws/voice"
 #define TAB5_VOICE_PORT           3502
 #define TAB5_VOICE_CHUNK_MS       20     // Audio chunk size in ms
-#define TAB5_VOICE_SAMPLE_RATE    16000
-#define TAB5_VOICE_PLAYBACK_BUF   4096   // Playback ring buffer bytes
+#define TAB5_VOICE_SAMPLE_RATE    16000  // Rate sent to Dragon (downsampled from 48kHz)
+#define TAB5_VOICE_PLAYBACK_BUF   16384  // Playback ring buffer bytes (was 4096)

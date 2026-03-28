@@ -245,7 +245,7 @@ class VoicePipeline:
             self._processing = False
 
     async def _synthesize_and_send(self, text: str) -> None:
-        """Synthesize a sentence and stream the audio back to the client."""
+        """Synthesize a sentence, resample to 16kHz, and stream back to client."""
         if self._cancelled:
             return
 
@@ -257,14 +257,34 @@ class VoicePipeline:
             tts_ms = (time.monotonic() - t0) * 1000
 
             if audio_bytes:
+                # Resample from TTS sample rate to 16kHz for Tab5 playback
+                tts_rate = self._tts.sample_rate if self._tts else 22050
+                target_rate = self._config.audio.input_sample_rate  # 16000
+
+                if tts_rate != target_rate:
+                    audio_i16 = np.frombuffer(audio_bytes, dtype=np.int16)
+                    # Simple linear interpolation resample
+                    ratio = target_rate / tts_rate
+                    new_len = int(len(audio_i16) * ratio)
+                    indices = np.arange(new_len) / ratio
+                    indices_floor = indices.astype(np.int32)
+                    indices_floor = np.clip(indices_floor, 0, len(audio_i16) - 2)
+                    frac = indices - indices_floor
+                    resampled = (
+                        audio_i16[indices_floor] * (1 - frac)
+                        + audio_i16[indices_floor + 1] * frac
+                    ).astype(np.int16)
+                    audio_bytes = resampled.tobytes()
+
                 logger.debug(
-                    "TTS (%.0fms): %d bytes for '%.40s...'",
+                    "TTS (%.0fms): %d bytes @ %dHz for '%.40s...'",
                     tts_ms,
                     len(audio_bytes),
+                    target_rate,
                     text,
                 )
                 # Send audio in chunks to avoid overwhelming the WebSocket
-                chunk_size = 4096  # ~93ms at 22050Hz 16-bit
+                chunk_size = 4096
                 for i in range(0, len(audio_bytes), chunk_size):
                     if self._cancelled:
                         return
