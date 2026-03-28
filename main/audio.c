@@ -134,40 +134,28 @@ static esp_err_t es8388_codec_init(void)
 }
 
 // ---------------------------------------------------------------------------
-// I2S init — Separate ports for TX and RX to fix 12.5% mic duty cycle (#23).
+// Shared I2S bus init — full-duplex on I2S_NUM_1:
+//   TX: TDM 4-slot for ES8388 DAC (MONO — audio in slot 0)
+//   RX: TDM 4-slot for ES7210 quad-mic ADC (STEREO — 4 mics in 4 slots)
 //
-// Full-duplex on a single port causes internal clock path interference:
-// RX slave clock calculation (MCLK = BCLK × bclk_div) conflicts with
-// TX master MCLK generation, resulting in only 1-in-8 frames having data.
-//
-// Solution: TX-only on I2S_NUM_1 (master, drives MCLK/BCLK/WS/DOUT),
-//           RX-only on I2S_NUM_0 (slave, reads same BCLK/WS + DIN).
-// Two peripherals can share GPIOs via the GPIO matrix (output vs input).
+// Both TX and RX use TDM 4-slot so BCLK = 48k × 4 × 16 = 3.072 MHz.
+// Previous [MUSIC PLAYING] issue was TX=STD (2-slot, BCLK=1.536M) vs
+// RX=TDM (4-slot, BCLK=3.072M) — mismatched bus speed corrupted mic data.
 // ---------------------------------------------------------------------------
 static esp_err_t i2s_bus_init(void)
 {
-    ESP_LOGI(TAG, "I2S init: TX on I2S%d (master), RX on I2S%d (slave)",
-             TAB5_I2S_TX_NUM, TAB5_I2S_RX_NUM);
+    ESP_LOGI(TAG, "I2S bus init (I2S_NUM_%d, TX=TDM RX=TDM full-duplex)", TAB5_I2S_NUM);
 
-    // --- TX-only channel on port 1 (master) ---
-    i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(TAB5_I2S_TX_NUM, I2S_ROLE_MASTER);
-    tx_chan_cfg.auto_clear = true;
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(TAB5_I2S_NUM, I2S_ROLE_MASTER);
+    chan_cfg.auto_clear = true;
 
+    // Create BOTH TX and RX on same I2S port
     ESP_RETURN_ON_ERROR(
-        i2s_new_channel(&tx_chan_cfg, &s_i2s_tx, NULL),
-        TAG, "i2s TX channel create failed"
+        i2s_new_channel(&chan_cfg, &s_i2s_tx, &s_i2s_rx),
+        TAG, "i2s new channel failed"
     );
 
-    // --- RX-only channel on port 0 (slave) ---
-    i2s_chan_config_t rx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(TAB5_I2S_RX_NUM, I2S_ROLE_SLAVE);
-    rx_chan_cfg.auto_clear = true;
-
-    ESP_RETURN_ON_ERROR(
-        i2s_new_channel(&rx_chan_cfg, NULL, &s_i2s_rx),
-        TAG, "i2s RX channel create failed"
-    );
-
-    // Shared clock config
+    // Shared clock config — 48kHz, MCLK = 48k × 256 = 12.288 MHz
     i2s_tdm_clk_config_t clk_cfg = {
         .sample_rate_hz  = TAB5_AUDIO_SAMPLE_RATE,
         .clk_src         = I2S_CLK_SRC_DEFAULT,
@@ -176,9 +164,7 @@ static esp_err_t i2s_bus_init(void)
         .bclk_div        = 8,
     };
 
-    // --- TX TDM: master, drives MCLK/BCLK/WS, DOUT to ES8388 ---
-    // MONO mode: active_slot=1, total_slot=4. BCLK=48k×4×16=3.072MHz.
-    // ES8388 reads slot 0, ignores TDM slots 1-3.
+    // --- TX TDM: MONO, 4 TDM slots — ES8388 reads slot 0 ---
     i2s_tdm_config_t tx_tdm_cfg = {
         .clk_cfg  = clk_cfg,
         .slot_cfg = {
@@ -200,7 +186,7 @@ static esp_err_t i2s_bus_init(void)
             .bclk = TAB5_I2S_BCK_GPIO,
             .ws   = TAB5_I2S_WS_GPIO,
             .dout = TAB5_I2S_DOUT_GPIO,
-            .din  = I2S_GPIO_UNUSED,
+            .din  = TAB5_I2S_DIN_GPIO,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
@@ -210,11 +196,10 @@ static esp_err_t i2s_bus_init(void)
         TAG, "i2s TX TDM init failed"
     );
 
-    // --- RX TDM: slave, reads BCLK/WS from TX master + DIN from ES7210 ---
-    // STEREO mode with 4 TDM slots: DMA delivers 4 int16_t per frame.
-    // MCLK unused (TX master drives it). DOUT unused (RX only).
+    // --- RX TDM: STEREO, 4 TDM slots — ES7210 quad-mic ---
+    // DMA delivers 4 int16_t per frame (one per mic).
     i2s_tdm_config_t rx_tdm_cfg = {
-        .clk_cfg  = clk_cfg,
+        .clk_cfg = clk_cfg,
         .slot_cfg = {
             .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
             .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
@@ -230,11 +215,11 @@ static esp_err_t i2s_bus_init(void)
             .total_slot      = I2S_TDM_AUTO_SLOT_NUM,
         },
         .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,     // TX master drives MCLK
-            .bclk = TAB5_I2S_BCK_GPIO,   // Input: reads TX's BCLK
-            .ws   = TAB5_I2S_WS_GPIO,    // Input: reads TX's WS
-            .dout = I2S_GPIO_UNUSED,      // RX only
-            .din  = TAB5_I2S_DIN_GPIO,    // ES7210 data
+            .mclk = TAB5_I2S_MCLK_GPIO,
+            .bclk = TAB5_I2S_BCK_GPIO,
+            .ws   = TAB5_I2S_WS_GPIO,
+            .dout = TAB5_I2S_DOUT_GPIO,
+            .din  = TAB5_I2S_DIN_GPIO,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
@@ -244,12 +229,12 @@ static esp_err_t i2s_bus_init(void)
         TAG, "i2s RX TDM init failed"
     );
 
-    // Enable TX first (starts clocks), then RX (reads those clocks)
+    // --- Enable TX first, then RX ---
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_tx), TAG, "i2s TX enable failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_rx), TAG, "i2s RX enable failed");
 
-    ESP_LOGI(TAG, "I2S TX(port%d master) + RX(port%d slave) enabled (%dHz 16-bit TDM 4-slot)",
-             TAB5_I2S_TX_NUM, TAB5_I2S_RX_NUM, TAB5_AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S TX+RX TDM enabled (%dHz 16-bit 4-slot full-duplex)",
+             TAB5_AUDIO_SAMPLE_RATE);
     return ESP_OK;
 }
 

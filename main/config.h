@@ -103,16 +103,16 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Audio — Separate I2S ports for ES8388 (DAC) + ES7210 (ADC)
-// TX master on I2S_NUM_1 drives MCLK/BCLK/WS/DOUT.
-// RX slave on I2S_NUM_0 reads same BCLK/WS pins + DIN.
-// Split ports fix 12.5% mic duty cycle caused by full-duplex clock interaction (#23).
+// Audio — Shared I2S bus for ES8388 (DAC) + ES7210 (ADC)
+// Full-duplex on I2S_NUM_1: TX and RX both use TDM 4-slot mode so BCLK
+// is consistent (48k × 4 × 16 = 3.072 MHz). Previous [MUSIC PLAYING]
+// issue was caused by TX=STD (2-slot BCLK=1.536M) vs RX=TDM (4-slot
+// BCLK=3.072M) mismatch on the same bus.
 // ---------------------------------------------------------------------------
-#define TAB5_I2S_TX_NUM       1     // TX only (master) — ES8388 DAC
-#define TAB5_I2S_RX_NUM       0     // RX only (slave)  — ES7210 ADC
-#define TAB5_I2S_MCLK_GPIO   30    // Master clock (driven by TX)
-#define TAB5_I2S_BCK_GPIO    27    // Bit clock (driven by TX, read by RX)
-#define TAB5_I2S_WS_GPIO     29    // Word select / LRCK (driven by TX, read by RX)
+#define TAB5_I2S_NUM          1     // Both TX and RX on I2S_NUM_1
+#define TAB5_I2S_MCLK_GPIO   30    // Master clock (shared)
+#define TAB5_I2S_BCK_GPIO    27    // Bit clock (shared)
+#define TAB5_I2S_WS_GPIO     29    // Word select / LRCK (shared)
 #define TAB5_I2S_DOUT_GPIO   26    // Data out -> ES8388 DSIN
 #define TAB5_I2S_DIN_GPIO    28    // Data in  <- ES7210 DOUT
 #define TAB5_AUDIO_SAMPLE_RATE 48000  // ES7210/ES8388 native rate
