@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=720, height=1280, initial-scale=1"/>
+<title>Glyph OS — Settings</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 720px; height: 1280px;
+    background: #0A0A0C;
+    color: #E8ECF1;
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Status bar */
+  .status-bar {
+    position: absolute; top: 0; left: 0; right: 0; height: 48px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px; z-index: 10;
+  }
+  .status-time { font-family: 'Space Grotesk'; font-weight: 600; font-size: 14px; color: #8B95A5; }
+  .status-badge { font-family: 'Space Grotesk'; font-size: 9px; font-weight: 700; letter-spacing: 0.35em; color: #00E5FF; border: 1px solid rgba(0,229,255,0.2); padding: 3px 10px; text-transform: uppercase; }
+  .status-icons { display: flex; gap: 8px; color: #4A5568; font-size: 14px; }
+
+  /* Header */
+  .page-header {
+    position: absolute; top: 60px; left: 32px;
+    font-family: 'Space Grotesk';
+    font-size: 32px; font-weight: 300;
+    color: #E8ECF1;
+    letter-spacing: -0.02em;
+  }
+
+  /* Settings content */
+  .settings-scroll {
+    position: absolute;
+    top: 116px; left: 0; right: 0; bottom: 80px;
+    overflow-y: auto;
+    padding: 0 24px 40px;
+  }
+
+  /* Group */
+  .group { margin-bottom: 28px; }
+  .group-label {
+    font-family: 'Space Grotesk';
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.3em;
+    color: #00A3B3;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    padding-left: 8px;
+  }
+  .group-container {
+    background: rgba(22,25,32,0.4);
+    border-left: 2px solid rgba(0,229,255,0.08);
+  }
+
+  /* Row */
+  .row {
+    height: 60px;
+    display: flex; align-items: center;
+    padding: 0 16px;
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .row:hover { background: rgba(30,34,43,0.3); }
+  .row + .row { border-top: 1px solid rgba(30,34,43,0.4); }
+
+  .row-icon {
+    width: 32px; height: 32px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    margin-right: 14px;
+    flex-shrink: 0;
+  }
+
+  .row-content { flex: 1; min-width: 0; }
+  .row-title {
+    font-size: 15px;
+    color: #E8ECF1;
+    font-weight: 400;
+  }
+  .row-subtitle {
+    font-size: 11px;
+    color: #4A5568;
+    margin-top: 2px;
+  }
+
+  .row-right {
+    display: flex; align-items: center; gap: 8px;
+    margin-left: 12px;
+    flex-shrink: 0;
+  }
+  .row-value {
+    font-family: 'Space Grotesk';
+    font-size: 12px;
+    color: #4A5568;
+    letter-spacing: 0.02em;
+  }
+  .row-chevron {
+    color: #2D3444;
+    font-size: 16px;
+  }
+
+  /* Toggle switch */
+  .toggle {
+    width: 40px; height: 22px;
+    border-radius: 11px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle.off { background: #1E222B; }
+  .toggle.on { background: rgba(0,229,255,0.25); border: 1px solid rgba(0,229,255,0.3); }
+  .toggle-thumb {
+    position: absolute;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    top: 3px;
+    transition: left 0.2s, background 0.2s;
+  }
+  .toggle.off .toggle-thumb { left: 3px; background: #4A5568; }
+  .toggle.on .toggle-thumb { left: 21px; background: #00E5FF; box-shadow: 0 0 6px rgba(0,229,255,0.4); }
+
+  /* Slider */
+  .slider-track {
+    width: 140px; height: 3px;
+    background: #1E222B;
+    position: relative;
+  }
+  .slider-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 70%;
+    background: linear-gradient(90deg, #00A3B3, #00E5FF);
+  }
+  .slider-thumb {
+    position: absolute;
+    right: -1px; top: -6px;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #E8ECF1;
+    box-shadow: 0 0 4px rgba(0,0,0,0.3);
+  }
+
+  /* Status dots */
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.green { background: #34D399; box-shadow: 0 0 4px #34D399; }
+
+  /* Danger row */
+  .row.danger .row-title { color: #FF3D3D; }
+  .row.danger .row-icon { color: #FF3D3D; }
+
+  /* Device info card */
+  .device-card {
+    margin: 0 0 28px;
+    padding: 20px;
+    background: rgba(22,25,32,0.4);
+    border-left: 2px solid rgba(0,229,255,0.15);
+    display: flex; align-items: center; gap: 16px;
+  }
+  .device-avatar {
+    width: 48px; height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+    color: #00E5FF;
+    background: rgba(0,229,255,0.06);
+    border-radius: 12px;
+  }
+  .device-name {
+    font-family: 'Space Grotesk';
+    font-size: 18px;
+    font-weight: 500;
+  }
+  .device-id {
+    font-family: 'Space Grotesk';
+    font-size: 10px;
+    color: #4A5568;
+    letter-spacing: 0.1em;
+    margin-top: 2px;
+  }
+
+  /* Page dots */
+  .page-dots {
+    position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 12px; align-items: center; z-index: 20;
+  }
+  .dot { width: 6px; height: 6px; background: #1E222B; }
+  .dot.active { width: 6px; height: 20px; background: #00E5FF; box-shadow: 0 0 8px rgba(0,229,255,0.4); }
+
+  /* Bottom nav */
+  .bottom-nav {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 72px;
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 0 40px;
+    background: linear-gradient(to top, #0A0A0C 60%, transparent);
+    z-index: 20;
+  }
+  .nav-item {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    color: #2D3444; font-family: 'Space Grotesk'; font-size: 9px;
+    letter-spacing: 0.15em; text-transform: uppercase;
+  }
+  .nav-item.active { color: #00E5FF; }
+  .nav-item .icon { font-size: 22px; }
+
+  /* Scrollbar */
+  .settings-scroll::-webkit-scrollbar { width: 2px; }
+  .settings-scroll::-webkit-scrollbar-track { background: transparent; }
+  .settings-scroll::-webkit-scrollbar-thumb { background: #1E222B; }
+</style>
+</head>
+<body>
+  <div class="status-bar">
+    <span class="status-time">21:42</span>
+    <span class="status-badge">Glyph</span>
+    <div class="status-icons"><span>⚡</span><span>●</span></div>
+  </div>
+
+  <div class="page-header">Settings</div>
+
+  <div class="settings-scroll">
+    <!-- Device Card -->
+    <div class="device-card">
+      <div class="device-avatar">◆</div>
+      <div>
+        <div class="device-name">Glyph · Tab5</div>
+        <div class="device-id">GLP-0x1A2B · v0.1.0-alpha</div>
+      </div>
+    </div>
+
+    <!-- NETWORK -->
+    <div class="group">
+      <div class="group-label">Network</div>
+      <div class="group-container">
+        <div class="row">
+          <div class="row-icon" style="color: #00E5FF;">⟐</div>
+          <div class="row-content">
+            <div class="row-title">Wi-Fi</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">Home_5G</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #B388FF;">ᛒ</div>
+          <div class="row-content">
+            <div class="row-title">Bluetooth</div>
+          </div>
+          <div class="row-right">
+            <div class="toggle on"><div class="toggle-thumb"></div></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #34D399;">◈</div>
+          <div class="row-content">
+            <div class="row-title">Dragon Link</div>
+            <div class="row-subtitle">192.168.1.89 · 12ms</div>
+          </div>
+          <div class="row-right">
+            <div class="status-dot green"></div>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DISPLAY -->
+    <div class="group">
+      <div class="group-label">Display</div>
+      <div class="group-container">
+        <div class="row">
+          <div class="row-icon" style="color: #FFB300;">☀</div>
+          <div class="row-content">
+            <div class="row-title">Brightness</div>
+          </div>
+          <div class="row-right">
+            <div class="slider-track">
+              <div class="slider-fill"><div class="slider-thumb"></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #B388FF;">☽</div>
+          <div class="row-content">
+            <div class="row-title">Night Mode</div>
+          </div>
+          <div class="row-right">
+            <div class="toggle off"><div class="toggle-thumb"></div></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #8B95A5;">◑</div>
+          <div class="row-content">
+            <div class="row-title">Auto-Dim</div>
+            <div class="row-subtitle">After 30s of inactivity</div>
+          </div>
+          <div class="row-right">
+            <div class="toggle on"><div class="toggle-thumb"></div></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #8B95A5;">◴</div>
+          <div class="row-content">
+            <div class="row-title">Screen Timeout</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">5 min</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI ASSISTANT -->
+    <div class="group">
+      <div class="group-label">AI Assistant</div>
+      <div class="group-container">
+        <div class="row">
+          <div class="row-icon" style="color: #00E5FF;">∿</div>
+          <div class="row-content">
+            <div class="row-title">Voice Model</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">Glyph Neural v2</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #FFB300;">◉</div>
+          <div class="row-content">
+            <div class="row-title">Wake Word</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">"Hey Glyph"</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #B388FF;">◎</div>
+          <div class="row-content">
+            <div class="row-title">Proactive Mode</div>
+            <div class="row-subtitle">Surface insights before you ask</div>
+          </div>
+          <div class="row-right">
+            <div class="toggle on"><div class="toggle-thumb"></div></div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #34D399;">◇</div>
+          <div class="row-content">
+            <div class="row-title">AI Tier</div>
+            <div class="row-subtitle">Balanced latency + capability</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">Tier 3 · Cloud</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SYSTEM -->
+    <div class="group">
+      <div class="group-label">System</div>
+      <div class="group-container">
+        <div class="row">
+          <div class="row-icon" style="color: #8B95A5;">▤</div>
+          <div class="row-content">
+            <div class="row-title">Storage</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">12.4 / 32 GB</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+        <div class="row">
+          <div class="row-icon" style="color: #8B95A5;">ⓘ</div>
+          <div class="row-content">
+            <div class="row-title">About Glyph OS</div>
+          </div>
+          <div class="row-right">
+            <span class="row-value">v0.1.0</span>
+            <span class="row-chevron">›</span>
+          </div>
+        </div>
+        <div class="row danger">
+          <div class="row-icon">⚠</div>
+          <div class="row-content">
+            <div class="row-title">Factory Reset</div>
+          </div>
+          <div class="row-right">
+            <span class="row-chevron" style="color: rgba(255,61,61,0.4);">›</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-dots">
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot active"></div>
+  </div>
+
+  <div class="bottom-nav">
+    <div class="nav-item"><span class="icon">⬡</span><span>Home</span></div>
+    <div class="nav-item"><span class="icon">⊞</span><span>Apps</span></div>
+    <div class="nav-item"><span class="icon">◈</span><span>Dragon</span></div>
+    <div class="nav-item active"><span class="icon">⚙</span><span>Sys</span></div>
+  </div>
+</body>
+</html>

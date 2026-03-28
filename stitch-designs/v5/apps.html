@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=720, height=1280"/>
+<title>Glyph OS — Apps</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@200;300;400;500;600&family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 720px; height: 1280px;
+    background: #000000;
+    color: #ffffff;
+    font-family: 'Space Grotesk', sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Header — just the word. That's enough. */
+  .header {
+    position: absolute;
+    top: 60px;
+    left: 48px;
+    font-size: 34px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.9);
+    letter-spacing: -0.01em;
+  }
+
+  /* Grid — generous spacing, the icons breathe */
+  .grid {
+    position: absolute;
+    top: 140px;
+    left: 0; right: 0;
+    padding: 0 36px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    row-gap: 36px;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: pointer;
+  }
+  .app:active .app-icon { transform: scale(0.9); opacity: 0.7; }
+
+  .app-icon {
+    width: 60px; height: 60px;
+    border-radius: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    transition: transform 0.12s, opacity 0.12s;
+  }
+
+  .app-name {
+    margin-top: 10px;
+    font-size: 12px;
+    font-weight: 400;
+    color: rgba(255,255,255,0.4);
+    letter-spacing: 0.01em;
+  }
+
+  /* Icon backgrounds — very subtle tints, almost monochrome */
+  .ic-1 { background: rgba(0,229,255,0.07); color: rgba(0,229,255,0.7); }
+  .ic-2 { background: rgba(179,136,255,0.07); color: rgba(179,136,255,0.7); }
+  .ic-3 { background: rgba(255,107,157,0.06); color: rgba(255,107,157,0.65); }
+  .ic-4 { background: rgba(255,179,0,0.06); color: rgba(255,179,0,0.65); }
+  .ic-5 { background: rgba(52,211,153,0.06); color: rgba(52,211,153,0.65); }
+  .ic-6 { background: rgba(255,255,255,0.03); color: rgba(255,255,255,0.15); border: 1px dashed rgba(255,255,255,0.08); }
+
+  /* The Glyph input — not a search bar. A conversation starter. */
+  .glyph-input {
+    position: absolute;
+    bottom: 88px;
+    left: 48px; right: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    border-bottom: 0.5px solid rgba(255,255,255,0.06);
+    padding-bottom: 16px;
+  }
+  .glyph-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: rgba(0,229,255,0.3);
+    flex-shrink: 0;
+  }
+  .glyph-placeholder {
+    font-size: 15px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.15);
+    font-style: italic;
+  }
+
+  /* Status */
+  .status {
+    position: absolute;
+    top: 16px; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 28px;
+  }
+  .status-left { font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.25); }
+  .status-right { display: flex; gap: 6px; align-items: center; }
+  .status-dot { width: 4px; height: 4px; border-radius: 50%; background: rgba(52,211,153,0.5); }
+  .status-text { font-size: 10px; color: rgba(255,255,255,0.15); letter-spacing: 0.1em; }
+
+  /* Page indicator */
+  .page-indicator {
+    position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .pip { width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,0.08); }
+  .pip.active { height: 16px; border-radius: 2px; background: rgba(0,229,255,0.35); }
+
+  /* Bottom nav */
+  .nav {
+    position: absolute; bottom: 32px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 48px;
+  }
+  .nav-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+  .nav-dot.active { width: 24px; border-radius: 3px; background: rgba(255,255,255,0.5); }
+</style>
+</head>
+<body>
+
+  <div class="status">
+    <span class="status-left">Glyph</span>
+    <div class="status-right">
+      <div class="status-dot"></div>
+      <span class="status-text">connected</span>
+    </div>
+  </div>
+
+  <div class="header">Apps</div>
+
+  <div class="grid">
+    <div class="app"><div class="app-icon ic-1">💬</div><div class="app-name">AI Chat</div></div>
+    <div class="app"><div class="app-icon ic-2">🌐</div><div class="app-name">Browser</div></div>
+    <div class="app"><div class="app-icon ic-3">📷</div><div class="app-name">Camera</div></div>
+    <div class="app"><div class="app-icon ic-4">🎙</div><div class="app-name">Voice</div></div>
+
+    <div class="app"><div class="app-icon ic-5">📁</div><div class="app-name">Files</div></div>
+    <div class="app"><div class="app-icon ic-1">⚡</div><div class="app-name">Automate</div></div>
+    <div class="app"><div class="app-icon ic-2" style="font-family:monospace;font-size:20px">&gt;_</div><div class="app-name">Terminal</div></div>
+    <div class="app"><div class="app-icon ic-4">✏</div><div class="app-name">Notes</div></div>
+
+    <div class="app"><div class="app-icon ic-5">📡</div><div class="app-name">IoT Hub</div></div>
+    <div class="app"><div class="app-icon ic-3">♫</div><div class="app-name">Music</div></div>
+    <div class="app"><div class="app-icon ic-2">⏱</div><div class="app-name">Clock</div></div>
+    <div class="app"><div class="app-icon ic-1">📍</div><div class="app-name">Maps</div></div>
+
+    <div class="app"><div class="app-icon ic-5">🛡</div><div class="app-name">VPN</div></div>
+    <div class="app"><div class="app-icon ic-4">💳</div><div class="app-name">Wallet</div></div>
+    <div class="app"><div class="app-icon ic-3">♥</div><div class="app-name">Health</div></div>
+    <div class="app"><div class="app-icon ic-6">+</div><div class="app-name" style="color:rgba(255,255,255,0.1)">Add</div></div>
+  </div>
+
+  <div class="glyph-input">
+    <div class="glyph-dot"></div>
+    <span class="glyph-placeholder">Ask Glyph anything</span>
+  </div>
+
+  <div class="page-indicator">
+    <div class="pip"></div>
+    <div class="pip active"></div>
+    <div class="pip"></div>
+    <div class="pip"></div>
+  </div>
+
+  <div class="nav">
+    <div class="nav-dot"></div>
+    <div class="nav-dot active"></div>
+    <div class="nav-dot"></div>
+    <div class="nav-dot"></div>
+  </div>
+
+</body>
+</html>

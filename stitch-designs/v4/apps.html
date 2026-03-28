@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=720, height=1280, initial-scale=1"/>
+<title>Glyph OS — Apps</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 720px; height: 1280px;
+    background: #0A0A0C;
+    color: #E8ECF1;
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .ambient {
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse 500px 300px at 360px 600px, rgba(0,229,255,0.02) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Status bar */
+  .status-bar {
+    position: absolute; top: 0; left: 0; right: 0; height: 48px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 24px; z-index: 10;
+  }
+  .status-time { font-family: 'Space Grotesk'; font-weight: 600; font-size: 14px; color: #8B95A5; letter-spacing: 0.05em; }
+  .status-badge { font-family: 'Space Grotesk'; font-size: 9px; font-weight: 700; letter-spacing: 0.35em; color: #00E5FF; border: 1px solid rgba(0,229,255,0.2); padding: 3px 10px; text-transform: uppercase; }
+  .status-icons { display: flex; gap: 8px; color: #4A5568; font-size: 14px; }
+
+  /* Page header — left-anchored, editorial */
+  .page-header {
+    position: absolute;
+    top: 68px; left: 32px;
+  }
+  .page-title {
+    font-family: 'Space Grotesk';
+    font-size: 32px;
+    font-weight: 300;
+    color: #E8ECF1;
+    letter-spacing: -0.02em;
+  }
+  .page-subtitle {
+    font-size: 12px;
+    color: #4A5568;
+    margin-top: 4px;
+    letter-spacing: 0.1em;
+  }
+  .search-pill {
+    position: absolute;
+    top: 72px; right: 32px;
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    color: #4A5568;
+    border: 1px solid #1E222B;
+    font-size: 18px;
+    cursor: pointer;
+  }
+
+  /* App grid — organic, not boxy */
+  .app-grid {
+    position: absolute;
+    top: 148px; left: 0; right: 0;
+    padding: 0 28px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px 4px;
+  }
+
+  .app-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px 8px 12px;
+    cursor: pointer;
+    position: relative;
+  }
+
+  .app-icon {
+    width: 56px; height: 56px;
+    border-radius: 16px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+    position: relative;
+    transition: transform 0.15s;
+  }
+  .app-cell:active .app-icon { transform: scale(0.92); }
+
+  .app-label {
+    font-family: 'Space Grotesk';
+    font-size: 11px;
+    color: #8B95A5;
+    margin-top: 10px;
+    text-align: center;
+    letter-spacing: 0.02em;
+  }
+
+  /* Icon color styles — muted tints, not garish */
+  .icon-cyan { background: rgba(0,229,255,0.08); color: #00E5FF; border: 1px solid rgba(0,229,255,0.1); }
+  .icon-violet { background: rgba(179,136,255,0.08); color: #B388FF; border: 1px solid rgba(179,136,255,0.1); }
+  .icon-rose { background: rgba(255,107,157,0.06); color: #FF6B9D; border: 1px solid rgba(255,107,157,0.08); }
+  .icon-amber { background: rgba(255,179,0,0.06); color: #FFB300; border: 1px solid rgba(255,179,0,0.08); }
+  .icon-mint { background: rgba(52,211,153,0.06); color: #34D399; border: 1px solid rgba(52,211,153,0.08); }
+  .icon-ghost { background: transparent; color: #2D3444; border: 1px dashed #2D3444; }
+
+  /* Active app indicator dot */
+  .app-dot {
+    position: absolute;
+    top: 12px; right: 32px;
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: #00E5FF;
+    box-shadow: 0 0 4px #00E5FF;
+  }
+
+  /* Glyph command bar — the soul of the apps page */
+  .command-bar {
+    position: absolute;
+    bottom: 100px; left: 32px; right: 32px;
+    height: 52px;
+    display: flex; align-items: center;
+    padding: 0 20px;
+    background: rgba(22,25,32,0.5);
+    border-left: 2px solid rgba(0,229,255,0.2);
+    backdrop-filter: blur(4px);
+    gap: 12px;
+  }
+  .command-icon {
+    color: #00A3B3;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .command-text {
+    font-size: 14px;
+    color: #4A5568;
+    font-style: italic;
+  }
+  .command-kbd {
+    margin-left: auto;
+    font-family: 'Space Grotesk';
+    font-size: 9px;
+    color: #2D3444;
+    border: 1px solid #1E222B;
+    padding: 2px 8px;
+    letter-spacing: 0.1em;
+  }
+
+  /* Page dots */
+  .page-dots {
+    position: absolute; right: 20px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 12px; align-items: center;
+  }
+  .dot { width: 6px; height: 6px; background: #1E222B; }
+  .dot.active { width: 6px; height: 20px; background: #00E5FF; box-shadow: 0 0 8px rgba(0,229,255,0.4); }
+
+  /* Bottom nav */
+  .bottom-nav {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 72px;
+    display: flex; align-items: center; justify-content: space-around;
+    padding: 0 40px;
+    background: linear-gradient(to top, #0A0A0C 60%, transparent);
+  }
+  .nav-item {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    color: #2D3444;
+    font-family: 'Space Grotesk'; font-size: 9px;
+    letter-spacing: 0.15em; text-transform: uppercase;
+  }
+  .nav-item.active { color: #00E5FF; }
+  .nav-item .icon { font-size: 22px; }
+</style>
+</head>
+<body>
+  <div class="ambient"></div>
+
+  <div class="status-bar">
+    <span class="status-time">21:42</span>
+    <span class="status-badge">Glyph</span>
+    <div class="status-icons"><span>⚡</span><span>●</span></div>
+  </div>
+
+  <div class="page-header">
+    <div class="page-title">Apps</div>
+    <div class="page-subtitle">16 installed</div>
+  </div>
+  <div class="search-pill">⌕</div>
+
+  <div class="app-grid">
+    <!-- Row 1 -->
+    <div class="app-cell">
+      <div class="app-icon icon-cyan">💬</div>
+      <span class="app-dot"></span>
+      <div class="app-label">AI Chat</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-violet">🌐</div>
+      <div class="app-label">Browser</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-rose">📷</div>
+      <div class="app-label">Camera</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-amber">🎙</div>
+      <div class="app-label">Voice</div>
+    </div>
+
+    <!-- Row 2 -->
+    <div class="app-cell">
+      <div class="app-icon icon-mint">📁</div>
+      <div class="app-label">Files</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-cyan">⚡</div>
+      <div class="app-label">Automate</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-violet" style="font-family: monospace; font-size: 20px;">&gt;_</div>
+      <div class="app-label">Terminal</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-amber">✎</div>
+      <div class="app-label">Notes</div>
+    </div>
+
+    <!-- Row 3 -->
+    <div class="app-cell">
+      <div class="app-icon icon-mint">◉</div>
+      <div class="app-label">IoT Hub</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-rose">♫</div>
+      <div class="app-label">Music</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-violet">◷</div>
+      <div class="app-label">Clock</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-cyan">⊕</div>
+      <div class="app-label">Maps</div>
+    </div>
+
+    <!-- Row 4 -->
+    <div class="app-cell">
+      <div class="app-icon icon-mint">⛊</div>
+      <div class="app-label">VPN</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-amber">◈</div>
+      <div class="app-label">Wallet</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-rose">♥</div>
+      <div class="app-label">Health</div>
+    </div>
+    <div class="app-cell">
+      <div class="app-icon icon-ghost">+</div>
+      <div class="app-label" style="color: #2D3444;">Add</div>
+    </div>
+  </div>
+
+  <!-- Command bar -->
+  <div class="command-bar">
+    <span class="command-icon">◆</span>
+    <span class="command-text">Ask Glyph anything...</span>
+    <span class="command-kbd">voice</span>
+  </div>
+
+  <div class="page-dots">
+    <div class="dot"></div>
+    <div class="dot active"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+  </div>
+
+  <div class="bottom-nav">
+    <div class="nav-item"><span class="icon">⬡</span><span>Home</span></div>
+    <div class="nav-item active"><span class="icon">⊞</span><span>Apps</span></div>
+    <div class="nav-item"><span class="icon">◈</span><span>Dragon</span></div>
+    <div class="nav-item"><span class="icon">⚙</span><span>Sys</span></div>
+  </div>
+</body>
+</html>

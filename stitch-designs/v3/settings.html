@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=720, height=1280, initial-scale=1.0" name="viewport"/>
+<title>Glyph OS - Settings</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@300;400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-container-low": "#1a1c1f",
+                        "error-container": "#93000a",
+                        "on-primary-fixed": "#001f24",
+                        "surface": "#0d0f12",
+                        "on-secondary-container": "#afb9ca",
+                        "surface-variant": "#333538",
+                        "tertiary-container": "#fec931",
+                        "primary": "#c3f5ff",
+                        "secondary-fixed-dim": "#bdc7d8",
+                        "surface-bright": "#37393d",
+                        "on-tertiary-fixed": "#251a00",
+                        "surface-container-lowest": "#0c0e11",
+                        "outline-variant": "#3b494c",
+                        "background": "#0d0f12",
+                        "tertiary-fixed-dim": "#f3bf26",
+                        "on-error": "#690005",
+                        "secondary": "#bdc7d8",
+                        "secondary-container": "#404a58",
+                        "on-background": "#e2e2e6",
+                        "primary-fixed": "#9cf0ff",
+                        "surface-tint": "#00daf3",
+                        "on-secondary": "#27313e",
+                        "error": "#ffb4ab",
+                        "on-surface": "#e2e2e6",
+                        "inverse-on-surface": "#2f3034",
+                        "on-secondary-fixed-variant": "#3e4755",
+                        "on-surface-variant": "#bac9cc",
+                        "tertiary-fixed": "#ffdf96",
+                        "surface-container-high": "#282a2d",
+                        "surface-container": "#1e2023",
+                        "on-tertiary-fixed-variant": "#594400",
+                        "outline": "#849396",
+                        "on-error-container": "#ffdad6",
+                        "inverse-surface": "#e2e2e6",
+                        "secondary-fixed": "#d9e3f5",
+                        "surface-container-highest": "#333538",
+                        "surface-dim": "#0d0f12",
+                        "primary-container": "#00e5ff",
+                        "on-primary": "#00363d",
+                        "tertiary": "#ffeac0",
+                        "on-primary-fixed-variant": "#004f58",
+                        "on-secondary-fixed": "#121c29",
+                        "primary-fixed-dim": "#00daf3",
+                        "on-tertiary-container": "#6f5500",
+                        "on-tertiary": "#3e2e00",
+                        "on-primary-container": "#00626e",
+                        "inverse-primary": "#006875"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.75rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            background-color: #0d0f12;
+            color: #e2e2e6;
+            font-family: 'Inter', sans-serif;
+        }
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .hide-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="flex flex-col h-[1280px] w-[720px] mx-auto overflow-hidden bg-background">
+<!-- TopAppBar -->
+<header class="w-full h-16 flex items-center px-6 justify-between bg-[#0D0F12]">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-[#00E5FF] active:scale-95 transition-transform cursor-pointer">arrow_back</span>
+<h1 class="font-['Space_Grotesk'] font-bold text-lg tracking-tight text-[#00E5FF]">Settings</h1>
+</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[#BAC9CC] hover:bg-[#282A2D] p-2 rounded-full transition-colors cursor-pointer">search</span>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 overflow-y-auto hide-scrollbar px-6 py-4 pb-24">
+<!-- Page Indicator -->
+<div class="flex justify-center items-center gap-2 mb-8">
+<div class="w-1.5 h-1.5 rounded-full bg-[#333538]"></div>
+<div class="w-1.5 h-1.5 rounded-full bg-[#333538]"></div>
+<div class="w-1.5 h-1.5 rounded-full bg-[#333538]"></div>
+<div class="w-1.5 h-1.5 rounded-full bg-[#00E5FF]"></div>
+</div>
+<!-- NETWORK GROUP -->
+<div class="mb-8">
+<h3 class="font-['Inter'] text-[10px] font-bold tracking-widest uppercase text-[#00E5FF] mb-3 ml-1">NETWORK</h3>
+<div class="space-y-2">
+<!-- Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl hover:bg-[#282A2D] transition-colors cursor-pointer group">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">wifi</span>
+</div>
+<span class="font-medium text-[15px]">WiFi</span>
+</div>
+<span class="text-[#BAC9CC] text-sm">Glyph_5G</span>
+</div>
+<!-- Row with Toggle -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl hover:bg-[#282A2D] transition-colors cursor-pointer">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">bluetooth</span>
+</div>
+<span class="font-medium text-[15px]">Bluetooth toggle</span>
+</div>
+<div class="w-10 h-5 bg-[#00E5FF] rounded-full relative">
+<div class="absolute right-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow-sm"></div>
+</div>
+</div>
+<!-- Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl hover:bg-[#282A2D] transition-colors cursor-pointer">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">share_reviews</span>
+</div>
+<span class="font-medium text-[15px]">Dragon Link</span>
+</div>
+<span class="material-symbols-outlined text-[#616D71]">chevron_right</span>
+</div>
+</div>
+</div>
+<!-- DISPLAY GROUP -->
+<div class="mb-8">
+<h3 class="font-['Inter'] text-[10px] font-bold tracking-widest uppercase text-[#00E5FF] mb-3 ml-1">DISPLAY</h3>
+<div class="space-y-2">
+<!-- Slider Row -->
+<div class="h-24 flex flex-col justify-center px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center justify-between mb-3">
+<div class="flex items-center gap-4">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">light_mode</span>
+<span class="font-medium text-[15px]">Brightness slider</span>
+</div>
+<span class="text-[12px] font-mono text-[#BAC9CC]">75%</span>
+</div>
+<div class="w-full h-1 bg-[#282A2D] rounded-full relative">
+<div class="absolute left-0 top-0 h-full w-3/4 bg-[#00E5FF] rounded-full"></div>
+<div class="absolute left-3/4 top-1/2 -translate-y-1/2 -translate-x-1/2 w-4 h-4 bg-white rounded-full border-2 border-[#00E5FF]"></div>
+</div>
+</div>
+<!-- Toggle Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">dark_mode</span>
+</div>
+<span class="font-medium text-[15px]">Night Mode toggle</span>
+</div>
+<div class="w-10 h-5 bg-[#333538] rounded-full relative">
+<div class="absolute left-0.5 top-0.5 w-4 h-4 bg-[#616D71] rounded-full"></div>
+</div>
+</div>
+<!-- Toggle Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">brightness_auto</span>
+</div>
+<span class="font-medium text-[15px]">Auto-Dim</span>
+</div>
+<div class="w-10 h-5 bg-[#00E5FF] rounded-full relative">
+<div class="absolute right-0.5 top-0.5 w-4 h-4 bg-white rounded-full"></div>
+</div>
+</div>
+<!-- Selection Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">timer</span>
+</div>
+<span class="font-medium text-[15px]">Timeout</span>
+</div>
+<span class="text-[#BAC9CC] text-sm">2 mins</span>
+</div>
+</div>
+</div>
+<!-- AI ASSISTANT GROUP -->
+<div class="mb-8">
+<h3 class="font-['Inter'] text-[10px] font-bold tracking-widest uppercase text-[#00E5FF] mb-3 ml-1">AI ASSISTANT</h3>
+<div class="space-y-2">
+<!-- Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">record_voice_over</span>
+</div>
+<span class="font-medium text-[15px]">Voice Model</span>
+</div>
+<span class="text-[#BAC9CC] text-sm">Nova V4</span>
+</div>
+<!-- Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">mic</span>
+</div>
+<span class="font-medium text-[15px]">Wake Word</span>
+</div>
+<span class="text-[#BAC9CC] text-sm">"Hey Glyph"</span>
+</div>
+<!-- Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">bolt</span>
+</div>
+<span class="font-medium text-[15px]">Proactive</span>
+</div>
+<div class="w-10 h-5 bg-[#00E5FF] rounded-full relative">
+<div class="absolute right-0.5 top-0.5 w-4 h-4 bg-white rounded-full"></div>
+</div>
+</div>
+<!-- Row -->
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#00E5FF] text-[20px]">grade</span>
+</div>
+<span class="font-medium text-[15px]">AI Tier</span>
+</div>
+<span class="text-[#00E5FF] text-xs font-bold bg-[#00E5FF]/10 px-2 py-1 rounded">ULTRA</span>
+</div>
+</div>
+</div>
+<!-- SYSTEM GROUP -->
+<div class="mb-12">
+<h3 class="font-['Inter'] text-[10px] font-bold tracking-widest uppercase text-[#00E5FF] mb-3 ml-1">SYSTEM</h3>
+<div class="space-y-2">
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#BAC9CC] text-[20px]">storage</span>
+</div>
+<span class="font-medium text-[15px]">Storage</span>
+</div>
+<span class="text-[#BAC9CC] text-sm">128GB / 512GB</span>
+</div>
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#282A2D] flex items-center justify-center">
+<span class="material-symbols-outlined text-[#BAC9CC] text-[20px]">info</span>
+</div>
+<span class="font-medium text-[15px]">About</span>
+</div>
+<span class="text-[#BAC9CC] text-sm">OS v2.4.1</span>
+</div>
+<div class="h-16 flex items-center justify-between px-4 bg-[#1A1C1F] rounded-xl group active:bg-[#FF3D3D]/10">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-lg bg-[#FF3D3D]/10 flex items-center justify-center">
+<span class="material-symbols-outlined text-[#FF3D3D] text-[20px]">factory</span>
+</div>
+<span class="font-medium text-[15px] text-[#FF3D3D]">Factory Reset</span>
+</div>
+<span class="material-symbols-outlined text-[#FF3D3D]/50">warning</span>
+</div>
+</div>
+</div>
+</main>
+<!-- BottomNavBar -->
+<nav class="fixed bottom-0 left-0 w-full h-20 bg-[#1A1C1F] flex justify-around items-center px-4 pb-4 z-50">
+<!-- Home -->
+<div class="flex flex-col items-center justify-center text-[#616D71] active:scale-90 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-[24px]">home</span>
+<span class="font-['Inter'] text-[10px] font-medium tracking-widest uppercase mt-1">Home</span>
+</div>
+<!-- Assistant -->
+<div class="flex flex-col items-center justify-center text-[#616D71] active:scale-90 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-[24px]">smart_toy</span>
+<span class="font-['Inter'] text-[10px] font-medium tracking-widest uppercase mt-1">Chat</span>
+</div>
+<!-- Library -->
+<div class="flex flex-col items-center justify-center text-[#616D71] active:scale-90 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-[24px]">folder</span>
+<span class="font-['Inter'] text-[10px] font-medium tracking-widest uppercase mt-1">Library</span>
+</div>
+<!-- Settings (ACTIVE) -->
+<div class="flex flex-col items-center justify-center text-[#00E5FF] bg-[#00E5FF]/10 rounded-xl px-3 py-1 active:scale-90 transition-transform cursor-pointer">
+<span class="material-symbols-outlined text-[24px]">settings</span>
+<span class="font-['Inter'] text-[10px] font-medium tracking-widest uppercase mt-1">Settings</span>
+</div>
+</nav>
+</body></html>

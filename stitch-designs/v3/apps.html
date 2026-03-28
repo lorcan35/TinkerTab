@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>GLYPH OS - Apps</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@700;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary-container": "#00e5ff",
+                        "surface": "#111317",
+                        "surface-variant": "#333538",
+                        "background": "#111317",
+                        "on-tertiary-fixed": "#251a00",
+                        "on-error-container": "#ffdad6",
+                        "surface-container-lowest": "#0c0e11",
+                        "secondary-container": "#11505a",
+                        "tertiary-fixed-dim": "#f3bf26",
+                        "surface-container": "#1e2023",
+                        "surface-dim": "#111317",
+                        "secondary-fixed-dim": "#98d0da",
+                        "on-surface-variant": "#bac9cc",
+                        "on-surface": "#e2e2e6",
+                        "tertiary-container": "#fec931",
+                        "outline": "#849396",
+                        "on-secondary": "#00363d",
+                        "primary-fixed-dim": "#00daf3",
+                        "on-primary-fixed-variant": "#004f58",
+                        "inverse-on-surface": "#2f3034",
+                        "secondary": "#98d0da",
+                        "on-primary": "#00363d",
+                        "on-secondary-fixed": "#001f24",
+                        "on-primary-fixed": "#001f24",
+                        "primary": "#c3f5ff",
+                        "on-tertiary-container": "#6f5500",
+                        "on-tertiary-fixed-variant": "#594400",
+                        "on-tertiary": "#3e2e00",
+                        "on-secondary-fixed-variant": "#0d4e57",
+                        "surface-container-low": "#1a1c1f",
+                        "surface-bright": "#37393d",
+                        "primary-fixed": "#9cf0ff",
+                        "tertiary-fixed": "#ffdf96",
+                        "on-secondary-container": "#8ac1cc",
+                        "on-primary-container": "#00626e",
+                        "surface-tint": "#00daf3",
+                        "outline-variant": "#3b494c",
+                        "surface-container-high": "#282a2d",
+                        "inverse-surface": "#e2e2e6",
+                        "error-container": "#93000a",
+                        "error": "#ffb4ab",
+                        "secondary-fixed": "#b3ecf7",
+                        "tertiary": "#ffeac0",
+                        "inverse-primary": "#006875",
+                        "surface-container-highest": "#333538",
+                        "on-background": "#e2e2e6",
+                        "on-error": "#690005"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+        body {
+            background-color: #0d0f12; /* Specific request background */
+            color: #e2e2e6;
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="flex flex-col items-center min-h-screen">
+<div class="w-full max-w-[720px] h-[1280px] relative overflow-hidden flex flex-col">
+<!-- TopAppBar (Shared Component Mapping) -->
+<header class="fixed top-0 w-full z-50 bg-[#111317]/60 backdrop-blur-3xl flex justify-between items-center px-6 h-14 max-w-[720px]">
+<div class="flex items-center gap-2">
+<span class="font-headline font-bold text-sm text-[#C3F5FF]">11:11</span>
+<span class="material-symbols-outlined text-[#C3F5FF] text-lg" data-icon="signal_cellular_alt">signal_cellular_alt</span>
+</div>
+<div class="text-xl font-black text-[#C3F5FF] tracking-widest font-headline uppercase">GLYPH</div>
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[#C3F5FF] text-lg" data-icon="battery_charging_full">battery_charging_full</span>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 pt-24 px-8 pb-32">
+<!-- Header Section -->
+<div class="flex justify-between items-end mb-12">
+<h1 class="font-headline font-bold text-[36px] leading-none tracking-tighter text-on-surface">Apps</h1>
+<div class="w-12 h-12 flex items-center justify-center bg-surface-container-low rounded-xl">
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="search">search</span>
+</div>
+</div>
+<!-- App Launcher Grid (4x4) -->
+<div class="grid grid-cols-4 gap-y-10 gap-x-6 mb-16">
+<!-- Row 1 -->
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#00E5FF]/10 rounded-xl flex items-center justify-center text-[#00E5FF]">
+<span class="material-symbols-outlined text-3xl" data-icon="chat_bubble" style="font-variation-settings: 'FILL' 1;">chat_bubble</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">AI Chat</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#B388FF]/10 rounded-xl flex items-center justify-center text-[#B388FF]">
+<span class="material-symbols-outlined text-3xl" data-icon="language">language</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Browser</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#FF6B9D]/10 rounded-xl flex items-center justify-center text-[#FF6B9D]">
+<span class="material-symbols-outlined text-3xl" data-icon="photo_camera" style="font-variation-settings: 'FILL' 1;">photo_camera</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Camera</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#FFB300]/10 rounded-xl flex items-center justify-center text-[#FFB300]">
+<span class="material-symbols-outlined text-3xl" data-icon="mic" style="font-variation-settings: 'FILL' 1;">mic</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Voice</span>
+</div>
+<!-- Row 2 -->
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#34D399]/10 rounded-xl flex items-center justify-center text-[#34D399]">
+<span class="material-symbols-outlined text-3xl" data-icon="folder_open" style="font-variation-settings: 'FILL' 1;">folder_open</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Files</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#00E5FF]/10 rounded-xl flex items-center justify-center text-[#00E5FF]">
+<span class="material-symbols-outlined text-3xl" data-icon="bolt" style="font-variation-settings: 'FILL' 1;">bolt</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Automations</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#8B95A5]/10 rounded-xl flex items-center justify-center text-[#8B95A5]">
+<span class="material-symbols-outlined text-3xl" data-icon="terminal">terminal</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Terminal</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#FFB300]/10 rounded-xl flex items-center justify-center text-[#FFB300]">
+<span class="material-symbols-outlined text-3xl" data-icon="sticky_note_2" style="font-variation-settings: 'FILL' 1;">sticky_note_2</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Notes</span>
+</div>
+<!-- Row 3 -->
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#34D399]/10 rounded-xl flex items-center justify-center text-[#34D399]">
+<span class="material-symbols-outlined text-3xl" data-icon="nest_eco_leaf" style="font-variation-settings: 'FILL' 1;">nest_eco_leaf</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">IoT</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#FF6B9D]/10 rounded-xl flex items-center justify-center text-[#FF6B9D]">
+<span class="material-symbols-outlined text-3xl" data-icon="music_note" style="font-variation-settings: 'FILL' 1;">music_note</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Music</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#B388FF]/10 rounded-xl flex items-center justify-center text-[#B388FF]">
+<span class="material-symbols-outlined text-3xl" data-icon="schedule" style="font-variation-settings: 'FILL' 1;">schedule</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Clock</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#00E5FF]/10 rounded-xl flex items-center justify-center text-[#00E5FF]">
+<span class="material-symbols-outlined text-3xl" data-icon="map" style="font-variation-settings: 'FILL' 1;">map</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Maps</span>
+</div>
+<!-- Row 4 -->
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#34D399]/10 rounded-xl flex items-center justify-center text-[#34D399]">
+<span class="material-symbols-outlined text-3xl" data-icon="vpn_lock" style="font-variation-settings: 'FILL' 1;">vpn_lock</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">VPN</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#FFB300]/10 rounded-xl flex items-center justify-center text-[#FFB300]">
+<span class="material-symbols-outlined text-3xl" data-icon="account_balance_wallet" style="font-variation-settings: 'FILL' 1;">account_balance_wallet</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Wallet</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 bg-[#FF6B9D]/10 rounded-xl flex items-center justify-center text-[#FF6B9D]">
+<span class="material-symbols-outlined text-3xl" data-icon="favorite" style="font-variation-settings: 'FILL' 1;">favorite</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Health</span>
+</div>
+<div class="flex flex-col items-center gap-3">
+<div class="w-16 h-16 border-2 border-dashed border-outline-variant rounded-xl flex items-center justify-center text-outline-variant">
+<span class="material-symbols-outlined text-3xl" data-icon="add">add</span>
+</div>
+<span class="font-label text-[11px] font-medium tracking-tight text-on-surface-variant uppercase">Add</span>
+</div>
+</div>
+<!-- Page Dots -->
+<div class="flex justify-center items-center gap-2 mb-12">
+<div class="w-1.5 h-1.5 rounded-full bg-surface-container-highest"></div>
+<div class="w-2.5 h-1.5 rounded-full bg-[#00E5FF]"></div>
+<div class="w-1.5 h-1.5 rounded-full bg-surface-container-highest"></div>
+</div>
+<!-- Search Bar Area -->
+<div class="w-full flex justify-center mt-auto">
+<div class="w-full h-14 px-6 rounded-full bg-[#161920] flex items-center gap-3 outline outline-variant/20">
+<span class="material-symbols-outlined text-[#00E5FF]" data-icon="smart_toy">smart_toy</span>
+<span class="font-body text-on-surface-variant text-sm flex-1">Ask Glyph anything...</span>
+<span class="material-symbols-outlined text-on-surface-variant" data-icon="mic">mic</span>
+</div>
+</div>
+</main>
+<!-- BottomNavBar (Shared Component Mapping) -->
+<nav class="fixed bottom-0 left-0 right-0 w-full max-w-[720px] mx-auto flex justify-around items-center h-20 pb-4 bg-[#282A2D]/60 backdrop-blur-3xl rounded-t-2xl z-50 border-t border-[#3B494C]/20">
+<!-- Active Tab: Apps -->
+<div class="flex flex-col items-center justify-center text-[#C3F5FF] bg-[#C3F5FF]/10 rounded-xl px-4 py-2 transition-all active:scale-90 duration-200 ease-out">
+<span class="material-symbols-outlined" data-icon="grid_view" style="font-variation-settings: 'FILL' 1;">grid_view</span>
+<span class="font-label font-medium text-[10px] tracking-tight uppercase mt-1">Apps</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#BAC9CC] px-4 py-2 transition-all hover:bg-[#1A1C1F] active:scale-90 duration-200 ease-out">
+<span class="material-symbols-outlined" data-icon="home">home</span>
+<span class="font-label font-medium text-[10px] tracking-tight uppercase mt-1">Home</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#BAC9CC] px-4 py-2 transition-all hover:bg-[#1A1C1F] active:scale-90 duration-200 ease-out">
+<span class="material-symbols-outlined" data-icon="smart_toy">smart_toy</span>
+<span class="font-label font-medium text-[10px] tracking-tight uppercase mt-1">Assistant</span>
+</div>
+<div class="flex flex-col items-center justify-center text-[#BAC9CC] px-4 py-2 transition-all hover:bg-[#1A1C1F] active:scale-90 duration-200 ease-out">
+<span class="material-symbols-outlined" data-icon="settings">settings</span>
+<span class="font-label font-medium text-[10px] tracking-tight uppercase mt-1">Settings</span>
+</div>
+</nav>
+</div>
+</body></html>

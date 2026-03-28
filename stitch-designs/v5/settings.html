@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=720, height=1280"/>
+<title>Glyph OS — Settings</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@200;300;400;500;600&family=Inter:wght@300;400;500&display=swap" rel="stylesheet"/>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 720px; height: 1280px;
+    background: #000000;
+    color: #ffffff;
+    font-family: 'Space Grotesk', sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Status */
+  .status {
+    position: absolute; top: 16px; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 28px;
+  }
+  .status-left { font-size: 12px; font-weight: 500; color: rgba(255,255,255,0.25); }
+  .status-right { display: flex; gap: 6px; align-items: center; }
+  .status-dot { width: 4px; height: 4px; border-radius: 50%; background: rgba(52,211,153,0.5); }
+  .status-text { font-size: 10px; color: rgba(255,255,255,0.15); letter-spacing: 0.1em; }
+
+  .header {
+    position: absolute; top: 60px; left: 48px;
+    font-size: 34px; font-weight: 300;
+    color: rgba(255,255,255,0.9);
+  }
+
+  /* The scroll area */
+  .scroll {
+    position: absolute;
+    top: 120px; left: 0; right: 0; bottom: 60px;
+    overflow-y: auto;
+    padding: 0 48px 40px;
+  }
+  .scroll::-webkit-scrollbar { width: 0; }
+
+  /* Section — just a label floating in space */
+  .section-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.2em;
+    color: rgba(0,229,255,0.3);
+    text-transform: uppercase;
+    margin-top: 36px;
+    margin-bottom: 20px;
+  }
+  .section-label:first-child { margin-top: 0; }
+
+  /* Row — no container, no box. Just a line of information. */
+  .row {
+    display: flex;
+    align-items: center;
+    height: 56px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  .row:hover { opacity: 0.8; }
+
+  /* Separator — a whisper of a line */
+  .sep {
+    height: 0.5px;
+    background: rgba(255,255,255,0.04);
+    margin: 0;
+  }
+
+  .row-icon {
+    width: 20px;
+    text-align: center;
+    font-size: 15px;
+    margin-right: 18px;
+    flex-shrink: 0;
+  }
+
+  .row-label {
+    font-size: 16px;
+    font-weight: 400;
+    color: rgba(255,255,255,0.75);
+    flex: 1;
+  }
+
+  .row-value {
+    font-size: 13px;
+    font-weight: 300;
+    color: rgba(255,255,255,0.2);
+    margin-right: 8px;
+  }
+
+  .row-chevron {
+    color: rgba(255,255,255,0.1);
+    font-size: 18px;
+  }
+
+  /* Toggle — Ive would spend 6 months on this */
+  .toggle {
+    width: 44px; height: 26px;
+    border-radius: 13px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.25s;
+  }
+  .toggle.off {
+    background: rgba(255,255,255,0.06);
+  }
+  .toggle.on {
+    background: rgba(0,229,255,0.2);
+  }
+  .toggle-thumb {
+    position: absolute;
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    top: 3px;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s;
+  }
+  .toggle.off .toggle-thumb {
+    left: 3px;
+    background: rgba(255,255,255,0.2);
+  }
+  .toggle.on .toggle-thumb {
+    left: 21px;
+    background: rgba(0,229,255,0.7);
+    box-shadow: 0 0 8px rgba(0,229,255,0.25);
+  }
+
+  /* Slider — the thinnest possible */
+  .slider {
+    width: 120px; height: 20px;
+    display: flex; align-items: center;
+    position: relative;
+  }
+  .slider-track {
+    width: 100%; height: 2px;
+    background: rgba(255,255,255,0.06);
+    border-radius: 1px;
+    position: relative;
+  }
+  .slider-fill {
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 70%;
+    background: rgba(0,229,255,0.3);
+    border-radius: 1px;
+  }
+  .slider-thumb {
+    position: absolute;
+    left: 70%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 0 8px rgba(0,0,0,0.3);
+  }
+
+  /* Danger */
+  .row.danger .row-label { color: rgba(255,61,61,0.5); }
+  .row.danger .row-icon { color: rgba(255,61,61,0.4) !important; }
+
+  /* Status dot inline */
+  .inline-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: rgba(52,211,153,0.6);
+    box-shadow: 0 0 4px rgba(52,211,153,0.2);
+    margin-right: 8px;
+  }
+
+  /* Page indicator */
+  .page-indicator {
+    position: absolute; right: 24px; top: 50%; transform: translateY(-50%);
+    display: flex; flex-direction: column; gap: 10px; z-index: 10;
+  }
+  .pip { width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,0.08); }
+  .pip.active { height: 16px; border-radius: 2px; background: rgba(0,229,255,0.35); }
+
+  /* Bottom nav */
+  .nav {
+    position: absolute; bottom: 28px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 48px;
+  }
+  .nav-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.1); }
+  .nav-dot.active { width: 24px; border-radius: 3px; background: rgba(255,255,255,0.5); }
+</style>
+</head>
+<body>
+
+  <div class="status">
+    <span class="status-left">Glyph</span>
+    <div class="status-right">
+      <div class="status-dot"></div>
+      <span class="status-text">connected</span>
+    </div>
+  </div>
+
+  <div class="header">Settings</div>
+
+  <div class="scroll">
+
+    <div class="section-label">Network</div>
+
+    <div class="row">
+      <div class="row-icon" style="color: rgba(0,229,255,0.4)">⟐</div>
+      <span class="row-label">Wi-Fi</span>
+      <span class="row-value">Home_5G</span>
+      <span class="row-chevron">›</span>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(179,136,255,0.4)">ᛒ</div>
+      <span class="row-label">Bluetooth</span>
+      <div class="toggle on"><div class="toggle-thumb"></div></div>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(52,211,153,0.4)">◈</div>
+      <span class="row-label">Dragon Link</span>
+      <div class="inline-dot"></div>
+      <span class="row-value">12ms</span>
+      <span class="row-chevron">›</span>
+    </div>
+
+    <div class="section-label">Display</div>
+
+    <div class="row">
+      <div class="row-icon" style="color: rgba(255,179,0,0.4)">☀</div>
+      <span class="row-label">Brightness</span>
+      <div class="slider"><div class="slider-track"><div class="slider-fill"></div><div class="slider-thumb"></div></div></div>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(179,136,255,0.4)">☽</div>
+      <span class="row-label">Night Mode</span>
+      <div class="toggle off"><div class="toggle-thumb"></div></div>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(255,255,255,0.2)">◑</div>
+      <span class="row-label">Auto-Dim</span>
+      <div class="toggle on"><div class="toggle-thumb"></div></div>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(255,255,255,0.2)">◴</div>
+      <span class="row-label">Screen Timeout</span>
+      <span class="row-value">5 min</span>
+      <span class="row-chevron">›</span>
+    </div>
+
+    <div class="section-label">AI Assistant</div>
+
+    <div class="row">
+      <div class="row-icon" style="color: rgba(0,229,255,0.4)">∿</div>
+      <span class="row-label">Voice Model</span>
+      <span class="row-value">Neural v2</span>
+      <span class="row-chevron">›</span>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(255,179,0,0.4)">◉</div>
+      <span class="row-label">Wake Word</span>
+      <span class="row-value">"Hey Glyph"</span>
+      <span class="row-chevron">›</span>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(179,136,255,0.4)">◎</div>
+      <span class="row-label">Proactive Mode</span>
+      <div class="toggle on"><div class="toggle-thumb"></div></div>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(52,211,153,0.4)">◇</div>
+      <span class="row-label">AI Tier</span>
+      <span class="row-value">Tier 3 · Cloud</span>
+      <span class="row-chevron">›</span>
+    </div>
+
+    <div class="section-label">System</div>
+
+    <div class="row">
+      <div class="row-icon" style="color: rgba(255,255,255,0.2)">▤</div>
+      <span class="row-label">Storage</span>
+      <span class="row-value">12.4 / 32 GB</span>
+      <span class="row-chevron">›</span>
+    </div>
+    <div class="sep"></div>
+    <div class="row">
+      <div class="row-icon" style="color: rgba(255,255,255,0.2)">ⓘ</div>
+      <span class="row-label">About Glyph OS</span>
+      <span class="row-value">v0.1.0</span>
+      <span class="row-chevron">›</span>
+    </div>
+    <div class="sep"></div>
+    <div class="row danger">
+      <div class="row-icon">⚠</div>
+      <span class="row-label">Factory Reset</span>
+      <span class="row-chevron" style="color:rgba(255,61,61,0.2)">›</span>
+    </div>
+
+  </div>
+
+  <div class="page-indicator">
+    <div class="pip"></div>
+    <div class="pip"></div>
+    <div class="pip"></div>
+    <div class="pip active"></div>
+  </div>
+
+  <div class="nav">
+    <div class="nav-dot"></div>
+    <div class="nav-dot"></div>
+    <div class="nav-dot"></div>
+    <div class="nav-dot active"></div>
+  </div>
+
+</body>
+</html>
