@@ -153,7 +153,7 @@ static esp_err_t es7210_adc_init(void)
 
     // --- Step 7: Mic select — follows reference driver es7210_mic_select() ---
     // Must power-down then power-up each mic pair, and set clock gates per-pair.
-    uint8_t gain_val = (s_mic_gain > 37) ? 0x0E : (s_mic_gain * 2 / 5);
+    uint8_t gain_val = (s_mic_gain > 37) ? 0x0E : (s_mic_gain / 3);
 
     // First: disable PGA on all channels, power down mic pairs
     for (int i = 0; i < 4; i++) {
@@ -313,7 +313,7 @@ esp_err_t tab5_mic_set_gain(uint8_t gain_db)
 
     // ES7210 gain: bits[3:0] = gain step, bit4 = PGA enable
     // Steps: 0=0dB, 1=3dB, 2=6dB ... 0x0A=30dB, 0x0E=37.5dB
-    uint8_t gain_val = (gain_db * 2 / 5);
+    uint8_t gain_val = (gain_db / 3);
     if (gain_val > 0x0E) gain_val = 0x0E;
     uint8_t gain_reg = 0x10 | gain_val;  // PGA enable + gain
 

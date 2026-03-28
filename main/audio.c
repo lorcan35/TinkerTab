@@ -119,11 +119,11 @@ static esp_err_t es8388_codec_init(void)
     ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL4, vol_reg), TAG, "vol L failed");
     ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL5, vol_reg), TAG, "vol R failed");
 
-    // Mixer: DAC L->LOUT1, DAC R->ROUT1
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL16, 0x00), TAG, "mix L failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL17, 0xB8), TAG, "mix L vol failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL20, 0x00), TAG, "mix R failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL21, 0xB8), TAG, "mix R vol failed");
+    // Mixer: DAC L->left mixer, DAC R->right mixer (matches esp_codec_dev reference)
+    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL16, 0x00), TAG, "mix L src failed");
+    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL17, 0x90), TAG, "mix L vol failed");
+    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL20, 0x90), TAG, "mix R vol failed");
+    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL21, 0x80), TAG, "dac lrck failed");
 
     // Power up
     ESP_RETURN_ON_ERROR(es8388_write(ES8388_CHIPPOWER, 0x00), TAG, "power up failed");
