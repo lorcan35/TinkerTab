@@ -1138,10 +1138,12 @@ static void send_click_cb(lv_event_t *e)
 static void orb_ready_click_cb(lv_event_t *e)
 {
     (void)e;
+    if (voice_get_state() != VOICE_STATE_READY) {
+        return;  /* Guard: only act in READY state */
+    }
     ESP_LOGI(TAG, "Orb tapped in READY state — starting recording");
-    /* Remove this handler before starting (listening state has its own UI) */
-    lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
+    /* Don't remove callback here (unsafe from within handler).
+     * show_state_listening() handles cleanup. */
     voice_start_listening();
 }
 
