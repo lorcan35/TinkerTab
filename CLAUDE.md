@@ -1,10 +1,18 @@
-# TinkerTab — TinkerOS Firmware (ESP32-P4 Tab5)
+# TinkerTab — TinkerOS Firmware (ESP32-P4 Tab5) — THE FACE
+
+## Repo Separation — READ THIS FIRST
+- **TinkerTab** (this repo) = Tab5 firmware. C/ESP-IDF. THIN CLIENT.
+  - Owns: LVGL UI, mic/speaker/camera/touch, SD card, WiFi, NVS settings
+  - Sends: audio frames, text messages, device registration over WebSocket
+  - Receives: STT results, LLM responses, TTS audio, config updates
+  - Storage: SD card for local audio recordings + offline queue. NVS for settings. NO database.
+- **TinkerBox** (github.com/lorcan35/TinkerBox) = Dragon Q6A server. Python. ALL intelligence.
+  - Owns: STT, LLM, TTS, embeddings, sessions, conversation engine, REST API, dashboard, database
+  - Tab5 is a thin client. Dragon is the brain.
+- **Protocol:** See TinkerBox `docs/protocol.md` for the WebSocket contract. Tab5 implements the client side.
 
 ## Overview
 TinkerTab is the TinkerOS firmware for the M5Stack Tab5, part of the TinkerClaw platform.
-- **TinkerClaw** = the platform ("Own Your AI")
-- **TinkerOS** = this firmware (Tab5 = the face)
-- **TinkerBox** = Dragon-side server (Dragon Q6A = the brain)
 - **Target audience:** Privacy-conscious tech enthusiasts (r/selfhosted, r/localllama). Setup under 5 minutes. Not tinkerers-only.
 
 Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side server)
@@ -136,6 +144,18 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 - All FreeRTOS tasks doing network + LVGL callbacks need minimum 8KB stack on ESP32-P4
 - Screenshot handler must copy framebuffer under LVGL lock, then stream without lock
 - `lv_screen_load_anim()` with auto_delete=false when returning to existing home screen
+
+## WebSocket Protocol (Tab5 = Client Side)
+See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
+
+1. **Device Registration:** On WS connect, send `{"type": "register", device_id, hardware_id, firmware_ver, platform, capabilities, session_id}` as first text frame.
+2. **device_id:** UUID stored in NVS. Generate once on first boot via `esp_random()`. Never changes.
+3. **Session Resume:** Store `session_id` from Dragon's `session_start` response in NVS. Send it on reconnect.
+4. **Voice Input:** `{"type":"start"}` → binary PCM frames → `{"type":"stop"}`
+5. **Text Input:** `{"type":"text","content":"..."}` — skips STT, same conversation.
+6. **Recording:** `{"type":"record_start"}` → binary PCM → `{"type":"record_stop"}` — creates a note.
+7. **Config Sync:** Handle `{"type":"config_update"}` from Dragon, apply settings, ACK.
+8. **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable.
 
 ## Key Files
 ```
