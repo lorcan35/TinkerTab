@@ -54,9 +54,10 @@ esp_err_t tab5_mic_init(i2c_master_bus_handle_t i2c_bus)
     }
 
     // Create I2C control interface for ES7210
+    // esp_codec_dev uses 8-bit I2C addresses (shifted left by 1)
     audio_codec_i2c_cfg_t i2c_cfg = {
         .port       = TAB5_I2C_NUM,
-        .addr       = TAB5_ES7210_I2C_ADDR,
+        .addr       = ES7210_CODEC_DEFAULT_ADDR,  // 0x80 (8-bit) = 0x40 (7-bit)
         .bus_handle = i2c_bus,
     };
     const audio_codec_ctrl_if_t *ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
