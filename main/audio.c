@@ -18,6 +18,7 @@
 #include "driver/i2s_std.h"
 #include "driver/i2s_tdm.h"
 #include "driver/i2c_master.h"
+#include "esp_codec_dev_defaults.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -59,6 +60,7 @@ static const char *TAG = "tab5_audio";
 static i2c_master_dev_handle_t s_es8388 = NULL;
 static i2s_chan_handle_t s_i2s_tx = NULL;
 static i2s_chan_handle_t s_i2s_rx = NULL;  // Created here, used by mic.c
+static const audio_codec_data_if_t *s_data_if = NULL;  // Shared I2S data interface for esp_codec_dev
 static uint8_t s_volume = 70;  // 0-100
 static bool s_initialized = false;
 
@@ -196,15 +198,16 @@ static esp_err_t i2s_bus_init(void)
         TAG, "i2s TX TDM init failed"
     );
 
-    // --- RX TDM: MONO, 4 TDM slots — ES7210 quad-mic ---
-    // DMA delivers 4 int16_t per frame: [MIC-L, AEC, MIC-R, MIC-HP]
-    // MONO mode + 16-bit slot width = exactly 4 samples per frame.
+    // --- RX TDM: STEREO, 4 TDM slots — ES7210 quad-mic ---
+    // STEREO mode: DMA delivers all 4 TDM slots interleaved per frame.
+    // MONO was WRONG — it only captured slot 0, making voice.c's 4-ch
+    // extraction read every 4th sample of mono data (aliased noise).
     i2s_tdm_config_t rx_tdm_cfg = {
         .clk_cfg = clk_cfg,
         .slot_cfg = {
             .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_16BIT,
-            .slot_mode       = I2S_SLOT_MODE_MONO,
+            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode       = I2S_SLOT_MODE_STEREO,
             .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
             .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
             .ws_pol          = false,
@@ -233,6 +236,18 @@ static esp_err_t i2s_bus_init(void)
     // --- Enable TX first, then RX ---
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_tx), TAG, "i2s TX enable failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_rx), TAG, "i2s RX enable failed");
+
+    // --- Create shared I2S data interface for esp_codec_dev ---
+    audio_codec_i2s_cfg_t codec_i2s_cfg = {
+        .port      = TAB5_I2S_NUM,
+        .tx_handle = s_i2s_tx,
+        .rx_handle = s_i2s_rx,
+    };
+    s_data_if = audio_codec_new_i2s_data(&codec_i2s_cfg);
+    if (!s_data_if) {
+        ESP_LOGE(TAG, "Failed to create I2S codec data interface");
+        return ESP_FAIL;
+    }
 
     ESP_LOGI(TAG, "I2S TX+RX TDM enabled (%dHz 16-bit 4-slot full-duplex)",
              TAB5_AUDIO_SAMPLE_RATE);
@@ -277,6 +292,11 @@ esp_err_t tab5_audio_init(i2c_master_bus_handle_t i2c_bus)
 i2s_chan_handle_t tab5_audio_get_i2s_rx(void)
 {
     return s_i2s_rx;
+}
+
+const audio_codec_data_if_t *tab5_audio_get_data_if(void)
+{
+    return s_data_if;
 }
 
 esp_err_t tab5_audio_play_raw(const int16_t *data, size_t samples)

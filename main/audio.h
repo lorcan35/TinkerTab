@@ -11,6 +11,7 @@
 #include "esp_err.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_types.h"
+#include "audio_codec_data_if.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -25,6 +26,9 @@ esp_err_t tab5_audio_init(i2c_master_bus_handle_t i2c_bus);
 
 /** Get the I2S RX channel handle (created by audio_init, used by mic_init). */
 i2s_chan_handle_t tab5_audio_get_i2s_rx(void);
+
+/** Get shared I2S data interface for esp_codec_dev (created by audio_init). */
+const audio_codec_data_if_t *tab5_audio_get_data_if(void);
 
 /** Play raw 16-bit PCM samples through the speaker. Blocks until complete. */
 esp_err_t tab5_audio_play_raw(const int16_t *data, size_t samples);

@@ -8,3 +8,4 @@ dependencies:
   espressif/esp_wifi_remote:
     version: 0.8.5
   espressif/mdns: '*'
+  espressif/esp_codec_dev: '*'
