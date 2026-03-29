@@ -169,7 +169,7 @@ static esp_err_t i2s_bus_init(void)
         .clk_cfg  = clk_cfg,
         .slot_cfg = {
             .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_16BIT,
             .slot_mode       = I2S_SLOT_MODE_MONO,
             .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
             .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
@@ -196,14 +196,15 @@ static esp_err_t i2s_bus_init(void)
         TAG, "i2s TX TDM init failed"
     );
 
-    // --- RX TDM: STEREO, 4 TDM slots — ES7210 quad-mic ---
-    // DMA delivers 4 int16_t per frame (one per mic).
+    // --- RX TDM: MONO, 4 TDM slots — ES7210 quad-mic ---
+    // DMA delivers 4 int16_t per frame: [MIC-L, AEC, MIC-R, MIC-HP]
+    // MONO mode + 16-bit slot width = exactly 4 samples per frame.
     i2s_tdm_config_t rx_tdm_cfg = {
         .clk_cfg = clk_cfg,
         .slot_cfg = {
             .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode       = I2S_SLOT_MODE_STEREO,
+            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_16BIT,
+            .slot_mode       = I2S_SLOT_MODE_MONO,
             .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
             .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
             .ws_pol          = false,

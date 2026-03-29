@@ -208,7 +208,7 @@ class VoicePipeline:
             stt_ms = (time.monotonic() - t0) * 1000
 
             if not transcript.strip():
-                logger.debug("STT returned empty transcript, skipping")
+                logger.info("STT returned empty transcript, skipping (audio=%d bytes)", len(audio_data))
                 return
 
             logger.info("STT (%.0fms): %s", stt_ms, transcript)

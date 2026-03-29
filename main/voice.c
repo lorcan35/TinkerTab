@@ -47,9 +47,11 @@ static const char *TAG = "tab5_voice";
 #define VOICE_CHUNK_SAMPLES    (TAB5_VOICE_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define VOICE_CHUNK_BYTES      (VOICE_CHUNK_SAMPLES * sizeof(int16_t))
 
-// Input: 20ms of 48kHz, 4 TDM channels = 960 frames × 4 ch = 3840 samples
+// Input: 20ms of 48kHz, 4 TDM slots = 960 frames × 4 ch = 3840 samples
+// TDM layout (M5Stack BSP): [MIC-L(0), AEC(1), MIC-R(2), MIC-HP(3)]
 #define MIC_48K_FRAMES         (TAB5_AUDIO_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define MIC_TDM_CHANNELS       4
+#define MIC_TDM_MIC1_OFF       0    // MIC1 (left mic) at slot 0
 #define MIC_TDM_SAMPLES        (MIC_48K_FRAMES * MIC_TDM_CHANNELS)
 // Downsample ratio: 48kHz -> 16kHz = 3:1
 #define DOWNSAMPLE_RATIO       (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
@@ -403,15 +405,44 @@ static void mic_capture_task(void *arg)
             continue;
         }
 
-        // Extract MIC1 (slot 0) and downsample 48kHz -> 16kHz with box filter.
-        // Using MIC1 only — averaging MIC1+MIC2 causes phase cancellation.
-        // Box filter (average of DOWNSAMPLE_RATIO frames) provides anti-alias
-        // rejection vs point-sampling which creates "[MUSIC PLAYING]" artifacts.
+        // Log per-slot RMS for first 5 chunks to find the real mic channel
+        if (frames_sent < 5) {
+            for (int ch = 0; ch < MIC_TDM_CHANNELS; ch++) {
+                int64_t sqsum = 0;
+                int16_t mn = 0, mx = 0;
+                int nz = 0;
+                for (int i = ch; i < MIC_TDM_SAMPLES; i += MIC_TDM_CHANNELS) {
+                    int16_t v = tdm_buf[i];
+                    sqsum += (int64_t)v * v;
+                    if (v < mn) mn = v;
+                    if (v > mx) mx = v;
+                    if (v != 0) nz++;
+                }
+                int count = MIC_48K_FRAMES;
+                float rms = sqrtf((float)(sqsum / (count > 0 ? count : 1)));
+                ESP_LOGI(TAG, "SLOT_DIAG #%d CH%d: min=%d max=%d rms=%.0f nz=%d/%d",
+                         frames_sent, ch, mn, mx, rms, nz, count);
+            }
+            // Also dump first 8 raw TDM frames as hex
+            if (frames_sent == 0) {
+                ESP_LOGI(TAG, "TDM raw [0..31]: %04X %04X %04X %04X | %04X %04X %04X %04X | %04X %04X %04X %04X | %04X %04X %04X %04X | %04X %04X %04X %04X | %04X %04X %04X %04X | %04X %04X %04X %04X | %04X %04X %04X %04X",
+                    (uint16_t)tdm_buf[0],  (uint16_t)tdm_buf[1],  (uint16_t)tdm_buf[2],  (uint16_t)tdm_buf[3],
+                    (uint16_t)tdm_buf[4],  (uint16_t)tdm_buf[5],  (uint16_t)tdm_buf[6],  (uint16_t)tdm_buf[7],
+                    (uint16_t)tdm_buf[8],  (uint16_t)tdm_buf[9],  (uint16_t)tdm_buf[10], (uint16_t)tdm_buf[11],
+                    (uint16_t)tdm_buf[12], (uint16_t)tdm_buf[13], (uint16_t)tdm_buf[14], (uint16_t)tdm_buf[15],
+                    (uint16_t)tdm_buf[16], (uint16_t)tdm_buf[17], (uint16_t)tdm_buf[18], (uint16_t)tdm_buf[19],
+                    (uint16_t)tdm_buf[20], (uint16_t)tdm_buf[21], (uint16_t)tdm_buf[22], (uint16_t)tdm_buf[23],
+                    (uint16_t)tdm_buf[24], (uint16_t)tdm_buf[25], (uint16_t)tdm_buf[26], (uint16_t)tdm_buf[27],
+                    (uint16_t)tdm_buf[28], (uint16_t)tdm_buf[29], (uint16_t)tdm_buf[30], (uint16_t)tdm_buf[31]);
+            }
+        }
+
+        // Extract selected slot and downsample 48kHz -> 16kHz with box filter.
         int out_idx = 0;
         for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
             int32_t sum = 0;
             for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
-                sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + 0];  // Slot 0: MIC1
+                sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + MIC_TDM_MIC1_OFF];
             }
             mono_buf[out_idx++] = (int16_t)(sum / DOWNSAMPLE_RATIO);
         }
@@ -427,8 +458,8 @@ static void mic_capture_task(void *arg)
                 sqsum += (int64_t)v * v;
             }
             float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
-            ESP_LOGI(TAG, "Mic chunk #%d: min=%d max=%d rms=%.0f samples=%d",
-                     frames_sent, mn, mx, rms, out_idx);
+            ESP_LOGI(TAG, "Mic chunk #%d (slot %d): min=%d max=%d rms=%.0f samples=%d",
+                     frames_sent, MIC_TDM_MIC1_OFF, mn, mx, rms, out_idx);
         }
 
         // Send 16kHz mono PCM as binary WS frame

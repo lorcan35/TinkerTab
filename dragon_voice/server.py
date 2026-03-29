@@ -204,7 +204,7 @@ class VoiceServer:
         """
         ws = web.WebSocketResponse(
             max_msg_size=10 * 1024 * 1024,  # 10MB max message
-            heartbeat=30.0,
+            heartbeat=600.0,
         )
         await ws.prepare(request)
 

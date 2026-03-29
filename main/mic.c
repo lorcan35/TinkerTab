@@ -73,7 +73,7 @@ static const char *TAG = "tab5_mic";
 // ---------------------------------------------------------------------------
 static i2c_master_dev_handle_t s_es7210 = NULL;
 static i2s_chan_handle_t s_i2s_rx = NULL;  // From audio.c shared bus
-static uint8_t s_mic_gain = 30;  // dB, default (matches esp_codec_dev)
+static uint8_t s_mic_gain = 37;  // dB, near-max PGA gain for better STT pickup
 static bool s_mic_initialized = false;
 
 // ---------------------------------------------------------------------------
