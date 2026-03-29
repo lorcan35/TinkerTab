@@ -55,6 +55,8 @@ static const char *TAG = "tab5_voice";
 #define MIC_TDM_SAMPLES        (MIC_48K_FRAMES * MIC_TDM_CHANNELS)
 // Downsample ratio: 48kHz -> 16kHz = 3:1
 #define DOWNSAMPLE_RATIO       (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
+// Upsample ratio: 16kHz -> 48kHz = 1:3 (mirror of downsample)
+#define UPSAMPLE_RATIO         (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
 
 // Reconnect parameters
 #define VOICE_RECONNECT_BASE_MS  2000
@@ -487,6 +489,23 @@ static void mic_capture_task(void *arg)
 }
 
 // ---------------------------------------------------------------------------
+// Upsample 16kHz -> 48kHz with linear interpolation (mirror of downsample)
+// ---------------------------------------------------------------------------
+static size_t upsample_16k_to_48k(const int16_t *in, size_t in_samples,
+                                    int16_t *out, size_t out_capacity)
+{
+    size_t out_idx = 0;
+    for (size_t i = 0; i < in_samples && out_idx + UPSAMPLE_RATIO <= out_capacity; i++) {
+        int16_t curr = in[i];
+        int16_t next = (i + 1 < in_samples) ? in[i + 1] : curr;
+        for (int j = 0; j < UPSAMPLE_RATIO; j++) {
+            out[out_idx++] = (int16_t)(curr + (int32_t)(next - curr) * j / UPSAMPLE_RATIO);
+        }
+    }
+    return out_idx;
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket receive task — reads from Dragon, handles text + binary frames
 // ---------------------------------------------------------------------------
 static void ws_receive_task(void *arg)
@@ -496,6 +515,10 @@ static void ws_receive_task(void *arg)
     // Receive buffer — Dragon sends TTS audio in 4096-byte chunks
     char rx_buf[4100];
     int16_t play_chunk[VOICE_CHUNK_SAMPLES];
+
+    // Static upsample buffer: max 2048 input samples × 3 = 6144 output samples
+    // Static because only one ws_receive_task runs at a time (saves stack)
+    static int16_t upsample_buf[2048 * UPSAMPLE_RATIO];
 
     s_ws_running = true;
     s_last_activity_us = esp_timer_get_time();
@@ -555,9 +578,13 @@ static void ws_receive_task(void *arg)
                     voice_set_state(VOICE_STATE_SPEAKING, NULL);
                 }
 
-                // Write to ring buffer
-                size_t samples = len / sizeof(int16_t);
-                playback_buf_write((const int16_t *)rx_buf, samples);
+                // Upsample 16kHz -> 48kHz before writing to playback buffer.
+                // Dragon sends PCM int16 mono at 16kHz; I2S TX runs at 48kHz.
+                size_t in_samples = len / sizeof(int16_t);
+                size_t out_samples = upsample_16k_to_48k(
+                    (const int16_t *)rx_buf, in_samples,
+                    upsample_buf, sizeof(upsample_buf) / sizeof(int16_t));
+                playback_buf_write(upsample_buf, out_samples);
 
                 // Immediately try to play what we have
                 size_t avail = playback_buf_read(play_chunk, VOICE_CHUNK_SAMPLES);
