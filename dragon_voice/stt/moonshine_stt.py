@@ -1,13 +1,13 @@
-"""Moonshine STT backend using sherpa-onnx.
+"""Moonshine STT backend using moonshine-voice native runtime.
 
-Moonshine is a lightweight speech recognition model optimized for edge devices.
-Uses the sherpa-onnx runtime for efficient inference with ARM NEON support.
+Moonshine V2 streaming models provide Whisper-level accuracy at 20x+ speed
+on ARM. Uses the ONNX-based C++ runtime with NEON acceleration.
 """
 
 import asyncio
 import logging
-import os
-from pathlib import Path
+import struct
+from typing import Optional
 
 import numpy as np
 
@@ -16,119 +16,83 @@ from dragon_voice.stt.base import STTBackend
 
 logger = logging.getLogger(__name__)
 
-# Default model download directory
-_MODEL_DIR = Path.home() / ".cache" / "dragon_voice" / "moonshine"
+# Model name -> (moonshine-voice download name, ModelArch enum value)
+_MODEL_MAP = {
+    "tiny": ("tiny-streaming-en", "TINY_STREAMING"),
+    "small": ("small-streaming-en", "SMALL_STREAMING"),
+    "medium": ("medium-streaming-en", "MEDIUM_STREAMING"),
+    "base": ("base-en", "BASE"),
+}
 
 
 class MoonshineBackend(STTBackend):
-    """STT backend using sherpa-onnx with Moonshine models."""
+    """STT backend using moonshine-voice native C++ runtime."""
 
     def __init__(self, config: STTConfig) -> None:
         self._config = config
-        self._recognizer = None
+        self._transcriber = None
+        self._model_arch = None
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
-        """Load the Moonshine model via sherpa-onnx.
-
-        Auto-downloads the model from the sherpa-onnx model zoo if not
-        already present locally.
-        """
+        """Load the Moonshine model."""
         try:
-            import sherpa_onnx
+            from moonshine_voice import ModelArch, get_model_path, download
+            from moonshine_voice.transcriber import Transcriber
         except ImportError:
             raise ImportError(
-                "sherpa-onnx is required for the moonshine backend. "
-                "Install it: pip install sherpa-onnx"
+                "moonshine-voice is required for the moonshine backend. "
+                "Install it: pip install moonshine-voice"
             )
 
-        model_path = self._config.moonshine_model_path
-        model_size = self._config.model  # "tiny" or "base"
+        model_size = self._config.model  # "tiny", "small", "medium", "base"
+        if model_size not in _MODEL_MAP:
+            raise ValueError(
+                f"Unknown Moonshine model {model_size}. "
+                f"Available: {', '.join(_MODEL_MAP.keys())}"
+            )
 
-        logger.info(
-            "Initializing Moonshine STT — model=%s, path=%s",
-            model_size,
-            model_path or "(auto-download)",
-        )
+        model_name, arch_name = _MODEL_MAP[model_size]
+        self._model_arch = getattr(ModelArch, arch_name)
+
+        logger.info("Initializing Moonshine STT — model=%s", model_size)
 
         loop = asyncio.get_running_loop()
 
         def _load():
-            if model_path and Path(model_path).is_dir():
-                base = Path(model_path)
-            else:
-                base = self._ensure_model(model_size)
+            # Download model if not cached
+            download.download_model(model_name)
 
-            # Moonshine model layout in sherpa-onnx:
-            #   preprocessor.onnx, encoder.onnx, uncached_decoder.onnx,
-            #   cached_decoder.onnx, tokens.txt
-            recognizer = sherpa_onnx.OfflineRecognizer.from_moonshine(
-                preprocessor=str(base / "preprocess.onnx"),
-                encoder=str(base / "encode.onnx"),
-                uncached_decoder=str(base / "uncached_decode.onnx"),
-                cached_decoder=str(base / "cached_decode.onnx"),
-                tokens=str(base / "tokens.txt"),
-                num_threads=4,
+            # Find model path — moonshine-voice caches in ~/.cache/moonshine_voice/
+            import pathlib
+            cache_dir = pathlib.Path.home() / ".cache" / "moonshine_voice"
+            model_dir = cache_dir / "download.moonshine.ai" / "model" / model_name / "quantized"
+
+            if not model_dir.exists():
+                # Fallback: try the assets path
+                model_dir = get_model_path(model_name)
+
+            model_path = str(model_dir)
+            logger.info("Loading model from %s", model_path)
+            return Transcriber(
+                model_path=model_path,
+                model_arch=self._model_arch,
             )
-            return recognizer
 
         try:
-            self._recognizer = await loop.run_in_executor(None, _load)
+            self._transcriber = await loop.run_in_executor(None, _load)
             logger.info("Moonshine model loaded successfully")
         except Exception:
             logger.exception("Failed to load Moonshine model")
             raise
 
-    @staticmethod
-    def _ensure_model(model_size: str) -> Path:
-        """Download the Moonshine model if not cached locally.
-
-        Uses sherpa-onnx's built-in model download mechanism or falls back
-        to manual download from the model zoo.
-        """
-        model_name = f"sherpa-onnx-moonshine-{model_size}-en-int8"
-        model_dir = _MODEL_DIR / model_name
-
-        if model_dir.exists() and any(model_dir.glob("*.onnx")):
-            logger.info("Using cached Moonshine model at %s", model_dir)
-            return model_dir
-
-        logger.info("Downloading Moonshine %s model...", model_size)
-        _MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Use sherpa-onnx's download utility if available
-        try:
-            from sherpa_onnx import cli as sherpa_cli
-
-            sherpa_cli.download_model(model_name, str(_MODEL_DIR))
-        except (ImportError, AttributeError):
-            # Fallback: direct download
-            import subprocess
-
-            url = (
-                f"https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-                f"asr-models/{model_name}.tar.bz2"
-            )
-            archive = _MODEL_DIR / f"{model_name}.tar.bz2"
-            subprocess.run(["wget", "-q", "-O", str(archive), url], check=True)
-            subprocess.run(
-                ["tar", "xjf", str(archive), "-C", str(_MODEL_DIR)], check=True
-            )
-            archive.unlink(missing_ok=True)
-
-        if not model_dir.exists():
-            raise FileNotFoundError(
-                f"Moonshine model download failed — expected at {model_dir}"
-            )
-        return model_dir
-
     async def transcribe(self, audio_bytes: bytes, sample_rate: int = 16000) -> str:
         """Transcribe PCM int16 audio to text using Moonshine."""
-        if self._recognizer is None:
+        if self._transcriber is None:
             raise RuntimeError("MoonshineBackend not initialized")
 
         audio_i16 = np.frombuffer(audio_bytes, dtype=np.int16)
-        audio_f32 = audio_i16.astype(np.float32) / 32768.0
+        audio_f32 = (audio_i16.astype(np.float32) / 32768.0).tolist()
 
         if len(audio_f32) == 0:
             return ""
@@ -137,12 +101,12 @@ class MoonshineBackend(STTBackend):
             loop = asyncio.get_running_loop()
 
             def _transcribe():
-                import sherpa_onnx
-
-                stream = self._recognizer.create_stream()
-                stream.accept_waveform(sample_rate, audio_f32)
-                self._recognizer.decode_stream(stream)
-                return stream.result.text.strip()
+                result = self._transcriber.transcribe_without_streaming(
+                    audio_f32, sample_rate=sample_rate
+                )
+                # Combine all transcript lines
+                texts = [line.text.strip() for line in result.lines if line.text.strip()]
+                return " ".join(texts)
 
             try:
                 text = await loop.run_in_executor(None, _transcribe)
@@ -150,11 +114,13 @@ class MoonshineBackend(STTBackend):
                 logger.exception("Moonshine transcription failed")
                 return ""
 
-        logger.debug("Moonshine transcribed %d samples -> '%s'", len(audio_f32), text)
+        logger.debug("Moonshine transcribed %d samples -> %s", len(audio_f32), text)
         return text
 
     async def shutdown(self) -> None:
-        self._recognizer = None
+        if self._transcriber is not None:
+            self._transcriber.close()
+            self._transcriber = None
         logger.info("Moonshine backend shut down")
 
     @property

@@ -3,8 +3,8 @@ server:
   port: 3502
 
 stt:
-  backend: "whisper_cpp"  # moonshine, whisper_cpp, vosk
-  model: "tiny"
+  backend: "moonshine"  # moonshine, whisper_cpp, vosk
+  model: "medium"
   language: "en"
   # moonshine-specific
   moonshine_model_path: ""
