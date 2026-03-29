@@ -83,6 +83,13 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** Increased SDIO task stack to 8KB minimum (commits 0e51a53, 1e1f650).
 - **Prevention:** Set SDIO task stacks to 8K+ in sdkconfig. Monitor high water mark with `uxTaskGetStackHighWaterMark()` during development.
 
+### ESP-IDF WS Transport Fragments Control Frames
+- **Date:** 2026-03-29
+- **Symptom:** Dragon aiohttp server logs "Received fragmented control frame" and disconnects
+- **Root Cause:** `esp_transport_ws_send_raw()` with `WS_TRANSPORT_OPCODES_PING` sends the ping as a fragmented frame. WebSocket spec forbids fragmenting control frames. aiohttp strictly enforces this.
+- **Fix:** Use JSON text heartbeat `{"type":"ping"}` instead of WS ping opcode for keep-alive
+- **Prevention:** Never use WS control frame opcodes with `esp_transport_ws_send_raw()` for keep-alive. Use application-level heartbeats.
+
 ### Flash String Literals Crash WebSocket Send
 - **Date:** 2026-03-19
 - **Symptom:** Crash in `esp_transport_ws_send_raw()` when sending a string literal like `"hello"`.
@@ -252,3 +259,10 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** ESP32-P4 has 32MB PSRAM but only ~512KB internal SRAM shared with FreeRTOS heap, stacks, and BSS.
 - **Fix:** Established rule: any buffer >4KB must use `heap_caps_malloc(MALLOC_CAP_SPIRAM)`.
 - **Prevention:** Grep for large static arrays (`static.*\[.*\]`) periodically. Code review should reject any static buffer over 4KB. Document the 4KB threshold in CLAUDE.md.
+
+### No Hardcoded Voice Response Timeout
+- **Date:** 2026-03-29
+- **Symptom:** Tab5 disconnected from Dragon voice server after 120s while LLM was still processing
+- **Root Cause:** Hardcoded VOICE_RESPONSE_TIMEOUT_MS forced disconnection regardless of whether Dragon was still working. ARM64 LLM inference is slow (~0.24 tok/s).
+- **Fix:** Removed timeout entirely. Tab5 stays in PROCESSING state as long as WebSocket is alive. JSON heartbeat every 15s prevents TCP idle timeout. Only disconnects on WS error or Dragon error message.
+- **Prevention:** Never use fixed timeouts for LLM inference. Processing time varies by model, prompt length, and hardware. Use connection health checks instead.
