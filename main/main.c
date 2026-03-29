@@ -135,8 +135,9 @@ static void voice_test_task(void *arg)
         voice_stop_listening();
         printf("[voice_test] Stopped, waiting for Dragon response...\n");
 
-        // Wait for processing + playback to complete
-        for (int w = 0; w < 60; w++) {
+        // Wait for Dragon to finish — no fixed timeout.
+        // Stay as long as state is PROCESSING or SPEAKING (WS alive, Dragon working).
+        for (int w = 0; ; w++) {
             vTaskDelay(pdMS_TO_TICKS(500));
             vs = voice_get_state();
             if (vs == VOICE_STATE_READY || vs == VOICE_STATE_IDLE) {
@@ -144,7 +145,7 @@ static void voice_test_task(void *arg)
                        voice_get_last_transcript());
                 break;
             }
-            if (w % 4 == 0) printf("[voice_test] waiting... state=%d\n", vs);
+            if (w % 10 == 0) printf("[voice_test] waiting... state=%d (%ds)\n", vs, w / 2);
         }
     }
 

@@ -60,16 +60,21 @@ class MoonshineBackend(STTBackend):
         loop = asyncio.get_running_loop()
 
         def _load():
-            # Download model if not cached
-            download.download_model(model_name)
-
-            # Find model path — moonshine-voice caches in ~/.cache/moonshine_voice/
             import pathlib
             cache_dir = pathlib.Path.home() / ".cache" / "moonshine_voice"
             model_dir = cache_dir / "download.moonshine.ai" / "model" / model_name / "quantized"
 
             if not model_dir.exists():
-                # Fallback: try the assets path
+                # Download model — API changed in v0.0.51+
+                model_url = f"https://download.moonshine.ai/model/{model_name}/quantized"
+                try:
+                    download.download_model(model_url, model_name)
+                except TypeError:
+                    # Fallback for older API: download.download_model(model_name)
+                    download.download_model(model_name)
+
+            if not model_dir.exists():
+                # Last resort: try the assets path
                 model_dir = get_model_path(model_name)
 
             model_path = str(model_dir)

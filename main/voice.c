@@ -62,7 +62,8 @@ static const char *TAG = "tab5_voice";
 #define VOICE_RECONNECT_BASE_MS  2000
 #define VOICE_RECONNECT_MAX_MS   15000
 #define VOICE_CONNECT_TIMEOUT_MS 5000
-#define VOICE_RESPONSE_TIMEOUT_MS 120000
+// Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
+#define VOICE_KEEPALIVE_MS       15000
 
 // Mic capture task (needs room for 3840-sample TDM buffer on stack)
 #define MIC_TASK_STACK_SIZE    4096  /* Reduced: tdm_buf moved to PSRAM heap (#18) */
@@ -102,13 +103,14 @@ static volatile bool s_mic_running = false;
 static TaskHandle_t  s_ws_task = NULL;
 static volatile bool s_ws_running = false;
 
-// Playback ring buffer (smooths network jitter)
-static int16_t  s_play_buf[TAB5_VOICE_PLAYBACK_BUF / sizeof(int16_t)];
+// Playback ring buffer (smooths network jitter) — allocated in PSRAM
+static int16_t  *s_play_buf = NULL;
+static size_t   s_play_capacity = 0;  // capacity in samples
 static size_t   s_play_wr = 0;  // write index (samples)
 static size_t   s_play_rd = 0;  // read index (samples)
 static size_t   s_play_count = 0; // samples available
 static SemaphoreHandle_t s_play_mutex = NULL;
-#define PLAY_BUF_CAPACITY  (TAB5_VOICE_PLAYBACK_BUF / sizeof(int16_t))
+#define PLAY_BUF_CAPACITY  s_play_capacity
 
 // Last transcript from Dragon STT
 static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
@@ -545,11 +547,13 @@ static void ws_receive_task(void *arg)
                     tab5_audio_play_raw(play_chunk, avail);
                 }
             }
-            if (s_state == VOICE_STATE_PROCESSING) {
+            // Send keep-alive heartbeat during processing to prevent TCP idle timeout.
+            // Uses JSON text frame (not WS ping) because esp_transport_ws fragments
+            // control frames, which aiohttp rejects as "fragmented control frame".
+            if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
                 int64_t elapsed_us = esp_timer_get_time() - s_last_activity_us;
-                if (elapsed_us > (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000) {
-                    ESP_LOGW(TAG, "Response timeout (%d ms)", VOICE_RESPONSE_TIMEOUT_MS);
-                    voice_set_state(VOICE_STATE_READY, "timeout");
+                if (elapsed_us > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
+                    ws_send_text("{\"type\":\"ping\"}");
                     s_last_activity_us = esp_timer_get_time();
                 }
             }
@@ -681,6 +685,21 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         ESP_LOGE(TAG, "Failed to create WS mutex");
         vSemaphoreDelete(s_play_mutex);
         vSemaphoreDelete(s_state_mutex);
+        s_play_mutex = NULL;
+        s_state_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Allocate playback ring buffer in PSRAM (too large for internal SRAM)
+    s_play_capacity = TAB5_VOICE_PLAYBACK_BUF / sizeof(int16_t);
+    s_play_buf = (int16_t *)heap_caps_malloc(
+        TAB5_VOICE_PLAYBACK_BUF, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_play_buf) {
+        ESP_LOGE(TAG, "Failed to allocate playback buffer in PSRAM");
+        vSemaphoreDelete(s_ws_mutex);
+        vSemaphoreDelete(s_play_mutex);
+        vSemaphoreDelete(s_state_mutex);
+        s_ws_mutex = NULL;
         s_play_mutex = NULL;
         s_state_mutex = NULL;
         return ESP_ERR_NO_MEM;
