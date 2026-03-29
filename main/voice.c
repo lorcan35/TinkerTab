@@ -516,9 +516,16 @@ static void ws_receive_task(void *arg)
     char rx_buf[4100];
     int16_t play_chunk[VOICE_CHUNK_SAMPLES];
 
-    // Static upsample buffer: max 2048 input samples × 3 = 6144 output samples
-    // Static because only one ws_receive_task runs at a time (saves stack)
-    static int16_t upsample_buf[2048 * UPSAMPLE_RATIO];
+    // Upsample buffer in PSRAM: max 2048 input samples × 3 = 6144 output samples (12KB)
+    const size_t upsample_cap = 2048 * UPSAMPLE_RATIO;
+    int16_t *upsample_buf = (int16_t *)heap_caps_malloc(
+        upsample_cap * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!upsample_buf) {
+        ESP_LOGE(TAG, "Failed to allocate upsample buffer");
+        s_ws_task = NULL;
+        vTaskSuspend(NULL);
+        return;
+    }
 
     s_ws_running = true;
     s_last_activity_us = esp_timer_get_time();
@@ -583,7 +590,7 @@ static void ws_receive_task(void *arg)
                 size_t in_samples = len / sizeof(int16_t);
                 size_t out_samples = upsample_16k_to_48k(
                     (const int16_t *)rx_buf, in_samples,
-                    upsample_buf, sizeof(upsample_buf) / sizeof(int16_t));
+                    upsample_buf, upsample_cap);
                 playback_buf_write(upsample_buf, out_samples);
 
                 // Immediately try to play what we have
@@ -616,6 +623,7 @@ static void ws_receive_task(void *arg)
 
     s_ws_running = false;
     s_ws_task = NULL;
+    heap_caps_free(upsample_buf);
 
     // Clean up transport on unexpected disconnect.
     // Take WS mutex to ensure mic task isn't mid-send when we destroy.
