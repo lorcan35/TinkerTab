@@ -1,5 +1,5 @@
 /*
- * ui_voice.c — Glyph OS voice overlay
+ * ui_voice.c — TinkerOS voice overlay
  * 720x1280 portrait, LVGL v9
  *
  * Full-screen voice interaction overlay with animated orb feedback.
@@ -10,7 +10,7 @@
  * Sits on lv_layer_top() alongside the keyboard overlay.
  * Wires into voice.h state callbacks for real-time visual feedback.
  *
- * The orb is the soul of Glyph — it breathes, pulses, and responds.
+ * The orb is the soul of Tinker — it breathes, pulses, and responds.
  */
 
 #include "ui_voice.h"
@@ -471,7 +471,7 @@ static void build_overlay(void)
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* ── Orb — the soul of Glyph ─────────────────────────────────── */
+/* ── Orb — the soul of Tinker ─────────────────────────────────── */
 
 static void build_orb(lv_obj_t *parent)
 {

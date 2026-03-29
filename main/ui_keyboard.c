@@ -1,5 +1,5 @@
 /*
- * ui_keyboard.c — Glyph OS on-screen keyboard overlay
+ * ui_keyboard.c — TinkerOS on-screen keyboard overlay
  * 720x1280 portrait, LVGL v9
  *
  * Full custom keyboard (no lv_keyboard widget) for complete design control.
@@ -19,7 +19,7 @@
 
 static const char *TAG = "ui_kbd";
 
-/* ── Palette — Glyph OS dark glass ─────────────────────────────── */
+/* ── Palette — TinkerOS dark glass ─────────────────────────────── */
 #define KB_BG           0x0A0A0A
 #define KB_KEY_BG       0x1A1A1A   /* rgba(255,255,255,0.06) on black */
 #define KB_KEY_PRESS    0x2A2A2A   /* rgba(255,255,255,0.12) on black */
@@ -127,7 +127,7 @@ void ui_keyboard_init(lv_obj_t *parent)
 {
     (void)parent; /* We use lv_layer_top() directly */
 
-    ESP_LOGI(TAG, "Initializing Glyph OS keyboard overlay");
+    ESP_LOGI(TAG, "Initializing TinkerOS keyboard overlay");
 
     build_keyboard_panel();
     build_trigger_button();

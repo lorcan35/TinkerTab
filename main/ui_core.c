@@ -227,7 +227,7 @@ esp_err_t tab5_ui_init(esp_lcd_panel_handle_t panel)
     ESP_LOGI(TAG, "Display driver: %dx%d, draw bufs %d bytes x2 in PSRAM",
              TAB5_DISPLAY_WIDTH, TAB5_DISPLAY_HEIGHT, (int)DRAW_BUF_SIZE);
 
-    /* ---- Apply Glyph OS dark theme ---- */
+    /* ---- Apply TinkerOS dark theme ---- */
     lv_theme_t *theme = lv_theme_default_init(
         s_display,
         lv_color_hex(0xFFB800),  /* primary: amber */

@@ -1,10 +1,10 @@
 /*
- * ui_home.c — Glyph OS home screen (v2 — refined OS aesthetic)
+ * ui_home.c — TinkerOS home screen (v2 — refined OS aesthetic)
  * 720x1280 portrait, LVGL v9
  *
  * Inspired by iOS/Android — clean, soft, consumer-grade feel.
  * Tileview for vertical snap-scroll:
- *   Page 0 — Home (large clock, greeting, Glyph AI orb)
+ *   Page 0 — Home (large clock, greeting, TinkerAI orb)
  *   Page 1 — Apps (rounded icon grid with labels)
  *   Page 2 — Dragon (full viewport, minimal chrome)
  *   Page 3 — Settings (iOS-style grouped list)
@@ -277,7 +277,7 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_20, 0);
         lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 245);
 
-        /* Glyph AI orb — outer ring (breathing) */
+        /* TinkerAI orb — outer ring (breathing) */
         orb_ring = lv_obj_create(pg);
         lv_obj_set_size(orb_ring, 180, 180);
         lv_obj_align(orb_ring, LV_ALIGN_CENTER, 0, 40);
@@ -321,7 +321,7 @@ lv_obj_t *ui_home_create(void)
 
         /* Greeting */
         lbl_greeting = lv_label_create(pg);
-        lv_label_set_text(lbl_greeting, "Glyph AI");
+        lv_label_set_text(lbl_greeting, "TinkerAI");
         lv_obj_set_style_text_color(lbl_greeting, lv_color_hex(COL_LABEL), 0);
         lv_obj_set_style_text_font(lbl_greeting, &lv_font_montserrat_20, 0);
         lv_obj_align(lbl_greeting, LV_ALIGN_CENTER, 0, 160);
@@ -463,7 +463,7 @@ lv_obj_t *ui_home_create(void)
 
         /* About */
         lv_obj_t *about = lv_label_create(pg);
-        lv_label_set_text(about, "Glyph OS v1.0.0\nTinkerTab \xC2\xB7 ESP32-P4");
+        lv_label_set_text(about, "TinkerOS v1.0.0\nTinkerTab \xC2\xB7 ESP32-P4");
         lv_obj_set_style_text_color(about, lv_color_hex(COL_LABEL3), 0);
         lv_obj_set_style_text_font(about, &lv_font_montserrat_16, 0);
         lv_obj_set_style_text_align(about, LV_TEXT_ALIGN_CENTER, 0);
@@ -557,7 +557,7 @@ lv_obj_t *ui_home_create(void)
     tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
 
     lv_screen_load(scr);
-    ESP_LOGI(TAG, "Glyph OS home (v2 refined) created");
+    ESP_LOGI(TAG, "TinkerOS home (v2 refined) created");
     return scr;
 }
 
@@ -760,7 +760,7 @@ void ui_home_update_status(void)
             if (streaming)
                 lv_label_set_text(lbl_greeting, "Dragon Connected");
             else
-                lv_label_set_text(lbl_greeting, "Glyph AI");
+                lv_label_set_text(lbl_greeting, "TinkerAI");
         }
     }
 

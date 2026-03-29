@@ -315,9 +315,9 @@ void app_main(void)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "LVGL UI init failed: %s", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "LVGL initialized — showing Glyph splash");
+        ESP_LOGI(TAG, "LVGL initialized — showing TinkerOS splash");
 
-        // Show Glyph OS splash screen
+        // Show TinkerOS splash screen
         tab5_ui_lock();
         ui_splash_create();
         ui_splash_set_status("Hardware OK");
@@ -338,17 +338,17 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(400));
 
         tab5_ui_lock();
-        ui_splash_set_status("Glyph OS ready");
+        ui_splash_set_status("TinkerOS ready");
         ui_splash_set_progress(100);
         tab5_ui_unlock();
         vTaskDelay(pdMS_TO_TICKS(600));
 
-        // Transition to Glyph home screen
+        // Transition to TinkerOS home screen
         tab5_ui_lock();
         ui_splash_destroy();
         ui_home_create();
         tab5_ui_unlock();
-        ESP_LOGI(TAG, "Glyph home screen loaded");
+        ESP_LOGI(TAG, "TinkerOS home screen loaded");
 
         // Defer overlay creation — runs on the LVGL timer task stack
         // (main task stack is too small for all the LVGL object creation)

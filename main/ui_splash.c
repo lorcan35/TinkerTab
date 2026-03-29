@@ -1,5 +1,5 @@
 /*
- * ui_splash.c — Glyph OS boot splash
+ * ui_splash.c — TinkerOS boot splash
  * 720x1280 portrait, LVGL v9
  *
  * Amber-on-black aesthetic. Shows "GLYPH" wordmark with
@@ -13,7 +13,7 @@
 
 static const char *TAG = "ui_splash";
 
-/* ── Glyph palette ───────────────────────────────────────────── */
+/* ── Tinker palette ───────────────────────────────────────────── */
 #define COL_BG          0x0D0D0D
 #define COL_SURFACE     0x1A1A1A
 #define COL_AMBER       0xFFB800
@@ -111,7 +111,7 @@ lv_obj_t *ui_splash_create(void)
     lv_obj_align(lbl_ver, LV_ALIGN_BOTTOM_MID, 0, -24);
 
     lv_screen_load(scr_splash);
-    ESP_LOGI(TAG, "Glyph splash created");
+    ESP_LOGI(TAG, "TinkerOS splash created");
     return scr_splash;
 }
 

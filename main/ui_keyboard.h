@@ -2,7 +2,7 @@
 #include "lvgl.h"
 
 /**
- * Global on-screen keyboard overlay for Glyph OS.
+ * Global on-screen keyboard overlay for TinkerOS.
  *
  * Slides up from the bottom of any screen. Activated by a floating
  * trigger button that sits at the bottom of the screen.

@@ -3,7 +3,7 @@
 #include "voice.h"
 
 /**
- * Voice UI overlay for Glyph OS.
+ * Voice UI overlay for TinkerOS.
  *
  * Full-screen overlay that shows:
  * - Tap-to-talk button (floating mic button, always visible)
