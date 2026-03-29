@@ -29,7 +29,7 @@ class OllamaBackend(LLMBackend):
     async def initialize(self) -> None:
         """Verify Ollama is reachable and the model is available."""
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=120, sock_read=60)
+            timeout=aiohttp.ClientTimeout(total=None, sock_read=None)
         )
 
         logger.info(
@@ -80,7 +80,7 @@ class OllamaBackend(LLMBackend):
         """
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=120, sock_read=60)
+                timeout=aiohttp.ClientTimeout(total=None, sock_read=None)
             )
 
         sys_prompt = system_prompt or self._config.system_prompt

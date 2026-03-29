@@ -365,8 +365,11 @@ static void handle_text_message(const char *data, int len)
         voice_set_state(VOICE_STATE_READY, err_buf);
     } else if (strcmp(type_str, "session_start") == 0) {
         ESP_LOGI(TAG, "Dragon session_start received (state=%d)", s_state);
-        /* Dragon is ready — no state change needed, voice_connect()
-           already set READY when the WS connection succeeded. */
+        // Dragon pipeline is fully initialized — NOW safe to record.
+        if (s_state == VOICE_STATE_CONNECTING) {
+            voice_set_state(VOICE_STATE_READY, NULL);
+            ESP_LOGI(TAG, "Connected to Dragon voice server");
+        }
     } else {
         ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
@@ -785,8 +788,11 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         return ESP_ERR_NO_MEM;
     }
 
-    voice_set_state(VOICE_STATE_READY, NULL);
-    ESP_LOGI(TAG, "Connected to Dragon voice server");
+    // Don't set READY yet — wait for Dragon's session_start message.
+    // Pipeline init on Dragon takes ~6s (loading models). Setting READY now
+    // causes the UI to allow recording before the server is ready, leading to
+    // lost audio frames and Error transport_poll_write.
+    ESP_LOGI(TAG, "WS connected, waiting for session_start from Dragon...");
     return ESP_OK;
 }
 
