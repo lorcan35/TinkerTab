@@ -1,9 +1,51 @@
-# TinkerTab — ESP32-P4 Tab5 Firmware
+# TinkerTab — TinkerOS Firmware (ESP32-P4 Tab5)
 
 ## Overview
-TinkerTab is the ESP32-P4 firmware for the M5Stack Tab5, part of the TinkerClaw AI device. It connects to a Dragon server (Radxa Zero 3W) for browser streaming, voice AI, and device management.
+TinkerTab is the TinkerOS firmware for the M5Stack Tab5, part of the TinkerClaw platform.
+- **TinkerClaw** = the platform ("Own Your AI")
+- **TinkerOS** = this firmware (Tab5 = the face)
+- **TinkerBox** = Dragon-side server (Dragon Q6A = the brain)
+- **Target audience:** Privacy-conscious tech enthusiasts (r/selfhosted, r/localllama). Setup under 5 minutes. Not tinkerers-only.
 
 Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side server)
+
+## TinkerClaw Vision (March 2026)
+
+### Architecture
+- Tab5 = the face (LVGL native UI, voice, camera, sensors)
+- Dragon Q6A = the brain (STT, LLM on NPU at 8 tok/s, TTS, embeddings, skills, memory)
+- Any ESP32/Pico/edge device = a TinkerClaw Node
+- PingOS app manifests = how AI interacts with web services (browser automation via CDP)
+- Local-first, cloud-optional. NPU Llama 1B for offline, cloud APIs for smart mode.
+
+### Priority Order
+1. Desktop SDL2 simulator + dev tooling (highest ROI — test UI without flashing)
+2. VAD + AEC + Wake Word ("Hey Tinker") — makes it hands-free, THE product feature
+3. Spring animations + battery UI + OTA (polish)
+4. On-device skills/app store + offline knowledge + multi-modal vision
+
+### Key Decisions
+- **STOP investing in Dragon Mode streaming.** The product is the voice assistant.
+- **Double down on voice** — that's what differentiates from every IoT display.
+- Memory/RAG via Qwen3-Embedding 0.6B on Dragon. AI that remembers you.
+- Skill store is the growth flywheel. Tinkerers publish, normies install.
+
+### What to Steal from M5Stack
+- Desktop SDL2 simulator build pattern (from M5Tab5-UserDemo)
+- sherpa-onnx for KWS + silero-vad for VAD (both CPU ONNX, hardware-agnostic)
+- Toast notification pattern, spring animation concept (write our own spring_anim.c)
+
+### What NOT to Do
+- Don't adopt Mooncake (our service_registry + mode_manager is better for embedded)
+- Don't rewrite to C++
+- Don't build a full browser on Tab5
+- Don't over-optimize Dragon Mode streaming
+
+### Our Unique Advantage
+- Dragon Q6A: 12GB RAM, 12 TOPS NPU vs M5Stack AX630C (4GB, 3.2 TOPS)
+- Full Ubuntu on Dragon = can run anything (NOMAD, Kiwix, databases)
+- Truly open — standard tools (Ollama, QAIRT/Genie, Python), not vendor-locked
+- LEARNINGS.md with 30+ entries = institutional knowledge no competitor has
 
 ## MANDATORY: Check LEARNINGS.md First
 Before writing any fix, CHECK LEARNINGS.md first. Your bug might already be documented. Every bug found, every fix, every gotcha MUST be added to LEARNINGS.md with Date/Symptom/Root Cause/Fix/Prevention.
@@ -80,6 +122,13 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 - **Use IDF v5.4.2** — MIPI-DSI broken in v5.5.x
 - Tab5 camera is SC202CS at SCCB 0x36 (NOT SC2336 at 0x30)
 - SD card uses SDMMC SLOT 0 with LDO channel 4
+
+## Voice Pipeline — Critical Gaps (from March 2026 audit)
+- **AEC (Acoustic Echo Cancellation):** ES7210 captures 4 TDM channels: [MIC-L, AEC, MIC-R, MIC-HP]. We only use slot 0 (MIC-L). Slot 1 = AEC reference. Without AEC, Tab5 hears its own TTS → hallucination loop. Use ESP-SR AEC.
+- **VAD (Voice Activity Detection):** Currently fixed 30s recording window. Need silero-vad on Dragon to detect speech end dynamically.
+- **Wake Word:** Currently push-to-talk only. Need ESP-SR WakeNet or Porcupine on Tab5 for "Hey Tinker". Tab5-side KWS = lowest latency.
+- **Barge-in:** Impossible without AEC. KWS should interrupt TTS playback and reset pipeline.
+- **OPUS encoding:** 16kHz PCM = 256kbps over WiFi. OPUS would cut to ~16kbps. Phase 2.
 
 ## Key Technical Notes
 - ESP-IDF WS transport masks frames in-place — NEVER pass string literals to `esp_transport_ws_send_raw()`, always copy to mutable buffer first
