@@ -5,6 +5,11 @@
  *   TX (speaker): TDM mode, 48kHz 16-bit, 4 slots (MONO — audio in slot 0)
  *   RX (mic):     TDM mode, 48kHz 16-bit, 4 slots (STEREO — MIC1, AEC, MIC2, MIC-HP)
  *
+ * ES8388 is configured in DSP/PCM mode (not standard I2S) so it can decode
+ * TDM WS timing (short pulse at frame start). In DSP mode, ES8388 reads
+ * slot 0 data as Left channel output, which feeds the NS4150B mono amplifier.
+ *
+ * Both TX and RX use TDM 4-slot so BCLK = 48k × 4 × 16 = 3.072 MHz.
  * GPIO pins verified against M5Stack Tab5 BSP reference.
  * Speaker amp (NS4150B) controlled via IO expander PI4IOE1 bit P1.
  */
@@ -107,8 +112,13 @@ static esp_err_t es8388_codec_init(void)
     // DAC power: power up DAC L+R, enable LOUT1/ROUT1
     ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACPOWER, 0x3C), TAG, "dac power failed");
 
-    // DAC Control 1: I2S 16-bit
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL1, 0x00), TAG, "dac ctrl1 failed");
+    // DAC Control 1: DSP/PCM mode, 16-bit word length
+    // Reg 0x17: bits [5]=DACLRSWAP=0, [4:3]=DACWL=11(16-bit), [2:1]=DACFORMAT=11(DSP)
+    // DSP mode decodes TDM WS timing (short pulse at frame start) — required because
+    // TX shares the I2S bus with RX TDM. Standard I2S mode expects 50% WS duty cycle
+    // which is incompatible with TDM framing. In DSP mode, ES8388 reads slot 0 as
+    // Left channel data after the WS rising edge.
+    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL1, 0x1E), TAG, "dac ctrl1 failed");
 
     // DAC Control 2: single speed, no de-emphasis
     ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL2, 0x02), TAG, "dac ctrl2 failed");
@@ -141,8 +151,7 @@ static esp_err_t es8388_codec_init(void)
 //   RX: TDM 4-slot for ES7210 quad-mic ADC (STEREO — 4 mics in 4 slots)
 //
 // Both TX and RX use TDM 4-slot so BCLK = 48k × 4 × 16 = 3.072 MHz.
-// Previous [MUSIC PLAYING] issue was TX=STD (2-slot, BCLK=1.536M) vs
-// RX=TDM (4-slot, BCLK=3.072M) — mismatched bus speed corrupted mic data.
+// ES8388 is set to DSP/PCM mode to decode TDM WS timing (short pulse).
 // ---------------------------------------------------------------------------
 static esp_err_t i2s_bus_init(void)
 {
@@ -166,7 +175,7 @@ static esp_err_t i2s_bus_init(void)
         .bclk_div        = 8,
     };
 
-    // --- TX TDM: MONO, 4 TDM slots — ES8388 reads slot 0 ---
+    // --- TX TDM: MONO, 4 TDM slots — ES8388 reads slot 0 in DSP mode ---
     i2s_tdm_config_t tx_tdm_cfg = {
         .clk_cfg  = clk_cfg,
         .slot_cfg = {
@@ -344,6 +353,63 @@ uint8_t tab5_audio_get_volume(void)
 
 esp_err_t tab5_audio_speaker_enable(bool enable)
 {
+    tab5_set_speaker_enable(enable);
     ESP_LOGI(TAG, "Speaker amp %s", enable ? "enabled" : "disabled");
+    return ESP_OK;
+}
+
+esp_err_t tab5_audio_test_tone(uint32_t freq_hz, uint32_t duration_ms)
+{
+    if (!s_initialized || !s_i2s_tx) {
+        ESP_LOGE(TAG, "Audio not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Playing %lu Hz test tone for %lu ms", freq_hz, duration_ms);
+
+    tab5_set_speaker_enable(true);
+
+    // Generate sine wave at 48kHz sample rate
+    const uint32_t sample_rate = TAB5_AUDIO_SAMPLE_RATE;
+    const size_t chunk_samples = 480;  // 10ms chunks
+    int16_t buf[480];
+
+    uint32_t total_samples = (sample_rate * duration_ms) / 1000;
+    uint32_t phase = 0;
+
+    // Pre-compute: phase increment per sample (fixed-point, 16.16)
+    // sin(2π × freq × n / sr) ≈ sin(phase), phase += 2π×freq/sr per sample
+    // Use integer approximation: 360° = 65536, increment = 65536 * freq / sr
+    uint32_t phase_inc = (65536UL * freq_hz) / sample_rate;
+
+    while (total_samples > 0) {
+        size_t n = (total_samples > chunk_samples) ? chunk_samples : total_samples;
+
+        for (size_t i = 0; i < n; i++) {
+            // Simple triangle wave approximation (avoids float/sin)
+            uint16_t p = (uint16_t)(phase & 0xFFFF);
+            int32_t val;
+            if (p < 16384) {
+                val = (int32_t)p;           // 0 → +16383
+            } else if (p < 49152) {
+                val = 32768 - (int32_t)p;   // +16384 → -16383
+            } else {
+                val = (int32_t)p - 65536;   // -16384 → -1
+            }
+            // Scale to ~50% amplitude to avoid clipping
+            buf[i] = (int16_t)(val / 2);
+            phase += phase_inc;
+        }
+
+        tab5_audio_play_raw(buf, n);
+        total_samples -= n;
+    }
+
+    // Wait for DMA to drain — i2s_channel_write blocks until data is in the DMA
+    // buffer, but the hardware hasn't played it yet. Keep amp on for the full duration.
+    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+
+    tab5_set_speaker_enable(false);
+    ESP_LOGI(TAG, "Test tone complete");
     return ESP_OK;
 }

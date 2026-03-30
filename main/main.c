@@ -528,23 +528,9 @@ void app_main(void)
                     } else if (strcmp(cmd_buf, "audio") == 0) {
                         if (s_audio_ok) {
                             printf("Audio: ES8388 initialized, volume=%d%%\n", tab5_audio_get_volume());
-                            printf("Playing test tone...\n");
-                            // Generate 440Hz sine wave test tone (0.5s)
-                            const int sample_rate = 16000;
-                            const int duration_samples = sample_rate / 2;
-                            int16_t *tone = heap_caps_malloc(duration_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-                            if (tone) {
-                                for (int i = 0; i < duration_samples; i++) {
-                                    tone[i] = (int16_t)(16000 * sinf(2.0f * 3.14159f * 440.0f * i / sample_rate));
-                                }
-                                tab5_audio_speaker_enable(true);
-                                tab5_audio_play_raw(tone, duration_samples);
-                                tab5_audio_speaker_enable(false);
-                                free(tone);
-                                printf("Done.\n");
-                            } else {
-                                printf("  Failed to allocate tone buffer\n");
-                            }
+                            printf("Playing 440Hz test tone (1s)...\n");
+                            tab5_audio_test_tone(440, 1000);
+                            printf("Done.\n");
                         } else {
                             printf("Audio: not initialized\n");
                         }

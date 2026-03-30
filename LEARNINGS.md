@@ -137,11 +137,18 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Prevention:** For multi-channel TDM capture, always use `I2S_SLOT_MODE_STEREO`, never `MONO`. The naming is misleading -- `STEREO` really means "capture all configured slots."
 
 ### I2S TX/RX Clock Mismatch on Shared Bus
-- **Date:** 2026-03-21
+- **Date:** 2026-03-21 (updated 2026-03-30)
 - **Symptom:** Audio playback was distorted when mic capture was active simultaneously.
 - **Root Cause:** TX was configured as STD 2-slot mode (BCLK=1.536MHz) and RX as TDM 4-slot mode (BCLK=3.072MHz). Both share the same I2S bus (I2S_NUM_1), which means shared BCLK. The conflicting clock rates corrupted both streams (commit d547338, issue #25).
-- **Fix:** Configured both TX and RX to use TDM 4-slot mode so BCLK is consistently 3.072MHz.
-- **Prevention:** When TX and RX share an I2S bus, they MUST use the same slot mode and BCLK rate. Always configure both sides identically.
+- **Fix:** Both TX and RX use TDM 4-slot mode so BCLK is consistently 3.072MHz. ES8388 is set to DSP/PCM mode to decode TDM WS timing.
+- **Prevention:** When TX and RX share an I2S bus, BCLK MUST match. Both must use the same slot mode/count.
+
+### ES8388 DSP/PCM Mode for TDM Compatibility
+- **Date:** 2026-03-30
+- **Symptom:** No audio output from speaker despite ES8388 being initialized and I2S data being written.
+- **Root Cause:** Two issues: (1) ES8388 was in standard I2S mode (DACCONTROL1=0x00) but TX uses TDM which produces a WS pulse, not the 50% duty cycle WS that I2S mode expects. ES8388 couldn't determine channel boundaries. (2) `tab5_audio_speaker_enable()` was a stub that logged but never actually toggled the NS4150B amp via IO expander.
+- **Fix:** (1) Set ES8388 DACCONTROL1 to 0x1E = DSP/PCM mode + 16-bit word length. DSP mode accepts TDM WS timing (data after pulse edge). Slot 0 maps to Left channel output. (2) Wired `tab5_audio_speaker_enable()` to call `tab5_set_speaker_enable()` from io_expander.c.
+- **Prevention:** If the I2S bus uses TDM framing, the codec MUST be in DSP/PCM mode, not standard I2S. When wrapping hardware control functions, never leave stubs that silently succeed — they hide real bugs.
 
 ### ES7210 Returns All Zeros (6 Register Bugs)
 - **Date:** 2026-03-19
@@ -233,11 +240,11 @@ Every entry here was learned the hard way. Read this before touching the codebas
 ## Architecture Decisions
 
 ### Full-Duplex Shared I2S Bus (ES8388 + ES7210)
-- **Date:** 2026-03-21
+- **Date:** 2026-03-21 (updated 2026-03-30)
 - **Symptom:** N/A (design constraint)
 - **Root Cause:** Tab5 hardware routes both ES8388 (DAC/speaker) and ES7210 (ADC/mic) to the same I2S bus (I2S_NUM_1). This is a PCB-level constraint, not a software choice.
-- **Fix:** Both TX and RX must use TDM 4-slot mode for consistent BCLK. Cannot use separate buses.
-- **Prevention:** Accept this constraint. All I2S configuration changes must consider both the playback and capture sides simultaneously.
+- **Fix:** Both TX and RX use TDM 4-slot mode for consistent BCLK=3.072MHz. ES8388 set to DSP/PCM mode to decode TDM framing. Cannot use separate buses.
+- **Prevention:** Accept this constraint. All I2S configuration changes must consider both the playback and capture sides simultaneously. ES8388 must stay in DSP mode for TDM compatibility.
 
 ### 48kHz to 16kHz Downsample for STT
 - **Date:** 2026-03-21

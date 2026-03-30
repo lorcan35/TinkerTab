@@ -42,6 +42,9 @@ uint8_t tab5_audio_get_volume(void);
 /** Enable/disable NS4150B speaker amplifier via IO expander. */
 esp_err_t tab5_audio_speaker_enable(bool enable);
 
+/** Play a test tone (triangle wave) at given frequency for duration_ms. */
+esp_err_t tab5_audio_test_tone(uint32_t freq_hz, uint32_t duration_ms);
+
 // ---- ES7210 Dual Mic (Recording) ----
 
 /**
