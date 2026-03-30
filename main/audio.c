@@ -51,8 +51,13 @@ static esp_err_t i2s_bus_init(void)
     ESP_LOGI(TAG, "I2S bus init (I2S_NUM_%d, TX=STD RX=TDM full-duplex)", TAB5_I2S_NUM);
 
     // Create both TX and RX on the same I2S port
+    // Reduce DMA buffer sizes from defaults (6×240) to save internal SRAM for WiFi SDIO.
+    // Default: 6 descriptors × 240 frames × 2 bytes × 4 slots = ~11.5KB per direction.
+    // Reduced: 4 descriptors × 160 frames = ~5.1KB per direction, saving ~12KB total.
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(TAB5_I2S_NUM, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
+    chan_cfg.dma_desc_num = 4;
+    chan_cfg.dma_frame_num = 160;
 
     ESP_RETURN_ON_ERROR(
         i2s_new_channel(&chan_cfg, &s_i2s_tx, &s_i2s_rx),
