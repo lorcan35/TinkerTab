@@ -100,7 +100,7 @@ echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 
 ## Build & Flash
 ```bash
-source ~/esp/esp-idf-v5.4.2/export.sh
+source ~/esp/esp-idf/export.sh  # v5.4.3
 idf.py build
 idf.py -p /dev/ttyACM0 flash
 # Monitor (needs TTY — use python serial or screen):
@@ -127,7 +127,7 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 - **Mic audio:** Slot 0 = MIC-L (primary). Extract from 4-ch TDM interleaved buffer.
 
 ## IDF Version
-- **Use IDF v5.4.2** — MIPI-DSI broken in v5.5.x
+- **Use IDF v5.4.3** — MIPI-DSI broken in v5.5.x, v5.4.2 missing PSRAM XIP + TCM stack fixes
 - Tab5 camera is SC202CS at SCCB 0x36 (NOT SC2336 at 0x30)
 - SD card uses SDMMC SLOT 0 with LDO channel 4
 
@@ -148,22 +148,33 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 
-1. **Device Registration:** On WS connect, send `{"type": "register", device_id, hardware_id, firmware_ver, platform, capabilities, session_id}` as first text frame.
-2. **device_id:** UUID stored in NVS. Generate once on first boot via `esp_random()`. Never changes.
-3. **Session Resume:** Store `session_id` from Dragon's `session_start` response in NVS. Send it on reconnect.
-4. **Voice Input:** `{"type":"start"}` → binary PCM frames → `{"type":"stop"}`
-5. **Text Input:** `{"type":"text","content":"..."}` — skips STT, same conversation.
-6. **Recording:** `{"type":"record_start"}` → binary PCM → `{"type":"record_stop"}` — creates a note.
-7. **Config Sync:** Handle `{"type":"config_update"}` from Dragon, apply settings, ACK.
-8. **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable.
+### Currently Implemented (voice.c)
+1. **Voice Input:** `{"type":"start"}` -> binary PCM frames -> `{"type":"stop"}`
+2. **Voice Cancel:** `{"type":"cancel"}` — abort current processing
+3. **Keepalive:** `{"type":"ping"}` — JSON heartbeat every 15s during processing
+4. **Receive:** Handle `session_start`, `stt`, `llm`, `tts_start`, binary TTS, `tts_end`, `error`
+
+### Not Yet Implemented (planned per protocol.md)
+5. **Device Registration:** On WS connect, send `{"type":"register", device_id, ...}` as first text frame. (Issue #43)
+6. **Session Resume:** Store `session_id` from `session_start` in NVS. Send on reconnect.
+7. **Text Input:** `{"type":"text","content":"..."}` — skips STT, same conversation.
+8. **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
+9. **Config Sync:** Handle `{"type":"config_update"}` from Dragon, apply settings, ACK.
+10. **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable. (Issue #44)
 
 ## Key Files
 ```
-main/voice.c      — Voice streaming (WS client, mic capture, TTS playback)
-main/audio.c      — ES8388 DAC + shared I2S bus setup
-main/mic.c        — ES7210 quad-mic via esp_codec_dev
-main/dragon_link.c — Dragon discovery + connection
-main/mode_manager.c — Mode FSM (IDLE/STREAMING/VOICE/BROWSING)
-main/config.h     — All pin definitions and constants
-LEARNINGS.md      — Institutional knowledge (MANDATORY)
+main/voice.c           — Voice streaming (WS client, mic capture, TTS playback)
+main/audio.c           — ES8388 DAC + shared I2S TDM bus setup
+main/mic.c             — ES7210 quad-mic via esp_codec_dev
+main/dragon_link.c     — Dragon mDNS discovery + connection state machine
+main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING)
+main/config.h          — All pin definitions and constants
+main/service_registry.c — Service lifecycle management
+main/ui_voice.c        — Voice UI overlay (animated orb, PTT button)
+main/ui_home.c         — TinkerOS home screen (4-page tileview)
+main/settings.c        — NVS persistence (WiFi, Dragon host, volume, brightness)
+main/debug_server.c    — HTTP debug server (port 8080, screenshots, touch inject)
+main/main.c            — Boot sequence, serial command loop
+LEARNINGS.md           — Institutional knowledge (MANDATORY)
 ```
