@@ -75,11 +75,11 @@ Every phase is documented, committed, and pushed chronologically.
 - **Commit:** `feat: Phase 4 — audio codec ES8388 + speaker playback`
 
 ### Phase 5 — Microphone (ES7210) ✅
-- [x] ES7210 I2C configuration
-- [x] I2S RX channel init (separate port)
-- [x] Dual mic capture
-- [x] Gain control (0-36 dB)
-- [x] Serial command: `mic` (1s recording + RMS level)
+- [x] ES7210 via esp_codec_dev (replaced hand-rolled register writes)
+- [x] I2S RX TDM 4-slot on shared bus (full-duplex with TX)
+- [x] Quad mic capture (MIC1/AEC/MIC2/MIC-HP in 4 TDM slots)
+- [x] Gain control (0-37 dB)
+- [x] Serial commands: `mic` (1s recording + RMS), `micdiag` (per-channel stats)
 - **Commit:** `feat: Phase 5 — microphone ES7210 dual mic recording`
 
 ### Phase 6 — IMU (BMI270) ✅
@@ -134,10 +134,10 @@ Every phase is documented, committed, and pushed chronologically.
 - [x] MJPEG streaming client (ported from pingdev)
 - [x] WebSocket touch forwarding (ported from pingdev)
 - [x] Auto-detect Dragon on network (mDNS `_tinkerclaw._tcp`)
-- [ ] Seamless mode switching (LVGL ↔ MJPEG)
+- [x] Mode manager FSM (IDLE/STREAMING/VOICE/BROWSING) — coordinates exclusive WiFi bandwidth
 
 ### Phase 12 — Voice Pipeline (STT/TTS/LLM)
-**Status: Phase 1 complete (Whisper.cpp + Ollama + Piper). Streaming pipeline (12c) and wake word (12d) pending.**
+**Status: Phase 1 complete (Moonshine v2 + Ollama + Piper). Streaming pipeline (12c) and wake word (12d) pending.**
 
 #### 12a: Dragon Voice Server ✅
 - [x] Python WebSocket server on port 3502
@@ -149,11 +149,14 @@ Every phase is documented, committed, and pushed chronologically.
 - [x] Whisper.cpp backend implementation
 
 #### 12b: Tab5 Voice Streaming ✅
-- [x] WebSocket client connecting to Dragon voice server
-- [x] Mic capture -> PCM 16kHz mono -> WebSocket binary frames
-- [x] Receive TTS audio -> playback via ES8388 codec
-- [x] Push-to-talk state machine
-- [x] Serial commands: voice_start, voice_stop
+- [x] WebSocket client connecting to Dragon voice server (port 3502, /ws/voice)
+- [x] Mic capture: 4-ch TDM 48kHz -> extract slot 0 -> downsample 3:1 to 16kHz mono -> WS binary
+- [x] Receive TTS audio: 16kHz PCM -> upsample 3x to 48kHz -> ring buffer -> ES8388 playback
+- [x] Push-to-talk state machine (IDLE/CONNECTING/READY/LISTENING/PROCESSING/SPEAKING)
+- [x] Voice UI overlay (animated orb, mic button, transcript display)
+- [x] Serial command: `voice` (spawns voice test task)
+- [x] JSON keepalive heartbeat (prevents TCP idle timeout during LLM processing)
+- [x] Playback ring buffer in PSRAM (smooths network jitter)
 
 #### 12c: Streaming Pipeline (Phase 2) ⬜
 - [ ] OPUS encoding/decoding on both ends
@@ -187,6 +190,8 @@ Every phase is documented, committed, and pushed chronologically.
 - [x] 17 bug fixes: LVGL thread safety, voice pipeline hardening, app grid wiring
 - [x] LVGL overlay crash fix (deferred + lazy number rows)
 - [x] MJPEG flickering fix (gate decode to Dragon page only)
+- [x] Service registry — layered init/start/stop lifecycle for all subsystems
+- [x] Mode manager — FSM coordinates exclusive WiFi bandwidth (IDLE/STREAMING/VOICE/BROWSING)
 - **Commits:** `fix: comprehensive UI sizing overhaul`, `fix: 17 bug fixes`
 
 ## Pin Reference
