@@ -6,7 +6,7 @@
  *
  * Rules:
  *   - ui_*.c files MUST include this header instead of esp_log.h, esp_heap_caps.h,
- *     esp_task_wdt.h, esp_timer.h, or freertos/*.h directly.
+ *     esp_task_wdt.h, esp_timer.h, or freertos/FreeRTOS.h etc. directly.
  *   - Hardware module headers (camera.h, wifi.h, etc.) are still included directly
  *     because the simulator stubs them via sim/stubs.c.
  *   - No platform #ifdef should appear in ui_*.c — only here.
