@@ -1,0 +1,35 @@
+{
+  "$schema": "https://assets.wokwi.com/schemas/wokwi-project.json",
+  "_comment": [
+    "TinkerTab (M5Stack Tab5) Wokwi simulation diagram.",
+    "NOTE: This is an approximation — Tab5 is not an official Wokwi board.",
+    "PSRAM is capped at 8MB in Wokwi; Tab5 has 32MB. Touch IC (GT911) not available.",
+    "Primary dev tool: SDL2 sim (sim/). Wokwi useful for GDB + MIPI-DSI visual check.",
+    "MIPI-DSI display: ILI9881C 8-inch (closest available). Real Tab5 uses 720x1280 ST7123."
+  ],
+  "version": 1,
+  "author": "TinkerLabs",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-esp32-p4-preview",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {
+        "psramSize": "8"
+      }
+    },
+    {
+      "type": "board-ili9881c-8in",
+      "id": "lcd",
+      "top": 100,
+      "left": 400,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    [ "esp:MIPI_DSI", "lcd:MIPI_DSI", "", [] ]
+  ],
+  "dependencies": {}
+}

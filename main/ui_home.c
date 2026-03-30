@@ -13,6 +13,7 @@
  */
 
 #include "ui_home.h"
+#include "ui_chat.h"
 #include "ui_settings.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -351,13 +352,13 @@ lv_obj_t *ui_home_create(void)
         /* Row 0 */
         lbl_app_wifi = make_app_icon(pg, 0, 0, gy, LV_SYMBOL_WIFI,    "WiFi",    COL_BLUE,   0);
         make_app_icon(pg, 1, 0, gy, LV_SYMBOL_UPLOAD,  "Dragon",  COL_CYAN,   1);
-        make_app_icon(pg, 2, 0, gy, LV_SYMBOL_IMAGE,   "Camera",  COL_PURPLE, 2);
+        make_app_icon(pg, 2, 0, gy, LV_SYMBOL_EYE_OPEN,"AI Chat", COL_AMBER,  6);
         make_app_icon(pg, 3, 0, gy, LV_SYMBOL_AUDIO,   "Audio",   COL_PINK,   3);
 
         /* Row 1 */
         lbl_app_mem = make_app_icon(pg, 0, 1, gy, LV_SYMBOL_LIST,     "Files",   COL_ORANGE, 4);
         make_app_icon(pg, 1, 1, gy, LV_SYMBOL_CHARGE,  "Battery", COL_MINT,   5);
-        make_app_icon(pg, 2, 1, gy, LV_SYMBOL_EYE_OPEN,"AI Chat", COL_AMBER,  6);
+        make_app_icon(pg, 2, 1, gy, LV_SYMBOL_IMAGE,   "Camera",  COL_PURPLE, 2);
         make_app_icon(pg, 3, 1, gy, LV_SYMBOL_SETTINGS,"Settings",COL_LABEL2, 7);
     }
 
@@ -600,19 +601,28 @@ static void show_toast(const char *text)
     lv_timer_set_repeat_count(tmr, 1);
 }
 
+static void deferred_chat_cb(lv_timer_t *t)
+{
+    lv_timer_delete(t);
+    ui_chat_create();
+}
+
 static void app_icon_click_cb(lv_event_t *e)
 {
     intptr_t app_id = (intptr_t)lv_event_get_user_data(e);
     ESP_LOGI(TAG, "App icon tapped: %d", (int)app_id);
     switch (app_id) {
-    case 0: /* WiFi */    ui_wifi_create(); break;
+    case 0: /* WiFi */ show_toast("WiFi disabled"); break;
     case 1: /* Dragon */  lv_tileview_set_tile(tileview, tiles[2], LV_ANIM_ON); break;
-    case 2: /* Camera */  ui_camera_create(); break;
+    case 2: /* Camera */ show_toast("Camera disabled"); break;
     case 3: /* Audio */   show_toast("Coming Soon"); break;
-    case 4: /* Files */   ui_files_create(); break;
+    case 4: /* Files */ show_toast("Files disabled"); break;
     case 5: /* Battery */ lv_tileview_set_tile(tileview, tiles[3], LV_ANIM_ON); break;
-    case 6: /* AI Chat */ show_toast("Coming Soon"); break;
-    case 7: /* Settings */ui_settings_create(); break;
+    case 6: /* AI Chat */
+        ESP_LOGI(TAG, "AI Chat tapped");
+        lv_async_call((lv_async_cb_t)ui_chat_create, NULL);
+        break;
+    case 7: /* Settings */ show_toast("Settings disabled"); break;
     default: break;
     }
 }

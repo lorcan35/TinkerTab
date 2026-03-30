@@ -1,0 +1,11 @@
+[wokwi]
+version = 1
+
+# Use flasher_args.json for a complete IDF build (bootloader + partition table + app)
+# Build with: source ~/esp/esp-idf/export.sh && idf.py build
+firmware = "build/flasher_args.json"
+elf = "build/tinkertab.elf"
+
+# Serial output forwarded to VS Code terminal
+# [serial]
+# rfc2217ServerPort = 4000
