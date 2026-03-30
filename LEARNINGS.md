@@ -286,3 +286,25 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Hardcoded VOICE_RESPONSE_TIMEOUT_MS forced disconnection regardless of whether Dragon was still working. ARM64 LLM inference is slow (~0.24 tok/s).
 - **Fix:** Removed timeout entirely. Tab5 stays in PROCESSING state as long as WebSocket is alive. JSON heartbeat every 15s prevents TCP idle timeout. Only disconnects on WS error or Dragon error message.
 - **Prevention:** Never use fixed timeouts for LLM inference. Processing time varies by model, prompt length, and hardware. Use connection health checks instead.
+
+### lv_screen_load() crashes from tileview touch events
+- **Date:** 2026-03-30
+- **Symptom:** Device hard faults (Instruction access fault + WDT) when any app icon is tapped on the tileview apps page. Camera, WiFi, Files, Settings, Chat — ALL crash.
+- **Root Cause:** Creating a new screen via lv_screen_load() during a tileview touch event triggers a hard fault. The same ui_chat_create() code works perfectly when called from the HTTP /open endpoint (different task context) but crashes when called from the LVGL touch callback.
+- **Workaround:** Use lv_layer_top() overlay instead of lv_screen_load(). The /open?screen=chat HTTP endpoint works reliably.
+- **Fix:** TBD — needs investigation in desktop simulator. Likely a tileview + screen load conflict in LVGL v9.2.2.
+- **Prevention:** Never call lv_screen_load() from a tileview touch event. Use overlays or deferred HTTP calls instead.
+
+### sdkconfig changes require rm -rf build
+- **Date:** 2026-03-30
+- **Symptom:** Changed CONFIG_ESP_TASK_WDT_TIMEOUT_S from 5 to 60 in sdkconfig, but build still used 5s.
+- **Root Cause:** ESP-IDF caches config in build/config/sdkconfig.h. Incremental builds don't regenerate from sdkconfig.
+- **Fix:** Always rm -rf build after sdkconfig changes, then idf.py set-target esp32p4 && idf.py build.
+- **Prevention:** When changing sdkconfig, always clean build.
+
+### ESP-IDF version matters — v5.4.3 vs v5.5.2 have different toolchains
+- **Date:** 2026-03-30
+- **Symptom:** Build fails with "Tool doesn't match supported version" when switching between esp-idf-v5.4.3 and esp-idf (v5.5.2).
+- **Root Cause:** Each IDF version expects its own toolchain version. source export.sh sets PATH to the matching toolchain.
+- **Fix:** Always use the same IDF version consistently. Currently: source ~/esp/esp-idf/export.sh (v5.5.2) for builds.
+- **Prevention:** Document which IDF version is used. Don't mix.
