@@ -62,8 +62,8 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Date:** 2026-03-15
 - **Symptom:** Display stopped working after upgrading to IDF v5.5.x. DSI init fails or produces no output.
 - **Root Cause:** Regression in IDF v5.5.x MIPI-DSI driver for ESP32-P4.
-- **Fix:** Pinned to IDF v5.4.2 in the project. Do not upgrade.
-- **Prevention:** Stick with IDF v5.4.x until Espressif confirms the DSI fix in a later release. Test display output on any IDF upgrade before merging.
+- **Fix:** Pinned to IDF v5.4.3 (v5.4.2 lacks PSRAM XIP + TCM stack fixes needed by ESP-Hosted). Do not upgrade to v5.5.x.
+- **Prevention:** Stick with IDF v5.4.3 until Espressif confirms the DSI fix in a later release. Test display output on any IDF upgrade before merging.
 
 ---
 
