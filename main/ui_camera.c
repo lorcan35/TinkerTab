@@ -12,7 +12,8 @@
 #include "camera.h"
 #include "sdcard.h"
 #include "config.h"
-#include "ui_port.h"
+#include "esp_log.h"
+#include "esp_heap_caps.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -41,7 +42,6 @@ static const char *TAG = "ui_camera";
 
 /* ── Module state ────────────────────────────────────────────── */
 static lv_obj_t   *scr_camera      = NULL;
-static lv_obj_t   *s_vf_area       = NULL;   /* viewfinder container */
 static lv_obj_t   *canvas_preview  = NULL;
 static lv_obj_t   *lbl_no_camera   = NULL;
 static lv_obj_t   *btn_capture     = NULL;
@@ -103,9 +103,9 @@ static void alloc_canvas_buffer(uint16_t w, uint16_t h)
     canvas_h = h;
     canvas_buf_size = (uint32_t)w * h * 2;
 
-    canvas_buf = UI_MALLOC_PSRAM(canvas_buf_size);
+    canvas_buf = heap_caps_malloc(canvas_buf_size, MALLOC_CAP_SPIRAM);
     if (!canvas_buf) {
-        UI_LOGE(TAG, "Failed to allocate canvas buffer (%"PRIu32" bytes)",
+        ESP_LOGE(TAG, "Failed to allocate canvas buffer (%"PRIu32" bytes)",
                  canvas_buf_size);
         canvas_buf_size = 0;
         canvas_w = 0;
@@ -113,14 +113,14 @@ static void alloc_canvas_buffer(uint16_t w, uint16_t h)
         return;
     }
     memset(canvas_buf, 0, canvas_buf_size);
-    UI_LOGI(TAG, "Canvas buffer: %ux%u (%"PRIu32" bytes in PSRAM)",
+    ESP_LOGI(TAG, "Canvas buffer: %ux%u (%"PRIu32" bytes in PSRAM)",
              w, h, canvas_buf_size);
 }
 
 static void free_canvas_buffer(void)
 {
     if (canvas_buf) {
-        UI_FREE(canvas_buf);
+        heap_caps_free(canvas_buf);
         canvas_buf = NULL;
         canvas_buf_size = 0;
         canvas_w = 0;
@@ -185,21 +185,26 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_radius(vf_area, 0, 0);
     lv_obj_clear_flag(vf_area, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Save for deferred canvas creation in preview_timer_cb */
-    s_vf_area = vf_area;
-
     if (cam_ok) {
         /* Set initial resolution */
         tab5_camera_set_resolution(current_res);
 
-        /* Canvas creation is deferred to the first preview_timer_cb tick.
-         * This avoids a heavy LVGL canvas blit during the initial screen
-         * render, which caused a WDT timeout (10 s budget exhausted by the
-         * 1.8 MB × 13-strip full-framebuffer cache sync).
-         * The timer fires 100 ms after lv_screen_load(), by which point
-         * the first render is complete and the task is idle. */
-        preview_timer = lv_timer_create(preview_timer_cb, PREVIEW_FPS_MS, NULL);
-        UI_LOGI(TAG, "Camera screen: timer started, canvas deferred to first tick");
+        uint16_t w, h;
+        res_to_dimensions(current_res, &w, &h);
+        alloc_canvas_buffer(w, h);
+
+        if (canvas_buf) {
+            canvas_preview = lv_canvas_create(vf_area);
+            lv_canvas_set_buffer(canvas_preview, canvas_buf,
+                                 canvas_w, canvas_h, LV_COLOR_FORMAT_RGB565);
+            lv_obj_center(canvas_preview);
+
+            /* Start the preview timer */
+            preview_timer = lv_timer_create(preview_timer_cb, PREVIEW_FPS_MS,
+                                            NULL);
+            ESP_LOGI(TAG, "Preview started at ~%d fps",
+                     1000 / PREVIEW_FPS_MS);
+        }
     } else {
         /* Camera unavailable — show placeholder text */
         lbl_no_camera = lv_label_create(vf_area);
@@ -316,7 +321,7 @@ lv_obj_t *ui_camera_create(void)
 
     /* ── Load the screen ─────────────────────────────────────── */
     lv_screen_load(scr_camera);
-    UI_LOGI(TAG, "Camera screen created");
+    ESP_LOGI(TAG, "Camera screen created");
 
     return scr_camera;
 }
@@ -327,25 +332,6 @@ lv_obj_t *ui_camera_create(void)
 static void preview_timer_cb(lv_timer_t *t)
 {
     (void)t;
-
-    /* Deferred first-tick canvas creation — screen is already rendered here */
-    if (!canvas_preview && s_vf_area) {
-        uint16_t w, h;
-        res_to_dimensions(current_res, &w, &h);
-        alloc_canvas_buffer(w, h);
-        if (canvas_buf) {
-            canvas_preview = lv_canvas_create(s_vf_area);
-            lv_canvas_set_buffer(canvas_preview, canvas_buf,
-                                 canvas_w, canvas_h, LV_COLOR_FORMAT_RGB565);
-            lv_obj_center(canvas_preview);
-            UI_LOGI(TAG, "Canvas created (deferred): %ux%u", w, h);
-        } else {
-            UI_LOGE(TAG, "Canvas buffer alloc failed — preview disabled");
-            lv_timer_delete(preview_timer);
-            preview_timer = NULL;
-            return;
-        }
-    }
 
     if (!canvas_preview || !canvas_buf) return;
 
@@ -385,7 +371,7 @@ static void capture_btn_cb(lv_event_t *e)
     tab5_cam_frame_t frame;
     esp_err_t err = tab5_camera_capture(&frame);
     if (err != ESP_OK) {
-        UI_LOGE(TAG, "Capture failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Capture failed: %s", esp_err_to_name(err));
         toast_show("Capture failed");
         return;
     }
@@ -397,13 +383,13 @@ static void capture_btn_cb(lv_event_t *e)
 
     err = tab5_camera_save_jpeg(&frame, path);
     if (err != ESP_OK) {
-        UI_LOGE(TAG, "Save failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Save failed: %s", esp_err_to_name(err));
         toast_show("Save failed");
         return;
     }
 
     capture_counter++;
-    UI_LOGI(TAG, "Photo saved: %s", path);
+    ESP_LOGI(TAG, "Photo saved: %s", path);
 
     /* Update gallery button text */
     if (lbl_gallery) {
@@ -442,7 +428,7 @@ static void resolution_dd_cb(lv_event_t *e)
 
     esp_err_t err = tab5_camera_set_resolution(new_res);
     if (err != ESP_OK) {
-        UI_LOGE(TAG, "Set resolution failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "Set resolution failed: %s", esp_err_to_name(err));
         toast_show("Resolution error");
         if (preview_timer) lv_timer_resume(preview_timer);
         return;
@@ -466,7 +452,7 @@ static void resolution_dd_cb(lv_event_t *e)
         lv_timer_resume(preview_timer);
     }
 
-    UI_LOGI(TAG, "Resolution changed to %ux%u", w, h);
+    ESP_LOGI(TAG, "Resolution changed to %ux%u", w, h);
 }
 
 /* ================================================================
@@ -561,7 +547,6 @@ void ui_camera_destroy(void)
     if (scr_camera) {
         lv_obj_delete(scr_camera);
         scr_camera     = NULL;
-        s_vf_area      = NULL;
         canvas_preview = NULL;
         lbl_no_camera  = NULL;
         btn_capture    = NULL;
@@ -570,7 +555,7 @@ void ui_camera_destroy(void)
         btn_gallery    = NULL;
         lbl_gallery    = NULL;
         toast_obj      = NULL;
-        UI_LOGI(TAG, "Camera screen destroyed");
+        ESP_LOGI(TAG, "Camera screen destroyed");
     }
 
     /* Free PSRAM canvas buffer */

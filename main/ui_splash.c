@@ -7,7 +7,7 @@
  */
 
 #include "ui_splash.h"
-#include "ui_port.h"
+#include "esp_log.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -111,7 +111,7 @@ lv_obj_t *ui_splash_create(void)
     lv_obj_align(lbl_ver, LV_ALIGN_BOTTOM_MID, 0, -24);
 
     lv_screen_load(scr_splash);
-    UI_LOGI(TAG, "TinkerOS splash created");
+    ESP_LOGI(TAG, "TinkerOS splash created");
     return scr_splash;
 }
 
@@ -154,6 +154,6 @@ void ui_splash_destroy(void)
         bar_progress = NULL;
         check_count  = 0;
         memset(lbl_checks, 0, sizeof(lbl_checks));
-        UI_LOGI(TAG, "Splash destroyed");
+        ESP_LOGI(TAG, "Splash destroyed");
     }
 }

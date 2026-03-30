@@ -140,15 +140,6 @@ static void ui_task(void *arg)
     (void)arg;
     ESP_LOGI(TAG, "UI task started on core %d", xPortGetCoreID());
 
-    /* Extend WDT timeout to 10s — initial renders of complex screens
-     * (camera canvas, chat layout) from PSRAM draw buffers can take >5s. */
-    esp_task_wdt_config_t wdt_cfg = {
-        .timeout_ms      = 10000,
-        .idle_core_mask  = 0,
-        .trigger_panic   = true,
-    };
-    esp_task_wdt_reconfigure(&wdt_cfg);
-
     /* Register this task with the Task Watchdog Timer.
      * If the LVGL loop gets stuck (deadlock, infinite loop), the WDT
      * will fire a panic with a backtrace — captured in the core dump. */

@@ -17,13 +17,13 @@
 #include "ui_wifi.h"
 #include "ui_camera.h"
 #include "ui_files.h"
-#include "ui_chat.h"
 #include "battery.h"
 #include "rtc.h"
 #include "dragon_link.h"
 #include "wifi.h"
 #include "display.h"
-#include "ui_port.h"
+#include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include <stdio.h>
 #include <string.h>
@@ -557,7 +557,7 @@ lv_obj_t *ui_home_create(void)
     tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
 
     lv_screen_load(scr);
-    UI_LOGI(TAG, "TinkerOS home (v2 refined) created");
+    ESP_LOGI(TAG, "TinkerOS home (v2 refined) created");
     return scr;
 }
 
@@ -603,7 +603,7 @@ static void show_toast(const char *text)
 static void app_icon_click_cb(lv_event_t *e)
 {
     intptr_t app_id = (intptr_t)lv_event_get_user_data(e);
-    UI_LOGI(TAG, "App icon tapped: %d", (int)app_id);
+    ESP_LOGI(TAG, "App icon tapped: %d", (int)app_id);
     switch (app_id) {
     case 0: /* WiFi */    ui_wifi_create(); break;
     case 1: /* Dragon */  lv_tileview_set_tile(tileview, tiles[2], LV_ANIM_ON); break;
@@ -611,7 +611,7 @@ static void app_icon_click_cb(lv_event_t *e)
     case 3: /* Audio */   show_toast("Coming Soon"); break;
     case 4: /* Files */   ui_files_create(); break;
     case 5: /* Battery */ lv_tileview_set_tile(tileview, tiles[3], LV_ANIM_ON); break;
-    case 6: /* AI Chat */ ui_chat_create(); break;
+    case 6: /* AI Chat */ show_toast("Coming Soon"); break;
     case 7: /* Settings */ui_settings_create(); break;
     default: break;
     }
@@ -623,10 +623,10 @@ static void dragon_toggle_cb(lv_event_t *e)
     bool streaming = tab5_dragon_is_streaming();
     if (streaming) {
         tab5_dragon_request_stop();
-        UI_LOGI(TAG, "Dragon stream stop requested");
+        ESP_LOGI(TAG, "Dragon stream stop requested");
     } else {
         tab5_dragon_request_start();
-        UI_LOGI(TAG, "Dragon stream start requested");
+        ESP_LOGI(TAG, "Dragon stream start requested");
     }
 }
 
@@ -801,7 +801,7 @@ void ui_home_destroy(void)
         memset(page_dots, 0, sizeof(page_dots));
         memset(tiles, 0, sizeof(tiles));
         cur_page = 0;
-        UI_LOGI(TAG, "Home destroyed");
+        ESP_LOGI(TAG, "Home destroyed");
     }
 }
 

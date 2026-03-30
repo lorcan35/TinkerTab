@@ -17,7 +17,10 @@
 #include "mode_manager.h"
 #include "config.h"
 #include "settings.h"
-#include "ui_port.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -206,11 +209,11 @@ static bool s_initialized         = false;
 void ui_voice_init(void)
 {
     if (s_initialized) {
-        UI_LOGW(TAG, "Already initialized");
+        ESP_LOGW(TAG, "Already initialized");
         return;
     }
 
-    UI_LOGI(TAG, "Initializing voice UI overlay");
+    ESP_LOGI(TAG, "Initializing voice UI overlay");
 
     build_mic_button();
     build_overlay();
@@ -219,12 +222,12 @@ void ui_voice_init(void)
     voice_init(ui_voice_on_state_change);
 
     s_initialized = true;
-    UI_LOGI(TAG, "Voice UI initialized — mic button at bottom-left");
+    ESP_LOGI(TAG, "Voice UI initialized — mic button at bottom-left");
 }
 
 void ui_voice_on_state_change(voice_state_t state, const char *detail)
 {
-    UI_LOGI(TAG, "State change: %d -> %d (%s)", s_cur_state, state,
+    ESP_LOGI(TAG, "State change: %d -> %d (%s)", s_cur_state, state,
              detail ? detail : "");
 
     s_cur_state = state;
@@ -241,7 +244,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         /* Voice session ended — return to IDLE (no auto-streaming).
          * Must defer to a task because we're inside the LVGL mutex here. */
         if (tab5_mode_get() == MODE_VOICE) {
-            UI_LOGI(TAG, "Voice ended, scheduling switch to IDLE");
+            ESP_LOGI(TAG, "Voice ended, scheduling switch to IDLE");
             xTaskCreatePinnedToCore(
                 mode_switch_idle_task, "mode_idle", 8192, NULL, 5, NULL, 1);
         }
@@ -351,7 +354,7 @@ void ui_voice_show(void)
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_start(&a);
 
-    UI_LOGI(TAG, "Voice overlay shown");
+    ESP_LOGI(TAG, "Voice overlay shown");
 }
 
 void ui_voice_hide(void)
@@ -372,7 +375,7 @@ void ui_voice_hide(void)
     lv_anim_set_ready_cb(&a, fade_done_hide_cb);
     lv_anim_start(&a);
 
-    UI_LOGI(TAG, "Voice overlay hiding");
+    ESP_LOGI(TAG, "Voice overlay hiding");
 }
 
 bool ui_voice_is_visible(void)
@@ -1190,7 +1193,7 @@ static void auto_hide_timer_cb(lv_timer_t *t)
     s_hide_timer = NULL;
     if (s_visible && (s_cur_state == VOICE_STATE_READY ||
                       s_cur_state == VOICE_STATE_IDLE)) {
-        UI_LOGI(TAG, "Auto-hiding overlay");
+        ESP_LOGI(TAG, "Auto-hiding overlay");
         ui_voice_hide();
     }
 }
@@ -1227,13 +1230,13 @@ static void mic_click_cb(lv_event_t *e)
     (void)e;
     voice_state_t state = voice_get_state();
 
-    UI_LOGI(TAG, "Mic button tapped (state=%d)", state);
+    ESP_LOGI(TAG, "Mic button tapped (state=%d)", state);
 
     switch (state) {
     case VOICE_STATE_IDLE:
         /* Not connected — switch to VOICE mode in a separate task
          * (mode_switch blocks 200ms+ which would trip the LVGL watchdog) */
-        UI_LOGI(TAG, "Requesting VOICE mode...");
+        ESP_LOGI(TAG, "Requesting VOICE mode...");
         xTaskCreatePinnedToCore(
             mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
         break;
@@ -1259,7 +1262,7 @@ static void mic_click_cb(lv_event_t *e)
 static void close_click_cb(lv_event_t *e)
 {
     (void)e;
-    UI_LOGI(TAG, "Close button tapped — cancelling");
+    ESP_LOGI(TAG, "Close button tapped — cancelling");
     voice_cancel();
     ui_voice_hide();
 }
@@ -1267,7 +1270,7 @@ static void close_click_cb(lv_event_t *e)
 static void send_click_cb(lv_event_t *e)
 {
     (void)e;
-    UI_LOGI(TAG, "Send/stop button tapped — submitting recording");
+    ESP_LOGI(TAG, "Send/stop button tapped — submitting recording");
     voice_stop_listening();
 }
 
@@ -1277,7 +1280,7 @@ static void orb_ready_click_cb(lv_event_t *e)
     if (voice_get_state() != VOICE_STATE_READY) {
         return;  /* Guard: only act in READY state */
     }
-    UI_LOGI(TAG, "Orb tapped in READY state — starting recording");
+    ESP_LOGI(TAG, "Orb tapped in READY state — starting recording");
     /* Don't remove callback here (unsafe from within handler).
      * show_state_listening() handles cleanup. */
     voice_start_listening();
@@ -1286,6 +1289,6 @@ static void orb_ready_click_cb(lv_event_t *e)
 static void orb_speak_click_cb(lv_event_t *e)
 {
     (void)e;
-    UI_LOGI(TAG, "Orb tapped during speaking — interrupting TTS");
+    ESP_LOGI(TAG, "Orb tapped during speaking — interrupting TTS");
     voice_cancel();
 }

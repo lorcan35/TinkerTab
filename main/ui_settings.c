@@ -19,8 +19,11 @@
 #include "settings.h"
 #include "audio.h"
 
-#include "ui_port.h"
+#include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -103,7 +106,7 @@ static void cb_brightness(lv_event_t *e)
     int val = lv_slider_get_value(slider);
     tab5_display_set_brightness(val);
     tab5_settings_set_brightness((uint8_t)val);
-    UI_LOGI(TAG, "Brightness set to %d%% (saved)", val);
+    ESP_LOGI(TAG, "Brightness set to %d%% (saved)", val);
 }
 
 static void cb_volume(lv_event_t *e)
@@ -112,14 +115,14 @@ static void cb_volume(lv_event_t *e)
     int val = lv_slider_get_value(slider);
     tab5_audio_set_volume((uint8_t)val);
     tab5_settings_set_volume((uint8_t)val);
-    UI_LOGI(TAG, "Volume set to %d%% (saved)", val);
+    ESP_LOGI(TAG, "Volume set to %d%% (saved)", val);
 }
 
 static void cb_autorotate(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
     bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    UI_LOGI(TAG, "Auto-rotate %s", on ? "enabled" : "disabled");
+    ESP_LOGI(TAG, "Auto-rotate %s", on ? "enabled" : "disabled");
     /* Update orientation label immediately */
     if (s_lbl_orient) {
         if (on) {
@@ -162,10 +165,10 @@ static void ntp_sync_task(void *arg)
     if (s_ntp_btn_label) {
         if (ret == ESP_OK) {
             lv_label_set_text(s_ntp_btn_label, "Synced!");
-            UI_LOGI(TAG, "NTP sync OK");
+            ESP_LOGI(TAG, "NTP sync OK");
         } else {
             lv_label_set_text(s_ntp_btn_label, "Failed");
-            UI_LOGW(TAG, "NTP sync failed: %s", esp_err_to_name(ret));
+            ESP_LOGW(TAG, "NTP sync failed: %s", esp_err_to_name(ret));
         }
     }
     s_ntp_spinner = NULL;
@@ -289,7 +292,7 @@ static lv_obj_t *add_row_value(lv_obj_t *row, const char *text)
 lv_obj_t *ui_settings_create(void)
 {
     if (s_screen) {
-        UI_LOGW(TAG, "Settings screen already exists");
+        ESP_LOGW(TAG, "Settings screen already exists");
         return s_screen;
     }
 
@@ -508,7 +511,7 @@ lv_obj_t *ui_settings_create(void)
     /* ── Load the screen ────────────────────────────────────────────── */
     lv_screen_load(s_screen);
 
-    UI_LOGI(TAG, "Settings screen created");
+    ESP_LOGI(TAG, "Settings screen created");
     return s_screen;
 }
 
@@ -584,7 +587,7 @@ void ui_settings_update(void)
     }
     if (s_lbl_psram) {
         char pbuf[32];
-        uint32_t psram = (uint32_t)UI_HEAP_FREE_PSRAM();
+        uint32_t psram = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
         if (psram > 1048576) {
             snprintf(pbuf, sizeof(pbuf), "%.1f MB", psram / 1048576.0f);
         } else {
@@ -619,5 +622,5 @@ void ui_settings_destroy(void)
     s_slider_volume = NULL;
     s_sw_autorot    = NULL;
 
-    UI_LOGI(TAG, "Settings screen destroyed");
+    ESP_LOGI(TAG, "Settings screen destroyed");
 }

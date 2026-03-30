@@ -21,8 +21,10 @@
 
 #include "esp_wifi.h"
 #include "esp_netif.h"
-#include "ui_port.h"
+#include "esp_log.h"
 #include "esp_event.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -108,7 +110,7 @@ static esp_err_t wifi_nvs_save(const char *ssid, const char *pass)
     if (ret == ESP_OK) {
         ret = tab5_settings_set_wifi_pass(pass);
     }
-    UI_LOGI(TAG, "Settings save %s: %s", ssid, esp_err_to_name(ret));
+    ESP_LOGI(TAG, "Settings save %s: %s", ssid, esp_err_to_name(ret));
     return ret;
 }
 
@@ -143,10 +145,10 @@ static void cb_scan_btn(lv_event_t *e)
 
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);  /* non-blocking */
     if (ret != ESP_OK) {
-        UI_LOGW(TAG, "Scan start failed: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Scan start failed: %s", esp_err_to_name(ret));
         if (s_scan_btn_label) lv_label_set_text(s_scan_btn_label, "Scan Failed");
     } else {
-        UI_LOGI(TAG, "WiFi scan started (non-blocking)");
+        ESP_LOGI(TAG, "WiFi scan started (non-blocking)");
     }
 }
 
@@ -156,7 +158,7 @@ static void cb_network_row(lv_event_t *e)
     if (idx < 0 || idx >= s_ap_count) return;
 
     const char *ssid = (const char *)s_ap_records[idx].ssid;
-    UI_LOGI(TAG, "Selected network: %s", ssid);
+    ESP_LOGI(TAG, "Selected network: %s", ssid);
 
     /* Open networks: connect directly. Secured: show password dialog. */
     if (s_ap_records[idx].authmode == WIFI_AUTH_OPEN) {
@@ -247,11 +249,11 @@ static void scan_done_handler(void *arg, esp_event_base_t event_base,
     uint16_t count = MAX_SCAN_APS;
     esp_err_t ret = esp_wifi_scan_get_ap_records(&count, s_ap_records);
     if (ret != ESP_OK) {
-        UI_LOGW(TAG, "Scan get records failed: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "Scan get records failed: %s", esp_err_to_name(ret));
         count = 0;
     }
     s_ap_count = count;
-    UI_LOGI(TAG, "Scan found %d networks", s_ap_count);
+    ESP_LOGI(TAG, "Scan found %d networks", s_ap_count);
 
     /* Try short lock; on failure defer to LVGL task via async call */
     if (tab5_ui_try_lock(200)) {
@@ -264,7 +266,7 @@ static void scan_done_handler(void *arg, esp_event_base_t event_base,
         }
         tab5_ui_unlock();
     } else {
-        UI_LOGW(TAG, "LVGL lock busy in scan_done — deferring to LVGL task");
+        ESP_LOGW(TAG, "LVGL lock busy in scan_done — deferring to LVGL task");
         lv_async_call(scan_done_update_ui, NULL);
     }
 }
@@ -277,11 +279,11 @@ static void wifi_connect_task(void *arg)
 
     if (s_destroying) { free(password); vTaskDelete(NULL); return; }
 
-    UI_LOGI(TAG, "Connecting to '%s'...", s_selected_ssid);
+    ESP_LOGI(TAG, "Connecting to '%s'...", s_selected_ssid);
 
     /* Disconnect current connection */
     esp_wifi_disconnect();
-    UI_DELAY_MS(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     /* Configure new connection */
     wifi_config_t wifi_cfg = {
@@ -302,7 +304,7 @@ static void wifi_connect_task(void *arg)
 
     esp_err_t ret = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
     if (ret != ESP_OK) {
-        UI_LOGE(TAG, "Set config failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Set config failed: %s", esp_err_to_name(ret));
         if (tab5_ui_try_lock(2000)) {
             if (s_pwd_status_lbl) {
                 lv_label_set_text(s_pwd_status_lbl, "Config error");
@@ -318,7 +320,7 @@ static void wifi_connect_task(void *arg)
 
     ret = esp_wifi_connect();
     if (ret != ESP_OK) {
-        UI_LOGE(TAG, "Connect failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "Connect failed: %s", esp_err_to_name(ret));
         if (tab5_ui_try_lock(2000)) {
             if (s_pwd_status_lbl) {
                 lv_label_set_text(s_pwd_status_lbl, "Connection failed");
@@ -335,7 +337,7 @@ static void wifi_connect_task(void *arg)
     /* Wait for connection (up to 10 seconds) */
     bool connected = false;
     for (int i = 0; i < 20; i++) {
-        UI_DELAY_MS(500);
+        vTaskDelay(pdMS_TO_TICKS(500));
         if (tab5_wifi_connected()) {
             connected = true;
             break;
@@ -343,11 +345,11 @@ static void wifi_connect_task(void *arg)
     }
 
     if (connected) {
-        UI_LOGI(TAG, "Connected to %s!", s_selected_ssid);
+        ESP_LOGI(TAG, "Connected to %s!", s_selected_ssid);
         /* Save to NVS — no lock needed */
         wifi_nvs_save(s_selected_ssid, password ? password : "");
     } else {
-        UI_LOGW(TAG, "Connection to %s timed out", s_selected_ssid);
+        ESP_LOGW(TAG, "Connection to %s timed out", s_selected_ssid);
     }
 
     /* Update password dialog UI — use try_lock to avoid deadlock */
@@ -368,7 +370,7 @@ static void wifi_connect_task(void *arg)
         }
         tab5_ui_unlock();
     } else {
-        UI_LOGW(TAG, "wifi_connect_task: LVGL lock timeout, skipping dialog update");
+        ESP_LOGW(TAG, "wifi_connect_task: LVGL lock timeout, skipping dialog update");
     }
 
     /* Update status card — ui_wifi_update manages its own lock */
@@ -769,7 +771,7 @@ static void hide_password_dialog(void)
 lv_obj_t *ui_wifi_create(void)
 {
     if (s_screen) {
-        UI_LOGW(TAG, "WiFi screen already exists");
+        ESP_LOGW(TAG, "WiFi screen already exists");
         return s_screen;
     }
 
@@ -818,7 +820,7 @@ lv_obj_t *ui_wifi_create(void)
      * when transitioning from tileview. Use direct load instead. */
     lv_screen_load(s_screen);
 
-    UI_LOGI(TAG, "WiFi screen created");
+    ESP_LOGI(TAG, "WiFi screen created");
     return s_screen;
 }
 
@@ -852,7 +854,7 @@ void ui_wifi_update(void)
      * Recursive mutex so safe if caller already holds it (e.g. ui_wifi_create).
      * Uses try_lock so we never block forever. */
     if (!tab5_ui_try_lock(1000)) {
-        UI_LOGW(TAG, "ui_wifi_update: LVGL lock timeout — skipping UI refresh");
+        ESP_LOGW(TAG, "ui_wifi_update: LVGL lock timeout — skipping UI refresh");
         return;
     }
 
@@ -924,5 +926,5 @@ void ui_wifi_destroy(void)
     s_scan_btn_label = NULL;
     s_spinner        = NULL;
 
-    UI_LOGI(TAG, "WiFi screen destroyed");
+    ESP_LOGI(TAG, "WiFi screen destroyed");
 }
