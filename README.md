@@ -7,12 +7,14 @@ TinkerTab turns the Tab5 into a full standalone device with a native LVGL UI, ca
 ## Features
 
 - **Native LVGL UI** — home launcher, settings, camera, file browser, audio player, all sized for 720x1280 DPI
-- **Voice AI Pipeline** — speak into Tab5, Dragon processes STT→LLM→TTS, response plays back on speaker (Whisper.cpp + Ollama + Piper)
+- **Voice AI Pipeline** — speak into Tab5, Dragon processes STT->LLM->TTS, response plays back on speaker (Moonshine v2 + Ollama + Piper)
+- **Mode Manager** — FSM coordinates exclusive WiFi bandwidth: IDLE, STREAMING (MJPEG), VOICE, BROWSING
 - **Dragon Mode** — live MJPEG browser streaming + touch forwarding from Dragon Q6A
 - **mDNS Auto-Discovery** — Tab5 finds Dragon via `_tinkerclaw._tcp` service, no hardcoded IPs
 - **WiFi Config Screen** — scan networks, tap to connect, on-screen keyboard for password entry
 - **NVS Settings Persistence** — WiFi credentials, Dragon host, brightness, volume survive power cycles
-- **Debug Server** — HTTP dashboard on port 8080 with remote screenshots, touch injection, device info
+- **Service Registry** — layered init/start/stop lifecycle for all subsystems (storage, display, audio, network, dragon)
+- **Debug Server** — HTTP dashboard on port 8080 with remote screenshots (BMP), touch injection, device info
 - **Full Hardware Support** — all Tab5 peripherals: display, touch, WiFi, camera, audio, mic, IMU, RTC, battery, SD card
 
 ## Hardware
@@ -30,7 +32,7 @@ TinkerTab turns the Tab5 into a full standalone device with a native LVGL UI, ca
 | SD Card | — | SDMMC 4-bit | ✅ |
 | Camera | SC202CS (SC2356) 2MP | MIPI-CSI 2-lane | ✅ |
 | Audio Codec | ES8388 | I2S + I2C 0x10 | ✅ |
-| Mic ADC | ES7210 (dual, AEC) | I2S + I2C 0x40 | ✅ |
+| Mic ADC | ES7210 (quad, AEC) | I2S TDM + I2C 0x40 | ✅ |
 | Speaker | NS4150B 1W | I2S DAC + GPIO enable | ✅ |
 | IMU | BMI270 6-axis | I2C 0x68 | ✅ |
 | RTC | RX8130CE | I2C 0x32 | ✅ |
@@ -57,7 +59,7 @@ When connected to a Dragon Q6A, Tab5 becomes a browser remote.
 - Full TinkerTab OS (React web app on Dragon)
 - PingApp ecosystem, local Ollama AI
 
-Auto-switches: boots standalone, discovers Dragon via mDNS, upgrades to Dragon mode when available.
+Tab5 boots standalone, discovers Dragon via mDNS, and connects. User explicitly switches to Dragon mode or voice mode from the UI. Mode manager ensures only one bandwidth-heavy service runs at a time.
 
 ## Prerequisites
 
@@ -101,7 +103,7 @@ TinkerTab runs an HTTP debug server on **port 8080** once WiFi is connected. Use
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/` | GET | HTML dashboard with live device info |
-| `/screenshot` | GET | Returns current framebuffer as JPEG |
+| `/screenshot` | GET | Returns current framebuffer as BMP |
 | `/info` | GET | JSON: heap, PSRAM, WiFi, battery, uptime |
 | `/touch` | POST | Inject touch event (`?x=360&y=640`) |
 | `/reboot` | POST | Restart the device |
@@ -110,10 +112,10 @@ TinkerTab runs an HTTP debug server on **port 8080** once WiFi is connected. Use
 **Grab a screenshot:**
 ```bash
 # Find the Tab5 on your network (mDNS name: tinkertab.local)
-curl http://tinkertab.local:8080/screenshot -o screen.jpg
+curl http://tinkertab.local:8080/screenshot -o screen.bmp
 
 # Or by IP
-curl http://192.168.1.X:8080/screenshot -o screen.jpg
+curl http://192.168.1.X:8080/screenshot -o screen.bmp
 ```
 
 **Inject a touch:**
@@ -146,8 +148,8 @@ The Tab5 discovers Dragon automatically via mDNS — no hardcoded IP needed. The
 Full conversational AI: user speaks into Tab5 mic → Dragon processes STT → LLM → TTS → spoken response plays on Tab5 speaker.
 
 **Stack:**
-- **STT:** Whisper.cpp (runs on Dragon CPU/GPU)
-- **LLM:** Ollama with local models (e.g. llama3, mistral)
+- **STT:** Moonshine v2 (ONNX, runs on Dragon ARM64 CPU — replaced Whisper.cpp for speed)
+- **LLM:** Ollama with local models (e.g. llama3.2:3b, phi4-mini, gemma3:4b)
 - **TTS:** Piper (fast local neural TTS)
 
 **Protocol:** Tab5 streams PCM 16kHz mono over WebSocket to Dragon port 3502. Dragon returns TTS audio as PCM frames.
@@ -195,8 +197,12 @@ Settings are loaded at boot and applied before the UI starts. The WiFi config sc
 | `rtc` | Current RTC date/time |
 | `ntp` | Sync RTC from NTP server |
 | `bat` | Battery voltage, current, power, % |
-| `voice_start` | Start voice capture + pipeline |
-| `voice_stop` | Stop voice capture |
+| `voice` | Spawn voice test task (connect, record 3s, get response) |
+| `mode` | Show current mode (IDLE/STREAMING/VOICE/BROWSING) |
+| `dragon` | Dragon connection status, MJPEG FPS, touch WS status |
+| `tasks` | Heap, PSRAM, task count diagnostics |
+| `micdiag` | ES7210 per-channel RMS diagnostic |
+| `services` | Print service registry status table |
 | `reboot` | Restart device |
 
 ## Project Structure
@@ -239,7 +245,7 @@ TinkerTab/
 │   ├── sdcard.c/h          # SDMMC 4-bit SD card driver
 │   ├── camera.c/h          # SC202CS MIPI-CSI camera
 │   ├── audio.c/h           # ES8388 codec + NS4150B speaker
-│   ├── mic.c               # ES7210 dual microphone
+│   ├── mic.c               # ES7210 quad microphone (esp_codec_dev)
 │   ├── imu.c/h             # BMI270 6-axis IMU
 │   ├── rtc.c/h             # RX8130CE real-time clock
 │   ├── battery.c/h         # INA226 battery monitor
@@ -254,7 +260,12 @@ TinkerTab/
 │   ├── ui_files.c/h        # File browser
 │   ├── ui_audio.c/h        # Audio player
 │   ├── ui_keyboard.c/h     # On-screen keyboard
-│   └── ui_voice.c/h        # Voice UI overlay
+│   ├── ui_voice.c/h        # Voice UI overlay (animated orb, PTT)
+│   ├── voice.c/h           # Voice streaming (WS client, mic, TTS playback)
+│   ├── mode_manager.c/h    # Mode FSM (IDLE/STREAMING/VOICE/BROWSING)
+│   ├── service_registry.c/h # Service lifecycle management
+│   ├── service_*.c          # Service wrappers (audio, display, dragon, network, storage)
+│   └── udp_stream.c/h      # UDP streaming (experimental)
 ```
 
 ## Pin Mapping
