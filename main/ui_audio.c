@@ -11,10 +11,7 @@
 #include "audio.h"
 #include "sdcard.h"
 #include "config.h"
-#include "esp_log.h"
-#include "esp_heap_caps.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+#include "ui_port.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -151,32 +148,32 @@ static void playback_task_fn(void *arg)
 {
     (void)arg;
 
-    ESP_LOGI(TAG, "Playback task started: %s", wav_filepath);
+    UI_LOGI(TAG, "Playback task started: %s", wav_filepath);
 
     FILE *fp = fopen(wav_filepath, "rb");
     if (!fp) {
-        ESP_LOGE(TAG, "Failed to open WAV: %s", wav_filepath);
+        UI_LOGE(TAG, "Failed to open WAV: %s", wav_filepath);
         goto done;
     }
 
     /* Read and validate WAV header */
     wav_header_t hdr;
     if (fread(&hdr, 1, sizeof(hdr), fp) != sizeof(hdr)) {
-        ESP_LOGE(TAG, "Failed to read WAV header");
+        UI_LOGE(TAG, "Failed to read WAV header");
         fclose(fp);
         goto done;
     }
 
     if (memcmp(hdr.riff_tag, "RIFF", 4) != 0 ||
         memcmp(hdr.wave_tag, "WAVE", 4) != 0) {
-        ESP_LOGE(TAG, "Invalid WAV file (bad RIFF/WAVE tags)");
+        UI_LOGE(TAG, "Invalid WAV file (bad RIFF/WAVE tags)");
         fclose(fp);
         goto done;
     }
 
     /* Seek to data chunk — handle non-standard headers by scanning */
     if (memcmp(hdr.fmt_tag, "fmt ", 4) != 0) {
-        ESP_LOGE(TAG, "Invalid WAV: missing fmt chunk");
+        UI_LOGE(TAG, "Invalid WAV: missing fmt chunk");
         fclose(fp);
         goto done;
     }
@@ -200,27 +197,26 @@ static void playback_task_fn(void *arg)
     }
 
     if (!found_data) {
-        ESP_LOGE(TAG, "WAV file missing data chunk");
+        UI_LOGE(TAG, "WAV file missing data chunk");
         fclose(fp);
         goto done;
     }
 
     if (hdr.audio_format != 1 || hdr.bits_per_sample != 16) {
-        ESP_LOGE(TAG, "Only 16-bit PCM WAV supported (got fmt=%d bps=%d)",
+        UI_LOGE(TAG, "Only 16-bit PCM WAV supported (got fmt=%d bps=%d)",
                  hdr.audio_format, hdr.bits_per_sample);
         fclose(fp);
         goto done;
     }
 
-    ESP_LOGI(TAG, "WAV: %lu Hz, %d ch, %lu bytes data",
+    UI_LOGI(TAG, "WAV: %lu Hz, %d ch, %lu bytes data",
              (unsigned long)hdr.sample_rate, hdr.num_channels,
              (unsigned long)hdr.data_size);
 
     /* Allocate audio buffer in PSRAM */
-    int16_t *audio_buf = heap_caps_malloc(AUDIO_CHUNK_SAMPLES * sizeof(int16_t),
-                                          MALLOC_CAP_SPIRAM);
+    int16_t *audio_buf = UI_MALLOC_PSRAM(AUDIO_CHUNK_SAMPLES * sizeof(int16_t));
     if (!audio_buf) {
-        ESP_LOGE(TAG, "Failed to allocate audio buffer");
+        UI_LOGE(TAG, "Failed to allocate audio buffer");
         fclose(fp);
         goto done;
     }
@@ -233,7 +229,7 @@ static void playback_task_fn(void *arg)
     while (bytes_remaining > 0 && !stop_requested) {
         /* Handle pause */
         while (playback_paused && !stop_requested) {
-            vTaskDelay(pdMS_TO_TICKS(50));
+            UI_DELAY_MS(50);
         }
         if (stop_requested) break;
 
@@ -254,7 +250,7 @@ static void playback_task_fn(void *arg)
     /* Disable speaker */
     tab5_audio_speaker_enable(false);
 
-    heap_caps_free(audio_buf);
+    UI_FREE(audio_buf);
     fclose(fp);
 
 done:
@@ -276,7 +272,7 @@ done:
     tab5_ui_unlock();
 
     playback_task = NULL;
-    ESP_LOGI(TAG, "Playback task ended");
+    UI_LOGI(TAG, "Playback task ended");
     vTaskDelete(NULL);
 }
 
@@ -427,7 +423,7 @@ lv_obj_t *ui_audio_create(const char *wav_path)
     lv_obj_set_style_text_font(lbl_vol_pct, &lv_font_montserrat_18, 0);
     lv_obj_align(lbl_vol_pct, LV_ALIGN_TOP_MID, 0, 410);
 
-    ESP_LOGI(TAG, "Audio player overlay created for: %s", basename);
+    UI_LOGI(TAG, "Audio player overlay created for: %s", basename);
 
     return overlay;
 }
@@ -443,13 +439,13 @@ void ui_audio_destroy(void)
     /* Wait for playback task to finish (up to 2 seconds) */
     int wait_count = 0;
     while (playback_task != NULL && wait_count < 40) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+        UI_DELAY_MS(50);
         wait_count++;
     }
 
     /* Force-delete task if it didn't exit cleanly */
     if (playback_task != NULL) {
-        ESP_LOGW(TAG, "Force-deleting playback task");
+        UI_LOGW(TAG, "Force-deleting playback task");
         vTaskDelete(playback_task);
         playback_task = NULL;
         tab5_audio_speaker_enable(false);
@@ -467,6 +463,6 @@ void ui_audio_destroy(void)
         lbl_play_icon = NULL;
         slider_vol    = NULL;
         lbl_status    = NULL;
-        ESP_LOGI(TAG, "Audio player overlay destroyed");
+        UI_LOGI(TAG, "Audio player overlay destroyed");
     }
 }

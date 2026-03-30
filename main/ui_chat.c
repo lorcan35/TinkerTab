@@ -11,9 +11,7 @@
 #include "ui_home.h"
 #include "ui_keyboard.h"
 #include "config.h"
-#include "esp_log.h"
-#include "esp_heap_caps.h"
-#include "esp_task_wdt.h"
+#include "ui_port.h"
 #include "lvgl.h"
 #include <string.h>
 #include <stdlib.h>
@@ -51,7 +49,7 @@ static int       s_msg_count = 0;
 static void cb_back(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "Back to home");
+    UI_LOGI(TAG, "Back to home");
     s_active = false;
     lv_screen_load(ui_home_get_screen());
 }
@@ -63,7 +61,7 @@ static void cb_send(lv_event_t *e)
     const char *txt = lv_textarea_get_text(s_textarea);
     if (!txt || !txt[0]) return;
 
-    ESP_LOGI(TAG, "Send: %s", txt);
+    UI_LOGI(TAG, "Send: %s", txt);
 
     /* Show the user's message in the chat */
     ui_chat_add_message(txt, true);
@@ -88,8 +86,8 @@ lv_obj_t *ui_chat_create(void)
 {
     if (s_active) return s_screen;
 
-    ESP_LOGI(TAG, "[1] Creating chat screen");
-    esp_task_wdt_reset();
+    UI_LOGI(TAG, "[1] Creating chat screen");
+    UI_WDT_RESET();
 
     /* Screen — black background, no scroll */
     s_screen = lv_obj_create(NULL);
@@ -99,8 +97,8 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(s_screen, 0, 0);
 
-    ESP_LOGI(TAG, "[2] Top bar");
-    esp_task_wdt_reset();
+    UI_LOGI(TAG, "[2] Top bar");
+    UI_WDT_RESET();
 
     /* Top bar */
     lv_obj_t *bar = lv_obj_create(s_screen);
@@ -130,8 +128,8 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
-    ESP_LOGI(TAG, "[3] Message list");
-    esp_task_wdt_reset();
+    UI_LOGI(TAG, "[3] Message list");
+    UI_WDT_RESET();
 
     /* Scrollable message area */
     s_msg_list = lv_obj_create(s_screen);
@@ -146,8 +144,8 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_scroll_dir(s_msg_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_msg_list, LV_SCROLLBAR_MODE_OFF);
 
-    ESP_LOGI(TAG, "[4] Input bar");
-    esp_task_wdt_reset();
+    UI_LOGI(TAG, "[4] Input bar");
+    UI_WDT_RESET();
 
     /* Input bar */
     lv_obj_t *input_bar = lv_obj_create(s_screen);
@@ -202,8 +200,8 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_text_color(mic_ico, COL_WHITE, 0);
     lv_obj_center(mic_ico);
 
-    ESP_LOGI(TAG, "[5] Loading screen");
-    esp_task_wdt_reset();
+    UI_LOGI(TAG, "[5] Loading screen");
+    UI_WDT_RESET();
 
     s_active    = true;
     s_msg_count = 0;
@@ -211,7 +209,7 @@ lv_obj_t *ui_chat_create(void)
 
     lv_screen_load(s_screen);
 
-    ESP_LOGI(TAG, "[6] Chat screen ready");
+    UI_LOGI(TAG, "[6] Chat screen ready");
     return s_screen;
 }
 
@@ -278,8 +276,7 @@ void ui_chat_stream_token(const char *token)
     size_t cur_len  = strlen(cur);
     size_t tok_len  = strlen(token);
 
-    char *buf = heap_caps_malloc(cur_len + tok_len + 1,
-                                 MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    char *buf = UI_MALLOC_PSRAM(cur_len + tok_len + 1);
     if (!buf) return;
 
     memcpy(buf, cur, cur_len);
@@ -287,7 +284,7 @@ void ui_chat_stream_token(const char *token)
     buf[cur_len + tok_len] = '\0';
 
     lv_label_set_text(s_ai_label, buf);
-    heap_caps_free(buf);
+    UI_FREE(buf);
 
     lv_obj_scroll_to_y(s_msg_list, LV_COORD_MAX, LV_ANIM_OFF);
 }
@@ -295,7 +292,7 @@ void ui_chat_stream_token(const char *token)
 void ui_chat_destroy(void)
 {
     if (!s_active) return;
-    ESP_LOGI(TAG, "Destroying chat screen");
+    UI_LOGI(TAG, "Destroying chat screen");
 
     s_active    = false;
     s_msg_list  = NULL;

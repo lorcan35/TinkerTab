@@ -24,3 +24,4 @@ static inline esp_err_t esp_netif_get_ip_info(esp_netif_t *n, esp_netif_ip_info_
 }
 static inline esp_err_t esp_netif_get_hostname(esp_netif_t *n, const char **hn) { *hn = "tinkeros-sim"; return ESP_OK; }
 static inline void esp_netif_destroy_default_wifi(esp_netif_t *n) { }
+static inline esp_netif_t *esp_netif_get_handle_from_ifkey(const char *key) { return NULL; }

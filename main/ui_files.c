@@ -15,8 +15,7 @@
 #include "ui_core.h"
 #include "sdcard.h"
 #include "config.h"
-#include "esp_log.h"
-#include "esp_heap_caps.h"
+#include "ui_port.h"
 
 #include <dirent.h>
 #include <sys/stat.h>
@@ -254,17 +253,16 @@ static void read_directory(void)
     entry_count = 0;
 
     if (!entries) {
-        entries = heap_caps_malloc(MAX_ENTRIES * sizeof(file_entry_t),
-                                   MALLOC_CAP_SPIRAM);
+        entries = UI_MALLOC_PSRAM(MAX_ENTRIES * sizeof(file_entry_t));
         if (!entries) {
-            ESP_LOGE(TAG, "Failed to allocate entries array");
+            UI_LOGE(TAG, "Failed to allocate entries array");
             return;
         }
     }
 
     DIR *dir = opendir(current_path);
     if (!dir) {
-        ESP_LOGE(TAG, "Failed to open directory: %s", current_path);
+        UI_LOGE(TAG, "Failed to open directory: %s", current_path);
         return;
     }
 
@@ -299,7 +297,7 @@ static void read_directory(void)
         qsort(entries, entry_count, sizeof(file_entry_t), entry_cmp);
     }
 
-    ESP_LOGI(TAG, "Read %d entries from %s", entry_count, current_path);
+    UI_LOGI(TAG, "Read %d entries from %s", entry_count, current_path);
 }
 
 /* ── Rebuild the LVGL file list ──────────────────────────────── */
@@ -656,7 +654,7 @@ lv_obj_t *ui_files_create(void)
 
     /* ── Load the screen ─────────────────────────────────────── */
     lv_screen_load(scr_files);
-    ESP_LOGI(TAG, "File browser created");
+    UI_LOGI(TAG, "File browser created");
 
     return scr_files;
 }
@@ -676,10 +674,10 @@ void ui_files_destroy(void)
         lbl_storage = NULL;
         no_sd_panel = NULL;
         img_preview = NULL;
-        ESP_LOGI(TAG, "File browser destroyed");
+        UI_LOGI(TAG, "File browser destroyed");
     }
     if (entries) {
-        heap_caps_free(entries);
+        UI_FREE(entries);
         entries     = NULL;
         entry_count = 0;
     }

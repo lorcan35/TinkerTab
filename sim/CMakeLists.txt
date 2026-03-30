@@ -44,6 +44,7 @@ set(SIM_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/main.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/ui_core_sim.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/stubs.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/mem_tracker.c"
 )
 
 # ── Build target ───────────────────────────────────────────────────────────

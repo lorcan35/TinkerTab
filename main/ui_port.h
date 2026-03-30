@@ -57,6 +57,14 @@ void   ui_port_heap_print(void);  /* print current heap stats */
 static inline uint32_t ui_time_ms(void) { return SDL_GetTicks(); }
 #define UI_TIME_MS() ui_time_ms()
 
+/* ── Heap query — sim: derived from tracker, firmware: heap_caps ─── */
+#define UI_HEAP_FREE_PSRAM() ((size_t)(32UL * 1024 * 1024) - ui_port_heap_used())
+
+/* ── FreeRTOS types — sim port headers shadow the real ones ─────── */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+
 /* esp_err_to_name — provided by sim/port/esp_err.h */
 #include "esp_err.h"
 
@@ -82,6 +90,7 @@ static inline uint32_t ui_time_ms(void) { return SDL_GetTicks(); }
 #define UI_MALLOC_PSRAM(size) heap_caps_malloc((size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define UI_FREE(p)            heap_caps_free(p)
 #define UI_REALLOC(p, size)   heap_caps_realloc((p), (size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define UI_HEAP_FREE_PSRAM()  heap_caps_get_free_size(MALLOC_CAP_SPIRAM)
 
 /* ── Watchdog ────────────────────────────────────────────────────── */
 #define UI_WDT_RESET() esp_task_wdt_reset()

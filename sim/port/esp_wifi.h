@@ -154,3 +154,5 @@ static inline esp_err_t esp_wifi_scan_get_ap_records(uint16_t *n, wifi_ap_record
 static inline esp_err_t esp_wifi_clear_ap_list(void)                            { return ESP_OK; }
 static inline esp_err_t esp_wifi_restore(void)                                  { return ESP_OK; }
 static inline esp_err_t esp_wifi_set_ps(int ps)                                 { return ESP_OK; }
+static inline esp_err_t esp_wifi_sta_get_ap_info(wifi_ap_record_t *ap_info) { return -1; }
+#define WIFI_EVENT ((esp_event_base_t)1)

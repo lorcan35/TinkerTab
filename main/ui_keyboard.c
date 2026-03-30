@@ -13,7 +13,7 @@
 
 #include "ui_keyboard.h"
 #include "config.h"
-#include "esp_log.h"
+#include "ui_port.h"
 #include <string.h>
 #include <ctype.h>
 
@@ -127,7 +127,7 @@ void ui_keyboard_init(lv_obj_t *parent)
 {
     (void)parent; /* We use lv_layer_top() directly */
 
-    ESP_LOGI(TAG, "Initializing TinkerOS keyboard overlay");
+    UI_LOGI(TAG, "Initializing TinkerOS keyboard overlay");
 
     build_keyboard_panel();
     build_trigger_button();
@@ -137,7 +137,7 @@ void ui_keyboard_init(lv_obj_t *parent)
     lv_obj_add_flag(s_kb_panel, LV_OBJ_FLAG_HIDDEN);
     s_visible = false;
 
-    ESP_LOGI(TAG, "Keyboard initialized (%dx%d), trigger at bottom-right", SW, KB_HEIGHT);
+    UI_LOGI(TAG, "Keyboard initialized (%dx%d), trigger at bottom-right", SW, KB_HEIGHT);
 }
 
 void ui_keyboard_show(lv_obj_t *target_textarea)
@@ -167,7 +167,7 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     /* Hide trigger while keyboard is open */
     lv_obj_add_flag(s_trigger_btn, LV_OBJ_FLAG_HIDDEN);
 
-    ESP_LOGI(TAG, "Keyboard shown");
+    UI_LOGI(TAG, "Keyboard shown");
 }
 
 void ui_keyboard_hide(void)
@@ -197,7 +197,7 @@ void ui_keyboard_hide(void)
         switch_layer(false);
     }
 
-    ESP_LOGI(TAG, "Keyboard hiding");
+    UI_LOGI(TAG, "Keyboard hiding");
 }
 
 void ui_keyboard_toggle(lv_obj_t *target_textarea)
@@ -847,7 +847,7 @@ static void switch_layer(bool to_numbers)
 
     /* Lazy-build number rows on first switch */
     if (to_numbers && !s_num_built && s_key_area) {
-        ESP_LOGI(TAG, "Lazy-building number rows...");
+        UI_LOGI(TAG, "Lazy-building number rows...");
         build_number_rows(s_key_area);
         s_num_built = true;
     }
