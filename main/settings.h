@@ -45,3 +45,20 @@ esp_err_t tab5_settings_set_brightness(uint8_t pct);
 /** Returns 0-100 (default 70). */
 uint8_t   tab5_settings_get_volume(void);
 esp_err_t tab5_settings_set_volume(uint8_t vol);
+
+/* ── Device identity ─────────────────────────────────────────────────── */
+
+/**
+ * Get persistent device_id. Generated once from MAC on first boot.
+ * Format: lowercase hex MAC without colons (e.g. "aabbccddeeff").
+ */
+esp_err_t tab5_settings_get_device_id(char *buf, size_t len);
+
+/** Get hardware MAC address as "AA:BB:CC:DD:EE:FF". */
+esp_err_t tab5_settings_get_hardware_id(char *buf, size_t len);
+
+/* ── Session persistence ─────────────────────────────────────────────── */
+
+/** Get last session_id (empty string if none). */
+esp_err_t tab5_settings_get_session_id(char *buf, size_t len);
+esp_err_t tab5_settings_set_session_id(const char *session_id);

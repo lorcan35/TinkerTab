@@ -14,8 +14,10 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 
 #include <string.h>
+#include <stdio.h>
 
 static const char *TAG = "settings";
 
@@ -29,6 +31,8 @@ static const char *TAG = "settings";
 #define KEY_DRAGON_PORT "dragon_port"
 #define KEY_BRIGHTNESS  "brightness"
 #define KEY_VOLUME      "volume"
+#define KEY_DEVICE_ID   "device_id"
+#define KEY_SESSION_ID  "session_id"
 
 /* Compile-time defaults */
 #define DEFAULT_BRIGHTNESS  80
@@ -223,4 +227,63 @@ esp_err_t tab5_settings_set_volume(uint8_t vol)
 {
     if (vol > 100) vol = 100;
     return set_u8(KEY_VOLUME, vol);
+}
+
+/* ── Device identity ─────────────────────────────────────────────────── */
+
+esp_err_t tab5_settings_get_device_id(char *buf, size_t len)
+{
+    if (!buf || len < 13) return ESP_ERR_INVALID_ARG;  /* need 12 hex chars + NUL */
+
+    /* Try NVS first */
+    esp_err_t err = get_str(KEY_DEVICE_ID, buf, len, "");
+    if (err == ESP_OK && buf[0] != '\0') {
+        return ESP_OK;
+    }
+
+    /* First boot — generate from MAC and persist */
+    uint8_t mac[6];
+    err = esp_efuse_mac_get_default(mac);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read MAC: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    snprintf(buf, len, "%02x%02x%02x%02x%02x%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    err = set_str(KEY_DEVICE_ID, buf);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to persist device_id to NVS");
+    }
+    ESP_LOGI(TAG, "Generated device_id: %s", buf);
+    return ESP_OK;
+}
+
+esp_err_t tab5_settings_get_hardware_id(char *buf, size_t len)
+{
+    if (!buf || len < 18) return ESP_ERR_INVALID_ARG;  /* "AA:BB:CC:DD:EE:FF" + NUL */
+
+    uint8_t mac[6];
+    esp_err_t err = esp_efuse_mac_get_default(mac);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read MAC: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    snprintf(buf, len, "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return ESP_OK;
+}
+
+/* ── Session persistence ─────────────────────────────────────────────── */
+
+esp_err_t tab5_settings_get_session_id(char *buf, size_t len)
+{
+    return get_str(KEY_SESSION_ID, buf, len, "");
+}
+
+esp_err_t tab5_settings_set_session_id(const char *session_id)
+{
+    return set_str(KEY_SESSION_ID, session_id ? session_id : "");
 }

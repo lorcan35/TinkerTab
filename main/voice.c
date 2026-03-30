@@ -18,6 +18,7 @@
 #include "voice.h"
 #include "audio.h"
 #include "config.h"
+#include "settings.h"
 #include "ui_core.h"
 
 #include <string.h>
@@ -289,6 +290,56 @@ static esp_err_t ws_send_binary(const void *data, size_t len)
 }
 
 // ---------------------------------------------------------------------------
+// Device registration — sends register JSON as first frame after WS connect
+// ---------------------------------------------------------------------------
+static esp_err_t ws_send_register(void)
+{
+    char device_id[16] = {0};
+    char hardware_id[20] = {0};
+    char session_id[64] = {0};
+
+    tab5_settings_get_device_id(device_id, sizeof(device_id));
+    tab5_settings_get_hardware_id(hardware_id, sizeof(hardware_id));
+    tab5_settings_get_session_id(session_id, sizeof(session_id));
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return ESP_ERR_NO_MEM;
+
+    cJSON_AddStringToObject(root, "type", "register");
+    cJSON_AddStringToObject(root, "device_id", device_id);
+    cJSON_AddStringToObject(root, "hardware_id", hardware_id);
+    cJSON_AddStringToObject(root, "name", "Tab5");
+    cJSON_AddStringToObject(root, "firmware_ver", TAB5_FIRMWARE_VER);
+    cJSON_AddStringToObject(root, "platform", TAB5_PLATFORM);
+
+    /* Session resume: send last session_id if we have one */
+    if (session_id[0] != '\0') {
+        cJSON_AddStringToObject(root, "session_id", session_id);
+    } else {
+        cJSON_AddNullToObject(root, "session_id");
+    }
+
+    cJSON *caps = cJSON_AddObjectToObject(root, "capabilities");
+    cJSON_AddBoolToObject(caps, "mic", true);
+    cJSON_AddBoolToObject(caps, "speaker", true);
+    cJSON_AddBoolToObject(caps, "screen", true);
+    cJSON_AddBoolToObject(caps, "camera", true);
+    cJSON_AddBoolToObject(caps, "sd_card", true);
+    cJSON_AddBoolToObject(caps, "touch", true);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return ESP_ERR_NO_MEM;
+
+    ESP_LOGI(TAG, "Sending register: device=%s hw=%s session=%s",
+             device_id, hardware_id, session_id[0] ? session_id : "(new)");
+
+    esp_err_t err = ws_send_text(json);
+    cJSON_free(json);
+    return err;
+}
+
+// ---------------------------------------------------------------------------
 // JSON message handling (Dragon -> Tab5)
 // ---------------------------------------------------------------------------
 static void handle_text_message(const char *data, int len)
@@ -364,7 +415,18 @@ static void handle_text_message(const char *data, int len)
         err_buf[sizeof(err_buf) - 1] = '\0';
         voice_set_state(VOICE_STATE_READY, err_buf);
     } else if (strcmp(type_str, "session_start") == 0) {
-        ESP_LOGI(TAG, "Dragon session_start received (state=%d)", s_state);
+        /* Store session_id in NVS for resume on reconnect */
+        cJSON *sid = cJSON_GetObjectItem(root, "session_id");
+        if (cJSON_IsString(sid) && sid->valuestring) {
+            tab5_settings_set_session_id(sid->valuestring);
+            ESP_LOGI(TAG, "Session: %s", sid->valuestring);
+        }
+        cJSON *resumed = cJSON_GetObjectItem(root, "resumed");
+        cJSON *msg_cnt = cJSON_GetObjectItem(root, "message_count");
+        ESP_LOGI(TAG, "session_start: resumed=%s messages=%d",
+                 (cJSON_IsTrue(resumed) ? "yes" : "no"),
+                 cJSON_IsNumber(msg_cnt) ? msg_cnt->valueint : 0);
+
         // Dragon pipeline is fully initialized — NOW safe to record.
         if (s_state == VOICE_STATE_CONNECTING) {
             voice_set_state(VOICE_STATE_READY, NULL);
@@ -774,6 +836,19 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     s_ws_connected = true;
     s_stop_flag = false;
 
+    // Send device registration as FIRST text frame (per protocol.md §1.1).
+    // Must happen before spawning the receive task to guarantee ordering.
+    esp_err_t reg_err = ws_send_register();
+    if (reg_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send register message");
+        esp_transport_close(s_ws);
+        esp_transport_destroy(s_ws);
+        s_ws = NULL;
+        s_ws_connected = false;
+        voice_set_state(VOICE_STATE_IDLE, "register failed");
+        return reg_err;
+    }
+
     // Start WS receive task
     BaseType_t ret = xTaskCreatePinnedToCore(
         ws_receive_task, "voice_ws", WS_TASK_STACK_SIZE,
@@ -792,7 +867,7 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     // Pipeline init on Dragon takes ~6s (loading models). Setting READY now
     // causes the UI to allow recording before the server is ready, leading to
     // lost audio frames and Error transport_poll_write.
-    ESP_LOGI(TAG, "WS connected, waiting for session_start from Dragon...");
+    ESP_LOGI(TAG, "WS connected, register sent, waiting for session_start...");
     return ESP_OK;
 }
 
