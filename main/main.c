@@ -5,7 +5,7 @@
  * 2. Show boot splash screen via LVGL
  * 3. Connect to WiFi via ESP32-C6 co-processor (ESP-Hosted SDIO)
  * 4. Transition to home screen (native LVGL launcher)
- * 5. If Dragon detected: switch to MJPEG streaming mode
+ * 5. Start Dragon link (mDNS discovery + health check, user triggers mode switch)
  */
 
 #include <stdio.h>

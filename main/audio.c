@@ -2,8 +2,8 @@
  * TinkerClaw Tab5 — Audio Subsystem (ES8388 DAC + ES7210 ADC)
  *
  * Single shared I2S bus (I2S_NUM_1) for both playback and recording:
- *   TX (speaker): Standard I2S mode, 48kHz 16-bit stereo
- *   RX (mic):     TDM mode, 48kHz 16-bit, 4 slots (MIC1, AEC, MIC2, MIC-HP)
+ *   TX (speaker): TDM mode, 48kHz 16-bit, 4 slots (MONO — audio in slot 0)
+ *   RX (mic):     TDM mode, 48kHz 16-bit, 4 slots (STEREO — MIC1, AEC, MIC2, MIC-HP)
  *
  * GPIO pins verified against M5Stack Tab5 BSP reference.
  * Speaker amp (NS4150B) controlled via IO expander PI4IOE1 bit P1.
