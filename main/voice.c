@@ -76,6 +76,11 @@ static const char *TAG = "tab5_voice";
 #define WS_TASK_PRIORITY       4
 #define WS_TASK_CORE           1
 
+// Playback drain task — higher priority than WS receive so I2S stays fed
+#define PLAY_TASK_STACK_SIZE   4096
+#define PLAY_TASK_PRIORITY     6
+#define PLAY_TASK_CORE         1
+
 // Max transcript length
 #define MAX_TRANSCRIPT_LEN     512
 
@@ -104,6 +109,11 @@ static volatile bool s_mic_running = false;
 static TaskHandle_t  s_ws_task = NULL;
 static volatile bool s_ws_running = false;
 
+// Playback drain task — pulls from ring buffer, blocks on i2s_channel_write
+static TaskHandle_t  s_play_task = NULL;
+static volatile bool s_play_running = false;
+static SemaphoreHandle_t s_play_sem = NULL;  // signalled when data is written to ring buf
+
 // Playback ring buffer (smooths network jitter) — allocated in PSRAM
 static int16_t  *s_play_buf = NULL;
 static size_t   s_play_capacity = 0;  // capacity in samples
@@ -128,6 +138,7 @@ static volatile bool s_connect_in_progress = false;
 static void voice_set_state(voice_state_t new_state, const char *detail);
 static void mic_capture_task(void *arg);
 static void ws_receive_task(void *arg);
+static void playback_drain_task(void *arg);
 static void handle_text_message(const char *data, int len);
 static void playback_buf_reset(void);
 static size_t playback_buf_write(const int16_t *data, size_t samples);
@@ -189,6 +200,11 @@ static size_t playback_buf_write(const int16_t *data, size_t samples)
     if (written < samples) {
         ESP_LOGW(TAG, "Playback buffer overflow, dropped %zu samples",
                  samples - written);
+    }
+
+    // Wake the playback drain task
+    if (written > 0 && s_play_sem) {
+        xSemaphoreGive(s_play_sem);
     }
     return written;
 }
@@ -383,14 +399,14 @@ static void handle_text_message(const char *data, int len)
         playback_buf_reset();
         voice_set_state(VOICE_STATE_SPEAKING, NULL);
     } else if (strcmp(type_str, "tts_end") == 0) {
-        // TTS audio stream complete — drain remaining buffer
-        ESP_LOGI(TAG, "TTS end — draining playback buffer");
+        // TTS audio stream complete — let the drain task finish playing the buffer.
+        // Wake it once more, then wait for the buffer to empty.
+        ESP_LOGI(TAG, "TTS end — waiting for playback drain");
+        if (s_play_sem) xSemaphoreGive(s_play_sem);
 
-        // Flush any remaining samples in the ring buffer to the speaker
-        int16_t drain_buf[VOICE_CHUNK_SAMPLES];
-        size_t drained;
-        while ((drained = playback_buf_read(drain_buf, VOICE_CHUNK_SAMPLES)) > 0) {
-            tab5_audio_play_raw(drain_buf, drained);
+        // Spin-wait for drain task to empty the ring buffer (check every 50ms)
+        for (int i = 0; i < 200 && s_play_count > 0; i++) {  // max 10s
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
 
         tab5_audio_speaker_enable(false);
@@ -584,6 +600,49 @@ static size_t upsample_16k_to_48k(const int16_t *in, size_t in_samples,
 }
 
 // ---------------------------------------------------------------------------
+// Playback drain task — pulls samples from ring buffer, blocks on I2S write.
+// Runs at higher priority than WS receive so I2S DMA stays fed.
+// Producer (WS receive) fills the ring buffer; this task drains it at the
+// hardware sample rate (48kHz), blocking on i2s_channel_write.
+// ---------------------------------------------------------------------------
+static void playback_drain_task(void *arg)
+{
+    ESP_LOGI(TAG, "Playback drain task started (core %d, prio %d)",
+             xPortGetCoreID(), uxTaskPriorityGet(NULL));
+
+    // Chunk size: 20ms at 48kHz = 960 samples.  Matches VOICE_CHUNK_SAMPLES.
+    int16_t *chunk = (int16_t *)heap_caps_malloc(
+        VOICE_CHUNK_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!chunk) {
+        ESP_LOGE(TAG, "Playback drain: failed to allocate chunk buffer");
+        s_play_task = NULL;
+        vTaskSuspend(NULL);
+        return;
+    }
+
+    s_play_running = true;
+
+    while (s_play_running) {
+        // Block until the producer signals new data (or timeout for state check)
+        xSemaphoreTake(s_play_sem, pdMS_TO_TICKS(50));
+
+        // Drain loop: keep pulling from ring buffer until empty
+        while (s_play_running) {
+            size_t avail = playback_buf_read(chunk, VOICE_CHUNK_SAMPLES);
+            if (avail == 0) break;
+
+            // This blocks until I2S DMA has room — the backpressure we need.
+            tab5_audio_play_raw(chunk, avail);
+        }
+    }
+
+    heap_caps_free(chunk);
+    ESP_LOGI(TAG, "Playback drain task exiting");
+    s_play_task = NULL;
+    vTaskSuspend(NULL);
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket receive task — reads from Dragon, handles text + binary frames
 // ---------------------------------------------------------------------------
 static void ws_receive_task(void *arg)
@@ -592,7 +651,6 @@ static void ws_receive_task(void *arg)
 
     // Receive buffer — Dragon sends TTS audio in 4096-byte chunks
     char rx_buf[4100];
-    int16_t play_chunk[VOICE_CHUNK_SAMPLES];
 
     // Upsample buffer in PSRAM: max 2048 input samples × 3 = 6144 output samples (12KB)
     const size_t upsample_cap = 2048 * UPSAMPLE_RATIO;
@@ -616,13 +674,7 @@ static void ws_receive_task(void *arg)
             break;
         }
         if (poll == 0) {
-            // No data available — check if we should drain playback buffer
-            if (s_state == VOICE_STATE_SPEAKING) {
-                size_t avail = playback_buf_read(play_chunk, VOICE_CHUNK_SAMPLES);
-                if (avail > 0) {
-                    tab5_audio_play_raw(play_chunk, avail);
-                }
-            }
+            // No data available — playback drain task handles I2S writes separately.
             // Send keep-alive heartbeat during processing to prevent TCP idle timeout.
             // Uses JSON text frame (not WS ping) because esp_transport_ws fragments
             // control frames, which aiohttp rejects as "fragmented control frame".
@@ -667,17 +719,12 @@ static void ws_receive_task(void *arg)
 
                 // Upsample 16kHz -> 48kHz before writing to playback buffer.
                 // Dragon sends PCM int16 mono at 16kHz; I2S TX runs at 48kHz.
+                // Playback drain task handles I2S writes from the ring buffer.
                 size_t in_samples = len / sizeof(int16_t);
                 size_t out_samples = upsample_16k_to_48k(
                     (const int16_t *)rx_buf, in_samples,
                     upsample_buf, upsample_cap);
                 playback_buf_write(upsample_buf, out_samples);
-
-                // Immediately try to play what we have
-                size_t avail = playback_buf_read(play_chunk, VOICE_CHUNK_SAMPLES);
-                if (avail > 0) {
-                    tab5_audio_play_raw(play_chunk, avail);
-                }
             }
         } else if (opcode == WS_TRANSPORT_OPCODES_PING) {
             // Respond to ping with pong — rx_buf is stack (mutable), safe for masking.
@@ -761,6 +808,18 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         ESP_LOGE(TAG, "Failed to create WS mutex");
         vSemaphoreDelete(s_play_mutex);
         vSemaphoreDelete(s_state_mutex);
+        s_play_mutex = NULL;
+        s_state_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_play_sem = xSemaphoreCreateBinary();
+    if (!s_play_sem) {
+        ESP_LOGE(TAG, "Failed to create playback semaphore");
+        vSemaphoreDelete(s_ws_mutex);
+        vSemaphoreDelete(s_play_mutex);
+        vSemaphoreDelete(s_state_mutex);
+        s_ws_mutex = NULL;
         s_play_mutex = NULL;
         s_state_mutex = NULL;
         return ESP_ERR_NO_MEM;
@@ -872,6 +931,15 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         s_ws_connected = false;
         voice_set_state(VOICE_STATE_IDLE, "task create failed");
         return ESP_ERR_NO_MEM;
+    }
+
+    // Start playback drain task — stack in PSRAM to save internal SRAM for WiFi DMA
+    ret = xTaskCreatePinnedToCoreWithCaps(
+        playback_drain_task, "voice_play", PLAY_TASK_STACK_SIZE,
+        NULL, PLAY_TASK_PRIORITY, &s_play_task, PLAY_TASK_CORE,
+        MALLOC_CAP_SPIRAM);
+    if (ret != pdPASS) {
+        ESP_LOGW(TAG, "Failed to create playback drain task — audio may stutter");
     }
 
     // Don't set READY yet — wait for Dragon's session_start message.
@@ -1101,7 +1169,14 @@ esp_err_t voice_disconnect(void)
     }
     xSemaphoreGive(s_ws_mutex);
 
-    // 4. Wait for WS receive task to exit (it checks s_ws_connected + s_stop_flag)
+    // 4. Stop playback drain task
+    s_play_running = false;
+    if (s_play_sem) xSemaphoreGive(s_play_sem);  // wake it so it can exit
+    for (int i = 0; i < 30 && s_play_task != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    // 5. Wait for WS receive task to exit (it checks s_ws_connected + s_stop_flag)
     for (int i = 0; i < 150 && s_ws_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -1109,7 +1184,7 @@ esp_err_t voice_disconnect(void)
         ESP_LOGW(TAG, "WS receive task did not exit in time");
     }
 
-    // 5. Destroy transport — safe now that all tasks have exited
+    // 6. Destroy transport — safe now that all tasks have exited
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
     if (s_ws) {
         esp_transport_destroy(s_ws);
