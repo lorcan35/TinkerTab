@@ -120,7 +120,9 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 - **PSRAM cache coherency:** DPI DMA reads PSRAM directly. Call `esp_cache_msync()` after CPU writes to framebuffer.
 
 ## Audio Pipeline Rules
-- **I2S TDM 4-slot:** Both TX (ES8388 DAC) and RX (ES7210 ADC) share I2S_NUM_1. Both MUST use TDM 4-slot for consistent BCLK (3.072MHz at 48kHz).
+- **I2S mixed mode:** TX = STD Philips (ES8388 DAC), RX = TDM 4-slot (ES7210 ADC), both on I2S_NUM_1. Matches M5Stack BSP exactly. ESP32-P4 supports mixed STD/TDM on same port.
+- **ES8388 init:** NEVER write custom registers. Use `es8388_codec_new()` from esp_codec_dev library. Custom init had 5 register differences that prevented audio (issue #46).
+- **Playback:** All audio via `esp_codec_dev_write()` through `tab5_audio_play_raw()`. Playback drain task (voice.c) handles producer-consumer I2S writes.
 - **Slot mode:** Use `I2S_SLOT_MODE_STEREO` for TDM multi-slot capture. MONO only gets slot 0.
 - **Sample rates:** Hardware runs at 48kHz. Downsample 3:1 to 16kHz for STT. Upsample 1:3 from 16kHz for TTS playback.
 - **esp_codec_dev:** Uses 8-bit I2C addresses (ES7210=0x80, ES8388=0x20). NOT 7-bit.
@@ -155,8 +157,8 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 4. **Receive:** Handle `session_start`, `stt`, `llm`, `tts_start`, binary TTS, `tts_end`, `error`
 
 ### Not Yet Implemented (planned per protocol.md)
-5. **Device Registration:** On WS connect, send `{"type":"register", device_id, ...}` as first text frame. (Issue #43)
-6. **Session Resume:** Store `session_id` from `session_start` in NVS. Send on reconnect.
+5. **~~Device Registration~~** — DONE (closes #43). Sends `register` + `session_id` on WS connect.
+6. **~~Session Resume~~** — DONE. Stores `session_id` from `session_start` in NVS, sends on reconnect.
 7. **Text Input:** `{"type":"text","content":"..."}` — skips STT, same conversation.
 8. **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
 9. **Config Sync:** Handle `{"type":"config_update"}` from Dragon, apply settings, ACK.
@@ -165,7 +167,7 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 ## Key Files
 ```
 main/voice.c           — Voice streaming (WS client, mic capture, TTS playback)
-main/audio.c           — ES8388 DAC + shared I2S TDM bus setup
+main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c             — ES7210 quad-mic via esp_codec_dev
 main/dragon_link.c     — Dragon mDNS discovery + connection state machine
 main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING)
