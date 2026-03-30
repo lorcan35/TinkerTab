@@ -117,13 +117,18 @@ Only after simulator passes → flash hardware.
 - **Port headers:** `sim/port/` — shadows ESP-IDF headers for compilation
 - **Window:** 720×1280, mouse = touch, ESC/Q = quit
 
-## Wokwi ESP32-P4 (Beta)
-- Wokwi has ESP32-P4 in **beta simulation** (separate from SDL2 sim)
-- VS Code extension: `wokwi.wokwi-vscode` — requires a license (free tier available)
-- Template: https://github.com/wokwi/esp32p4-hello-world
-- Requires `wokwi.toml` + `diagram.json` in project root
-- **Status:** Research ongoing — may not support MIPI-DSI display yet
-- **Assessment:** SDL2 sim is our primary dev tool; Wokwi useful for peripheral testing
+## Wokwi ESP32-P4 (Secondary Simulator)
+- VS Code extension: `wokwi.wokwi-vscode` — **Linux ARM64 confirmed supported**
+- License: **Paid** — Hobby+ $12/month minimum. No free tier for VS Code extension.
+- **MIPI-DSI: YES** — `wokwi/esp32p4-mipi-dsi-panel-demo` confirms LVGL on ILI9881C panel
+- **PSRAM cap: 8MB max** — Tab5 has 32MB. OOM likely for PSRAM-heavy framebuffers.
+- **GT911 touch: NOT available** — no Wokwi part for it. Use FT6206 as functional proxy.
+- Board type in diagram.json: `"board-esp32-p4-preview"`
+- Firmware: use `flasher_args.json` (built by `idf.py build`) — no `--preview` flag needed
+- Project files: `wokwi.toml` + `diagram.json` at repo root (already created, refs #52)
+- **CLI on DGX:** `wokwi-cli-linuxstatic-arm64` binary — works headless for CI
+- **Assessment:** SDL2 is primary (free, 32MB, full res, GT911). Wokwi = GDB + visual regression.
+- **ESP-IDF Linux target (`idf.py set-target linux`): DOES NOT WORK** — `esp_lcd` not supported on linux target. Our SDL2 sim IS the correct approach. Do NOT attempt linux target again.
 
 ## Build & Flash
 ```bash
