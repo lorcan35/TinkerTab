@@ -89,6 +89,7 @@ static const char *TAG = "tab5_voice";
 // ---------------------------------------------------------------------------
 static voice_state_t     s_state = VOICE_STATE_IDLE;
 static voice_state_cb_t  s_state_cb = NULL;
+static voice_chat_cb_t   s_chat_cb = NULL;
 static SemaphoreHandle_t s_state_mutex = NULL;
 
 // WebSocket transport
@@ -391,6 +392,7 @@ static void handle_text_message(const char *data, int len)
             if (s_state_mutex) xSemaphoreGive(s_state_mutex);
             ESP_LOGI(TAG, "STT: \"%s\"", s_stt_text);
             voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
+            if (s_chat_cb) { tab5_ui_lock(); s_chat_cb("stt", s_stt_text); tab5_ui_unlock(); }
         }
     } else if (strcmp(type_str, "tts_start") == 0) {
         // Dragon is about to send TTS audio
@@ -410,6 +412,7 @@ static void handle_text_message(const char *data, int len)
         }
 
         tab5_audio_speaker_enable(false);
+        if (s_chat_cb) { tab5_ui_lock(); s_chat_cb("llm_done", s_llm_text); tab5_ui_unlock(); }
         voice_set_state(VOICE_STATE_READY, NULL);
     } else if (strcmp(type_str, "llm") == 0) {
         // Streaming LLM response token — append to LLM buffer
@@ -430,6 +433,7 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGD(TAG, "LLM token: \"%s\"", text->valuestring);
             // Update UI with streaming LLM response
             voice_set_state(VOICE_STATE_PROCESSING, s_llm_text);
+            if (s_chat_cb) { tab5_ui_lock(); s_chat_cb("llm_token", text->valuestring); tab5_ui_unlock(); }
         }
     } else if (strcmp(type_str, "error") == 0) {
         cJSON *msg = cJSON_GetObjectItem(root, "message");
@@ -440,6 +444,7 @@ static void handle_text_message(const char *data, int len)
         char err_buf[128];
         strncpy(err_buf, err_src, sizeof(err_buf) - 1);
         err_buf[sizeof(err_buf) - 1] = '\0';
+        if (s_chat_cb) { tab5_ui_lock(); s_chat_cb("error", err_buf); tab5_ui_unlock(); }
         voice_set_state(VOICE_STATE_READY, err_buf);
     } else if (strcmp(type_str, "session_start") == 0) {
         /* Store session_id in NVS for resume on reconnect */
@@ -1227,4 +1232,44 @@ const char *voice_get_stt_text(void)
 const char *voice_get_llm_text(void)
 {
     return s_llm_text;
+}
+
+// ---------------------------------------------------------------------------
+// Chat integration
+// ---------------------------------------------------------------------------
+
+void voice_set_chat_cb(voice_chat_cb_t cb)
+{
+    s_chat_cb = cb;
+}
+
+esp_err_t voice_send_text(const char *text)
+{
+    if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
+    if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return ESP_ERR_NO_MEM;
+    cJSON_AddStringToObject(root, "type", "text");
+    cJSON_AddStringToObject(root, "content", text);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) return ESP_ERR_NO_MEM;
+
+    // Store as "user said" for state consistency
+    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    strncpy(s_stt_text, text, MAX_TRANSCRIPT_LEN - 1);
+    s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+    s_llm_text[0] = '\0';
+    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+
+    esp_err_t err = ws_send_text(json);
+    cJSON_free(json);
+
+    if (err == ESP_OK) {
+        voice_set_state(VOICE_STATE_PROCESSING, text);
+        // Notify chat UI of the user's text input
+        if (s_chat_cb) { tab5_ui_lock(); s_chat_cb("stt", text); tab5_ui_unlock(); }
+    }
+    return err;
 }

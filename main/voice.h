@@ -64,3 +64,24 @@ const char *voice_get_stt_text(void);
 
 // Get separated LLM text (what Tinker is saying, streams in)
 const char *voice_get_llm_text(void);
+
+// ---- Chat integration (for ui_chat) ----
+
+/**
+ * Callback for chat events — dispatched from WS receive task.
+ * Called under tab5_ui_lock() so handler can safely modify LVGL objects.
+ *
+ * Events:
+ *   "stt"       — STT result, data = transcript text
+ *   "llm_token" — single LLM token, data = token string
+ *   "llm_done"  — full LLM response complete, data = full text
+ *   "tts_end"   — TTS playback complete, data = NULL
+ *   "error"     — pipeline error, data = error message
+ */
+typedef void (*voice_chat_cb_t)(const char *event, const char *data);
+
+/** Register a chat event callback (NULL to unregister). */
+void voice_set_chat_cb(voice_chat_cb_t cb);
+
+/** Send a text message to Dragon (skips STT, goes directly to LLM). */
+esp_err_t voice_send_text(const char *text);

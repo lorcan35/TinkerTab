@@ -227,6 +227,13 @@ void ui_voice_init(void)
 
 void ui_voice_on_state_change(voice_state_t state, const char *detail)
 {
+    /* Suppress voice overlay when chat screen handles voice events */
+    extern bool ui_chat_is_active(void);
+    if (ui_chat_is_active()) {
+        s_cur_state = state;
+        return;
+    }
+
     ESP_LOGI(TAG, "State change: %d -> %d (%s)", s_cur_state, state,
              detail ? detail : "");
 

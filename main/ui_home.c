@@ -17,6 +17,7 @@
 #include "ui_wifi.h"
 #include "ui_camera.h"
 #include "ui_files.h"
+#include "ui_chat.h"
 #include "battery.h"
 #include "rtc.h"
 #include "dragon_link.h"
@@ -611,7 +612,7 @@ static void app_icon_click_cb(lv_event_t *e)
     case 3: /* Audio */   show_toast("Coming Soon"); break;
     case 4: /* Files */   ui_files_create(); break;
     case 5: /* Battery */ lv_tileview_set_tile(tileview, tiles[3], LV_ANIM_ON); break;
-    case 6: /* AI Chat */ show_toast("Coming Soon"); break;
+    case 6: /* AI Chat */ ui_chat_create(); break;
     case 7: /* Settings */ui_settings_create(); break;
     default: break;
     }
