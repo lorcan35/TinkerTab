@@ -97,7 +97,7 @@
 ## Infrastructure
 
 ### Dragon Q6A (192.168.1.89)
-- SSH: `sshpass -p 'rock' ssh rock@192.168.1.89`
+- SSH: `sshpass -p 'radxa' ssh radxa@192.168.1.89` (user migrated from rock to radxa)
 - Services: tinkerclaw-stream (3501), tinkerclaw-voice (3502), tinkerclaw-mdns
 - Ollama models: llama3.2:3b, phi4-mini, gemma3:4b
 - Storage: ~429GB free
@@ -110,7 +110,7 @@
 - ESP-IDF: v5.4.3 (NOT v5.5.x — breaks DSI)
 
 ### Repos
-- **TinkerTab**: github.com/lorcan35/TinkerTab (22 commits, 4 open issues)
+- **TinkerTab**: github.com/lorcan35/TinkerTab (11 open issues as of 2026-03-30)
 - **TinkerBox**: github.com/lorcan35/TinkerBox (2 commits, 0 issues)
 - **tinkerclaw**: ~/projects/tinkerclaw (fork of zclaw, can't push)
 
