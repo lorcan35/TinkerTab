@@ -115,6 +115,9 @@ static SemaphoreHandle_t s_play_mutex = NULL;
 
 // Last transcript from Dragon STT
 static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
+// Separated buffers: STT = what user said, LLM = what Tinker says
+static char s_stt_text[MAX_TRANSCRIPT_LEN] = {0};
+static char s_llm_text[MAX_TRANSCRIPT_LEN] = {0};
 
 static bool s_initialized = false;
 static volatile bool s_connect_in_progress = false;
@@ -360,15 +363,18 @@ static void handle_text_message(const char *data, int len)
     const char *type_str = type->valuestring;
 
     if (strcmp(type_str, "stt") == 0) {
-        // Speech-to-text result
+        // Speech-to-text result — store separately from LLM response
         cJSON *text = cJSON_GetObjectItem(root, "text");
         if (cJSON_IsString(text) && text->valuestring) {
             if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+            strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
+            s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
             strncpy(s_transcript, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
             s_transcript[MAX_TRANSCRIPT_LEN - 1] = '\0';
+            s_llm_text[0] = '\0';  // clear LLM buffer for new response
             if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-            ESP_LOGI(TAG, "STT: \"%s\"", s_transcript);
-            voice_set_state(VOICE_STATE_PROCESSING, s_transcript);
+            ESP_LOGI(TAG, "STT: \"%s\"", s_stt_text);
+            voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
         }
     } else if (strcmp(type_str, "tts_start") == 0) {
         // Dragon is about to send TTS audio
@@ -390,19 +396,24 @@ static void handle_text_message(const char *data, int len)
         tab5_audio_speaker_enable(false);
         voice_set_state(VOICE_STATE_READY, NULL);
     } else if (strcmp(type_str, "llm") == 0) {
-        // Streaming LLM response token — append to transcript
+        // Streaming LLM response token — append to LLM buffer
         cJSON *text = cJSON_GetObjectItem(root, "text");
         if (cJSON_IsString(text) && text->valuestring) {
             if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-            size_t cur_len = strlen(s_transcript);
+            size_t llm_len = strlen(s_llm_text);
             size_t add_len = strlen(text->valuestring);
+            if (llm_len + add_len < MAX_TRANSCRIPT_LEN - 1) {
+                strcat(s_llm_text, text->valuestring);
+            }
+            // Also keep s_transcript as full combined text for backward compat
+            size_t cur_len = strlen(s_transcript);
             if (cur_len + add_len < MAX_TRANSCRIPT_LEN - 1) {
                 strcat(s_transcript, text->valuestring);
             }
             if (s_state_mutex) xSemaphoreGive(s_state_mutex);
             ESP_LOGD(TAG, "LLM token: \"%s\"", text->valuestring);
-            // Update UI with streaming response
-            voice_set_state(VOICE_STATE_PROCESSING, s_transcript);
+            // Update UI with streaming LLM response
+            voice_set_state(VOICE_STATE_PROCESSING, s_llm_text);
         }
     } else if (strcmp(type_str, "error") == 0) {
         cJSON *msg = cJSON_GetObjectItem(root, "message");
@@ -978,8 +989,10 @@ esp_err_t voice_start_listening(void)
     }
     ESP_LOGI(TAG, "Start signal sent OK");
 
-    // Clear previous transcript
+    // Clear previous transcript and separated buffers
     s_transcript[0] = '\0';
+    s_stt_text[0] = '\0';
+    s_llm_text[0] = '\0';
 
     // Start mic capture task on core 1
     s_mic_running = true;
@@ -1129,4 +1142,14 @@ const char *voice_get_last_transcript(void)
     /* Note: caller must not hold reference across calls — copy if needed.
        Protected by s_state_mutex in handle_text_message(). */
     return s_transcript;
+}
+
+const char *voice_get_stt_text(void)
+{
+    return s_stt_text;
+}
+
+const char *voice_get_llm_text(void)
+{
+    return s_llm_text;
 }

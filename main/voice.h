@@ -56,5 +56,11 @@ esp_err_t voice_disconnect(void);
 // Get current state
 voice_state_t voice_get_state(void);
 
-// Get last transcript (from Dragon STT)
+// Get last transcript (combined STT + LLM, for backward compat)
 const char *voice_get_last_transcript(void);
+
+// Get separated STT text (what the user said)
+const char *voice_get_stt_text(void);
+
+// Get separated LLM text (what Tinker is saying, streams in)
+const char *voice_get_llm_text(void);
