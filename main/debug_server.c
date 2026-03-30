@@ -18,6 +18,7 @@
 #include "ui_settings.h"
 #include "ui_files.h"
 #include "ui_home.h"
+#include "ui_chat.h"
 #include "wifi.h"
 #include "battery.h"
 #include "dragon_link.h"
@@ -514,6 +515,7 @@ static void deferred_open_cb(lv_timer_t *t)
     case 2: ui_settings_create(); break;
     case 3: ui_files_create(); break;
     case 4: lv_screen_load(ui_home_get_screen()); break;
+    case 5: ui_chat_create(); break;
     default: break;
     }
 }
@@ -532,6 +534,7 @@ static esp_err_t open_handler(httpd_req_t *req)
     else if (strcmp(screen, "settings") == 0) scr_id = 2;
     else if (strcmp(screen, "files") == 0) scr_id = 3;
     else if (strcmp(screen, "home") == 0) scr_id = 4;
+    else if (strcmp(screen, "chat") == 0) scr_id = 5;
     else {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unknown screen");
         return ESP_FAIL;
