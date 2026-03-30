@@ -136,19 +136,18 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** Changed to `I2S_SLOT_MODE_STEREO` which captures all TDM slots interleaved in the DMA buffer.
 - **Prevention:** For multi-channel TDM capture, always use `I2S_SLOT_MODE_STEREO`, never `MONO`. The naming is misleading -- `STEREO` really means "capture all configured slots."
 
-### I2S TX/RX Clock Mismatch on Shared Bus
-- **Date:** 2026-03-21 (updated 2026-03-30)
-- **Symptom:** Audio playback was distorted when mic capture was active simultaneously.
-- **Root Cause:** TX was configured as STD 2-slot mode (BCLK=1.536MHz) and RX as TDM 4-slot mode (BCLK=3.072MHz). Both share the same I2S bus (I2S_NUM_1), which means shared BCLK. The conflicting clock rates corrupted both streams (commit d547338, issue #25).
-- **Fix:** Both TX and RX use TDM 4-slot mode so BCLK is consistently 3.072MHz. ES8388 is set to DSP/PCM mode to decode TDM WS timing.
-- **Prevention:** When TX and RX share an I2S bus, BCLK MUST match. Both must use the same slot mode/count.
-
-### ES8388 DSP/PCM Mode for TDM Compatibility
+### ES8388 Custom Register Init NEVER Produced Audio
 - **Date:** 2026-03-30
-- **Symptom:** No audio output from speaker despite ES8388 being initialized and I2S data being written.
-- **Root Cause:** Two issues: (1) ES8388 was in standard I2S mode (DACCONTROL1=0x00) but TX uses TDM which produces a WS pulse, not the 50% duty cycle WS that I2S mode expects. ES8388 couldn't determine channel boundaries. (2) `tab5_audio_speaker_enable()` was a stub that logged but never actually toggled the NS4150B amp via IO expander.
-- **Fix:** (1) Set ES8388 DACCONTROL1 to 0x1E = DSP/PCM mode + 16-bit word length. DSP mode accepts TDM WS timing (data after pulse edge). Slot 0 maps to Left channel output. (2) Wired `tab5_audio_speaker_enable()` to call `tab5_set_speaker_enable()` from io_expander.c.
-- **Prevention:** If the I2S bus uses TDM framing, the codec MUST be in DSP/PCM mode, not standard I2S. When wrapping hardware control functions, never leave stubs that silently succeed — they hide real bugs.
+- **Symptom:** No audio output from speaker despite weeks of debugging. ES8388 was initialized, I2S data was being written, speaker amp was enabled. Zero sound.
+- **Root Cause:** Our custom ES8388 register init had FIVE differences from the working esp_codec_dev library init:
+  1. DACCONTROL1=0x1E (DSP/PCM mode) — library uses 0x18 (standard I2S mode)
+  2. CONTROL1=0x36 — library uses 0x12
+  3. CONTROL2=0x72 — library uses 0x50
+  4. Missing DACCONTROL24/25 (LOUT/ROUT output volume registers, should be 0x1E = 0dB)
+  5. Missing internal DLL disable (regs 0x35=0xA0, 0x37=0xD0, 0x39=0xD0)
+  Additionally, our TDM-for-TX approach was wrong: M5Stack uses STD Philips for TX + TDM for RX on the same I2S port. ESP32-P4 supports mixed modes on the same port.
+- **Fix:** Replaced entire custom register init with `es8388_codec_new()` from `esp_codec_dev` library. Changed I2S TX from TDM to STD Philips mode (matching M5Stack BSP). Removed TDM frame expansion. All playback now goes through `esp_codec_dev_write()`.
+- **Prevention:** NEVER write custom codec register sequences. Use the esp_codec_dev library for ES8388/ES7210 initialization — it has a tested, proven register sequence. The 6 hours spent debugging custom registers could have been avoided by using the library from day one.
 
 ### ES7210 Returns All Zeros (6 Register Bugs)
 - **Date:** 2026-03-19
@@ -243,8 +242,8 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Date:** 2026-03-21 (updated 2026-03-30)
 - **Symptom:** N/A (design constraint)
 - **Root Cause:** Tab5 hardware routes both ES8388 (DAC/speaker) and ES7210 (ADC/mic) to the same I2S bus (I2S_NUM_1). This is a PCB-level constraint, not a software choice.
-- **Fix:** Both TX and RX use TDM 4-slot mode for consistent BCLK=3.072MHz. ES8388 set to DSP/PCM mode to decode TDM framing. Cannot use separate buses.
-- **Prevention:** Accept this constraint. All I2S configuration changes must consider both the playback and capture sides simultaneously. ES8388 must stay in DSP mode for TDM compatibility.
+- **Fix:** TX uses STD Philips mode (ES8388 expects standard I2S), RX uses TDM 4-slot (ES7210 quad-mic). ESP32-P4 supports mixed STD/TDM modes on the same I2S port — confirmed working by M5Stack BSP and our own testing. ES8388 initialized via esp_codec_dev library. All playback through esp_codec_dev_write().
+- **Prevention:** Accept this constraint. Match M5Stack BSP exactly: STD TX + TDM RX. Never use custom ES8388 register init — always use esp_codec_dev library.
 
 ### 48kHz to 16kHz Downsample for STT
 - **Date:** 2026-03-21

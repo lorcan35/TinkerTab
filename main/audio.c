@@ -1,16 +1,15 @@
 /**
  * TinkerClaw Tab5 — Audio Subsystem (ES8388 DAC + ES7210 ADC)
  *
- * Single shared I2S bus (I2S_NUM_1) for both playback and recording:
- *   TX (speaker): TDM mode, 48kHz 16-bit, 4 slots (MONO — audio in slot 0)
- *   RX (mic):     TDM mode, 48kHz 16-bit, 4 slots (STEREO — MIC1, AEC, MIC2, MIC-HP)
+ * Matches M5Stack Tab5 BSP reference exactly:
+ *   TX (speaker): STD Philips mode, 48kHz 16-bit MONO → ES8388 DAC
+ *   RX (mic):     TDM 4-slot mode, 48kHz 16-bit STEREO → ES7210 quad-mic
  *
- * ES8388 is configured in DSP/PCM mode (not standard I2S) so it can decode
- * TDM WS timing (short pulse at frame start). In DSP mode, ES8388 reads
- * slot 0 data as Left channel output, which feeds the NS4150B mono amplifier.
+ * ES8388 is initialized via esp_codec_dev library (es8388_codec_new) which
+ * sets standard I2S mode (DACCONTROL1=0x18). Previous custom register init
+ * used DSP/PCM mode (0x1E) which never produced audio — the CONTROL1/CONTROL2
+ * values and missing DACCONTROL24/25 registers were also wrong.
  *
- * Both TX and RX use TDM 4-slot so BCLK = 48k × 4 × 16 = 3.072 MHz.
- * GPIO pins verified against M5Stack Tab5 BSP reference.
  * Speaker amp (NS4150B) controlled via IO expander PI4IOE1 bit P1.
  */
 
@@ -23,6 +22,7 @@
 #include "driver/i2s_std.h"
 #include "driver/i2s_tdm.h"
 #include "driver/i2c_master.h"
+#include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -32,187 +32,61 @@
 static const char *TAG = "tab5_audio";
 
 // ---------------------------------------------------------------------------
-// ES8388 I2C
+// State
 // ---------------------------------------------------------------------------
-#define ES8388_ADDR         0x10
-#define I2C_TIMEOUT_MS      50
-
-// ES8388 register addresses
-#define ES8388_CONTROL1     0x00
-#define ES8388_CONTROL2     0x01
-#define ES8388_CHIPPOWER    0x02
-#define ES8388_ADCPOWER     0x03
-#define ES8388_DACPOWER     0x04
-#define ES8388_CHIPLOPOW1   0x05
-#define ES8388_CHIPLOPOW2   0x06
-#define ES8388_ANAVOLMANAG  0x07
-#define ES8388_MASTERMODE   0x08
-#define ES8388_DACCONTROL1  0x17
-#define ES8388_DACCONTROL2  0x18
-#define ES8388_DACCONTROL3  0x19
-#define ES8388_DACCONTROL4  0x1A
-#define ES8388_DACCONTROL5  0x1B
-#define ES8388_DACCONTROL6  0x1C
-#define ES8388_DACCONTROL7  0x1D
-#define ES8388_DACCONTROL16 0x26
-#define ES8388_DACCONTROL17 0x27
-#define ES8388_DACCONTROL20 0x2A
-#define ES8388_DACCONTROL21 0x2B
+static i2s_chan_handle_t         s_i2s_tx = NULL;
+static i2s_chan_handle_t         s_i2s_rx = NULL;
+static const audio_codec_data_if_t *s_data_if = NULL;
+static esp_codec_dev_handle_t   s_play_dev = NULL;   // esp_codec_dev playback device
+static uint8_t                  s_volume = 70;        // 0-100
+static bool                     s_initialized = false;
+static bool                     s_amp_on = false;
 
 // ---------------------------------------------------------------------------
-// State — shared I2S bus handles exposed to mic.c via getters
-// ---------------------------------------------------------------------------
-static i2c_master_dev_handle_t s_es8388 = NULL;
-static i2s_chan_handle_t s_i2s_tx = NULL;
-static i2s_chan_handle_t s_i2s_rx = NULL;  // Created here, used by mic.c
-static const audio_codec_data_if_t *s_data_if = NULL;  // Shared I2S data interface for esp_codec_dev
-static uint8_t s_volume = 70;  // 0-100
-static bool s_initialized = false;
-
-// ---------------------------------------------------------------------------
-// ES8388 I2C helpers
-// ---------------------------------------------------------------------------
-static esp_err_t es8388_write(uint8_t reg, uint8_t val)
-{
-    uint8_t buf[2] = {reg, val};
-    return i2c_master_transmit(s_es8388, buf, 2, I2C_TIMEOUT_MS);
-}
-
-// ---------------------------------------------------------------------------
-// Volume mapping: 0-100 -> ES8388 DAC volume register (0x00=0dB, 0xC0=-96dB)
-// ---------------------------------------------------------------------------
-static uint8_t volume_to_reg(uint8_t vol)
-{
-    if (vol >= 100) return 0x00;
-    if (vol == 0)   return 0xC0;
-    return (uint8_t)((100 - vol) * 192 / 100);
-}
-
-// ---------------------------------------------------------------------------
-// ES8388 codec init — DAC output only (slave mode)
-// ---------------------------------------------------------------------------
-static esp_err_t es8388_codec_init(void)
-{
-    ESP_LOGI(TAG, "ES8388 codec init");
-
-    // Reset
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_MASTERMODE, 0x00), TAG, "reset failed");
-    vTaskDelay(pdMS_TO_TICKS(20));
-
-    // All power down first
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_CHIPPOWER, 0xFF), TAG, "power down failed");
-
-    // Slave mode, no clock doubler
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_MASTERMODE, 0x00), TAG, "slave mode failed");
-
-    // Power up analog and bias
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_CONTROL1, 0x36), TAG, "ctrl1 failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_CONTROL2, 0x72), TAG, "ctrl2 failed");
-
-    // DAC power: power up DAC L+R, enable LOUT1/ROUT1
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACPOWER, 0x3C), TAG, "dac power failed");
-
-    // DAC Control 1: DSP/PCM mode, 16-bit word length
-    // Reg 0x17: bits [5]=DACLRSWAP=0, [4:3]=DACWL=11(16-bit), [2:1]=DACFORMAT=11(DSP)
-    // DSP mode decodes TDM WS timing (short pulse at frame start) — required because
-    // TX shares the I2S bus with RX TDM. Standard I2S mode expects 50% WS duty cycle
-    // which is incompatible with TDM framing. In DSP mode, ES8388 reads slot 0 as
-    // Left channel data after the WS rising edge.
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL1, 0x1E), TAG, "dac ctrl1 failed");
-
-    // DAC Control 2: single speed, no de-emphasis
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL2, 0x02), TAG, "dac ctrl2 failed");
-
-    // DAC unmute
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL3, 0x00), TAG, "unmute failed");
-
-    // DAC volume L+R
-    uint8_t vol_reg = volume_to_reg(s_volume);
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL4, vol_reg), TAG, "vol L failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL5, vol_reg), TAG, "vol R failed");
-
-    // Mixer: DAC L->left mixer, DAC R->right mixer (matches esp_codec_dev reference)
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL16, 0x00), TAG, "mix L src failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL17, 0x90), TAG, "mix L vol failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL20, 0x90), TAG, "mix R vol failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL21, 0x80), TAG, "dac lrck failed");
-
-    // Power up
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_CHIPPOWER, 0x00), TAG, "power up failed");
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    ESP_LOGI(TAG, "ES8388 initialized (vol=%d%%)", s_volume);
-    return ESP_OK;
-}
-
-// ---------------------------------------------------------------------------
-// Shared I2S bus init — full-duplex on I2S_NUM_1:
-//   TX: TDM 4-slot for ES8388 DAC (MONO — audio in slot 0)
-//   RX: TDM 4-slot for ES7210 quad-mic ADC (STEREO — 4 mics in 4 slots)
-//
-// Both TX and RX use TDM 4-slot so BCLK = 48k × 4 × 16 = 3.072 MHz.
-// ES8388 is set to DSP/PCM mode to decode TDM WS timing (short pulse).
+// I2S bus init — STD TX + TDM RX full-duplex on I2S_NUM_1
+// Matches M5Stack Tab5 BSP: bsp_audio_init() in m5stack_tab5.c
 // ---------------------------------------------------------------------------
 static esp_err_t i2s_bus_init(void)
 {
-    ESP_LOGI(TAG, "I2S bus init (I2S_NUM_%d, TX=TDM RX=TDM full-duplex)", TAB5_I2S_NUM);
+    ESP_LOGI(TAG, "I2S bus init (I2S_NUM_%d, TX=STD RX=TDM full-duplex)", TAB5_I2S_NUM);
 
+    // Create both TX and RX on the same I2S port
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(TAB5_I2S_NUM, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
 
-    // Create BOTH TX and RX on same I2S port
     ESP_RETURN_ON_ERROR(
         i2s_new_channel(&chan_cfg, &s_i2s_tx, &s_i2s_rx),
         TAG, "i2s new channel failed"
     );
 
-    // Shared clock config — 48kHz, MCLK = 48k × 256 = 12.288 MHz
-    i2s_tdm_clk_config_t clk_cfg = {
-        .sample_rate_hz  = TAB5_AUDIO_SAMPLE_RATE,
-        .clk_src         = I2S_CLK_SRC_DEFAULT,
-        .ext_clk_freq_hz = 0,
-        .mclk_multiple   = I2S_MCLK_MULTIPLE_256,
-        .bclk_div        = 8,
-    };
-
-    // --- TX TDM: MONO, 4 TDM slots — ES8388 reads slot 0 in DSP mode ---
-    i2s_tdm_config_t tx_tdm_cfg = {
-        .clk_cfg  = clk_cfg,
-        .slot_cfg = {
-            .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width  = I2S_SLOT_BIT_WIDTH_16BIT,
-            .slot_mode       = I2S_SLOT_MODE_MONO,
-            .slot_mask       = I2S_TDM_SLOT0 | I2S_TDM_SLOT1 | I2S_TDM_SLOT2 | I2S_TDM_SLOT3,
-            .ws_width        = I2S_TDM_AUTO_WS_WIDTH,
-            .ws_pol          = false,
-            .bit_shift       = true,
-            .left_align      = false,
-            .big_endian      = false,
-            .bit_order_lsb   = false,
-            .skip_mask       = false,
-            .total_slot      = I2S_TDM_AUTO_SLOT_NUM,
-        },
+    // --- TX: STD Philips, 48kHz, 16-bit, MONO ---
+    i2s_std_config_t tx_std_cfg = {
+        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(TAB5_AUDIO_SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(
+                        I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
         .gpio_cfg = {
             .mclk = TAB5_I2S_MCLK_GPIO,
             .bclk = TAB5_I2S_BCK_GPIO,
             .ws   = TAB5_I2S_WS_GPIO,
             .dout = TAB5_I2S_DOUT_GPIO,
-            .din  = TAB5_I2S_DIN_GPIO,
+            .din  = I2S_GPIO_UNUSED,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
-
     ESP_RETURN_ON_ERROR(
-        i2s_channel_init_tdm_mode(s_i2s_tx, &tx_tdm_cfg),
-        TAG, "i2s TX TDM init failed"
+        i2s_channel_init_std_mode(s_i2s_tx, &tx_std_cfg),
+        TAG, "i2s TX STD init failed"
     );
 
-    // --- RX TDM: STEREO, 4 TDM slots — ES7210 quad-mic ---
-    // STEREO mode: DMA delivers all 4 TDM slots interleaved per frame.
-    // MONO was WRONG — it only captured slot 0, making voice.c's 4-ch
-    // extraction read every 4th sample of mono data (aliased noise).
+    // --- RX: TDM 4-slot, STEREO — ES7210 quad-mic ---
     i2s_tdm_config_t rx_tdm_cfg = {
-        .clk_cfg = clk_cfg,
+        .clk_cfg = {
+            .sample_rate_hz  = TAB5_AUDIO_SAMPLE_RATE,
+            .clk_src         = I2S_CLK_SRC_DEFAULT,
+            .ext_clk_freq_hz = 0,
+            .mclk_multiple   = I2S_MCLK_MULTIPLE_256,
+            .bclk_div        = 8,
+        },
         .slot_cfg = {
             .data_bit_width  = I2S_DATA_BIT_WIDTH_16BIT,
             .slot_bit_width  = I2S_SLOT_BIT_WIDTH_AUTO,
@@ -236,17 +110,16 @@ static esp_err_t i2s_bus_init(void)
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false },
         },
     };
-
     ESP_RETURN_ON_ERROR(
         i2s_channel_init_tdm_mode(s_i2s_rx, &rx_tdm_cfg),
         TAG, "i2s RX TDM init failed"
     );
 
-    // --- Enable TX first, then RX ---
+    // Enable TX first, then RX
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_tx), TAG, "i2s TX enable failed");
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_rx), TAG, "i2s RX enable failed");
 
-    // --- Create shared I2S data interface for esp_codec_dev ---
+    // Create shared I2S data interface for esp_codec_dev
     audio_codec_i2s_cfg_t codec_i2s_cfg = {
         .port      = TAB5_I2S_NUM,
         .tx_handle = s_i2s_tx,
@@ -258,8 +131,73 @@ static esp_err_t i2s_bus_init(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "I2S TX+RX TDM enabled (%dHz 16-bit 4-slot full-duplex)",
-             TAB5_AUDIO_SAMPLE_RATE);
+    ESP_LOGI(TAG, "I2S TX(STD)+RX(TDM) enabled (%dHz full-duplex)", TAB5_AUDIO_SAMPLE_RATE);
+    return ESP_OK;
+}
+
+// ---------------------------------------------------------------------------
+// Create ES8388 playback device via esp_codec_dev library.
+// This replaces our old custom register init — the library's es8388_open()
+// sets all registers correctly (DACCONTROL1=0x18 for standard I2S mode,
+// CONTROL1=0x12, CONTROL2=0x50, DACCONTROL24/25=0x1E, internal DLL, etc.)
+// ---------------------------------------------------------------------------
+static esp_err_t codec_dev_init(i2c_master_bus_handle_t i2c_bus)
+{
+    // I2C control interface — 8-bit address 0x20 (7-bit 0x10)
+    audio_codec_i2c_cfg_t i2c_cfg = {
+        .port       = TAB5_I2C_NUM,
+        .addr       = ES8388_CODEC_DEFAULT_ADDR,
+        .bus_handle = i2c_bus,
+    };
+    const audio_codec_ctrl_if_t *ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+    if (!ctrl_if) {
+        ESP_LOGE(TAG, "audio_codec_new_i2c_ctrl failed");
+        return ESP_FAIL;
+    }
+
+    // ES8388 codec — DAC only, slave mode, PA controlled externally
+    es8388_codec_cfg_t es_cfg = {
+        .codec_mode  = ESP_CODEC_DEV_WORK_MODE_DAC,
+        .master_mode = false,
+        .ctrl_if     = ctrl_if,
+        .pa_pin      = -1,
+    };
+    const audio_codec_if_t *codec_if = es8388_codec_new(&es_cfg);
+    if (!codec_if) {
+        ESP_LOGE(TAG, "es8388_codec_new failed");
+        return ESP_FAIL;
+    }
+
+    // Wrap codec + I2S data interface into an esp_codec_dev playback device
+    esp_codec_dev_cfg_t dev_cfg = {
+        .dev_type = ESP_CODEC_DEV_TYPE_OUT,
+        .codec_if = codec_if,
+        .data_if  = s_data_if,
+    };
+    s_play_dev = esp_codec_dev_new(&dev_cfg);
+    if (!s_play_dev) {
+        ESP_LOGE(TAG, "esp_codec_dev_new failed");
+        return ESP_FAIL;
+    }
+
+    // Open at 48kHz mono 16-bit — configures I2S clocks and enables DAC
+    esp_codec_dev_sample_info_t fs = {
+        .sample_rate     = TAB5_AUDIO_SAMPLE_RATE,
+        .channel         = 1,
+        .bits_per_sample = 16,
+    };
+    esp_err_t err = esp_codec_dev_open(s_play_dev, &fs);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_codec_dev_open failed: %s", esp_err_to_name(err));
+        esp_codec_dev_delete(s_play_dev);
+        s_play_dev = NULL;
+        return err;
+    }
+
+    // Set initial volume
+    esp_codec_dev_set_out_vol(s_play_dev, s_volume);
+
+    ESP_LOGI(TAG, "ES8388 codec device ready (48kHz mono 16-bit, vol=%d%%)", s_volume);
     return ESP_OK;
 }
 
@@ -274,24 +212,13 @@ esp_err_t tab5_audio_init(i2c_master_bus_handle_t i2c_bus)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Initializing audio (ES8388 + shared I2S bus)");
+    ESP_LOGI(TAG, "Initializing audio (ES8388 via esp_codec_dev + STD/TDM I2S)");
 
-    // Add ES8388 to I2C bus
-    i2c_device_config_t dev_cfg = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address  = ES8388_ADDR,
-        .scl_speed_hz    = 400000,
-    };
-    ESP_RETURN_ON_ERROR(
-        i2c_master_bus_add_device(i2c_bus, &dev_cfg, &s_es8388),
-        TAG, "i2c add ES8388 failed"
-    );
-
-    // Init codec registers
-    ESP_RETURN_ON_ERROR(es8388_codec_init(), TAG, "codec init failed");
-
-    // Init shared I2S bus (TX + RX channels)
+    // Init I2S bus (STD TX + TDM RX)
     ESP_RETURN_ON_ERROR(i2s_bus_init(), TAG, "i2s bus init failed");
+
+    // Init ES8388 via esp_codec_dev library
+    ESP_RETURN_ON_ERROR(codec_dev_init(i2c_bus), TAG, "codec dev init failed");
 
     s_initialized = true;
     ESP_LOGI(TAG, "Audio initialized");
@@ -310,23 +237,16 @@ const audio_codec_data_if_t *tab5_audio_get_data_if(void)
 
 esp_err_t tab5_audio_play_raw(const int16_t *data, size_t samples)
 {
-    if (!s_initialized || !s_i2s_tx) {
+    if (!s_initialized || !s_play_dev) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    size_t bytes_to_write = samples * sizeof(int16_t);
-    size_t bytes_written = 0;
-
-    ESP_RETURN_ON_ERROR(
-        i2s_channel_write(s_i2s_tx, data, bytes_to_write, &bytes_written, portMAX_DELAY),
-        TAG, "i2s write failed"
-    );
-
-    if (bytes_written != bytes_to_write) {
-        ESP_LOGW(TAG, "Partial write: %zu/%zu bytes", bytes_written, bytes_to_write);
+    // Write mono 16-bit PCM directly — esp_codec_dev handles I2S formatting
+    esp_err_t err = esp_codec_dev_write(s_play_dev, (void *)data, samples * sizeof(int16_t));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_codec_dev_write failed: %s", esp_err_to_name(err));
     }
-
-    return ESP_OK;
+    return err;
 }
 
 esp_err_t tab5_audio_set_volume(uint8_t vol)
@@ -334,15 +254,11 @@ esp_err_t tab5_audio_set_volume(uint8_t vol)
     if (vol > 100) vol = 100;
     s_volume = vol;
 
-    if (!s_es8388) {
-        return ESP_OK;
+    if (s_play_dev) {
+        esp_codec_dev_set_out_vol(s_play_dev, vol);
     }
 
-    uint8_t reg_val = volume_to_reg(vol);
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL4, reg_val), TAG, "set vol L failed");
-    ESP_RETURN_ON_ERROR(es8388_write(ES8388_DACCONTROL5, reg_val), TAG, "set vol R failed");
-
-    ESP_LOGI(TAG, "Volume set to %d%% (reg=0x%02X)", vol, reg_val);
+    ESP_LOGI(TAG, "Volume set to %d%%", vol);
     return ESP_OK;
 }
 
@@ -353,63 +269,57 @@ uint8_t tab5_audio_get_volume(void)
 
 esp_err_t tab5_audio_speaker_enable(bool enable)
 {
+    if (enable == s_amp_on) return ESP_OK;
     tab5_set_speaker_enable(enable);
-    ESP_LOGI(TAG, "Speaker amp %s", enable ? "enabled" : "disabled");
+    s_amp_on = enable;
+    ESP_LOGI(TAG, "Speaker amp %s", enable ? "ON" : "OFF");
     return ESP_OK;
 }
 
 esp_err_t tab5_audio_test_tone(uint32_t freq_hz, uint32_t duration_ms)
 {
-    if (!s_initialized || !s_i2s_tx) {
+    ESP_LOGI(TAG, "=== SPEAKER TEST: %lu Hz, %lu ms ===", freq_hz, duration_ms);
+
+    if (!s_initialized || !s_play_dev) {
         ESP_LOGE(TAG, "Audio not initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Playing %lu Hz test tone for %lu ms", freq_hz, duration_ms);
+    // Enable speaker amp
+    tab5_audio_speaker_enable(true);
 
-    tab5_set_speaker_enable(true);
-
-    // Generate sine wave at 48kHz sample rate
-    const uint32_t sample_rate = TAB5_AUDIO_SAMPLE_RATE;
-    const size_t chunk_samples = 480;  // 10ms chunks
+    // Generate and play triangle wave through esp_codec_dev
+    const size_t chunk_samples = 480;  // 10ms at 48kHz
     int16_t buf[480];
-
-    uint32_t total_samples = (sample_rate * duration_ms) / 1000;
+    uint32_t total_samples = (TAB5_AUDIO_SAMPLE_RATE * duration_ms) / 1000;
     uint32_t phase = 0;
-
-    // Pre-compute: phase increment per sample (fixed-point, 16.16)
-    // sin(2π × freq × n / sr) ≈ sin(phase), phase += 2π×freq/sr per sample
-    // Use integer approximation: 360° = 65536, increment = 65536 * freq / sr
-    uint32_t phase_inc = (65536UL * freq_hz) / sample_rate;
+    uint32_t phase_inc = (65536UL * freq_hz) / TAB5_AUDIO_SAMPLE_RATE;
+    esp_err_t err = ESP_OK;
 
     while (total_samples > 0) {
         size_t n = (total_samples > chunk_samples) ? chunk_samples : total_samples;
-
         for (size_t i = 0; i < n; i++) {
-            // Simple triangle wave approximation (avoids float/sin)
             uint16_t p = (uint16_t)(phase & 0xFFFF);
             int32_t val;
-            if (p < 16384) {
-                val = (int32_t)p;           // 0 → +16383
-            } else if (p < 49152) {
-                val = 32768 - (int32_t)p;   // +16384 → -16383
-            } else {
-                val = (int32_t)p - 65536;   // -16384 → -1
-            }
-            // Scale to ~50% amplitude to avoid clipping
+            if (p < 16384)       val = (int32_t)p;
+            else if (p < 49152)  val = 32768 - (int32_t)p;
+            else                 val = (int32_t)p - 65536;
             buf[i] = (int16_t)(val / 2);
             phase += phase_inc;
         }
 
-        tab5_audio_play_raw(buf, n);
+        err = esp_codec_dev_write(s_play_dev, buf, n * sizeof(int16_t));
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "write failed: %s", esp_err_to_name(err));
+            break;
+        }
         total_samples -= n;
     }
 
-    // Wait for DMA to drain — i2s_channel_write blocks until data is in the DMA
-    // buffer, but the hardware hasn't played it yet. Keep amp on for the full duration.
-    vTaskDelay(pdMS_TO_TICKS(duration_ms));
+    // Let DMA drain, then disable amp
+    vTaskDelay(pdMS_TO_TICKS(200));
+    tab5_audio_speaker_enable(false);
 
-    tab5_set_speaker_enable(false);
-    ESP_LOGI(TAG, "Test tone complete");
-    return ESP_OK;
+    ESP_LOGI(TAG, "=== SPEAKER TEST COMPLETE ===");
+    return err;
 }
