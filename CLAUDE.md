@@ -98,10 +98,38 @@ echo radxa | sudo -S systemctl status tinkerclaw-voice
 echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
+## SIM-FIRST WORKFLOW (MANDATORY)
+**Before flashing hardware, the simulator MUST pass:**
+```bash
+cd /home/rebelforce/projects/TinkerTab/sim
+make
+./tinkeros_sim --test   # must show "ALL SELF-TESTS PASSED"
+./tinkeros_sim          # manual visual check
+```
+Only after simulator passes → flash hardware.
+
+## Desktop SDL2 Simulator
+- **Location:** `sim/` directory
+- **Build:** `cd sim && make && ./tinkeros_sim`
+- **Test mode:** `./tinkeros_sim --test` (self-test + exit)
+- **Platform define:** `TINKEROS_SIMULATOR=1` activates simulator path in `ui_port.h`
+- **HAL stubs:** `sim/stubs.c` — all hardware returns safe defaults
+- **Port headers:** `sim/port/` — shadows ESP-IDF headers for compilation
+- **Window:** 720×1280, mouse = touch, ESC/Q = quit
+
+## Wokwi ESP32-P4 (Beta)
+- Wokwi has ESP32-P4 in **beta simulation** (separate from SDL2 sim)
+- VS Code extension: `wokwi.wokwi-vscode` — requires a license (free tier available)
+- Template: https://github.com/wokwi/esp32p4-hello-world
+- Requires `wokwi.toml` + `diagram.json` in project root
+- **Status:** Research ongoing — may not support MIPI-DSI display yet
+- **Assessment:** SDL2 sim is our primary dev tool; Wokwi useful for peripheral testing
+
 ## Build & Flash
 ```bash
 source ~/esp/esp-idf/export.sh  # v5.4.3
 idf.py build
+idf.py uf2        # builds UF2 at build/uf2.bin (drag-and-drop flash)
 idf.py -p /dev/ttyACM0 flash
 # Monitor (needs TTY — use python serial or screen):
 python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.readline().decode(errors='replace'),end='') for _ in range(1000)]"

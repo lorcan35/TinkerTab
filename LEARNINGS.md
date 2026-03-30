@@ -266,6 +266,20 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** Established rule: any buffer >4KB must use `heap_caps_malloc(MALLOC_CAP_SPIRAM)`.
 - **Prevention:** Grep for large static arrays (`static.*\[.*\]`) periodically. Code review should reject any static buffer over 4KB. Document the 4KB threshold in CLAUDE.md.
 
+### Desktop SDL2 Simulator — Build Architecture
+- **Date:** 2026-03-30
+- **Symptom:** N/A (design decision)
+- **Root Cause:** Testing UI required flashing hardware every iteration (~2 minutes per cycle). Needed a faster dev loop.
+- **Fix:** Built SDL2 desktop simulator in `sim/`. All `ui_*.c` files compile for both x86_64/ARM64 Linux and ESP32-P4 without modification. `TINKEROS_SIMULATOR` define controls platform behavior via `main/ui_port.h`. Hardware stubs in `sim/stubs.c` return safe defaults. `make && ./tinkeros_sim` gives a 720x1280 interactive window. Mouse = touch.
+- **Prevention:** SIM-FIRST workflow is now mandatory. Simulator must pass `--test` before any hardware flash. Add any new ui_*.c to `sim/CMakeLists.txt`.
+
+### ui_port.h — The ONLY Platform Include for UI Files
+- **Date:** 2026-03-30
+- **Symptom:** N/A (Phase 1 refactor)
+- **Root Cause:** `ui_*.c` files directly included `esp_log.h`, `esp_heap_caps.h`, `esp_task_wdt.h`, `freertos/*.h` — none of which exist in the simulator environment.
+- **Fix:** Created `main/ui_port.h`. On simulator: maps to printf/SDL_Delay/tracked malloc. On firmware: maps to ESP_LOGx/heap_caps_malloc/esp_task_wdt_reset/vTaskDelay. All `ui_*.c` files include ONLY this header for platform primitives.
+- **Prevention:** Never include `esp_*.h` or `freertos/*.h` directly in `ui_*.c` files. Use `UI_LOGI`, `UI_MALLOC_PSRAM`, `UI_FREE`, `UI_WDT_RESET`, `UI_DELAY_MS`, `UI_TIME_MS`.
+
 ### No Hardcoded Voice Response Timeout
 - **Date:** 2026-03-29
 - **Symptom:** Tab5 disconnected from Dragon voice server after 120s while LLM was still processing
