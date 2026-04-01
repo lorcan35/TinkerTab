@@ -51,9 +51,9 @@ lv_obj_t *ui_splash_create(void)
     lv_obj_set_style_bg_opa(scr_splash, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr_splash, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* ── "GLYPH" wordmark ──────────────────────────────────── */
+    /* ── "TINKEROS" wordmark ──────────────────────────────────── */
     lv_obj_t *lbl_logo = lv_label_create(scr_splash);
-    lv_label_set_text(lbl_logo, "G L Y P H");
+    lv_label_set_text(lbl_logo, "T i n k e r O S");
     lv_obj_set_style_text_color(lbl_logo, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_text_font(lbl_logo, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_letter_space(lbl_logo, 10, 0);
@@ -61,7 +61,7 @@ lv_obj_t *ui_splash_create(void)
 
     /* ── Subtitle ──────────────────────────────────────────── */
     lv_obj_t *lbl_sub = lv_label_create(scr_splash);
-    lv_label_set_text(lbl_sub, "TinkerTab OS");
+    lv_label_set_text(lbl_sub, "TinkerTab Firmware");
     lv_obj_set_style_text_color(lbl_sub, lv_color_hex(COL_AMBER_DIM), 0);
     lv_obj_set_style_text_font(lbl_sub, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_letter_space(lbl_sub, 4, 0);
