@@ -19,6 +19,7 @@
 #include "ui_chat.h"
 #include "ui_settings.h"
 #include "ui_voice.h"
+#include "ui_keyboard.h"
 #include "voice.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -165,7 +166,7 @@ static lv_obj_t *build_page_home(void)
     lv_label_set_text(orb_lbl, "Tap to ask");
     lv_obj_set_style_text_color(orb_lbl, lv_color_hex(COL_LABEL2), 0);
     lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_28, 0);
-    lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 40);
 
     /* Breathing animation on ring */
     lv_anim_init(&orb_anim);
@@ -178,10 +179,10 @@ static lv_obj_t *build_page_home(void)
     lv_anim_start(&orb_anim);
     orb_anim_on = true;
 
-    /* ── Last Note Card — BIG ───────────────────────────────── */
+    /* ── Last Note Card ────────────────────────────────────── */
     last_note_card = lv_obj_create(pg);
-    lv_obj_set_size(last_note_card, SW - 48, 240);
-    lv_obj_align(last_note_card, LV_ALIGN_CENTER, 0, 420);
+    lv_obj_set_size(last_note_card, SW - 48, 160);
+    lv_obj_align(last_note_card, LV_ALIGN_CENTER, 0, 240);
     lv_obj_set_style_bg_color(last_note_card, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_bg_opa(last_note_card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(last_note_card, 24, 0);
@@ -195,20 +196,21 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
     lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_36, 0);
-    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 20);
+    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_28, 0);
+    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 12);
 
     lbl_last_note = lv_label_create(last_note_card);
     lv_label_set_text(lbl_last_note, "Tap to see notes");
     lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_28, 0);
     lv_obj_set_width(lbl_last_note, SW - 88);
-    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -20);
+    lv_label_set_long_mode(lbl_last_note, LV_LABEL_LONG_DOT);
+    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -12);
 
-    /* ── Ask Tinker Button — BIG ─────────────────── */
+    /* ── Ask Tinker Button ──────────────────────── */
     lv_obj_t *ask_btn = lv_button_create(pg);
-    lv_obj_set_size(ask_btn, SW - 48, 120);
-    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 8));
+    lv_obj_set_size(ask_btn, SW - 48, 96);
+    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 52));
     lv_obj_set_style_bg_color(ask_btn, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(ask_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(ask_btn, 24, 0);
@@ -218,7 +220,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
     lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
     lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_36, 0);
     lv_obj_center(ask_lbl);
 
     return pg;
@@ -360,30 +362,24 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_border_width(nav, 0, 0);
         lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
 
-        /* Nav labels — Home | Notes | Voice | Settings — BIG */
+        /* Nav labels — Home | Notes | Voice | Settings */
         const char *labels[NUM_PAGES] = {
             "Home", "Notes", "Voice", "Settings"
-        };
-        const uint32_t colors[NUM_PAGES] = {
-            COL_AMBER, COL_LABEL2, COL_LABEL2, COL_LABEL2
         };
         int slot = SW / NUM_PAGES;
         for (int i = 0; i < NUM_PAGES; i++) {
             nav_icons[i] = lv_label_create(nav);
             lv_label_set_text(nav_icons[i], labels[i]);
-            lv_obj_set_style_text_font(nav_icons[i], &lv_font_montserrat_28, 0);
-            lv_obj_set_style_text_color(nav_icons[i], lv_color_hex(colors[i]), 0);
-            lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID,
-                         slot * i + slot / 2 - 40, 0);
+            lv_obj_set_style_text_font(nav_icons[i], &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_color(nav_icons[i],
+                lv_color_hex(i == 0 ? COL_AMBER : COL_LABEL2), 0);
+            lv_obj_set_style_text_align(nav_icons[i], LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_width(nav_icons[i], slot);
+            lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID, slot * i, 0);
             lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
             lv_obj_set_ext_click_area(nav_icons[i], 20);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                (void *)(intptr_t)i);
-        }
-        /* Active page color is amber */
-        for (int i = 0; i < NUM_PAGES; i++) {
-            lv_obj_set_style_text_color(nav_icons[i],
-                lv_color_hex(i == 0 ? COL_AMBER : COL_LABEL2), 0);
         }
     }
 
@@ -411,6 +407,13 @@ lv_obj_t *ui_home_create(void)
 
     ui_home_update_status();
     tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
+
+    /* Hide persistent floating buttons on home page (orb + Ask Tinker are
+     * the primary voice entry points here — mic/kbd triggers are redundant) */
+    lv_obj_t *mic = ui_voice_get_mic_btn();
+    if (mic) lv_obj_add_flag(mic, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
+    if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
 
     lv_screen_load(scr);
     ESP_LOGI(TAG, "TinkerOS home screen created");
@@ -504,9 +507,6 @@ static void show_toast(const char *text)
 
 static void update_nav_ui(int page)
 {
-    const uint32_t colors[NUM_PAGES] = {
-        COL_AMBER, COL_LABEL2, COL_LABEL2, COL_LABEL2
-    };
     for (int i = 0; i < NUM_PAGES; i++) {
         if (page_dots[i]) {
             lv_obj_set_style_bg_color(page_dots[i],
@@ -514,12 +514,24 @@ static void update_nav_ui(int page)
         }
         if (nav_icons[i]) {
             lv_obj_set_style_text_color(nav_icons[i],
-                lv_color_hex(colors[i]), 0);
+                lv_color_hex(i == page ? COL_AMBER : COL_LABEL2), 0);
         }
     }
 
     /* Gate JPEG rendering — only on Dragon/voice page (page 2) */
     tab5_display_set_jpeg_enabled(page == 2);
+
+    /* Show/hide persistent floating buttons: hidden on Page 0 (home has
+     * its own orb + Ask Tinker), visible on other pages */
+    lv_obj_t *mic = ui_voice_get_mic_btn();
+    lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
+    if (page == 0) {
+        if (mic) lv_obj_add_flag(mic, LV_OBJ_FLAG_HIDDEN);
+        if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        if (mic) lv_obj_clear_flag(mic, LV_OBJ_FLAG_HIDDEN);
+        if (kbd) lv_obj_clear_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* When switching to Notes page, load the notes screen */
     if (page == 1 && tiles[1]) {
@@ -648,4 +660,13 @@ void ui_home_destroy(void)
 lv_obj_t *ui_home_get_screen(void)
 {
     return scr;
+}
+
+void ui_home_go_home(void)
+{
+    if (tileview && tiles[0]) {
+        lv_tileview_set_tile(tileview, tiles[0], LV_ANIM_OFF);
+        cur_page = 0;
+        update_nav_ui(0);
+    }
 }

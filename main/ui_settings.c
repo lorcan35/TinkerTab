@@ -97,6 +97,7 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_settings_destroy();
+    ui_home_go_home();
     lv_screen_load(ui_home_get_screen());
 }
 

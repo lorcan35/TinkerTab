@@ -12,3 +12,6 @@ void ui_home_destroy(void);
 
 /** Return the existing home screen object (for navigation back). */
 lv_obj_t *ui_home_get_screen(void);
+
+/** Navigate tileview to page 0 (Home) and update nav/floating buttons. */
+void ui_home_go_home(void);

@@ -91,6 +91,15 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
     ESP_LOGI(TAG, "Creating overlays (deferred)...");
     ui_keyboard_init(NULL);
     ui_voice_init();
+
+    /* Home screen is active at boot — hide floating buttons that are
+     * redundant on home (orb + Ask Tinker handle voice). They'll be
+     * shown when the user navigates to other pages. */
+    lv_obj_t *mic = ui_voice_get_mic_btn();
+    if (mic) lv_obj_add_flag(mic, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
+    if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+
     ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
 }
 
