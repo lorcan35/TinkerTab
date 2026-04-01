@@ -55,11 +55,11 @@ static const char *TAG = "ui_home";
 #define COL_LABEL3      0x48484A
 #define COL_SEP         0x38383A
 
-/* ── Layout ─────────────────────────────────────────────────── */
+/* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW              720
 #define SH              1280
-#define SBAR_H          40
-#define NAV_H           64
+#define SBAR_H          56
+#define NAV_H           120
 #define NUM_PAGES       4
 
 /* ── Forward decls ───────────────────────────────────────────── */
@@ -124,7 +124,7 @@ static lv_obj_t *build_page_home(void)
     lbl_date = lv_label_create(pg);
     lv_label_set_text(lbl_date, "Wednesday, March 26");
     lv_obj_set_style_text_color(lbl_date, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_36, 0);
     lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 148);
 
     /* ── Voice Orb (center) — TINKER ─────────────────── */
@@ -164,7 +164,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *orb_lbl = lv_label_create(pg);
     lv_label_set_text(orb_lbl, "Tap to ask");
     lv_obj_set_style_text_color(orb_lbl, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_28, 0);
     lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 80);
 
     /* Breathing animation on ring */
@@ -178,49 +178,47 @@ static lv_obj_t *build_page_home(void)
     lv_anim_start(&orb_anim);
     orb_anim_on = true;
 
-    /* ── Last Note Card ───────────────────────────────── */
-    /* Card background */
+    /* ── Last Note Card — BIG ───────────────────────────────── */
     last_note_card = lv_obj_create(pg);
-    lv_obj_set_size(last_note_card, SW - 48, 100);
-    lv_obj_align(last_note_card, LV_ALIGN_CENTER, 0, 460);
+    lv_obj_set_size(last_note_card, SW - 48, 240);
+    lv_obj_align(last_note_card, LV_ALIGN_CENTER, 0, 420);
     lv_obj_set_style_bg_color(last_note_card, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_bg_opa(last_note_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(last_note_card, 16, 0);
+    lv_obj_set_style_radius(last_note_card, 24, 0);
     lv_obj_set_style_border_width(last_note_card, 0, 0);
-    lv_obj_set_style_pad_hor(last_note_card, 20, 0);
+    lv_obj_set_style_pad_hor(last_note_card, 32, 0);
     lv_obj_clear_flag(last_note_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(last_note_card, 10);
+    lv_obj_set_ext_click_area(last_note_card, 20);
     lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
     lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_14, 0);
-    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 12);
+    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_36, 0);
+    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 20);
 
     lbl_last_note = lv_label_create(last_note_card);
     lv_label_set_text(lbl_last_note, "Tap to see notes");
     lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_36, 0);
     lv_obj_set_width(lbl_last_note, SW - 88);
-    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -12);
+    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -20);
 
-    /* ── Quick Action Buttons (bottom) ─────────────────── */
-    /* Ask button — full width */
+    /* ── Ask Tinker Button — BIG ─────────────────── */
     lv_obj_t *ask_btn = lv_button_create(pg);
-    lv_obj_set_size(ask_btn, SW - 48, 56);
-    lv_obj_align(ask_btn, LV_ALIGN_CENTER, 0, 540);
+    lv_obj_set_size(ask_btn, SW - 48, 120);
+    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 8));
     lv_obj_set_style_bg_color(ask_btn, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(ask_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(ask_btn, 16, 0);
+    lv_obj_set_style_radius(ask_btn, 24, 0);
     lv_obj_set_style_border_width(ask_btn, 0, 0);
     lv_obj_add_event_cb(ask_btn, ask_tap_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
     lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
     lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_48, 0);
     lv_obj_center(ask_lbl);
 
     return pg;
@@ -320,7 +318,7 @@ lv_obj_t *ui_home_create(void)
         lbl_sbar_time = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_time, "00:00");
         lv_obj_set_style_text_color(lbl_sbar_time, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_time, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl_sbar_time, &lv_font_montserrat_24, 0);
         lv_obj_align(lbl_sbar_time, LV_ALIGN_LEFT_MID, 16, 0);
 
         /* Privacy badge (center-left) */
@@ -329,25 +327,25 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(COL_MINT), 0);
         lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
         lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_text_font(lbl_privacy, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_radius(lbl_privacy, 6, 0);
-        lv_obj_align(lbl_privacy, LV_ALIGN_LEFT_MID, 70, 0);
+        lv_obj_set_style_text_font(lbl_privacy, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_radius(lbl_privacy, 8, 0);
+        lv_obj_align(lbl_privacy, LV_ALIGN_LEFT_MID, 80, 0);
         lv_obj_add_flag(lbl_privacy, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(lbl_privacy, 8);
+        lv_obj_set_ext_click_area(lbl_privacy, 10);
         lv_obj_add_event_cb(lbl_privacy, privacy_tap_cb, LV_EVENT_CLICKED, NULL);
 
         /* WiFi (right of center) */
         lbl_sbar_wifi = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_wifi, LV_SYMBOL_WIFI);
         lv_obj_set_style_text_color(lbl_sbar_wifi, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_wifi, &lv_font_montserrat_16, 0);
-        lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -60, 0);
+        lv_obj_set_style_text_font(lbl_sbar_wifi, &lv_font_montserrat_24, 0);
+        lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -80, 0);
 
         /* Battery (far right) */
         lbl_sbar_batt = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_batt, "100%");
         lv_obj_set_style_text_color(lbl_sbar_batt, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_batt, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(lbl_sbar_batt, &lv_font_montserrat_24, 0);
         lv_obj_align(lbl_sbar_batt, LV_ALIGN_RIGHT_MID, -16, 0);
     }
 
@@ -362,40 +360,40 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_border_width(nav, 0, 0);
         lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
 
-        /* Nav labels — Home | Notes | Voice | Settings */
+        /* Nav labels — Home | Notes | Voice | Settings — BIG */
         const char *labels[NUM_PAGES] = {
             "Home", "Notes", "Voice", "Settings"
         };
         const uint32_t colors[NUM_PAGES] = {
-            COL_WHITE, COL_LABEL2, COL_LABEL2, COL_LABEL2
+            COL_AMBER, COL_LABEL2, COL_LABEL2, COL_LABEL2
         };
         int slot = SW / NUM_PAGES;
         for (int i = 0; i < NUM_PAGES; i++) {
             nav_icons[i] = lv_label_create(nav);
             lv_label_set_text(nav_icons[i], labels[i]);
-            lv_obj_set_style_text_font(nav_icons[i], &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(nav_icons[i], &lv_font_montserrat_28, 0);
             lv_obj_set_style_text_color(nav_icons[i], lv_color_hex(colors[i]), 0);
             lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID,
-                         slot * i + slot / 2 - 30, 0);
+                         slot * i + slot / 2 - 40, 0);
             lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(nav_icons[i], 10);
+            lv_obj_set_ext_click_area(nav_icons[i], 20);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                (void *)(intptr_t)i);
         }
-        /* Highlight first page */
+        /* Active page color is amber */
         for (int i = 0; i < NUM_PAGES; i++) {
             lv_obj_set_style_text_color(nav_icons[i],
                 lv_color_hex(i == 0 ? COL_AMBER : COL_LABEL2), 0);
         }
     }
 
-    /* ── PAGE DOTS ───────────────────────────────────────────── */
+    /* ── PAGE DOTS — BIG ───────────────────────────────────── */
     {
-        int dot_sz = 8;
-        int dot_gap = 8;
+        int dot_sz = 16;
+        int dot_gap = 12;
         int total = NUM_PAGES * dot_sz + (NUM_PAGES - 1) * dot_gap;
         int x0 = (SW - total) / 2;
-        int y = SH - NAV_H - 16;
+        int y = SH - NAV_H - 20;
         for (int i = 0; i < NUM_PAGES; i++) {
             page_dots[i] = lv_obj_create(scr);
             lv_obj_set_size(page_dots[i], dot_sz, dot_sz);
