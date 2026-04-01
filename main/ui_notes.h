@@ -47,3 +47,6 @@ void ui_notes_write_audio(const int16_t *samples, size_t count);
 
 /** Get number of unprocessed (RECORDED) notes that need transcription. */
 int ui_notes_unprocessed_count(void);
+
+/** Start background transcription task (call once after WiFi + Dragon are up). */
+void ui_notes_start_transcription_queue(void);

@@ -101,6 +101,9 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
     if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
 
     ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
+
+    /* Start background transcription queue for recorded voice notes */
+    ui_notes_start_transcription_queue();
 }
 
 // Voice E2E test task — uses mode manager for clean MJPEG↔voice switching

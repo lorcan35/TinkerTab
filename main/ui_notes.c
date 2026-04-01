@@ -15,6 +15,7 @@
 #include "ui_voice.h"
 #include "ui_keyboard.h"
 #include "voice.h"
+#include "audio.h"
 #include "config.h"
 #include "mode_manager.h"
 #include "rtc.h"
@@ -264,8 +265,17 @@ static void notes_load(void)
             n->audio_path[MAX_AUDIO_PATH - 1] = '\0';
         }
         cJSON *jstate = cJSON_GetObjectItem(item, "s");
-        n->state = cJSON_IsNumber(jstate) ? (note_state_t)(int)jstate->valuedouble
-                                          : NOTE_STATE_TEXT;
+        if (cJSON_IsNumber(jstate)) {
+            n->state = (note_state_t)(int)jstate->valuedouble;
+        } else {
+            /* Legacy notes without state field — infer from content */
+            n->state = NOTE_STATE_TEXT;
+        }
+        /* Fix up: voice notes with placeholder text → RECORDED.
+         * Covers notes saved before schema change or crashed recordings. */
+        if (n->is_voice && strncmp(n->text, "(Recording", 10) == 0) {
+            n->state = NOTE_STATE_RECORDED;
+        }
         n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
         n->hour     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
         n->minute   = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
@@ -308,6 +318,7 @@ static lv_obj_t *s_input_btn   = NULL;
 static bool s_input_visible    = false;
 static bool s_voice_recording  = false;
 static bool s_pending_dictation = false;  /* waiting for READY to start dictation */
+static volatile bool s_sd_rec_running = false;  /* standalone SD recording active */
 
 /* ── Forward decls ─────────────────────────────────────── */
 static void cb_back(lv_event_t *e);
@@ -394,12 +405,15 @@ void ui_notes_list(void)
 {
     notes_load();
     printf("%d note(s) stored\n", s_note_count);
+    static const char *state_names[] = {"TEXT","RECORDED","TRANSCRIBING","TRANSCRIBED","FAILED"};
     for (int i = 0; i < MAX_NOTES; i++) {
         if (s_notes[i].used) {
-            printf("  [%d] %s: %.60s\n",
+            printf("  [%d] %s (%s): %.50s %s\n",
                    i,
                    s_notes[i].is_voice ? "V" : "T",
-                   s_notes[i].text);
+                   state_names[s_notes[i].state < 5 ? s_notes[i].state : 0],
+                   s_notes[i].text,
+                   s_notes[i].audio_path[0] ? s_notes[i].audio_path : "");
         }
     }
 }
@@ -586,6 +600,169 @@ void ui_notes_stop_recording(const char *transcript)
     refresh_list();
 }
 
+/* ── Background transcription queue ─────────────────────── */
+/*
+ * Periodically checks for RECORDED notes, reads the WAV from SD,
+ * POSTs to Dragon's /api/v1/transcribe, and updates the note.
+ */
+#include "esp_http_client.h"
+#include "dragon_link.h"
+#include "wifi.h"
+
+static void transcription_queue_task(void *arg)
+{
+    ESP_LOGI(TAG, "Transcription queue started");
+    vTaskDelay(pdMS_TO_TICKS(10000));  /* wait 10s for system to settle */
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(15000));  /* check every 15s */
+
+        /* Don't process while a recording is active */
+        if (s_rec_file || s_sd_rec_running || s_voice_recording) continue;
+
+        notes_load();
+        int pending = ui_notes_unprocessed_count();
+        if (pending == 0) continue;
+        ESP_LOGI(TAG, "Transcription queue: %d unprocessed", pending);
+
+        /* Need WiFi to be up — Dragon reachability is tested by the HTTP POST itself */
+        if (!tab5_wifi_connected()) continue;
+
+        /* Find the first RECORDED note with an audio file */
+        int slot = -1;
+        for (int i = 0; i < MAX_NOTES; i++) {
+            if (!s_notes[i].used || s_notes[i].state != NOTE_STATE_RECORDED) continue;
+            if (!s_notes[i].audio_path[0]) {
+                /* No audio file — can't transcribe, mark failed */
+                s_notes[i].state = NOTE_STATE_FAILED;
+                snprintf(s_notes[i].text, MAX_NOTE_LEN, "(No audio file)");
+                notes_save();
+                continue;
+            }
+            slot = i;
+            break;
+        }
+        if (slot < 0) continue;
+
+        note_entry_t *n = &s_notes[slot];
+        ESP_LOGI(TAG, "Transcribing note [%d]: %s", slot, n->audio_path);
+        n->state = NOTE_STATE_TRANSCRIBING;
+        notes_save();
+
+        /* Read WAV file from SD */
+        FILE *f = fopen(n->audio_path, "rb");
+        if (!f) {
+            ESP_LOGW(TAG, "Cannot open WAV: %s", n->audio_path);
+            n->state = NOTE_STATE_FAILED;
+            notes_save();
+            continue;
+        }
+
+        fseek(f, 0, SEEK_END);
+        long file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        if (file_size < 100 || file_size > 30 * 1024 * 1024) {
+            ESP_LOGW(TAG, "WAV file size invalid: %ld", file_size);
+            fclose(f);
+            n->state = NOTE_STATE_FAILED;
+            notes_save();
+            continue;
+        }
+
+        char *audio_buf = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
+        if (!audio_buf) {
+            ESP_LOGE(TAG, "PSRAM alloc failed for WAV (%ld bytes)", file_size);
+            fclose(f);
+            n->state = NOTE_STATE_FAILED;
+            notes_save();
+            continue;
+        }
+
+        fread(audio_buf, 1, file_size, f);
+        fclose(f);
+
+        /* Build URL: http://<dragon_host>:<voice_port>/api/v1/transcribe */
+        char dragon_host[64];
+        tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
+        uint16_t dragon_port = tab5_settings_get_dragon_port();
+        char url[128];
+        snprintf(url, sizeof(url), "http://%s:%d/api/v1/transcribe",
+                 dragon_host, dragon_port);
+
+        /* HTTP POST */
+        esp_http_client_config_t http_cfg = {
+            .url = url,
+            .method = HTTP_METHOD_POST,
+            .timeout_ms = 60000,  /* 60s — long audio can take time */
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+        esp_http_client_set_header(client, "Content-Type", "audio/wav");
+
+        esp_err_t err = esp_http_client_open(client, file_size);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            heap_caps_free(audio_buf);
+            n->state = NOTE_STATE_FAILED;
+            notes_save();
+            continue;
+        }
+
+        esp_http_client_write(client, audio_buf, file_size);
+        heap_caps_free(audio_buf);
+
+        int content_len = esp_http_client_fetch_headers(client);
+        int status = esp_http_client_get_status_code(client);
+
+        if (status == 200 && content_len > 0 && content_len < 8192) {
+            char *resp = malloc(content_len + 1);
+            if (resp) {
+                esp_http_client_read(client, resp, content_len);
+                resp[content_len] = '\0';
+
+                /* Parse JSON response: {"text":"...", "duration_s":..., "stt_ms":...} */
+                cJSON *root = cJSON_Parse(resp);
+                if (root) {
+                    const char *text = cJSON_GetStringValue(
+                        cJSON_GetObjectItem(root, "text"));
+                    if (text && text[0]) {
+                        strncpy(n->text, text, MAX_NOTE_LEN - 1);
+                        n->text[MAX_NOTE_LEN - 1] = '\0';
+                        n->state = NOTE_STATE_TRANSCRIBED;
+                        ESP_LOGI(TAG, "Transcription done [%d]: %.60s", slot, text);
+                    } else {
+                        snprintf(n->text, MAX_NOTE_LEN, "(Empty transcription)");
+                        n->state = NOTE_STATE_FAILED;
+                    }
+                    cJSON_Delete(root);
+                }
+                free(resp);
+            }
+        } else {
+            ESP_LOGW(TAG, "Transcribe HTTP %d (len=%d)", status, content_len);
+            n->state = NOTE_STATE_FAILED;
+        }
+
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        notes_save();
+        refresh_list();
+    }
+}
+
+void ui_notes_start_transcription_queue(void)
+{
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        transcription_queue_task, "transcribe_q", 16384,  /* needs room for HTTP client */
+        NULL, 3, NULL, 1);
+    if (ret == pdPASS) {
+        ESP_LOGI(TAG, "Transcription queue task created");
+    } else {
+        ESP_LOGE(TAG, "Failed to create transcription queue task");
+    }
+}
+
 /* ── Voice session complete — save transcript ─────────────── */
 static void voice_session_done(void)
 {
@@ -698,12 +875,74 @@ static void pending_dictation_poll_cb(lv_timer_t *t)
     }
 }
 
+/* Standalone SD-only recording task — reads mic, writes WAV, no Dragon needed */
+static TaskHandle_t  s_sd_rec_task = NULL;
+
+static void sd_record_task(void *arg)
+{
+    ESP_LOGI(TAG, "SD recording task started (core %d)", xPortGetCoreID());
+
+    /* Allocate buffers in PSRAM */
+    const int tdm_samples = 960 * 4;  /* 20ms @ 48kHz, 4 TDM channels */
+    const int mono_samples = 320;      /* 20ms @ 16kHz */
+    int16_t *tdm_buf = heap_caps_malloc(tdm_samples * sizeof(int16_t),
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    int16_t *mono_buf = heap_caps_malloc(mono_samples * sizeof(int16_t),
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tdm_buf || !mono_buf) {
+        ESP_LOGE(TAG, "SD rec: buffer alloc failed");
+        heap_caps_free(tdm_buf);
+        heap_caps_free(mono_buf);
+        s_sd_rec_running = false;
+        s_sd_rec_task = NULL;
+        vTaskSuspend(NULL);
+        return;
+    }
+
+    while (s_sd_rec_running) {
+        esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
+        if (err != ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        /* Downsample 48kHz TDM slot 0 → 16kHz mono */
+        int out_idx = 0;
+        for (int i = 0; i + 2 < 960 && out_idx < mono_samples; i += 3) {
+            int32_t sum = tdm_buf[i * 4] + tdm_buf[(i+1) * 4] + tdm_buf[(i+2) * 4];
+            mono_buf[out_idx++] = (int16_t)(sum / 3);
+        }
+
+        ui_notes_write_audio(mono_buf, out_idx);
+    }
+
+    heap_caps_free(tdm_buf);
+    heap_caps_free(mono_buf);
+    ESP_LOGI(TAG, "SD recording task exiting");
+    s_sd_rec_task = NULL;
+    vTaskSuspend(NULL);
+}
+
 static void cb_new_voice(lv_event_t *e)
 {
     (void)e;
+    if (s_sd_rec_running || s_voice_recording) {
+        /* Stop current recording */
+        s_sd_rec_running = false;  /* signal task to exit */
+        if (voice_get_state() == VOICE_STATE_LISTENING) {
+            voice_stop_listening();
+        }
+        s_voice_recording = false;
+        /* Give mic task time to exit before finalizing WAV.
+         * Use lv_async_call to run on next LVGL cycle. */
+        lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
+        ESP_LOGI(TAG, "Recording stopping...");
+        return;
+    }
+
     voice_state_t st = voice_get_state();
 
-    /* Always start SD recording first — this never needs Dragon */
+    /* Always start SD recording first */
     const char *wav = ui_notes_start_recording();
     if (!wav) {
         ESP_LOGE(TAG, "Failed to start recording (SD card issue?)");
@@ -713,20 +952,21 @@ static void cb_new_voice(lv_event_t *e)
     s_voice_recording = true;
 
     if (st == VOICE_STATE_READY) {
-        /* Dragon online — dual-write: SD + live dictation */
+        /* Dragon online — dual-write: SD + live dictation via voice module */
         voice_start_dictation();
         ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
-    } else if (st == VOICE_STATE_IDLE) {
-        /* Dragon offline — SD-only recording, connect in background for later transcription */
-        s_pending_dictation = true;
-        int *ticks = calloc(1, sizeof(int));
-        lv_timer_create(pending_dictation_poll_cb, 100, ticks);
-        ESP_LOGI(TAG, "Recording to SD (connecting to Dragon...): %s", wav);
-        xTaskCreatePinnedToCore(
-            dictation_connect_task, "dict_conn", 8192, NULL, 5, NULL, 1);
     } else {
-        /* Voice busy but still record to SD */
-        ESP_LOGI(TAG, "Recording to SD only (voice busy state %d): %s", st, wav);
+        /* Offline or busy — SD-only recording with standalone mic task */
+        s_sd_rec_running = true;
+        xTaskCreatePinnedToCore(
+            sd_record_task, "sd_rec", 4096, NULL, 5, &s_sd_rec_task, 1);
+        ESP_LOGI(TAG, "Recording to SD only: %s", wav);
+
+        /* Try to connect Dragon in background for later transcription */
+        if (st == VOICE_STATE_IDLE) {
+            xTaskCreatePinnedToCore(
+                dictation_connect_task, "dict_conn", 8192, NULL, 3, NULL, 1);
+        }
     }
 }
 
