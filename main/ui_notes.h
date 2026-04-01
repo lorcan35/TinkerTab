@@ -20,3 +20,9 @@ void ui_notes_destroy(void);
 
 /** Add a new note. Returns note index or -1 on failure. */
 int ui_notes_add(const char *text, bool is_voice);
+
+/** Get last note's text preview (up to 80 chars). Returns false if no notes. */
+bool ui_notes_get_last_preview(char *buf, size_t len);
+
+/** Check if notes exist. */
+int ui_notes_count(void);

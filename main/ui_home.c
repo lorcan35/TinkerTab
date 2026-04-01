@@ -72,6 +72,7 @@ static void orb_tap_cb(lv_event_t *e);
 static void voice_hint_tap_cb(lv_event_t *e);
 static void privacy_tap_cb(lv_event_t *e);
 static void ask_tap_cb(lv_event_t *e);
+static void cb_last_note_tap(lv_event_t *e);
 
 /* ── State ───────────────────────────────────────────────────── */
 static lv_obj_t  *scr        = NULL;
@@ -188,6 +189,9 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_border_width(last_note_card, 0, 0);
     lv_obj_set_style_pad_hor(last_note_card, 20, 0);
     lv_obj_clear_flag(last_note_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(last_note_card, 10);
+    lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
@@ -196,7 +200,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 12);
 
     lbl_last_note = lv_label_create(last_note_card);
-    lv_label_set_text(lbl_last_note, "No notes yet — tap the orb to record");
+    lv_label_set_text(lbl_last_note, "Tap to see notes");
     lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
     lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_16, 0);
     lv_obj_set_width(lbl_last_note, SW - 88);
@@ -440,6 +444,15 @@ static void ask_tap_cb(lv_event_t *e)
     orb_tap_cb(e);  /* Same action as orb tap */
 }
 
+static void cb_last_note_tap(lv_event_t *e)
+{
+    (void)e;
+    /* Navigate to notes page */
+    if (tileview && tiles[1]) {
+        lv_tileview_set_tile(tileview, tiles[1], LV_ANIM_ON);
+    }
+}
+
 static void privacy_tap_cb(lv_event_t *e)
 {
     (void)e;
@@ -590,6 +603,16 @@ void ui_home_update_status(void)
     if (lbl_sbar_wifi) {
         lv_obj_set_style_text_color(lbl_sbar_wifi,
             lv_color_hex(wifi_on ? COL_WHITE : COL_LABEL3), 0);
+    }
+
+    /* Last note card */
+    if (lbl_last_note) {
+        char note_preview[96];
+        if (ui_notes_get_last_preview(note_preview, sizeof(note_preview))) {
+            lv_label_set_text(lbl_last_note, note_preview);
+        } else {
+            lv_label_set_text(lbl_last_note, "No notes yet — tap Voice to record");
+        }
     }
 }
 
