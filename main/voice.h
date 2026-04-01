@@ -27,6 +27,12 @@ typedef enum {
     VOICE_STATE_SPEAKING,    // Playing TTS audio from Dragon
 } voice_state_t;
 
+// Voice modes
+typedef enum {
+    VOICE_MODE_ASK,      // Short-form: STT -> LLM -> TTS (30s max)
+    VOICE_MODE_DICTATE,  // Long-form: STT only, unlimited, no LLM/TTS
+} voice_mode_t;
+
 // Callback for state changes (for UI updates)
 typedef void (*voice_state_cb_t)(voice_state_t new_state, const char *detail);
 
@@ -64,3 +70,12 @@ const char *voice_get_stt_text(void);
 
 // Get separated LLM text (what Tinker is saying, streams in)
 const char *voice_get_llm_text(void);
+
+// Dictation mode: unlimited recording, STT-only, no LLM/TTS
+esp_err_t voice_start_dictation(void);
+
+// Get current voice mode
+voice_mode_t voice_get_mode(void);
+
+// Get accumulated dictation transcript (concatenated stt_partial results)
+const char *voice_get_dictation_text(void);

@@ -15,14 +15,20 @@
 #include "ui_voice.h"
 #include "ui_keyboard.h"
 #include "voice.h"
+#include "config.h"
+#include "mode_manager.h"
 #include "rtc.h"
 #include "settings.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <sys/stat.h>
 
 static const char *TAG = "ui_notes";
 
@@ -50,9 +56,22 @@ static const char *TAG = "ui_notes";
 #define MAX_NOTES      30
 #define MAX_NOTE_LEN   512
 
+/* ── Note states ────────────────────────────────────────── */
+typedef enum {
+    NOTE_STATE_TEXT,         /* text-only note (typed) */
+    NOTE_STATE_RECORDED,    /* has audio file, not yet transcribed */
+    NOTE_STATE_TRANSCRIBING,/* transcription in progress */
+    NOTE_STATE_TRANSCRIBED, /* has audio file + transcript */
+    NOTE_STATE_FAILED,      /* transcription failed — can retry */
+} note_state_t;
+
+#define MAX_AUDIO_PATH  64
+
 /* ── Note storage ───────────────────────────────────────── */
 typedef struct {
     char text[MAX_NOTE_LEN];
+    char audio_path[MAX_AUDIO_PATH]; /* e.g. "/sdcard/rec/0042.wav" or "" */
+    note_state_t state;
     bool is_voice;
     uint8_t hour;
     uint8_t minute;
@@ -75,8 +94,13 @@ static bool s_loaded    = false;   /* NVS loaded at least once */
  * Falls back to NVS blob if SD card is not mounted.
  */
 #define NOTES_SD_PATH  "/sdcard/notes.js"
+#define NOTES_TMP_PATH "/sdcard/notes.tmp"
+#define REC_DIR        "/sdcard/rec"
 #define NVS_NAMESPACE  "notes"
 #define NVS_KEY_DATA   "data"
+#define NVS_KEY_RECID  "recid"   /* next recording ID counter */
+
+static uint32_t s_next_rec_id = 1;  /* monotonic recording counter */
 
 #include "sdcard.h"
 #include "cJSON.h"
@@ -92,41 +116,50 @@ static void notes_save(void)
         cJSON *obj = cJSON_CreateObject();
         cJSON_AddStringToObject(obj, "t", n->text);
         cJSON_AddNumberToObject(obj, "v", n->is_voice ? 1 : 0);
+        cJSON_AddNumberToObject(obj, "s", (int)n->state);
+        if (n->audio_path[0]) {
+            cJSON_AddStringToObject(obj, "a", n->audio_path);
+        }
         cJSON_AddNumberToObject(obj, "h", n->hour);
         cJSON_AddNumberToObject(obj, "m", n->minute);
         cJSON_AddNumberToObject(obj, "d", n->day);
         cJSON_AddNumberToObject(obj, "mo", n->month);
         cJSON_AddNumberToObject(obj, "y", n->year);
-        cJSON_AddNumberToObject(obj, "i", i);  /* slot index */
+        cJSON_AddNumberToObject(obj, "i", i);
         cJSON_AddItemToArray(arr, obj);
     }
 
-    /* Wrap in envelope with ring buffer state */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "count", s_note_count);
     cJSON_AddNumberToObject(root, "next", s_next_slot);
+    cJSON_AddNumberToObject(root, "recid", (double)s_next_rec_id);
     cJSON_AddItemToObject(root, "notes", arr);
 
-    char *json = cJSON_Print(root);  /* pretty-printed for readability on PC */
+    char *json = cJSON_Print(root);
     cJSON_Delete(root);
     if (!json) return;
 
-    /* Try SD card first */
+    /* Atomic write: .tmp → rename. Prevents corruption on power loss. */
     if (tab5_sdcard_mounted()) {
-        FILE *f = fopen(NOTES_SD_PATH, "w");
+        FILE *f = fopen(NOTES_TMP_PATH, "w");
         if (f) {
             int written = fputs(json, f);
+            fflush(f);
             fclose(f);
             if (written >= 0) {
-                ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
-                free(json);
-                return;
+                /* Atomic rename — old file replaced only after new is complete */
+                remove(NOTES_SD_PATH);
+                if (rename(NOTES_TMP_PATH, NOTES_SD_PATH) == 0) {
+                    ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
+                    free(json);
+                    return;
+                }
             }
         }
         ESP_LOGW(TAG, "SD write failed (errno=%d), falling back to NVS", errno);
     }
 
-    /* Fallback: NVS blob (compact binary for size) */
+    /* Fallback: NVS */
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_blob(h, NVS_KEY_DATA, json, strlen(json) + 1);
@@ -135,6 +168,14 @@ static void notes_save(void)
         ESP_LOGI(TAG, "Notes saved to NVS fallback (%d notes)", s_note_count);
     }
     free(json);
+
+    /* Persist recording counter in NVS */
+    nvs_handle_t h2;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h2) == ESP_OK) {
+        nvs_set_u32(h2, NVS_KEY_RECID, s_next_rec_id);
+        nvs_commit(h2);
+        nvs_close(h2);
+    }
 }
 
 static void notes_load(void)
@@ -199,6 +240,11 @@ static void notes_load(void)
     s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
     s_next_slot  = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
 
+    cJSON *jrecid = cJSON_GetObjectItem(root, "recid");
+    if (cJSON_IsNumber(jrecid)) {
+        s_next_rec_id = (uint32_t)jrecid->valuedouble;
+    }
+
     cJSON *arr = cJSON_GetObjectItem(root, "notes");
     int loaded = 0;
     cJSON *item;
@@ -212,6 +258,14 @@ static void notes_load(void)
             strncpy(n->text, text, MAX_NOTE_LEN - 1);
             n->text[MAX_NOTE_LEN - 1] = '\0';
         }
+        const char *apath = cJSON_GetStringValue(cJSON_GetObjectItem(item, "a"));
+        if (apath) {
+            strncpy(n->audio_path, apath, MAX_AUDIO_PATH - 1);
+            n->audio_path[MAX_AUDIO_PATH - 1] = '\0';
+        }
+        cJSON *jstate = cJSON_GetObjectItem(item, "s");
+        n->state = cJSON_IsNumber(jstate) ? (note_state_t)(int)jstate->valuedouble
+                                          : NOTE_STATE_TEXT;
         n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
         n->hour     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
         n->minute   = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
@@ -223,7 +277,27 @@ static void notes_load(void)
     }
 
     cJSON_Delete(root);
-    ESP_LOGI(TAG, "Loaded %d notes", loaded);
+
+    /* Load recording counter from NVS (survives SD card removal) */
+    nvs_handle_t nh;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nh) == ESP_OK) {
+        uint32_t rid = 0;
+        if (nvs_get_u32(nh, NVS_KEY_RECID, &rid) == ESP_OK && rid > s_next_rec_id) {
+            s_next_rec_id = rid;
+        }
+        nvs_close(nh);
+    }
+
+    /* Ensure recordings directory exists */
+    if (tab5_sdcard_mounted()) {
+        struct stat st;
+        if (stat(REC_DIR, &st) != 0) {
+            mkdir(REC_DIR, 0755);
+            ESP_LOGI(TAG, "Created recordings directory: %s", REC_DIR);
+        }
+    }
+
+    ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
 }
 
 /* ── Screen state ──────────────────────────────────────── */
@@ -233,6 +307,7 @@ static lv_obj_t *s_input_area  = NULL;
 static lv_obj_t *s_input_btn   = NULL;
 static bool s_input_visible    = false;
 static bool s_voice_recording  = false;
+static bool s_pending_dictation = false;  /* waiting for READY to start dictation */
 
 /* ── Forward decls ─────────────────────────────────────── */
 static void cb_back(lv_event_t *e);
@@ -251,7 +326,22 @@ static void voice_session_done(void);
 /* ── Voice state callback ───────────────────────────────── */
 static void voice_state_cb(voice_state_t state, const char *detail)
 {
-    (void)detail;
+    /* Auto-start dictation once Dragon connection is READY */
+    if (state == VOICE_STATE_READY && s_pending_dictation) {
+        s_pending_dictation = false;
+        s_voice_recording = true;
+        voice_start_dictation();
+        ESP_LOGI(TAG, "Auto-starting dictation after connect");
+        return;
+    }
+    /* Dictation ends with READY + "dictation_done" detail */
+    if (s_voice_recording && state == VOICE_STATE_READY
+        && voice_get_mode() == VOICE_MODE_DICTATE
+        && detail && strcmp(detail, "dictation_done") == 0) {
+        s_voice_recording = false;
+        voice_session_done();
+    }
+    /* Ask mode ends with IDLE */
     if (state == VOICE_STATE_IDLE && s_voice_recording) {
         s_voice_recording = false;
         voice_session_done();
@@ -330,15 +420,186 @@ int ui_notes_count(void)
     return s_note_count;
 }
 
+int ui_notes_unprocessed_count(void)
+{
+    notes_load();
+    int count = 0;
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (s_notes[i].used && s_notes[i].state == NOTE_STATE_RECORDED) count++;
+    }
+    return count;
+}
+
+/* ── WAV recording ──────────────────────────────────────── */
+/*
+ * Records raw PCM 16kHz mono to a WAV file on the SD card.
+ * The mic capture task calls ui_notes_write_audio() for each chunk.
+ * Thread-safe via s_rec_mutex.
+ */
+#include "freertos/semphr.h"
+
+static FILE *s_rec_file = NULL;
+static char s_rec_path[MAX_AUDIO_PATH] = {0};
+static uint32_t s_rec_samples = 0;
+static SemaphoreHandle_t s_rec_mutex = NULL;
+static int s_rec_note_slot = -1;
+
+/* WAV header for PCM 16-bit mono */
+static void wav_write_header(FILE *f, uint32_t data_bytes, uint16_t sample_rate)
+{
+    uint32_t file_size = 36 + data_bytes;
+    uint16_t channels = 1;
+    uint16_t bits = 16;
+    uint32_t byte_rate = sample_rate * channels * bits / 8;
+    uint16_t block_align = channels * bits / 8;
+
+    fwrite("RIFF", 1, 4, f);
+    fwrite(&file_size, 4, 1, f);
+    fwrite("WAVE", 1, 4, f);
+    fwrite("fmt ", 1, 4, f);
+    uint32_t fmt_size = 16;
+    fwrite(&fmt_size, 4, 1, f);
+    uint16_t pcm = 1;
+    fwrite(&pcm, 2, 1, f);
+    fwrite(&channels, 2, 1, f);
+    fwrite(&sample_rate, 4, 1, f);
+    fwrite(&byte_rate, 4, 1, f);
+    fwrite(&block_align, 2, 1, f);
+    fwrite(&bits, 2, 1, f);
+    fwrite("data", 1, 4, f);
+    fwrite(&data_bytes, 4, 1, f);
+}
+
+const char *ui_notes_start_recording(void)
+{
+    notes_load();
+
+    if (!tab5_sdcard_mounted()) {
+        ESP_LOGE(TAG, "SD card not mounted — cannot record");
+        return NULL;
+    }
+
+    /* Create mutex on first use */
+    if (!s_rec_mutex) {
+        s_rec_mutex = xSemaphoreCreateMutex();
+    }
+
+    /* Ensure recordings directory exists */
+    struct stat st;
+    if (stat(REC_DIR, &st) != 0) {
+        mkdir(REC_DIR, 0755);
+    }
+
+    /* Generate unique filename */
+    snprintf(s_rec_path, sizeof(s_rec_path), "%s/%04lu.wav",
+             REC_DIR, (unsigned long)s_next_rec_id);
+    s_next_rec_id++;
+
+    /* Open file and write placeholder WAV header (updated on stop) */
+    s_rec_file = fopen(s_rec_path, "wb");
+    if (!s_rec_file) {
+        ESP_LOGE(TAG, "Failed to create recording: %s (errno=%d)", s_rec_path, errno);
+        s_rec_path[0] = '\0';
+        return NULL;
+    }
+
+    wav_write_header(s_rec_file, 0, TAB5_VOICE_SAMPLE_RATE);
+    s_rec_samples = 0;
+
+    /* Reserve a note slot for this recording */
+    tab5_rtc_time_t rtc = {0};
+    tab5_rtc_get_time(&rtc);
+
+    s_rec_note_slot = s_next_slot;
+    note_entry_t *n = &s_notes[s_rec_note_slot];
+    memset(n, 0, sizeof(*n));
+    snprintf(n->audio_path, MAX_AUDIO_PATH, "%s", s_rec_path);
+    n->state = NOTE_STATE_RECORDED;
+    n->is_voice = true;
+    n->hour = rtc.hour;
+    n->minute = rtc.minute;
+    n->day = rtc.day;
+    n->month = rtc.month;
+    n->year = (rtc.year > 2000) ? rtc.year - 2000 : 0;
+    n->used = true;
+    snprintf(n->text, MAX_NOTE_LEN, "(Recording...)");
+
+    s_next_slot = (s_next_slot + 1) % MAX_NOTES;
+    if (s_note_count < MAX_NOTES) s_note_count++;
+
+    /* Save immediately so the note exists even if we crash mid-recording.
+     * The WAV header is a placeholder (0 bytes data) — stop_recording updates it. */
+    notes_save();
+
+    ESP_LOGI(TAG, "Recording started: %s (slot %d)", s_rec_path, s_rec_note_slot);
+    return s_rec_path;
+}
+
+void ui_notes_write_audio(const int16_t *samples, size_t count)
+{
+    if (!s_rec_file || !s_rec_mutex) return;
+    if (xSemaphoreTake(s_rec_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
+
+    if (s_rec_file) {
+        fwrite(samples, sizeof(int16_t), count, s_rec_file);
+        s_rec_samples += count;
+    }
+
+    xSemaphoreGive(s_rec_mutex);
+}
+
+void ui_notes_stop_recording(const char *transcript)
+{
+    if (!s_rec_file) return;
+
+    if (s_rec_mutex) xSemaphoreTake(s_rec_mutex, portMAX_DELAY);
+
+    /* Update WAV header with final size */
+    uint32_t data_bytes = s_rec_samples * sizeof(int16_t);
+    fseek(s_rec_file, 0, SEEK_SET);
+    wav_write_header(s_rec_file, data_bytes, TAB5_VOICE_SAMPLE_RATE);
+    fclose(s_rec_file);
+    s_rec_file = NULL;
+
+    if (s_rec_mutex) xSemaphoreGive(s_rec_mutex);
+
+    float duration_s = (float)s_rec_samples / TAB5_VOICE_SAMPLE_RATE;
+    ESP_LOGI(TAG, "Recording stopped: %s (%.1fs, %lu samples)",
+             s_rec_path, duration_s, (unsigned long)s_rec_samples);
+
+    /* Update the note */
+    if (s_rec_note_slot >= 0 && s_rec_note_slot < MAX_NOTES) {
+        note_entry_t *n = &s_notes[s_rec_note_slot];
+        if (transcript && transcript[0]) {
+            strncpy(n->text, transcript, MAX_NOTE_LEN - 1);
+            n->text[MAX_NOTE_LEN - 1] = '\0';
+            n->state = NOTE_STATE_TRANSCRIBED;
+        } else {
+            snprintf(n->text, MAX_NOTE_LEN, "Voice recording (%.0fs)", duration_s);
+            n->state = NOTE_STATE_RECORDED;
+        }
+    }
+
+    s_rec_note_slot = -1;
+    s_rec_samples = 0;
+    notes_save();
+    refresh_list();
+}
+
 /* ── Voice session complete — save transcript ─────────────── */
 static void voice_session_done(void)
 {
-    const char *stt = voice_get_stt_text();
-    if (stt && stt[0]) {
-        ui_notes_add(stt, true);
+    const char *text = NULL;
+    if (voice_get_mode() == VOICE_MODE_DICTATE) {
+        text = voice_get_dictation_text();
     } else {
-        ESP_LOGW(TAG, "Voice session ended but no STT text to save");
+        text = voice_get_stt_text();
     }
+
+    /* Stop SD recording and attach transcript (if we have one) */
+    ui_notes_stop_recording((text && text[0]) ? text : NULL);
+    ESP_LOGI(TAG, "Voice session done: %s",
+             (text && text[0]) ? "transcribed" : "recorded (needs transcription)");
 }
 
 /* ── Input area (inline text note creation) ───────────────── */
@@ -406,15 +667,66 @@ static void cb_back(lv_event_t *e)
     lv_screen_load(ui_home_get_screen());
 }
 
+/* FreeRTOS task to switch to VOICE mode (connects to Dragon) */
+static void dictation_connect_task(void *arg)
+{
+    tab5_mode_switch(MODE_VOICE);
+    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
+}
+
+/* LVGL timer: poll for READY state after Dragon connect, then start dictation */
+static void pending_dictation_poll_cb(lv_timer_t *t)
+{
+    int *ticks = (int *)lv_timer_get_user_data(t);
+    (*ticks)++;
+
+    if (voice_get_state() == VOICE_STATE_READY && s_pending_dictation) {
+        s_pending_dictation = false;
+        lv_timer_delete(t);
+        free(ticks);
+        s_voice_recording = true;
+        voice_start_dictation();
+        ESP_LOGI(TAG, "Dictation auto-started after Dragon connect");
+        return;
+    }
+    /* Timeout after 15s */
+    if (*ticks > 150) {
+        s_pending_dictation = false;
+        lv_timer_delete(t);
+        free(ticks);
+        ESP_LOGW(TAG, "Dictation connect timeout");
+    }
+}
+
 static void cb_new_voice(lv_event_t *e)
 {
     (void)e;
-    if (voice_get_state() == VOICE_STATE_IDLE) {
-        s_voice_recording = true;
-        voice_start_listening();
-        ESP_LOGI(TAG, "Voice recording — note saves when session ends");
+    voice_state_t st = voice_get_state();
+
+    /* Always start SD recording first — this never needs Dragon */
+    const char *wav = ui_notes_start_recording();
+    if (!wav) {
+        ESP_LOGE(TAG, "Failed to start recording (SD card issue?)");
+        return;
+    }
+
+    s_voice_recording = true;
+
+    if (st == VOICE_STATE_READY) {
+        /* Dragon online — dual-write: SD + live dictation */
+        voice_start_dictation();
+        ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
+    } else if (st == VOICE_STATE_IDLE) {
+        /* Dragon offline — SD-only recording, connect in background for later transcription */
+        s_pending_dictation = true;
+        int *ticks = calloc(1, sizeof(int));
+        lv_timer_create(pending_dictation_poll_cb, 100, ticks);
+        ESP_LOGI(TAG, "Recording to SD (connecting to Dragon...): %s", wav);
+        xTaskCreatePinnedToCore(
+            dictation_connect_task, "dict_conn", 8192, NULL, 5, NULL, 1);
     } else {
-        ESP_LOGI(TAG, "Voice busy (state %d)", voice_get_state());
+        /* Voice busy but still record to SD */
+        ESP_LOGI(TAG, "Recording to SD only (voice busy state %d): %s", st, wav);
     }
 }
 
@@ -511,10 +823,20 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
     lv_obj_set_style_text_font(ts, &lv_font_montserrat_28, 0);
 
-    /* Type badge — bigger */
+    /* State badge — shows recording/transcription state */
     lv_obj_t *badge = lv_label_create(card);
-    lv_label_set_text(badge, n.is_voice ? "  voice  " : "  text  ");
-    lv_obj_set_style_bg_color(badge, lv_color_hex(n.is_voice ? COL_CYAN : COL_AMBER), 0);
+    const char *badge_text;
+    uint32_t badge_color;
+    switch (n.state) {
+    case NOTE_STATE_RECORDED:     badge_text = "  recorded  "; badge_color = 0xFF9F0A; break;
+    case NOTE_STATE_TRANSCRIBING: badge_text = "  processing  "; badge_color = COL_CYAN; break;
+    case NOTE_STATE_TRANSCRIBED:  badge_text = "  voice  "; badge_color = COL_CYAN; break;
+    case NOTE_STATE_FAILED:       badge_text = "  failed  "; badge_color = COL_RED; break;
+    default:                      badge_text = n.is_voice ? "  voice  " : "  text  ";
+                                  badge_color = n.is_voice ? COL_CYAN : COL_AMBER; break;
+    }
+    lv_label_set_text(badge, badge_text);
+    lv_obj_set_style_bg_color(badge, lv_color_hex(badge_color), 0);
     lv_obj_set_style_bg_opa(badge, LV_OPA_40, 0);
     lv_obj_set_style_text_color(badge, lv_color_hex(COL_WHITE), 0);
     lv_obj_set_style_text_font(badge, &lv_font_montserrat_24, 0);

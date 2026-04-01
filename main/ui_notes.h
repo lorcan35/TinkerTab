@@ -32,3 +32,18 @@ void ui_notes_delete(int idx);
 
 /** List all notes to stdout (for serial debug). */
 void ui_notes_list(void);
+
+/** Start recording a voice note to SD card. Returns the WAV file path, or NULL on failure.
+ *  The returned path is valid until the next call to ui_notes_start_recording(). */
+const char *ui_notes_start_recording(void);
+
+/** Stop recording and finalize the WAV file. Creates a note in state RECORDED.
+ *  If transcript is non-NULL, attaches it and sets state to TRANSCRIBED. */
+void ui_notes_stop_recording(const char *transcript);
+
+/** Write raw PCM samples to the active recording. Called from mic capture task.
+ *  Thread-safe (uses internal mutex). */
+void ui_notes_write_audio(const int16_t *samples, size_t count);
+
+/** Get number of unprocessed (RECORDED) notes that need transcription. */
+int ui_notes_unprocessed_count(void);

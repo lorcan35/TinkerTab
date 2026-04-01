@@ -321,7 +321,26 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         if (!s_visible) {
             ui_voice_show();
         }
-        show_state_listening();
+        if (voice_get_mode() == VOICE_MODE_DICTATE && detail && detail[0]) {
+            /* Dictation: partial transcript update — show running text */
+            lv_label_set_text(s_lbl_status, "Dictating...");
+            lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
+            lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
+            lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
+                         ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
+            lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+            /* Show partial transcript in user bubble */
+            lv_label_set_text(s_user_label, detail);
+            lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
+        } else {
+            show_state_listening();
+            /* Override status text for dictation mode */
+            if (voice_get_mode() == VOICE_MODE_DICTATE) {
+                lv_label_set_text(s_lbl_status, "Dictating...");
+            }
+        }
         break;
     case VOICE_STATE_PROCESSING:
         show_state_processing(detail);

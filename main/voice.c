@@ -16,6 +16,7 @@
  */
 
 #include "voice.h"
+#include "ui_notes.h"
 #include "audio.h"
 #include "config.h"
 #include "settings.h"
@@ -84,6 +85,12 @@ static const char *TAG = "tab5_voice";
 // Max transcript length
 #define MAX_TRANSCRIPT_LEN     512
 
+// Dictation mode constants
+#define DICTATION_SILENCE_THRESHOLD  800   /* RMS below this = silence (Tab5 mic has higher noise floor) */
+#define DICTATION_SILENCE_FRAMES     40    /* 40 × 20ms = 800ms silence before segment */
+#define DICTATION_TEXT_SIZE          8192  /* 8KB for accumulated transcript (PSRAM) */
+#define MAX_RECORD_FRAMES_ASK        1500  /* 30s limit for Ask mode only */
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -128,6 +135,10 @@ static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
 // Separated buffers: STT = what user said, LLM = what Tinker says
 static char s_stt_text[MAX_TRANSCRIPT_LEN] = {0};
 static char s_llm_text[MAX_TRANSCRIPT_LEN] = {0};
+
+// Dictation mode
+static voice_mode_t s_voice_mode = VOICE_MODE_ASK;
+static char *s_dictation_text = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
 
 static bool s_initialized = false;
 static volatile bool s_connect_in_progress = false;
@@ -378,19 +389,46 @@ static void handle_text_message(const char *data, int len)
 
     const char *type_str = type->valuestring;
 
-    if (strcmp(type_str, "stt") == 0) {
-        // Speech-to-text result — store separately from LLM response
+    if (strcmp(type_str, "stt_partial") == 0) {
+        /* Dictation mode: partial transcript from a segment */
+        cJSON *text = cJSON_GetObjectItem(root, "text");
+        if (cJSON_IsString(text) && text->valuestring && s_voice_mode == VOICE_MODE_DICTATE
+            && s_dictation_text) {
+            size_t cur_len = strlen(s_dictation_text);
+            size_t add_len = strlen(text->valuestring);
+            if (cur_len + add_len + 2 < DICTATION_TEXT_SIZE) {
+                if (cur_len > 0) strcat(s_dictation_text, " ");
+                strcat(s_dictation_text, text->valuestring);
+            }
+            ESP_LOGI(TAG, "STT partial: \"%s\" (total %u chars)",
+                     text->valuestring, (unsigned)strlen(s_dictation_text));
+            /* Update UI with running transcript */
+            voice_set_state(VOICE_STATE_LISTENING, s_dictation_text);
+        }
+    } else if (strcmp(type_str, "stt") == 0) {
         cJSON *text = cJSON_GetObjectItem(root, "text");
         if (cJSON_IsString(text) && text->valuestring) {
-            if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-            strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
-            s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
-            strncpy(s_transcript, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
-            s_transcript[MAX_TRANSCRIPT_LEN - 1] = '\0';
-            s_llm_text[0] = '\0';  // clear LLM buffer for new response
-            if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-            ESP_LOGI(TAG, "STT: \"%s\"", s_stt_text);
-            voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
+            if (s_voice_mode == VOICE_MODE_DICTATE) {
+                /* Dictation: final combined transcript — store in stt_text,
+                 * transition to READY (no LLM/TTS phase) */
+                if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+                strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
+                s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+                if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+                ESP_LOGI(TAG, "Dictation complete: %u chars", (unsigned)strlen(text->valuestring));
+                voice_set_state(VOICE_STATE_READY, "dictation_done");
+            } else {
+                /* Ask mode: STT result, proceed to LLM */
+                if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+                strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
+                s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+                strncpy(s_transcript, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
+                s_transcript[MAX_TRANSCRIPT_LEN - 1] = '\0';
+                s_llm_text[0] = '\0';
+                if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+                ESP_LOGI(TAG, "STT: \"%s\"", s_stt_text);
+                voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
+            }
         }
     } else if (strcmp(type_str, "tts_start") == 0) {
         // Dragon is about to send TTS audio
@@ -492,6 +530,10 @@ static void mic_capture_task(void *arg)
     s_mic_running = true;
     int frames_sent = 0;
 
+    /* Dictation VAD state (only used when s_voice_mode == VOICE_MODE_DICTATE) */
+    int silence_frames = 0;
+    bool had_speech = false;
+
     while (s_mic_running && s_ws_connected) {
         // Read 4-channel TDM data at 48kHz
         esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
@@ -558,18 +600,48 @@ static void mic_capture_task(void *arg)
                      frames_sent, MIC_TDM_MIC1_OFF, mn, mx, rms, out_idx);
         }
 
-        // Send 16kHz mono PCM as binary WS frame
+        // Always write to SD card WAV (if recording is active)
+        ui_notes_write_audio(mono_buf, out_idx);
+
+        // Stream to Dragon via WebSocket (if connected)
         size_t send_bytes = out_idx * sizeof(int16_t);
-        err = ws_send_binary(mono_buf, send_bytes);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to send audio chunk");
-            break;
+        if (s_ws_connected) {
+            err = ws_send_binary(mono_buf, send_bytes);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "WS send failed — continuing SD recording");
+                /* Don't break — keep recording to SD even if WS dies */
+                if (s_voice_mode == VOICE_MODE_ASK) break;
+            }
         }
         frames_sent++;
-        #define MAX_RECORD_FRAMES 1500  /* 1500 * 20ms = 30s */
-        if (frames_sent >= MAX_RECORD_FRAMES) {
-            ESP_LOGI(TAG, "Max recording duration reached (%ds)", MAX_RECORD_FRAMES * TAB5_VOICE_CHUNK_MS / 1000);
+
+        // Duration limit: 30s for Ask mode, unlimited for Dictate
+        if (s_voice_mode == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
+            ESP_LOGI(TAG, "Max recording duration reached (%ds)",
+                     MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
             break;
+        }
+
+        // Dictation VAD: detect pauses and send segment markers to Dragon
+        if (s_voice_mode == VOICE_MODE_DICTATE) {
+            int64_t sqsum = 0;
+            for (int k = 0; k < out_idx; k++) {
+                sqsum += (int64_t)mono_buf[k] * mono_buf[k];
+            }
+            float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
+
+            if (rms < DICTATION_SILENCE_THRESHOLD) {
+                silence_frames++;
+            } else {
+                if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
+                    // Pause detected — send segment marker
+                    ESP_LOGI(TAG, "Dictation: pause detected (%dms silence), sending segment",
+                             silence_frames * TAB5_VOICE_CHUNK_MS);
+                    ws_send_text("{\"type\":\"segment\"}");
+                }
+                silence_frames = 0;
+                had_speech = true;
+            }
         }
     }
 
@@ -1046,7 +1118,8 @@ esp_err_t voice_start_listening(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Starting push-to-talk");
+    ESP_LOGI(TAG, "Starting push-to-talk (ask mode)");
+    s_voice_mode = VOICE_MODE_ASK;
 
     // Send start signal to Dragon
     ESP_LOGI(TAG, "Sending {\"type\":\"start\"} to Dragon...");
@@ -1076,6 +1149,68 @@ esp_err_t voice_start_listening(void)
 
     voice_set_state(VOICE_STATE_LISTENING, NULL);
     return ESP_OK;
+}
+
+esp_err_t voice_start_dictation(void)
+{
+    if (!s_initialized || !s_ws_connected) {
+        ESP_LOGE(TAG, "Not connected for dictation");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_state != VOICE_STATE_READY) {
+        ESP_LOGW(TAG, "Cannot start dictation in state %d", s_state);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Starting dictation mode (unlimited, STT-only)");
+    s_voice_mode = VOICE_MODE_DICTATE;
+
+    /* Allocate dictation text buffer in PSRAM if not already */
+    if (!s_dictation_text) {
+        s_dictation_text = heap_caps_malloc(DICTATION_TEXT_SIZE, MALLOC_CAP_SPIRAM);
+        if (!s_dictation_text) {
+            ESP_LOGE(TAG, "Failed to allocate dictation buffer");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    s_dictation_text[0] = '\0';
+
+    /* Send start with dictate mode to Dragon */
+    esp_err_t err = ws_send_text("{\"type\":\"start\",\"mode\":\"dictate\"}");
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send dictation start");
+        return err;
+    }
+
+    /* Clear previous transcripts */
+    s_transcript[0] = '\0';
+    s_stt_text[0] = '\0';
+    s_llm_text[0] = '\0';
+
+    /* Start mic capture task — same task, mode-aware behavior */
+    s_mic_running = true;
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
+        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create mic capture task");
+        ws_send_text("{\"type\":\"stop\"}");
+        s_mic_running = false;
+        return ESP_ERR_NO_MEM;
+    }
+
+    voice_set_state(VOICE_STATE_LISTENING, NULL);
+    return ESP_OK;
+}
+
+voice_mode_t voice_get_mode(void)
+{
+    return s_voice_mode;
+}
+
+const char *voice_get_dictation_text(void)
+{
+    return s_dictation_text ? s_dictation_text : "";
 }
 
 esp_err_t voice_stop_listening(void)
