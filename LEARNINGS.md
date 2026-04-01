@@ -271,7 +271,7 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Symptom:** N/A (design decision)
 - **Root Cause:** Testing UI required flashing hardware every iteration (~2 minutes per cycle). Needed a faster dev loop.
 - **Fix:** Built SDL2 desktop simulator in `sim/`. All `ui_*.c` files compile for both x86_64/ARM64 Linux and ESP32-P4 without modification. `TINKEROS_SIMULATOR` define controls platform behavior via `main/ui_port.h`. Hardware stubs in `sim/stubs.c` return safe defaults. `make && ./tinkeros_sim` gives a 720x1280 interactive window. Mouse = touch.
-- **Prevention:** SIM-FIRST workflow is now mandatory. Simulator must pass `--test` before any hardware flash. Add any new ui_*.c to `sim/CMakeLists.txt`.
+- **Prevention:** Add any new ui_*.c to `sim/CMakeLists.txt` so it compiles in both environments.
 
 ### ui_port.h — The ONLY Platform Include for UI Files
 - **Date:** 2026-03-30
@@ -299,12 +299,37 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Date:** 2026-03-30
 - **Symptom:** Changed CONFIG_ESP_TASK_WDT_TIMEOUT_S from 5 to 60 in sdkconfig, but build still used 5s.
 - **Root Cause:** ESP-IDF caches config in build/config/sdkconfig.h. Incremental builds don't regenerate from sdkconfig.
-- **Fix:** Always rm -rf build after sdkconfig changes, then idf.py set-target esp32p4 && idf.py build.
+- **Fix:** Always `idf.py fullclean build` after sdkconfig changes, then `idf.py set-target esp32p4` to be safe.
 - **Prevention:** When changing sdkconfig, always clean build.
 
-### ESP-IDF version matters — v5.4.3 vs v5.5.2 have different toolchains
-- **Date:** 2026-03-30
-- **Symptom:** Build fails with "Tool doesn't match supported version" when switching between esp-idf-v5.4.3 and esp-idf (v5.5.2).
-- **Root Cause:** Each IDF version expects its own toolchain version. source export.sh sets PATH to the matching toolchain.
-- **Fix:** Always use the same IDF version consistently. Currently: source ~/esp/esp-idf/export.sh (v5.5.2) for builds.
-- **Prevention:** Document which IDF version is used. Don't mix.
+### sdkconfig CONFIG_IDF_TARGET must be esp32p4 for Tab5
+- **Date:** 2026-03-31
+- **Symptom:** Full clean build failed with `fatal error: esp_lcd_mipi_dsi.h: No such file directory` in debug_server.c and display.c.
+- **Root Cause:** sdkconfig had `CONFIG_IDF_TARGET="esp32"` (plain ESP32, no DSI support). Tab5 uses ESP32-P4 with MIPI DSI display panel. The DSI include paths are only exposed when the target supports MIPI DSI.
+- **Fix:** Run `idf.py set-target esp32p4` in a clean worktree. This updates sdkconfig and regenerates the build.
+- **Prevention:** Always verify `CONFIG_IDF_TARGET` matches the actual hardware (esp32p4 for Tab5). After any `idf.py fullclean`, re-run `idf.py set-target esp32p4` to be safe.
+
+### Managed_components esp_hosted Hash Error on Clean Build
+- **Date:** 2026-03-31
+- **Symptom:** `idf.py build` fails: `Hash file does not exist` for `managed_components/espressif__esp_hosted`.
+- **Root Cause:** ESP-IDF component manager tracks managed_components in a local hash file. When the managed_components directory is checked into git (as it is here) alongside a `dependencies.lock` that points to a local path, the manager gets confused. The tracked `managed_components/espressif__esp_hosted` directory interferes with the component manager's expected layout.
+- **Fix:** Move the broken tracked managed_components directory aside in a disposable worktree (not the primary checkout): `mv managed_components/espressif__esp_hosted managed_components/espressif__esp_hosted.bak`. The component manager then rebuilds its state cleanly. This is non-destructive and reversible.
+- **Prevention:** Do not check managed_components directories into git. Add them to .gitignore. The `dependencies.lock` file is sufficient for reproducible builds.
+
+### ESP32-P4 Flashes to ROM Download Mode Instead of Booting App
+- **Date:** 2026-03-31
+- **Symptom:** After flashing, board shows `rst:0x17 (CHIP_USB_UART_RESET), boot:0x204 (DOWNLOAD(USB/UART0/SPI)) waiting for download` instead of booting the app. Ctrl+C / Ctrl+R over serial did not recover.
+- **Root Cause:** ESP32-P4 reliably enters ROM download mode after esptool finishes flashing when using USB-Serial/JTAG. This is a known P4 boot behavior — the ROM bootloader, not the flashed app, starts after USB reset events.
+- **Fix:** Trigger a watchdog reset from the ROM stub while the chip is in this state:
+  ```
+  python -m esptool --chip esp32p4 -p /dev/ttyACM0 --before no_reset --after watchdog_reset read_mac
+  ```
+  This forces the ROM watchdog to fire, which causes a clean app boot from SPI flash.
+- **Prevention:** If flashing succeeds but the board boots to ROM mode, always try the watchdog reset command before assuming the flash failed.
+
+### BMI270 Post-Reset Readiness Race Causes IMU Init Failure
+- **Date:** 2026-03-31
+- **Symptom:** IMU init fails with `ESP_ERR_INVALID_STATE`. I2C bus scan shows `0x68` (BMI270 present). Soft reset succeeds. But chip-ID read fails immediately after reset.
+- **Root Cause:** BMI270 needs a short settle time after soft reset before it can respond to register reads. The first chip-ID read happens too early, and `i2c_master_bus_add_device()` returns `ESP_ERR_INVALID_STATE` for what is actually a transient not-ready condition.
+- **Fix:** After BMI270 soft reset, wait 10ms then retry chip-ID read up to 5 times with 5ms spacing between attempts. Only fail if all retries are exhausted. This is in `main/imu.c`.
+- **Prevention:** Any sensor that requires a settling period after reset needs a retry loop. Check the datasheet and add appropriate delay+retry logic rather than assuming the device is immediately ready.

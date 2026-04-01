@@ -200,11 +200,23 @@ esp_err_t tab5_imu_init(i2c_master_bus_handle_t i2c_bus)
         ESP_LOGE(TAG, "Soft reset write failed: %s", esp_err_to_name(ret));
         goto fail;
     }
-    vTaskDelay(pdMS_TO_TICKS(2));  /* BMI270 needs >= 2 ms after reset */
+    /*
+     * On the Tab5 rollback build the BMI270 is visible on the bus, but an
+     * immediate post-reset chip-ID read can transiently fail with
+     * ESP_ERR_INVALID_STATE. Give the sensor time to come back and retry the
+     * first read a few times before treating init as failed.
+     */
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     /* ── Verify chip ID ─────────────────────────────────────────────── */
     uint8_t chip_id = 0;
-    ret = imu_read_reg(BMI270_REG_CHIP_ID, &chip_id, 1);
+    for (int attempt = 0; attempt < 5; attempt++) {
+        ret = imu_read_reg(BMI270_REG_CHIP_ID, &chip_id, 1);
+        if (ret == ESP_OK) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Chip ID read failed: %s", esp_err_to_name(ret));
         goto fail;

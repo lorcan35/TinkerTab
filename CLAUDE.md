@@ -27,8 +27,8 @@ Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side 
 - Local-first, cloud-optional. NPU Llama 1B for offline, cloud APIs for smart mode.
 
 ### Priority Order
-1. Desktop SDL2 simulator + dev tooling (highest ROI — test UI without flashing)
-2. VAD + AEC + Wake Word ("Hey Tinker") — makes it hands-free, THE product feature
+1. VAD + AEC + Wake Word ("Hey Tinker") — makes it hands-free, THE product feature
+2. Desktop SDL2 simulator + dev tooling (fast dev loop without flashing)
 3. Spring animations + battery UI + OTA (polish)
 4. On-device skills/app store + offline knowledge + multi-modal vision
 
@@ -54,9 +54,6 @@ Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side 
 - Full Ubuntu on Dragon = can run anything (NOMAD, Kiwix, databases)
 - Truly open — standard tools (Ollama, QAIRT/Genie, Python), not vendor-locked
 - LEARNINGS.md with 30+ entries = institutional knowledge no competitor has
-
-## MANDATORY: Check LEARNINGS.md First
-Before writing any fix, CHECK LEARNINGS.md first. Your bug might already be documented. Every bug found, every fix, every gotcha MUST be added to LEARNINGS.md with Date/Symptom/Root Cause/Fix/Prevention.
 
 ## Workflow
 1. **Issue first** — Create a GitHub issue before starting work (`gh issue create`)
@@ -98,46 +95,36 @@ echo radxa | sudo -S systemctl status tinkerclaw-voice
 echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
-## SIM-FIRST WORKFLOW (MANDATORY)
-**Before flashing hardware, the simulator MUST pass:**
-```bash
-cd /home/rebelforce/projects/TinkerTab/sim
-make
-./tinkeros_sim --test   # must show "ALL SELF-TESTS PASSED"
-./tinkeros_sim          # manual visual check
-```
-Only after simulator passes → flash hardware.
-
-## Desktop SDL2 Simulator
-- **Location:** `sim/` directory
-- **Build:** `cd sim && make && ./tinkeros_sim`
-- **Test mode:** `./tinkeros_sim --test` (self-test + exit)
-- **Platform define:** `TINKEROS_SIMULATOR=1` activates simulator path in `ui_port.h`
-- **HAL stubs:** `sim/stubs.c` — all hardware returns safe defaults
-- **Port headers:** `sim/port/` — shadows ESP-IDF headers for compilation
-- **Window:** 720×1280, mouse = touch, ESC/Q = quit
-
-## Wokwi ESP32-P4 (Secondary Simulator)
-- VS Code extension: `wokwi.wokwi-vscode` — **Linux ARM64 confirmed supported**
-- License: **Paid** — Hobby+ $12/month minimum. No free tier for VS Code extension.
-- **MIPI-DSI: YES** — `wokwi/esp32p4-mipi-dsi-panel-demo` confirms LVGL on ILI9881C panel
-- **PSRAM cap: 8MB max** — Tab5 has 32MB. OOM likely for PSRAM-heavy framebuffers.
-- **GT911 touch: NOT available** — no Wokwi part for it. Use FT6206 as functional proxy.
-- Board type in diagram.json: `"board-esp32-p4-preview"`
-- Firmware: use `flasher_args.json` (built by `idf.py build`) — no `--preview` flag needed
-- Project files: `wokwi.toml` + `diagram.json` at repo root (already created, refs #52)
-- **CLI on DGX:** `wokwi-cli-linuxstatic-arm64` binary — works headless for CI
-- **Assessment:** SDL2 is primary (free, 32MB, full res, GT911). Wokwi = GDB + visual regression.
-- **ESP-IDF Linux target (`idf.py set-target linux`): DOES NOT WORK** — `esp_lcd` not supported on linux target. Our SDL2 sim IS the correct approach. Do NOT attempt linux target again.
-
 ## Build & Flash
 ```bash
-source ~/esp/esp-idf/export.sh  # v5.4.3
+# Always use ESP-IDF v5.5.2 — matches dependencies.lock
+. /home/rebelforce/esp/esp-idf/export.sh
+
+cd /home/rebelforce/projects/TinkerTab
+
+# Clean build (after sdkconfig changes, pull new components, or target changes):
+idf.py set-target esp32p4
 idf.py build
-idf.py uf2        # builds UF2 at build/uf2.bin (drag-and-drop flash)
+
+# Flash to device:
 idf.py -p /dev/ttyACM0 flash
-# Monitor (needs TTY — use python serial or screen):
-python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.readline().decode(errors='replace'),end='') for _ in range(1000)]"
+
+# If the board enters ROM download mode after flashing (common on ESP32-P4),
+# trigger a watchdog reset to boot the flashed app:
+python -m esptool --chip esp32p4 -p /dev/ttyACM0 --before no_reset --after watchdog_reset read_mac
+```
+
+### Monitor Serial Output
+```bash
+python3 -c "
+import serial, time
+s = serial.Serial('/dev/ttyACM0', 115200, timeout=5)
+time.sleep(0.3)
+s.write(b'\r')
+while True:
+    if s.in_waiting:
+        print(s.read(s.in_waiting).decode('utf-8', errors='replace'), end='', flush=True)
+"
 ```
 
 ## Debug Server
@@ -162,7 +149,7 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 - **Mic audio:** Slot 0 = MIC-L (primary). Extract from 4-ch TDM interleaved buffer.
 
 ## IDF Version
-- **Use IDF v5.4.3** — MIPI-DSI broken in v5.5.x, v5.4.2 missing PSRAM XIP + TCM stack fixes
+- **Use IDF v5.5.2** — matches `dependencies.lock`. Build always requires `idf.py set-target esp32p4` after any clean build or target change. Run `idf.py fullclean build` when in doubt.
 - Tab5 camera is SC202CS at SCCB 0x36 (NOT SC2336 at 0x30)
 - SD card uses SDMMC SLOT 0 with LDO channel 4
 
@@ -179,6 +166,7 @@ python3 -c "import serial; s=serial.Serial('/dev/ttyACM0',115200); [print(s.read
 - All FreeRTOS tasks doing network + LVGL callbacks need minimum 8KB stack on ESP32-P4
 - Screenshot handler must copy framebuffer under LVGL lock, then stream without lock
 - `lv_screen_load_anim()` with auto_delete=false when returning to existing home screen
+- sdkconfig changes always require `idf.py fullclean build` — incremental builds cache stale config
 
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
@@ -211,5 +199,14 @@ main/ui_home.c         — TinkerOS home screen (4-page tileview)
 main/settings.c        — NVS persistence (WiFi, Dragon host, volume, brightness)
 main/debug_server.c    — HTTP debug server (port 8080, screenshots, touch inject)
 main/main.c            — Boot sequence, serial command loop
+main/imu.c             — BMI270 IMU via I2C (try-read-retry pattern)
 LEARNINGS.md           — Institutional knowledge (MANDATORY)
 ```
+
+## Recovery & Rollback
+If something breaks after a build/flash:
+- Physical backup: `/home/rebelforce/projects/TinkerTab-backups/rollback-20260331-132117`
+- Backup git branch: `backup/pre-rollback-20260331-132117`
+- Stash: `stash@{0}` holds uncommitted work before rollback
+- To restore pre-rollback work: `git switch main && git stash apply stash@{0}`
+- Safe rollback branch: `rollback/e7c7253-clean-20260331` at commit `e7c7253`
