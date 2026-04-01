@@ -2,8 +2,8 @@
  * TinkerTab — Notes Screen
  *
  * Voice-first note-taking: tap to record a note, tap to play back.
- * Notes are stored in a static ring buffer in this module.
- * Long-term: SD card storage with WiFi/SDIO conflict resolved.
+ * Notes persist across reboots — saved as JSON to SD card (/sdcard/notes.json).
+ * Falls back to NVS blob if SD is not mounted. Saved on every add/delete.
  *
  * 720x1280 portrait, LVGL v9, dark theme.
  */

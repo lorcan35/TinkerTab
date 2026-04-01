@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""
+tab-screenshot — Capture and convert Tab5 screenshots for visual analysis.
+
+Usage:
+    tab-screenshot                  # save PNG to /tmp/tab5-screen.png
+    tab-screenshot -o FILE          # save to custom path
+    tab-screenshot --info           # print device info JSON
+    tab-screenshot --tap X Y        # inject tap then screenshot
+    tab-screenshot --screen NAME    # navigate to screen then screenshot
+    tab-screenshot --host IP        # override device IP (default 192.168.1.90)
+    tab-screenshot --raw            # save raw BMP instead of PNG
+
+Requires: Python 3, PIL (Pillow). Device must be on the network with
+debug server running on port 8080.
+"""
+
+import argparse
+import io
+import json
+import sys
+import time
+import urllib.request
+import urllib.error
+
+DEFAULT_HOST = "192.168.1.90"
+DEFAULT_PORT = 8080
+DEFAULT_OUTPUT = "/tmp/tab5-screen.png"
+
+
+def base_url(host, port):
+    return f"http://{host}:{port}"
+
+
+def fetch(url, method="GET", data=None, timeout=10):
+    """Simple HTTP fetch, returns bytes."""
+    req = urllib.request.Request(url, method=method)
+    if data:
+        req.data = data if isinstance(data, bytes) else data.encode()
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.URLError as e:
+        print(f"Error: cannot reach {url} — {e}", file=sys.stderr)
+        sys.exit(1)
+    except TimeoutError:
+        print(f"Error: timeout reaching {url}", file=sys.stderr)
+        sys.exit(1)
+
+
+def capture_screenshot(host, port, output, raw=False):
+    """Fetch BMP from device, convert to PNG, save to disk."""
+    url = f"{base_url(host, port)}/screenshot.bmp"
+    print(f"Capturing from {url} ...", file=sys.stderr)
+    bmp_data = fetch(url, timeout=30)
+
+    if raw:
+        if not output.endswith(".bmp"):
+            output = output.rsplit(".", 1)[0] + ".bmp"
+        with open(output, "wb") as f:
+            f.write(bmp_data)
+        print(f"Saved raw BMP: {output} ({len(bmp_data)} bytes)", file=sys.stderr)
+        return output
+
+    # Convert BMP → PNG via PIL
+    try:
+        from PIL import Image
+    except ImportError:
+        print("Error: Pillow not installed. Run: pip install Pillow", file=sys.stderr)
+        sys.exit(1)
+
+    img = Image.open(io.BytesIO(bmp_data))
+    if not output.endswith(".png"):
+        output = output.rsplit(".", 1)[0] + ".png"
+    img.save(output, "PNG")
+    print(f"Saved PNG: {output} ({img.size[0]}x{img.size[1]})", file=sys.stderr)
+    return output
+
+
+def device_info(host, port):
+    """Fetch and print device info."""
+    url = f"{base_url(host, port)}/info"
+    data = fetch(url)
+    info = json.loads(data)
+    print(json.dumps(info, indent=2))
+    return info
+
+
+def inject_tap(host, port, x, y):
+    """Send a tap to the device."""
+    url = f"{base_url(host, port)}/touch"
+    payload = json.dumps({"x": x, "y": y, "action": "tap"})
+    fetch(url, method="POST", data=payload)
+    print(f"Tapped ({x}, {y})", file=sys.stderr)
+
+
+def navigate_screen(host, port, screen_name):
+    """Navigate to a named screen."""
+    url = f"{base_url(host, port)}/open?screen={screen_name}"
+    fetch(url, method="POST")
+    print(f"Navigated to: {screen_name}", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Capture Tab5 screenshots for visual analysis"
+    )
+    parser.add_argument("-o", "--output", default=DEFAULT_OUTPUT,
+                        help=f"Output file path (default: {DEFAULT_OUTPUT})")
+    parser.add_argument("--host", default=DEFAULT_HOST,
+                        help=f"Device IP (default: {DEFAULT_HOST})")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help=f"Debug server port (default: {DEFAULT_PORT})")
+    parser.add_argument("--info", action="store_true",
+                        help="Print device info and exit")
+    parser.add_argument("--tap", nargs=2, type=int, metavar=("X", "Y"),
+                        help="Inject tap before screenshot")
+    parser.add_argument("--screen", type=str,
+                        help="Navigate to screen before screenshot (wifi/camera/settings/files/home/chat)")
+    parser.add_argument("--raw", action="store_true",
+                        help="Save raw BMP instead of converting to PNG")
+    parser.add_argument("--delay", type=float, default=0.5,
+                        help="Delay in seconds after tap/navigate before screenshot (default: 0.5)")
+
+    args = parser.parse_args()
+
+    if args.info:
+        device_info(args.host, args.port)
+        return
+
+    # Optional: navigate to screen first
+    if args.screen:
+        navigate_screen(args.host, args.port, args.screen)
+        time.sleep(args.delay)
+
+    # Optional: inject tap first
+    if args.tap:
+        inject_tap(args.host, args.port, args.tap[0], args.tap[1])
+        time.sleep(args.delay)
+
+    # Capture screenshot
+    output = capture_screenshot(args.host, args.port, args.output, raw=args.raw)
+    # Print the output path to stdout for piping
+    print(output)
+
+
+if __name__ == "__main__":
+    main()

@@ -5,8 +5,8 @@
  * Voice notes: tap Voice → Dragon STT → note saved when session ends.
  * Text notes: tap Text → keyboard opens inline → type + Enter to save.
  *
- * Storage: static ring buffer in RAM. Survives screen navigations.
- * Reboot persistence: NVS JSON (future — SD has WiFi/SDIO conflict).
+ * Storage: ring buffer in RAM, persisted to /sdcard/notes.json (SD card).
+ * Falls back to NVS blob if SD unavailable. Saved on every add/delete.
  */
 
 #include "ui_notes.h"
@@ -17,9 +17,12 @@
 #include "voice.h"
 #include "rtc.h"
 #include "settings.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 #include "esp_log.h"
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 
 static const char *TAG = "ui_notes";
 
@@ -62,6 +65,166 @@ typedef struct {
 static note_entry_t s_notes[MAX_NOTES];
 static int s_note_count = 0;
 static int s_next_slot  = 0;
+static bool s_loaded    = false;   /* NVS loaded at least once */
+
+/* ── Persistence — SD card JSON file ────────────────────── */
+/*
+ * Notes are stored as a JSON array in /sdcard/notes.json.
+ * Each note: {"t":"text","v":1,"ts":"2026-04-01T19:05"}
+ * Human-readable, easily accessible by plugging the SD card into a PC.
+ * Falls back to NVS blob if SD card is not mounted.
+ */
+#define NOTES_SD_PATH  "/sdcard/notes.js"
+#define NVS_NAMESPACE  "notes"
+#define NVS_KEY_DATA   "data"
+
+#include "sdcard.h"
+#include "cJSON.h"
+
+static void notes_save(void)
+{
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) return;
+
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (!s_notes[i].used) continue;
+        const note_entry_t *n = &s_notes[i];
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "t", n->text);
+        cJSON_AddNumberToObject(obj, "v", n->is_voice ? 1 : 0);
+        cJSON_AddNumberToObject(obj, "h", n->hour);
+        cJSON_AddNumberToObject(obj, "m", n->minute);
+        cJSON_AddNumberToObject(obj, "d", n->day);
+        cJSON_AddNumberToObject(obj, "mo", n->month);
+        cJSON_AddNumberToObject(obj, "y", n->year);
+        cJSON_AddNumberToObject(obj, "i", i);  /* slot index */
+        cJSON_AddItemToArray(arr, obj);
+    }
+
+    /* Wrap in envelope with ring buffer state */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "count", s_note_count);
+    cJSON_AddNumberToObject(root, "next", s_next_slot);
+    cJSON_AddItemToObject(root, "notes", arr);
+
+    char *json = cJSON_Print(root);  /* pretty-printed for readability on PC */
+    cJSON_Delete(root);
+    if (!json) return;
+
+    /* Try SD card first */
+    if (tab5_sdcard_mounted()) {
+        FILE *f = fopen(NOTES_SD_PATH, "w");
+        if (f) {
+            int written = fputs(json, f);
+            fclose(f);
+            if (written >= 0) {
+                ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
+                free(json);
+                return;
+            }
+        }
+        ESP_LOGW(TAG, "SD write failed (errno=%d), falling back to NVS", errno);
+    }
+
+    /* Fallback: NVS blob (compact binary for size) */
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_blob(h, NVS_KEY_DATA, json, strlen(json) + 1);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "Notes saved to NVS fallback (%d notes)", s_note_count);
+    }
+    free(json);
+}
+
+static void notes_load(void)
+{
+    if (s_loaded) return;
+    s_loaded = true;
+
+    char *json = NULL;
+
+    /* Try SD card first */
+    if (tab5_sdcard_mounted()) {
+        FILE *f = fopen(NOTES_SD_PATH, "r");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz > 0 && sz < 64 * 1024) {
+                json = malloc(sz + 1);
+                if (json) {
+                    fread(json, 1, sz, f);
+                    json[sz] = '\0';
+                }
+            }
+            fclose(f);
+            if (json) {
+                ESP_LOGI(TAG, "Reading notes from SD (%ld bytes)", sz);
+            }
+        }
+    }
+
+    /* Fallback: NVS */
+    if (!json) {
+        nvs_handle_t h;
+        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+            size_t blob_size = 0;
+            if (nvs_get_blob(h, NVS_KEY_DATA, NULL, &blob_size) == ESP_OK && blob_size > 2) {
+                json = malloc(blob_size);
+                if (json) {
+                    nvs_get_blob(h, NVS_KEY_DATA, json, &blob_size);
+                    ESP_LOGI(TAG, "Reading notes from NVS fallback (%u bytes)",
+                             (unsigned)blob_size);
+                }
+            }
+            nvs_close(h);
+        }
+    }
+
+    if (!json) {
+        ESP_LOGI(TAG, "No saved notes found");
+        return;
+    }
+
+    /* Parse JSON */
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    if (!root) {
+        ESP_LOGW(TAG, "Notes JSON parse failed");
+        return;
+    }
+
+    memset(s_notes, 0, sizeof(s_notes));
+    s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
+    s_next_slot  = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
+
+    cJSON *arr = cJSON_GetObjectItem(root, "notes");
+    int loaded = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, arr) {
+        int slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "i"));
+        if (slot < 0 || slot >= MAX_NOTES) continue;
+
+        note_entry_t *n = &s_notes[slot];
+        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(item, "t"));
+        if (text) {
+            strncpy(n->text, text, MAX_NOTE_LEN - 1);
+            n->text[MAX_NOTE_LEN - 1] = '\0';
+        }
+        n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
+        n->hour     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
+        n->minute   = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
+        n->day      = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "d"));
+        n->month    = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "mo"));
+        n->year     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
+        n->used = true;
+        loaded++;
+    }
+
+    cJSON_Delete(root);
+    ESP_LOGI(TAG, "Loaded %d notes", loaded);
+}
 
 /* ── Screen state ──────────────────────────────────────── */
 static lv_obj_t *s_screen      = NULL;
@@ -99,6 +262,7 @@ static void voice_state_cb(voice_state_t state, const char *detail)
 int ui_notes_add(const char *text, bool is_voice)
 {
     if (!text || !text[0]) return -1;
+    notes_load();  /* ensure loaded */
 
     tab5_rtc_time_t rtc = {0};
     tab5_rtc_get_time(&rtc);
@@ -121,6 +285,7 @@ int ui_notes_add(const char *text, bool is_voice)
     ESP_LOGI(TAG, "Note added [%s]: %.40s",
              is_voice ? "voice" : "text", text);
 
+    notes_save();
     refresh_list();
     return 0;
 }
@@ -130,12 +295,14 @@ void ui_notes_delete(int idx)
     if (idx < 0 || idx >= MAX_NOTES || !s_notes[idx].used) return;
     s_notes[idx].used = false;
     s_note_count--;
+    notes_save();
     refresh_list();
     ESP_LOGI(TAG, "Note deleted");
 }
 
 void ui_notes_list(void)
 {
+    notes_load();
     printf("%d note(s) stored\n", s_note_count);
     for (int i = 0; i < MAX_NOTES; i++) {
         if (s_notes[i].used) {
@@ -149,6 +316,7 @@ void ui_notes_list(void)
 
 bool ui_notes_get_last_preview(char *buf, size_t len)
 {
+    notes_load();
     if (!buf || s_note_count == 0) return false;
     int last_idx = (s_next_slot - 1 + MAX_NOTES) % MAX_NOTES;
     if (!s_notes[last_idx].used) return false;
@@ -158,6 +326,7 @@ bool ui_notes_get_last_preview(char *buf, size_t len)
 
 int ui_notes_count(void)
 {
+    notes_load();
     return s_note_count;
 }
 
@@ -233,6 +402,7 @@ static void cb_back(lv_event_t *e)
     (void)e;
     hide_input_area();
     ui_notes_destroy();
+    ui_home_go_home();
     lv_screen_load(ui_home_get_screen());
 }
 
