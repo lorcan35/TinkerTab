@@ -1,0 +1,43 @@
+name: Format Check
+
+on:
+  pull_request:
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 18
+          which clang-format-18
+
+      - name: Create .clang-format
+        run: |
+          if [ ! -f .clang-format ]; then
+            cat > .clang-format << 'EOF'
+BasedOnStyle: Google
+IndentWidth: 3
+UseTab: Never
+ColumnLimit: 120
+AccessModifierOffset: -3
+EOF
+          fi
+
+      - name: Check formatting
+        run: |
+          unformatted=$(clang-format-18 --dry-run --Werror main/*.c main/*.h 2>&1 || true)
+          if [ -n "$unformatted" ]; then
+            echo "The following files need formatting:"
+            echo "$unformatted"
+            echo ""
+            echo "Format them with: clang-format-18 -i main/*.c main/*.h"
+            exit 1
+          fi
+          echo "All files are correctly formatted."

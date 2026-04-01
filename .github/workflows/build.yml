@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache ESP-IDF
+        id: cache-idf
+        uses: actions/cache@v4
+        with:
+          path: ~/esp/esp-idf
+          key: esp-idf-v5.5.2-${{ runner.os }}
+
+      - name: Download ESP-IDF
+        if: steps.cache-idf.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/esp
+          curl -L -o ~/esp/esp-idf-v5.5.2.zip https://github.com/espressif/esp-idf/releases/download/v5.5.2/esp-idf-v5.5.2.zip
+          unzip -q ~/esp/esp-idf-v5.5.2.zip -d ~/esp/
+          rm ~/esp/esp-idf-v5.5.2.zip
+
+      - name: Install ESP-IDF
+        run: |
+          . ~/esp/esp-idf/install.sh
+          . ~/esp/esp-idf/export.sh
+          idf.py --version
+
+      - name: Set target
+        run: |
+          . ~/esp/esp-idf/export.sh
+          idf.py set-target esp32p4
+
+      - name: Build
+        run: |
+          . ~/esp/esp-idf/export.sh
+          idf.py build
+
+      - name: Verify artifact
+        run: test -f build/tinkertab.bin

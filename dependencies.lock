@@ -1,0 +1,85 @@
+dependencies:
+  espressif/cmake_utilities:
+    component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 0.5.3
+  espressif/eppp_link:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__eppp_link
+      type: local
+    version: 1.1.4
+  espressif/esp_codec_dev:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_codec_dev
+      type: local
+    version: 1.5.6
+  espressif/esp_hosted:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_hosted
+      type: local
+    version: 1.4.0
+  espressif/esp_lcd_touch:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_lcd_touch
+      type: local
+    version: 1.2.1
+  espressif/esp_lcd_touch_st7123:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_lcd_touch_st7123
+      type: local
+    version: 1.0.1
+  espressif/esp_serial_slave_link:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_serial_slave_link
+      type: local
+    version: 1.1.2
+  espressif/esp_wifi_remote:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_wifi_remote
+      type: local
+    version: 0.8.5
+  espressif/mdns:
+    dependencies: []
+    source:
+      path: /home/rebelforce/projects/TinkerTab/components/espressif__mdns
+      type: local
+    version: 1.11.0
+  idf:
+    source:
+      type: idf
+    version: 5.5.2
+  lvgl/lvgl:
+    component_hash: 096c69af22eaf8a2b721e3913da91918c5e6bf1a762a113ec01f401aa61337a0
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 9.2.2
+direct_dependencies:
+- espressif/cmake_utilities
+- espressif/eppp_link
+- espressif/esp_codec_dev
+- espressif/esp_hosted
+- espressif/esp_lcd_touch
+- espressif/esp_lcd_touch_st7123
+- espressif/esp_serial_slave_link
+- espressif/esp_wifi_remote
+- espressif/mdns
+- idf
+- lvgl/lvgl
+manifest_hash: 23e7054e7a95f67f172e30dc814a77998c830b875aebdf9843bdc631f2ebfc30
+target: esp32p4
+version: 2.0.0

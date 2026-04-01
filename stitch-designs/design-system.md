@@ -1,1 +1,0 @@
-# Design System Specification: The Kinetic Monolith\n\n## 1. Overview & Creative North Star\nThis design system is a departure from the \

@@ -3,7 +3,12 @@ build/
 sdkconfig
 sdkconfig.old
 managed_components/
-dependencies.lock
+
+# Large design files (kept locally, not tracked)
+stitch-designs/
+
+# Wokwi simulator state
+wokwi.dat
 
 # Python
 *.pyc

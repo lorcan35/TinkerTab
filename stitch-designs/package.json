@@ -1,6 +1,0 @@
-{
-  "dependencies": {
-    "@google/stitch-sdk": "^0.0.3",
-    "puppeteer": "^24.40.0"
-  }
-}
