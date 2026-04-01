@@ -26,3 +26,9 @@ bool ui_notes_get_last_preview(char *buf, size_t len);
 
 /** Check if notes exist. */
 int ui_notes_count(void);
+
+/** Delete a note by ring-buffer slot index. No-op if invalid index. */
+void ui_notes_delete(int idx);
+
+/** List all notes to stdout (for serial debug). */
+void ui_notes_list(void);

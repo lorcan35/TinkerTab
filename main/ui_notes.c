@@ -146,6 +146,19 @@ void ui_notes_delete(int idx)
     ESP_LOGI(TAG, "Note deleted");
 }
 
+void ui_notes_list(void)
+{
+    printf("%d note(s) stored\n", s_note_count);
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (s_notes[i].used) {
+            printf("  [%d] %s: %.60s\n",
+                   i,
+                   s_notes[i].is_voice ? "V" : "T",
+                   s_notes[i].text);
+        }
+    }
+}
+
 /* ── Voice session complete — save transcript ─────────────── */
 static void voice_session_done(void)
 {

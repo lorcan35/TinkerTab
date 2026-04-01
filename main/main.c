@@ -44,6 +44,7 @@
 #include "ui_home.h"
 #include "ui_keyboard.h"
 #include "ui_voice.h"
+#include "ui_notes.h"
 #include "settings.h"
 #include "debug_server.h"
 #include "voice.h"
@@ -635,6 +636,33 @@ void app_main(void)
                             xTaskCreatePinnedToCore(voice_test_task, "voice_test",
                                                     16384, NULL, 5, NULL, 1);
                         }
+                    } else if (strncmp(cmd_buf, "noteadd ", 8) == 0) {
+                        /* noteadd <text> — add a text note */
+                        const char *text = cmd_buf + 8;
+                        if (text[0] == '\0') {
+                            printf("Usage: noteadd <text>\n");
+                        } else {
+                            int idx = ui_notes_add(text, false);
+                            if (idx >= 0) {
+                                printf("Note added (slot %d): %.40s\n", idx, text);
+                            } else {
+                                printf("Note add failed\n");
+                            }
+                        }
+                    } else if (strcmp(cmd_buf, "notes") == 0) {
+                        /* List all notes */
+                        ui_notes_list();
+                    } else if (strncmp(cmd_buf, "notedel ", 8) == 0) {
+                        /* notedel <idx> — delete a note by slot index */
+                        int idx = atoi(cmd_buf + 8);
+                        ui_notes_delete(idx);
+                        printf("Note %d deleted\n", idx);
+                    } else if (strcmp(cmd_buf, "notetest") == 0) {
+                        /* Add 3 test notes */
+                        ui_notes_add("This is a test note from serial", false);
+                        ui_notes_add("Second test note — voice flag", true);
+                        ui_notes_add("Third note — checking ring buffer wrap", false);
+                        printf("3 test notes added\n");
                     } else if (strcmp(cmd_buf, "reboot") == 0) {
                         printf("Rebooting...\n");
                         vTaskDelay(pdMS_TO_TICKS(100));
@@ -643,7 +671,8 @@ void app_main(void)
                         printf("Unknown: %s\n", cmd_buf);
                         printf("Commands: info, heap, wifi, stream, scan,\n"
                                "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
-                               "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat, reboot\n");
+                               "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
+                               "  noteadd <text>, notes, notedel <idx>, notetest, reboot\n");
                     }
                 }
                 pos = 0;
