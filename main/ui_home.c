@@ -20,6 +20,7 @@
 #include "ui_settings.h"
 #include "ui_voice.h"
 #include "ui_keyboard.h"
+#include "mode_manager.h"
 #include "voice.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -32,6 +33,8 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -424,17 +427,33 @@ lv_obj_t *ui_home_create(void)
  *  Callbacks
  * ================================================================ */
 
+/* FreeRTOS task to connect to Dragon voice (mode switch) */
+static void voice_connect_task(void *arg)
+{
+    tab5_mode_switch(MODE_VOICE);
+    vTaskSuspend(NULL);
+}
+
 static void orb_tap_cb(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "Orb tapped — starting voice");
     voice_state_t st = voice_get_state();
-    if (st == VOICE_STATE_IDLE) {
-        voice_start_listening();
-    } else if (st == VOICE_STATE_READY) {
-        /* Already connected — just start listening */
-        voice_start_listening();
+
+    if (st == VOICE_STATE_READY) {
+        esp_err_t err = voice_start_listening();
+        if (err != ESP_OK) {
+            show_toast("Voice not ready — try again");
+            ESP_LOGW(TAG, "voice_start_listening failed: %s", esp_err_to_name(err));
+        }
+    } else if (st == VOICE_STATE_IDLE) {
+        /* Not connected — connect to Dragon first */
+        show_toast("Connecting to Tinker...");
+        xTaskCreatePinnedToCore(
+            voice_connect_task, "voice_conn", 8192, NULL, 5, NULL, 1);
+    } else if (st == VOICE_STATE_CONNECTING) {
+        show_toast("Connecting...");
     } else {
+        show_toast("Voice is busy");
         ESP_LOGI(TAG, "Voice busy (state %d)", st);
     }
 }

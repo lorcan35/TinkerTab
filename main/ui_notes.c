@@ -1032,7 +1032,22 @@ static void cb_new_voice(lv_event_t *e)
     /* Always start SD recording first */
     const char *wav = ui_notes_start_recording();
     if (!wav) {
-        ESP_LOGE(TAG, "Failed to start recording (SD card issue?)");
+        ESP_LOGE(TAG, "Failed to start recording — SD card not mounted?");
+        /* Show toast on the layer_top so it's visible from any screen */
+        lv_obj_t *toast = lv_obj_create(lv_layer_top());
+        lv_obj_set_size(toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_align(toast, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_set_style_bg_color(toast, lv_color_hex(0xFF453A), 0);
+        lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
+        lv_obj_set_style_radius(toast, 16, 0);
+        lv_obj_set_style_pad_all(toast, 20, 0);
+        lv_obj_set_style_border_width(toast, 0, 0);
+        lv_obj_t *lbl = lv_label_create(toast);
+        lv_label_set_text(lbl, "SD card not ready");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_timer_t *tmr = lv_timer_create((lv_timer_cb_t)lv_obj_delete, 2000, toast);
+        lv_timer_set_repeat_count(tmr, 1);
         return;
     }
 
@@ -1040,8 +1055,12 @@ static void cb_new_voice(lv_event_t *e)
 
     if (st == VOICE_STATE_READY) {
         /* Dragon online — dual-write: SD + live dictation via voice module */
-        voice_start_dictation();
-        ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
+        esp_err_t err = voice_start_dictation();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Dictation start failed, continuing SD-only");
+        } else {
+            ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
+        }
     } else {
         /* Offline or busy — SD-only recording with standalone mic task */
         s_sd_rec_running = true;

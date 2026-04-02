@@ -1300,9 +1300,13 @@ static void orb_ready_click_cb(lv_event_t *e)
         return;  /* Guard: only act in READY state */
     }
     ESP_LOGI(TAG, "Orb tapped in READY state — starting recording");
-    /* Don't remove callback here (unsafe from within handler).
-     * show_state_listening() handles cleanup. */
-    voice_start_listening();
+    esp_err_t err = voice_start_listening();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "voice_start_listening failed: %s", esp_err_to_name(err));
+        lv_label_set_text(s_lbl_status, "Connection lost — tap to retry");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF4444), 0);
+        lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void orb_speak_click_cb(lv_event_t *e)
