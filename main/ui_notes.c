@@ -668,8 +668,11 @@ static void transcription_queue_task(void *arg)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(15000));  /* check every 15s */
 
-        /* Don't process while a recording is active */
+        /* Don't process while recording or voice is active — concurrent
+         * HTTP upload + WS connection exhausts DMA memory */
         if (s_rec_file || s_sd_rec_running || s_voice_recording) continue;
+        voice_state_t vst = voice_get_state();
+        if (vst != VOICE_STATE_IDLE && vst != VOICE_STATE_READY) continue;
 
         notes_load();
         int pending = ui_notes_unprocessed_count();

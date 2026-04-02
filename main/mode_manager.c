@@ -119,7 +119,14 @@ esp_err_t tab5_mode_switch(tab5_mode_t new_mode)
     tab5_mode_t old_mode = s_mode;
 
     if (old_mode == new_mode) {
-        ESP_LOGD(TAG, "Already in %s", mode_names[new_mode]);
+        /* Special case: if we're in VOICE mode but voice is disconnected,
+         * force a reconnect instead of returning early. */
+        if (new_mode == MODE_VOICE && voice_get_state() == VOICE_STATE_IDLE) {
+            ESP_LOGI(TAG, "VOICE mode but disconnected — reconnecting");
+            start_voice();
+        } else {
+            ESP_LOGD(TAG, "Already in %s", mode_names[new_mode]);
+        }
         xSemaphoreGive(s_mutex);
         return ESP_OK;
     }
