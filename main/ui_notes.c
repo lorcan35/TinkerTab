@@ -452,7 +452,10 @@ int ui_notes_unprocessed_count(void)
     notes_load();
     int count = 0;
     for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && s_notes[i].state == NOTE_STATE_RECORDED) count++;
+        if (!s_notes[i].used) continue;
+        /* Count RECORDED and FAILED-with-audio (retry on transient errors) */
+        if (s_notes[i].state == NOTE_STATE_RECORDED) count++;
+        if (s_notes[i].state == NOTE_STATE_FAILED && s_notes[i].audio_path[0]) count++;
     }
     return count;
 }
@@ -676,12 +679,14 @@ static void transcription_queue_task(void *arg)
         /* Need WiFi to be up — Dragon reachability is tested by the HTTP POST itself */
         if (!tab5_wifi_connected()) continue;
 
-        /* Find the first RECORDED note with an audio file */
+        /* Find the first note needing transcription (RECORDED or FAILED with audio) */
         int slot = -1;
         for (int i = 0; i < MAX_NOTES; i++) {
-            if (!s_notes[i].used || s_notes[i].state != NOTE_STATE_RECORDED) continue;
+            if (!s_notes[i].used) continue;
+            bool needs_work = (s_notes[i].state == NOTE_STATE_RECORDED) ||
+                              (s_notes[i].state == NOTE_STATE_FAILED && s_notes[i].audio_path[0]);
+            if (!needs_work) continue;
             if (!s_notes[i].audio_path[0]) {
-                /* No audio file — can't transcribe, mark failed */
                 s_notes[i].state = NOTE_STATE_FAILED;
                 snprintf(s_notes[i].text, MAX_NOTE_LEN, "(No audio file)");
                 notes_save();
@@ -749,13 +754,13 @@ static void transcription_queue_task(void *arg)
         fread(audio_buf, 1, file_size, f);
         fclose(f);
 
-        /* Build URL: http://<dragon_host>:<voice_port>/api/v1/transcribe */
+        /* Build URL: http://<dragon_host>:3502/api/v1/transcribe
+         * Voice server (with STT) runs on port 3502, not the CDP port (3501). */
         char dragon_host[64];
         tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
-        uint16_t dragon_port = tab5_settings_get_dragon_port();
         char url[128];
         snprintf(url, sizeof(url), "http://%s:%d/api/v1/transcribe",
-                 dragon_host, dragon_port);
+                 dragon_host, TAB5_VOICE_PORT);
 
         /* HTTP POST */
         esp_http_client_config_t http_cfg = {
