@@ -50,3 +50,6 @@ int ui_notes_unprocessed_count(void);
 
 /** Start background transcription task (call once after WiFi + Dragon are up). */
 void ui_notes_start_transcription_queue(void);
+
+/** Delete all FAILED notes. Returns number deleted. */
+int ui_notes_clear_failed(void);

@@ -298,6 +298,19 @@ static void notes_load(void)
         nvs_close(nh);
     }
 
+    /* Reset stuck TRANSCRIBING notes back to RECORDED for retry.
+     * This happens when the device reboots mid-transcription. */
+    int reset_count = 0;
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (s_notes[i].used && s_notes[i].state == NOTE_STATE_TRANSCRIBING) {
+            s_notes[i].state = NOTE_STATE_RECORDED;
+            reset_count++;
+        }
+    }
+    if (reset_count > 0) {
+        ESP_LOGI(TAG, "Reset %d stuck TRANSCRIBING notes to RECORDED", reset_count);
+    }
+
     /* Ensure recordings directory exists */
     if (tab5_sdcard_mounted()) {
         struct stat st;
@@ -442,6 +455,24 @@ int ui_notes_unprocessed_count(void)
         if (s_notes[i].used && s_notes[i].state == NOTE_STATE_RECORDED) count++;
     }
     return count;
+}
+
+int ui_notes_clear_failed(void)
+{
+    notes_load();
+    int cleared = 0;
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (s_notes[i].used && (s_notes[i].state == NOTE_STATE_FAILED ||
+            (s_notes[i].is_voice && s_notes[i].state == NOTE_STATE_RECORDED
+             && strncmp(s_notes[i].text, "(Recording", 10) == 0
+             && !s_notes[i].audio_path[0]))) {
+            s_notes[i].used = false;
+            s_note_count--;
+            cleared++;
+        }
+    }
+    if (cleared > 0) notes_save();
+    return cleared;
 }
 
 /* ── WAV recording ──────────────────────────────────────── */

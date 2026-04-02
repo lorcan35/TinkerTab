@@ -675,6 +675,10 @@ void app_main(void)
                         ui_notes_add("Second test note — voice flag", true);
                         ui_notes_add("Third note — checking ring buffer wrap", false);
                         printf("3 test notes added\n");
+                    } else if (strcmp(cmd_buf, "noteclear") == 0) {
+                        /* Delete all FAILED and empty recording notes */
+                        int cleared = ui_notes_clear_failed();
+                        printf("Cleared %d failed/empty notes\n", cleared);
                     } else if (strcmp(cmd_buf, "reboot") == 0) {
                         printf("Rebooting...\n");
                         vTaskDelay(pdMS_TO_TICKS(100));
@@ -684,7 +688,7 @@ void app_main(void)
                         printf("Commands: info, heap, wifi, stream, scan,\n"
                                "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
                                "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
-                               "  noteadd <text>, notes, notedel <idx>, notetest, reboot\n");
+                               "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot\n");
                     }
                 }
                 pos = 0;

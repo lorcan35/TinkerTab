@@ -66,6 +66,8 @@ static const char *TAG = "tab5_voice";
 #define VOICE_CONNECT_TIMEOUT_MS 5000
 // Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
 #define VOICE_KEEPALIVE_MS       15000
+// Dragon response timeout: auto-cancel if no STT/LLM response after stop
+#define VOICE_RESPONSE_TIMEOUT_MS 60000
 
 // Mic capture task (needs room for 3840-sample TDM buffer on stack)
 #define MIC_TASK_STACK_SIZE    4096  /* Reduced: tdm_buf moved to PSRAM heap (#18) */
@@ -277,7 +279,8 @@ static esp_err_t ws_send_text(const char *msg)
     free(buf);
 
     if (ret < 0) {
-        ESP_LOGE(TAG, "WS text send failed: %d", ret);
+        ESP_LOGE(TAG, "WS text send failed: %d — marking disconnected", ret);
+        s_ws_connected = false;
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -313,7 +316,8 @@ static esp_err_t ws_send_binary(const void *data, size_t len)
     free(buf);
 
     if (ret < 0) {
-        ESP_LOGE(TAG, "WS binary send failed (%zu bytes): %d", len, ret);
+        ESP_LOGW(TAG, "WS binary send failed — marking disconnected");
+        s_ws_connected = false;
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -534,7 +538,7 @@ static void mic_capture_task(void *arg)
     int silence_frames = 0;
     bool had_speech = false;
 
-    while (s_mic_running && s_ws_connected) {
+    while (s_mic_running && (s_ws_connected || s_voice_mode == VOICE_MODE_DICTATE)) {
         // Read 4-channel TDM data at 48kHz
         esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
         if (err != ESP_OK) {
@@ -754,6 +758,14 @@ static void ws_receive_task(void *arg)
                 int64_t elapsed_us = esp_timer_get_time() - s_last_activity_us;
                 if (elapsed_us > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
                     ws_send_text("{\"type\":\"ping\"}");
+                    s_last_activity_us = esp_timer_get_time();
+                }
+                /* Response timeout: if Dragon hasn't sent anything in 60s, give up */
+                if (elapsed_us > (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000) {
+                    ESP_LOGW(TAG, "Dragon response timeout (%ds) — cancelling",
+                             VOICE_RESPONSE_TIMEOUT_MS / 1000);
+                    ws_send_text("{\"type\":\"cancel\"}");
+                    voice_set_state(VOICE_STATE_READY, "timeout");
                     s_last_activity_us = esp_timer_get_time();
                 }
             }
