@@ -196,6 +196,7 @@ static int         s_rec_seconds  = 0;
 /* Timers */
 static lv_timer_t *s_dot_timer    = NULL;
 static lv_timer_t *s_hide_timer   = NULL;
+static lv_timer_t *s_stuck_timer  = NULL;  /* watchdog for stuck PROCESSING state */
 static int         s_dot_phase    = 0;
 
 /* Current state tracking */
@@ -225,6 +226,27 @@ void ui_voice_init(void)
     ESP_LOGI(TAG, "Voice UI initialized — mic button at bottom-left");
 }
 
+/* Watchdog: if stuck in PROCESSING/SPEAKING for 65s, force-cancel.
+ * This catches the case where the WS receive task dies and the
+ * in-task timeout never fires. */
+static void stuck_watchdog_cb(lv_timer_t *t)
+{
+    s_stuck_timer = NULL;
+    if (s_cur_state == VOICE_STATE_PROCESSING || s_cur_state == VOICE_STATE_SPEAKING) {
+        ESP_LOGW(TAG, "Stuck watchdog: force-cancelling after 65s in state %d", s_cur_state);
+        voice_cancel();
+        /* Show error and auto-hide */
+        stop_all_anims();
+        lv_label_set_text(s_lbl_status, "Timed out — try again");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF4444), 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+        s_hide_timer = lv_timer_create(auto_hide_timer_cb, 3000, NULL);
+        lv_timer_set_repeat_count(s_hide_timer, 1);
+    }
+}
+
 void ui_voice_on_state_change(voice_state_t state, const char *detail)
 {
     ESP_LOGI(TAG, "State change: %d -> %d (%s)", s_cur_state, state,
@@ -237,6 +259,16 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
     if (s_hide_timer) {
         lv_timer_delete(s_hide_timer);
         s_hide_timer = NULL;
+    }
+
+    /* Manage stuck watchdog timer */
+    if (s_stuck_timer) {
+        lv_timer_delete(s_stuck_timer);
+        s_stuck_timer = NULL;
+    }
+    if (state == VOICE_STATE_PROCESSING || state == VOICE_STATE_SPEAKING) {
+        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 65000, NULL);
+        lv_timer_set_repeat_count(s_stuck_timer, 1);
     }
 
     switch (state) {
@@ -1152,6 +1184,12 @@ static void stop_all_anims(void)
     if (s_rec_timer) {
         lv_timer_delete(s_rec_timer);
         s_rec_timer = NULL;
+    }
+
+    /* Cancel stuck watchdog if running */
+    if (s_stuck_timer) {
+        lv_timer_delete(s_stuck_timer);
+        s_stuck_timer = NULL;
     }
 
     /* Remove orb click handler if set (Fix #4 cleanup) */
