@@ -82,3 +82,6 @@ const char *voice_get_dictation_text(void);
 
 // Clear conversation history on Dragon (start fresh context)
 esp_err_t voice_clear_history(void);
+
+// Send text message to Dragon (skips STT, goes straight to LLM)
+esp_err_t voice_send_text(const char *text);

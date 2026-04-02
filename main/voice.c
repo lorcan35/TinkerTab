@@ -501,6 +501,13 @@ static void handle_text_message(const char *data, int len)
             voice_set_state(VOICE_STATE_READY, NULL);
             ESP_LOGI(TAG, "Connected to Dragon voice server");
         }
+    } else if (strcmp(type_str, "llm_done") == 0) {
+        /* LLM streaming complete — informational only (TTS may follow) */
+        cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
+        ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
+    } else if (strcmp(type_str, "config_update") == 0) {
+        /* Dragon pushed new config — log for now */
+        ESP_LOGI(TAG, "Config update from Dragon (not applied yet)");
     } else {
         ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
@@ -751,22 +758,30 @@ static void ws_receive_task(void *arg)
         }
         if (poll == 0) {
             // No data available — playback drain task handles I2S writes separately.
-            // Send keep-alive heartbeat during processing to prevent TCP idle timeout.
-            // Uses JSON text frame (not WS ping) because esp_transport_ws fragments
-            // control frames, which aiohttp rejects as "fragmented control frame".
             if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
-                int64_t elapsed_us = esp_timer_get_time() - s_last_activity_us;
-                if (elapsed_us > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
+                int64_t now_us = esp_timer_get_time();
+                int64_t elapsed_us = now_us - s_last_activity_us;
+
+                // Send keep-alive heartbeat to prevent TCP idle timeout.
+                // Uses JSON text frame (not WS ping) because esp_transport_ws fragments
+                // control frames, which aiohttp rejects as "fragmented control frame".
+                // NOTE: keepalive does NOT reset s_last_activity_us — only real
+                // incoming data resets the timer, so the response timeout can fire.
+                static int64_t s_last_keepalive_us = 0;
+                if ((now_us - s_last_keepalive_us) > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
                     ws_send_text("{\"type\":\"ping\"}");
-                    s_last_activity_us = esp_timer_get_time();
+                    s_last_keepalive_us = now_us;
                 }
-                /* Response timeout: if Dragon hasn't sent anything in 60s, give up */
+
+                /* Response timeout: if Dragon hasn't sent anything in 20s, give up */
                 if (elapsed_us > (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000) {
                     ESP_LOGW(TAG, "Dragon response timeout (%ds) — cancelling",
                              VOICE_RESPONSE_TIMEOUT_MS / 1000);
                     ws_send_text("{\"type\":\"cancel\"}");
+                    playback_buf_reset();
+                    tab5_audio_speaker_enable(false);
                     voice_set_state(VOICE_STATE_READY, "timeout");
-                    s_last_activity_us = esp_timer_get_time();
+                    s_last_activity_us = now_us;
                 }
             }
             continue;
@@ -1381,4 +1396,37 @@ const char *voice_get_stt_text(void)
 const char *voice_get_llm_text(void)
 {
     return s_llm_text;
+}
+
+esp_err_t voice_send_text(const char *text)
+{
+    if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
+    if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
+
+    /* Build JSON: {"type":"text","content":"..."} */
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "text");
+    cJSON_AddStringToObject(msg, "content", text);
+    char *json = cJSON_PrintUnformatted(msg);
+    cJSON_Delete(msg);
+    if (!json) return ESP_ERR_NO_MEM;
+
+    ESP_LOGI(TAG, "Sending text to Dragon: %s", text);
+
+    /* Store as user STT text for UI display */
+    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    strncpy(s_stt_text, text, MAX_TRANSCRIPT_LEN - 1);
+    s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+    strncpy(s_transcript, text, MAX_TRANSCRIPT_LEN - 1);
+    s_transcript[MAX_TRANSCRIPT_LEN - 1] = '\0';
+    s_llm_text[0] = '\0';
+    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+
+    esp_err_t ret = ws_send_text(json);
+    free(json);
+
+    if (ret == ESP_OK) {
+        voice_set_state(VOICE_STATE_PROCESSING, text);
+    }
+    return ret;
 }
