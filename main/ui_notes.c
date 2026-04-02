@@ -1134,10 +1134,69 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_pad_top(lbl, 20, 0);
 }
 
+/* Delete confirmation callbacks */
+static void cb_confirm_delete_yes(lv_event_t *e)
+{
+    lv_obj_t *dialog = (lv_obj_t *)lv_event_get_user_data(e);
+    int note_idx = (int)(intptr_t)lv_obj_get_user_data(dialog);
+    lv_obj_del(dialog);
+    ui_notes_delete(note_idx);
+}
+
+static void cb_confirm_delete_no(lv_event_t *e)
+{
+    lv_obj_t *dialog = (lv_obj_t *)lv_event_get_user_data(e);
+    lv_obj_del(dialog);
+}
+
 static void cb_note_delete(lv_event_t *e)
 {
     int note_idx = (int)(intptr_t)lv_event_get_user_data(e);
-    ui_notes_delete(note_idx);
+
+    /* Show confirmation dialog */
+    lv_obj_t *dialog = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(dialog, 480, 200);
+    lv_obj_align(dialog, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(dialog, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_bg_opa(dialog, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(dialog, 24, 0);
+    lv_obj_set_style_border_width(dialog, 1, 0);
+    lv_obj_set_style_border_color(dialog, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_border_opa(dialog, LV_OPA_40, 0);
+    lv_obj_clear_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_user_data(dialog, (void *)(intptr_t)note_idx);
+
+    lv_obj_t *lbl = lv_label_create(dialog);
+    lv_label_set_text(lbl, "Delete this note?");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, 20);
+
+    /* Yes button */
+    lv_obj_t *yes = lv_button_create(dialog);
+    lv_obj_set_size(yes, 160, 60);
+    lv_obj_align(yes, LV_ALIGN_BOTTOM_LEFT, 20, -16);
+    lv_obj_set_style_bg_color(yes, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_radius(yes, 16, 0);
+    lv_obj_add_event_cb(yes, cb_confirm_delete_yes, LV_EVENT_CLICKED, dialog);
+    lv_obj_t *yes_lbl = lv_label_create(yes);
+    lv_label_set_text(yes_lbl, "Delete");
+    lv_obj_set_style_text_color(yes_lbl, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(yes_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(yes_lbl);
+
+    /* No button */
+    lv_obj_t *no = lv_button_create(dialog);
+    lv_obj_set_size(no, 160, 60);
+    lv_obj_align(no, LV_ALIGN_BOTTOM_RIGHT, -20, -16);
+    lv_obj_set_style_bg_color(no, lv_color_hex(COL_CARD2), 0);
+    lv_obj_set_style_radius(no, 16, 0);
+    lv_obj_add_event_cb(no, cb_confirm_delete_no, LV_EVENT_CLICKED, dialog);
+    lv_obj_t *no_lbl = lv_label_create(no);
+    lv_label_set_text(no_lbl, "Cancel");
+    lv_obj_set_style_text_color(no_lbl, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(no_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(no_lbl);
 }
 
 /* ── Note card widget ──────────────────────────────────── */

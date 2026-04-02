@@ -88,6 +88,7 @@ static lv_obj_t  *lbl_sbar_time   = NULL;
 static lv_obj_t  *lbl_sbar_wifi  = NULL;
 static lv_obj_t  *lbl_sbar_batt  = NULL;
 static lv_obj_t  *lbl_privacy    = NULL;   /* "Local" badge */
+static lv_obj_t  *lbl_sbar_dragon = NULL;  /* Dragon connection dot */
 
 /* Home page (Page 0) */
 static lv_obj_t  *lbl_clock     = NULL;
@@ -339,12 +340,22 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_ext_click_area(lbl_privacy, 10);
         lv_obj_add_event_cb(lbl_privacy, privacy_tap_cb, LV_EVENT_CLICKED, NULL);
 
+        /* Dragon status dot (green=connected, red=offline) */
+        lbl_sbar_dragon = lv_obj_create(sbar);
+        lv_obj_set_size(lbl_sbar_dragon, 12, 12);
+        lv_obj_set_style_radius(lbl_sbar_dragon, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(lbl_sbar_dragon, lv_color_hex(COL_RED), 0);
+        lv_obj_set_style_bg_opa(lbl_sbar_dragon, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(lbl_sbar_dragon, 0, 0);
+        lv_obj_align(lbl_sbar_dragon, LV_ALIGN_RIGHT_MID, -120, 0);
+        lv_obj_clear_flag(lbl_sbar_dragon, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
         /* WiFi (right of center) */
         lbl_sbar_wifi = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_wifi, LV_SYMBOL_WIFI);
         lv_obj_set_style_text_color(lbl_sbar_wifi, lv_color_hex(COL_WHITE), 0);
         lv_obj_set_style_text_font(lbl_sbar_wifi, &lv_font_montserrat_24, 0);
-        lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -80, 0);
+        lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -90, 0);
 
         /* Battery (far right) */
         lbl_sbar_batt = lv_label_create(sbar);
@@ -634,6 +645,29 @@ void ui_home_update_status(void)
             lv_color_hex(wifi_on ? COL_WHITE : COL_LABEL3), 0);
     }
 
+    /* Dragon connection status dot */
+    if (lbl_sbar_dragon) {
+        dragon_state_t ds = tab5_dragon_get_state();
+        bool dragon_ok = (ds == DRAGON_STATE_CONNECTED || ds == DRAGON_STATE_STREAMING);
+        lv_obj_set_style_bg_color(lbl_sbar_dragon,
+            lv_color_hex(dragon_ok ? COL_MINT : COL_RED), 0);
+    }
+
+    /* Low battery warnings */
+    {
+        static bool s_warned_10 = false;
+        static bool s_warned_5 = false;
+        if (bpct <= 10 && bpct > 5 && !s_warned_10) {
+            s_warned_10 = true;
+            show_toast("Battery low (10%)");
+        }
+        if (bpct <= 5 && bpct > 0 && !s_warned_5) {
+            s_warned_5 = true;
+            show_toast("Battery critical — plug in soon!");
+            ESP_LOGW(TAG, "Battery critical (%u%%)", bpct);
+        }
+    }
+
     /* Last note card */
     if (lbl_last_note) {
         char note_preview[96];
@@ -665,6 +699,7 @@ void ui_home_destroy(void)
         orb_ring = NULL;
         lbl_clock = lbl_date = lbl_greeting = NULL;
         lbl_sbar_time = lbl_sbar_wifi = lbl_sbar_batt = NULL;
+        lbl_sbar_dragon = NULL;
         lbl_privacy = NULL;
         lbl_last_note = NULL;
         last_note_card = NULL;
