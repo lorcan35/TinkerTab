@@ -557,6 +557,23 @@ void ui_notes_write_audio(const int16_t *samples, size_t count)
     if (s_rec_file) {
         fwrite(samples, sizeof(int16_t), count, s_rec_file);
         s_rec_samples += count;
+
+        /* Commit to SD every ~2 seconds: close + reopen to force FAT metadata update.
+         * fflush alone doesn't update directory entry size on FAT. */
+        if (s_rec_samples % (100 * 320) < count) {
+            /* Update WAV header with current size, close, reopen at end */
+            uint32_t data_bytes = s_rec_samples * sizeof(int16_t);
+            fseek(s_rec_file, 0, SEEK_SET);
+            wav_write_header(s_rec_file, data_bytes, TAB5_VOICE_SAMPLE_RATE);
+            fflush(s_rec_file);
+            fclose(s_rec_file);
+            s_rec_file = fopen(s_rec_path, "r+b");
+            if (s_rec_file) {
+                fseek(s_rec_file, 0, SEEK_END);
+            } else {
+                ESP_LOGE(TAG, "Failed to reopen recording file");
+            }
+        }
     }
 
     xSemaphoreGive(s_rec_mutex);
@@ -663,11 +680,30 @@ static void transcription_queue_task(void *arg)
         fseek(f, 0, SEEK_SET);
 
         if (file_size < 100 || file_size > 30 * 1024 * 1024) {
-            ESP_LOGW(TAG, "WAV file size invalid: %ld", file_size);
+            ESP_LOGW(TAG, "WAV file too small or too large: %ld bytes", file_size);
             fclose(f);
             n->state = NOTE_STATE_FAILED;
+            snprintf(n->text, MAX_NOTE_LEN, "(Empty recording)");
             notes_save();
             continue;
+        }
+        /* Fix WAV header if it was from a crashed recording (header says 0 data) */
+        if (file_size > 44) {
+            uint32_t hdr_data_size = 0;
+            fseek(f, 40, SEEK_SET);
+            fread(&hdr_data_size, 4, 1, f);
+            if (hdr_data_size == 0 || hdr_data_size > (uint32_t)(file_size - 44)) {
+                /* Fix the header in place */
+                uint32_t actual_data = (uint32_t)(file_size - 44);
+                uint32_t riff_size = actual_data + 36;
+                fseek(f, 4, SEEK_SET);
+                fwrite(&riff_size, 4, 1, f);
+                fseek(f, 40, SEEK_SET);
+                fwrite(&actual_data, 4, 1, f);
+                fflush(f);
+                ESP_LOGI(TAG, "Fixed WAV header: %lu data bytes", (unsigned long)actual_data);
+            }
+            fseek(f, 0, SEEK_SET);
         }
 
         char *audio_buf = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
@@ -899,9 +935,13 @@ static void sd_record_task(void *arg)
         return;
     }
 
+    int frames = 0;
     while (s_sd_rec_running) {
         esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
         if (err != ESP_OK) {
+            if (frames == 0) {
+                ESP_LOGE(TAG, "SD rec: mic_read failed: %s", esp_err_to_name(err));
+            }
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
@@ -914,6 +954,13 @@ static void sd_record_task(void *arg)
         }
 
         ui_notes_write_audio(mono_buf, out_idx);
+        frames++;
+        if (frames == 1) {
+            ESP_LOGI(TAG, "SD rec: first audio chunk written (%d samples)", out_idx);
+        }
+        if (frames % 250 == 0) {  /* every 5 seconds */
+            ESP_LOGI(TAG, "SD rec: %d frames (%.1fs)", frames, frames * 0.02f);
+        }
     }
 
     heap_caps_free(tdm_buf);
