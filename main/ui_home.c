@@ -243,24 +243,34 @@ static lv_obj_t *build_page_notes(void)
     return pg;
 }
 
-/* ── Page 2: Voice Hint ────────────────────────────────────── */
+/* ── Page 2: Voice — tap anywhere to start ─────────────────── */
+static void voice_page_tap_cb(lv_event_t *e)
+{
+    (void)e;
+    orb_tap_cb(e);  /* same as tapping the orb */
+}
+
 static lv_obj_t *build_page_voice(void)
 {
     lv_obj_t *pg = tiles[2];
 
-    /* Large hint: tap the orb */
+    /* Big tappable area */
+    lv_obj_add_flag(pg, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(pg, voice_page_tap_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Large mic icon */
     lv_obj_t *icon = lv_label_create(pg);
     lv_label_set_text(icon, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(icon, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
-    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -100);
+    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -60);
 
     lv_obj_t *lbl = lv_label_create(pg);
-    lv_label_set_text(lbl, "Tap the orb on the home screen\nto start a voice conversation");
+    lv_label_set_text(lbl, "Tap to talk to Tinker");
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(lbl);
+    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 20);
 
     return pg;
 }
