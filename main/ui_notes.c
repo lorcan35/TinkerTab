@@ -340,6 +340,7 @@ static void cb_new_text(lv_event_t *e);
 static void cb_input_send(lv_event_t *e);
 static void cb_note_tap(lv_event_t *e);
 static void cb_note_delete(lv_event_t *e);
+static void cb_note_play(lv_event_t *e);
 static void refresh_list(void);
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx);
 static lv_obj_t *make_topbar(lv_obj_t *parent);
@@ -1199,6 +1200,68 @@ static void cb_note_delete(lv_event_t *e)
     lv_obj_center(no_lbl);
 }
 
+/* ── WAV playback ──────────────────────────────────────── */
+static volatile bool s_wav_playing = false;
+
+static void wav_play_task(void *arg)
+{
+    char *path = (char *)arg;
+    ESP_LOGI(TAG, "Playing WAV: %s", path);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        ESP_LOGE(TAG, "Cannot open %s", path);
+        goto done;
+    }
+
+    /* Skip WAV header (44 bytes) */
+    fseek(f, 44, SEEK_SET);
+
+    tab5_audio_speaker_enable(true);
+
+    /* Read and play in 2048-sample chunks (16-bit mono @ 16kHz → 128ms each)
+     * Tab5 I2S runs at 48kHz, so upsample 3:1 inline */
+    int16_t buf_16k[2048];
+    int16_t buf_48k[2048 * 3];
+    size_t rd;
+    while (s_wav_playing && (rd = fread(buf_16k, sizeof(int16_t), 2048, f)) > 0) {
+        /* Upsample 16kHz → 48kHz (simple sample-hold) */
+        for (size_t i = 0; i < rd; i++) {
+            buf_48k[i * 3]     = buf_16k[i];
+            buf_48k[i * 3 + 1] = buf_16k[i];
+            buf_48k[i * 3 + 2] = buf_16k[i];
+        }
+        tab5_audio_play_raw(buf_48k, rd * 3);
+    }
+
+    tab5_audio_speaker_enable(false);
+    fclose(f);
+
+done:
+    free(path);
+    s_wav_playing = false;
+    ESP_LOGI(TAG, "WAV playback done");
+    vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
+}
+
+static void cb_note_play(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= MAX_NOTES || !s_notes[idx].used) return;
+    if (!s_notes[idx].audio_path[0]) return;
+
+    if (s_wav_playing) {
+        s_wav_playing = false;  /* Stop current playback */
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    char *path = strdup(s_notes[idx].audio_path);
+    if (!path) return;
+
+    s_wav_playing = true;
+    xTaskCreate(wav_play_task, "wav_play", 8192, path, 5, NULL);
+}
+
 /* ── Note card widget ──────────────────────────────────── */
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx)
 {
@@ -1250,6 +1313,25 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_text_font(badge, &lv_font_montserrat_24, 0);
     lv_obj_set_style_radius(badge, 12, 0);
     lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+
+    /* Play button — only for notes with audio */
+    if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
+        lv_obj_t *play = lv_button_create(card);
+        lv_obj_set_size(play, 80, 56);
+        lv_obj_align(play, LV_ALIGN_TOP_RIGHT, -90, 0);
+        lv_obj_set_style_bg_color(play, lv_color_hex(COL_CYAN), 0);
+        lv_obj_set_style_bg_opa(play, LV_OPA_80, 0);
+        lv_obj_set_style_radius(play, 16, 0);
+        lv_obj_set_style_border_width(play, 0, 0);
+        lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
+                           (void *)(intptr_t)note_idx);
+
+        lv_obj_t *play_lbl = lv_label_create(play);
+        lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
+        lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
+        lv_obj_set_style_text_font(play_lbl, &lv_font_montserrat_28, 0);
+        lv_obj_center(play_lbl);
+    }
 
     /* Delete button — big touch target */
     lv_obj_t *del = lv_button_create(card);
