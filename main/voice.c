@@ -482,7 +482,7 @@ static void handle_text_message(const char *data, int len)
         char err_buf[128];
         strncpy(err_buf, err_src, sizeof(err_buf) - 1);
         err_buf[sizeof(err_buf) - 1] = '\0';
-        voice_set_state(VOICE_STATE_READY, err_buf);
+        voice_set_state(VOICE_STATE_IDLE, err_buf);
     } else if (strcmp(type_str, "session_start") == 0) {
         /* Store session_id in NVS for resume on reconnect */
         cJSON *sid = cJSON_GetObjectItem(root, "session_id");

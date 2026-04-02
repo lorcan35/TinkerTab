@@ -281,14 +281,15 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
                 mode_switch_idle_task, "mode_idle", 8192, NULL, 5, NULL, 1);
         }
         if (detail && s_visible) {
-            /* Show error briefly before hiding (e.g. "connect failed") */
+            /* Show error briefly before hiding (e.g. "connect failed", Dragon error) */
             stop_all_anims();
-            if (detail && strstr(detail, "disconnect")) {
+            if (strstr(detail, "disconnect")) {
                 lv_label_set_text(s_lbl_status, "Disconnected");
-            } else if (detail && strstr(detail, "timeout")) {
+            } else if (strstr(detail, "timeout")) {
                 lv_label_set_text(s_lbl_status, "Response timed out");
             } else {
-                lv_label_set_text(s_lbl_status, "Connection failed");
+                /* Dragon-side error or other failure — show the actual message */
+                lv_label_set_text(s_lbl_status, detail);
             }
             lv_obj_set_style_text_color(s_lbl_status,
                 lv_color_hex(0xFF4444), 0);
@@ -296,8 +297,8 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
                 &lv_font_montserrat_20, 0);
             lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_Y_OFFSET + 40);
             lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
-            /* Auto-hide after 2s */
-            s_hide_timer = lv_timer_create(auto_hide_timer_cb, 2000, NULL);
+            /* Auto-hide after 3s (longer for Dragon errors so user can read) */
+            s_hide_timer = lv_timer_create(auto_hide_timer_cb, 3000, NULL);
             lv_timer_set_repeat_count(s_hide_timer, 1);
         } else {
             show_state_idle();
