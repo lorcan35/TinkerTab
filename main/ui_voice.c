@@ -267,7 +267,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         s_stuck_timer = NULL;
     }
     if (state == VOICE_STATE_PROCESSING || state == VOICE_STATE_SPEAKING) {
-        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 65000, NULL);
+        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 25000, NULL);
         lv_timer_set_repeat_count(s_stuck_timer, 1);
     }
 

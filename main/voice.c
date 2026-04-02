@@ -67,7 +67,7 @@ static const char *TAG = "tab5_voice";
 // Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
 #define VOICE_KEEPALIVE_MS       15000
 // Dragon response timeout: auto-cancel if no STT/LLM response after stop
-#define VOICE_RESPONSE_TIMEOUT_MS 60000
+#define VOICE_RESPONSE_TIMEOUT_MS 20000
 
 // Mic capture task (needs room for 3840-sample TDM buffer on stack)
 #define MIC_TASK_STACK_SIZE    4096  /* Reduced: tdm_buf moved to PSRAM heap (#18) */
@@ -1244,12 +1244,12 @@ esp_err_t voice_stop_listening(void)
     // Send stop signal to Dragon
     esp_err_t err = ws_send_text("{\"type\":\"stop\"}");
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to send stop signal");
+        ESP_LOGW(TAG, "Stop signal failed — connection lost");
+        voice_set_state(VOICE_STATE_IDLE, "Connection lost");
+        return ESP_FAIL;
     }
 
-    // Reset the activity timestamp so the response timeout starts NOW,
-    // not from when the last WS frame was received (which could be 30s ago
-    // during recording when Tab5 was only sending, not receiving).
+    // Reset the activity timestamp so the response timeout starts NOW
     extern void voice_reset_activity_timestamp(void);
     voice_reset_activity_timestamp();
 
