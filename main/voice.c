@@ -1225,6 +1225,13 @@ const char *voice_get_dictation_text(void)
     return s_dictation_text ? s_dictation_text : "";
 }
 
+esp_err_t voice_clear_history(void)
+{
+    if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
+    ESP_LOGI(TAG, "Clearing conversation history on Dragon");
+    return ws_send_text("{\"type\":\"clear\"}");
+}
+
 esp_err_t voice_stop_listening(void)
 {
     if (s_state != VOICE_STATE_LISTENING) {

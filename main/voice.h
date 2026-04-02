@@ -79,3 +79,6 @@ voice_mode_t voice_get_mode(void);
 
 // Get accumulated dictation transcript (concatenated stt_partial results)
 const char *voice_get_dictation_text(void);
+
+// Clear conversation history on Dragon (start fresh context)
+esp_err_t voice_clear_history(void);

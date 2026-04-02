@@ -323,12 +323,19 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         start_pulse_anim();
         break;
     case VOICE_STATE_READY:
-        /* Show "Tap to Record" prompt — user must explicitly tap to start */
+        /* Show prompt — if we had a conversation, offer follow-up */
         if (!s_visible) {
             ui_voice_show();
         }
         stop_all_anims();
-        lv_label_set_text(s_lbl_status, "Tap to Record");
+
+        /* If chat bubbles have content, this is a follow-up turn */
+        bool has_conversation = s_has_llm_text;
+        if (has_conversation) {
+            lv_label_set_text(s_lbl_status, "Ask a follow-up...");
+        } else {
+            lv_label_set_text(s_lbl_status, "Tap to Record");
+        }
         lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
@@ -342,8 +349,10 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-        s_has_llm_text = false;
+        /* Keep chat bubbles visible if there's conversation context */
+        if (!has_conversation) {
+            lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+        }
         /* Make orb tappable to start recording.
          * Remove first to avoid stacking duplicate callbacks on re-entry. */
         lv_obj_add_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
