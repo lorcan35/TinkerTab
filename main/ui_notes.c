@@ -742,47 +742,51 @@ static void transcription_queue_task(void *arg)
             fseek(f, 0, SEEK_SET);
         }
 
-        char *audio_buf = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
-        if (!audio_buf) {
-            ESP_LOGE(TAG, "PSRAM alloc failed for WAV (%ld bytes)", file_size);
-            fclose(f);
-            n->state = NOTE_STATE_FAILED;
-            notes_save();
-            continue;
-        }
-
-        fread(audio_buf, 1, file_size, f);
-        fclose(f);
-
-        /* Build URL: http://<dragon_host>:3502/api/v1/transcribe
-         * Voice server (with STT) runs on port 3502, not the CDP port (3501). */
+        /* Build URL: http://<dragon_host>:3502/api/v1/transcribe */
         char dragon_host[64];
         tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
         char url[128];
         snprintf(url, sizeof(url), "http://%s:%d/api/v1/transcribe",
                  dragon_host, TAB5_VOICE_PORT);
 
-        /* HTTP POST */
+        /* HTTP POST — stream from file in 4KB chunks (never hold >4KB in RAM) */
         esp_http_client_config_t http_cfg = {
             .url = url,
             .method = HTTP_METHOD_POST,
-            .timeout_ms = 60000,  /* 60s — long audio can take time */
+            .timeout_ms = 120000,  /* 2min — large files take time to upload+transcribe */
+            .buffer_size = 4096,
         };
         esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
         esp_http_client_set_header(client, "Content-Type", "audio/wav");
 
+        fseek(f, 0, SEEK_SET);
         esp_err_t err = esp_http_client_open(client, file_size);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
             esp_http_client_cleanup(client);
-            heap_caps_free(audio_buf);
+            fclose(f);
             n->state = NOTE_STATE_FAILED;
             notes_save();
             continue;
         }
 
-        esp_http_client_write(client, audio_buf, file_size);
-        heap_caps_free(audio_buf);
+        /* Stream file to HTTP in 4KB chunks */
+        char chunk[4096];
+        long sent = 0;
+        while (sent < file_size) {
+            size_t to_read = (file_size - sent > (long)sizeof(chunk))
+                             ? sizeof(chunk) : (size_t)(file_size - sent);
+            size_t got = fread(chunk, 1, to_read, f);
+            if (got == 0) break;
+            int written = esp_http_client_write(client, chunk, got);
+            if (written < 0) {
+                ESP_LOGE(TAG, "HTTP write failed at %ld/%ld", sent, file_size);
+                break;
+            }
+            sent += got;
+        }
+        fclose(f);
+        ESP_LOGI(TAG, "Uploaded %ld/%ld bytes", sent, file_size);
 
         int content_len = esp_http_client_fetch_headers(client);
         int status = esp_http_client_get_status_code(client);
