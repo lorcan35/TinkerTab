@@ -14,6 +14,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_task_wdt.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -162,8 +163,10 @@ lv_obj_t *ui_camera_create(void)
 
         lv_obj_t *btn_back = lv_button_create(topbar);
         lv_obj_remove_style_all(btn_back);
-        lv_obj_set_size(btn_back, 48, 48);
-        lv_obj_set_style_bg_opa(btn_back, LV_OPA_TRANSP, 0);
+        lv_obj_set_size(btn_back, 80, 48);
+        lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_bg_opa(btn_back, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(btn_back, 12, 0);
         lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 8, 0);
         lv_obj_add_event_cb(btn_back, cb_back_btn, LV_EVENT_CLICKED, NULL);
 
@@ -186,11 +189,13 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_clear_flag(vf_area, LV_OBJ_FLAG_SCROLLABLE);
 
     if (cam_ok) {
-        /* Set initial resolution */
+        /* Set initial resolution — feed watchdog as camera init can be slow */
+        esp_task_wdt_reset();
         tab5_camera_set_resolution(current_res);
 
         uint16_t w, h;
         res_to_dimensions(current_res, &w, &h);
+        esp_task_wdt_reset();
         alloc_canvas_buffer(w, h);
 
         if (canvas_buf) {

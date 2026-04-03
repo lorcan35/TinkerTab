@@ -67,7 +67,7 @@ static const char *TAG = "tab5_voice";
 // Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
 #define VOICE_KEEPALIVE_MS       15000
 // Dragon response timeout: auto-cancel if no STT/LLM response after stop
-#define VOICE_RESPONSE_TIMEOUT_MS 20000
+#define VOICE_RESPONSE_TIMEOUT_MS 35000  /* Must exceed Dragon's 30s TTS timeout */
 
 // Mic capture task (needs room for 3840-sample TDM buffer on stack)
 #define MIC_TASK_STACK_SIZE    4096  /* Reduced: tdm_buf moved to PSRAM heap (#18) */
@@ -477,12 +477,14 @@ static void handle_text_message(const char *data, int len)
         cJSON *msg = cJSON_GetObjectItem(root, "message");
         const char *err_src = cJSON_IsString(msg) ? msg->valuestring : "unknown";
         ESP_LOGE(TAG, "Dragon error: %s", err_src);
-        // Copy to local buffer — err_src points into cJSON tree that we free below.
-        // voice_set_state callback must not hold a dangling pointer.
         char err_buf[128];
         strncpy(err_buf, err_src, sizeof(err_buf) - 1);
         err_buf[sizeof(err_buf) - 1] = '\0';
-        voice_set_state(VOICE_STATE_IDLE, err_buf);
+        // Stop any playback in progress
+        playback_buf_reset();
+        tab5_audio_speaker_enable(false);
+        // Go to READY if WS still alive (transient error), IDLE if disconnected
+        voice_set_state(s_ws_connected ? VOICE_STATE_READY : VOICE_STATE_IDLE, err_buf);
     } else if (strcmp(type_str, "session_start") == 0) {
         /* Store session_id in NVS for resume on reconnect */
         cJSON *sid = cJSON_GetObjectItem(root, "session_id");
@@ -502,9 +504,10 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "Connected to Dragon voice server");
         }
     } else if (strcmp(type_str, "llm_done") == 0) {
-        /* LLM streaming complete — informational only (TTS may follow) */
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
         ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
+    } else if (strcmp(type_str, "pong") == 0) {
+        /* Dragon keepalive response — no action needed */
     } else if (strcmp(type_str, "config_update") == 0) {
         /* Dragon pushed new config — log for now */
         ESP_LOGI(TAG, "Config update from Dragon (not applied yet)");

@@ -516,9 +516,9 @@ static void deferred_open_cb(lv_timer_t *t)
     case 3: ui_files_create(); break;
     case 4: lv_screen_load(ui_home_get_screen()); break;
     case 5: ui_chat_create(); break;
-    case 6: /* Notes page — scroll tileview to page 1 */ {
+    case 6: /* Notes page — scroll tileview to page 1 (row=1, col=0) */ {
         lv_obj_t *tv = lv_obj_get_child(ui_home_get_screen(), 0);
-        if (tv) lv_obj_set_tile_id(tv, 1, 0, LV_ANIM_OFF);
+        if (tv) lv_obj_set_tile_id(tv, 0, 1, LV_ANIM_OFF);
         break;
     }
     default: break;

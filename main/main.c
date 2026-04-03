@@ -377,6 +377,14 @@ void app_main(void)
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Debug server init failed: %s", esp_err_to_name(ret));
         }
+
+        // Auto-sync RTC from NTP on boot (non-blocking, best-effort)
+        if (s_rtc_ok) {
+            ESP_LOGI(TAG, "Syncing RTC from NTP...");
+            if (tab5_rtc_sync_from_ntp() != ESP_OK) {
+                ESP_LOGW(TAG, "NTP sync failed — using last RTC time");
+            }
+        }
     }
 
     // Print service status table
