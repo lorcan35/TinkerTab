@@ -503,11 +503,9 @@ static void handle_text_message(const char *data, int len)
             voice_set_state(VOICE_STATE_READY, NULL);
             ESP_LOGI(TAG, "Connected to Dragon voice server");
 
-            // Restore cloud mode preference on reconnect
-            if (tab5_settings_get_cloud_mode()) {
-                ESP_LOGI(TAG, "Restoring cloud mode on reconnect");
-                voice_send_cloud_mode(true);
-            }
+            // Cloud mode is toggled via Settings UI, not auto-restored.
+            // Auto-restore was causing Dragon pipeline hot-swap during
+            // connection, delaying session_start and breaking voice tests.
         }
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");

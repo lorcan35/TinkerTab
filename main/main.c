@@ -124,14 +124,15 @@ static void voice_test_task(void *arg)
            tab5_mode_str(), (unsigned long)esp_get_free_heap_size());
 
     // voice_connect_async was called by mode_switch — wait for connection
-    for (int w = 0; w < 20; w++) {
+    // Dragon pipeline init can take 10-15s (loading Moonshine/Piper models)
+    for (int w = 0; w < 60; w++) {
         vTaskDelay(pdMS_TO_TICKS(250));
         voice_state_t vs = voice_get_state();
         if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_READY) {
             printf("[voice_test] Voice connected! state=%d\n", vs);
             break;
         }
-        if (vs == VOICE_STATE_IDLE && w > 4) {
+        if (vs == VOICE_STATE_IDLE && w > 20) {
             printf("[voice_test] Voice failed to connect\n");
             goto done;
         }
