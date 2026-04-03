@@ -229,6 +229,18 @@ esp_err_t tab5_settings_set_volume(uint8_t vol)
     return set_u8(KEY_VOLUME, vol);
 }
 
+/* ── Cloud mode ──────────────────────────────────────────────────────── */
+
+uint8_t tab5_settings_get_cloud_mode(void)
+{
+    return get_u8("cloud", 0);
+}
+
+esp_err_t tab5_settings_set_cloud_mode(uint8_t enabled)
+{
+    return set_u8("cloud", enabled ? 1 : 0);
+}
+
 /* ── Device identity ─────────────────────────────────────────────────── */
 
 esp_err_t tab5_settings_get_device_id(char *buf, size_t len)

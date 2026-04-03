@@ -85,3 +85,6 @@ esp_err_t voice_clear_history(void);
 
 // Send text message to Dragon (skips STT, goes straight to LLM)
 esp_err_t voice_send_text(const char *text);
+
+// Toggle full cloud mode on Dragon (STT + TTS via OpenRouter)
+esp_err_t voice_send_cloud_mode(bool enabled);

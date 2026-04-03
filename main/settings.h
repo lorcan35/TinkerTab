@@ -62,3 +62,9 @@ esp_err_t tab5_settings_get_hardware_id(char *buf, size_t len);
 /** Get last session_id (empty string if none). */
 esp_err_t tab5_settings_get_session_id(char *buf, size_t len);
 esp_err_t tab5_settings_set_session_id(const char *session_id);
+
+/* ── Cloud mode ──────────────────────────────────────────────────────── */
+
+/** 0 = local (default), 1 = full cloud via OpenRouter */
+uint8_t   tab5_settings_get_cloud_mode(void);
+esp_err_t tab5_settings_set_cloud_mode(uint8_t enabled);

@@ -18,6 +18,7 @@
 #include "config.h"
 #include "settings.h"
 #include "audio.h"
+#include "voice.h"
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -134,6 +135,20 @@ static void cb_autorotate(lv_event_t *e)
             lv_label_set_text(s_lbl_orient, "Off");
         }
     }
+}
+
+static void cb_cloud_mode(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    lv_obj_t *hint = lv_event_get_user_data(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    tab5_settings_set_cloud_mode(on ? 1 : 0);
+    ESP_LOGI(TAG, "Cloud mode %s", on ? "ON" : "OFF");
+    if (hint) {
+        lv_label_set_text(hint, on ? "On" : "Off");
+        lv_obj_set_style_text_color(hint, on ? COL_GREEN : COL_TEXT_DIM, 0);
+    }
+    voice_send_cloud_mode(on);
 }
 
 static void cb_ntp_sync(lv_event_t *e)
@@ -416,6 +431,41 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_ntp_btn_label, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_18, 0);
         lv_obj_center(s_ntp_btn_label);
+    }
+
+    /* ────────────────────────────────────────────────────────────────
+     *  SECTION: Voice
+     * ──────────────────────────────────────────────────────────────── */
+    {
+        lv_obj_t *sec = make_section(s_scroll, "Voice");
+
+        /* Cloud Mode row */
+        lv_obj_t *row_cloud = make_row(sec);
+        add_row_label(row_cloud, "Cloud Mode");
+
+        lv_obj_t *cloud_right = lv_obj_create(row_cloud);
+        lv_obj_remove_style_all(cloud_right);
+        lv_obj_set_size(cloud_right, LV_SIZE_CONTENT, 48);
+        lv_obj_set_flex_flow(cloud_right, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_flex_cross_place(cloud_right, LV_FLEX_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_gap(cloud_right, 12, 0);
+
+        lv_obj_t *cloud_hint = lv_label_create(cloud_right);
+        lv_label_set_text(cloud_hint,
+            tab5_settings_get_cloud_mode() ? "On" : "Off");
+        lv_obj_set_style_text_color(cloud_hint,
+            tab5_settings_get_cloud_mode() ? COL_GREEN : COL_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(cloud_hint, &lv_font_montserrat_18, 0);
+
+        lv_obj_t *sw_cloud = lv_switch_create(cloud_right);
+        lv_obj_set_size(sw_cloud, 60, 36);
+        lv_obj_set_style_bg_color(sw_cloud, lv_color_hex(0x334155), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(sw_cloud, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(sw_cloud, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+        if (tab5_settings_get_cloud_mode()) {
+            lv_obj_add_state(sw_cloud, LV_STATE_CHECKED);
+        }
+        lv_obj_add_event_cb(sw_cloud, cb_cloud_mode, LV_EVENT_VALUE_CHANGED, cloud_hint);
     }
 
     /* ────────────────────────────────────────────────────────────────

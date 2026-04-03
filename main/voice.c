@@ -502,6 +502,12 @@ static void handle_text_message(const char *data, int len)
         if (s_state == VOICE_STATE_CONNECTING) {
             voice_set_state(VOICE_STATE_READY, NULL);
             ESP_LOGI(TAG, "Connected to Dragon voice server");
+
+            // Restore cloud mode preference on reconnect
+            if (tab5_settings_get_cloud_mode()) {
+                ESP_LOGI(TAG, "Restoring cloud mode on reconnect");
+                voice_send_cloud_mode(true);
+            }
         }
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
@@ -509,8 +515,15 @@ static void handle_text_message(const char *data, int len)
     } else if (strcmp(type_str, "pong") == 0) {
         /* Dragon keepalive response — no action needed */
     } else if (strcmp(type_str, "config_update") == 0) {
-        /* Dragon pushed new config — log for now */
-        ESP_LOGI(TAG, "Config update from Dragon (not applied yet)");
+        cJSON *config = cJSON_GetObjectItem(root, "config");
+        if (config) {
+            cJSON *cloud = cJSON_GetObjectItem(config, "cloud_mode");
+            if (cJSON_IsBool(cloud)) {
+                bool is_cloud = cJSON_IsTrue(cloud);
+                tab5_settings_set_cloud_mode(is_cloud ? 1 : 0);
+                ESP_LOGI(TAG, "Config update: cloud_mode=%d (persisted)", is_cloud);
+            }
+        }
     } else {
         ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
@@ -1431,5 +1444,22 @@ esp_err_t voice_send_text(const char *text)
     if (ret == ESP_OK) {
         voice_set_state(VOICE_STATE_PROCESSING, text);
     }
+    return ret;
+}
+
+esp_err_t voice_send_cloud_mode(bool enabled)
+{
+    if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
+
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "config_update");
+    cJSON_AddBoolToObject(msg, "cloud_mode", enabled);
+    char *json = cJSON_PrintUnformatted(msg);
+    cJSON_Delete(msg);
+    if (!json) return ESP_ERR_NO_MEM;
+
+    ESP_LOGI(TAG, "Sending cloud_mode=%d to Dragon", enabled);
+    esp_err_t ret = ws_send_text(json);
+    cJSON_free(json);
     return ret;
 }
