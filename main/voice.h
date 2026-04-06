@@ -88,3 +88,10 @@ esp_err_t voice_send_text(const char *text);
 
 // Toggle full cloud mode on Dragon (STT + TTS via OpenRouter)
 esp_err_t voice_send_cloud_mode(bool enabled);
+
+// Get current mic RMS level (for live waveform during dictation)
+float voice_get_current_rms(void);
+
+// Get dictation post-processing results (arrives after dictation_summary event)
+const char *voice_get_dictation_title(void);
+const char *voice_get_dictation_summary(void);

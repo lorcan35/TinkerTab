@@ -122,6 +122,7 @@ static void build_send_button(lv_obj_t *parent);
 static void build_chat_area(lv_obj_t *parent);
 
 static void mic_click_cb(lv_event_t *e);
+static void mic_long_press_cb(lv_event_t *e);
 static void close_click_cb(lv_event_t *e);
 static void send_click_cb(lv_event_t *e);
 static void orb_speak_click_cb(lv_event_t *e);
@@ -484,8 +485,9 @@ static void build_mic_button(void)
     lv_obj_center(s_mic_dot);
     lv_obj_clear_flag(s_mic_dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Click handler */
+    /* Click handler: short tap = Ask, long press = Dictation */
     lv_obj_add_event_cb(s_mic_btn, mic_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_mic_btn, mic_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     /* Pressed feedback */
     lv_obj_set_style_bg_color(s_mic_btn, lv_color_hex(VO_CYAN_GLOW), LV_PART_MAIN | LV_STATE_PRESSED);
@@ -1323,6 +1325,27 @@ static void mic_click_cb(lv_event_t *e)
     case VOICE_STATE_CONNECTING:
         /* Already connecting — ignore */
         break;
+    }
+}
+
+static bool s_dictation_from_anywhere = false;
+
+static void mic_long_press_cb(lv_event_t *e)
+{
+    (void)e;
+    voice_state_t state = voice_get_state();
+    ESP_LOGI(TAG, "Mic long-press → dictation (state=%d)", state);
+
+    s_dictation_from_anywhere = true;
+
+    if (state == VOICE_STATE_IDLE) {
+        xTaskCreatePinnedToCore(
+            mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+    } else if (state == VOICE_STATE_READY) {
+        esp_err_t ret = voice_start_dictation();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(ret));
+        }
     }
 }
 

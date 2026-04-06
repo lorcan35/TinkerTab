@@ -23,6 +23,7 @@
 #include "ui_core.h"
 
 #include <string.h>
+#include <math.h>
 #include <stdio.h>
 #include <math.h>
 
@@ -89,8 +90,9 @@ static const char *TAG = "tab5_voice";
 
 // Dictation mode constants
 #define DICTATION_SILENCE_THRESHOLD  800   /* RMS below this = silence (Tab5 mic has higher noise floor) */
-#define DICTATION_SILENCE_FRAMES     40    /* 40 × 20ms = 800ms silence before segment */
-#define DICTATION_TEXT_SIZE          8192  /* 8KB for accumulated transcript (PSRAM) */
+#define DICTATION_SILENCE_FRAMES     25    /* 25 × 20ms = 500ms silence before segment (was 800ms) */
+#define DICTATION_AUTO_STOP_FRAMES   250   /* 250 × 20ms = 5s total silence → auto-stop */
+#define DICTATION_TEXT_SIZE          65536  /* 64KB for accumulated transcript (~2hrs, PSRAM) */
 #define MAX_RECORD_FRAMES_ASK        1500  /* 30s limit for Ask mode only */
 
 // ---------------------------------------------------------------------------
@@ -141,6 +143,9 @@ static char s_llm_text[MAX_TRANSCRIPT_LEN] = {0};
 // Dictation mode
 static voice_mode_t s_voice_mode = VOICE_MODE_ASK;
 static char *s_dictation_text = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
+static volatile float s_current_rms = 0.0f;  /* live mic RMS for UI waveform */
+static char s_dictation_title[128] = {0};
+static char s_dictation_summary[512] = {0};
 
 static bool s_initialized = false;
 static volatile bool s_connect_in_progress = false;
@@ -507,6 +512,19 @@ static void handle_text_message(const char *data, int len)
             // Auto-restore was causing Dragon pipeline hot-swap during
             // connection, delaying session_start and breaking voice tests.
         }
+    } else if (strcmp(type_str, "dictation_summary") == 0) {
+        cJSON *title = cJSON_GetObjectItem(root, "title");
+        cJSON *summary = cJSON_GetObjectItem(root, "summary");
+        if (cJSON_IsString(title)) {
+            strncpy(s_dictation_title, title->valuestring, sizeof(s_dictation_title) - 1);
+            s_dictation_title[sizeof(s_dictation_title) - 1] = '\0';
+        }
+        if (cJSON_IsString(summary)) {
+            strncpy(s_dictation_summary, summary->valuestring, sizeof(s_dictation_summary) - 1);
+            s_dictation_summary[sizeof(s_dictation_summary) - 1] = '\0';
+        }
+        ESP_LOGI(TAG, "Dictation summary: \"%s\"", s_dictation_title);
+        voice_set_state(VOICE_STATE_READY, "dictation_summary");
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
         ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
@@ -557,7 +575,14 @@ static void mic_capture_task(void *arg)
 
     /* Dictation VAD state (only used when s_voice_mode == VOICE_MODE_DICTATE) */
     int silence_frames = 0;
+    int total_silence_frames = 0;
     bool had_speech = false;
+
+    /* Adaptive VAD: calibrate threshold from first 500ms of ambient noise */
+    #define CALIBRATION_FRAMES 25
+    float noise_sum = 0;
+    int cal_count = 0;
+    float dictation_threshold = DICTATION_SILENCE_THRESHOLD;
 
     while (s_mic_running && (s_ws_connected || s_voice_mode == VOICE_MODE_DICTATE)) {
         // Read 4-channel TDM data at 48kHz
@@ -647,35 +672,66 @@ static void mic_capture_task(void *arg)
             break;
         }
 
-        // Dictation VAD: detect pauses and send segment markers to Dragon
+        // Dictation VAD: detect pauses, send segment markers, auto-stop
         if (s_voice_mode == VOICE_MODE_DICTATE) {
             int64_t sqsum = 0;
             for (int k = 0; k < out_idx; k++) {
                 sqsum += (int64_t)mono_buf[k] * mono_buf[k];
             }
             float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
+            s_current_rms = rms;  /* expose for UI waveform */
 
-            if (rms < DICTATION_SILENCE_THRESHOLD) {
+            /* Adaptive calibration: first 500ms measures ambient noise */
+            if (cal_count < CALIBRATION_FRAMES) {
+                noise_sum += rms;
+                cal_count++;
+                if (cal_count == CALIBRATION_FRAMES) {
+                    float ambient = noise_sum / CALIBRATION_FRAMES;
+                    dictation_threshold = fmaxf(400.0f, fminf(1500.0f, ambient * 2.0f));
+                    ESP_LOGI(TAG, "VAD calibrated: ambient=%.0f, threshold=%.0f",
+                             ambient, dictation_threshold);
+                }
+                continue;  /* skip VAD during calibration */
+            }
+
+            if (rms < dictation_threshold) {
                 silence_frames++;
+                total_silence_frames++;
             } else {
                 if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
-                    // Pause detected — send segment marker
-                    ESP_LOGI(TAG, "Dictation: pause detected (%dms silence), sending segment",
+                    ESP_LOGI(TAG, "Dictation: pause (%dms), sending segment",
                              silence_frames * TAB5_VOICE_CHUNK_MS);
                     ws_send_text("{\"type\":\"segment\"}");
                 }
                 silence_frames = 0;
+                total_silence_frames = 0;
                 had_speech = true;
+            }
+
+            // Auto-stop: 5s of continuous silence after speech
+            if (had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES) {
+                ESP_LOGI(TAG, "Dictation auto-stop: %ds silence",
+                         DICTATION_AUTO_STOP_FRAMES * TAB5_VOICE_CHUNK_MS / 1000);
+                break;
             }
         }
     }
 
     s_mic_running = false;
+    s_current_rms = 0;
     heap_caps_free(tdm_buf);
     heap_caps_free(mono_buf);
+
+    /* Auto-stop: if we broke out of the loop due to dictation silence,
+     * send stop to Dragon and transition to PROCESSING (same as manual stop) */
+    if (s_voice_mode == VOICE_MODE_DICTATE && had_speech
+        && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES && s_ws_connected) {
+        ws_send_text("{\"type\":\"stop\"}");
+        voice_set_state(VOICE_STATE_PROCESSING, NULL);
+    }
+
     ESP_LOGI(TAG, "Mic capture task exiting");
     s_mic_task = NULL;
-    /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
     vTaskSuspend(NULL);
 }
 
@@ -1460,4 +1516,19 @@ esp_err_t voice_send_cloud_mode(bool enabled)
     esp_err_t ret = ws_send_text(json);
     cJSON_free(json);
     return ret;
+}
+
+float voice_get_current_rms(void)
+{
+    return s_current_rms;
+}
+
+const char *voice_get_dictation_title(void)
+{
+    return s_dictation_title;
+}
+
+const char *voice_get_dictation_summary(void)
+{
+    return s_dictation_summary;
 }
