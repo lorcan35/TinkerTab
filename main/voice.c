@@ -58,9 +58,11 @@ static const char *TAG = "tab5_voice";
 #define MIC_TDM_CHANNELS       4
 // TDM slot offsets — verified at runtime via SLOT_DIAG logs.
 // Adjust these if the slot verification test shows a different layout.
-#define MIC_TDM_MIC1_OFF       0    // MIC1 (left mic) at slot 0
-#define MIC_TDM_MIC2_OFF       1    // MIC2 (right mic) at slot 1
-#define MIC_TDM_REF_OFF        2    // AEC reference (DAC loopback) at slot 2
+// TDM slot mapping — verified from SLOT_DIAG: slot 1 is near-silent (AEC ref from DAC)
+// Slots 0 and 2 have similar RMS (both are mics). Slot 3 has low non-zero (noise/unused).
+#define MIC_TDM_MIC1_OFF       0    // MIC1 at slot 0 (high RMS ~200)
+#define MIC_TDM_REF_OFF        1    // AEC reference at slot 1 (near-zero RMS ~6 when speaker silent)
+#define MIC_TDM_MIC2_OFF       2    // MIC2 at slot 2 (high RMS ~200)
 
 // AFE feed: channels match the format string passed to afe_config_init().
 // "MR" = 1 mic + 1 ref = 2 channels. "MMR" = 2 mic + 1 ref = 3 channels.
@@ -572,7 +574,8 @@ static void handle_text_message(const char *data, int len)
 // ---------------------------------------------------------------------------
 static void afe_detect_task(void *arg)
 {
-    ESP_LOGI(TAG, "AFE detect task started (core %d)", xPortGetCoreID());
+    ESP_LOGI(TAG, "AFE detect task started (core %d), afe_listening=%d", xPortGetCoreID(), s_afe_listening);
+    int fetch_count = 0;
 
     while (s_afe_listening) {
         int16_t *clean_audio = NULL;
@@ -580,10 +583,20 @@ static void afe_detect_task(void *arg)
         bool wake_detected = false;
         bool vad_speech = false;
 
+        if (fetch_count == 0) {
+            ESP_LOGI(TAG, "AFE detect: calling first fetch()...");
+        }
         esp_err_t err = tab5_afe_fetch(&clean_audio, &clean_samples, &wake_detected, &vad_speech);
         if (err != ESP_OK) {
+            ESP_LOGW(TAG, "AFE fetch failed: %s", esp_err_to_name(err));
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
+        }
+
+        fetch_count++;
+        if (fetch_count % 100 == 0 || fetch_count <= 3) {
+            ESP_LOGI(TAG, "AFE fetch #%d: wake=%d vad=%d samples=%d",
+                     fetch_count, wake_detected, vad_speech, clean_samples);
         }
 
         if (wake_detected) {
@@ -660,21 +673,27 @@ static void mic_capture_task(void *arg)
         MIC_TDM_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int16_t *mono_buf = (int16_t *)heap_caps_malloc(
         VOICE_CHUNK_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    // AFE feed buffer — size from get_feed_chunksize(), typically 1024 int16_t
+    // AFE feed buffer — size from get_feed_chunksize()
+    // Allocate in PSRAM with cache-line alignment for esp_cache_msync
     int16_t *afe_buf = NULL;
     int afe_chunksize = 0;
-    int afe_buf_pos = 0;  // accumulator position
+    int afe_buf_pos = 0;
     if (s_afe_enabled) {
         afe_chunksize = tab5_afe_get_feed_chunksize();
-        if (afe_chunksize <= 0) afe_chunksize = 1024;
-        afe_buf = (int16_t *)heap_caps_malloc(
-            afe_chunksize * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (!afe_buf) {
-            ESP_LOGW(TAG, "Internal alloc failed for afe_buf (%d), trying PSRAM", afe_chunksize);
-            afe_buf = (int16_t *)heap_caps_malloc(
-                afe_chunksize * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        }
-        ESP_LOGI(TAG, "AFE feed buffer: %d samples, buf=%p", afe_chunksize, afe_buf);
+        if (afe_chunksize <= 0) afe_chunksize = 512;
+        // Align to 64-byte cache line for PSRAM coherency
+        size_t alloc_size = ((afe_chunksize * sizeof(int16_t) + 63) / 64) * 64;
+        afe_buf = (int16_t *)heap_caps_aligned_alloc(64, alloc_size,
+                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        ESP_LOGI(TAG, "AFE feed buffer: %d samples (%zu bytes), buf=%p",
+                 afe_chunksize, alloc_size, afe_buf);
+    }
+    // Temp extraction buffer — heap allocated to avoid PSRAM stack cache issues
+    int16_t *afe_tmp = NULL;
+    if (s_afe_enabled) {
+        afe_tmp = (int16_t *)heap_caps_malloc(
+            VOICE_CHUNK_SAMPLES * AFE_FEED_CHANNELS * sizeof(int16_t),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
     if (!tdm_buf || !mono_buf || (s_afe_enabled && !afe_buf)) {
         ESP_LOGE(TAG, "Failed to allocate mic buffers");
@@ -746,9 +765,7 @@ static void mic_capture_task(void *arg)
         int out_idx = 0;
 
         if (s_afe_enabled && afe_buf) {
-            // AFE mode: extract mic1 + ref interleaved into temp stack buffer
-            // "MR" format: 320 samples × 2 channels = 640 int16_t = 1280 bytes on stack
-            int16_t afe_tmp[VOICE_CHUNK_SAMPLES * AFE_FEED_CHANNELS];
+            // AFE mode: extract mic1 + ref interleaved into heap-allocated afe_tmp
             for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
                 int32_t m1 = 0, ref = 0;
                 for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
@@ -775,6 +792,10 @@ static void mic_capture_task(void *arg)
                 if (afe_buf_pos >= afe_chunksize) {
                     tab5_afe_feed(afe_buf, afe_chunksize);
                     afe_buf_pos = 0;
+                    static int feed_count = 0;
+                    if (++feed_count % 100 == 0) {
+                        ESP_LOGI(TAG, "AFE fed %d chunks", feed_count);
+                    }
                 }
             }
         } else {
@@ -822,8 +843,8 @@ static void mic_capture_task(void *arg)
         }
         frames_sent++;
 
-        // Duration limit: 30s for Ask mode, unlimited for Dictate
-        if (s_voice_mode == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
+        // Duration limit: 30s for Ask mode, unlimited for Dictate and AFE
+        if (s_voice_mode == VOICE_MODE_ASK && !s_afe_enabled && frames_sent >= MAX_RECORD_FRAMES_ASK) {
             ESP_LOGI(TAG, "Max recording duration reached (%ds)",
                      MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
             break;
@@ -880,6 +901,7 @@ static void mic_capture_task(void *arg)
     heap_caps_free(tdm_buf);
     heap_caps_free(mono_buf);
     heap_caps_free(afe_buf);
+    heap_caps_free(afe_tmp);
 
     /* Auto-stop: if we broke out of the loop due to dictation silence,
      * send stop to Dragon and transition to PROCESSING (same as manual stop) */

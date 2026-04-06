@@ -45,8 +45,11 @@ esp_err_t tab5_afe_init(void)
         return ESP_FAIL;
     }
 
-    /* Find WakeNet model — prefer "hilexin", fall back to first available */
-    char *wn_name = esp_srmodel_filter(models, ESP_WN_PREFIX, "hilexin");
+    /* Find WakeNet model — prefer "hiesp" (English), fall back to "hilexin" */
+    char *wn_name = esp_srmodel_filter(models, ESP_WN_PREFIX, "hiesp");
+    if (!wn_name) {
+        wn_name = esp_srmodel_filter(models, ESP_WN_PREFIX, "hilexin");
+    }
     if (!wn_name) {
         wn_name = esp_srmodel_filter(models, ESP_WN_PREFIX, NULL);
     }

@@ -268,12 +268,20 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 - 7 UI screens + keyboard overlay + voice overlay — all functional
 - NVS settings persistence (WiFi, Dragon, volume, brightness, cloud mode, session) — working
 
-**Phase 2 — Next priorities:**
-1. AEC (Acoustic Echo Cancellation) using ESP-SR — eliminates TTS hallucination loop
-2. Wake Word ("Hey Tinker") via ESP-SR WakeNet — hands-free activation
+**Phase 2 — AEC + Wake Word (IN PROGRESS):**
+- ESP-SR v2.4.0 integrated, compiles and links on ESP32-P4
+- AFE pipeline: AEC + NS + VAD + WakeNet9 — runs stable (1-mic "MR" mode, LOW_COST)
+- afe.c/afe.h wrapper, Settings toggle, /wake debug endpoint — all wired
+- 3MB model partition with wn9_hiesp + wn9_hilexin WakeNet models flashed
+- **BLOCKER:** Wake word detection not triggering — likely TDM slot mapping issue (AEC ref on wrong channel cancels real voice). Needs physical slot verification test + possibly custom "Hey Tinker" model from Espressif.
+- PTT mode still works as before when wake word is OFF (default).
+
+**Phase 2 — Remaining priorities:**
+1. Fix wake word TDM slot mapping (tone test to identify AEC ref channel)
+2. Custom "Hey Tinker" WakeNet model (contact Espressif sales@espressif.com)
 3. Desktop SDL2 simulator for fast dev loop
 4. OPUS audio encoding (16kbps vs 256kbps PCM)
-5. SD card offline queue (Issue #44)
+5. OTA firmware updates
 
 ## Recovery & Rollback
 If something breaks after a build/flash:

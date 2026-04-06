@@ -421,3 +421,38 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** The RTC year was stored as `uint8_t` (0-255). The comparison `if (year > 2000)` can never be true for a `uint8_t` because max value is 255. The condition was dead code.
 - **Fix:** Changed the comparison to use the RTC year value directly (e.g., `year > 24` for years after 2024, where the RTC stores year as offset from 2000), or cast to a wider type before adding the century offset.
 - **Prevention:** Enable `-Wtype-limits` compiler warning to catch comparisons that are always true or always false due to type range. Review all comparisons involving `uint8_t` / `uint16_t` for range issues.
+
+### ESP-SR AFE + Wake Word Integration (Phase 2)
+
+- **Date:** 2026-04-06
+- **Symptom:** ESP-SR AFE crashes on first `feed()` call with "Load access fault" on Core 1.
+- **Root Cause:** Multiple issues compounded:
+  1. **Feed chunk size mismatch:** AFE expects exactly `get_feed_chunksize()` samples per `feed()` call (512 for "MR", 1024 for "MMR"). Feeding 960 samples (320 samples x 3 channels from 20ms mic frame) caused buffer overrun inside the AFE library.
+  2. **PSRAM stack + stack-allocated arrays:** Task stacks in PSRAM have cache coherency issues with large local arrays. Stack-allocated `int16_t afe_tmp[960]` on a PSRAM stack caused Store access faults.
+  3. **2-mic mode ("MMR") exhausts SRAM:** With only 44KB SRAM free after AFE init, the HIGH_PERF 2-mic mode couldn't allocate working buffers. Switching to "MR" (1-mic + 1-ref, LOW_COST) leaves 68KB free and runs stable.
+  4. **30-second mic task timeout:** The `MAX_RECORD_FRAMES_ASK` limit (1500 frames = 30s) killed the mic capture task even in always-listening mode, starving the AFE feed.
+- **Fix:**
+  1. Query `get_feed_chunksize()` at init, accumulate samples in a ring-style buffer, only call `feed()` when exactly `chunksize` samples are ready.
+  2. Allocate `afe_tmp` and `afe_buf` on heap (PSRAM), not stack. Use `xTaskCreatePinnedToCoreWithCaps(MALLOC_CAP_SPIRAM)` for task stacks.
+  3. Use "MR" format (1 mic + 1 ref) with `AFE_MODE_LOW_COST`.
+  4. Skip 30s duration limit when `s_afe_enabled` is true.
+- **Prevention:** Always call `get_feed_chunksize()` before `feed()`. Never use stack-allocated arrays >256 bytes on PSRAM-stack tasks. Monitor SRAM free after AFE init — below 40KB is danger zone.
+
+- **Date:** 2026-04-06
+- **Symptom:** WakeNet9 "hilexin" model never triggers `wake=1` despite VAD detecting speech.
+- **Root Cause:** "hilexin" (嗨乐鑫) is trained on native Mandarin Chinese pronunciation. English speakers saying "Hi Lexin" don't match the acoustic pattern. TTS-generated speech also doesn't trigger it (by design — prevents TV/speaker false triggers).
+- **Fix:** Switched to "hiesp" model. Still didn't trigger — likely a TDM slot mapping issue. The AEC reference channel may be on slot 1 (near-zero RMS when speaker silent), not slot 2. If the mic signal is fed as the reference, AEC cancels the actual voice.
+- **Prevention:** Verify TDM slot mapping before integrating AEC. Play a known tone through the speaker and log per-channel RMS — the channel that shows the tone is the reference. Slots 0 and 2 both showed high RMS (both are mics), slot 1 was near-zero (likely the AEC ref or unused).
+- **Status:** AFE pipeline works (feed/fetch stable, VAD detects speech, no crashes). Wake word detection needs slot mapping verification and possibly custom "Hey Tinker" model from Espressif.
+
+- **Date:** 2026-04-06
+- **Symptom:** Dragon Q6A keeps going offline for 10+ minutes, unreachable via network.
+- **Root Cause:** Dragon uses WiFi (wlan0 at 192.168.1.89), not ethernet. WiFi power save was enabled (`Power save: on`), causing periodic disconnects. Additionally, PingOS services (node/Fastify) competed for port 3500 with our dashboard.
+- **Fix:** `iw wlan0 set power_save off` + NetworkManager dispatcher script at `/etc/NetworkManager/dispatcher.d/99-wifi-powersave.sh`. Disabled PingOS services (`systemctl disable pingos-dashboard pingos-gateway pingos-chromium pingos-xvfb`). Also disabled EEE on ethernet (`ethtool --set-eee enp1s0 eee off`) as belt-and-suspenders.
+- **Prevention:** Always check `iw wlan0 get power_save` on ARM SBCs using WiFi. Set power save off immediately after any reboot. The dispatcher script should handle this automatically but verify after updates.
+
+- **Date:** 2026-04-06
+- **Symptom:** SD card and WiFi SDIO were documented as conflicting (can't use simultaneously).
+- **Root Cause:** The comment in sdcard.c was incorrect. Tab5 uses SDMMC Slot 0 for SD card and Slot 1 for WiFi SDIO — different slots on different GPIO banks. They coexist fine.
+- **Fix:** Updated sdcard.c comment to reflect verified coexistence. Confirmed: 122GB SD card mounts and operates normally while WiFi is active.
+- **Prevention:** Don't trust hardware conflict comments without testing. The ESP32-P4 SDMMC controller supports 2 independent slots.
