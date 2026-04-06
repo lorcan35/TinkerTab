@@ -26,14 +26,14 @@ static void poll_voice_cb(lv_timer_t *t)
 
     voice_state_t st = voice_get_state();
 
-    /* New LLM tokens streaming → update assistant bubble */
-    if (st == VOICE_STATE_PROCESSING) {
+    /* Update assistant bubble while LLM tokens stream in.
+     * Check PROCESSING and SPEAKING — tokens continue arriving
+     * during TTS synthesis. */
+    if (st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING) {
         const char *llm = voice_get_llm_text();
         if (llm && llm[0]) {
             if (!s_assistant_bubble) {
-                /* Create assistant bubble for streaming response */
                 ui_chat_add_message("...", false);
-                /* The last child is the bubble we just created */
                 int count = lv_obj_get_child_count(s_msg_list);
                 if (count > 0) {
                     s_assistant_bubble = lv_obj_get_child(s_msg_list, count - 1);
@@ -47,9 +47,14 @@ static void poll_voice_cb(lv_timer_t *t)
         }
     }
 
-    /* Transition out of PROCESSING/SPEAKING → finalize bubble */
+    /* Transition back to READY → finalize the bubble */
     if (s_last_state == VOICE_STATE_PROCESSING || s_last_state == VOICE_STATE_SPEAKING) {
         if (st == VOICE_STATE_READY || st == VOICE_STATE_IDLE) {
+            /* Final update with complete LLM text */
+            const char *llm = voice_get_llm_text();
+            if (llm && llm[0] && s_assistant_label) {
+                lv_label_set_text(s_assistant_label, llm);
+            }
             s_assistant_bubble = NULL;
             s_assistant_label = NULL;
         }

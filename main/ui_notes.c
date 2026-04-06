@@ -1214,24 +1214,44 @@ static void wav_play_task(void *arg)
         goto done;
     }
 
-    /* Skip WAV header (44 bytes) */
-    fseek(f, 44, SEEK_SET);
+    /* Read WAV header to get actual sample rate */
+    uint8_t hdr[44];
+    if (fread(hdr, 1, 44, f) < 44) {
+        ESP_LOGE(TAG, "WAV header too short");
+        fclose(f);
+        goto done;
+    }
+    uint32_t wav_rate = hdr[24] | (hdr[25] << 8) | (hdr[26] << 16) | (hdr[27] << 24);
+    uint16_t wav_channels = hdr[22] | (hdr[23] << 8);
+    uint16_t wav_bits = hdr[34] | (hdr[35] << 8);
+    ESP_LOGI(TAG, "WAV: %luHz %uch %ubit", (unsigned long)wav_rate, wav_channels, wav_bits);
+
+    if (wav_bits != 16 || wav_channels != 1) {
+        ESP_LOGE(TAG, "Only 16-bit mono WAV supported");
+        fclose(f);
+        goto done;
+    }
+
+    /* Calculate upsample ratio to 48kHz */
+    int ratio = 48000 / wav_rate;  /* 3 for 16kHz, 2 for 22050→ round to 2 */
+    if (ratio < 1) ratio = 1;
+    if (ratio > 4) ratio = 4;
+    /* For non-integer ratios (like 22050→48000 = 2.177), use nearest integer */
+    if (wav_rate > 20000 && wav_rate < 25000) ratio = 2;  /* 22050/24000 → 2x */
+    ESP_LOGI(TAG, "Upsample ratio: %dx (%luHz → 48kHz)", ratio, (unsigned long)wav_rate);
 
     tab5_audio_speaker_enable(true);
 
-    /* Read and play in 2048-sample chunks (16-bit mono @ 16kHz → 128ms each)
-     * Tab5 I2S runs at 48kHz, so upsample 3:1 inline */
-    int16_t buf_16k[2048];
-    int16_t buf_48k[2048 * 3];
+    int16_t buf_in[1024];
+    int16_t buf_out[1024 * 4];  /* max ratio=4 */
     size_t rd;
-    while (s_wav_playing && (rd = fread(buf_16k, sizeof(int16_t), 2048, f)) > 0) {
-        /* Upsample 16kHz → 48kHz (simple sample-hold) */
+    while (s_wav_playing && (rd = fread(buf_in, sizeof(int16_t), 1024, f)) > 0) {
         for (size_t i = 0; i < rd; i++) {
-            buf_48k[i * 3]     = buf_16k[i];
-            buf_48k[i * 3 + 1] = buf_16k[i];
-            buf_48k[i * 3 + 2] = buf_16k[i];
+            for (int r = 0; r < ratio; r++) {
+                buf_out[i * ratio + r] = buf_in[i];
+            }
         }
-        tab5_audio_play_raw(buf_48k, rd * 3);
+        tab5_audio_play_raw(buf_out, rd * ratio);
     }
 
     tab5_audio_speaker_enable(false);
