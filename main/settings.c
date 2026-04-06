@@ -241,6 +241,18 @@ esp_err_t tab5_settings_set_cloud_mode(uint8_t enabled)
     return set_u8("cloud", enabled ? 1 : 0);
 }
 
+/* ── Wake word ──────────────────────────────────────────────────────── */
+
+uint8_t tab5_settings_get_wake_word(void)
+{
+    return get_u8("wake", 0);
+}
+
+esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
+{
+    return set_u8("wake", enabled ? 1 : 0);
+}
+
 /* ── Device identity ─────────────────────────────────────────────────── */
 
 esp_err_t tab5_settings_get_device_id(char *buf, size_t len)

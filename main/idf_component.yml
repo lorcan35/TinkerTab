@@ -9,3 +9,4 @@ dependencies:
     version: 0.8.5
   espressif/mdns: '*'
   espressif/esp_codec_dev: '*'
+  espressif/esp-sr: '>=2.4.0'

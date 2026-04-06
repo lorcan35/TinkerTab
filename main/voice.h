@@ -95,3 +95,11 @@ float voice_get_current_rms(void);
 // Get dictation post-processing results (arrives after dictation_summary event)
 const char *voice_get_dictation_title(void);
 const char *voice_get_dictation_summary(void);
+
+// Wake word: called when AFE detects wake word. Starts listening or barge-in.
+void voice_on_wake(void);
+
+// Always-listening mode: init/start/stop the AFE pipeline
+esp_err_t voice_start_always_listening(void);
+esp_err_t voice_stop_always_listening(void);
+bool voice_is_always_listening(void);

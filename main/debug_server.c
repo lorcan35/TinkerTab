@@ -13,6 +13,8 @@
 #include "config.h"
 #include "display.h"
 #include "sdcard.h"
+#include "afe.h"
+#include "voice.h"
 #include "ui_core.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -242,6 +244,13 @@ static esp_err_t info_handler(httpd_req_t *req)
 
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     cJSON_AddNumberToObject(root, "tasks", (double)task_count);
+
+    /* AFE / wake word */
+    cJSON_AddBoolToObject(root, "afe_active", tab5_afe_is_active());
+    cJSON_AddBoolToObject(root, "wake_listening", voice_is_always_listening());
+    if (tab5_afe_is_active()) {
+        cJSON_AddStringToObject(root, "wake_word", tab5_afe_wake_word_name());
+    }
 
     /* SD card */
     cJSON_AddBoolToObject(root, "sd_mounted", tab5_sdcard_mounted());
@@ -699,6 +708,32 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
     return ret;
 }
 
+/* ── Wake word toggle ────────────────────────────────────────────────── */
+
+static esp_err_t wake_handler(httpd_req_t *req)
+{
+    if (voice_is_always_listening()) {
+        voice_stop_always_listening();
+    } else {
+        voice_start_always_listening();
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "afe_active", tab5_afe_is_active());
+    cJSON_AddBoolToObject(root, "wake_listening", voice_is_always_listening());
+    if (tab5_afe_is_active()) {
+        cJSON_AddStringToObject(root, "wake_word", tab5_afe_wake_word_name());
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -713,7 +748,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 14;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -755,6 +790,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_sdcard = {
         .uri = "/sdcard", .method = HTTP_GET, .handler = sdcard_handler
     };
+    const httpd_uri_t uri_wake = {
+        .uri = "/wake", .method = HTTP_POST, .handler = wake_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -766,6 +804,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_open);
     httpd_register_uri_handler(server, &uri_crashlog);
     httpd_register_uri_handler(server, &uri_sdcard);
+    httpd_register_uri_handler(server, &uri_wake);
 
     /* Log the URL */
     char ip[20];
