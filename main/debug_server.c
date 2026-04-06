@@ -12,6 +12,7 @@
 #include "debug_server.h"
 #include "config.h"
 #include "display.h"
+#include "sdcard.h"
 #include "ui_core.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -26,6 +27,8 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -239,6 +242,13 @@ static esp_err_t info_handler(httpd_req_t *req)
 
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     cJSON_AddNumberToObject(root, "tasks", (double)task_count);
+
+    /* SD card */
+    cJSON_AddBoolToObject(root, "sd_mounted", tab5_sdcard_mounted());
+    if (tab5_sdcard_mounted()) {
+        cJSON_AddNumberToObject(root, "sd_total_mb", (double)(tab5_sdcard_total_bytes() / (1024 * 1024)));
+        cJSON_AddNumberToObject(root, "sd_free_mb", (double)(tab5_sdcard_free_bytes() / (1024 * 1024)));
+    }
 
     const char *reset_reasons[] = {"UNKNOWN","POWERON","EXT","SW","PANIC","INT_WDT","TASK_WDT","WDT","DEEPSLEEP","BROWNOUT","SDIO","USB","JTAG","EFUSE","PWR_GLITCH","CPU_LOCKUP"};
     esp_reset_reason_t reason = esp_reset_reason();
@@ -627,6 +637,68 @@ static esp_err_t crashlog_handler(httpd_req_t *req)
     return ret;
 }
 
+/* ── SD card file listing ─────────────────────────────────────────────── */
+
+static void _list_dir_to_json(cJSON *arr, const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d) return;
+
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        char full[320];
+        snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
+
+        struct stat st;
+        stat(full, &st);
+
+        cJSON *item = cJSON_CreateObject();
+        cJSON_AddStringToObject(item, "name", entry->d_name);
+        cJSON_AddStringToObject(item, "path", full);
+        cJSON_AddBoolToObject(item, "dir", entry->d_type == DT_DIR);
+        if (entry->d_type != DT_DIR) {
+            cJSON_AddNumberToObject(item, "size", (double)st.st_size);
+        }
+        cJSON_AddItemToArray(arr, item);
+    }
+    closedir(d);
+}
+
+static esp_err_t sdcard_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "mounted", tab5_sdcard_mounted());
+
+    if (tab5_sdcard_mounted()) {
+        cJSON_AddNumberToObject(root, "total_mb", (double)(tab5_sdcard_total_bytes() / (1024*1024)));
+        cJSON_AddNumberToObject(root, "free_mb", (double)(tab5_sdcard_free_bytes() / (1024*1024)));
+
+        /* List /sdcard root */
+        cJSON *files = cJSON_AddArrayToObject(root, "files");
+        _list_dir_to_json(files, "/sdcard");
+
+        /* List /sdcard/rec if it exists */
+        struct stat st;
+        if (stat("/sdcard/rec", &st) == 0) {
+            cJSON *recs = cJSON_AddArrayToObject(root, "recordings");
+            _list_dir_to_json(recs, "/sdcard/rec");
+        }
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!json) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JSON alloc");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -641,7 +713,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 12;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -680,6 +752,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_crashlog = {
         .uri = "/crashlog", .method = HTTP_GET, .handler = crashlog_handler
     };
+    const httpd_uri_t uri_sdcard = {
+        .uri = "/sdcard", .method = HTTP_GET, .handler = sdcard_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -690,6 +765,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_log);
     httpd_register_uri_handler(server, &uri_open);
     httpd_register_uri_handler(server, &uri_crashlog);
+    httpd_register_uri_handler(server, &uri_sdcard);
 
     /* Log the URL */
     char ip[20];

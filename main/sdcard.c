@@ -4,26 +4,17 @@
  * 4-bit SDMMC interface for the M5Stack Tab5 micro-SD slot.
  *
  * ┌──────────────────────────────────────────────────────────────────┐
- * │  KNOWN ISSUE — SD / WiFi CONFLICT                               │
+ * │  SD / WiFi COEXISTENCE — CONFIRMED WORKING                      │
  * │                                                                  │
- * │  The Tab5 routes both the micro-SD card and the ESP32-C6 WiFi   │
- * │  co-processor through SDMMC / SDIO on the ESP32-P4. Both need   │
- * │  the SDMMC peripheral, and they use different GPIO banks:        │
+ * │  The Tab5 uses BOTH SDMMC slots on the ESP32-P4 simultaneously: │
+ * │      SD  card : SLOT 0 — CLK=43  CMD=44  D0-D3 = 39-42         │
+ * │      WiFi SDIO: SLOT 1 — CLK=12  CMD=13  D0-D3 = 11-8          │
  * │                                                                  │
- * │      SD  card : CLK=43  CMD=44  D0-D3 = 39-42                  │
- * │      WiFi SDIO: CLK=12  CMD=13  D0-D3 = 11-8                   │
- * │                                                                  │
- * │  While the GPIOs differ, the ESP-IDF SDMMC host driver only     │
- * │  supports a single slot configuration at a time. If WiFi is     │
- * │  active (ESP-Hosted over SDIO), you must deinitialise the SDIO  │
- * │  link before mounting the SD card, and vice versa.               │
- * │                                                                  │
- * │  Possible strategies:                                            │
- * │    1. Time-multiplex: tear down WiFi, mount SD, do I/O, unmount │
- * │       SD, bring WiFi back.                                       │
- * │    2. Boot-time choice: decide at startup which one is needed.   │
- * │    3. Use SPI mode for the SD card (slower, but avoids the      │
- * │       SDMMC peripheral conflict).                                │
+ * │  Because they use DIFFERENT SDMMC slots and different GPIO       │
+ * │  banks, they coexist without conflict. Storage service inits     │
+ * │  BEFORE network service, then WiFi starts on a separate slot.    │
+ * │  Verified: 122GB SD card mounts and operates normally while      │
+ * │  WiFi is active (ESP-Hosted over SDIO on Slot 1).                │
  * └──────────────────────────────────────────────────────────────────┘
  */
 
