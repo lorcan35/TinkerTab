@@ -14,6 +14,7 @@
  */
 
 #include "ui_voice.h"
+#include "ui_notes.h"
 #include "mode_manager.h"
 #include "config.h"
 #include "settings.h"
@@ -155,6 +156,7 @@ static void show_state_idle(void);
 
 /* Mic button */
 static lv_obj_t  *s_mic_btn       = NULL;
+static bool       s_dictation_from_anywhere = false;
 static lv_obj_t  *s_mic_dot       = NULL;
 
 /* Overlay container */
@@ -324,6 +326,28 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         start_pulse_anim();
         break;
     case VOICE_STATE_READY:
+        /* Dictation from anywhere: save note and hide overlay */
+        if (s_dictation_from_anywhere && detail
+            && (strcmp(detail, "dictation_done") == 0
+                || strcmp(detail, "dictation_summary") == 0)) {
+            const char *txt = voice_get_dictation_text();
+            if (txt && txt[0]) {
+                const char *title = voice_get_dictation_title();
+                if (title && title[0]) {
+                    char buf[600];
+                    snprintf(buf, sizeof(buf), "[%s] %s", title, txt);
+                    ui_notes_add(buf, true);
+                } else {
+                    ui_notes_add(txt, true);
+                }
+                ESP_LOGI(TAG, "Dictation note saved from anywhere (%u chars)",
+                         (unsigned)strlen(txt));
+            }
+            s_dictation_from_anywhere = false;
+            ui_voice_hide();
+            break;
+        }
+
         /* Show prompt — if we had a conversation, offer follow-up */
         if (!s_visible) {
             ui_voice_show();
@@ -1327,8 +1351,6 @@ static void mic_click_cb(lv_event_t *e)
         break;
     }
 }
-
-static bool s_dictation_from_anywhere = false;
 
 static void mic_long_press_cb(lv_event_t *e)
 {

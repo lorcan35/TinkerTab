@@ -73,7 +73,7 @@ static void nav_click_cb(lv_event_t *e);
 static void brain_pulse_cb(void *obj, int32_t val);
 static void show_toast(const char *text);
 static void orb_tap_cb(lv_event_t *e);
-static void voice_hint_tap_cb(lv_event_t *e);
+/* voice_hint_tap_cb removed — was dead code, never wired to any UI element */
 static void privacy_tap_cb(lv_event_t *e);
 static void ask_tap_cb(lv_event_t *e);
 static void cb_last_note_tap(lv_event_t *e);
@@ -93,7 +93,7 @@ static lv_obj_t  *lbl_sbar_dragon = NULL;  /* Dragon connection dot */
 /* Home page (Page 0) */
 static lv_obj_t  *lbl_clock     = NULL;
 static lv_obj_t  *lbl_date      = NULL;
-static lv_obj_t  *lbl_greeting  = NULL;
+/* lbl_greeting removed — was declared but never created or assigned */
 static lv_obj_t  *orb_ring      = NULL;
 static lv_obj_t  *lbl_last_note = NULL;    /* last note preview card */
 static lv_obj_t  *last_note_card = NULL;
@@ -500,16 +500,6 @@ static void privacy_tap_cb(lv_event_t *e)
     show_toast("Local mode: all data stays on your network");
 }
 
-static void voice_hint_tap_cb(lv_event_t *e)
-{
-    (void)e;
-    /* Navigate to home page and start voice */
-    if (tileview && tiles[0]) {
-        lv_tileview_set_tile(tileview, tiles[0], LV_ANIM_ON);
-    }
-    orb_tap_cb(e);
-}
-
 static void brain_pulse_cb(void *obj, int32_t val)
 {
     lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
@@ -545,6 +535,10 @@ static void show_toast(const char *text)
     lv_timer_set_repeat_count(tmr, 1);
 }
 
+/* Wrappers for lv_async_call — avoid cast between incompatible function types */
+static void async_notes_create(void *arg) { (void)arg; ui_notes_create(); }
+static void async_settings_create(void *arg) { (void)arg; ui_settings_create(); }
+
 static void update_nav_ui(int page)
 {
     for (int i = 0; i < NUM_PAGES; i++) {
@@ -575,11 +569,11 @@ static void update_nav_ui(int page)
 
     /* When switching to Notes page, load the notes screen */
     if (page == 1 && tiles[1]) {
-        lv_async_call((lv_async_cb_t)ui_notes_create, NULL);
+        lv_async_call(async_notes_create, NULL);
     }
     /* When switching to Settings page, load the settings screen */
     if (page == 3 && tiles[3]) {
-        lv_async_call((lv_async_cb_t)ui_settings_create, NULL);
+        lv_async_call(async_settings_create, NULL);
     }
 }
 
@@ -688,7 +682,7 @@ void ui_home_update_status(void)
         if (ui_notes_get_last_preview(note_preview, sizeof(note_preview))) {
             lv_label_set_text(lbl_last_note, note_preview);
         } else {
-            lv_label_set_text(lbl_last_note, "No notes yet — tap Voice to record");
+            lv_label_set_text(lbl_last_note, "No notes yet - tap Voice to record");
         }
     }
 }
@@ -711,7 +705,7 @@ void ui_home_destroy(void)
         scr = NULL;
         tileview = NULL;
         orb_ring = NULL;
-        lbl_clock = lbl_date = lbl_greeting = NULL;
+        lbl_clock = lbl_date = NULL;
         lbl_sbar_time = lbl_sbar_wifi = lbl_sbar_batt = NULL;
         lbl_sbar_dragon = NULL;
         lbl_privacy = NULL;
