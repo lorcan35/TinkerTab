@@ -348,8 +348,8 @@ static void show_input_area(void);
 static void hide_input_area(void);
 static void voice_session_done(void);
 
-/* ── Voice state callback ───────────────────────────────── */
-static void voice_state_cb(voice_state_t state, const char *detail)
+/* ── Voice state callback (used by dictation connect flow) ── */
+static void __attribute__((unused)) voice_state_cb(voice_state_t state, const char *detail)
 {
     /* Auto-start dictation once Dragon connection is READY */
     if (state == VOICE_STATE_READY && s_pending_dictation) {
@@ -391,7 +391,7 @@ int ui_notes_add(const char *text, bool is_voice)
     n->minute = rtc.minute;
     n->day   = rtc.day;
     n->month = rtc.month;
-    n->year  = (rtc.year > 2000) ? rtc.year - 2000 : 0;
+    n->year  = rtc.year;  /* RTC year is already offset from 2000 */
     n->used  = true;
 
     s_next_slot = (s_next_slot + 1) % MAX_NOTES;
@@ -569,7 +569,7 @@ const char *ui_notes_start_recording(void)
     n->minute = rtc.minute;
     n->day = rtc.day;
     n->month = rtc.month;
-    n->year = (rtc.year > 2000) ? rtc.year - 2000 : 0;
+    n->year = rtc.year;  /* RTC year is already offset from 2000 */
     n->used = true;
     snprintf(n->text, MAX_NOTE_LEN, "(Recording...)");
 
@@ -932,7 +932,7 @@ static void dictation_connect_task(void *arg)
 }
 
 /* LVGL timer: poll for READY state after Dragon connect, then start dictation */
-static void pending_dictation_poll_cb(lv_timer_t *t)
+static void __attribute__((unused)) pending_dictation_poll_cb(lv_timer_t *t)
 {
     int *ticks = (int *)lv_timer_get_user_data(t);
     (*ticks)++;
@@ -1116,10 +1116,11 @@ static void cb_note_tap(lv_event_t *e)
 
     /* Timestamp */
     char ts_buf[64];
+    static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                "Jul","Aug","Sep","Oct","Nov","Dec"};
+    int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
     snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d — %s note",
-             (const char *[]){"Jan","Feb","Mar","Apr","May","Jun",
-              "Jul","Aug","Sep","Oct","Nov","Dec"}[n->month - 1],
-             n->day, n->hour, n->minute,
+             mn[mi], n->day, n->hour, n->minute,
              n->is_voice ? "Voice" : "Text");
     lv_obj_t *ts = lv_label_create(overlay);
     lv_label_set_text(ts, ts_buf);
@@ -1306,10 +1307,11 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     /* Row 1: timestamp + badge */
     lv_obj_t *ts = lv_label_create(card);
     char ts_buf[32];
+    static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
+                                "Jul","Aug","Sep","Oct","Nov","Dec"};
+    int mi = (n.month >= 1 && n.month <= 12) ? n.month - 1 : 0;
     snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d",
-             (const char *[]){"Jan","Feb","Mar","Apr","May","Jun",
-              "Jul","Aug","Sep","Oct","Nov","Dec"}[n.month - 1],
-             n.day, n.hour, n.minute);
+             mn[mi], n.day, n.hour, n.minute);
     lv_label_set_text(ts, ts_buf);
     lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
     lv_obj_set_style_text_font(ts, &lv_font_montserrat_28, 0);

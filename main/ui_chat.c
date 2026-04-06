@@ -1,5 +1,6 @@
 #include "ui_chat.h"
 #include "voice.h"
+#include "ui_keyboard.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "lvgl.h"
@@ -76,9 +77,15 @@ static void cb_close(lv_event_t *e) {
     ESP_LOGI(TAG, "Chat closed");
 }
 
+static void cb_textarea_click(lv_event_t *e) {
+    (void)e;
+    if (s_textarea) ui_keyboard_show(s_textarea);
+}
+
 static void cb_send(lv_event_t *e) {
     (void)e;
     if (!s_textarea) return;
+    ui_keyboard_hide();
     const char *txt = lv_textarea_get_text(s_textarea);
     if (!txt || !txt[0]) return;
 
@@ -146,7 +153,7 @@ lv_obj_t *ui_chat_create(void) {
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Text input */
+    /* Text input — tap to show keyboard */
     s_textarea = lv_textarea_create(bar);
     lv_obj_set_size(s_textarea, 540, 52);
     lv_obj_set_pos(s_textarea, 12, 10);
@@ -157,6 +164,7 @@ lv_obj_t *ui_chat_create(void) {
     lv_obj_set_style_border_width(s_textarea, 0, 0);
     lv_obj_set_style_radius(s_textarea, 24, 0);
     lv_obj_set_style_pad_left(s_textarea, 16, 0);
+    lv_obj_add_event_cb(s_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
 
     /* Send button */
     lv_obj_t *send = lv_button_create(bar);

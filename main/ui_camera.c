@@ -9,6 +9,7 @@
 
 #include "ui_camera.h"
 #include "ui_home.h"
+#include "ui_files.h"
 #include "camera.h"
 #include "sdcard.h"
 #include "config.h"
@@ -17,6 +18,7 @@
 #include "esp_task_wdt.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static const char *TAG = "ui_camera";
 
@@ -62,6 +64,7 @@ static uint16_t    canvas_w        = 0;
 static uint16_t    canvas_h        = 0;
 
 static uint32_t    capture_counter = 0;
+static bool        capture_counter_init = false;
 
 /* Currently selected resolution (default VGA for smooth preview) */
 static tab5_cam_resolution_t current_res = TAB5_CAM_RES_VGA;
@@ -129,6 +132,15 @@ static void free_canvas_buffer(void)
     }
 }
 
+/* ── Gallery button — open file browser ───────────────────────── */
+static void gallery_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Gallery tapped — opening file browser");
+    ui_camera_destroy();
+    ui_files_create();
+}
+
 /* ── Back button callback ────────────────────────────────────── */
 static void cb_back_btn(lv_event_t *e)
 {
@@ -143,6 +155,21 @@ static void cb_back_btn(lv_event_t *e)
 lv_obj_t *ui_camera_create(void)
 {
     bool cam_ok = tab5_camera_initialized();
+
+    /* Find highest existing IMG_NNNN.jpg to avoid overwriting */
+    if (!capture_counter_init && tab5_sdcard_mounted()) {
+        char path[32];
+        for (uint32_t i = 9999; i > 0; i--) {
+            snprintf(path, sizeof(path), "/sdcard/IMG_%04"PRIu32".jpg", i);
+            struct stat st;
+            if (stat(path, &st) == 0) {
+                capture_counter = i + 1;
+                ESP_LOGI(TAG, "Resuming capture counter at %"PRIu32, capture_counter);
+                break;
+            }
+        }
+        capture_counter_init = true;
+    }
 
     /* ── Screen ──────────────────────────────────────────────── */
     scr_camera = lv_obj_create(NULL);
@@ -314,6 +341,8 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_pad_all(btn_gallery, 0, 0);
     lv_obj_clear_flag(btn_gallery, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(btn_gallery, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_add_event_cb(btn_gallery, gallery_btn_cb, LV_EVENT_CLICKED, NULL);
 
     lbl_gallery = lv_label_create(btn_gallery);
     lv_label_set_text(lbl_gallery, "Gallery");

@@ -83,6 +83,12 @@ static int s_row_idx = 0;
 
 /* Guard flag for background tasks during destroy */
 static volatile bool s_destroying = false;
+static lv_timer_t *s_refresh_timer = NULL;
+
+static void settings_refresh_cb(lv_timer_t *t) {
+    (void)t;
+    if (!s_destroying) ui_settings_update();
+}
 
 /* ── Forward declarations ───────────────────────────────────────────── */
 static lv_obj_t *make_topbar(lv_obj_t *parent);
@@ -554,8 +560,9 @@ lv_obj_t *ui_settings_create(void)
         s_lbl_psram = add_row_value(row_psram, "-- MB");
     }
 
-    /* ── Initial data refresh ───────────────────────────────────────── */
+    /* ── Initial data refresh + periodic timer ────────────────────── */
     ui_settings_update();
+    s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
 
     s_destroying = false;
 
@@ -653,6 +660,8 @@ void ui_settings_destroy(void)
     if (!s_screen) return;
 
     s_destroying = true;
+
+    if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
 
     lv_obj_delete(s_screen);
 
