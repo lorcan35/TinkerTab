@@ -19,6 +19,7 @@
 #include "ui_files.h"
 #include "ui_home.h"
 #include "ui_chat.h"
+#include "ui_keyboard.h"
 #include "wifi.h"
 #include "battery.h"
 #include "dragon_link.h"
@@ -508,6 +509,10 @@ static void deferred_open_cb(lv_timer_t *t)
     int scr_id = s_pending_screen;
     s_pending_screen = -1;
     lv_timer_delete(t);
+
+    /* Dismiss any overlays (chat, voice, keyboard) before switching */
+    if (ui_chat_is_active()) ui_chat_destroy();
+    ui_keyboard_hide();
 
     switch (scr_id) {
     case 0: ui_wifi_create(); break;

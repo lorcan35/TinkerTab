@@ -587,6 +587,7 @@ static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg >= 0 && pg < NUM_PAGES && tiles[pg] && tileview) {
+        ui_keyboard_hide();
         lv_tileview_set_tile(tileview, tiles[pg], LV_ANIM_ON);
     }
 }
@@ -601,6 +602,9 @@ static void tileview_scroll_cb(lv_event_t *e)
     if (pg != cur_page) {
         cur_page = pg;
         update_nav_ui(cur_page);
+        /* Hide keyboard when swiping between pages — prevents
+         * persistent keyboard from Notes blocking other screens */
+        ui_keyboard_hide();
     }
 }
 
