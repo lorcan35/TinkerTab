@@ -153,9 +153,16 @@ while True:
 - Tab5 camera is SC202CS at SCCB 0x36 (NOT SC2336 at 0x30)
 - SD card uses SDMMC SLOT 0 with LDO channel 4
 
-## Voice Pipeline — Critical Gaps (from March 2026 audit)
+## Voice Pipeline
+### Implemented
+- **Ask Mode:** Short-form voice: PTT → mic stream → Dragon STT → LLM → TTS playback (30s max recording)
+- **Dictation Mode:** Long-form recording via `voice_start_dictation()`. Long-press mic from any screen. STT-only (no LLM/TTS). Auto-stop after 5s silence (`DICTATION_AUTO_STOP_FRAMES = 250 × 20ms`). Adaptive VAD calibration. 64KB PSRAM transcript buffer (~2hrs). Post-processing on Dragon generates title + summary (`dictation_summary` message).
+- **Text Input:** `voice_send_text()` sends `{"type":"text","content":"..."}` — skips STT, same conversation context.
+- **Cloud Mode Toggle:** `voice_send_cloud_mode(bool)` sends `{"type":"config_update","cloud_mode":true/false}` to Dragon, switching STT+TTS backends between local and OpenRouter.
+- **Live RMS:** `voice_get_current_rms()` for waveform visualization during dictation.
+
+### Critical Gaps (from March 2026 audit)
 - **AEC (Acoustic Echo Cancellation):** ES7210 captures 4 TDM channels: [MIC-L, AEC, MIC-R, MIC-HP]. We only use slot 0 (MIC-L). Slot 1 = AEC reference. Without AEC, Tab5 hears its own TTS → hallucination loop. Use ESP-SR AEC.
-- **VAD (Voice Activity Detection):** Currently fixed 30s recording window. Need silero-vad on Dragon to detect speech end dynamically.
 - **Wake Word:** Currently push-to-talk only. Need ESP-SR WakeNet or Porcupine on Tab5 for "Hey Tinker". Tab5-side KWS = lowest latency.
 - **Barge-in:** Impossible without AEC. KWS should interrupt TTS playback and reset pipeline.
 - **OPUS encoding:** 16kHz PCM = 256kbps over WiFi. OPUS would cut to ~16kbps. Phase 2.
@@ -171,37 +178,102 @@ while True:
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 
-### Currently Implemented (voice.c)
-1. **Voice Input:** `{"type":"start"}` -> binary PCM frames -> `{"type":"stop"}`
+### Tab5 → Dragon (sending)
+1. **Voice Input:** `{"type":"start"}` (with optional `"mode":"dictate"`) -> binary PCM frames -> `{"type":"stop"}`
 2. **Voice Cancel:** `{"type":"cancel"}` — abort current processing
 3. **Keepalive:** `{"type":"ping"}` — JSON heartbeat every 15s during processing
-4. **Receive:** Handle `session_start`, `stt`, `llm`, `tts_start`, binary TTS, `tts_end`, `error`
+4. **Text Input:** `{"type":"text","content":"..."}` — skips STT, goes straight to LLM
+5. **Config Update:** `{"type":"config_update","cloud_mode":true/false}` — toggle cloud STT+TTS on Dragon
+6. **Device Registration:** `{"type":"register","device_id":"...","session_id":"..."}` on WS connect
+7. **Clear History:** `{"type":"clear_history"}` — reset conversation context
 
-### Not Yet Implemented (planned per protocol.md)
-5. **~~Device Registration~~** — DONE (closes #43). Sends `register` + `session_id` on WS connect.
-6. **~~Session Resume~~** — DONE. Stores `session_id` from `session_start` in NVS, sends on reconnect.
-7. **Text Input:** `{"type":"text","content":"..."}` — skips STT, same conversation.
-8. **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
-9. **Config Sync:** Handle `{"type":"config_update"}` from Dragon, apply settings, ACK.
-10. **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable. (Issue #44)
+### Dragon → Tab5 (receiving)
+1. **session_start** — session_id for NVS persistence
+2. **stt** / **stt_partial** — transcription results (partial for dictation streaming)
+3. **llm** — LLM response text (streamed)
+4. **tts_start** / binary TTS / **tts_end** — TTS audio playback
+5. **dictation_summary** — post-processing results: `{"title":"...","summary":"..."}`
+6. **pong** — keepalive response
+7. **config_update** — ACK with applied backend config + cloud_mode state
+8. **error** — error details
+
+### Not Yet Implemented (planned)
+- **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
+- **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable. (Issue #44)
 
 ## Key Files
 ```
-main/voice.c           — Voice streaming (WS client, mic capture, TTS playback)
+main/voice.c           — Voice streaming (WS client, mic capture, TTS playback, dictation, text input, cloud mode)
 main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c             — ES7210 quad-mic via esp_codec_dev
 main/dragon_link.c     — Dragon mDNS discovery + connection state machine
 main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING)
 main/config.h          — All pin definitions and constants
 main/service_registry.c — Service lifecycle management
-main/ui_voice.c        — Voice UI overlay (animated orb, PTT button)
+main/settings.c        — NVS persistence (WiFi, Dragon host, volume, brightness, cloud_mode, session_id)
+main/ui_voice.c        — Voice UI overlay (animated orb, PTT button, dictation long-press)
 main/ui_home.c         — TinkerOS home screen (4-page tileview)
-main/settings.c        — NVS persistence (WiFi, Dragon host, volume, brightness)
+main/ui_chat.c         — Chat screen (text conversation with Tinker, user/assistant message bubbles)
+main/ui_notes.c        — Notes screen (voice dictation + text notes, SD card storage)
+main/ui_settings.c     — Settings screen (WiFi, Dragon, brightness, volume, cloud mode toggle)
+main/ui_camera.c       — Camera viewfinder screen
+main/ui_files.c        — File browser (SD card)
+main/ui_audio.c        — Audio test/debug screen
+main/ui_splash.c       — Boot splash screen
+main/ui_wifi.c         — WiFi setup/connection screen
+main/ui_keyboard.c     — On-screen keyboard overlay (shared by all text-input screens)
+main/ui_core.c         — LVGL display init, screen management, theme
 main/debug_server.c    — HTTP debug server (port 8080, screenshots, touch inject)
 main/main.c            — Boot sequence, serial command loop
 main/imu.c             — BMI270 IMU via I2C (try-read-retry pattern)
 LEARNINGS.md           — Institutional knowledge (MANDATORY)
 ```
+
+## UI Screens
+The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
+| Screen | File | Description |
+|--------|------|-------------|
+| Splash | ui_splash.c | Boot animation, shown during init |
+| Home | ui_home.c | 4-page tileview (main launcher) |
+| Chat | ui_chat.c | Text conversation with Tinker (user/assistant bubbles) |
+| Notes | ui_notes.c | Voice dictation + typed notes, SD card backed |
+| Settings | ui_settings.c | WiFi, Dragon host, brightness, volume, cloud mode |
+| Camera | ui_camera.c | SC202CS viewfinder |
+| Files | ui_files.c | SD card file browser |
+| Keyboard | ui_keyboard.c | On-screen keyboard overlay (shared) |
+| Voice | ui_voice.c | Voice overlay (animated orb, PTT, dictation waveform) |
+
+## Dictation Mode
+- **Trigger:** Long-press mic button from any screen (or tap Record in Notes screen)
+- **Flow:** `voice_start_dictation()` → sends `{"type":"start","mode":"dictate"}` → mic streams PCM → Dragon returns `stt_partial` segments → accumulated in 64KB PSRAM buffer
+- **Auto-stop:** 5 seconds of silence triggers automatic stop (`DICTATION_AUTO_STOP_FRAMES = 250`)
+- **Adaptive VAD:** Calibrates noise floor from ambient audio for reliable silence detection
+- **Post-processing:** Dragon sends `dictation_summary` with auto-generated title + summary via LLM
+- **UI:** Live waveform visualization using `voice_get_current_rms()`, transcript display
+
+## Cloud Mode
+- **Toggle:** Settings screen has a Cloud Mode switch. Persisted in NVS via `tab5_settings_get/set_cloud_mode()`.
+- **Mechanism:** `voice_send_cloud_mode(enabled)` sends `{"type":"config_update","cloud_mode":true}` to Dragon over WebSocket.
+- **Effect on Dragon:** Switches STT backend to `openrouter` (gpt-audio-mini) and TTS backend to `openrouter` (gpt-audio-mini with voice selection). Dragon ACKs with `config_update` containing applied config.
+- **Default:** Off (local backends: Moonshine STT + Piper TTS on Dragon).
+
+## Current Sprint: Phase 1 Complete (April 2026)
+
+**Phase 1 — Voice Assistant + UI** is feature-complete:
+- Ask mode (PTT voice → STT → LLM → TTS) — working end-to-end
+- Dictation mode (long-press, auto-stop, adaptive VAD, 64KB buffer, post-processing) — working
+- Text input via chat screen (`voice_send_text`) — working
+- Cloud mode toggle (local ↔ OpenRouter STT+TTS) — working
+- Device registration + session resume over WebSocket — working
+- 7 UI screens + keyboard overlay + voice overlay — all functional
+- NVS settings persistence (WiFi, Dragon, volume, brightness, cloud mode, session) — working
+
+**Phase 2 — Next priorities:**
+1. AEC (Acoustic Echo Cancellation) using ESP-SR — eliminates TTS hallucination loop
+2. Wake Word ("Hey Tinker") via ESP-SR WakeNet — hands-free activation
+3. Desktop SDL2 simulator for fast dev loop
+4. OPUS audio encoding (16kbps vs 256kbps PCM)
+5. SD card offline queue (Issue #44)
 
 ## Recovery & Rollback
 If something breaks after a build/flash:

@@ -333,3 +333,91 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** BMI270 needs a short settle time after soft reset before it can respond to register reads. The first chip-ID read happens too early, and `i2c_master_bus_add_device()` returns `ESP_ERR_INVALID_STATE` for what is actually a transient not-ready condition.
 - **Fix:** After BMI270 soft reset, wait 10ms then retry chip-ID read up to 5 times with 5ms spacing between attempts. Only fail if all retries are exhausted. This is in `main/imu.c`.
 - **Prevention:** Any sensor that requires a settling period after reset needs a retry loop. Check the datasheet and add appropriate delay+retry logic rather than assuming the device is immediately ready.
+
+---
+
+## Session Bugs (2026-04-06)
+
+### #41 — tts_end Dropped by DMA Contention (Keepalive vs Activity Timer)
+- **Date:** 2026-04-06
+- **Symptom:** `tts_end` message was never received by the client; voice playback appeared to hang indefinitely after TTS audio finished.
+- **Root Cause:** The keepalive timer and the response timeout timer were the same timer. Every keepalive ping reset the response timeout, so the timeout could never fire. The `tts_end` frame was dropped by DMA contention, and the timeout that should have recovered from this never triggered.
+- **Fix:** Separated the keepalive timer from the activity/response timeout timer so they operate independently. Keepalive pings no longer reset the response timeout.
+- **Prevention:** Never multiplex unrelated timeout semantics onto a single timer. Keepalive (connection liveness) and response timeout (application-level deadline) are separate concerns and must use separate timers.
+
+### #42 — Persistent Keyboard Across Page Transitions
+- **Date:** 2026-04-06
+- **Symptom:** Once the Notes screen's "Type Note" textarea opened the on-screen keyboard, the keyboard persisted across all screens — navigating to Home, Voice, Settings, etc. still showed the keyboard overlay.
+- **Root Cause:** No code dismissed the keyboard when leaving a screen. The LVGL keyboard remained attached and visible because neither the tileview scroll handler nor the nav tab click handler called `ui_keyboard_hide()`.
+- **Fix:** Added `ui_keyboard_hide()` calls in both the tileview scroll event handler and the navigation tab click handler, ensuring the keyboard is dismissed on any page transition.
+- **Prevention:** Any screen that can open a keyboard must ensure the keyboard is dismissed on exit. Add `ui_keyboard_hide()` to all navigation/transition code paths.
+
+### #43 — Notes month==0 Array Underflow Crash
+- **Date:** 2026-04-06
+- **Symptom:** Crash (array underflow) when displaying a note's date. Device rebooted.
+- **Root Cause:** `month_names[n->month - 1]` was used to look up the month string, but `n->month` could be 0 (uninitialized or default). `month_names[0 - 1]` = `month_names[-1]`, which is an out-of-bounds access on an embedded system with no memory protection — instant crash.
+- **Fix:** Added bounds check: clamp `n->month` to the valid range [1, 12] before indexing into `month_names[]`.
+- **Prevention:** Always validate array indices derived from external or stored data before use. Treat any value read from NVS, SD card, or network as untrusted input.
+
+### #44 — Static IP Unreliable (Race with DHCP)
+- **Date:** 2026-04-06
+- **Symptom:** Static IP configuration was intermittently ignored. Device sometimes got a DHCP address instead of the configured static IP.
+- **Root Cause:** The static IP was being set in the WiFi event handler, after `esp_wifi_connect()` had already triggered DHCP. The DHCP client could complete before the static IP was applied, creating a race condition.
+- **Fix:** Set the static IP configuration (via `esp_netif_set_ip_info()` or equivalent) before calling `esp_wifi_connect()`, ensuring DHCP is never started.
+- **Prevention:** Always configure static IP before initiating WiFi connection, not in the connected event handler. The event handler is too late — DHCP may have already won the race.
+
+### #45 — Voice Test Wait Too Short (5s for Moonshine)
+- **Date:** 2026-04-06
+- **Symptom:** Voice connectivity test reported failure even though Dragon was healthy and responding.
+- **Root Cause:** The test had a 5-second timeout, but the Dragon Moonshine STT model takes 7-10 seconds to load on first invocation (cold start). The test timed out before Dragon could respond.
+- **Fix:** Increased the voice test timeout from 5 seconds to 15 seconds to accommodate model cold-start loading.
+- **Prevention:** Timeouts for first-contact tests must account for cold-start latency of the backend service. Always measure worst-case (cold boot) timing, not steady-state.
+
+### #46 — Cloud Mode Auto-Restore Race Condition
+- **Date:** 2026-04-06
+- **Symptom:** Switching to cloud mode caused Dragon's voice pipeline to crash or produce garbled output. The pipeline attempted a hot-swap during active session startup.
+- **Root Cause:** On WebSocket connect, the client automatically sent a `config_update` message to restore the last-known cloud config. This arrived while Dragon was still processing `session_start`, causing a pipeline hot-swap race — the TTS/STT backends were being swapped out while actively being used.
+- **Fix:** Removed the automatic config restore on connect. Config updates are now only sent explicitly by user action, not automatically on reconnect.
+- **Prevention:** Never auto-send config mutations during connection setup. Connection handshake should be read-only (register, resume session). Config changes require explicit user intent.
+
+### #47 — WAV Player Hardcoded 16kHz Sample Rate
+- **Date:** 2026-04-06
+- **Symptom:** WAV files recorded at sample rates other than 16kHz played back at wrong speed — too fast or too slow depending on the actual sample rate.
+- **Root Cause:** The WAV player skipped the WAV header entirely and assumed all audio was 16kHz 16-bit mono PCM. It did not parse the header to read the actual sample rate.
+- **Fix:** Modified the WAV player to read and parse the WAV header, extracting the actual sample rate, bit depth, and channel count. Playback now uses the correct sample rate from the file.
+- **Prevention:** Never hardcode audio format parameters. Always parse the container header (WAV, FLAC, etc.) to determine the actual format. Add assertions if the format is outside supported ranges.
+
+### #48 — Chat Textarea No Keyboard on Tap
+- **Date:** 2026-04-06
+- **Symptom:** Tapping the chat text input area did nothing — no on-screen keyboard appeared. Users could not type messages.
+- **Root Cause:** The textarea widget had no click event callback registered to trigger the on-screen keyboard. LVGL textareas do not automatically show a keyboard on focus — the application must explicitly handle this.
+- **Fix:** Added `cb_textarea_click` callback to the chat textarea that calls the keyboard show function when the textarea is tapped/focused.
+- **Prevention:** Every textarea in the UI that expects user text input must have a click/focus handler that shows the on-screen keyboard. Add this to the UI component checklist.
+
+### #49 — Camera Gallery Button No Handler
+- **Date:** 2026-04-06
+- **Symptom:** The gallery button on the camera screen appeared clickable (visual feedback on press) but tapping it did nothing.
+- **Root Cause:** The button was created with visual styling but no event callback was registered. The button had no `LV_EVENT_CLICKED` handler.
+- **Fix:** Added an event callback that opens the file browser / gallery view when the gallery button is clicked.
+- **Prevention:** Every UI button must have an event callback registered at creation time. Add a lint/review step that checks all `lv_obj_add_event_cb` calls match all clickable widgets.
+
+### #50 — Camera Capture Counter Resets on Reboot
+- **Date:** 2026-04-06
+- **Symptom:** After reboot, new camera captures overwrote existing files on the SD card. Files named `IMG_0000.jpg`, `IMG_0001.jpg`, etc. were lost.
+- **Root Cause:** The capture filename counter always started at 0 on boot. It did not scan the SD card for existing files to determine the next available number.
+- **Fix:** On boot, scan the capture directory for existing files and set the counter to max(existing) + 1 before starting new captures.
+- **Prevention:** Any auto-incrementing filename counter must persist across reboots. Either store the counter in NVS or scan existing files on startup. Never assume the storage is empty.
+
+### #51 — lv_async_call Cast Warning (Function Pointer Type Mismatch)
+- **Date:** 2026-04-06
+- **Symptom:** Compiler warning: incompatible function pointer type passed to `lv_async_call()`.
+- **Root Cause:** Functions with different signatures (e.g., `void fn(specific_type*)`) were being cast to `void (*)(void*)` when passed to `lv_async_call()`. While this often works in practice on most ABIs, it is undefined behavior in C and triggers compiler warnings.
+- **Fix:** Created proper wrapper functions with the correct `void (*)(void*)` signature that cast the argument internally before calling the real function.
+- **Prevention:** Never cast function pointers to a different type. Always write a thin wrapper with the correct signature. Treat all `-Wincompatible-pointer-types` warnings as errors.
+
+### #52 — Year Comparison Always-False (uint8_t > 2000)
+- **Date:** 2026-04-06
+- **Symptom:** Date validation logic never triggered, allowing invalid dates through. Year was always treated as "valid" regardless of RTC state.
+- **Root Cause:** The RTC year was stored as `uint8_t` (0-255). The comparison `if (year > 2000)` can never be true for a `uint8_t` because max value is 255. The condition was dead code.
+- **Fix:** Changed the comparison to use the RTC year value directly (e.g., `year > 24` for years after 2024, where the RTC stores year as offset from 2000), or cast to a wider type before adding the century offset.
+- **Prevention:** Enable `-Wtype-limits` compiler warning to catch comparisons that are always true or always false due to type range. Review all comparisons involving `uint8_t` / `uint16_t` for range issues.
