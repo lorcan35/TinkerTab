@@ -178,6 +178,10 @@
 // ---------------------------------------------------------------------------
 #define TAB5_VOICE_WS_PATH       "/ws/voice"
 #define TAB5_VOICE_PORT           3502
+
+// ngrok fallback for when Dragon is unreachable on LAN
+#define TAB5_NGROK_HOST           "tinkerbox.ngrok.dev"
+#define TAB5_NGROK_PORT           443
 #define TAB5_VOICE_CHUNK_MS       20     // Audio chunk size in ms
 #define TAB5_VOICE_SAMPLE_RATE    16000  // Rate sent to Dragon (downsampled from 48kHz)
 #define TAB5_VOICE_PLAYBACK_BUF   131072 // Playback ring buffer bytes (~1.4s at 48kHz mono 16-bit, in PSRAM)

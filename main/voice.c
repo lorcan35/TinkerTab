@@ -39,6 +39,7 @@
 #include "esp_cache.h"
 #include "esp_transport.h"
 #include "esp_transport_tcp.h"
+#include "esp_transport_ssl.h"
 #include "esp_transport_ws.h"
 #include "cJSON.h"
 
@@ -1245,12 +1246,39 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     int err = esp_transport_connect(s_ws, s_dragon_host, s_dragon_port,
                                     VOICE_CONNECT_TIMEOUT_MS);
     if (err < 0) {
-        ESP_LOGW(TAG, "WS connect failed");
+        ESP_LOGW(TAG, "Local WS connect failed — trying ngrok fallback...");
         esp_transport_close(s_ws);
         esp_transport_destroy(s_ws);
         s_ws = NULL;
-        voice_set_state(VOICE_STATE_IDLE, "connect failed");
-        return ESP_FAIL;
+
+        /* Fallback: try ngrok tunnel with TLS */
+        esp_transport_handle_t ssl = esp_transport_ssl_init();
+        if (ssl) {
+            s_ws = esp_transport_ws_init(ssl);
+            if (s_ws) {
+                esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
+                ESP_LOGI(TAG, "Trying wss://%s:%d%s",
+                         TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH);
+                err = esp_transport_connect(s_ws, TAB5_NGROK_HOST, TAB5_NGROK_PORT,
+                                            VOICE_CONNECT_TIMEOUT_MS);
+                if (err < 0) {
+                    ESP_LOGE(TAG, "ngrok fallback also failed");
+                    esp_transport_close(s_ws);
+                    esp_transport_destroy(s_ws);
+                    s_ws = NULL;
+                } else {
+                    /* Connected via ngrok! Update host for logging */
+                    strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
+                    s_dragon_port = TAB5_NGROK_PORT;
+                    ESP_LOGI(TAG, "Connected via ngrok tunnel!");
+                }
+            }
+        }
+
+        if (!s_ws || err < 0) {
+            voice_set_state(VOICE_STATE_IDLE, "connect failed");
+            return ESP_FAIL;
+        }
     }
 
     s_ws_connected = true;
