@@ -1283,48 +1283,43 @@ static void cb_note_tap(lv_event_t *e)
 
     note_entry_t *n = &s_notes[note_idx];
     lv_obj_t *overlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(overlay, lv_pct(90), lv_pct(75));
-    lv_obj_align(overlay, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(overlay, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_size(overlay, 660, 800);  /* fixed size, not percentage */
+    lv_obj_align(overlay, LV_ALIGN_CENTER, 0, -60);  /* shifted up for keyboard */
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x1C1C2E), 0);
     lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(overlay, 28, 0);
-    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_radius(overlay, 24, 0);
+    lv_obj_set_style_border_width(overlay, 1, 0);
+    lv_obj_set_style_border_color(overlay, lv_color_hex(0x333344), 0);
     lv_obj_set_style_pad_all(overlay, 24, 0);
+    lv_obj_set_style_pad_row(overlay, 12, 0);
+    lv_obj_set_flex_flow(overlay, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_user_data(overlay, (void *)(intptr_t)note_idx);
 
-    /* Timestamp + close button row */
+    /* Timestamp */
     char ts_buf[64];
     static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
                                 "Jul","Aug","Sep","Oct","Nov","Dec"};
     int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
-    snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d — %s note",
+    snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d — %s note  " LV_SYMBOL_EDIT,
              mn[mi], n->day, n->hour, n->minute,
              n->is_voice ? "Voice" : "Text");
     lv_obj_t *ts = lv_label_create(overlay);
     lv_label_set_text(ts, ts_buf);
-    lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(ts, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(ts, lv_color_hex(0x8888AA), 0);
+    lv_obj_set_style_text_font(ts, &lv_font_montserrat_20, 0);
 
-    /* Hint */
-    lv_obj_t *hint = lv_label_create(overlay);
-    lv_label_set_text(hint, "Tap text to edit");
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_pad_top(hint, 4, 0);
-
-    /* M1: Editable textarea instead of read-only label */
+    /* Editable textarea */
     lv_obj_t *ta = lv_textarea_create(overlay);
-    lv_obj_set_size(ta, lv_pct(100), lv_pct(55));
+    lv_obj_set_size(ta, lv_pct(100), 480);
     lv_textarea_set_text(ta, n->text);
     lv_obj_set_style_bg_color(ta, lv_color_hex(0x1A1A30), 0);
     lv_obj_set_style_text_color(ta, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(ta, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(ta, &lv_font_montserrat_24, 0);
     lv_obj_set_style_border_width(ta, 1, 0);
-    lv_obj_set_style_border_color(ta, lv_color_hex(COL_CYAN), 0);
-    lv_obj_set_style_radius(ta, 12, 0);
+    lv_obj_set_style_border_color(ta, lv_color_hex(0x444466), 0);
+    lv_obj_set_style_radius(ta, 16, 0);
     lv_obj_set_style_pad_all(ta, 16, 0);
-    lv_obj_set_style_pad_top(ta, 12, 0);
     lv_obj_add_event_cb(ta, (lv_event_cb_t)ui_keyboard_show, LV_EVENT_CLICKED, ta);
 
     /* Button row */

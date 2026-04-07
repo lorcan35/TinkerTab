@@ -73,7 +73,11 @@ static void cb_close(lv_event_t *e) {
     if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
     /* F1: HIDE overlay instead of deleting — preserves message history.
      * Messages live in the LVGL tree. Reopening just unhides. */
-    if (s_overlay) { lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN); }
+    ui_keyboard_hide();  /* MUST dismiss keyboard before hiding overlay */
+    if (s_overlay) {
+        lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);  /* stop intercepting taps */
+    }
     s_assistant_bubble = NULL;
     s_assistant_label = NULL;
     s_active = false;
@@ -130,6 +134,7 @@ lv_obj_t *ui_chat_create(void) {
     if (s_overlay) {
         ESP_LOGI(TAG, "Restoring chat (%d messages)", s_msg_count);
         lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);  /* re-enable tap capture */
         s_active = true;
         s_last_state = voice_get_state();
         s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
@@ -149,82 +154,95 @@ lv_obj_t *ui_chat_create(void) {
     /* L5: Swipe-right to close chat */
     lv_obj_add_event_cb(s_overlay, cb_close, LV_EVENT_GESTURE, NULL);
 
-    /* Back button */
-    lv_obj_t *btn = lv_button_create(s_overlay);
-    lv_obj_set_size(btn, 80, 44);
-    lv_obj_set_pos(btn, 10, 10);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_radius(btn, 12, 0);
+    /* Top bar — 80px with back button + title */
+    lv_obj_t *topbar = lv_obj_create(s_overlay);
+    lv_obj_remove_style_all(topbar);
+    lv_obj_set_size(topbar, 720, 80);
+    lv_obj_set_pos(topbar, 0, 0);
+    lv_obj_set_style_bg_color(topbar, lv_color_hex(0x1A1A1A), 0);
+    lv_obj_set_style_bg_opa(topbar, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(topbar, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Back button — larger touch target */
+    lv_obj_t *btn = lv_button_create(topbar);
+    lv_obj_set_size(btn, 100, 56);
+    lv_obj_set_pos(btn, 12, 12);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x2C2C2E), 0);
+    lv_obj_set_style_radius(btn, 16, 0);
     lv_obj_add_event_cb(btn, cb_close, LV_EVENT_CLICKED, NULL);
     lv_obj_t *bl = lv_label_create(btn);
-    lv_label_set_text(bl, LV_SYMBOL_LEFT);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
     lv_obj_set_style_text_color(bl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(bl, &lv_font_montserrat_18, 0);
     lv_obj_center(bl);
 
     /* Title */
-    lv_obj_t *title = lv_label_create(s_overlay);
+    lv_obj_t *title = lv_label_create(topbar);
     lv_label_set_text(title, "Chat with Tinker");
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 18);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 30, 0);
 
-    /* Message scroll area */
+    /* Message scroll area — between topbar (80px) and input bar (80px) */
     s_msg_list = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(s_msg_list);
-    lv_obj_set_size(s_msg_list, 700, 1280 - 66 - 72);
-    lv_obj_set_pos(s_msg_list, 10, 62);
+    lv_obj_set_size(s_msg_list, 700, 1280 - 80 - 80);
+    lv_obj_set_pos(s_msg_list, 10, 80);
     lv_obj_set_style_bg_opa(s_msg_list, LV_OPA_TRANSP, 0);
     lv_obj_set_flex_flow(s_msg_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(s_msg_list, 4, 0);
     lv_obj_set_style_pad_gap(s_msg_list, 10, 0);
     lv_obj_set_scrollbar_mode(s_msg_list, LV_SCROLLBAR_MODE_OFF);
 
-    /* Input bar */
+    /* Input bar — 80px tall, proper spacing */
     lv_obj_t *bar = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 720, 72);
-    lv_obj_set_pos(bar, 0, 1280 - 72);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1C1C1E), 0);
+    lv_obj_set_size(bar, 720, 80);
+    lv_obj_set_pos(bar, 0, 1280 - 80);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0x1A1A1A), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Text input — tap to show keyboard */
-    s_textarea = lv_textarea_create(bar);
-    lv_obj_set_size(s_textarea, 470, 52);  /* narrower for mic button */
-    lv_obj_set_pos(s_textarea, 64, 10);
-    lv_textarea_set_placeholder_text(s_textarea, "Type or tap mic...");
-    lv_textarea_set_one_line(s_textarea, true);
-    lv_obj_set_style_bg_color(s_textarea, lv_color_hex(0x2C2C2E), 0);
-    lv_obj_set_style_text_color(s_textarea, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_border_width(s_textarea, 0, 0);
-    lv_obj_set_style_radius(s_textarea, 24, 0);
-    lv_obj_set_style_pad_left(s_textarea, 16, 0);
-    lv_obj_add_event_cb(s_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
-
-    /* S5: Mic button — voice input in chat */
+    /* S5: Mic button — 60px circle, proper touch target */
     lv_obj_t *mic = lv_button_create(bar);
-    lv_obj_set_size(mic, 52, 52);
-    lv_obj_set_pos(mic, 6, 10);
-    lv_obj_set_style_bg_color(mic, lv_color_hex(0x00E5FF), 0);  /* cyan */
+    lv_obj_set_size(mic, 60, 60);
+    lv_obj_set_pos(mic, 10, 10);
+    lv_obj_set_style_bg_color(mic, lv_color_hex(0x00E5FF), 0);
     lv_obj_set_style_radius(mic, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(mic, 0, 0);
     lv_obj_add_event_cb(mic, cb_mic, LV_EVENT_CLICKED, NULL);
     lv_obj_t *mic_lbl = lv_label_create(mic);
     lv_label_set_text(mic_lbl, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(mic_lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(mic_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(mic_lbl, &lv_font_montserrat_24, 0);
     lv_obj_center(mic_lbl);
 
-    /* Send button */
+    /* Text input — between mic and send */
+    s_textarea = lv_textarea_create(bar);
+    lv_obj_set_size(s_textarea, 440, 60);
+    lv_obj_set_pos(s_textarea, 80, 10);
+    lv_textarea_set_placeholder_text(s_textarea, "Type a message...");
+    lv_textarea_set_one_line(s_textarea, true);
+    lv_obj_set_style_bg_color(s_textarea, lv_color_hex(0x2C2C2E), 0);
+    lv_obj_set_style_text_color(s_textarea, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_textarea, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_border_width(s_textarea, 0, 0);
+    lv_obj_set_style_radius(s_textarea, 28, 0);
+    lv_obj_set_style_pad_left(s_textarea, 20, 0);
+    lv_obj_add_event_cb(s_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
+
+    /* Send button — matches input height */
     lv_obj_t *send = lv_button_create(bar);
-    lv_obj_set_size(send, 100, 52);
-    lv_obj_set_pos(send, 546, 10);
+    lv_obj_set_size(send, 108, 60);
+    lv_obj_set_pos(send, 530, 10);
     lv_obj_set_style_bg_color(send, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_radius(send, 24, 0);
+    lv_obj_set_style_radius(send, 28, 0);
+    lv_obj_set_style_border_width(send, 0, 0);
     lv_obj_add_event_cb(send, cb_send, LV_EVENT_CLICKED, NULL);
     lv_obj_t *sl = lv_label_create(send);
     lv_label_set_text(sl, "Send");
     lv_obj_set_style_text_color(sl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(sl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(sl, &lv_font_montserrat_20, 0);
     lv_obj_center(sl);
 
     s_active = true;
@@ -249,21 +267,22 @@ void ui_chat_add_message(const char *text, bool is_user) {
     }
     lv_obj_t *bubble = lv_obj_create(s_msg_list);
     lv_obj_remove_style_all(bubble);
-    lv_obj_set_width(bubble, 580);
+    lv_obj_set_width(bubble, 560);
     lv_obj_set_style_bg_color(bubble, is_user ? lv_color_hex(0xF5A623) : lv_color_hex(0x2C2C2E), 0);
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bubble, 16, 0);
-    lv_obj_set_style_pad_all(bubble, 14, 0);
+    lv_obj_set_style_radius(bubble, 20, 0);
+    lv_obj_set_style_pad_all(bubble, 16, 0);
     lv_obj_set_height(bubble, LV_SIZE_CONTENT);
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
     if (is_user) {
-        lv_obj_set_style_translate_x(bubble, 100, 0);  /* Right-align user bubbles */
+        lv_obj_set_style_translate_x(bubble, 120, 0);  /* Right-align user bubbles */
     }
 
     lv_obj_t *lbl = lv_label_create(bubble);
     lv_label_set_text(lbl, text);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(lbl, 552);
+    lv_obj_set_width(lbl, 528);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);  /* readable size */
     lv_obj_set_style_text_color(lbl, is_user ? lv_color_hex(0x000000) : lv_color_hex(0xFFFFFF), 0);
     s_msg_count++;
     lv_obj_scroll_to_y(s_msg_list, LV_COORD_MAX, LV_ANIM_ON);
