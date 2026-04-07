@@ -16,6 +16,7 @@
 #include "afe.h"
 #include "voice.h"
 #include "ota.h"
+#include "camera.h"
 #include "ui_core.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -804,6 +805,52 @@ static esp_err_t ota_apply_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── Camera debug endpoint ────────────────────────────────────────────── */
+
+static esp_err_t camera_handler(httpd_req_t *req)
+{
+    if (!tab5_camera_initialized()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"camera not initialized\"}");
+        return ESP_OK;
+    }
+
+    tab5_cam_frame_t frame;
+    esp_err_t err = tab5_camera_capture(&frame);
+    if (err != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        char buf[128];
+        snprintf(buf, sizeof(buf), "{\"error\":\"capture failed: %s\"}", esp_err_to_name(err));
+        httpd_resp_sendstr(req, buf);
+        return ESP_OK;
+    }
+
+    /* Return raw RGB565 as BMP */
+    uint32_t data_size = frame.width * frame.height * 2;
+    uint32_t file_size = 66 + data_size;
+    uint8_t hdr[66] = {0};
+    hdr[0] = 'B'; hdr[1] = 'M';
+    memcpy(&hdr[2], &file_size, 4);
+    uint32_t offset = 66; memcpy(&hdr[10], &offset, 4);
+    uint32_t dib = 40; memcpy(&hdr[14], &dib, 4);
+    int32_t w = frame.width, h = -(int32_t)frame.height;
+    memcpy(&hdr[18], &w, 4); memcpy(&hdr[22], &h, 4);
+    uint16_t planes = 1; memcpy(&hdr[26], &planes, 2);
+    uint16_t bpp = 16; memcpy(&hdr[28], &bpp, 2);
+    uint32_t comp = 3; memcpy(&hdr[30], &comp, 4);
+    memcpy(&hdr[34], &data_size, 4);
+    uint32_t rm = 0xF800, gm = 0x07E0, bm = 0x001F;
+    memcpy(&hdr[54], &rm, 4); memcpy(&hdr[58], &gm, 4); memcpy(&hdr[62], &bm, 4);
+
+    httpd_resp_set_type(req, "image/bmp");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send_chunk(req, (const char *)hdr, 66);
+    httpd_resp_send_chunk(req, (const char *)frame.data, data_size);
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    return ESP_OK;
+}
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -818,7 +865,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 18;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -863,6 +910,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_wake = {
         .uri = "/wake", .method = HTTP_POST, .handler = wake_handler
     };
+    const httpd_uri_t uri_camera = {
+        .uri = "/camera", .method = HTTP_GET, .handler = camera_handler
+    };
     const httpd_uri_t uri_ota_check = {
         .uri = "/ota/check", .method = HTTP_GET, .handler = ota_check_handler
     };
@@ -881,6 +931,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_crashlog);
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_wake);
+    httpd_register_uri_handler(server, &uri_camera);
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);
 

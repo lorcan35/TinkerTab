@@ -67,7 +67,7 @@ static uint32_t    capture_counter = 0;
 static bool        capture_counter_init = false;
 
 /* Currently selected resolution (default VGA for smooth preview) */
-static tab5_cam_resolution_t current_res = TAB5_CAM_RES_VGA;
+static tab5_cam_resolution_t current_res = TAB5_CAM_RES_HD;  /* SC202CS outputs 1280x720 */
 
 /* ── Forward declarations ────────────────────────────────────── */
 static void cb_back_btn(lv_event_t *e);
