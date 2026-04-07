@@ -30,6 +30,9 @@
 #include <stdio.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include "esp_http_client.h"
+#include "dragon_link.h"
+#include "wifi.h"
 
 static const char *TAG = "ui_notes";
 
@@ -105,6 +108,71 @@ static uint32_t s_next_rec_id = 1;  /* monotonic recording counter */
 
 #include "sdcard.h"
 #include "cJSON.h"
+
+/* ── Sync single note to Dragon REST API (fire-and-forget task) ─── */
+
+typedef struct {
+    char title[128];
+    char text[MAX_NOTE_LEN];
+} sync_note_args_t;
+
+static void sync_note_to_dragon_task(void *arg)
+{
+    sync_note_args_t *a = (sync_note_args_t *)arg;
+
+    /* Build Dragon URL from settings */
+    char dhost[64];
+    tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+    char url[160];
+    snprintf(url, sizeof(url), "http://%s:%d/api/notes", dhost, 3502);
+
+    /* Build JSON body */
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "title", a->title);
+    cJSON_AddStringToObject(body, "text", a->text);
+    char *json = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    if (!json) { free(a); vTaskSuspend(NULL); return; }
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .timeout_ms = 10000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, json, strlen(json));
+
+    esp_err_t err = esp_http_client_perform(client);
+    int status = esp_http_client_get_status_code(client);
+
+    if (err == ESP_OK && (status == 200 || status == 201)) {
+        ESP_LOGI(TAG, "Note synced to Dragon (status=%d)", status);
+    } else {
+        ESP_LOGW(TAG, "Note sync failed: err=%s status=%d (will retry later)",
+                 esp_err_to_name(err), status);
+    }
+
+    esp_http_client_cleanup(client);
+    free(json);
+    free(a);
+    vTaskSuspend(NULL);
+}
+
+static void sync_note_to_dragon(const char *title, const char *text)
+{
+    if (!tab5_wifi_connected()) return;
+    if (!text || !text[0]) return;
+
+    sync_note_args_t *args = calloc(1, sizeof(sync_note_args_t));
+    if (!args) return;
+    strncpy(args->title, title ? title : "", sizeof(args->title) - 1);
+    strncpy(args->text, text, sizeof(args->text) - 1);
+
+    xTaskCreatePinnedToCore(sync_note_to_dragon_task, "note_sync", 4096,
+                            args, 3, NULL, 0);
+}
 
 static void notes_save(void)
 {
@@ -401,6 +469,10 @@ int ui_notes_add(const char *text, bool is_voice)
              is_voice ? "voice" : "text", text);
 
     notes_save();
+
+    /* Sync to Dragon notes DB (fire-and-forget) */
+    sync_note_to_dragon("", text);
+
     refresh_list();
     return 0;
 }
@@ -649,6 +721,13 @@ void ui_notes_stop_recording(const char *transcript)
     s_rec_note_slot = -1;
     s_rec_samples = 0;
     notes_save();
+
+    /* Sync transcribed note to Dragon */
+    if (transcript && transcript[0]) {
+        const char *title = voice_get_dictation_title();
+        sync_note_to_dragon(title && title[0] ? title : "", transcript);
+    }
+
     refresh_list();
 }
 

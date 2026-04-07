@@ -544,6 +544,12 @@ static void handle_text_message(const char *data, int len)
         }
         ESP_LOGI(TAG, "Dictation summary: \"%s\"", s_dictation_title);
         voice_set_state(VOICE_STATE_READY, "dictation_summary");
+    } else if (strcmp(type_str, "note_created") == 0) {
+        cJSON *nid = cJSON_GetObjectItem(root, "note_id");
+        cJSON *ntitle = cJSON_GetObjectItem(root, "title");
+        ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"",
+                 cJSON_IsString(nid) ? nid->valuestring : "?",
+                 cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
         ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
