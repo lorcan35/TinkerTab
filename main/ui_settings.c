@@ -76,6 +76,8 @@ static lv_obj_t *s_dragon_ta      = NULL;
 
 /* OTA update button label (updated during check) */
 static lv_obj_t *s_ota_btn_label  = NULL;
+static lv_obj_t *s_ota_apply_btn  = NULL;
+static char      s_ota_url[256]   = {0};
 
 /* Brightness slider tracks the current value */
 static lv_obj_t *s_slider_bright  = NULL;
@@ -187,6 +189,30 @@ static void cb_wake_word(lv_event_t *e)
     }
 }
 
+/* F2: OTA apply background task — downloads firmware, reboots */
+static void ota_apply_task(void *arg)
+{
+    ESP_LOGI(TAG, "OTA apply: downloading from %s", s_ota_url);
+    esp_err_t err = tab5_ota_apply(s_ota_url);  /* reboots on success */
+    /* If we get here, it failed */
+    ESP_LOGE(TAG, "OTA apply failed: %s", esp_err_to_name(err));
+    if (s_destroying) { vTaskDelete(NULL); return; }
+    tab5_ui_lock();
+    if (s_ota_btn_label) lv_label_set_text(s_ota_btn_label, "Update failed!");
+    if (s_ota_apply_btn) lv_obj_clear_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
+    tab5_ui_unlock();
+    vTaskDelete(NULL);
+}
+
+static void cb_ota_apply(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ota_url[0]) return;
+    if (s_ota_btn_label) lv_label_set_text(s_ota_btn_label, "Updating...");
+    if (s_ota_apply_btn) lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
+    xTaskCreate(ota_apply_task, "ota_apply", 8192, NULL, 5, NULL);
+}
+
 /* OTA check background task */
 static void ota_check_task(void *arg)
 {
@@ -200,13 +226,17 @@ static void ota_check_task(void *arg)
 
     if (err != ESP_OK) {
         lv_label_set_text(s_ota_btn_label, "Check failed");
+        if (s_ota_apply_btn) lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     } else if (info.available) {
         char buf[64];
         snprintf(buf, sizeof(buf), LV_SYMBOL_OK " v%s available!", info.version);
         lv_label_set_text(s_ota_btn_label, buf);
-        /* TODO: Add "Apply" button that calls tab5_ota_apply(info.url) */
+        /* F2: Store URL and show Apply button */
+        snprintf(s_ota_url, sizeof(s_ota_url), "%s", info.url);
+        if (s_ota_apply_btn) lv_obj_clear_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_label_set_text(s_ota_btn_label, LV_SYMBOL_OK " Up to date");
+        if (s_ota_apply_btn) lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     }
     tab5_ui_unlock();
     vTaskDelete(NULL);
@@ -218,6 +248,7 @@ static void cb_ota_check(lv_event_t *e)
     if (s_ota_btn_label) {
         lv_label_set_text(s_ota_btn_label, "Checking...");
     }
+    if (s_ota_apply_btn) lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     xTaskCreate(ota_check_task, "ota_check", 8192, NULL, 5, NULL);
 }
 
@@ -239,6 +270,11 @@ static void cb_dragon_host_done(lv_event_t *e)
     if (txt && txt[0]) {
         tab5_settings_set_dragon_host(txt);
         ESP_LOGI(TAG, "Dragon host saved: %s", txt);
+        /* F3: Disconnect voice so reconnect watchdog picks up new host */
+        if (voice_is_connected()) {
+            ESP_LOGI(TAG, "Disconnecting voice for host change → watchdog will reconnect");
+            voice_disconnect();
+        }
     }
     ui_keyboard_hide();
 }
@@ -735,6 +771,19 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_ota_btn_label, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(s_ota_btn_label, &lv_font_montserrat_16, 0);
         lv_obj_center(s_ota_btn_label);
+
+        /* F2: Apply Update button — hidden until check finds an update */
+        s_ota_apply_btn = lv_button_create(row_ota);
+        lv_obj_set_size(s_ota_apply_btn, 220, 48);
+        lv_obj_set_style_bg_color(s_ota_apply_btn, lv_color_hex(0x22C55E), 0);  /* green */
+        lv_obj_set_style_radius(s_ota_apply_btn, 6, 0);
+        lv_obj_add_event_cb(s_ota_apply_btn, cb_ota_apply, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *apply_lbl = lv_label_create(s_ota_apply_btn);
+        lv_label_set_text(apply_lbl, LV_SYMBOL_OK " Apply Update");
+        lv_obj_set_style_text_color(apply_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(apply_lbl, &lv_font_montserrat_16, 0);
+        lv_obj_center(apply_lbl);
+        lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);  /* hidden until update found */
 
         /* Free Heap */
         lv_obj_t *row_heap = make_row(sec);

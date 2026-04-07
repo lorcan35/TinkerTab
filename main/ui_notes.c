@@ -27,6 +27,7 @@
 #include "freertos/task.h"
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>  /* strcasestr */
 #include <stdio.h>
 #include <errno.h>
 #include <sys/stat.h>
@@ -518,7 +519,10 @@ bool ui_notes_get_last_preview(char *buf, size_t len)
     if (!buf || s_note_count == 0) return false;
     int last_idx = (s_next_slot - 1 + MAX_NOTES) % MAX_NOTES;
     if (!s_notes[last_idx].used) return false;
-    snprintf(buf, len, "%.80s", s_notes[last_idx].text);
+    /* N4: Strip "[Untitled Note] " prefix for cleaner home preview */
+    const char *src = s_notes[last_idx].text;
+    if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
+    snprintf(buf, len, "%.80s", src);
     return true;
 }
 
@@ -1608,7 +1612,8 @@ static void refresh_list(void)
         if (!s_notes[idx].used) continue;
         /* M2: Search filter — skip notes that don't match search text */
         if (s_search_text[0]) {
-            if (!strstr(s_notes[idx].text, s_search_text)) continue;
+            /* N1: Case-insensitive search */
+            if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
         }
         add_note_card(s_list, &s_notes[idx], idx);
         shown++;

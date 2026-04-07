@@ -77,6 +77,8 @@ static void orb_tap_cb(lv_event_t *e);
 static void privacy_tap_cb(lv_event_t *e);
 static void ask_tap_cb(lv_event_t *e);
 static void cb_last_note_tap(lv_event_t *e);
+static void cb_camera_launch(lv_event_t *e);
+static void cb_files_launch(lv_event_t *e);
 
 /* ── State ───────────────────────────────────────────────────── */
 static lv_obj_t  *scr        = NULL;
@@ -233,6 +235,36 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_36, 0);
     lv_obj_center(ask_lbl);
+
+    /* S1+S2: Quick-launch buttons for Camera + Files */
+    int qbtn_w = (SW - 48 - 12) / 2;  /* half width with gap */
+    int qbtn_y = -(NAV_H + 10);       /* just above nav bar */
+
+    lv_obj_t *cam_btn = lv_button_create(pg);
+    lv_obj_set_size(cam_btn, qbtn_w, 48);
+    lv_obj_align(cam_btn, LV_ALIGN_BOTTOM_LEFT, 24, qbtn_y);
+    lv_obj_set_style_bg_color(cam_btn, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_radius(cam_btn, 12, 0);
+    lv_obj_set_style_border_width(cam_btn, 0, 0);
+    lv_obj_add_event_cb(cam_btn, cb_camera_launch, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cam_lbl = lv_label_create(cam_btn);
+    lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
+    lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_LABEL2), 0);
+    lv_obj_set_style_text_font(cam_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(cam_lbl);
+
+    lv_obj_t *files_btn = lv_button_create(pg);
+    lv_obj_set_size(files_btn, qbtn_w, 48);
+    lv_obj_align(files_btn, LV_ALIGN_BOTTOM_RIGHT, -24, qbtn_y);
+    lv_obj_set_style_bg_color(files_btn, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_radius(files_btn, 12, 0);
+    lv_obj_set_style_border_width(files_btn, 0, 0);
+    lv_obj_add_event_cb(files_btn, cb_files_launch, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *files_lbl = lv_label_create(files_btn);
+    lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
+    lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_LABEL2), 0);
+    lv_obj_set_style_text_font(files_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(files_lbl);
 
     return pg;
 }
@@ -501,6 +533,22 @@ static void ask_tap_cb(lv_event_t *e)
     orb_tap_cb(e);  /* Same action as orb tap */
 }
 
+/* S1: Camera quick-launch from Home */
+static void cb_camera_launch(lv_event_t *e)
+{
+    (void)e;
+    extern lv_obj_t *ui_camera_create(void);
+    ui_camera_create();
+}
+
+/* S2: Files quick-launch from Home */
+static void cb_files_launch(lv_event_t *e)
+{
+    (void)e;
+    extern lv_obj_t *ui_files_create(void);
+    ui_files_create();
+}
+
 static void cb_last_note_tap(lv_event_t *e)
 {
     (void)e;
@@ -672,12 +720,11 @@ void ui_home_update_status(void)
             lv_color_hex(wifi_on ? COL_WHITE : COL_LABEL3), 0);
     }
 
-    /* Dragon connection status dot */
+    /* S4: Connection dot reflects voice WS state (the real indicator) */
     if (lbl_sbar_dragon) {
-        dragon_state_t ds = tab5_dragon_get_state();
-        bool dragon_ok = (ds == DRAGON_STATE_CONNECTED || ds == DRAGON_STATE_STREAMING);
+        bool voice_ok = voice_is_connected();
         lv_obj_set_style_bg_color(lbl_sbar_dragon,
-            lv_color_hex(dragon_ok ? COL_MINT : COL_RED), 0);
+            lv_color_hex(voice_ok ? COL_MINT : COL_RED), 0);
     }
 
     /* Low battery warnings */

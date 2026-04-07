@@ -71,14 +71,13 @@ static void cb_close(lv_event_t *e) {
         if (dir != LV_DIR_RIGHT) return;
     }
     if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
-    if (s_overlay) { lv_obj_del(s_overlay); s_overlay = NULL; }
-    s_msg_list = NULL;
-    s_textarea = NULL;
+    /* F1: HIDE overlay instead of deleting — preserves message history.
+     * Messages live in the LVGL tree. Reopening just unhides. */
+    if (s_overlay) { lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN); }
     s_assistant_bubble = NULL;
     s_assistant_label = NULL;
     s_active = false;
-    s_msg_count = 0;
-    ESP_LOGI(TAG, "Chat closed");
+    ESP_LOGI(TAG, "Chat hidden (messages preserved)");
 }
 
 static void cb_textarea_click(lv_event_t *e) {
@@ -108,6 +107,17 @@ static void cb_send(lv_event_t *e) {
 
 lv_obj_t *ui_chat_create(void) {
     if (s_active) return s_overlay;
+
+    /* F1: If overlay exists but is hidden, just unhide it (preserves messages) */
+    if (s_overlay) {
+        ESP_LOGI(TAG, "Restoring chat (%d messages)", s_msg_count);
+        lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+        s_active = true;
+        s_last_state = voice_get_state();
+        s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
+        return s_overlay;
+    }
+
     ESP_LOGI(TAG, "Creating chat screen");
     esp_task_wdt_reset();
 
