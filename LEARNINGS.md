@@ -480,3 +480,35 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Voice WS only connected on-demand. Each mic tap triggered: mode_switch(VOICE) → stop_streaming → settle(200ms) → TCP connect → WS upgrade → register → session_start (6s pipeline init) → READY → start_listening.
 - **Fix:** Boot auto-connect means voice WS is READY before user ever taps. Mic tap from READY goes straight to `voice_start_listening()` — instant response. Mode-aware: if streaming is active, still calls `mode_switch(VOICE)` to stop MJPEG before recording.
 - **Prevention:** Persistent connections eliminate connect-time latency. The voice WS is lightweight (~1KB/s keepalive) and doesn't conflict with other modes until actual recording starts.
+
+### Camera SC202CS — Black Preview (Multiple Root Causes)
+
+- **Date:** 2026-04-07
+- **Symptom:** Camera screen showed black viewfinder. `cam` serial command returned "CSI transaction queue full" or "Capture timeout".
+- **Root Cause:** FIVE stacked issues: (1) CSI queue_items=1 caused queue overflow on overlapping preview captures. (2) Lane count wrong: code said 2-lane but SC202CS is 1-lane. (3) Sensor init had only ~10 stub registers — needs 129 from Espressif's verified table. (4) MIPI bitrate 400 Mbps vs correct 576 Mbps. (5) Missing `esp_cam_ctlr_start()` call. Even after fixing all 5, frames still didn't arrive because the raw `esp_cam_ctlr_csi` API doesn't handle ISP pipeline setup (RAW→RGB conversion).
+- **Fix:** Complete rewrite using M5Stack's `esp_video` + `esp_cam_sensor` V4L2 stack. Sensor auto-detected, ISP handles RAW8→RGB565, V4L2 MMAP double-buffering. Also required `CONFIG_CAMERA_SC202CS=y` in sdkconfig (sensor code guarded by Kconfig!). Exposure tuned via SCCB registers post-init.
+- **Prevention:** Never use raw `esp_cam_ctlr_csi` for MIPI cameras — use `esp_video` V4L2 framework. Always check Kconfig guards in component CMakeLists.txt. SC202CS is 1-lane only, not 2-lane.
+
+### LVGL Deadlock from HTTP Handler
+
+- **Date:** 2026-04-07
+- **Symptom:** Tab5 froze when calling `/navigate?screen=settings`. Debug server HTTP handler called `tab5_ui_lock()` → `ui_settings_create()` directly, but LVGL task was waiting for the HTTP response → deadlock.
+- **Root Cause:** HTTP handler runs on the httpd task. `tab5_ui_lock()` acquires the LVGL mutex. But LVGL timer task may be blocked waiting for httpd to finish (if LVGL callback triggered an HTTP request). Classic mutex inversion deadlock.
+- **Fix:** Use `lv_async_call()` to schedule UI operations on the LVGL timer thread instead of calling them directly from HTTP context. The HTTP handler returns immediately, the LVGL thread executes the navigation on its next tick.
+- **Prevention:** NEVER call `tab5_ui_lock()` + LVGL create/load functions from HTTP handlers. Always use `lv_async_call()` for deferred execution.
+
+### Chat Overlay Blocking Navigation After Close
+
+- **Date:** 2026-04-07
+- **Symptom:** After closing Chat overlay (F1: hide instead of delete), tapping nav bar had no effect. Tab5 appeared frozen on Chat page.
+- **Root Cause:** Hidden overlay on `lv_layer_top()` still intercepted all touch events. `LV_OBJ_FLAG_CLICKABLE` was set even when hidden, so the invisible overlay ate every tap.
+- **Fix:** Clear `LV_OBJ_FLAG_CLICKABLE` when hiding, re-add when showing. Hidden overlay becomes transparent to touch events.
+- **Prevention:** When hiding LVGL overlays (instead of deleting), always clear CLICKABLE flag. Hidden ≠ non-interactive in LVGL.
+
+### Three-Tier Mode — NVS vs ACK Race Condition
+
+- **Date:** 2026-04-07
+- **Symptom:** After switching to Full Cloud (mode=2), NVS sometimes showed mode=1 (hybrid). The `/mode` debug endpoint saved mode=2 locally but the Dragon ACK arrived with a different mode value.
+- **Root Cause:** The `/mode` endpoint uses `voice_send_cloud_mode(bool)` as a bridge — both hybrid (1) and cloud (2) send `cloud_mode=true`. Dragon's backward compat maps `cloud_mode=true` to voice_mode=2, but the ACK timing vs NVS write created a race.
+- **Fix:** Document the limitation. For proper three-tier, Tab5 should send `voice_mode` integer directly (not boolean bridge). The current implementation works for Local↔Hybrid switching; Full Cloud model selection needs the integer protocol.
+- **Prevention:** Don't use boolean bridges for multi-valued enums. Send the actual value.

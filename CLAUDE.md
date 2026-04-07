@@ -133,10 +133,42 @@ while True:
 "
 ```
 
-## Debug Server
-- Screenshots: `curl -s -o screen.bmp http://192.168.1.90:8080/screenshot`
-- Device info: `curl -s http://192.168.1.90:8080/info | python3 -m json.tool`
-- Touch inject: `curl -s -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'`
+## Debug Server (ADB-style Remote Control)
+Full HTTP API on port 8080 for remote testing and control:
+
+```bash
+# Display
+curl -s -o screen.bmp http://192.168.1.90:8080/screenshot     # BMP screenshot
+curl -s http://192.168.1.90:8080/info | python3 -m json.tool   # Device info JSON
+
+# Touch
+curl -s -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
+
+# Settings (read all NVS settings as JSON)
+curl -s http://192.168.1.90:8080/settings | python3 -m json.tool
+
+# Voice Mode (switch Local/Hybrid/Cloud remotely)
+curl -s -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
+curl -s -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
+curl -s -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
+
+# Navigation (force screen change — bypasses tileview)
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=settings"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=notes"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=chat"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=camera"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=home"
+
+# Camera (capture live frame as BMP)
+curl -s -o frame.bmp http://192.168.1.90:8080/camera
+
+# OTA
+curl -s http://192.168.1.90:8080/ota/check | python3 -m json.tool
+curl -s -X POST http://192.168.1.90:8080/ota/apply
+
+# Wake word (toggle AFE always-listening)
+curl -s -X POST http://192.168.1.90:8080/wake
+```
 
 ## ESP32-P4 Memory Rules
 - **PSRAM for large buffers (>4KB):** Use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)`. Static BSS arrays eat limited internal SRAM (~512KB shared with FreeRTOS).
@@ -160,18 +192,54 @@ while True:
 - SD card uses SDMMC SLOT 0 with LDO channel 4
 
 ## Voice Pipeline
-### Implemented
-- **Ask Mode:** Short-form voice: PTT → mic stream → Dragon STT → LLM → TTS playback (30s max recording)
-- **Dictation Mode:** Long-form recording via `voice_start_dictation()`. Long-press mic from any screen. STT-only (no LLM/TTS). Auto-stop after 5s silence (`DICTATION_AUTO_STOP_FRAMES = 250 × 20ms`). Adaptive VAD calibration. 64KB PSRAM transcript buffer (~2hrs). Post-processing on Dragon generates title + summary (`dictation_summary` message).
-- **Text Input:** `voice_send_text()` sends `{"type":"text","content":"..."}` — skips STT, same conversation context.
-- **Cloud Mode Toggle:** `voice_send_cloud_mode(bool)` sends `{"type":"config_update","cloud_mode":true/false}` to Dragon, switching STT+TTS backends between local and OpenRouter.
-- **Live RMS:** `voice_get_current_rms()` for waveform visualization during dictation.
+### Core Features
+- **Ask Mode:** Short-form voice: PTT → mic stream → Dragon STT → LLM → TTS playback (30s max)
+- **Dictation Mode:** Long-press mic → unlimited recording → STT-only → auto-stop 5s silence → Dragon post-processing generates title + summary
+- **Text Input:** `voice_send_text()` sends `{"type":"text","content":"..."}` — skips STT, same conversation context
+- **Boot Auto-Connect:** Voice WS connects at boot (silent — no overlay popup). Device registers immediately. Session created on boot. Eliminates 5-15s connect delay on first mic tap.
+- **Reconnect Watchdog:** Checks connection every 5s. If Dragon restarts or network drops, auto-reconnects with exponential backoff (10s→20s→40s→60s max). Idle keepalive pings detect dead TCP.
+- **Offline Fallback:** If Dragon is unreachable on mic tap, auto-starts local SD card recording via Notes module.
 
-### Critical Gaps (from March 2026 audit)
-- **AEC (Acoustic Echo Cancellation):** ES7210 captures 4 TDM channels: [MIC-L, AEC, MIC-R, MIC-HP]. We only use slot 0 (MIC-L). Slot 1 = AEC reference. Without AEC, Tab5 hears its own TTS → hallucination loop. Use ESP-SR AEC.
-- **Wake Word:** Currently push-to-talk only. Need ESP-SR WakeNet or Porcupine on Tab5 for "Hey Tinker". Tab5-side KWS = lowest latency.
-- **Barge-in:** Impossible without AEC. KWS should interrupt TTS playback and reset pipeline.
-- **OPUS encoding:** 16kHz PCM = 256kbps over WiFi. OPUS would cut to ~16kbps. Phase 2.
+### Three-Tier Voice Mode
+Settings dropdown: **Local / Hybrid / Full Cloud**
+
+| Mode | STT | LLM | TTS | Latency | Cost |
+|------|-----|-----|-----|---------|------|
+| Local (0) | Moonshine | NPU/Ollama | Piper | 2-5s | Free |
+| Hybrid (1) | OpenRouter gpt-audio-mini | Local (unchanged) | OpenRouter gpt-audio-mini | 4-8s | ~$0.02/req |
+| Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
+
+- **LLM Model Picker:** Settings dropdown: Local NPU / Local Ollama / Claude Haiku / Claude Sonnet / GPT-4o mini (enabled only in Full Cloud mode)
+- **Auto-Fallback:** If cloud STT/TTS fails, Dragon falls back to local for that request + sends `config_update` with `error` field → Tab5 auto-reverts to Local mode
+- **NVS:** `voice_mode` (uint8: 0/1/2), `llm_model` (string: model ID)
+- **Protocol:** `{"type":"config_update","voice_mode":0|1|2,"llm_model":"anthropic/claude-sonnet-4-20250514"}`
+
+## OTA Firmware Updates
+- **Dual OTA partitions:** ota_0 (3MB) + ota_1 (3MB) with otadata boot selector
+- **Check:** `tab5_ota_check()` → GET `http://dragon:3502/api/ota/check?current=0.6.0`
+- **Apply:** `tab5_ota_apply(url)` → downloads via `esp_https_ota()`, writes inactive slot, reboots
+- **Auto-rollback:** New firmware boots in PENDING_VERIFY. If crash before `tab5_ota_mark_valid()`, bootloader reverts.
+- **Settings UI:** "Check Update" button shows version + partition. "Apply Update" green button appears when update available.
+- **Debug:** `/ota/check` and `/ota/apply` endpoints on debug server
+- **Deploy new firmware:**
+  ```bash
+  scp build/tinkertab.bin radxa@192.168.1.89:/home/radxa/ota/
+  echo '{"version":"0.6.1","sha256":""}' | ssh radxa@192.168.1.89 'cat > /home/radxa/ota/version.json'
+  # Tab5 checks hourly or user taps "Check Update" in Settings
+  ```
+
+## Camera
+- **Sensor:** SC202CS 2MP via MIPI-CSI (1-lane, 576MHz, RAW8)
+- **Pipeline:** SC202CS → MIPI CSI → ISP (RAW8→RGB565) → /dev/video0 (V4L2)
+- **Driver:** Uses `esp_video` + `esp_cam_sensor` stack from M5Stack (NOT raw CSI API)
+- **Resolution:** 1280×720 @ 30fps RGB565
+- **Exposure:** Tuned for indoor lighting (SCCB register writes post-init)
+- **Debug:** `GET /camera` returns live frame as BMP
+- **CONFIG_CAMERA_SC202CS=y** must be set in sdkconfig (sensor won't compile without it!)
+
+### Remaining Gaps
+- **AEC + Wake Word:** ESP-SR integrated, AFE runs, but wake word detection not triggering (TDM slot mapping issue). Parked.
+- **OPUS encoding:** 16kHz PCM = 256kbps. OPUS would cut to ~16kbps. Future optimization.
 
 ## Key Technical Notes
 - ESP-IDF WS transport masks frames in-place — NEVER pass string literals to `esp_transport_ws_send_raw()`, always copy to mutable buffer first
@@ -189,7 +257,7 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 2. **Voice Cancel:** `{"type":"cancel"}` — abort current processing
 3. **Keepalive:** `{"type":"ping"}` — JSON heartbeat every 15s during processing
 4. **Text Input:** `{"type":"text","content":"..."}` — skips STT, goes straight to LLM
-5. **Config Update:** `{"type":"config_update","cloud_mode":true/false}` — toggle cloud STT+TTS on Dragon
+5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2,"llm_model":"..."}` — three-tier mode switch. Backward compat: `cloud_mode` bool still accepted.
 6. **Device Registration:** `{"type":"register","device_id":"...","session_id":"..."}` on WS connect
 7. **Clear History:** `{"type":"clear_history"}` — reset conversation context
 
@@ -209,30 +277,35 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 
 ## Key Files
 ```
-main/voice.c           — Voice streaming (WS client, mic capture, TTS playback, dictation, text input, cloud mode)
+main/voice.c           — Voice WS client, mic capture, TTS playback, dictation, reconnect watchdog, three-tier mode
+main/voice.h           — Voice API: connect, listen, dictate, cancel, mode switch, reconnect watchdog
+main/ota.c             — OTA: check Dragon for updates, download via esp_https_ota, auto-rollback
+main/ota.h             — OTA API: tab5_ota_check(), tab5_ota_apply(), tab5_ota_mark_valid()
+main/camera.c          — Camera: esp_video V4L2 stack, SC202CS sensor, MMAP capture, exposure tuning
+main/camera.h          — Camera API: init, capture, save_jpeg, set_resolution
+main/afe.c             — ESP-SR Audio Front End wrapper (AEC + WakeNet9, parked)
 main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c             — ES7210 quad-mic via esp_codec_dev
-main/dragon_link.c     — Dragon mDNS discovery + connection state machine
-main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING)
-main/config.h          — All pin definitions and constants
-main/service_registry.c — Service lifecycle management
-main/settings.c        — NVS persistence (WiFi, Dragon host, volume, brightness, cloud_mode, session_id)
-main/ui_voice.c        — Voice UI overlay (animated orb, PTT button, dictation long-press)
-main/ui_home.c         — TinkerOS home screen (4-page tileview)
-main/ui_chat.c         — Chat screen (text conversation with Tinker, user/assistant message bubbles)
-main/ui_notes.c        — Notes screen (voice dictation + text notes, SD card storage)
-main/ui_settings.c     — Settings screen (WiFi, Dragon, brightness, volume, cloud mode toggle)
-main/ui_camera.c       — Camera viewfinder screen
-main/ui_files.c        — File browser (SD card)
-main/ui_audio.c        — Audio test/debug screen
-main/ui_splash.c       — Boot splash screen
-main/ui_wifi.c         — WiFi setup/connection screen
-main/ui_keyboard.c     — On-screen keyboard overlay (shared by all text-input screens)
+main/dragon_link.c     — Dragon mDNS discovery + CDP connection state
+main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING), voice WS kept across transitions
+main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.6.0)
+main/settings.c        — NVS: WiFi, Dragon host, volume, brightness, voice_mode, llm_model, session_id
+main/settings.h        — Settings API including three-tier voice_mode + llm_model
+main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat bubbles, stop button)
+main/ui_home.c         — Home screen (clock, orb, Ask Tinker, Camera, Files, notes card, nav bar)
+main/ui_chat.c         — Chat overlay (text conversation, mic button, message persistence across close/open)
+main/ui_notes.c        — Notes screen (search, compact cards, edit overlay, voice/text, SD storage, Dragon sync)
+main/ui_settings.c     — Settings (Display, Network+WiFi+Dragon host, Voice mode+model, Storage, Battery, OTA, About)
+main/ui_camera.c       — Camera viewfinder (1280x720 canvas, capture to SD, resolution picker, gallery)
+main/ui_files.c        — SD card file browser (directories, WAV playback, image preview)
+main/ui_wifi.c         — WiFi setup (scan, select, password entry)
+main/ui_keyboard.c     — On-screen keyboard overlay (shared by all text inputs)
 main/ui_core.c         — LVGL display init, screen management, theme
-main/debug_server.c    — HTTP debug server (port 8080, screenshots, touch inject)
-main/main.c            — Boot sequence, serial command loop
-main/imu.c             — BMI270 IMU via I2C (try-read-retry pattern)
-LEARNINGS.md           — Institutional knowledge (MANDATORY)
+main/debug_server.c    — HTTP debug server (12 endpoints: info, screenshot, touch, settings, mode, navigate, camera, ota, wake, etc.)
+main/main.c            — Boot sequence: hardware init → WiFi → Dragon link → LVGL → voice auto-connect → watchdog
+main/imu.c             — BMI270 IMU via I2C
+partitions.csv         — OTA dual-slot partition table (ota_0 + ota_1, 3MB each)
+LEARNINGS.md           — Institutional knowledge (MANDATORY reading before any changes)
 ```
 
 ## UI Screens
