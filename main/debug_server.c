@@ -17,6 +17,8 @@
 #include "voice.h"
 #include "ota.h"
 #include "camera.h"
+#include "settings.h"
+#include "ui_core.h"
 #include "ui_core.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -805,6 +807,146 @@ static esp_err_t ota_apply_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── ADB-style debug APIs ─────────────────────────────────────────────── */
+
+/* GET /settings — dump all NVS settings as JSON */
+static esp_err_t settings_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+
+    char buf[64];
+    tab5_settings_get_wifi_ssid(buf, sizeof(buf));
+    cJSON_AddStringToObject(root, "wifi_ssid", buf);
+    tab5_settings_get_dragon_host(buf, sizeof(buf));
+    cJSON_AddStringToObject(root, "dragon_host", buf);
+    cJSON_AddNumberToObject(root, "dragon_port", tab5_settings_get_dragon_port());
+    cJSON_AddNumberToObject(root, "brightness", tab5_settings_get_brightness());
+    cJSON_AddNumberToObject(root, "volume", tab5_settings_get_volume());
+    cJSON_AddNumberToObject(root, "voice_mode", tab5_settings_get_voice_mode());
+    char model[64];
+    tab5_settings_get_llm_model(model, sizeof(model));
+    cJSON_AddStringToObject(root, "llm_model", model);
+    cJSON_AddNumberToObject(root, "wake_word", tab5_settings_get_wake_word());
+    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
+    cJSON_AddNumberToObject(root, "voice_state", voice_get_state());
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+/* POST /mode?m=0|1|2&model=anthropic/claude-3-haiku — switch voice mode */
+static esp_err_t mode_set_handler(httpd_req_t *req)
+{
+    /* Parse query string */
+    char query[128] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"use ?m=0|1|2&model=...\"}");
+        return ESP_OK;
+    }
+
+    char val[8] = {0};
+    char model[64] = {0};
+    httpd_query_key_value(query, "m", val, sizeof(val));
+    httpd_query_key_value(query, "model", model, sizeof(model));
+
+    int mode = atoi(val);
+    if (mode < 0 || mode > 2) mode = 0;
+
+    /* Save to NVS */
+    tab5_settings_set_voice_mode((uint8_t)mode);
+    if (model[0]) {
+        tab5_settings_set_llm_model(model);
+    }
+
+    ESP_LOGI("debug", "Mode switch: voice_mode=%d, llm_model=%s", mode, model[0] ? model : "(unchanged)");
+
+    /* Send config_update to Dragon via voice WS */
+    if (voice_is_connected()) {
+        voice_send_cloud_mode(mode >= 1);  /* triggers config_update on Dragon */
+    }
+
+    /* Return current state */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "voice_mode", mode);
+    cJSON_AddStringToObject(root, "mode_name", mode == 0 ? "local" : mode == 1 ? "hybrid" : "cloud");
+    char cur_model[64];
+    tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+    cJSON_AddStringToObject(root, "llm_model", cur_model);
+    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
+    cJSON_AddStringToObject(root, "status", "applied");
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+/* POST /navigate?screen=settings|notes|chat|camera|files|home
+ * Uses lv_async_call to avoid LVGL lock deadlock from HTTP context */
+static char s_nav_target[16] = {0};
+
+static void async_navigate(void *arg)
+{
+    (void)arg;
+    if (strcmp(s_nav_target, "settings") == 0) {
+        extern lv_obj_t *ui_settings_create(void);
+        ui_settings_create();
+    } else if (strcmp(s_nav_target, "notes") == 0) {
+        extern lv_obj_t *ui_notes_create(void);
+        ui_notes_create();
+    } else if (strcmp(s_nav_target, "chat") == 0) {
+        extern lv_obj_t *ui_chat_create(void);
+        ui_chat_create();
+    } else if (strcmp(s_nav_target, "camera") == 0) {
+        extern lv_obj_t *ui_camera_create(void);
+        ui_camera_create();
+    } else if (strcmp(s_nav_target, "files") == 0) {
+        extern lv_obj_t *ui_files_create(void);
+        ui_files_create();
+    } else if (strcmp(s_nav_target, "home") == 0) {
+        extern void ui_home_go_home(void);
+        extern lv_obj_t *ui_home_get_screen(void);
+        ui_home_go_home();
+        lv_screen_load(ui_home_get_screen());
+    }
+}
+
+static esp_err_t navigate_handler(httpd_req_t *req)
+{
+    char query[64] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"use ?screen=settings|notes|chat|camera|files|home\"}");
+        return ESP_OK;
+    }
+
+    httpd_query_key_value(query, "screen", s_nav_target, sizeof(s_nav_target));
+
+    /* Schedule on LVGL thread — avoids deadlock */
+    tab5_ui_lock();
+    lv_async_call(async_navigate, NULL);
+    tab5_ui_unlock();
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "navigated", s_nav_target);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
 /* ── Camera debug endpoint ────────────────────────────────────────────── */
 
 static esp_err_t camera_handler(httpd_req_t *req)
@@ -865,7 +1007,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 18;
+    config.max_uri_handlers = 22;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -910,6 +1052,15 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_wake = {
         .uri = "/wake", .method = HTTP_POST, .handler = wake_handler
     };
+    const httpd_uri_t uri_settings_get = {
+        .uri = "/settings", .method = HTTP_GET, .handler = settings_get_handler
+    };
+    const httpd_uri_t uri_mode_set = {
+        .uri = "/mode", .method = HTTP_POST, .handler = mode_set_handler
+    };
+    const httpd_uri_t uri_navigate = {
+        .uri = "/navigate", .method = HTTP_POST, .handler = navigate_handler
+    };
     const httpd_uri_t uri_camera = {
         .uri = "/camera", .method = HTTP_GET, .handler = camera_handler
     };
@@ -931,6 +1082,9 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_crashlog);
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_wake);
+    httpd_register_uri_handler(server, &uri_settings_get);
+    httpd_register_uri_handler(server, &uri_mode_set);
+    httpd_register_uri_handler(server, &uri_navigate);
     httpd_register_uri_handler(server, &uri_camera);
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);
