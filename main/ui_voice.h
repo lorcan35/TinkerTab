@@ -28,3 +28,6 @@ bool ui_voice_is_visible(void);
 
 // Get the floating mic button (for external positioning)
 lv_obj_t *ui_voice_get_mic_btn(void);
+
+// Suppress overlay during boot auto-connect (only update mic dot state)
+void ui_voice_set_boot_connect(bool silent);

@@ -207,6 +207,9 @@ static int         s_dot_phase    = 0;
 static voice_state_t s_cur_state  = VOICE_STATE_IDLE;
 static bool s_initialized         = false;
 
+/* Boot auto-connect: suppress overlay during initial voice WS connect */
+static bool s_boot_connect        = false;
+
 /* ================================================================
  *  Public API
  * ================================================================ */
@@ -228,6 +231,12 @@ void ui_voice_init(void)
 
     s_initialized = true;
     ESP_LOGI(TAG, "Voice UI initialized — mic button at bottom-left");
+}
+
+void ui_voice_set_boot_connect(bool silent)
+{
+    s_boot_connect = silent;
+    ESP_LOGI(TAG, "Boot connect mode: %s", silent ? "ON (silent)" : "OFF");
 }
 
 /* Watchdog: if stuck in PROCESSING/SPEAKING for 65s, force-cancel.
@@ -277,12 +286,30 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 
     switch (state) {
     case VOICE_STATE_IDLE:
+        /* Clear boot connect flag — either connected or failed */
+        if (s_boot_connect) {
+            s_boot_connect = false;
+            ESP_LOGI(TAG, "Boot connect ended (IDLE)");
+        }
         /* Voice session ended — return to IDLE (no auto-streaming).
          * Must defer to a task because we're inside the LVGL mutex here. */
         if (tab5_mode_get() == MODE_VOICE) {
             ESP_LOGI(TAG, "Voice ended, scheduling switch to IDLE");
             xTaskCreatePinnedToCore(
                 mode_switch_idle_task, "mode_idle", 8192, NULL, 5, NULL, 1);
+        }
+        /* C5: Offline recording fallback — if connect failed and user wanted
+         * to record, fall back to local SD card recording via Notes. */
+        if (detail && strstr(detail, "connect failed")
+            && (s_pending_ask || s_dictation_from_anywhere)) {
+            ESP_LOGI(TAG, "Dragon offline — falling back to local recording");
+            s_pending_ask = false;
+            s_dictation_from_anywhere = false;
+            if (s_visible) ui_voice_hide();
+            /* Start SD-only dictation via Notes module */
+            const char *wav_path = ui_notes_start_recording();
+            ESP_LOGI(TAG, "Offline recording started: %s", wav_path ? wav_path : "(null)");
+            break;
         }
         if (detail && s_visible) {
             /* Show error briefly before hiding (e.g. "connect failed", Dragon error) */
@@ -309,6 +336,11 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         }
         break;
     case VOICE_STATE_CONNECTING:
+        if (s_boot_connect) {
+            /* Silent boot connect — only update mic dot, don't show overlay */
+            ESP_LOGI(TAG, "Boot connect: CONNECTING (silent)");
+            break;
+        }
         /* Show overlay immediately with "Connecting..." */
         if (!s_visible) {
             ui_voice_show();
@@ -346,6 +378,14 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             }
             s_dictation_from_anywhere = false;
             ui_voice_hide();
+            break;
+        }
+
+        /* Clear boot connect flag — successfully connected */
+        if (s_boot_connect) {
+            s_boot_connect = false;
+            ESP_LOGI(TAG, "Boot connect succeeded — voice READY (silent)");
+            /* Don't show overlay or auto-start — just sit ready */
             break;
         }
 
@@ -1366,11 +1406,20 @@ static void mic_click_cb(lv_event_t *e)
         xTaskCreatePinnedToCore(
             mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
         break;
-    case VOICE_STATE_READY:
-        /* Connected — start Ask mode (30s Q&A) */
-        ESP_LOGI(TAG, "READY → Ask mode");
-        voice_start_listening();
+    case VOICE_STATE_READY: {
+        /* Connected — start Ask mode, but stop streaming first if active */
+        tab5_mode_t cur_mode = tab5_mode_get();
+        if (cur_mode == MODE_STREAMING || cur_mode == MODE_BROWSING) {
+            ESP_LOGI(TAG, "READY but streaming active — mode switch first");
+            s_pending_ask = true;
+            xTaskCreatePinnedToCore(
+                mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+        } else {
+            ESP_LOGI(TAG, "READY → Ask mode");
+            voice_start_listening();
+        }
         break;
+    }
     case VOICE_STATE_LISTENING:
         /* Recording — stop and send for processing */
         voice_stop_listening();
@@ -1398,9 +1447,16 @@ static void mic_long_press_cb(lv_event_t *e)
         xTaskCreatePinnedToCore(
             mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
     } else if (state == VOICE_STATE_READY) {
-        esp_err_t ret = voice_start_dictation();
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(ret));
+        tab5_mode_t cur_mode = tab5_mode_get();
+        if (cur_mode == MODE_STREAMING || cur_mode == MODE_BROWSING) {
+            ESP_LOGI(TAG, "READY but streaming — mode switch, then dictate");
+            xTaskCreatePinnedToCore(
+                mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+        } else {
+            esp_err_t ret = voice_start_dictation();
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(ret));
+            }
         }
     }
 }

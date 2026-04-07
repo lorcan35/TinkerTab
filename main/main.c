@@ -102,6 +102,18 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
 
     ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
 
+    /* C1+C2: Auto-connect voice WS at boot for persistent session +
+     * device registration. Silent mode = no overlay popup on connect. */
+    if (tab5_wifi_connected()) {
+        char dhost[64];
+        tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+        if (dhost[0]) {
+            ESP_LOGI(TAG, "Auto-connecting voice WS to %s:%d...", dhost, TAB5_VOICE_PORT);
+            ui_voice_set_boot_connect(true);
+            voice_connect_async(dhost, TAB5_VOICE_PORT, false);
+        }
+    }
+
     /* Start background transcription queue for recorded voice notes */
     ui_notes_start_transcription_queue();
 }
