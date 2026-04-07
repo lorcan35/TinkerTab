@@ -149,6 +149,8 @@ lv_obj_t *ui_chat_create(void) {
     lv_obj_set_pos(s_overlay, 0, 0);
     lv_obj_set_style_bg_color(s_overlay, lv_color_hex(0x111111), 0);
     lv_obj_set_style_bg_opa(s_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(s_overlay, 0, 0);  /* kill default padding — children use absolute pos */
+    lv_obj_set_style_border_width(s_overlay, 0, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
 
     /* L5: Swipe-right to close chat */
