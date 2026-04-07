@@ -79,8 +79,9 @@ static void start_voice(void)
 {
     char dhost[64];
     tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-    // Auto-listen: single-tap UX — connect and immediately start listening
-    voice_connect_async(dhost, TAB5_VOICE_PORT, true);
+    // Connect only — don't auto-listen. User chooses mode:
+    // Short tap from READY → Ask (30s), Long-press from READY → Dictate (unlimited)
+    voice_connect_async(dhost, TAB5_VOICE_PORT, false);
 }
 
 // -------------------------------------------------------------------------

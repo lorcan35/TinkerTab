@@ -157,6 +157,7 @@ static void show_state_idle(void);
 /* Mic button */
 static lv_obj_t  *s_mic_btn       = NULL;
 static bool       s_dictation_from_anywhere = false;
+static bool       s_pending_ask   = false;  /* true = auto-start ASK when connected */
 static lv_obj_t  *s_mic_dot       = NULL;
 
 /* Overlay container */
@@ -383,6 +384,17 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_add_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
         lv_obj_add_event_cb(s_orb_container, orb_ready_click_cb, LV_EVENT_CLICKED, NULL);
+
+        /* Auto-start pending action from mic button tap/long-press */
+        if (s_pending_ask) {
+            s_pending_ask = false;
+            ESP_LOGI(TAG, "READY: auto-starting Ask (pending from tap)");
+            voice_start_listening();
+        } else if (s_dictation_from_anywhere) {
+            /* Don't clear flag here — cleared after dictation completes */
+            ESP_LOGI(TAG, "READY: auto-starting Dictation (pending from long-press)");
+            voice_start_dictation();
+        }
         break;
     case VOICE_STATE_LISTENING:
         if (!s_visible) {
@@ -1347,16 +1359,15 @@ static void mic_click_cb(lv_event_t *e)
 
     switch (state) {
     case VOICE_STATE_IDLE:
-        /* Not connected — switch to VOICE mode in a separate task
-         * (mode_switch blocks 200ms+ which would trip the LVGL watchdog) */
-        ESP_LOGI(TAG, "Requesting VOICE mode...");
+        /* Not connected — connect to Dragon, then auto-start Ask mode */
+        ESP_LOGI(TAG, "Requesting VOICE mode (pending: ask)...");
+        s_pending_ask = true;
         xTaskCreatePinnedToCore(
             mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
         break;
     case VOICE_STATE_READY:
-        /* Connected — immediately start listening (single-tap UX).
-         * No more double-tap: mic button → orb tap. Just mic → go. */
-        ESP_LOGI(TAG, "READY → auto-start listening");
+        /* Connected — start Ask mode (30s Q&A) */
+        ESP_LOGI(TAG, "READY → Ask mode");
         voice_start_listening();
         break;
     case VOICE_STATE_LISTENING:
