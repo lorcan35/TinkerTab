@@ -53,3 +53,6 @@ void ui_notes_start_transcription_queue(void);
 
 /** Delete all FAILED notes. Returns number deleted. */
 int ui_notes_clear_failed(void);
+
+/** S6: Sync all pending (needs_sync) notes to Dragon. Call on reconnect. */
+void ui_notes_sync_pending(void);

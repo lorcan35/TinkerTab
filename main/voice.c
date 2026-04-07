@@ -1812,6 +1812,9 @@ static void reconnect_watchdog_task(void *arg)
                 if (s_ws_connected) {
                     ESP_LOGI(TAG, "Watchdog: reconnected successfully!");
                     backoff_ms = RECONNECT_BACKOFF_MS;  /* reset backoff */
+                    /* S6: Sync pending notes that were created while offline */
+                    extern void ui_notes_sync_pending(void);
+                    ui_notes_sync_pending();
                 } else {
                     ESP_LOGW(TAG, "Watchdog: reconnect failed");
                     backoff_ms = (backoff_ms < 60000) ? backoff_ms * 2 : 60000;

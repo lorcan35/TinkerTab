@@ -84,6 +84,7 @@ typedef struct {
     uint8_t month;
     uint8_t year;     /* year offset from 2000 */
     bool used;
+    bool needs_sync;  /* S6: true if not yet synced to Dragon */
 } note_entry_t;
 
 static note_entry_t s_notes[MAX_NOTES];
@@ -110,11 +111,16 @@ static uint32_t s_next_rec_id = 1;  /* monotonic recording counter */
 #include "sdcard.h"
 #include "cJSON.h"
 
+/* Forward declarations for persistence (defined below) */
+static void notes_load(void);
+static void notes_save(void);
+
 /* ── Sync single note to Dragon REST API (fire-and-forget task) ─── */
 
 typedef struct {
     char title[128];
     char text[MAX_NOTE_LEN];
+    int  note_idx;  /* S6: index in s_notes for clearing needs_sync */
 } sync_note_args_t;
 
 static void sync_note_to_dragon_task(void *arg)
@@ -149,8 +155,11 @@ static void sync_note_to_dragon_task(void *arg)
     int status = esp_http_client_get_status_code(client);
 
     if (err == ESP_OK && (status == 200 || status == 201)) {
-        ESP_LOGI(TAG, "Note synced to Dragon (status=%d)", status);
-        /* H7: Visual feedback — update note title prefix on UI thread */
+        ESP_LOGI(TAG, "Note synced to Dragon (status=%d, idx=%d)", status, a->note_idx);
+        /* S6: Clear needs_sync flag on success */
+        if (a->note_idx >= 0 && a->note_idx < MAX_NOTES) {
+            s_notes[a->note_idx].needs_sync = false;
+        }
     } else {
         ESP_LOGW(TAG, "Note sync failed: err=%s status=%d",
                  esp_err_to_name(err), status);
@@ -162,22 +171,54 @@ static void sync_note_to_dragon_task(void *arg)
     vTaskSuspend(NULL);
 }
 
+/* S6: Find note index by text content (for needs_sync tracking) */
+static int find_note_idx_by_text(const char *text)
+{
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (s_notes[i].used && strncmp(s_notes[i].text, text, 64) == 0) return i;
+    }
+    return -1;
+}
+
 static void sync_note_to_dragon(const char *title, const char *text)
 {
+    if (!text || !text[0]) return;
+    int idx = find_note_idx_by_text(text);
+
     if (!tab5_wifi_connected()) {
         ESP_LOGW(TAG, "Note sync skipped — WiFi not connected");
+        /* S6: Mark for later sync */
+        if (idx >= 0) s_notes[idx].needs_sync = true;
         return;
     }
-    if (!text || !text[0]) return;
 
     sync_note_args_t *args = calloc(1, sizeof(sync_note_args_t));
     if (!args) return;
     strncpy(args->title, title ? title : "", sizeof(args->title) - 1);
     strncpy(args->text, text, sizeof(args->text) - 1);
+    args->note_idx = idx;
 
-    ESP_LOGI(TAG, "H7: Syncing note to Dragon (%zu chars)", strlen(text));
+    ESP_LOGI(TAG, "Syncing note to Dragon (%zu chars, idx=%d)", strlen(text), idx);
     xTaskCreatePinnedToCore(sync_note_to_dragon_task, "note_sync", 4096,
                             args, 3, NULL, 0);
+}
+
+/* S6: Sync all pending notes to Dragon (called on reconnect) */
+void ui_notes_sync_pending(void)
+{
+    notes_load();
+    int synced = 0;
+    for (int i = 0; i < MAX_NOTES; i++) {
+        if (s_notes[i].used && s_notes[i].needs_sync && s_notes[i].text[0]) {
+            ESP_LOGI(TAG, "Catch-up sync: note %d", i);
+            sync_note_to_dragon("", s_notes[i].text);
+            synced++;
+            vTaskDelay(pdMS_TO_TICKS(500));  /* stagger to avoid flooding */
+        }
+    }
+    if (synced > 0) {
+        ESP_LOGI(TAG, "Catch-up sync: %d notes queued", synced);
+    }
 }
 
 static void notes_save(void)

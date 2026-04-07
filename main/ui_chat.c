@@ -85,6 +85,24 @@ static void cb_textarea_click(lv_event_t *e) {
     if (s_textarea) ui_keyboard_show(s_textarea);
 }
 
+/* S5: Mic button — start voice recording for speech-to-text input */
+static void cb_mic(lv_event_t *e) {
+    (void)e;
+    voice_state_t st = voice_get_state();
+    if (st == VOICE_STATE_READY) {
+        ESP_LOGI(TAG, "Chat mic: starting voice input");
+        voice_start_listening();
+    } else if (st == VOICE_STATE_IDLE) {
+        ESP_LOGW(TAG, "Chat mic: not connected to Dragon");
+        ui_chat_add_message("(Not connected — tap orb on Home to connect)", false);
+    } else if (st == VOICE_STATE_LISTENING) {
+        /* Already listening — stop and send */
+        voice_stop_listening();
+    } else {
+        ESP_LOGI(TAG, "Chat mic: voice busy (state=%d)", st);
+    }
+}
+
 static void cb_send(lv_event_t *e) {
     (void)e;
     if (!s_textarea) return;
@@ -172,9 +190,9 @@ lv_obj_t *ui_chat_create(void) {
 
     /* Text input — tap to show keyboard */
     s_textarea = lv_textarea_create(bar);
-    lv_obj_set_size(s_textarea, 540, 52);
-    lv_obj_set_pos(s_textarea, 12, 10);
-    lv_textarea_set_placeholder_text(s_textarea, "Type a message...");
+    lv_obj_set_size(s_textarea, 470, 52);  /* narrower for mic button */
+    lv_obj_set_pos(s_textarea, 64, 10);
+    lv_textarea_set_placeholder_text(s_textarea, "Type or tap mic...");
     lv_textarea_set_one_line(s_textarea, true);
     lv_obj_set_style_bg_color(s_textarea, lv_color_hex(0x2C2C2E), 0);
     lv_obj_set_style_text_color(s_textarea, lv_color_hex(0xFFFFFF), 0);
@@ -183,10 +201,23 @@ lv_obj_t *ui_chat_create(void) {
     lv_obj_set_style_pad_left(s_textarea, 16, 0);
     lv_obj_add_event_cb(s_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
 
+    /* S5: Mic button — voice input in chat */
+    lv_obj_t *mic = lv_button_create(bar);
+    lv_obj_set_size(mic, 52, 52);
+    lv_obj_set_pos(mic, 6, 10);
+    lv_obj_set_style_bg_color(mic, lv_color_hex(0x00E5FF), 0);  /* cyan */
+    lv_obj_set_style_radius(mic, LV_RADIUS_CIRCLE, 0);
+    lv_obj_add_event_cb(mic, cb_mic, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *mic_lbl = lv_label_create(mic);
+    lv_label_set_text(mic_lbl, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_color(mic_lbl, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(mic_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(mic_lbl);
+
     /* Send button */
     lv_obj_t *send = lv_button_create(bar);
     lv_obj_set_size(send, 100, 52);
-    lv_obj_set_pos(send, 564, 10);
+    lv_obj_set_pos(send, 546, 10);
     lv_obj_set_style_bg_color(send, lv_color_hex(0xF5A623), 0);
     lv_obj_set_style_radius(send, 24, 0);
     lv_obj_add_event_cb(send, cb_send, LV_EVENT_CLICKED, NULL);
