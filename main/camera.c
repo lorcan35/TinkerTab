@@ -87,6 +87,54 @@ static esp_err_t cam_xclk_init(void)
 
 extern i2c_master_bus_handle_t tab5_get_i2c_bus(void);
 
+/* Direct SCCB register write for exposure/gain tuning after esp_video init */
+#define SC202CS_SCCB_ADDR 0x36
+static i2c_master_dev_handle_t s_sccb_dev = NULL;
+
+static esp_err_t sccb_write(uint16_t reg, uint8_t val)
+{
+    if (!s_sccb_dev) return ESP_ERR_INVALID_STATE;
+    uint8_t buf[3] = {(uint8_t)(reg >> 8), (uint8_t)(reg & 0xFF), val};
+    return i2c_master_transmit(s_sccb_dev, buf, 3, 100);
+}
+
+static void cam_set_exposure_gain(void)
+{
+    /* Create SCCB device handle for direct register access */
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = SC202CS_SCCB_ADDR,
+        .scl_speed_hz = 100000,
+    };
+    i2c_master_bus_handle_t bus = tab5_get_i2c_bus();
+    if (i2c_master_bus_add_device(bus, &dev_cfg, &s_sccb_dev) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not add SCCB device for exposure tuning");
+        return;
+    }
+
+    /* SC202CS exposure registers: 0x3e00[3:0], 0x3e01[7:0], 0x3e02[7:4]
+     * Higher value = longer exposure = brighter image
+     * Default was 0x004dc0 (~20k). Set to ~0x009800 (~39k) for indoor lighting */
+    sccb_write(0x3e00, 0x00);
+    sccb_write(0x3e01, 0x98);  /* was 0x4d */
+    sccb_write(0x3e02, 0x00);  /* was 0xc0 */
+
+    /* SC202CS analog gain: 0x3e09[4:0]
+     * 0x00=1x, 0x01=2x, 0x03=4x, 0x07=8x, 0x0f=15.5x
+     * Set to 4x gain for indoor */
+    sccb_write(0x3e09, 0x03);  /* was 0x00 (1x) → now 4x */
+
+    /* Digital gain: 0x3e06[3:0], 0x3e07[7:0]
+     * Fine digital gain for additional brightness */
+    sccb_write(0x3e06, 0x00);
+    sccb_write(0x3e07, 0x80);  /* 1.5x digital gain */
+
+    ESP_LOGI(TAG, "Exposure/gain set for indoor lighting");
+
+    i2c_master_bus_rm_device(s_sccb_dev);
+    s_sccb_dev = NULL;
+}
+
 esp_err_t tab5_camera_init(void)
 {
     if (s_initialized) return ESP_OK;
@@ -209,6 +257,10 @@ esp_err_t tab5_camera_init(void)
     }
 
     s_initialized = true;
+
+    /* Tune exposure/gain for indoor lighting (defaults are too dark) */
+    cam_set_exposure_gain();
+
     ESP_LOGI(TAG, "Camera ready! %dx%d @ V4L2 (MMAP double-buffer)", s_width, s_height);
     return ESP_OK;
 }
