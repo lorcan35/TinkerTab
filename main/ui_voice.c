@@ -33,7 +33,7 @@ static void mode_switch_idle_task(void *arg);
 
 /* ── Palette — Voice overlay ──────────────────────────────────── */
 #define VO_BG              0x000000
-#define VO_BG_OPA          242        /* ~95% opacity */
+#define VO_BG_OPA          LV_OPA_COVER  /* fully opaque — no bleed-through */
 
 /* Cyan — listening */
 #define VO_CYAN            0x00E5FF
@@ -844,10 +844,11 @@ static void build_chat_area(lv_obj_t *parent)
     /* Scroll snap to bottom (follow new content) */
     lv_obj_set_scroll_snap_y(s_chat_cont, LV_SCROLL_SNAP_END);
 
-    /* User bubble — right-aligned, cyan tint */
+    /* User bubble — right-aligned via translate_x (flex ignores lv_obj_align) */
     s_user_bubble = create_bubble(s_chat_cont, VO_USER_BG, VO_USER_BORDER,
                                    LV_ALIGN_RIGHT_MID, &s_user_label);
     lv_obj_set_style_text_color(s_user_label, lv_color_hex(VO_CYAN), 0);
+    lv_obj_set_style_translate_x(s_user_bubble, SW - CHAT_BUBBLE_MAX_W - 2 * CHAT_PAD_X, 0);
     lv_obj_add_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
 
     /* AI bubble — left-aligned, green tint */

@@ -265,8 +265,8 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
     lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_20, 0);
-    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 8);
+    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_18, 0);
+    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 6);
 
     lbl_last_note = lv_label_create(last_note_card);
     lv_label_set_text(lbl_last_note, "Tap to see notes");
@@ -274,7 +274,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_24, 0);
     lv_obj_set_width(lbl_last_note, SW - 96);
     lv_label_set_long_mode(lbl_last_note, LV_LABEL_LONG_DOT);
-    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -8);
+    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -6);
 
     return pg;
 }
