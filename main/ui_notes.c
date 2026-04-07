@@ -1477,24 +1477,32 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 {
     note_entry_t n = *note;
 
-    /* Card — big padding, full width */
+    /* Card — compact, flex column layout. Tap for full view. */
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
-    lv_obj_set_style_min_height(card, 160, 0);
+    lv_obj_set_style_max_height(card, 160, 0);  /* FIX N1: cap card height */
     lv_obj_set_style_bg_color(card, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, CARD_RAD, 0);
     lv_obj_set_style_border_width(card, 0, 0);
-    lv_obj_set_style_pad_all(card, CARD_PAD, 0);
+    lv_obj_set_style_pad_all(card, 12, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(card, 20);
+    lv_obj_set_ext_click_area(card, 10);
     lv_obj_add_event_cb(card, cb_note_tap, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
 
-    /* Row 1: timestamp + badge */
-    lv_obj_t *ts = lv_label_create(card);
+    /* Row 1: timestamp + badge + action buttons (all in one line) */
+    lv_obj_t *header = lv_obj_create(card);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 36);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Timestamp */
+    lv_obj_t *ts = lv_label_create(header);
     char ts_buf[32];
     static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
                                 "Jul","Aug","Sep","Oct","Nov","Dec"};
@@ -1503,71 +1511,80 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
              mn[mi], n.day, n.hour, n.minute);
     lv_label_set_text(ts, ts_buf);
     lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(ts, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(ts, &lv_font_montserrat_20, 0);
+    lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
 
-    /* State badge — shows recording/transcription state */
-    lv_obj_t *badge = lv_label_create(card);
+    /* Badge */
+    lv_obj_t *badge = lv_label_create(header);
     const char *badge_text;
     uint32_t badge_color;
     switch (n.state) {
-    case NOTE_STATE_RECORDED:     badge_text = "  recorded  "; badge_color = 0xFF9F0A; break;
-    case NOTE_STATE_TRANSCRIBING: badge_text = "  processing  "; badge_color = COL_CYAN; break;
-    case NOTE_STATE_TRANSCRIBED:  badge_text = "  voice  "; badge_color = COL_CYAN; break;
-    case NOTE_STATE_FAILED:       badge_text = "  failed  "; badge_color = COL_RED; break;
-    default:                      badge_text = n.is_voice ? "  voice  " : "  text  ";
+    case NOTE_STATE_RECORDED:     badge_text = " rec "; badge_color = 0xFF9F0A; break;
+    case NOTE_STATE_TRANSCRIBING: badge_text = " ... "; badge_color = COL_CYAN; break;
+    case NOTE_STATE_TRANSCRIBED:  badge_text = " voice "; badge_color = COL_CYAN; break;
+    case NOTE_STATE_FAILED:       badge_text = " fail "; badge_color = COL_RED; break;
+    default:                      badge_text = n.is_voice ? " voice " : " text ";
                                   badge_color = n.is_voice ? COL_CYAN : COL_AMBER; break;
     }
     lv_label_set_text(badge, badge_text);
     lv_obj_set_style_bg_color(badge, lv_color_hex(badge_color), 0);
     lv_obj_set_style_bg_opa(badge, LV_OPA_40, 0);
     lv_obj_set_style_text_color(badge, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(badge, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_radius(badge, 12, 0);
-    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 16, 0);
+    lv_obj_set_style_text_font(badge, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_radius(badge, 8, 0);
+    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
-    /* Play button — only for notes with audio */
-    if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
-        lv_obj_t *play = lv_button_create(card);
-        lv_obj_set_size(play, 80, 56);
-        lv_obj_align(play, LV_ALIGN_TOP_RIGHT, -90, 0);
-        lv_obj_set_style_bg_color(play, lv_color_hex(COL_CYAN), 0);
-        lv_obj_set_style_bg_opa(play, LV_OPA_80, 0);
-        lv_obj_set_style_radius(play, 16, 0);
-        lv_obj_set_style_border_width(play, 0, 0);
-        lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
-                           (void *)(intptr_t)note_idx);
-
-        lv_obj_t *play_lbl = lv_label_create(play);
-        lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
-        lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(play_lbl, &lv_font_montserrat_28, 0);
-        lv_obj_center(play_lbl);
-    }
-
-    /* Delete button — big touch target */
-    lv_obj_t *del = lv_button_create(card);
-    lv_obj_set_size(del, 80, 56);
-    lv_obj_align(del, LV_ALIGN_TOP_RIGHT, 0, 0);
+    /* Delete button — small, top-right */
+    lv_obj_t *del = lv_button_create(header);
+    lv_obj_set_size(del, 48, 36);
+    lv_obj_align(del, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(del, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_bg_opa(del, LV_OPA_80, 0);
-    lv_obj_set_style_radius(del, 16, 0);
+    lv_obj_set_style_bg_opa(del, LV_OPA_60, 0);
+    lv_obj_set_style_radius(del, 8, 0);
     lv_obj_set_style_border_width(del, 0, 0);
     lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
-
     lv_obj_t *del_lbl = lv_label_create(del);
-    lv_label_set_text(del_lbl, "X");
+    lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(del_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(del_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(del_lbl);
 
-    /* Note text — BIG readable font */
+    /* Play button — next to delete, only for notes with audio */
+    if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
+        lv_obj_t *play = lv_button_create(header);
+        lv_obj_set_size(play, 48, 36);
+        lv_obj_align(play, LV_ALIGN_RIGHT_MID, -56, 0);
+        lv_obj_set_style_bg_color(play, lv_color_hex(COL_CYAN), 0);
+        lv_obj_set_style_bg_opa(play, LV_OPA_60, 0);
+        lv_obj_set_style_radius(play, 8, 0);
+        lv_obj_set_style_border_width(play, 0, 0);
+        lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
+                           (void *)(intptr_t)note_idx);
+        lv_obj_t *play_lbl = lv_label_create(play);
+        lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
+        lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
+        lv_obj_set_style_text_font(play_lbl, &lv_font_montserrat_18, 0);
+        lv_obj_center(play_lbl);
+    }
+
+    /* FIX N1+N4: Note preview — truncated to ~100 chars, smaller font */
     lv_obj_t *preview = lv_label_create(card);
-    lv_label_set_text(preview, n.text);
+    /* Truncate long text for card preview — full text in edit overlay */
+    char preview_text[120];
+    const char *src = n.text;
+    /* Skip "[Untitled Note] " prefix (N7) */
+    if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
+    if (strlen(src) > 100) {
+        snprintf(preview_text, sizeof(preview_text), "%.100s...", src);
+    } else {
+        strncpy(preview_text, src, sizeof(preview_text) - 1);
+        preview_text[sizeof(preview_text) - 1] = '\0';
+    }
+    lv_label_set_text(preview, preview_text);
     lv_obj_set_style_text_color(preview, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(preview, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(preview, &lv_font_montserrat_24, 0);  /* was 36 — way too big */
     lv_obj_set_width(preview, lv_pct(100));
-    lv_obj_set_style_pad_top(preview, 20, 0);
 }
 
 /* ── Refresh list ───────────────────────────────────────── */

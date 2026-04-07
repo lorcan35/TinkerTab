@@ -554,23 +554,12 @@ static void handle_text_message(const char *data, int len)
     } else if (strcmp(type_str, "note_created") == 0) {
         cJSON *nid = cJSON_GetObjectItem(root, "note_id");
         cJSON *ntitle = cJSON_GetObjectItem(root, "title");
-        cJSON *ntranscript = cJSON_GetObjectItem(root, "transcript");
         ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"",
                  cJSON_IsString(nid) ? nid->valuestring : "?",
                  cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
-        /* C6: Save Dragon notes to Tab5 SD card for offline access */
-        const char *txt = cJSON_IsString(ntranscript) ? ntranscript->valuestring : NULL;
-        const char *title = cJSON_IsString(ntitle) ? ntitle->valuestring : NULL;
-        if (txt && txt[0]) {
-            char note_buf[600];
-            if (title && title[0]) {
-                snprintf(note_buf, sizeof(note_buf), "[%s] %s", title, txt);
-            } else {
-                snprintf(note_buf, sizeof(note_buf), "%s", txt);
-            }
-            int idx = ui_notes_add(note_buf, true);
-            ESP_LOGI(TAG, "Saved Dragon note to SD (slot %d)", idx);
-        }
+        /* C6: Dragon note_created is the auto-save from dictation.
+         * Tab5 already saves dictation text in ui_voice (dictation_done handler),
+         * so we DON'T duplicate here. Just log it for awareness. */
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
         ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
