@@ -47,9 +47,9 @@ static const char *TAG = "tab5_cam";
 #define CAM_XCLK_GPIO           36
 #define CAM_XCLK_FREQ_HZ       24000000
 
-/* MIPI-CSI config */
-#define CAM_CSI_LANE_NUM        2
-#define CAM_CSI_LANE_BITRATE    400  /* Mbps per lane */
+/* MIPI-CSI config — SC202CS is a 1-lane sensor */
+#define CAM_CSI_LANE_NUM        1
+#define CAM_CSI_LANE_BITRATE    576  /* Mbps — from M5Stack esp_cam_sensor (576MHz for 720p RAW8) */
 
 /* Frame buffer (allocated in PSRAM) */
 #define CAM_FB_MAX_SIZE         (1920 * 1080 * 2)  /* Max: 1080p RGB565 */
@@ -60,8 +60,9 @@ static esp_cam_ctlr_handle_t s_cam_ctrl = NULL;
 static i2c_master_dev_handle_t s_sccb_dev = NULL;
 static uint8_t *s_frame_buf = NULL;
 static uint32_t s_frame_size = 0;
-static uint16_t s_width = 640;
-static uint16_t s_height = 480;
+static uint16_t s_width = 1280;
+static uint16_t s_height = 720;
+static volatile bool s_capture_busy = false;  /* prevents overlapping captures */
 
 /* --- XCLK (24MHz via LEDC on GPIO 36) --- */
 
@@ -153,44 +154,110 @@ static esp_err_t cam_check_sensor_id(void)
  */
 static esp_err_t cam_sensor_init_vga(void)
 {
+    /*
+     * SC202CS full register init: 1280x720 @ 30fps, MIPI 1-lane, RAW8.
+     * Register table from M5Stack esp_cam_sensor component (verified working).
+     * 129 registers — proper PLL, analog, timing, MIPI, window config.
+     */
+    ESP_LOGI(TAG, "Initializing SC202CS (1280x720 RAW8 1-lane, 129 registers)...");
+
     /* Software reset */
-    ESP_RETURN_ON_ERROR(cam_sccb_write_reg(0x0103, 0x01), TAG, "Soft reset failed");
+    cam_sccb_write_reg(0x0103, 0x01);
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    /*
-     * SC2336 register init for 640x480 @ 30fps, MIPI 2-lane RAW10
-     *
-     * These are typical values — the exact sequence should be validated
-     * against the SC2336 datasheet or factory firmware register dump.
-     *
-     * TODO: Replace with verified register table from sc2336_settings.h
-     */
+    /* Stream off during config */
+    cam_sccb_write_reg(0x0100, 0x00);
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* PLL / clock configuration */
-    cam_sccb_write_reg(0x0100, 0x00);  /* Stream off during config */
-
-    /* Basic analog settings */
-    cam_sccb_write_reg(0x36e9, 0x80);  /* Bypass PLL */
-    cam_sccb_write_reg(0x37f9, 0x80);
-
-    /* MIPI output config */
-    cam_sccb_write_reg(0x3018, 0x32);  /* 2-lane MIPI */
-    cam_sccb_write_reg(0x3019, 0x0c);
-
-    /* Window size — 640x480 */
-    cam_sccb_write_reg(0x3208, 0x02);  /* H size high = 640 */
-    cam_sccb_write_reg(0x3209, 0x80);
-    cam_sccb_write_reg(0x320a, 0x01);  /* V size high = 480 */
-    cam_sccb_write_reg(0x320b, 0xe0);
-
-    /* Undo PLL bypass */
+    /* PLL config */
+    cam_sccb_write_reg(0x36e9, 0x80);
+    cam_sccb_write_reg(0x36ea, 0x06);
+    cam_sccb_write_reg(0x36eb, 0x0a);
+    cam_sccb_write_reg(0x36ec, 0x01);
+    cam_sccb_write_reg(0x36ed, 0x18);
     cam_sccb_write_reg(0x36e9, 0x24);
-    cam_sccb_write_reg(0x37f9, 0x24);
+
+    /* System + MIPI config */
+    cam_sccb_write_reg(0x301f, 0x18);  /* 1-lane MIPI */
+    cam_sccb_write_reg(0x3031, 0x08);  /* RAW8 output */
+    cam_sccb_write_reg(0x3037, 0x00);
+
+    /* Window: 1280x720 */
+    cam_sccb_write_reg(0x3200, 0x00); cam_sccb_write_reg(0x3201, 0xa0);
+    cam_sccb_write_reg(0x3202, 0x00); cam_sccb_write_reg(0x3203, 0xf0);
+    cam_sccb_write_reg(0x3204, 0x05); cam_sccb_write_reg(0x3205, 0xa7);
+    cam_sccb_write_reg(0x3206, 0x03); cam_sccb_write_reg(0x3207, 0xc7);
+    cam_sccb_write_reg(0x3208, 0x05); cam_sccb_write_reg(0x3209, 0x00);  /* H=1280 */
+    cam_sccb_write_reg(0x320a, 0x02); cam_sccb_write_reg(0x320b, 0xd0);  /* V=720  */
+    cam_sccb_write_reg(0x3210, 0x00); cam_sccb_write_reg(0x3211, 0x04);
+    cam_sccb_write_reg(0x3212, 0x00); cam_sccb_write_reg(0x3213, 0x04);
+
+    /* Analog + timing (full Espressif-verified table) */
+    cam_sccb_write_reg(0x3301, 0xff); cam_sccb_write_reg(0x3304, 0x68);
+    cam_sccb_write_reg(0x3306, 0x40); cam_sccb_write_reg(0x3308, 0x08);
+    cam_sccb_write_reg(0x3309, 0xa8); cam_sccb_write_reg(0x330b, 0xd0);
+    cam_sccb_write_reg(0x330c, 0x18); cam_sccb_write_reg(0x330d, 0xff);
+    cam_sccb_write_reg(0x330e, 0x20); cam_sccb_write_reg(0x331e, 0x59);
+    cam_sccb_write_reg(0x331f, 0x99); cam_sccb_write_reg(0x3333, 0x10);
+    cam_sccb_write_reg(0x335e, 0x06); cam_sccb_write_reg(0x335f, 0x08);
+    cam_sccb_write_reg(0x3364, 0x1f); cam_sccb_write_reg(0x337c, 0x02);
+    cam_sccb_write_reg(0x337d, 0x0a); cam_sccb_write_reg(0x338f, 0xa0);
+    cam_sccb_write_reg(0x3390, 0x01); cam_sccb_write_reg(0x3391, 0x03);
+    cam_sccb_write_reg(0x3392, 0x1f); cam_sccb_write_reg(0x3393, 0xff);
+    cam_sccb_write_reg(0x3394, 0xff); cam_sccb_write_reg(0x3395, 0xff);
+    cam_sccb_write_reg(0x33a2, 0x04); cam_sccb_write_reg(0x33ad, 0x0c);
+    cam_sccb_write_reg(0x33b1, 0x20); cam_sccb_write_reg(0x33b3, 0x38);
+    cam_sccb_write_reg(0x33f9, 0x40); cam_sccb_write_reg(0x33fb, 0x48);
+    cam_sccb_write_reg(0x33fc, 0x0f); cam_sccb_write_reg(0x33fd, 0x1f);
+    cam_sccb_write_reg(0x349f, 0x03); cam_sccb_write_reg(0x34a6, 0x03);
+    cam_sccb_write_reg(0x34a7, 0x1f); cam_sccb_write_reg(0x34a8, 0x38);
+    cam_sccb_write_reg(0x34a9, 0x30); cam_sccb_write_reg(0x34ab, 0xd0);
+    cam_sccb_write_reg(0x34ad, 0xd8); cam_sccb_write_reg(0x34f8, 0x1f);
+    cam_sccb_write_reg(0x34f9, 0x20);
+
+    /* AFE + driver */
+    cam_sccb_write_reg(0x3630, 0xa0); cam_sccb_write_reg(0x3631, 0x92);
+    cam_sccb_write_reg(0x3632, 0x64); cam_sccb_write_reg(0x3633, 0x43);
+    cam_sccb_write_reg(0x3637, 0x49); cam_sccb_write_reg(0x363a, 0x85);
+    cam_sccb_write_reg(0x363c, 0x0f); cam_sccb_write_reg(0x3650, 0x31);
+    cam_sccb_write_reg(0x3670, 0x0d); cam_sccb_write_reg(0x3674, 0xc0);
+    cam_sccb_write_reg(0x3675, 0xa0); cam_sccb_write_reg(0x3676, 0xa0);
+    cam_sccb_write_reg(0x3677, 0x92); cam_sccb_write_reg(0x3678, 0x96);
+    cam_sccb_write_reg(0x3679, 0x9a); cam_sccb_write_reg(0x367c, 0x03);
+    cam_sccb_write_reg(0x367d, 0x0f); cam_sccb_write_reg(0x367e, 0x01);
+    cam_sccb_write_reg(0x367f, 0x0f); cam_sccb_write_reg(0x3698, 0x83);
+    cam_sccb_write_reg(0x3699, 0x86); cam_sccb_write_reg(0x369a, 0x8c);
+    cam_sccb_write_reg(0x369b, 0x94); cam_sccb_write_reg(0x36a2, 0x01);
+    cam_sccb_write_reg(0x36a3, 0x03); cam_sccb_write_reg(0x36a4, 0x07);
+    cam_sccb_write_reg(0x36ae, 0x0f); cam_sccb_write_reg(0x36af, 0x1f);
+    cam_sccb_write_reg(0x36bd, 0x22); cam_sccb_write_reg(0x36be, 0x22);
+    cam_sccb_write_reg(0x36bf, 0x22); cam_sccb_write_reg(0x36d0, 0x01);
+    cam_sccb_write_reg(0x370f, 0x02); cam_sccb_write_reg(0x3721, 0x6c);
+    cam_sccb_write_reg(0x3722, 0x8d); cam_sccb_write_reg(0x3725, 0xc5);
+    cam_sccb_write_reg(0x3727, 0x14); cam_sccb_write_reg(0x3728, 0x04);
+    cam_sccb_write_reg(0x37b7, 0x04); cam_sccb_write_reg(0x37b8, 0x04);
+    cam_sccb_write_reg(0x37b9, 0x06); cam_sccb_write_reg(0x37bd, 0x07);
+    cam_sccb_write_reg(0x37be, 0x0f);
+
+    /* AEC/AGC */
+    cam_sccb_write_reg(0x3901, 0x02); cam_sccb_write_reg(0x3903, 0x40);
+    cam_sccb_write_reg(0x3905, 0x8d); cam_sccb_write_reg(0x3907, 0x00);
+    cam_sccb_write_reg(0x3908, 0x41); cam_sccb_write_reg(0x391f, 0x41);
+    cam_sccb_write_reg(0x3933, 0x80); cam_sccb_write_reg(0x3934, 0x02);
+    cam_sccb_write_reg(0x3937, 0x6f); cam_sccb_write_reg(0x393a, 0x01);
+    cam_sccb_write_reg(0x393d, 0x01); cam_sccb_write_reg(0x393e, 0xc0);
+    cam_sccb_write_reg(0x39dd, 0x41);
+
+    /* Exposure defaults */
+    cam_sccb_write_reg(0x3e00, 0x00); cam_sccb_write_reg(0x3e01, 0x4d);
+    cam_sccb_write_reg(0x3e02, 0xc0); cam_sccb_write_reg(0x3e09, 0x00);
+    cam_sccb_write_reg(0x4509, 0x28); cam_sccb_write_reg(0x450d, 0x61);
 
     /* Stream on */
     cam_sccb_write_reg(0x0100, 0x01);
+    vTaskDelay(pdMS_TO_TICKS(50));  /* allow first frame to stabilize */
 
-    ESP_LOGI(TAG, "SC202CS initialized (640x480 basic mode)");
+    ESP_LOGI(TAG, "SC202CS initialized (1280x720 RAW8, 1-lane MIPI, 129 registers)");
     return ESP_OK;
 }
 
@@ -210,11 +277,11 @@ static esp_err_t cam_csi_init(void)
         .ctlr_id = 0,
         .clk_src = MIPI_CSI_PHY_CLK_SRC_DEFAULT,
         .byte_swap_en = false,
-        .queue_items = 1,
+        .queue_items = 2,  /* double-buffer: prevents "queue full" when preview timer overlaps */
         .h_res = s_width,
         .v_res = s_height,
         .data_lane_num = CAM_CSI_LANE_NUM,
-        .input_data_color_type = CAM_CTLR_COLOR_RAW8,
+        .input_data_color_type = CAM_CTLR_COLOR_RAW8,  /* SC202CS RAW8 mode (0x3031=0x08) */
         .output_data_color_type = CAM_CTLR_COLOR_RGB565,
         .lane_bit_rate_mbps = CAM_CSI_LANE_BITRATE,
     };
@@ -226,8 +293,9 @@ static esp_err_t cam_csi_init(void)
     };
     ESP_RETURN_ON_ERROR(esp_cam_ctlr_register_event_callbacks(s_cam_ctrl, &cbs, NULL), TAG, "Register CBS failed");
     ESP_RETURN_ON_ERROR(esp_cam_ctlr_enable(s_cam_ctrl), TAG, "CSI enable failed");
+    ESP_RETURN_ON_ERROR(esp_cam_ctlr_start(s_cam_ctrl), TAG, "CSI start failed");
 
-    ESP_LOGI(TAG, "CSI controller initialized (%dx%d, %d lanes @ %d Mbps)",
+    ESP_LOGI(TAG, "CSI controller initialized + started (%dx%d, %d lanes @ %d Mbps)",
              s_width, s_height, CAM_CSI_LANE_NUM, CAM_CSI_LANE_BITRATE);
     return ESP_OK;
 }
@@ -334,20 +402,33 @@ esp_err_t tab5_camera_capture(tab5_cam_frame_t *frame)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Prevent overlapping captures — preview timer can fire while
+     * previous frame is still being received via CSI DMA */
+    if (s_capture_busy) {
+        return ESP_ERR_NOT_FINISHED;
+    }
+    s_capture_busy = true;
+
     esp_cam_ctlr_trans_t trans = {
         .buffer = s_frame_buf,
         .buflen = CAM_FB_MAX_SIZE,
     };
 
     s_frame_size = 0;
-    ESP_RETURN_ON_ERROR(esp_cam_ctlr_receive(s_cam_ctrl, &trans, 2000), TAG, "Capture failed");
+    esp_err_t err = esp_cam_ctlr_receive(s_cam_ctrl, &trans, 2000);
+    if (err != ESP_OK) {
+        s_capture_busy = false;
+        ESP_LOGW(TAG, "CSI receive failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
     /* Wait for frame done callback */
-    /* TODO: Use semaphore/event instead of polling */
-    int retries = 100;
+    int retries = 200;  /* up to 2s */
     while (s_frame_size == 0 && retries-- > 0) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+
+    s_capture_busy = false;
 
     if (s_frame_size == 0) {
         ESP_LOGE(TAG, "Capture timeout — no frame received");
@@ -360,7 +441,6 @@ esp_err_t tab5_camera_capture(tab5_cam_frame_t *frame)
     frame->height = s_height;
     frame->format = TAB5_CAM_FMT_RGB565;
 
-    ESP_LOGI(TAG, "Captured frame: %dx%d, %lu bytes", s_width, s_height, (unsigned long)s_frame_size);
     return ESP_OK;
 }
 
