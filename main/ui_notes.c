@@ -1004,7 +1004,11 @@ static void hide_input_area(void)
 /* ── Callbacks ────────────────────────────────────────── */
 static void cb_back(lv_event_t *e)
 {
-    (void)e;
+    /* L5: Support both click and swipe-right gesture */
+    if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+        if (dir != LV_DIR_RIGHT) return;  /* only swipe-right triggers back */
+    }
     hide_input_area();
     ui_notes_destroy();
     ui_home_go_home();
@@ -1645,6 +1649,9 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* L5: Swipe-right to go back */
+    lv_obj_add_event_cb(s_screen, cb_back, LV_EVENT_GESTURE, NULL);
 
     make_topbar(s_screen);
 

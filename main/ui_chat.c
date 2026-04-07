@@ -65,7 +65,11 @@ static void poll_voice_cb(lv_timer_t *t)
 }
 
 static void cb_close(lv_event_t *e) {
-    (void)e;
+    /* L5: Support swipe-right gesture as back action */
+    if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+        if (dir != LV_DIR_RIGHT) return;
+    }
     if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
     if (s_overlay) { lv_obj_del(s_overlay); s_overlay = NULL; }
     s_msg_list = NULL;
@@ -113,6 +117,9 @@ lv_obj_t *ui_chat_create(void) {
     lv_obj_set_style_bg_color(s_overlay, lv_color_hex(0x111111), 0);
     lv_obj_set_style_bg_opa(s_overlay, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* L5: Swipe-right to close chat */
+    lv_obj_add_event_cb(s_overlay, cb_close, LV_EVENT_GESTURE, NULL);
 
     /* Back button */
     lv_obj_t *btn = lv_button_create(s_overlay);

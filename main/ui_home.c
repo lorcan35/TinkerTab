@@ -158,9 +158,9 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_ext_click_area(orb, 20);
     lv_obj_add_event_cb(orb, orb_tap_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Orb mic icon */
+    /* L1: Orb icon — audio waveform (closest to mic in LVGL built-in set) */
     lv_obj_t *orb_icon = lv_label_create(orb);
-    lv_label_set_text(orb_icon, LV_SYMBOL_CALL);  /* Mic icon instead of music note */
+    lv_label_set_text(orb_icon, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(orb_icon, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_text_font(orb_icon, &lv_font_montserrat_48, 0);
     lv_obj_center(orb_icon);
@@ -229,7 +229,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_add_event_cb(ask_btn, ask_tap_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
-    lv_label_set_text(ask_lbl, LV_SYMBOL_CALL "  Ask Tinker");
+    lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
     lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_36, 0);
     lv_obj_center(ask_lbl);

@@ -106,7 +106,11 @@ static void      ntp_sync_task(void *arg);
 
 static void cb_back_btn(lv_event_t *e)
 {
-    (void)e;
+    /* L5: Support both click and swipe-right gesture */
+    if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+        if (dir != LV_DIR_RIGHT) return;
+    }
     ui_settings_destroy();
     ui_home_go_home();
     lv_screen_load(ui_home_get_screen());
@@ -375,6 +379,9 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_bg_color(s_screen, COL_BG, 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* L5: Swipe-right to go back */
+    lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
 
     /* ── Top bar ────────────────────────────────────────────────────── */
     make_topbar(s_screen);
