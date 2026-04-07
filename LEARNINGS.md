@@ -456,3 +456,11 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** The comment in sdcard.c was incorrect. Tab5 uses SDMMC Slot 0 for SD card and Slot 1 for WiFi SDIO — different slots on different GPIO banks. They coexist fine.
 - **Fix:** Updated sdcard.c comment to reflect verified coexistence. Confirmed: 122GB SD card mounts and operates normally while WiFi is active.
 - **Prevention:** Don't trust hardware conflict comments without testing. The ESP32-P4 SDMMC controller supports 2 independent slots.
+
+### Dragon Q6A 15-Minute Reboot Cycle
+
+- **Date:** 2026-04-07
+- **Symptom:** Dragon reboots every ~15 minutes. Boot log shows exact 14-19 minute sessions. Previous boot journal empty (hard power cut, no graceful shutdown). Happens on both WiFi and ethernet.
+- **Root Cause:** Power/thermal overload from bloated services. The Dragon was running GDM3 (gnome desktop, 175MB), nanobot/TinkerClaw agent (116MB, 56% CPU), snapd, ollama, rustdesk, fwupd, and chromium on every boot — totaling ~900MB RAM and heavy CPU. The QCS6490 SoC hit thermal limits after ~15 minutes under sustained load and hard-reset.
+- **Fix:** Masked/disabled all non-essential services: gdm3, snapd, ollama, snap.rustdesk.rustdesk-server, tinkerclaw-nanobot, fwupd, systemd-sysupdate-reboot.timer. Created tinkerclaw-strip.service to enforce this on every boot. Memory dropped from 900MB to 558MB. Only tinkerclaw-voice, tinkerclaw-dashboard, tinkerclaw-ngrok, and dragon_server.py remain.
+- **Prevention:** Never enable desktop environment (GDM) on a headless server. Monitor memory usage after adding services. The QCS6490 with 12GB RAM seems generous but the SoC power budget is tight — keep total RAM usage under 1GB and CPU under 50% sustained.

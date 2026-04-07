@@ -158,19 +158,26 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_ext_click_area(orb, 20);
     lv_obj_add_event_cb(orb, orb_tap_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Orb eye icon */
+    /* Orb mic icon */
     lv_obj_t *orb_icon = lv_label_create(orb);
-    lv_label_set_text(orb_icon, LV_SYMBOL_AUDIO);
+    lv_label_set_text(orb_icon, LV_SYMBOL_CALL);  /* Mic icon instead of music note */
     lv_obj_set_style_text_color(orb_icon, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_text_font(orb_icon, &lv_font_montserrat_48, 0);
     lv_obj_center(orb_icon);
 
-    /* Orb label below */
+    /* Orb label — "Tap to ask" with long-press hint */
     lv_obj_t *orb_lbl = lv_label_create(pg);
     lv_label_set_text(orb_lbl, "Tap to ask");
     lv_obj_set_style_text_color(orb_lbl, lv_color_hex(COL_LABEL2), 0);
     lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_28, 0);
     lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 40);
+
+    /* Long-press hint below */
+    lv_obj_t *hold_hint = lv_label_create(pg);
+    lv_label_set_text(hold_hint, "Hold for dictation");
+    lv_obj_set_style_text_color(hold_hint, lv_color_hex(COL_LABEL3), 0);
+    lv_obj_set_style_text_font(hold_hint, &lv_font_montserrat_20, 0);
+    lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, 75);
 
     /* Breathing animation on ring */
     lv_anim_init(&orb_anim);
@@ -222,7 +229,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_add_event_cb(ask_btn, ask_tap_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
-    lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
+    lv_label_set_text(ask_lbl, LV_SYMBOL_CALL "  Ask Tinker");
     lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_36, 0);
     lv_obj_center(ask_lbl);

@@ -95,6 +95,12 @@ echo radxa | sudo -S systemctl status tinkerclaw-voice
 echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
+### Dragon Stability
+- **Ethernet only** — WiFi disabled (`nmcli radio wifi off`), static IP 192.168.1.89 on enp1s0
+- **Stripped services** — gdm3, snapd, ollama, nanobot, rustdesk, fwupd all masked. Only tinkerclaw-* services run.
+- **ngrok tunnel** — `tinkerclaw-ngrok.service` maintains `tinkerbox.ngrok.dev` → localhost:3502
+- **Tab5 ngrok fallback** — voice.c tries local WS first, falls back to wss://tinkerbox.ngrok.dev:443
+
 ## Build & Flash
 ```bash
 # Always use ESP-IDF v5.5.2 — matches dependencies.lock

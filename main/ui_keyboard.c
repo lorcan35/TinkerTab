@@ -12,6 +12,7 @@
  */
 
 #include "ui_keyboard.h"
+#include "ui_voice.h"
 #include "config.h"
 #include "esp_log.h"
 #include <string.h>
@@ -164,8 +165,10 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_start(&a);
 
-    /* Hide trigger while keyboard is open */
+    /* Hide trigger and mic button while keyboard is open */
     lv_obj_add_flag(s_trigger_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *mic_btn = ui_voice_get_mic_btn();
+    if (mic_btn) lv_obj_add_flag(mic_btn, LV_OBJ_FLAG_HIDDEN);
 
     ESP_LOGI(TAG, "Keyboard shown");
 }
@@ -196,6 +199,10 @@ void ui_keyboard_hide(void)
     if (s_num_layer) {
         switch_layer(false);
     }
+
+    /* Restore mic button */
+    lv_obj_t *mic_btn = ui_voice_get_mic_btn();
+    if (mic_btn) lv_obj_clear_flag(mic_btn, LV_OBJ_FLAG_HIDDEN);
 
     ESP_LOGI(TAG, "Keyboard hiding");
 }

@@ -142,7 +142,9 @@ esp_err_t tab5_mode_switch(tab5_mode_t new_mode)
         wait_streams_stopped();
         break;
     case MODE_VOICE:
-        stop_voice();
+        /* Keep voice WS connected across screen transitions.
+         * Session survives going to Notes/Settings and back.
+         * Only disconnect on explicit voice_disconnect() call. */
         break;
     case MODE_IDLE:
         break;

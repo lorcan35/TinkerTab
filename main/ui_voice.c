@@ -1305,9 +1305,10 @@ static void dot_timer_cb(lv_timer_t *t)
 static void auto_hide_timer_cb(lv_timer_t *t)
 {
     s_hide_timer = NULL;
-    if (s_visible && (s_cur_state == VOICE_STATE_READY ||
-                      s_cur_state == VOICE_STATE_IDLE)) {
-        ESP_LOGI(TAG, "Auto-hiding overlay");
+    /* Only auto-hide on error/timeout (IDLE state).
+     * NEVER auto-hide from READY — user should see conversation + close manually. */
+    if (s_visible && s_cur_state == VOICE_STATE_IDLE) {
+        ESP_LOGI(TAG, "Auto-hiding overlay (error/timeout)");
         ui_voice_hide();
     }
 }
