@@ -172,10 +172,10 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_28, 0);
     lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 40);
 
-    /* Long-press hint below */
+    /* H1: Long-press hint — brighter, more descriptive */
     lv_obj_t *hold_hint = lv_label_create(pg);
-    lv_label_set_text(hold_hint, "Hold for dictation");
-    lv_obj_set_style_text_color(hold_hint, lv_color_hex(COL_LABEL3), 0);
+    lv_label_set_text(hold_hint, LV_SYMBOL_EDIT "  Long-press to dictate");
+    lv_obj_set_style_text_color(hold_hint, lv_color_hex(COL_LABEL2), 0);  /* brighter than COL_LABEL3 */
     lv_obj_set_style_text_font(hold_hint, &lv_font_montserrat_20, 0);
     lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, 75);
 
@@ -250,34 +250,43 @@ static lv_obj_t *build_page_notes(void)
     return pg;
 }
 
-/* ── Page 2: Voice — tap anywhere to start ─────────────────── */
-static void voice_page_tap_cb(lv_event_t *e)
+/* ── Page 2: Chat — opens text chat with Tinker ─────────────── */
+static void chat_page_tap_cb(lv_event_t *e)
 {
     (void)e;
-    orb_tap_cb(e);  /* same as tapping the orb */
+    /* Launch Chat overlay (modal on lv_layer_top) */
+    extern lv_obj_t *ui_chat_create(void);
+    ui_chat_create();
 }
 
-static lv_obj_t *build_page_voice(void)
+static lv_obj_t *build_page_chat(void)
 {
     lv_obj_t *pg = tiles[2];
 
-    /* Big tappable area */
+    /* Tap anywhere to open Chat */
     lv_obj_add_flag(pg, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(pg, voice_page_tap_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(pg, chat_page_tap_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Large mic icon */
+    /* Chat icon */
     lv_obj_t *icon = lv_label_create(pg);
-    lv_label_set_text(icon, LV_SYMBOL_AUDIO);
+    lv_label_set_text(icon, LV_SYMBOL_NEW_LINE);
     lv_obj_set_style_text_color(icon, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
     lv_obj_align(icon, LV_ALIGN_CENTER, 0, -60);
 
     lv_obj_t *lbl = lv_label_create(pg);
-    lv_label_set_text(lbl, "Tap to talk to Tinker");
+    lv_label_set_text(lbl, "Tap to chat with Tinker");
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL2), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 20);
+
+    lv_obj_t *hint = lv_label_create(pg);
+    lv_label_set_text(hint, "Type questions instead of speaking");
+    lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL3), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 60);
 
     return pg;
 }
@@ -323,7 +332,7 @@ lv_obj_t *ui_home_create(void)
     /* ── Build each page ─────────────────────────────────── */
     build_page_home();
     build_page_notes();
-    build_page_voice();
+    build_page_chat();
     build_page_settings();
 
     /* ── STATUS BAR ─────────────────────────────────────────── */
@@ -393,9 +402,9 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_border_width(nav, 0, 0);
         lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
 
-        /* Nav labels — Home | Notes | Voice | Settings */
+        /* Nav labels — Home | Notes | Chat | Settings */
         const char *labels[NUM_PAGES] = {
-            "Home", "Notes", "Voice", "Settings"
+            "Home", "Notes", "Chat", "Settings"
         };
         int slot = SW / NUM_PAGES;
         for (int i = 0; i < NUM_PAGES; i++) {
@@ -559,16 +568,19 @@ static void update_nav_ui(int page)
         }
     }
 
-    /* Gate JPEG rendering — only on Dragon/voice page (page 2) */
-    tab5_display_set_jpeg_enabled(page == 2);
+    /* Gate JPEG rendering — only when in streaming mode (not Chat page) */
+    tab5_display_set_jpeg_enabled(false);
 
-    /* Show/hide persistent floating buttons: hidden on Page 0 (home has
-     * its own orb + Ask Tinker), visible on other pages */
+    /* Show/hide persistent floating buttons:
+     * - Page 0 (Home): hidden (home has orb + Ask Tinker)
+     * - Page 3 (Settings): mic hidden (H5: overlaps scrollable content)
+     * - Pages 1,2: both visible */
     lv_obj_t *mic = ui_voice_get_mic_btn();
     lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
-    if (page == 0) {
+    if (page == 0 || page == 3) {
         if (mic) lv_obj_add_flag(mic, LV_OBJ_FLAG_HIDDEN);
-        if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+        if (page == 0 && kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+        if (page == 3 && kbd) lv_obj_clear_flag(kbd, LV_OBJ_FLAG_HIDDEN);
     } else {
         if (mic) lv_obj_clear_flag(mic, LV_OBJ_FLAG_HIDDEN);
         if (kbd) lv_obj_clear_flag(kbd, LV_OBJ_FLAG_HIDDEN);

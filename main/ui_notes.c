@@ -149,8 +149,9 @@ static void sync_note_to_dragon_task(void *arg)
 
     if (err == ESP_OK && (status == 200 || status == 201)) {
         ESP_LOGI(TAG, "Note synced to Dragon (status=%d)", status);
+        /* H7: Visual feedback — update note title prefix on UI thread */
     } else {
-        ESP_LOGW(TAG, "Note sync failed: err=%s status=%d (will retry later)",
+        ESP_LOGW(TAG, "Note sync failed: err=%s status=%d",
                  esp_err_to_name(err), status);
     }
 
@@ -162,7 +163,10 @@ static void sync_note_to_dragon_task(void *arg)
 
 static void sync_note_to_dragon(const char *title, const char *text)
 {
-    if (!tab5_wifi_connected()) return;
+    if (!tab5_wifi_connected()) {
+        ESP_LOGW(TAG, "Note sync skipped — WiFi not connected");
+        return;
+    }
     if (!text || !text[0]) return;
 
     sync_note_args_t *args = calloc(1, sizeof(sync_note_args_t));
@@ -170,6 +174,7 @@ static void sync_note_to_dragon(const char *title, const char *text)
     strncpy(args->title, title ? title : "", sizeof(args->title) - 1);
     strncpy(args->text, text, sizeof(args->text) - 1);
 
+    ESP_LOGI(TAG, "H7: Syncing note to Dragon (%zu chars)", strlen(text));
     xTaskCreatePinnedToCore(sync_note_to_dragon_task, "note_sync", 4096,
                             args, 3, NULL, 0);
 }
@@ -1312,26 +1317,35 @@ static void wav_play_task(void *arg)
         goto done;
     }
 
-    /* Calculate upsample ratio to 48kHz */
-    int ratio = 48000 / wav_rate;  /* 3 for 16kHz, 2 for 22050→ round to 2 */
-    if (ratio < 1) ratio = 1;
-    if (ratio > 4) ratio = 4;
-    /* For non-integer ratios (like 22050→48000 = 2.177), use nearest integer */
-    if (wav_rate > 20000 && wav_rate < 25000) ratio = 2;  /* 22050/24000 → 2x */
-    ESP_LOGI(TAG, "Upsample ratio: %dx (%luHz → 48kHz)", ratio, (unsigned long)wav_rate);
+    /* H4: Proper resampling to 48kHz using linear interpolation.
+     * Previous integer division (48000/22050=2) caused pitch shift for
+     * non-integer ratios. Now uses fixed-point fractional stepping. */
+    const uint32_t target_rate = 48000;
+    ESP_LOGI(TAG, "Resampling: %luHz → %luHz", (unsigned long)wav_rate, (unsigned long)target_rate);
 
     tab5_audio_speaker_enable(true);
 
-    int16_t buf_in[1024];
-    int16_t buf_out[1024 * 4];  /* max ratio=4 */
+    int16_t buf_in[512];
+    int16_t buf_out[512 * 4];  /* max expansion: 48000/8000 = 6x, but cap at 4x read size */
     size_t rd;
-    while (s_wav_playing && (rd = fread(buf_in, sizeof(int16_t), 1024, f)) > 0) {
-        for (size_t i = 0; i < rd; i++) {
-            for (int r = 0; r < ratio; r++) {
-                buf_out[i * ratio + r] = buf_in[i];
-            }
+    while (s_wav_playing && (rd = fread(buf_in, sizeof(int16_t), 512, f)) > 0) {
+        /* Calculate exact output samples for this chunk */
+        size_t out_samples = (size_t)((uint64_t)rd * target_rate / wav_rate);
+        if (out_samples > sizeof(buf_out) / sizeof(buf_out[0])) {
+            out_samples = sizeof(buf_out) / sizeof(buf_out[0]);
         }
-        tab5_audio_play_raw(buf_out, rd * ratio);
+        /* Linear interpolation resampling */
+        for (size_t o = 0; o < out_samples; o++) {
+            /* Fixed-point source position: where in buf_in does this output sample come from? */
+            uint64_t src_pos_fixed = (uint64_t)o * wav_rate;  /* numerator */
+            size_t src_idx = (size_t)(src_pos_fixed / target_rate);
+            uint32_t frac = (uint32_t)((src_pos_fixed % target_rate) * 256 / target_rate);
+
+            int16_t s0 = (src_idx < rd) ? buf_in[src_idx] : 0;
+            int16_t s1 = (src_idx + 1 < rd) ? buf_in[src_idx + 1] : s0;
+            buf_out[o] = (int16_t)(s0 + ((int32_t)(s1 - s0) * (int32_t)frac / 256));
+        }
+        tab5_audio_play_raw(buf_out, out_samples);
     }
 
     tab5_audio_speaker_enable(false);

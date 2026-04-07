@@ -876,10 +876,15 @@ static void show_state_listening(void)
     set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_60);
     set_orb_size(ORB_SZ_LISTEN);
 
-    /* Status text */
-    lv_label_set_text(s_lbl_status, "Listening...");
+    /* H6: Show clear mode indicator — ASK (30s) or DICTATE (unlimited) */
+    if (voice_get_mode() == VOICE_MODE_DICTATE) {
+        lv_label_set_text(s_lbl_status, "DICTATION");
+    } else {
+        lv_label_set_text(s_lbl_status, "LISTENING");
+    }
     lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
+    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
+    lv_obj_set_style_text_letter_space(s_lbl_status, 4, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
 
     /* Hide transcript, dots, wave, chat */

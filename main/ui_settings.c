@@ -19,6 +19,7 @@
 #include "settings.h"
 #include "audio.h"
 #include "voice.h"
+#include "ui_keyboard.h"
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -68,6 +69,9 @@ static lv_obj_t *s_lbl_orient     = NULL;
 /* NTP sync spinner (created on demand, removed on completion) */
 static lv_obj_t *s_ntp_spinner    = NULL;
 static lv_obj_t *s_ntp_btn_label  = NULL;
+
+/* H3: Dragon host text input */
+static lv_obj_t *s_dragon_ta      = NULL;
 
 /* Brightness slider tracks the current value */
 static lv_obj_t *s_slider_bright  = NULL;
@@ -172,6 +176,27 @@ static void cb_wake_word(lv_event_t *e)
         voice_start_always_listening();
     } else {
         voice_stop_always_listening();
+    }
+}
+
+/* H3: Dragon host — save on defocus/return key */
+static void cb_dragon_host_done(lv_event_t *e)
+{
+    (void)e;
+    if (!s_dragon_ta) return;
+    const char *txt = lv_textarea_get_text(s_dragon_ta);
+    if (txt && txt[0]) {
+        tab5_settings_set_dragon_host(txt);
+        ESP_LOGI(TAG, "Dragon host saved: %s", txt);
+    }
+    ui_keyboard_hide();
+}
+
+static void cb_dragon_host_click(lv_event_t *e)
+{
+    (void)e;
+    if (s_dragon_ta) {
+        ui_keyboard_show(s_dragon_ta);
     }
 }
 
@@ -455,6 +480,34 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_ntp_btn_label, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_18, 0);
         lv_obj_center(s_ntp_btn_label);
+
+        /* H3: Dragon host input — editable text field */
+        lv_obj_t *row_dragon = make_row(sec);
+        add_row_label(row_dragon, "Dragon Host");
+
+        s_dragon_ta = lv_textarea_create(row_dragon);
+        lv_obj_set_size(s_dragon_ta, 280, 48);
+        lv_textarea_set_one_line(s_dragon_ta, true);
+        lv_textarea_set_max_length(s_dragon_ta, 63);
+        lv_obj_set_style_bg_color(s_dragon_ta, lv_color_hex(0x1E1E2E), 0);
+        lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_dragon_ta, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
+        lv_obj_set_style_border_color(s_dragon_ta, COL_ACCENT, 0);
+        lv_obj_set_style_radius(s_dragon_ta, 6, 0);
+        lv_obj_set_style_pad_left(s_dragon_ta, 10, 0);
+        lv_textarea_set_placeholder_text(s_dragon_ta, "192.168.1.89");
+
+        /* Load current value from NVS */
+        char dhost[64];
+        tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+        if (dhost[0]) {
+            lv_textarea_set_text(s_dragon_ta, dhost);
+        }
+
+        lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
+        lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
+        lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
     }
 
     /* ────────────────────────────────────────────────────────────────
