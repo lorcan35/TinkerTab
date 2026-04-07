@@ -19,6 +19,7 @@
 #include "settings.h"
 #include "audio.h"
 #include "voice.h"
+#include "ota.h"
 #include "ui_keyboard.h"
 
 #include "esp_log.h"
@@ -72,6 +73,9 @@ static lv_obj_t *s_ntp_btn_label  = NULL;
 
 /* H3: Dragon host text input */
 static lv_obj_t *s_dragon_ta      = NULL;
+
+/* OTA update button label (updated during check) */
+static lv_obj_t *s_ota_btn_label  = NULL;
 
 /* Brightness slider tracks the current value */
 static lv_obj_t *s_slider_bright  = NULL;
@@ -181,6 +185,40 @@ static void cb_wake_word(lv_event_t *e)
     } else {
         voice_stop_always_listening();
     }
+}
+
+/* OTA check background task */
+static void ota_check_task(void *arg)
+{
+    tab5_ota_info_t info;
+    esp_err_t err = tab5_ota_check(&info);
+
+    if (s_destroying) { vTaskDelete(NULL); return; }
+
+    tab5_ui_lock();
+    if (s_destroying || !s_ota_btn_label) { tab5_ui_unlock(); vTaskDelete(NULL); return; }
+
+    if (err != ESP_OK) {
+        lv_label_set_text(s_ota_btn_label, "Check failed");
+    } else if (info.available) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), LV_SYMBOL_OK " v%s available!", info.version);
+        lv_label_set_text(s_ota_btn_label, buf);
+        /* TODO: Add "Apply" button that calls tab5_ota_apply(info.url) */
+    } else {
+        lv_label_set_text(s_ota_btn_label, LV_SYMBOL_OK " Up to date");
+    }
+    tab5_ui_unlock();
+    vTaskDelete(NULL);
+}
+
+static void cb_ota_check(lv_event_t *e)
+{
+    (void)e;
+    if (s_ota_btn_label) {
+        lv_label_set_text(s_ota_btn_label, "Checking...");
+    }
+    xTaskCreate(ota_check_task, "ota_check", 8192, NULL, 5, NULL);
 }
 
 /* M3: WiFi setup — launches existing wifi picker screen */
@@ -678,7 +716,25 @@ lv_obj_t *ui_settings_create(void)
         /* Firmware */
         lv_obj_t *row_fw = make_row(sec);
         add_row_label(row_fw, "Firmware");
-        add_row_value(row_fw, "TinkerTab v1.0.0");
+        char fw_str[48];
+        snprintf(fw_str, sizeof(fw_str), "TinkerTab v%s (%s)", TAB5_FIRMWARE_VER, tab5_ota_current_partition());
+        add_row_value(row_fw, fw_str);
+
+        /* OTA Update */
+        lv_obj_t *row_ota = make_row(sec);
+        add_row_label(row_ota, "Updates");
+
+        lv_obj_t *ota_btn = lv_button_create(row_ota);
+        lv_obj_set_size(ota_btn, 220, 48);
+        lv_obj_set_style_bg_color(ota_btn, COL_ACCENT, 0);
+        lv_obj_set_style_radius(ota_btn, 6, 0);
+        lv_obj_add_event_cb(ota_btn, cb_ota_check, LV_EVENT_CLICKED, NULL);
+
+        s_ota_btn_label = lv_label_create(ota_btn);
+        lv_label_set_text(s_ota_btn_label, LV_SYMBOL_DOWNLOAD " Check Update");
+        lv_obj_set_style_text_color(s_ota_btn_label, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_ota_btn_label, &lv_font_montserrat_16, 0);
+        lv_obj_center(s_ota_btn_label);
 
         /* Free Heap */
         lv_obj_t *row_heap = make_row(sec);

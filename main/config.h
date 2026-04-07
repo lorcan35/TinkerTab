@@ -170,8 +170,15 @@
 // ---------------------------------------------------------------------------
 // Firmware identity
 // ---------------------------------------------------------------------------
-#define TAB5_FIRMWARE_VER     "0.5.0"
+#define TAB5_FIRMWARE_VER     "0.6.0"
 #define TAB5_PLATFORM         "esp32p4-tab5"
+
+// ---------------------------------------------------------------------------
+// OTA — Over-the-air firmware updates via Dragon
+// ---------------------------------------------------------------------------
+#define TAB5_OTA_CHECK_PATH       "/api/ota/check"
+#define TAB5_OTA_CHECK_INTERVAL_MS 3600000  /* 1 hour between auto-checks */
+#define TAB5_OTA_PORT             3502      /* same as voice server */
 
 // ---------------------------------------------------------------------------
 // Voice — Dragon voice server

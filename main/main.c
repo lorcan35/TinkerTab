@@ -48,6 +48,7 @@
 #include "settings.h"
 #include "debug_server.h"
 #include "voice.h"
+#include "ota.h"
 #include "mode_manager.h"
 #include "service_registry.h"
 
@@ -403,6 +404,11 @@ void app_main(void)
             }
         }
     }
+
+    // OTA: Mark firmware valid after successful boot (prevents auto-rollback).
+    // Run early so even if later init fails, we don't rollback a working base.
+    ESP_LOGI(TAG, "OTA: Running on partition '%s', marking valid...", tab5_ota_current_partition());
+    tab5_ota_mark_valid();
 
     // Print service status table
     tab5_services_print_status();
