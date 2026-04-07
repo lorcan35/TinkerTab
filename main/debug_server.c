@@ -15,6 +15,7 @@
 #include "sdcard.h"
 #include "afe.h"
 #include "voice.h"
+#include "ota.h"
 #include "ui_core.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
@@ -737,6 +738,72 @@ static esp_err_t wake_handler(httpd_req_t *req)
     return ret;
 }
 
+/* ── OTA debug endpoints ──────────────────────────────────────────────── */
+
+static esp_err_t ota_check_handler(httpd_req_t *req)
+{
+    tab5_ota_info_t info;
+    esp_err_t err = tab5_ota_check(&info);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "current", TAB5_FIRMWARE_VER);
+    cJSON_AddStringToObject(root, "partition", tab5_ota_current_partition());
+    if (err == ESP_OK) {
+        cJSON_AddBoolToObject(root, "update_available", info.available);
+        if (info.available) {
+            cJSON_AddStringToObject(root, "new_version", info.version);
+            cJSON_AddStringToObject(root, "url", info.url);
+        }
+    } else {
+        cJSON_AddStringToObject(root, "error", esp_err_to_name(err));
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+static void ota_apply_task(void *arg)
+{
+    char *url = (char *)arg;
+    ESP_LOGI("ota", "Applying OTA from: %s", url);
+    esp_err_t err = tab5_ota_apply(url);  /* reboots on success */
+    /* If we get here, it failed */
+    ESP_LOGE("ota", "OTA apply failed: %s", esp_err_to_name(err));
+    free(url);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t ota_apply_handler(httpd_req_t *req)
+{
+    /* Check for update first */
+    tab5_ota_info_t info;
+    esp_err_t err = tab5_ota_check(&info);
+    if (err != ESP_OK || !info.available) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"no update available\"}");
+        return ESP_OK;
+    }
+
+    /* Spawn OTA task — can't do it in HTTP handler (blocks server) */
+    char *url = strdup(info.url);
+    if (url) {
+        xTaskCreate(ota_apply_task, "ota_apply", 8192, url, 5, NULL);
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    char resp[512];
+    snprintf(resp, sizeof(resp),
+             "{\"status\":\"updating\",\"version\":\"%s\",\"url\":\"%s\"}",
+             info.version, info.url);
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -751,7 +818,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 14;
+    config.max_uri_handlers = 16;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -796,6 +863,12 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_wake = {
         .uri = "/wake", .method = HTTP_POST, .handler = wake_handler
     };
+    const httpd_uri_t uri_ota_check = {
+        .uri = "/ota/check", .method = HTTP_GET, .handler = ota_check_handler
+    };
+    const httpd_uri_t uri_ota_apply = {
+        .uri = "/ota/apply", .method = HTTP_POST, .handler = ota_apply_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -808,6 +881,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_crashlog);
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_wake);
+    httpd_register_uri_handler(server, &uri_ota_check);
+    httpd_register_uri_handler(server, &uri_ota_apply);
 
     /* Log the URL */
     char ip[20];
