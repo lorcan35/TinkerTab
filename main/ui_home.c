@@ -192,38 +192,50 @@ static lv_obj_t *build_page_home(void)
     lv_anim_start(&orb_anim);
     orb_anim_on = true;
 
-    /* ── Last Note Card ────────────────────────────────────── */
-    last_note_card = lv_obj_create(pg);
-    lv_obj_set_size(last_note_card, SW - 48, 160);
-    lv_obj_align(last_note_card, LV_ALIGN_CENTER, 0, 240);
-    lv_obj_set_style_bg_color(last_note_card, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_bg_opa(last_note_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(last_note_card, 24, 0);
-    lv_obj_set_style_border_width(last_note_card, 0, 0);
-    lv_obj_set_style_pad_hor(last_note_card, 32, 0);
-    lv_obj_clear_flag(last_note_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(last_note_card, 20);
-    lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
+    /* ── Bottom layout (from bottom up):
+     *   Nav bar:        120px
+     *   Page dots:       40px
+     *   Camera+Files:    80px  (proper touch targets!)
+     *   Ask Tinker:      88px
+     *   Note card:      100px
+     * ─────────────────────────────────────────── */
 
-    lv_obj_t *note_icon = lv_label_create(last_note_card);
-    lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
-    lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_28, 0);
-    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 12);
+    /* Camera + Files — FULL WIDTH buttons, proper 80px height */
+    #define BTN_GAP 12
+    int qbtn_w = (SW - 48 - BTN_GAP) / 2;
 
-    lbl_last_note = lv_label_create(last_note_card);
-    lv_label_set_text(lbl_last_note, "Tap to see notes");
-    lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_28, 0);
-    lv_obj_set_width(lbl_last_note, SW - 88);
-    lv_label_set_long_mode(lbl_last_note, LV_LABEL_LONG_DOT);
-    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -12);
+    lv_obj_t *cam_btn = lv_button_create(pg);
+    lv_obj_set_size(cam_btn, qbtn_w, 80);
+    lv_obj_align(cam_btn, LV_ALIGN_BOTTOM_LEFT, 24, -(NAV_H + 44));
+    lv_obj_set_style_bg_color(cam_btn, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_radius(cam_btn, 20, 0);
+    lv_obj_set_style_border_width(cam_btn, 1, 0);
+    lv_obj_set_style_border_color(cam_btn, lv_color_hex(0x333344), 0);
+    lv_obj_add_event_cb(cam_btn, cb_camera_launch, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cam_lbl = lv_label_create(cam_btn);
+    lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
+    lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(cam_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_center(cam_lbl);
 
-    /* ── Ask Tinker Button ──────────────────────── */
+    lv_obj_t *files_btn = lv_button_create(pg);
+    lv_obj_set_size(files_btn, qbtn_w, 80);
+    lv_obj_align(files_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -(NAV_H + 44));
+    lv_obj_set_style_bg_color(files_btn, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_radius(files_btn, 20, 0);
+    lv_obj_set_style_border_width(files_btn, 1, 0);
+    lv_obj_set_style_border_color(files_btn, lv_color_hex(0x333344), 0);
+    lv_obj_add_event_cb(files_btn, cb_files_launch, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *files_lbl = lv_label_create(files_btn);
+    lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
+    lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(files_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_center(files_lbl);
+
+    /* Ask Tinker — above Camera/Files */
     lv_obj_t *ask_btn = lv_button_create(pg);
-    lv_obj_set_size(ask_btn, SW - 48, 96);
-    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 52));
+    lv_obj_set_size(ask_btn, SW - 48, 88);
+    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 44 + 80 + 12));
     lv_obj_set_style_bg_color(ask_btn, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(ask_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(ask_btn, 24, 0);
@@ -236,35 +248,33 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_36, 0);
     lv_obj_center(ask_lbl);
 
-    /* S1+S2: Quick-launch buttons for Camera + Files */
-    int qbtn_w = (SW - 48 - 12) / 2;  /* half width with gap */
-    int qbtn_y = -(NAV_H + 10);       /* just above nav bar */
+    /* Last Note Card — above Ask Tinker, compact */
+    last_note_card = lv_obj_create(pg);
+    lv_obj_set_size(last_note_card, SW - 48, 120);
+    lv_obj_align(last_note_card, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 44 + 80 + 12 + 88 + 12));
+    lv_obj_set_style_bg_color(last_note_card, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_bg_opa(last_note_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(last_note_card, 20, 0);
+    lv_obj_set_style_border_width(last_note_card, 0, 0);
+    lv_obj_set_style_pad_hor(last_note_card, 24, 0);
+    lv_obj_clear_flag(last_note_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(last_note_card, 10);
+    lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *cam_btn = lv_button_create(pg);
-    lv_obj_set_size(cam_btn, qbtn_w, 48);
-    lv_obj_align(cam_btn, LV_ALIGN_BOTTOM_LEFT, 24, qbtn_y);
-    lv_obj_set_style_bg_color(cam_btn, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_radius(cam_btn, 12, 0);
-    lv_obj_set_style_border_width(cam_btn, 0, 0);
-    lv_obj_add_event_cb(cam_btn, cb_camera_launch, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *cam_lbl = lv_label_create(cam_btn);
-    lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
-    lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(cam_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_center(cam_lbl);
+    lv_obj_t *note_icon = lv_label_create(last_note_card);
+    lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
+    lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
+    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_20, 0);
+    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 8);
 
-    lv_obj_t *files_btn = lv_button_create(pg);
-    lv_obj_set_size(files_btn, qbtn_w, 48);
-    lv_obj_align(files_btn, LV_ALIGN_BOTTOM_RIGHT, -24, qbtn_y);
-    lv_obj_set_style_bg_color(files_btn, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_radius(files_btn, 12, 0);
-    lv_obj_set_style_border_width(files_btn, 0, 0);
-    lv_obj_add_event_cb(files_btn, cb_files_launch, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *files_lbl = lv_label_create(files_btn);
-    lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
-    lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(files_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_center(files_lbl);
+    lbl_last_note = lv_label_create(last_note_card);
+    lv_label_set_text(lbl_last_note, "Tap to see notes");
+    lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_24, 0);
+    lv_obj_set_width(lbl_last_note, SW - 96);
+    lv_label_set_long_mode(lbl_last_note, LV_LABEL_LONG_DOT);
+    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -8);
 
     return pg;
 }
