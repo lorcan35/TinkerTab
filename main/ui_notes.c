@@ -1538,7 +1538,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     /* Row 1: timestamp + badge + action buttons (all in one line) */
     lv_obj_t *header = lv_obj_create(card);
     lv_obj_remove_style_all(header);
-    lv_obj_set_size(header, lv_pct(100), 36);
+    lv_obj_set_size(header, lv_pct(100), 44);
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Timestamp */
@@ -1576,7 +1576,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 
     /* Delete button — small, top-right */
     lv_obj_t *del = lv_button_create(header);
-    lv_obj_set_size(del, 48, 36);
+    lv_obj_set_size(del, 56, 44);
     lv_obj_align(del, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(del, lv_color_hex(COL_RED), 0);
     lv_obj_set_style_bg_opa(del, LV_OPA_60, 0);
@@ -1593,7 +1593,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     /* Play button — next to delete, only for notes with audio */
     if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
         lv_obj_t *play = lv_button_create(header);
-        lv_obj_set_size(play, 48, 36);
+        lv_obj_set_size(play, 56, 44);
         lv_obj_align(play, LV_ALIGN_RIGHT_MID, -56, 0);
         lv_obj_set_style_bg_color(play, lv_color_hex(COL_CYAN), 0);
         lv_obj_set_style_bg_opa(play, LV_OPA_60, 0);
@@ -1756,7 +1756,7 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_center(ticon);
 
     /* M2: Search bar */
-    #define SEARCH_H 56
+    #define SEARCH_H 64
     s_search_ta = lv_textarea_create(s_screen);
     lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
     lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + 160 + 4);

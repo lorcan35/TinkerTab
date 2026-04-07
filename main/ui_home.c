@@ -309,26 +309,36 @@ static lv_obj_t *build_page_chat(void)
     lv_obj_add_flag(pg, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(pg, chat_page_tap_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Chat icon */
-    lv_obj_t *icon = lv_label_create(pg);
+    /* Chat visual — big tappable card in center */
+    lv_obj_t *card = lv_obj_create(pg);
+    lv_obj_set_size(card, SW - 80, 280);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_set_style_bg_color(card, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 32, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x333344), 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *icon = lv_label_create(card);
     lv_label_set_text(icon, LV_SYMBOL_NEW_LINE);
     lv_obj_set_style_text_color(icon, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
-    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -60);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 32);
 
-    lv_obj_t *lbl = lv_label_create(pg);
-    lv_label_set_text(lbl, "Tap to chat with Tinker");
-    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
+    lv_obj_t *lbl = lv_label_create(card);
+    lv_label_set_text(lbl, "Chat with Tinker");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_36, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 10);
 
-    lv_obj_t *hint = lv_label_create(pg);
+    lv_obj_t *hint = lv_label_create(card);
     lv_label_set_text(hint, "Type questions instead of speaking");
-    lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL3), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 60);
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
     return pg;
 }
