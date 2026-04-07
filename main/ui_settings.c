@@ -21,6 +21,7 @@
 #include "voice.h"
 #include "ota.h"
 #include "ui_keyboard.h"
+#include "cJSON.h"
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -157,18 +158,82 @@ static void cb_autorotate(lv_event_t *e)
     }
 }
 
-static void cb_cloud_mode(lv_event_t *e)
+/* Three-tier voice mode + LLM model picker */
+static lv_obj_t *s_dd_voice_mode = NULL;
+static lv_obj_t *s_dd_llm_model = NULL;
+
+/* LLM model IDs matching dropdown order */
+static const char *s_llm_model_ids[] = {
+    "",                                    /* Local NPU — empty = use local */
+    "",                                    /* Local Ollama — empty = use local */
+    "anthropic/claude-3-haiku",
+    "anthropic/claude-sonnet-4-20250514",
+    "openai/gpt-4o-mini",
+};
+
+static void send_voice_config(void)
 {
-    lv_obj_t *sw = lv_event_get_target(e);
-    lv_obj_t *hint = lv_event_get_user_data(e);
-    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    tab5_settings_set_cloud_mode(on ? 1 : 0);
-    ESP_LOGI(TAG, "Cloud mode %s", on ? "ON" : "OFF");
-    if (hint) {
-        lv_label_set_text(hint, on ? "On" : "Off");
-        lv_obj_set_style_text_color(hint, on ? COL_GREEN : COL_TEXT_DIM, 0);
+    uint8_t mode = tab5_settings_get_voice_mode();
+    char model[64] = {0};
+    tab5_settings_get_llm_model(model, sizeof(model));
+    ESP_LOGI(TAG, "Sending voice config: mode=%d model=%s", mode, model);
+
+    if (!voice_is_connected()) {
+        ESP_LOGW(TAG, "Voice not connected — config will apply on reconnect");
+        return;
     }
-    voice_send_cloud_mode(on);
+
+    /* Build config_update JSON */
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "config_update");
+    cJSON_AddNumberToObject(msg, "voice_mode", mode);
+    if (mode == 2 && model[0]) {
+        cJSON_AddStringToObject(msg, "llm_model", model);
+    }
+    char *json = cJSON_PrintUnformatted(msg);
+    cJSON_Delete(msg);
+    if (json) {
+        extern esp_err_t voice_send_text_raw(const char *msg);
+        /* Use ws_send_text via voice module — but we don't have direct access.
+         * Use voice_send_cloud_mode as a bridge for now, or add new API. */
+        voice_send_cloud_mode(mode >= 1);  /* triggers config_update on Dragon */
+        /* TODO: Replace with voice_send_config(mode, model) for full three-tier */
+        cJSON_free(json);
+    }
+}
+
+static void cb_voice_mode(lv_event_t *e)
+{
+    (void)e;
+    if (!s_dd_voice_mode) return;
+    uint8_t mode = lv_dropdown_get_selected(s_dd_voice_mode);
+    tab5_settings_set_voice_mode(mode);
+    ESP_LOGI(TAG, "Voice mode: %d (%s)", mode, mode == 0 ? "local" : mode == 1 ? "hybrid" : "cloud");
+
+    /* Enable/disable model dropdown based on mode */
+    if (s_dd_llm_model) {
+        if (mode == 2) {
+            lv_obj_clear_state(s_dd_llm_model, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_COVER, 0);
+        } else {
+            lv_obj_add_state(s_dd_llm_model, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_40, 0);
+        }
+    }
+
+    send_voice_config();
+}
+
+static void cb_llm_model(lv_event_t *e)
+{
+    (void)e;
+    if (!s_dd_llm_model) return;
+    uint32_t sel = lv_dropdown_get_selected(s_dd_llm_model);
+    if (sel < sizeof(s_llm_model_ids)/sizeof(s_llm_model_ids[0])) {
+        tab5_settings_set_llm_model(s_llm_model_ids[sel]);
+        ESP_LOGI(TAG, "LLM model: %s", s_llm_model_ids[sel]);
+        send_voice_config();
+    }
 }
 
 static void cb_wake_word(lv_event_t *e)
@@ -622,33 +687,51 @@ lv_obj_t *ui_settings_create(void)
     {
         lv_obj_t *sec = make_section(s_scroll, "Voice");
 
-        /* Cloud Mode row */
-        lv_obj_t *row_cloud = make_row(sec);
-        add_row_label(row_cloud, "Cloud Mode");
+        /* Voice Mode dropdown (three-tier: Local / Hybrid / Full Cloud) */
+        lv_obj_t *row_mode = make_row(sec);
+        add_row_label(row_mode, "Mode");
 
-        lv_obj_t *cloud_right = lv_obj_create(row_cloud);
-        lv_obj_remove_style_all(cloud_right);
-        lv_obj_set_size(cloud_right, LV_SIZE_CONTENT, 48);
-        lv_obj_set_flex_flow(cloud_right, LV_FLEX_FLOW_ROW);
-        lv_obj_set_style_flex_cross_place(cloud_right, LV_FLEX_ALIGN_CENTER, 0);
-        lv_obj_set_style_pad_gap(cloud_right, 12, 0);
+        s_dd_voice_mode = lv_dropdown_create(row_mode);
+        lv_dropdown_set_options(s_dd_voice_mode, "Local\nHybrid\nFull Cloud");
+        lv_obj_set_size(s_dd_voice_mode, 200, 48);
+        lv_obj_set_style_bg_color(s_dd_voice_mode, lv_color_hex(0x1E1E2E), 0);
+        lv_obj_set_style_text_color(s_dd_voice_mode, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_dd_voice_mode, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_border_width(s_dd_voice_mode, 1, 0);
+        lv_obj_set_style_border_color(s_dd_voice_mode, COL_ACCENT, 0);
+        lv_obj_set_style_radius(s_dd_voice_mode, 6, 0);
+        lv_dropdown_set_selected(s_dd_voice_mode, tab5_settings_get_voice_mode());
+        lv_obj_add_event_cb(s_dd_voice_mode, cb_voice_mode, LV_EVENT_VALUE_CHANGED, NULL);
 
-        lv_obj_t *cloud_hint = lv_label_create(cloud_right);
-        lv_label_set_text(cloud_hint,
-            tab5_settings_get_cloud_mode() ? "On" : "Off");
-        lv_obj_set_style_text_color(cloud_hint,
-            tab5_settings_get_cloud_mode() ? COL_GREEN : COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(cloud_hint, &lv_font_montserrat_18, 0);
+        /* AI Model dropdown (only active in Full Cloud mode) */
+        lv_obj_t *row_model = make_row(sec);
+        add_row_label(row_model, "AI Model");
 
-        lv_obj_t *sw_cloud = lv_switch_create(cloud_right);
-        lv_obj_set_size(sw_cloud, 60, 36);
-        lv_obj_set_style_bg_color(sw_cloud, lv_color_hex(0x334155), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(sw_cloud, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(sw_cloud, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-        if (tab5_settings_get_cloud_mode()) {
-            lv_obj_add_state(sw_cloud, LV_STATE_CHECKED);
+        s_dd_llm_model = lv_dropdown_create(row_model);
+        lv_dropdown_set_options(s_dd_llm_model,
+            "Local NPU\nLocal Ollama\nClaude Haiku\nClaude Sonnet\nGPT-4o mini");
+        lv_obj_set_size(s_dd_llm_model, 240, 48);
+        lv_obj_set_style_bg_color(s_dd_llm_model, lv_color_hex(0x1E1E2E), 0);
+        lv_obj_set_style_text_color(s_dd_llm_model, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(s_dd_llm_model, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_border_width(s_dd_llm_model, 1, 0);
+        lv_obj_set_style_border_color(s_dd_llm_model, COL_ACCENT, 0);
+        lv_obj_set_style_radius(s_dd_llm_model, 6, 0);
+        /* Set selected based on saved model */
+        char saved_model[64] = {0};
+        tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
+        for (int i = 0; i < 5; i++) {
+            if (s_llm_model_ids[i][0] && strcmp(s_llm_model_ids[i], saved_model) == 0) {
+                lv_dropdown_set_selected(s_dd_llm_model, i);
+                break;
+            }
         }
-        lv_obj_add_event_cb(sw_cloud, cb_cloud_mode, LV_EVENT_VALUE_CHANGED, cloud_hint);
+        lv_obj_add_event_cb(s_dd_llm_model, cb_llm_model, LV_EVENT_VALUE_CHANGED, NULL);
+        /* Disable model dropdown unless in Full Cloud mode */
+        if (tab5_settings_get_voice_mode() != 2) {
+            lv_obj_add_state(s_dd_llm_model, LV_STATE_DISABLED);
+            lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_40, 0);
+        }
 
         /* -- Wake Word toggle -- */
         lv_obj_t *wake_row = make_row(sec);

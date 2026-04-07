@@ -566,13 +566,30 @@ static void handle_text_message(const char *data, int len)
     } else if (strcmp(type_str, "pong") == 0) {
         /* Dragon keepalive response — no action needed */
     } else if (strcmp(type_str, "config_update") == 0) {
+        /* Check for error (auto-fallback notification from Dragon) */
+        cJSON *error = cJSON_GetObjectItem(root, "error");
+        if (cJSON_IsString(error) && error->valuestring[0]) {
+            ESP_LOGW(TAG, "Config update error from Dragon: %s", error->valuestring);
+            /* Auto-disable: revert to local mode */
+            tab5_settings_set_voice_mode(0);
+            voice_set_state(VOICE_STATE_READY, error->valuestring);
+        }
+        /* Normal ACK: persist voice_mode */
+        cJSON *vmode = cJSON_GetObjectItem(root, "voice_mode");
+        if (cJSON_IsNumber(vmode)) {
+            uint8_t mode = (uint8_t)vmode->valueint;
+            tab5_settings_set_voice_mode(mode);
+            ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
+        }
+        /* Backward compat: cloud_mode bool */
         cJSON *config = cJSON_GetObjectItem(root, "config");
         if (config) {
             cJSON *cloud = cJSON_GetObjectItem(config, "cloud_mode");
             if (cJSON_IsBool(cloud)) {
                 bool is_cloud = cJSON_IsTrue(cloud);
-                tab5_settings_set_cloud_mode(is_cloud ? 1 : 0);
-                ESP_LOGI(TAG, "Config update: cloud_mode=%d (persisted)", is_cloud);
+                if (!cJSON_IsNumber(vmode)) {
+                    tab5_settings_set_voice_mode(is_cloud ? 1 : 0);
+                }
             }
         }
     } else {

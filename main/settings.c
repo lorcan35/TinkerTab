@@ -229,16 +229,27 @@ esp_err_t tab5_settings_set_volume(uint8_t vol)
     return set_u8(KEY_VOLUME, vol);
 }
 
-/* ── Cloud mode ──────────────────────────────────────────────────────── */
+/* ── Voice mode (three-tier) ──────────────────────────────────────────── */
 
-uint8_t tab5_settings_get_cloud_mode(void)
+uint8_t tab5_settings_get_voice_mode(void)
 {
-    return get_u8("cloud", 0);
+    return get_u8("vmode", 0);  /* 0=local, 1=hybrid, 2=cloud */
 }
 
-esp_err_t tab5_settings_set_cloud_mode(uint8_t enabled)
+esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 {
-    return set_u8("cloud", enabled ? 1 : 0);
+    if (mode > 2) mode = 0;
+    return set_u8("vmode", mode);
+}
+
+esp_err_t tab5_settings_get_llm_model(char *buf, size_t len)
+{
+    return get_str("llm_mdl", buf, len, "anthropic/claude-3-haiku");
+}
+
+esp_err_t tab5_settings_set_llm_model(const char *model)
+{
+    return set_str("llm_mdl", model);
 }
 
 /* ── Wake word ──────────────────────────────────────────────────────── */

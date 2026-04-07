@@ -63,11 +63,19 @@ esp_err_t tab5_settings_get_hardware_id(char *buf, size_t len);
 esp_err_t tab5_settings_get_session_id(char *buf, size_t len);
 esp_err_t tab5_settings_set_session_id(const char *session_id);
 
-/* ── Cloud mode ──────────────────────────────────────────────────────── */
+/* ── Voice mode (three-tier) ──────────────────────────────────────────── */
 
-/** 0 = local (default), 1 = full cloud via OpenRouter */
-uint8_t   tab5_settings_get_cloud_mode(void);
-esp_err_t tab5_settings_set_cloud_mode(uint8_t enabled);
+/** 0 = local (default), 1 = hybrid (cloud STT+TTS), 2 = full cloud */
+uint8_t   tab5_settings_get_voice_mode(void);
+esp_err_t tab5_settings_set_voice_mode(uint8_t mode);
+
+/** Backward compat alias */
+#define tab5_settings_get_cloud_mode() tab5_settings_get_voice_mode()
+#define tab5_settings_set_cloud_mode(v) tab5_settings_set_voice_mode(v)
+
+/** Cloud LLM model ID (e.g. "anthropic/claude-3-haiku"). Empty = default. */
+esp_err_t tab5_settings_get_llm_model(char *buf, size_t len);
+esp_err_t tab5_settings_set_llm_model(const char *model);
 
 /* ── Wake word ──────────────────────────────────────────────────────── */
 
