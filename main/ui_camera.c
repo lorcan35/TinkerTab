@@ -204,10 +204,10 @@ lv_obj_t *ui_camera_create(void)
         lv_obj_center(arrow);
     }
 
-    /* ── Viewfinder area (top 960px) ─────────────────────────── */
+    /* ── Viewfinder area (below topbar) ─────────────────────────── */
     lv_obj_t *vf_area = lv_obj_create(scr_camera);
-    lv_obj_set_size(vf_area, SCREEN_W, VIEWFINDER_H);
-    lv_obj_align(vf_area, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_size(vf_area, SCREEN_W, VIEWFINDER_H - 48);
+    lv_obj_align(vf_area, LV_ALIGN_TOP_LEFT, 0, 48);
     lv_obj_set_style_bg_color(vf_area, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(vf_area, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(vf_area, 0, 0);
