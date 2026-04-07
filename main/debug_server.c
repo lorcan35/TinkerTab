@@ -231,6 +231,9 @@ static esp_err_t info_handler(httpd_req_t *req)
     dragon_state_t ds = tab5_dragon_get_state();
     cJSON_AddBoolToObject(root, "dragon_connected",
         ds == DRAGON_STATE_CONNECTED || ds == DRAGON_STATE_STREAMING);
+    /* N2: voice_connected reflects actual voice WS state (port 3502),
+     * while dragon_connected reflects CDP link state (port 3501) */
+    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
 
     char display_str[16];
     snprintf(display_str, sizeof(display_str), "%dx%d", FB_W, FB_H);

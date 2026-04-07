@@ -114,6 +114,10 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
         }
     }
 
+    /* N1: Start reconnect watchdog — auto-reconnects voice WS if Dragon
+     * restarts or connection drops. Runs every 5s, exponential backoff. */
+    voice_start_reconnect_watchdog();
+
     /* Start background transcription queue for recorded voice notes */
     ui_notes_start_transcription_queue();
 }

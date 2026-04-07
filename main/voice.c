@@ -169,6 +169,13 @@ static TaskHandle_t  s_afe_detect_task = NULL;   // fetch task handle
 static bool s_initialized = false;
 static volatile bool s_connect_in_progress = false;
 
+// Reconnect watchdog
+static TaskHandle_t  s_reconnect_task = NULL;
+static volatile bool s_reconnect_enabled = false;
+#define RECONNECT_CHECK_MS     5000   /* check connection every 5s */
+#define RECONNECT_BACKOFF_MS   10000  /* wait 10s between reconnect attempts */
+#define IDLE_PING_INTERVAL_MS  10000  /* ping every 10s when idle/ready */
+
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
@@ -1031,19 +1038,21 @@ static void ws_receive_task(void *arg)
         }
         if (poll == 0) {
             // No data available — playback drain task handles I2S writes separately.
+            int64_t now_us = esp_timer_get_time();
+            static int64_t s_last_keepalive_us = 0;
+
             if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
-                int64_t now_us = esp_timer_get_time();
                 int64_t elapsed_us = now_us - s_last_activity_us;
 
                 // Send keep-alive heartbeat to prevent TCP idle timeout.
-                // Uses JSON text frame (not WS ping) because esp_transport_ws fragments
-                // control frames, which aiohttp rejects as "fragmented control frame".
-                // NOTE: keepalive does NOT reset s_last_activity_us — only real
-                // incoming data resets the timer, so the response timeout can fire.
-                static int64_t s_last_keepalive_us = 0;
                 if ((now_us - s_last_keepalive_us) > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
-                    ws_send_text("{\"type\":\"ping\"}");
+                    esp_err_t ping_err = ws_send_text("{\"type\":\"ping\"}");
                     s_last_keepalive_us = now_us;
+                    if (ping_err != ESP_OK) {
+                        ESP_LOGW(TAG, "Keepalive ping failed — connection dead");
+                        s_ws_connected = false;
+                        break;
+                    }
                 }
 
                 /* Response timeout: if Dragon hasn't sent anything in 20s, give up */
@@ -1055,6 +1064,19 @@ static void ws_receive_task(void *arg)
                     tab5_audio_speaker_enable(false);
                     voice_set_state(VOICE_STATE_READY, "timeout");
                     s_last_activity_us = now_us;
+                }
+            } else if (s_state == VOICE_STATE_READY) {
+                /* N1: Idle keepalive — detect dead TCP connections while READY.
+                 * If Dragon restarts, TCP stays open but WS is dead. Periodic
+                 * ping detects this and triggers reconnect via watchdog. */
+                if ((now_us - s_last_keepalive_us) > (int64_t)IDLE_PING_INTERVAL_MS * 1000) {
+                    esp_err_t ping_err = ws_send_text("{\"type\":\"ping\"}");
+                    s_last_keepalive_us = now_us;
+                    if (ping_err != ESP_OK) {
+                        ESP_LOGW(TAG, "Idle ping failed — connection dead");
+                        s_ws_connected = false;
+                        break;
+                    }
                 }
             }
             continue;
@@ -1761,6 +1783,86 @@ const char *voice_get_dictation_title(void)
 const char *voice_get_dictation_summary(void)
 {
     return s_dictation_summary;
+}
+
+// ---------------------------------------------------------------------------
+// N1: Reconnect watchdog — auto-reconnects voice WS after disconnect
+// ---------------------------------------------------------------------------
+
+static void reconnect_watchdog_task(void *arg)
+{
+    ESP_LOGI(TAG, "Reconnect watchdog started");
+    int backoff_ms = RECONNECT_BACKOFF_MS;
+
+    while (s_reconnect_enabled) {
+        vTaskDelay(pdMS_TO_TICKS(RECONNECT_CHECK_MS));
+
+        if (!s_reconnect_enabled) break;
+
+        /* Only reconnect if: initialized, not connected, not already connecting,
+         * and not intentionally stopped (s_stop_flag) */
+        if (s_initialized && !s_ws_connected && !s_connect_in_progress && !s_stop_flag) {
+            ESP_LOGI(TAG, "Watchdog: voice WS disconnected — reconnecting (backoff %dms)", backoff_ms);
+
+            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            if (!s_reconnect_enabled || s_ws_connected) continue;
+
+            char dhost[64];
+            tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+            if (dhost[0]) {
+                /* Silent reconnect — don't show overlay */
+                extern void ui_voice_set_boot_connect(bool silent);
+                ui_voice_set_boot_connect(true);
+                voice_connect_async(dhost, TAB5_VOICE_PORT, false);
+
+                /* Wait for connect result */
+                for (int i = 0; i < 60 && s_connect_in_progress; i++) {
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                }
+
+                if (s_ws_connected) {
+                    ESP_LOGI(TAG, "Watchdog: reconnected successfully!");
+                    backoff_ms = RECONNECT_BACKOFF_MS;  /* reset backoff */
+                } else {
+                    ESP_LOGW(TAG, "Watchdog: reconnect failed");
+                    backoff_ms = (backoff_ms < 60000) ? backoff_ms * 2 : 60000;
+                }
+            }
+        } else if (s_ws_connected) {
+            backoff_ms = RECONNECT_BACKOFF_MS;  /* reset when connected */
+        }
+    }
+
+    ESP_LOGI(TAG, "Reconnect watchdog stopped");
+    s_reconnect_task = NULL;
+    vTaskSuspend(NULL);
+}
+
+esp_err_t voice_start_reconnect_watchdog(void)
+{
+    if (s_reconnect_task) return ESP_OK;  /* already running */
+
+    s_reconnect_enabled = true;
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        reconnect_watchdog_task, "voice_recon", 4096,
+        NULL, 3, &s_reconnect_task, 0);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create reconnect watchdog task");
+        s_reconnect_enabled = false;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+void voice_stop_reconnect_watchdog(void)
+{
+    s_reconnect_enabled = false;
+    /* Task will exit on next check */
+}
+
+bool voice_is_connected(void)
+{
+    return s_ws_connected && s_ws_running;
 }
 
 // ---------------------------------------------------------------------------

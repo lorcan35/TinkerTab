@@ -99,6 +99,13 @@ const char *voice_get_dictation_summary(void);
 // Wake word: called when AFE detects wake word. Starts listening or barge-in.
 void voice_on_wake(void);
 
+// Reconnect watchdog: auto-reconnects voice WS after disconnect
+esp_err_t voice_start_reconnect_watchdog(void);
+void voice_stop_reconnect_watchdog(void);
+
+// True if voice WebSocket is actually connected and receive task is running
+bool voice_is_connected(void);
+
 // Always-listening mode: init/start/stop the AFE pipeline
 esp_err_t voice_start_always_listening(void);
 esp_err_t voice_stop_always_listening(void);
