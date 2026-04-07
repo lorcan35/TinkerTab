@@ -464,3 +464,19 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Power/thermal overload from bloated services. The Dragon was running GDM3 (gnome desktop, 175MB), nanobot/TinkerClaw agent (116MB, 56% CPU), snapd, ollama, rustdesk, fwupd, and chromium on every boot — totaling ~900MB RAM and heavy CPU. The QCS6490 SoC hit thermal limits after ~15 minutes under sustained load and hard-reset.
 - **Fix:** Masked/disabled all non-essential services: gdm3, snapd, ollama, snap.rustdesk.rustdesk-server, tinkerclaw-nanobot, fwupd, systemd-sysupdate-reboot.timer. Created tinkerclaw-strip.service to enforce this on every boot. Memory dropped from 900MB to 558MB. Only tinkerclaw-voice, tinkerclaw-dashboard, tinkerclaw-ngrok, and dragon_server.py remain.
 - **Prevention:** Never enable desktop environment (GDM) on a headless server. Monitor memory usage after adding services. The QCS6490 with 12GB RAM seems generous but the SoC power budget is tight — keep total RAM usage under 1GB and CPU under 50% sustained.
+
+### Device Always Offline in Dragon Dashboard
+
+- **Date:** 2026-04-07
+- **Symptom:** Tab5 device shows `is_online=0` in Dragon DB despite being connected. Dashboard shows all devices offline. Dragon reports `active_connections: 0` even though Tab5's `/info` endpoint says `dragon_connected: true`.
+- **Root Cause:** Voice WS only connected on-demand (when user tapped mic). Device registration only happens on voice WS connect. The `dragon_connected` field in Tab5's /info came from `dragon_link.c` (CDP health check on port 3501), not the voice WS (port 3502). So Tab5 said "connected" to Dragon's streaming server but was never registered on the voice server.
+- **Fix:** Auto-connect voice WS at boot (`main.c` → `deferred_overlay_init_cb`). Uses `ui_voice_set_boot_connect(true)` to suppress overlay popup during boot. Device registers immediately, Dragon marks `is_online=1`. Session created on boot, persists across screen transitions.
+- **Prevention:** "Connected" must mean registered on the voice server (port 3502), not just reachable via CDP health check. Always distinguish between the streaming connection (3501) and voice connection (3502).
+
+### Single-Tap Voice Had Connect Delay
+
+- **Date:** 2026-04-07
+- **Symptom:** Tapping the mic orb from Home screen took 5-15 seconds before "Listening..." appeared. User had to wait for WS connect → register → session_start → READY → auto-start.
+- **Root Cause:** Voice WS only connected on-demand. Each mic tap triggered: mode_switch(VOICE) → stop_streaming → settle(200ms) → TCP connect → WS upgrade → register → session_start (6s pipeline init) → READY → start_listening.
+- **Fix:** Boot auto-connect means voice WS is READY before user ever taps. Mic tap from READY goes straight to `voice_start_listening()` — instant response. Mode-aware: if streaming is active, still calls `mode_switch(VOICE)` to stop MJPEG before recording.
+- **Prevention:** Persistent connections eliminate connect-time latency. The voice WS is lightweight (~1KB/s keepalive) and doesn't conflict with other modes until actual recording starts.
