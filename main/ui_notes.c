@@ -401,6 +401,8 @@ static lv_obj_t *s_screen      = NULL;
 static lv_obj_t *s_list        = NULL;
 static lv_obj_t *s_input_area  = NULL;
 static lv_obj_t *s_input_btn   = NULL;
+static lv_obj_t *s_search_ta   = NULL;  /* M2: search bar */
+static char      s_search_text[64] = {0};  /* current search filter */
 static bool s_input_visible    = false;
 static bool s_voice_recording  = false;
 static bool s_pending_dictation = false;  /* waiting for READY to start dictation */
@@ -414,6 +416,7 @@ static void cb_input_send(lv_event_t *e);
 static void cb_note_tap(lv_event_t *e);
 static void cb_note_delete(lv_event_t *e);
 static void cb_note_play(lv_event_t *e);
+static void cb_search_changed(lv_event_t *e);
 static void refresh_list(void);
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx);
 static lv_obj_t *make_topbar(lv_obj_t *parent);
@@ -1182,23 +1185,66 @@ static void cb_input_send(lv_event_t *e)
     hide_input_area();
 }
 
+/* M2: Search callback — live filter on keystroke */
+static void cb_search_changed(lv_event_t *e)
+{
+    (void)e;
+    if (!s_search_ta) return;
+    const char *txt = lv_textarea_get_text(s_search_ta);
+    strncpy(s_search_text, txt ? txt : "", sizeof(s_search_text) - 1);
+    s_search_text[sizeof(s_search_text) - 1] = '\0';
+    refresh_list();
+}
+
+/* M1: Edit overlay — save callback */
+static void cb_edit_save(lv_event_t *e)
+{
+    lv_obj_t *overlay = (lv_obj_t *)lv_event_get_user_data(e);
+    int note_idx = (int)(intptr_t)lv_obj_get_user_data(overlay);
+    lv_obj_t *ta = lv_obj_get_child(overlay, 2);  /* textarea is 3rd child (ts, hint, ta, btn) */
+    if (!ta || note_idx < 0 || note_idx >= MAX_NOTES || !s_notes[note_idx].used) {
+        lv_obj_del(overlay);
+        return;
+    }
+    const char *txt = lv_textarea_get_text(ta);
+    if (txt && txt[0]) {
+        strncpy(s_notes[note_idx].text, txt, MAX_NOTE_LEN - 1);
+        s_notes[note_idx].text[MAX_NOTE_LEN - 1] = '\0';
+        notes_save();
+        sync_note_to_dragon("", txt);
+        ESP_LOGI(TAG, "Note %d edited: %.40s", note_idx, txt);
+    }
+    ui_keyboard_hide();
+    lv_obj_del(overlay);
+    /* Refresh notes list */
+    if (s_screen) ui_notes_create();
+}
+
+static void cb_edit_close(lv_event_t *e)
+{
+    lv_obj_t *overlay = (lv_obj_t *)lv_event_get_user_data(e);
+    ui_keyboard_hide();
+    lv_obj_del(overlay);
+}
+
 static void cb_note_tap(lv_event_t *e)
 {
     int note_idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (note_idx < 0 || note_idx >= MAX_NOTES || !s_notes[note_idx].used) return;
 
-    const note_entry_t *n = &s_notes[note_idx];
+    note_entry_t *n = &s_notes[note_idx];
     lv_obj_t *overlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(overlay, lv_pct(85), lv_pct(70));
+    lv_obj_set_size(overlay, lv_pct(90), lv_pct(75));
     lv_obj_align(overlay, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(overlay, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(overlay, 28, 0);
     lv_obj_set_style_border_width(overlay, 0, 0);
-    lv_obj_set_style_pad_all(overlay, 40, 0);
-    lv_obj_add_event_cb(overlay, (lv_event_cb_t)lv_obj_del, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_pad_all(overlay, 24, 0);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_user_data(overlay, (void *)(intptr_t)note_idx);
 
-    /* Timestamp */
+    /* Timestamp + close button row */
     char ts_buf[64];
     static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
                                 "Jul","Aug","Sep","Oct","Nov","Dec"};
@@ -1209,15 +1255,61 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_t *ts = lv_label_create(overlay);
     lv_label_set_text(ts, ts_buf);
     lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(ts, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(ts, &lv_font_montserrat_24, 0);
 
-    /* Full note text */
-    lv_obj_t *lbl = lv_label_create(overlay);
-    lv_label_set_text(lbl, n->text);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_36, 0);
-    lv_obj_set_width(lbl, lv_pct(100));
-    lv_obj_set_style_pad_top(lbl, 20, 0);
+    /* Hint */
+    lv_obj_t *hint = lv_label_create(overlay);
+    lv_label_set_text(hint, "Tap text to edit");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x606060), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_pad_top(hint, 4, 0);
+
+    /* M1: Editable textarea instead of read-only label */
+    lv_obj_t *ta = lv_textarea_create(overlay);
+    lv_obj_set_size(ta, lv_pct(100), lv_pct(55));
+    lv_textarea_set_text(ta, n->text);
+    lv_obj_set_style_bg_color(ta, lv_color_hex(0x1A1A30), 0);
+    lv_obj_set_style_text_color(ta, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(ta, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_border_width(ta, 1, 0);
+    lv_obj_set_style_border_color(ta, lv_color_hex(COL_CYAN), 0);
+    lv_obj_set_style_radius(ta, 12, 0);
+    lv_obj_set_style_pad_all(ta, 16, 0);
+    lv_obj_set_style_pad_top(ta, 12, 0);
+    lv_obj_add_event_cb(ta, (lv_event_cb_t)ui_keyboard_show, LV_EVENT_CLICKED, ta);
+
+    /* Button row */
+    lv_obj_t *btn_row = lv_obj_create(overlay);
+    lv_obj_remove_style_all(btn_row);
+    lv_obj_set_size(btn_row, lv_pct(100), 60);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(btn_row, 16, 0);
+    lv_obj_set_style_pad_top(btn_row, 8, 0);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    /* Save button */
+    lv_obj_t *save_btn = lv_button_create(btn_row);
+    lv_obj_set_size(save_btn, 200, 56);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(COL_CYAN), 0);
+    lv_obj_set_style_radius(save_btn, 12, 0);
+    lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, overlay);
+    lv_obj_t *save_lbl = lv_label_create(save_btn);
+    lv_label_set_text(save_lbl, "Save");
+    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(save_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(save_lbl);
+
+    /* Cancel button */
+    lv_obj_t *cancel_btn = lv_button_create(btn_row);
+    lv_obj_set_size(cancel_btn, 200, 56);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x333340), 0);
+    lv_obj_set_style_radius(cancel_btn, 12, 0);
+    lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, overlay);
+    lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_lbl, "Cancel");
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(cancel_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(cancel_lbl);
 }
 
 /* Delete confirmation callbacks */
@@ -1493,8 +1585,19 @@ static void refresh_list(void)
     for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
         int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
         if (!s_notes[idx].used) continue;
+        /* M2: Search filter — skip notes that don't match search text */
+        if (s_search_text[0]) {
+            if (!strstr(s_notes[idx].text, s_search_text)) continue;
+        }
         add_note_card(s_list, &s_notes[idx], idx);
         shown++;
+    }
+    if (shown == 0 && s_search_text[0]) {
+        lv_obj_t *nf = lv_label_create(s_list);
+        lv_label_set_text(nf, "No matching notes");
+        lv_obj_set_style_text_color(nf, lv_color_hex(COL_LABEL2), 0);
+        lv_obj_set_style_text_font(nf, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_align(nf, LV_TEXT_ALIGN_CENTER, 0);
     }
 }
 
@@ -1587,16 +1690,34 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_text_align(ticon, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(ticon);
 
+    /* M2: Search bar */
+    #define SEARCH_H 56
+    s_search_ta = lv_textarea_create(s_screen);
+    lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
+    lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + 160 + 4);
+    lv_textarea_set_one_line(s_search_ta, true);
+    lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " Search notes...");
+    lv_obj_set_style_bg_color(s_search_ta, lv_color_hex(0x1A1A30), 0);
+    lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(s_search_ta, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_border_width(s_search_ta, 1, 0);
+    lv_obj_set_style_border_color(s_search_ta, lv_color_hex(0x333344), 0);
+    lv_obj_set_style_radius(s_search_ta, 12, 0);
+    lv_obj_set_style_pad_left(s_search_ta, 16, 0);
+    if (s_search_text[0]) lv_textarea_set_text(s_search_ta, s_search_text);
+    lv_obj_add_event_cb(s_search_ta, (lv_event_cb_t)ui_keyboard_show, LV_EVENT_CLICKED, s_search_ta);
+    lv_obj_add_event_cb(s_search_ta, cb_search_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
     /* Divider */
     lv_obj_t *div = lv_obj_create(s_screen);
     lv_obj_set_size(div, SW, 2);
-    lv_obj_set_pos(div, 0, TOPBAR_H + 160);
+    lv_obj_set_pos(div, 0, TOPBAR_H + 160 + SEARCH_H + 8);
     lv_obj_set_style_bg_color(div, lv_color_hex(COL_CARD2), 0);
 
     /* Scrollable notes list */
     s_list = lv_obj_create(s_screen);
-    lv_obj_set_size(s_list, SW, SH - TOPBAR_H - 160 - 2);
-    lv_obj_set_pos(s_list, 0, TOPBAR_H + 160 + 2);
+    lv_obj_set_size(s_list, SW, SH - TOPBAR_H - 160 - SEARCH_H - 10);
+    lv_obj_set_pos(s_list, 0, TOPBAR_H + 160 + SEARCH_H + 10);
     lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);

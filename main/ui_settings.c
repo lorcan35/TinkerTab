@@ -179,6 +179,15 @@ static void cb_wake_word(lv_event_t *e)
     }
 }
 
+/* M3: WiFi setup — launches existing wifi picker screen */
+static void cb_wifi_setup(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Launching WiFi setup screen");
+    extern lv_obj_t *ui_wifi_create(void);
+    ui_wifi_create();
+}
+
 /* H3: Dragon host — save on defocus/return key */
 static void cb_dragon_host_done(lv_event_t *e)
 {
@@ -449,10 +458,26 @@ lv_obj_t *ui_settings_create(void)
     {
         lv_obj_t *sec = make_section(s_scroll, "Network");
 
-        /* WiFi row */
+        /* WiFi row with configure button */
         lv_obj_t *row_wifi = make_row(sec);
         add_row_label(row_wifi, "WiFi");
         s_lbl_wifi = add_row_value(row_wifi, "Checking...");
+
+        /* M3: WiFi configure button — launches full WiFi picker screen */
+        lv_obj_t *row_wifi_cfg = make_row(sec);
+        add_row_label(row_wifi_cfg, "WiFi Setup");
+
+        lv_obj_t *wifi_btn = lv_button_create(row_wifi_cfg);
+        lv_obj_set_size(wifi_btn, 180, 48);
+        lv_obj_set_style_bg_color(wifi_btn, COL_ACCENT, 0);
+        lv_obj_set_style_radius(wifi_btn, 6, 0);
+        lv_obj_add_event_cb(wifi_btn, cb_wifi_setup, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *wifi_btn_lbl = lv_label_create(wifi_btn);
+        lv_label_set_text(wifi_btn_lbl, LV_SYMBOL_WIFI " Configure");
+        lv_obj_set_style_text_color(wifi_btn_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(wifi_btn_lbl, &lv_font_montserrat_18, 0);
+        lv_obj_center(wifi_btn_lbl);
 
         /* Bluetooth row */
         lv_obj_t *row_bt = make_row(sec);
