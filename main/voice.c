@@ -848,6 +848,7 @@ static void mic_capture_task(void *arg)
         if (s_voice_mode == VOICE_MODE_ASK && !s_afe_enabled && frames_sent >= MAX_RECORD_FRAMES_ASK) {
             ESP_LOGI(TAG, "Max recording duration reached (%ds)",
                      MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
+            voice_set_state(VOICE_STATE_LISTENING, "max_duration");
             break;
         }
 

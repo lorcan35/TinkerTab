@@ -837,9 +837,18 @@ static void show_state_listening(void)
     lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
     s_has_llm_text = false;
 
-    /* Show recording duration timer */
+    /* Show send/stop button so user knows how to stop recording */
+    lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+
+    /* Show recording duration timer — large and prominent */
     s_rec_seconds = 0;
-    lv_label_set_text(s_lbl_rec_time, "0:00");
+    if (voice_get_mode() == VOICE_MODE_ASK) {
+        lv_label_set_text(s_lbl_rec_time, "0:30 left");
+    } else {
+        lv_label_set_text(s_lbl_rec_time, "0:00");
+    }
+    lv_obj_set_style_text_font(s_lbl_rec_time, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_CYAN), 0);
     lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
     lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
@@ -1294,8 +1303,19 @@ static void auto_hide_timer_cb(lv_timer_t *t)
 static void rec_timer_cb(lv_timer_t *t)
 {
     s_rec_seconds++;
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d:%02d", s_rec_seconds / 60, s_rec_seconds % 60);
+    char buf[32];
+    if (voice_get_mode() == VOICE_MODE_ASK) {
+        /* Ask mode: show countdown from 30s */
+        int remaining = 30 - s_rec_seconds;
+        if (remaining <= 0) remaining = 0;
+        snprintf(buf, sizeof(buf), "0:%02d left", remaining);
+        if (remaining <= 5 && remaining > 0) {
+            lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(0xFF5252), 0);
+        }
+    } else {
+        /* Dictation: show elapsed time */
+        snprintf(buf, sizeof(buf), "%d:%02d", s_rec_seconds / 60, s_rec_seconds % 60);
+    }
     lv_label_set_text(s_lbl_rec_time, buf);
 }
 
@@ -1334,8 +1354,10 @@ static void mic_click_cb(lv_event_t *e)
             mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
         break;
     case VOICE_STATE_READY:
-        /* Connected — show overlay with "Tap to Record" prompt.
-         * Do NOT auto-start listening; user must tap the orb. */
+        /* Connected — immediately start listening (single-tap UX).
+         * No more double-tap: mic button → orb tap. Just mic → go. */
+        ESP_LOGI(TAG, "READY → auto-start listening");
+        voice_start_listening();
         break;
     case VOICE_STATE_LISTENING:
         /* Recording — stop and send for processing */
