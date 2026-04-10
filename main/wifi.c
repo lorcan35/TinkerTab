@@ -22,7 +22,7 @@ static const char *TAG = "tab5_wifi";
 
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_count = 0;
-#define MAX_RETRY 5
+#define MAX_RETRY 30
 
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
@@ -30,11 +30,16 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
+        xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         if (s_retry_count < MAX_RETRY) {
             esp_wifi_connect();
             s_retry_count++;
-            ESP_LOGI(TAG, "Retrying WiFi connection (%d/%d)", s_retry_count, MAX_RETRY);
+            ESP_LOGI(TAG, "Retrying WiFi (%d/%d) reason=%d",
+                     s_retry_count, MAX_RETRY, disconn->reason);
         } else {
+            ESP_LOGE(TAG, "WiFi failed after %d retries (reason=%d)",
+                     MAX_RETRY, disconn->reason);
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -51,16 +56,7 @@ esp_err_t tab5_wifi_init(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_t *sta = esp_netif_create_default_wifi_sta();
-
-    /* Static IP 192.168.1.90 — stop DHCP and set before connect */
-    esp_netif_dhcpc_stop(sta);
-    esp_netif_ip_info_t static_ip = {0};
-    esp_netif_str_to_ip4("192.168.1.90", &static_ip.ip);
-    esp_netif_str_to_ip4("192.168.1.1", &static_ip.gw);
-    esp_netif_str_to_ip4("255.255.255.0", &static_ip.netmask);
-    esp_netif_set_ip_info(sta, &static_ip);
-    ESP_LOGI(TAG, "Static IP set: 192.168.1.90");
+    esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -75,9 +71,13 @@ esp_err_t tab5_wifi_init(void)
     wifi_config_t wifi_config = {
         .sta = {
             .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .capable  = true,
+                .required = false,
+            },
         },
     };
-    /* Load SSID/password from NVS (falls back to compile-time defaults) */
+
     tab5_settings_get_wifi_ssid((char *)wifi_config.sta.ssid,
                                 sizeof(wifi_config.sta.ssid));
     tab5_settings_get_wifi_pass((char *)wifi_config.sta.password,
@@ -87,7 +87,8 @@ esp_err_t tab5_wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "WiFi init done, connecting to %s...", (char *)wifi_config.sta.ssid);
+    ESP_LOGI(TAG, "WiFi init done, connecting to '%s' (pass len=%d)",
+             (char *)wifi_config.sta.ssid, (int)strlen((char *)wifi_config.sta.password));
     return ESP_OK;
 }
 

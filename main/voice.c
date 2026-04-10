@@ -41,6 +41,7 @@
 #include "esp_transport_tcp.h"
 #include "esp_transport_ssl.h"
 #include "esp_transport_ws.h"
+#include "esp_crt_bundle.h"
 #include "cJSON.h"
 
 static const char *TAG = "tab5_voice";
@@ -312,6 +313,8 @@ static esp_err_t ws_send_text(const char *msg)
     if (ret < 0) {
         ESP_LOGE(TAG, "WS text send failed: %d — marking disconnected", ret);
         s_ws_connected = false;
+        playback_buf_reset();
+        tab5_audio_speaker_enable(false);
         return ESP_FAIL;
     }
     return ESP_OK;
@@ -592,6 +595,36 @@ static void handle_text_message(const char *data, int len)
                 }
             }
         }
+    } else if (strcmp(type_str, "tool_call") == 0) {
+        /* Dragon is invoking a tool — show status on voice overlay */
+        cJSON *tool = cJSON_GetObjectItem(root, "tool");
+        const char *tool_name = cJSON_IsString(tool) ? tool->valuestring : "unknown";
+        ESP_LOGI(TAG, "Tool call: %s", tool_name);
+
+        const char *status_text = "Thinking...";
+        if (strcmp(tool_name, "web_search") == 0) {
+            status_text = "Searching the web...";
+        } else if (strcmp(tool_name, "remember") == 0 || strcmp(tool_name, "memory_store") == 0) {
+            status_text = "Remembering...";
+        } else if (strcmp(tool_name, "memory_search") == 0 || strcmp(tool_name, "recall") == 0) {
+            status_text = "Recalling...";
+        } else if (strcmp(tool_name, "browser") == 0 || strcmp(tool_name, "browse") == 0) {
+            status_text = "Browsing...";
+        } else if (strcmp(tool_name, "calculator") == 0 || strcmp(tool_name, "math") == 0) {
+            status_text = "Calculating...";
+        } else {
+            status_text = "Using tools...";
+        }
+        voice_set_state(VOICE_STATE_PROCESSING, status_text);
+    } else if (strcmp(type_str, "tool_result") == 0) {
+        /* Tool execution complete — log result, LLM response will follow */
+        cJSON *tool = cJSON_GetObjectItem(root, "tool");
+        cJSON *exec_ms = cJSON_GetObjectItem(root, "execution_ms");
+        const char *tool_name = cJSON_IsString(tool) ? tool->valuestring : "unknown";
+        double ms = cJSON_IsNumber(exec_ms) ? exec_ms->valuedouble : 0.0;
+        ESP_LOGI(TAG, "Tool result: %s (%.0fms)", tool_name, ms);
+        /* Clear tool status — LLM will continue generating shortly */
+        voice_set_state(VOICE_STATE_PROCESSING, "Thinking...");
     } else {
         ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
@@ -1061,10 +1094,16 @@ static void ws_receive_task(void *arg)
                     }
                 }
 
-                /* Response timeout: if Dragon hasn't sent anything in 20s, give up */
-                if (elapsed_us > (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000) {
-                    ESP_LOGW(TAG, "Dragon response timeout (%ds) — cancelling",
-                             VOICE_RESPONSE_TIMEOUT_MS / 1000);
+                /* Response timeout: if Dragon hasn't sent anything, give up.
+                 * Local mode (voice_mode=0): no timeout — Ollama + tool-calling can take 2+ minutes.
+                 * Cloud mode (voice_mode 1/2): 35s timeout — cloud LLM is fast, timeout means real failure. */
+                uint8_t cur_voice_mode = tab5_settings_get_voice_mode();
+                int64_t timeout_us = (cur_voice_mode == 0)
+                    ? (int64_t)300000 * 1000   /* 5 minutes for local (tool-calling + slow LLM) */
+                    : (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000;  /* 35s for cloud */
+                if (elapsed_us > timeout_us) {
+                    ESP_LOGW(TAG, "Dragon response timeout (%llds, mode=%d) — cancelling",
+                             (long long)(timeout_us / 1000000), cur_voice_mode);
                     ws_send_text("{\"type\":\"cancel\"}");
                     playback_buf_reset();
                     tab5_audio_speaker_enable(false);
@@ -1271,55 +1310,57 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
     }
 
-    // Create WS transport (same pattern as touch_ws.c)
-    esp_transport_handle_t tcp = esp_transport_tcp_init();
-    if (!tcp) {
-        ESP_LOGE(TAG, "Failed to create TCP transport");
-        voice_set_state(VOICE_STATE_IDLE, "transport error");
-        return ESP_ERR_NO_MEM;
+    /* PRIMARY: try ngrok tunnel first (works across any network) */
+    ESP_LOGI(TAG, "Connecting to wss://%s:%d%s (ngrok primary)",
+             TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH);
+
+    esp_transport_handle_t ssl = esp_transport_ssl_init();
+    int err = -1;
+    if (ssl) {
+        /* Use ESP x509 certificate bundle for TLS verification (ngrok, etc.) */
+        esp_transport_ssl_crt_bundle_attach(ssl, esp_crt_bundle_attach);
+        s_ws = esp_transport_ws_init(ssl);
+        if (s_ws) {
+            esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
+            err = esp_transport_connect(s_ws, TAB5_NGROK_HOST, TAB5_NGROK_PORT,
+                                        VOICE_CONNECT_TIMEOUT_MS);
+            if (err >= 0) {
+                strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
+                s_dragon_port = TAB5_NGROK_PORT;
+                ESP_LOGI(TAG, "Connected via ngrok!");
+            } else {
+                ESP_LOGW(TAG, "ngrok connect failed — trying local fallback...");
+                esp_transport_close(s_ws);
+                esp_transport_destroy(s_ws);
+                s_ws = NULL;
+                /* ssl transport is owned by the WS wrapper — destroyed with it */
+            }
+        } else {
+            /* WS init over SSL failed — clean up SSL */
+            esp_transport_destroy(ssl);
+        }
+    } else {
+        ESP_LOGW(TAG, "SSL transport init failed");
     }
 
-    s_ws = esp_transport_ws_init(tcp);
-    if (!s_ws) {
-        ESP_LOGE(TAG, "Failed to create WS transport");
-        esp_transport_destroy(tcp);
-        voice_set_state(VOICE_STATE_IDLE, "transport error");
-        return ESP_ERR_NO_MEM;
-    }
-
-    esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
-
-    ESP_LOGI(TAG, "Connecting to ws://%s:%d%s",
-             s_dragon_host, s_dragon_port, TAB5_VOICE_WS_PATH);
-
-    int err = esp_transport_connect(s_ws, s_dragon_host, s_dragon_port,
-                                    VOICE_CONNECT_TIMEOUT_MS);
+    /* FALLBACK: try local Dragon on LAN */
     if (err < 0) {
-        ESP_LOGW(TAG, "Local WS connect failed — trying ngrok fallback...");
-        esp_transport_close(s_ws);
-        esp_transport_destroy(s_ws);
-        s_ws = NULL;
-
-        /* Fallback: try ngrok tunnel with TLS */
-        esp_transport_handle_t ssl = esp_transport_ssl_init();
-        if (ssl) {
-            s_ws = esp_transport_ws_init(ssl);
+        esp_transport_handle_t tcp_fb = esp_transport_tcp_init();
+        if (tcp_fb) {
+            s_ws = esp_transport_ws_init(tcp_fb);
             if (s_ws) {
                 esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
-                ESP_LOGI(TAG, "Trying wss://%s:%d%s",
-                         TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH);
-                err = esp_transport_connect(s_ws, TAB5_NGROK_HOST, TAB5_NGROK_PORT,
+                ESP_LOGI(TAG, "Trying local ws://%s:%d%s",
+                         dragon_host, dragon_port, TAB5_VOICE_WS_PATH);
+                err = esp_transport_connect(s_ws, dragon_host, dragon_port,
                                             VOICE_CONNECT_TIMEOUT_MS);
                 if (err < 0) {
-                    ESP_LOGE(TAG, "ngrok fallback also failed");
+                    ESP_LOGE(TAG, "Local fallback also failed");
                     esp_transport_close(s_ws);
                     esp_transport_destroy(s_ws);
                     s_ws = NULL;
                 } else {
-                    /* Connected via ngrok! Update host for logging */
-                    strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
-                    s_dragon_port = TAB5_NGROK_PORT;
-                    ESP_LOGI(TAG, "Connected via ngrok tunnel!");
+                    ESP_LOGI(TAG, "Connected via local LAN!");
                 }
             }
         }
@@ -1771,6 +1812,29 @@ esp_err_t voice_send_cloud_mode(bool enabled)
     if (!json) return ESP_ERR_NO_MEM;
 
     ESP_LOGI(TAG, "Sending cloud_mode=%d to Dragon", enabled);
+    esp_err_t ret = ws_send_text(json);
+    cJSON_free(json);
+    return ret;
+}
+
+esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
+{
+    if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
+
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "config_update");
+    cJSON_AddNumberToObject(msg, "voice_mode", voice_mode);
+    /* Backward compat: Dragon still checks cloud_mode bool */
+    cJSON_AddBoolToObject(msg, "cloud_mode", voice_mode >= 1);
+    if (voice_mode == 2 && llm_model && llm_model[0]) {
+        cJSON_AddStringToObject(msg, "llm_model", llm_model);
+    }
+    char *json = cJSON_PrintUnformatted(msg);
+    cJSON_Delete(msg);
+    if (!json) return ESP_ERR_NO_MEM;
+
+    ESP_LOGI(TAG, "Sending config_update: voice_mode=%d llm_model=%s",
+             voice_mode, (llm_model && llm_model[0]) ? llm_model : "(local)");
     esp_err_t ret = ws_send_text(json);
     cJSON_free(json);
     return ret;

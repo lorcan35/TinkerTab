@@ -74,8 +74,9 @@ esp_err_t tab5_io_expander_init(i2c_master_bus_handle_t bus)
     pi4io_write(s_pi4ioe1, PI4IO_REG_OUT_H_IM,  0b00000000);
     pi4io_write(s_pi4ioe1, PI4IO_REG_PULL_SEL,  0b01111111);  // pull up
     pi4io_write(s_pi4ioe1, PI4IO_REG_PULL_EN,   0b01111111);
-    // P1=SPK_EN, P2=EXT5V_EN, P4=LCD_RST, P5=TP_RST, P6=CAM_RST high
-    pi4io_write(s_pi4ioe1, PI4IO_REG_OUT_SET,   0b01110110);
+    // P2=EXT5V_EN, P4=LCD_RST, P5=TP_RST, P6=CAM_RST high
+    // P1=SPK_EN LOW — speaker amp OFF at boot (prevents buzzing)
+    pi4io_write(s_pi4ioe1, PI4IO_REG_OUT_SET,   0b01110100);
 
     ESP_LOGI(TAG, "PI4IOE1 (0x43) initialized");
 

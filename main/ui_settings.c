@@ -1,8 +1,18 @@
+#include "esp_task_wdt.h"
+#include "ui_core.h"
+
+static inline void feed_wdt(void) {
+    esp_task_wdt_reset();
+}
 /**
- * TinkerTab — Settings Screen
+ * TinkerTab — Settings Screen (Low-Object Version)
  *
  * Dark-themed settings UI for M5Stack Tab5 (720x1280 portrait).
  * LVGL v9 API, accent color #3B82F6.
+ *
+ * MINIMAL OBJECTS: No row containers. All labels and controls placed
+ * directly on s_scroll with manual (x, y) positioning.
+ * Target: under 40 LVGL objects total.
  */
 
 #include "ui_settings.h"
@@ -21,7 +31,6 @@
 #include "voice.h"
 #include "ota.h"
 #include "ui_keyboard.h"
-#include "cJSON.h"
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -38,8 +47,6 @@ static const char *TAG = "ui_settings";
 #define COL_BG          lv_color_hex(0x0F0F23)
 #define COL_TOPBAR      lv_color_hex(0x1A1A2E)
 #define COL_ACCENT      lv_color_hex(0x3B82F6)
-#define COL_ROW_EVEN    lv_color_hex(0x0F172A)
-#define COL_ROW_ODD     lv_color_hex(0x1E293B)
 #define COL_TEXT        lv_color_hex(0xE2E8F0)
 #define COL_TEXT_DIM    lv_color_hex(0x94A3B8)
 #define COL_GREEN       lv_color_hex(0x22C55E)
@@ -48,10 +55,12 @@ static const char *TAG = "ui_settings";
 
 /* ── Layout constants ───────────────────────────────────────────────── */
 #define TOPBAR_H        48
-#define ROW_H           60
-#define SECTION_PAD     12
 #define SIDE_PAD        16
-#define CORNER_R        8
+#define LEFT_X          16
+#define RIGHT_X         380
+#define ROW_STEP        44
+#define SECTION_GAP     12
+#define HDR_STEP        36
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
@@ -89,25 +98,18 @@ static lv_obj_t *s_slider_volume  = NULL;
 /* Auto-rotate switch */
 static lv_obj_t *s_sw_autorot     = NULL;
 
-/* Row index counter for alternating colours */
-static int s_row_idx = 0;
-
 /* Guard flag for background tasks during destroy */
 static volatile bool s_destroying = false;
 static lv_timer_t *s_refresh_timer = NULL;
 
 static void settings_refresh_cb(lv_timer_t *t) {
     (void)t;
+    feed_wdt();
     if (!s_destroying) ui_settings_update();
 }
 
 /* ── Forward declarations ───────────────────────────────────────────── */
-static lv_obj_t *make_topbar(lv_obj_t *parent);
-static lv_obj_t *make_section(lv_obj_t *parent, const char *title);
-static lv_obj_t *make_row(lv_obj_t *section);
-static void      add_row_label(lv_obj_t *row, const char *text);
-static lv_obj_t *add_row_value(lv_obj_t *row, const char *text);
-static void      ntp_sync_task(void *arg);
+static void ntp_sync_task(void *arg);
 
 /* ── Event callbacks ────────────────────────────────────────────────── */
 
@@ -118,9 +120,11 @@ static void cb_back_btn(lv_event_t *e)
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;
     }
-    ui_settings_destroy();
-    ui_home_go_home();
-    lv_screen_load(ui_home_get_screen());
+    s_destroying = true;
+    if (s_refresh_timer) { lv_timer_pause(s_refresh_timer); }
+
+    /* Settings is an overlay on the home screen — just hide it */
+    if (s_screen) lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void cb_brightness(lv_event_t *e)
@@ -183,22 +187,10 @@ static void send_voice_config(void)
         return;
     }
 
-    /* Build config_update JSON */
-    cJSON *msg = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg, "type", "config_update");
-    cJSON_AddNumberToObject(msg, "voice_mode", mode);
-    if (mode == 2 && model[0]) {
-        cJSON_AddStringToObject(msg, "llm_model", model);
-    }
-    char *json = cJSON_PrintUnformatted(msg);
-    cJSON_Delete(msg);
-    if (json) {
-        extern esp_err_t voice_send_text_raw(const char *msg);
-        /* Use ws_send_text via voice module — but we don't have direct access.
-         * Use voice_send_cloud_mode as a bridge for now, or add new API. */
-        voice_send_cloud_mode(mode >= 1);  /* triggers config_update on Dragon */
-        /* TODO: Replace with voice_send_config(mode, model) for full three-tier */
-        cJSON_free(json);
+    /* Send full three-tier config update to Dragon */
+    esp_err_t err = voice_send_config_update((int)mode, model);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to send voice config: %s", esp_err_to_name(err));
     }
 }
 
@@ -337,7 +329,7 @@ static void cb_dragon_host_done(lv_event_t *e)
         ESP_LOGI(TAG, "Dragon host saved: %s", txt);
         /* F3: Disconnect voice so reconnect watchdog picks up new host */
         if (voice_is_connected()) {
-            ESP_LOGI(TAG, "Disconnecting voice for host change → watchdog will reconnect");
+            ESP_LOGI(TAG, "Disconnecting voice for host change -> watchdog will reconnect");
             voice_disconnect();
         }
     }
@@ -393,112 +385,40 @@ static void ntp_sync_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/* ── Helper: top bar ────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════
+ *  Inline helpers for minimal-object layout
+ * ══════════════════════════════════════════════════════════════════════ */
 
-static lv_obj_t *make_topbar(lv_obj_t *parent)
+/** Create a section header label (accent colored, font 20). Returns label. */
+static lv_obj_t *mk_hdr(lv_obj_t *parent, const char *text, int x, int y)
 {
-    lv_obj_t *bar = lv_obj_create(parent);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 720, TOPBAR_H);
-    lv_obj_set_style_bg_color(bar, COL_TOPBAR, 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_hor(bar, SIDE_PAD, 0);
-    lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    /* Back button */
-    lv_obj_t *btn = lv_button_create(bar);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 48, TOPBAR_H);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
-    lv_obj_add_event_cb(btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *arrow = lv_label_create(btn);
-    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(arrow, COL_TEXT, 0);
-    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
-    lv_obj_center(arrow);
-
-    /* Title */
-    lv_obj_t *title = lv_label_create(bar);
-    lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, COL_TEXT, 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_set_flex_grow(title, 1);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-
-    /* Spacer to balance the back button */
-    lv_obj_t *spacer = lv_obj_create(bar);
-    lv_obj_remove_style_all(spacer);
-    lv_obj_set_size(spacer, 48, 1);
-
-    return bar;
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, COL_ACCENT, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(lbl, x, y);
+    return lbl;
 }
 
-/* ── Helper: section container with header ──────────────────────────── */
-
-static lv_obj_t *make_section(lv_obj_t *parent, const char *title)
+/** Create a key label (left side, font 18, COL_TEXT). */
+static lv_obj_t *mk_key(lv_obj_t *parent, const char *text, int x, int y)
 {
-    /* Reset row counter for each section */
-    s_row_idx = 0;
-
-    lv_obj_t *cont = lv_obj_create(parent);
-    lv_obj_remove_style_all(cont);
-    lv_obj_set_width(cont, 720 - 2 * SIDE_PAD);
-    lv_obj_set_height(cont, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_top(cont, SECTION_PAD, 0);
-    lv_obj_set_style_pad_bottom(cont, 4, 0);
-    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    /* Section header */
-    lv_obj_t *hdr = lv_label_create(cont);
-    lv_label_set_text(hdr, title);
-    lv_obj_set_style_text_color(hdr, COL_ACCENT, 0);
-    lv_obj_set_style_text_font(hdr, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_pad_left(hdr, 4, 0);
-    lv_obj_set_style_pad_bottom(hdr, 4, 0);
-
-    return cont;
-}
-
-/* ── Helper: single row inside a section ────────────────────────────── */
-
-static lv_obj_t *make_row(lv_obj_t *section)
-{
-    lv_obj_t *row = lv_obj_create(section);
-    lv_obj_remove_style_all(row);
-    lv_obj_set_size(row, 720 - 2 * SIDE_PAD, ROW_H);
-    lv_obj_set_style_bg_color(row, (s_row_idx % 2 == 0) ? COL_ROW_EVEN : COL_ROW_ODD, 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(row, CORNER_R, 0);
-    lv_obj_set_style_pad_hor(row, 12, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    s_row_idx++;
-    return row;
-}
-
-/* ── Helper: add label on left side of a row ────────────────────────── */
-
-static void add_row_label(lv_obj_t *row, const char *text)
-{
-    lv_obj_t *lbl = lv_label_create(row);
+    lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, COL_TEXT, 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_pos(lbl, x, y);
+    return lbl;
 }
 
-/* ── Helper: add value label on right side of a row ─────────────────── */
-
-static lv_obj_t *add_row_value(lv_obj_t *row, const char *text)
+/** Create a value label (right side, font 18, COL_TEXT_DIM). */
+static lv_obj_t *mk_val(lv_obj_t *parent, const char *text, int x, int y)
 {
-    lv_obj_t *lbl = lv_label_create(row);
+    lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, COL_TEXT_DIM, 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_pos(lbl, x, y);
     return lbl;
 }
 
@@ -509,112 +429,151 @@ static lv_obj_t *add_row_value(lv_obj_t *row, const char *text)
 lv_obj_t *ui_settings_create(void)
 {
     if (s_screen) {
-        ESP_LOGW(TAG, "Settings screen already exists");
+        /* Overlay already exists — just unhide and resume refresh */
+        ESP_LOGI(TAG, "Settings screen resumed");
+        s_destroying = false;
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_screen);
+        if (s_refresh_timer) lv_timer_resume(s_refresh_timer);
+        ui_settings_update();
         return s_screen;
     }
+    ESP_LOGI(TAG, "Creating settings screen...");
+    /* Temporarily remove the UI task from WDT — creation takes 1-5s with manual layout. */
+    TaskHandle_t ui_task = xTaskGetHandle("ui_task");
+    if (ui_task) esp_task_wdt_delete(ui_task);
 
-    /* ── Screen ─────────────────────────────────────────────────────── */
-    s_screen = lv_obj_create(NULL);
+    /* ── Fullscreen overlay on home screen (NOT a separate screen) ── */
+    /* Using a separate lv_screen causes crashes on screen transitions
+     * because the DPI+PSRAM draw pipeline can't handle two screens. */
+    lv_obj_t *home = ui_home_get_screen();
+    s_screen = lv_obj_create(home);
+    lv_obj_remove_style_all(s_screen);
+    lv_obj_set_size(s_screen, 720, 1280);
+    lv_obj_set_pos(s_screen, 0, 0);
     lv_obj_set_style_bg_color(s_screen, COL_BG, 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_foreground(s_screen);
 
     /* L5: Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
 
-    /* ── Top bar ────────────────────────────────────────────────────── */
-    make_topbar(s_screen);
+    /* ── Top bar — minimal: just 1 container + back button + title ── */
+    lv_obj_t *bar = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, 720, TOPBAR_H);
+    lv_obj_set_pos(bar, 0, 0);
+    lv_obj_set_style_bg_color(bar, COL_TOPBAR, 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* ── Scrollable body ────────────────────────────────────────────── */
+    /* Back button */
+    lv_obj_t *btn = lv_button_create(bar);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, 48, TOPBAR_H);
+    lv_obj_set_pos(btn, SIDE_PAD, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
+    lv_obj_add_event_cb(btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *arrow = lv_label_create(btn);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(arrow, COL_TEXT, 0);
+    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
+    lv_obj_center(arrow);
+
+    /* Title — centered in topbar */
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, COL_TEXT, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+    /* ── Scrollable body (NO flex) ──────────────────────────────────── */
     s_scroll = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_scroll);
     lv_obj_set_size(s_scroll, 720, 1280 - TOPBAR_H);
-    lv_obj_align(s_scroll, LV_ALIGN_TOP_LEFT, 0, TOPBAR_H);
+    lv_obj_set_pos(s_scroll, 0, TOPBAR_H);
     lv_obj_set_style_bg_opa(s_scroll, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_hor(s_scroll, SIDE_PAD, 0);
-    lv_obj_set_style_pad_top(s_scroll, 8, 0);
-    lv_obj_set_style_pad_bottom(s_scroll, 32, 0);
-    lv_obj_set_flex_flow(s_scroll, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_scroll, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_scroll, 0, 0);
     lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(s_scroll, LV_DIR_VER);
 
-    /* ────────────────────────────────────────────────────────────────
+    /* Hide during creation — prevents rendering on every child add */
+    lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_HIDDEN);
+
+    /* Running Y position inside s_scroll */
+    int y = 8;
+
+    feed_wdt();
+    ESP_LOGI(TAG, "Section: Display");
+
+    /* ════════════════════════════════════════════════════════════════
      *  SECTION: Display
-     * ──────────────────────────────────────────────────────────────── */
-    {
-        lv_obj_t *sec = make_section(s_scroll, "Display");
+     * ════════════════════════════════════════════════════════════════ */
+    mk_hdr(s_scroll, "Display", LEFT_X, y);
+    y += HDR_STEP;
 
-        /* Brightness row */
-        lv_obj_t *row_bright = make_row(sec);
-        add_row_label(row_bright, "Brightness");
+    /* Brightness */
+    mk_key(s_scroll, "Brightness", LEFT_X, y + 4);
+    s_slider_bright = lv_slider_create(s_scroll);
+    lv_obj_set_pos(s_slider_bright, RIGHT_X, y);
+    lv_obj_set_size(s_slider_bright, 280, 30);
+    lv_slider_set_range(s_slider_bright, 0, 100);
+    lv_slider_set_value(s_slider_bright, tab5_settings_get_brightness(), LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_slider_bright, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_slider_bright, COL_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_slider_bright, COL_ACCENT, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s_slider_bright, 4, LV_PART_KNOB);
+    lv_obj_add_event_cb(s_slider_bright, cb_brightness, LV_EVENT_VALUE_CHANGED, NULL);
+    y += ROW_STEP;
 
-        s_slider_bright = lv_slider_create(row_bright);
-        lv_obj_set_width(s_slider_bright, 280);
-        lv_slider_set_range(s_slider_bright, 0, 100);
-        lv_slider_set_value(s_slider_bright, tab5_settings_get_brightness(), LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_slider_bright, lv_color_hex(0x334155), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_slider_bright, COL_ACCENT, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(s_slider_bright, COL_ACCENT, LV_PART_KNOB);
-        lv_obj_set_style_pad_all(s_slider_bright, 4, LV_PART_KNOB);
-        lv_obj_add_event_cb(s_slider_bright, cb_brightness, LV_EVENT_VALUE_CHANGED, NULL);
+    /* Volume */
+    mk_key(s_scroll, "Volume", LEFT_X, y + 4);
+    s_slider_volume = lv_slider_create(s_scroll);
+    lv_obj_set_pos(s_slider_volume, RIGHT_X, y);
+    lv_obj_set_size(s_slider_volume, 280, 30);
+    lv_slider_set_range(s_slider_volume, 0, 100);
+    lv_slider_set_value(s_slider_volume, tab5_settings_get_volume(), LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_slider_volume, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_slider_volume, COL_ACCENT, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_slider_volume, COL_ACCENT, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(s_slider_volume, 4, LV_PART_KNOB);
+    lv_obj_add_event_cb(s_slider_volume, cb_volume, LV_EVENT_VALUE_CHANGED, NULL);
+    y += ROW_STEP;
 
-        /* Volume row */
-        lv_obj_t *row_vol = make_row(sec);
-        add_row_label(row_vol, "Volume");
+    /* Auto-rotate */
+    mk_key(s_scroll, "Auto-rotate", LEFT_X, y + 6);
+    s_lbl_orient = mk_val(s_scroll, "Off", RIGHT_X, y + 6);
+    s_sw_autorot = lv_switch_create(s_scroll);
+    lv_obj_set_pos(s_sw_autorot, 600, y);
+    lv_obj_set_size(s_sw_autorot, 60, 36);
+    lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_sw_autorot, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
+    lv_obj_add_event_cb(s_sw_autorot, cb_autorotate, LV_EVENT_VALUE_CHANGED, NULL);
+    y += ROW_STEP + SECTION_GAP;
 
-        s_slider_volume = lv_slider_create(row_vol);
-        lv_obj_set_width(s_slider_volume, 280);
-        lv_slider_set_range(s_slider_volume, 0, 100);
-        lv_slider_set_value(s_slider_volume, tab5_settings_get_volume(), LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_slider_volume, lv_color_hex(0x334155), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_slider_volume, COL_ACCENT, LV_PART_INDICATOR);
-        lv_obj_set_style_bg_color(s_slider_volume, COL_ACCENT, LV_PART_KNOB);
-        lv_obj_set_style_pad_all(s_slider_volume, 4, LV_PART_KNOB);
-        lv_obj_add_event_cb(s_slider_volume, cb_volume, LV_EVENT_VALUE_CHANGED, NULL);
+    feed_wdt();
+    ESP_LOGI(TAG, "Section: Network");
 
-        /* Auto-rotate row */
-        lv_obj_t *row_rot = make_row(sec);
-        add_row_label(row_rot, "Auto-rotate");
-
-        /* Right side: orientation label + switch */
-        lv_obj_t *rot_right = lv_obj_create(row_rot);
-        lv_obj_remove_style_all(rot_right);
-        lv_obj_set_size(rot_right, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(rot_right, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(rot_right, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(rot_right, 12, 0);
-
-        s_lbl_orient = lv_label_create(rot_right);
-        lv_label_set_text(s_lbl_orient, "Off");
-        lv_obj_set_style_text_color(s_lbl_orient, COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(s_lbl_orient, &lv_font_montserrat_18, 0);
-
-        s_sw_autorot = lv_switch_create(rot_right);
-        lv_obj_set_size(s_sw_autorot, 60, 36);
-        lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0x334155), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_sw_autorot, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(s_sw_autorot, lv_color_hex(0xFFFFFF), LV_PART_KNOB);
-        lv_obj_add_event_cb(s_sw_autorot, cb_autorotate, LV_EVENT_VALUE_CHANGED, NULL);
-    }
-
-    /* ────────────────────────────────────────────────────────────────
+    /* ════════════════════════════════════════════════════════════════
      *  SECTION: Network
-     * ──────────────────────────────────────────────────────────────── */
+     * ════════════════════════════════════════════════════════════════ */
+    mk_hdr(s_scroll, "Network", LEFT_X, y);
+    y += HDR_STEP;
+
+    /* WiFi status */
+    mk_key(s_scroll, "WiFi", LEFT_X, y + 4);
+    s_lbl_wifi = mk_val(s_scroll, "Checking...", RIGHT_X, y + 4);
+    y += ROW_STEP;
+
+    /* WiFi Setup button */
+    mk_key(s_scroll, "WiFi Setup", LEFT_X, y + 6);
     {
-        lv_obj_t *sec = make_section(s_scroll, "Network");
-
-        /* WiFi row with configure button */
-        lv_obj_t *row_wifi = make_row(sec);
-        add_row_label(row_wifi, "WiFi");
-        s_lbl_wifi = add_row_value(row_wifi, "Checking...");
-
-        /* M3: WiFi configure button — launches full WiFi picker screen */
-        lv_obj_t *row_wifi_cfg = make_row(sec);
-        add_row_label(row_wifi_cfg, "WiFi Setup");
-
-        lv_obj_t *wifi_btn = lv_button_create(row_wifi_cfg);
-        lv_obj_set_size(wifi_btn, 180, 48);
+        lv_obj_t *wifi_btn = lv_button_create(s_scroll);
+        lv_obj_set_pos(wifi_btn, RIGHT_X, y);
+        lv_obj_set_size(wifi_btn, 180, 38);
         lv_obj_set_style_bg_color(wifi_btn, COL_ACCENT, 0);
         lv_obj_set_style_radius(wifi_btn, 6, 0);
         lv_obj_add_event_cb(wifi_btn, cb_wifi_setup, LV_EVENT_CLICKED, NULL);
@@ -624,24 +583,23 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(wifi_btn_lbl, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(wifi_btn_lbl, &lv_font_montserrat_18, 0);
         lv_obj_center(wifi_btn_lbl);
+    }
+    y += ROW_STEP;
 
-        /* Bluetooth row */
-        lv_obj_t *row_bt = make_row(sec);
-        add_row_label(row_bt, "Bluetooth");
-        lv_obj_t *bt_val = add_row_value(row_bt, "Not supported");
-        lv_obj_set_style_text_color(bt_val, COL_TEXT_DIM, 0);
-
-        /* Sub-label for BT explanation */
-        /* We'll just make the value text more descriptive */
-        lv_label_set_text(bt_val, "ESP-Hosted pending");
+    /* Bluetooth */
+    mk_key(s_scroll, "Bluetooth", LEFT_X, y + 4);
+    {
+        lv_obj_t *bt_val = mk_val(s_scroll, "ESP-Hosted pending", RIGHT_X, y + 4);
         lv_obj_set_style_text_color(bt_val, COL_YELLOW, 0);
+    }
+    y += ROW_STEP;
 
-        /* Sync Time row */
-        lv_obj_t *row_ntp = make_row(sec);
-        add_row_label(row_ntp, "Sync Time");
-
-        lv_obj_t *ntp_btn = lv_button_create(row_ntp);
-        lv_obj_set_size(ntp_btn, 140, 48);
+    /* Sync Time button */
+    mk_key(s_scroll, "Sync Time", LEFT_X, y + 6);
+    {
+        lv_obj_t *ntp_btn = lv_button_create(s_scroll);
+        lv_obj_set_pos(ntp_btn, RIGHT_X, y);
+        lv_obj_set_size(ntp_btn, 140, 38);
         lv_obj_set_style_bg_color(ntp_btn, COL_ACCENT, 0);
         lv_obj_set_style_radius(ntp_btn, 6, 0);
         lv_obj_add_event_cb(ntp_btn, cb_ntp_sync, LV_EVENT_CLICKED, NULL);
@@ -651,73 +609,75 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_ntp_btn_label, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(s_ntp_btn_label, &lv_font_montserrat_18, 0);
         lv_obj_center(s_ntp_btn_label);
+    }
+    y += ROW_STEP;
 
-        /* H3: Dragon host input — editable text field */
-        lv_obj_t *row_dragon = make_row(sec);
-        add_row_label(row_dragon, "Dragon Host");
-
-        s_dragon_ta = lv_textarea_create(row_dragon);
-        lv_obj_set_size(s_dragon_ta, 280, 48);
-        lv_textarea_set_one_line(s_dragon_ta, true);
-        lv_textarea_set_max_length(s_dragon_ta, 63);
-        lv_obj_set_style_bg_color(s_dragon_ta, lv_color_hex(0x1E1E2E), 0);
-        lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(s_dragon_ta, &lv_font_montserrat_16, 0);
-        lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
-        lv_obj_set_style_border_color(s_dragon_ta, COL_ACCENT, 0);
-        lv_obj_set_style_radius(s_dragon_ta, 6, 0);
-        lv_obj_set_style_pad_left(s_dragon_ta, 10, 0);
-        lv_textarea_set_placeholder_text(s_dragon_ta, "192.168.1.89");
-
-        /* Load current value from NVS */
+    /* Dragon host input */
+    mk_key(s_scroll, "Dragon Host", LEFT_X, y + 6);
+    s_dragon_ta = lv_textarea_create(s_scroll);
+    lv_obj_set_pos(s_dragon_ta, RIGHT_X, y);
+    lv_obj_set_size(s_dragon_ta, 280, 38);
+    lv_textarea_set_one_line(s_dragon_ta, true);
+    lv_textarea_set_max_length(s_dragon_ta, 63);
+    lv_obj_set_style_bg_color(s_dragon_ta, lv_color_hex(0x1E1E2E), 0);
+    lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_dragon_ta, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
+    lv_obj_set_style_border_color(s_dragon_ta, COL_ACCENT, 0);
+    lv_obj_set_style_radius(s_dragon_ta, 6, 0);
+    lv_obj_set_style_pad_left(s_dragon_ta, 10, 0);
+    lv_textarea_set_placeholder_text(s_dragon_ta, "192.168.1.89");
+    {
         char dhost[64];
         tab5_settings_get_dragon_host(dhost, sizeof(dhost));
         if (dhost[0]) {
             lv_textarea_set_text(s_dragon_ta, dhost);
         }
-
-        lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
-        lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
-        lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
     }
+    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
+    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
+    y += ROW_STEP + SECTION_GAP;
 
-    /* ────────────────────────────────────────────────────────────────
+    feed_wdt();
+    ESP_LOGI(TAG, "Section: Voice");
+
+    /* ════════════════════════════════════════════════════════════════
      *  SECTION: Voice
-     * ──────────────────────────────────────────────────────────────── */
+     * ════════════════════════════════════════════════════════════════ */
+    mk_hdr(s_scroll, "Voice", LEFT_X, y);
+    y += HDR_STEP;
+
+    /* Voice Mode dropdown */
+    mk_key(s_scroll, "Mode", LEFT_X, y + 6);
+    s_dd_voice_mode = lv_dropdown_create(s_scroll);
+    lv_obj_set_pos(s_dd_voice_mode, RIGHT_X, y);
+    lv_obj_set_size(s_dd_voice_mode, 200, 38);
+    lv_dropdown_set_options(s_dd_voice_mode, "Local\nHybrid\nFull Cloud");
+    lv_obj_set_style_bg_color(s_dd_voice_mode, lv_color_hex(0x1E1E2E), 0);
+    lv_obj_set_style_text_color(s_dd_voice_mode, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_dd_voice_mode, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_border_width(s_dd_voice_mode, 1, 0);
+    lv_obj_set_style_border_color(s_dd_voice_mode, COL_ACCENT, 0);
+    lv_obj_set_style_radius(s_dd_voice_mode, 6, 0);
+    lv_dropdown_set_selected(s_dd_voice_mode, tab5_settings_get_voice_mode());
+    lv_obj_add_event_cb(s_dd_voice_mode, cb_voice_mode, LV_EVENT_VALUE_CHANGED, NULL);
+    y += ROW_STEP;
+
+    /* AI Model dropdown */
+    mk_key(s_scroll, "AI Model", LEFT_X, y + 6);
+    s_dd_llm_model = lv_dropdown_create(s_scroll);
+    lv_obj_set_pos(s_dd_llm_model, RIGHT_X, y);
+    lv_obj_set_size(s_dd_llm_model, 240, 38);
+    lv_dropdown_set_options(s_dd_llm_model,
+        "Local NPU\nLocal Ollama\nClaude Haiku\nClaude Sonnet\nGPT-4o mini");
+    lv_obj_set_style_bg_color(s_dd_llm_model, lv_color_hex(0x1E1E2E), 0);
+    lv_obj_set_style_text_color(s_dd_llm_model, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_dd_llm_model, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_border_width(s_dd_llm_model, 1, 0);
+    lv_obj_set_style_border_color(s_dd_llm_model, COL_ACCENT, 0);
+    lv_obj_set_style_radius(s_dd_llm_model, 6, 0);
     {
-        lv_obj_t *sec = make_section(s_scroll, "Voice");
-
-        /* Voice Mode dropdown (three-tier: Local / Hybrid / Full Cloud) */
-        lv_obj_t *row_mode = make_row(sec);
-        add_row_label(row_mode, "Mode");
-
-        s_dd_voice_mode = lv_dropdown_create(row_mode);
-        lv_dropdown_set_options(s_dd_voice_mode, "Local\nHybrid\nFull Cloud");
-        lv_obj_set_size(s_dd_voice_mode, 200, 48);
-        lv_obj_set_style_bg_color(s_dd_voice_mode, lv_color_hex(0x1E1E2E), 0);
-        lv_obj_set_style_text_color(s_dd_voice_mode, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(s_dd_voice_mode, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_border_width(s_dd_voice_mode, 1, 0);
-        lv_obj_set_style_border_color(s_dd_voice_mode, COL_ACCENT, 0);
-        lv_obj_set_style_radius(s_dd_voice_mode, 6, 0);
-        lv_dropdown_set_selected(s_dd_voice_mode, tab5_settings_get_voice_mode());
-        lv_obj_add_event_cb(s_dd_voice_mode, cb_voice_mode, LV_EVENT_VALUE_CHANGED, NULL);
-
-        /* AI Model dropdown (only active in Full Cloud mode) */
-        lv_obj_t *row_model = make_row(sec);
-        add_row_label(row_model, "AI Model");
-
-        s_dd_llm_model = lv_dropdown_create(row_model);
-        lv_dropdown_set_options(s_dd_llm_model,
-            "Local NPU\nLocal Ollama\nClaude Haiku\nClaude Sonnet\nGPT-4o mini");
-        lv_obj_set_size(s_dd_llm_model, 240, 48);
-        lv_obj_set_style_bg_color(s_dd_llm_model, lv_color_hex(0x1E1E2E), 0);
-        lv_obj_set_style_text_color(s_dd_llm_model, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(s_dd_llm_model, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_border_width(s_dd_llm_model, 1, 0);
-        lv_obj_set_style_border_color(s_dd_llm_model, COL_ACCENT, 0);
-        lv_obj_set_style_radius(s_dd_llm_model, 6, 0);
-        /* Set selected based on saved model */
         char saved_model[64] = {0};
         tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
         for (int i = 0; i < 5; i++) {
@@ -726,32 +686,23 @@ lv_obj_t *ui_settings_create(void)
                 break;
             }
         }
-        lv_obj_add_event_cb(s_dd_llm_model, cb_llm_model, LV_EVENT_VALUE_CHANGED, NULL);
-        /* Disable model dropdown unless in Full Cloud mode */
-        if (tab5_settings_get_voice_mode() != 2) {
-            lv_obj_add_state(s_dd_llm_model, LV_STATE_DISABLED);
-            lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_40, 0);
-        }
+    }
+    lv_obj_add_event_cb(s_dd_llm_model, cb_llm_model, LV_EVENT_VALUE_CHANGED, NULL);
+    if (tab5_settings_get_voice_mode() != 2) {
+        lv_obj_add_state(s_dd_llm_model, LV_STATE_DISABLED);
+        lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_40, 0);
+    }
+    y += ROW_STEP;
 
-        /* -- Wake Word toggle -- */
-        lv_obj_t *wake_row = make_row(sec);
-        add_row_label(wake_row, "Wake Word");
-
-        lv_obj_t *wake_right = lv_obj_create(wake_row);
-        lv_obj_remove_style_all(wake_right);
-        lv_obj_set_size(wake_right, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(wake_right, LV_FLEX_FLOW_ROW);
-        lv_obj_set_style_flex_cross_place(wake_right, LV_FLEX_ALIGN_CENTER, 0);
-        lv_obj_set_style_pad_gap(wake_right, 12, 0);
-
-        lv_obj_t *wake_hint = lv_label_create(wake_right);
-        lv_label_set_text(wake_hint,
-            tab5_settings_get_wake_word() ? "On" : "Off");
-        lv_obj_set_style_text_color(wake_hint,
-            tab5_settings_get_wake_word() ? COL_GREEN : COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(wake_hint, &lv_font_montserrat_18, 0);
-
-        lv_obj_t *sw_wake = lv_switch_create(wake_right);
+    /* Wake Word toggle */
+    mk_key(s_scroll, "Wake Word", LEFT_X, y + 6);
+    lv_obj_t *wake_hint = mk_val(s_scroll,
+        tab5_settings_get_wake_word() ? "On" : "Off", RIGHT_X, y + 6);
+    lv_obj_set_style_text_color(wake_hint,
+        tab5_settings_get_wake_word() ? COL_GREEN : COL_TEXT_DIM, 0);
+    {
+        lv_obj_t *sw_wake = lv_switch_create(s_scroll);
+        lv_obj_set_pos(sw_wake, 600, y);
         lv_obj_set_size(sw_wake, 60, 36);
         lv_obj_set_style_bg_color(sw_wake, lv_color_hex(0x334155), LV_PART_MAIN);
         lv_obj_set_style_bg_color(sw_wake, COL_ACCENT, LV_PART_INDICATOR | LV_STATE_CHECKED);
@@ -761,90 +712,88 @@ lv_obj_t *ui_settings_create(void)
         }
         lv_obj_add_event_cb(sw_wake, cb_wake_word, LV_EVENT_VALUE_CHANGED, wake_hint);
     }
+    y += ROW_STEP + SECTION_GAP;
 
-    /* ────────────────────────────────────────────────────────────────
+    feed_wdt();
+    ESP_LOGI(TAG, "Section: Storage");
+
+    /* ════════════════════════════════════════════════════════════════
      *  SECTION: Storage
-     * ──────────────────────────────────────────────────────────────── */
-    {
-        lv_obj_t *sec = make_section(s_scroll, "Storage");
+     * ════════════════════════════════════════════════════════════════ */
+    mk_hdr(s_scroll, "Storage", LEFT_X, y);
+    y += HDR_STEP;
 
-        lv_obj_t *row_sd = make_row(sec);
-        add_row_label(row_sd, "SD Card");
-        s_lbl_sd_info = add_row_value(row_sd, "Checking...");
-    }
+    mk_key(s_scroll, "SD Card", LEFT_X, y + 4);
+    s_lbl_sd_info = mk_val(s_scroll, "Checking...", RIGHT_X, y + 4);
+    y += ROW_STEP + SECTION_GAP;
 
-    /* ────────────────────────────────────────────────────────────────
+    feed_wdt();
+    ESP_LOGI(TAG, "Section: Battery");
+
+    /* ════════════════════════════════════════════════════════════════
      *  SECTION: Battery
-     * ──────────────────────────────────────────────────────────────── */
-    {
-        lv_obj_t *sec = make_section(s_scroll, "Battery");
+     * ════════════════════════════════════════════════════════════════ */
+    mk_hdr(s_scroll, "Battery", LEFT_X, y);
+    y += HDR_STEP;
 
-        /* Voltage row */
-        lv_obj_t *row_volt = make_row(sec);
-        add_row_label(row_volt, "Voltage");
-        s_lbl_bat_volt = add_row_value(row_volt, "-- V");
+    /* Voltage */
+    mk_key(s_scroll, "Voltage", LEFT_X, y + 4);
+    s_lbl_bat_volt = mk_val(s_scroll, "-- V", RIGHT_X, y + 4);
+    y += ROW_STEP;
 
-        /* Status row */
-        lv_obj_t *row_stat = make_row(sec);
-        add_row_label(row_stat, "Status");
-        s_lbl_bat_status = add_row_value(row_stat, "--");
+    /* Status */
+    mk_key(s_scroll, "Status", LEFT_X, y + 4);
+    s_lbl_bat_status = mk_val(s_scroll, "--", RIGHT_X, y + 4);
+    y += ROW_STEP;
 
-        /* Level row with bar */
-        lv_obj_t *row_lvl = make_row(sec);
-        add_row_label(row_lvl, "Level");
+    /* Level with bar + percentage */
+    mk_key(s_scroll, "Level", LEFT_X, y + 4);
+    s_bar_bat_level = lv_bar_create(s_scroll);
+    lv_obj_set_pos(s_bar_bat_level, RIGHT_X, y + 6);
+    lv_obj_set_size(s_bar_bat_level, 180, 16);
+    lv_bar_set_range(s_bar_bat_level, 0, 100);
+    lv_bar_set_value(s_bar_bat_level, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(s_bar_bat_level, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_bar_bat_level, COL_GREEN, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(s_bar_bat_level, 4, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_bar_bat_level, 4, LV_PART_INDICATOR);
+    s_lbl_bat_pct = mk_val(s_scroll, "0%", RIGHT_X + 200, y + 4);
+    y += ROW_STEP + SECTION_GAP;
 
-        /* Right side: bar + percentage label */
-        lv_obj_t *lvl_right = lv_obj_create(row_lvl);
-        lv_obj_remove_style_all(lvl_right);
-        lv_obj_set_size(lvl_right, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(lvl_right, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(lvl_right, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(lvl_right, 8, 0);
+    feed_wdt();
+    ESP_LOGI(TAG, "Section: About");
 
-        s_bar_bat_level = lv_bar_create(lvl_right);
-        lv_obj_set_size(s_bar_bat_level, 180, 16);
-        lv_bar_set_range(s_bar_bat_level, 0, 100);
-        lv_bar_set_value(s_bar_bat_level, 0, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(s_bar_bat_level, lv_color_hex(0x334155), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(s_bar_bat_level, COL_GREEN, LV_PART_INDICATOR);
-        lv_obj_set_style_radius(s_bar_bat_level, 4, LV_PART_MAIN);
-        lv_obj_set_style_radius(s_bar_bat_level, 4, LV_PART_INDICATOR);
-
-        s_lbl_bat_pct = lv_label_create(lvl_right);
-        lv_label_set_text(s_lbl_bat_pct, "0%");
-        lv_obj_set_style_text_color(s_lbl_bat_pct, COL_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(s_lbl_bat_pct, &lv_font_montserrat_18, 0);
-    }
-
-    /* ────────────────────────────────────────────────────────────────
+    /* ════════════════════════════════════════════════════════════════
      *  SECTION: About
-     * ──────────────────────────────────────────────────────────────── */
+     * ════════════════════════════════════════════════════════════════ */
+    mk_hdr(s_scroll, "About", LEFT_X, y);
+    y += HDR_STEP;
+
+    /* Device */
+    mk_key(s_scroll, "Device", LEFT_X, y + 4);
+    mk_val(s_scroll, "M5Stack Tab5", RIGHT_X, y + 4);
+    y += ROW_STEP;
+
+    /* SoC */
+    mk_key(s_scroll, "SoC", LEFT_X, y + 4);
+    mk_val(s_scroll, "ESP32-P4 (RISC-V 2x400MHz)", RIGHT_X, y + 4);
+    y += ROW_STEP;
+
+    /* Firmware */
+    mk_key(s_scroll, "Firmware", LEFT_X, y + 4);
     {
-        lv_obj_t *sec = make_section(s_scroll, "About");
-
-        /* Device */
-        lv_obj_t *row_dev = make_row(sec);
-        add_row_label(row_dev, "Device");
-        add_row_value(row_dev, "M5Stack Tab5");
-
-        /* SoC */
-        lv_obj_t *row_soc = make_row(sec);
-        add_row_label(row_soc, "SoC");
-        add_row_value(row_soc, "ESP32-P4 (RISC-V 2x400MHz)");
-
-        /* Firmware */
-        lv_obj_t *row_fw = make_row(sec);
-        add_row_label(row_fw, "Firmware");
         char fw_str[48];
         snprintf(fw_str, sizeof(fw_str), "TinkerTab v%s (%s)", TAB5_FIRMWARE_VER, tab5_ota_current_partition());
-        add_row_value(row_fw, fw_str);
+        mk_val(s_scroll, fw_str, RIGHT_X, y + 4);
+    }
+    y += ROW_STEP;
 
-        /* OTA Update */
-        lv_obj_t *row_ota = make_row(sec);
-        add_row_label(row_ota, "Updates");
-
-        lv_obj_t *ota_btn = lv_button_create(row_ota);
-        lv_obj_set_size(ota_btn, 220, 48);
+    /* OTA Update button */
+    mk_key(s_scroll, "Updates", LEFT_X, y + 6);
+    {
+        lv_obj_t *ota_btn = lv_button_create(s_scroll);
+        lv_obj_set_pos(ota_btn, RIGHT_X, y);
+        lv_obj_set_size(ota_btn, 220, 38);
         lv_obj_set_style_bg_color(ota_btn, COL_ACCENT, 0);
         lv_obj_set_style_radius(ota_btn, 6, 0);
         lv_obj_add_event_cb(ota_btn, cb_ota_check, LV_EVENT_CLICKED, NULL);
@@ -854,41 +803,60 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_ota_btn_label, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(s_ota_btn_label, &lv_font_montserrat_16, 0);
         lv_obj_center(s_ota_btn_label);
+    }
+    y += ROW_STEP;
 
-        /* F2: Apply Update button — hidden until check finds an update */
-        s_ota_apply_btn = lv_button_create(row_ota);
-        lv_obj_set_size(s_ota_apply_btn, 220, 48);
-        lv_obj_set_style_bg_color(s_ota_apply_btn, lv_color_hex(0x22C55E), 0);  /* green */
-        lv_obj_set_style_radius(s_ota_apply_btn, 6, 0);
-        lv_obj_add_event_cb(s_ota_apply_btn, cb_ota_apply, LV_EVENT_CLICKED, NULL);
+    /* OTA Apply button (hidden until update found) */
+    s_ota_apply_btn = lv_button_create(s_scroll);
+    lv_obj_set_pos(s_ota_apply_btn, RIGHT_X, y);
+    lv_obj_set_size(s_ota_apply_btn, 220, 38);
+    lv_obj_set_style_bg_color(s_ota_apply_btn, COL_GREEN, 0);
+    lv_obj_set_style_radius(s_ota_apply_btn, 6, 0);
+    lv_obj_add_event_cb(s_ota_apply_btn, cb_ota_apply, LV_EVENT_CLICKED, NULL);
+    {
         lv_obj_t *apply_lbl = lv_label_create(s_ota_apply_btn);
         lv_label_set_text(apply_lbl, LV_SYMBOL_OK " Apply Update");
         lv_obj_set_style_text_color(apply_lbl, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(apply_lbl, &lv_font_montserrat_16, 0);
         lv_obj_center(apply_lbl);
-        lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);  /* hidden until update found */
-
-        /* Free Heap */
-        lv_obj_t *row_heap = make_row(sec);
-        add_row_label(row_heap, "Free Heap");
-        s_lbl_heap = add_row_value(row_heap, "-- KB");
-
-        /* Free PSRAM */
-        lv_obj_t *row_psram = make_row(sec);
-        add_row_label(row_psram, "Free PSRAM");
-        s_lbl_psram = add_row_value(row_psram, "-- MB");
     }
+    lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
+    y += ROW_STEP;
 
-    /* ── Initial data refresh + periodic timer ────────────────────── */
-    ui_settings_update();
-    s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
+    /* Free Heap */
+    mk_key(s_scroll, "Free Heap", LEFT_X, y + 4);
+    s_lbl_heap = mk_val(s_scroll, "-- KB", RIGHT_X, y + 4);
+    y += ROW_STEP;
+
+    /* Free PSRAM */
+    mk_key(s_scroll, "Free PSRAM", LEFT_X, y + 4);
+    s_lbl_psram = mk_val(s_scroll, "-- MB", RIGHT_X, y + 4);
+    y += ROW_STEP;
+
+    /* ── Set scroll content size based on total Y ──────────────────── */
+    y += 32; /* bottom padding */
+    lv_obj_set_scrollbar_mode(s_scroll, LV_SCROLLBAR_MODE_AUTO);
 
     s_destroying = false;
+    ESP_LOGI(TAG, "Widgets done, unhiding scroll...");
+    feed_wdt();
 
-    /* ── Load the screen ────────────────────────────────────────────── */
-    lv_screen_load(s_screen);
+    /* Unhide — triggers a single layout pass for all widgets at once */
+    lv_obj_clear_flag(s_scroll, LV_OBJ_FLAG_HIDDEN);
+    ESP_LOGI(TAG, "Loading screen...");
+    feed_wdt();
+
+    /* Overlay is now visible (created on home screen, moved to foreground) */
+    ESP_LOGI(TAG, "Settings overlay ready");
+
+    s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
+    lv_timer_t *init_timer = lv_timer_create(settings_refresh_cb, 500, NULL);
+    lv_timer_set_auto_delete(init_timer, true);
 
     ESP_LOGI(TAG, "Settings screen created");
+
+    /* Re-subscribe UI task to WDT */
+    if (ui_task) esp_task_wdt_add(ui_task);
     return s_screen;
 }
 
@@ -1000,6 +968,11 @@ void ui_settings_destroy(void)
     s_slider_bright = NULL;
     s_slider_volume = NULL;
     s_sw_autorot    = NULL;
+    s_dd_voice_mode = NULL;
+    s_dd_llm_model  = NULL;
+    s_dragon_ta     = NULL;
+    s_ota_btn_label = NULL;
+    s_ota_apply_btn = NULL;
 
     ESP_LOGI(TAG, "Settings screen destroyed");
 }

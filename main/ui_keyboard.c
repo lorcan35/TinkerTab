@@ -152,8 +152,9 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     s_target_ta = target_textarea;
     s_visible = true;
 
-    /* Unhide and animate slide-up */
+    /* Unhide, bring to front (above any overlays), and animate slide-up */
     lv_obj_clear_flag(s_kb_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_kb_panel);  /* ensure keyboard is above chat/voice overlays */
     lv_obj_set_y(s_kb_panel, SH); /* start below screen */
 
     lv_anim_t a;

@@ -157,11 +157,27 @@ uint64_t tab5_sdcard_total_bytes(void)
     return (uint64_t)s_card->csd.capacity * s_card->csd.sector_size;
 }
 
+/* Cached free bytes — f_getfree() scans FAT and can take 10-30s on large cards,
+ * which triggers WDT if called from LVGL thread. Cache result and refresh in background. */
+static uint64_t s_cached_free_bytes = 0;
+static bool     s_free_bytes_valid  = false;
+
 uint64_t tab5_sdcard_free_bytes(void)
 {
     if (!s_mounted) {
         return 0;
     }
+
+    /* Always return cached value — NEVER call f_getfree() on the calling thread.
+     * f_getfree() blocks 10-30s on large SD cards, which triggers WDT if called
+     * from the LVGL thread. Return 0 if cache not populated yet. */
+    return s_cached_free_bytes;  /* 0 until first boot scan completes */
+}
+
+/* Internal: actually scan — only called from background/boot context */
+static uint64_t _sdcard_free_bytes_slow(void)
+{
+    if (!s_mounted) return 0;
 
     FATFS *fs;
     DWORD free_clusters;
@@ -175,7 +191,19 @@ uint64_t tab5_sdcard_free_bytes(void)
     /* Each cluster is fs->csize sectors; SD sector size is always 512 bytes */
     uint64_t free_bytes = (uint64_t)free_clusters * fs->csize * 512;
 
+    /* Cache the result */
+    s_cached_free_bytes = free_bytes;
+    s_free_bytes_valid = true;
+
     return free_bytes;
+}
+
+void tab5_sdcard_refresh_free_bytes(void)
+{
+    /* Call from a background task to refresh the cached free bytes.
+     * Do NOT call from LVGL thread — f_getfree blocks for 10-30s on large cards. */
+    s_free_bytes_valid = false;  /* Force recalculation on next call */
+    (void)_sdcard_free_bytes_slow();  /* Triggers the slow scan and caches result */
 }
 
 const char *tab5_sdcard_mount_point(void)

@@ -62,7 +62,7 @@ static void mode_switch_idle_task(void *arg);
 
 #define MIC_BTN_SZ         72
 #define MIC_BTN_MARGIN     20
-#define MIC_BTN_BOTTOM     84        /* above nav dots */
+#define MIC_BTN_BOTTOM     140       /* above 120px nav bar + 20px margin */
 #define MIC_DOT_SZ         12        /* inner dot indicator */
 
 #define ORB_SZ_LISTEN      200

@@ -28,6 +28,7 @@
 #include "battery.h"
 #include "rtc.h"
 #include "dragon_link.h"
+#include "ui_core.h"
 #include "wifi.h"
 #include "display.h"
 #include "esp_log.h"
@@ -658,17 +659,31 @@ static void update_nav_ui(int page)
     if (page == 1 && tiles[1]) {
         lv_async_call(async_notes_create, NULL);
     }
-    /* When switching to Settings page, load the settings screen */
-    if (page == 3 && tiles[3]) {
-        lv_async_call(async_settings_create, NULL);
-    }
+    /* Settings handled in nav_click_cb directly */
+}
+
+static void _async_settings(void *arg)
+{
+    (void)arg;
+    extern lv_obj_t *ui_settings_create(void);
+    ui_settings_create();
+}
+
+void ui_home_nav_settings(void)
+{
+    lv_async_call(_async_settings, NULL);
 }
 
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
-    if (pg >= 0 && pg < NUM_PAGES && tiles[pg] && tileview) {
-        ui_keyboard_hide();
+    if (pg < 0 || pg >= NUM_PAGES) return;
+    ui_keyboard_hide();
+    if (pg == 3) {
+        ui_home_nav_settings();
+        return;
+    }
+    if (tiles[pg] && tileview) {
         lv_tileview_set_tile(tileview, tiles[pg], LV_ANIM_ON);
     }
 }
@@ -808,6 +823,17 @@ void ui_home_destroy(void)
 lv_obj_t *ui_home_get_screen(void)
 {
     return scr;
+}
+
+lv_obj_t *ui_home_get_tileview(void)
+{
+    return tileview;
+}
+
+lv_obj_t *ui_home_get_tile(int page)
+{
+    if (page < 0 || page >= NUM_PAGES) return NULL;
+    return tiles[page];
 }
 
 void ui_home_go_home(void)

@@ -267,6 +267,8 @@ void app_main(void)
 
             // WiFi power ON — C6 co-processor needs power before SDIO init
             tab5_set_wifi_power(true);
+            vTaskDelay(pdMS_TO_TICKS(2000));  /* C6 needs time to boot after power-on */
+            ESP_LOGI(TAG, "C6 WiFi co-processor powered on (2s settle)");
         }
     }
 

@@ -188,8 +188,9 @@ esp_err_t tab5_camera_init(void)
     struct v4l2_format fmt = {0};
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(s_video_fd, VIDIOC_G_FMT, &fmt);
-    ESP_LOGI(TAG, "Default format: %dx%d, pixfmt=0x%x",
-             fmt.fmt.pix.width, fmt.fmt.pix.height, fmt.fmt.pix.pixelformat);
+    ESP_LOGI(TAG, "Default format: %lux%lu, pixfmt=0x%lx",
+             (unsigned long)fmt.fmt.pix.width, (unsigned long)fmt.fmt.pix.height,
+             (unsigned long)fmt.fmt.pix.pixelformat);
 
     /* Set RGB565 output format */
     fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
@@ -201,8 +202,8 @@ esp_err_t tab5_camera_init(void)
     ioctl(s_video_fd, VIDIOC_G_FMT, &fmt);
     s_width = fmt.fmt.pix.width;
     s_height = fmt.fmt.pix.height;
-    ESP_LOGI(TAG, "Active format: %dx%d, pixfmt=0x%x",
-             s_width, s_height, fmt.fmt.pix.pixelformat);
+    ESP_LOGI(TAG, "Active format: %dx%d, pixfmt=0x%lx",
+             s_width, s_height, (unsigned long)fmt.fmt.pix.pixelformat);
 
     /* Request MMAP buffers */
     struct v4l2_requestbuffers req = {0};
@@ -215,7 +216,7 @@ esp_err_t tab5_camera_init(void)
         s_video_fd = -1;
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "Allocated %d video buffers", req.count);
+    ESP_LOGI(TAG, "Allocated %lu video buffers", (unsigned long)req.count);
 
     /* MMAP + queue each buffer */
     for (int i = 0; i < (int)req.count && i < CAM_BUFFER_COUNT; i++) {

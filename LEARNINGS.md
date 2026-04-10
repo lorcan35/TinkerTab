@@ -445,6 +445,59 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Prevention:** Verify TDM slot mapping before integrating AEC. Play a known tone through the speaker and log per-channel RMS — the channel that shows the tone is the reference. Slots 0 and 2 both showed high RMS (both are mics), slot 1 was near-zero (likely the AEC ref or unused).
 - **Status:** AFE pipeline works (feed/fetch stable, VAD detects speech, no crashes). Wake word detection needs slot mapping verification and possibly custom "Hey Tinker" model from Espressif.
 
+---
+
+## Session Bugs (2026-04-10)
+
+### Speaker Buzzing at Boot
+- **Date:** 2026-04-10
+- **Symptom:** Speaker amp produces audible buzz/noise during boot before any audio plays.
+- **Root Cause:** IO expander PI4IOE1 register OUT_SET was 0b01110110 which sets P1 (SPK_EN) HIGH at init. Speaker amp was enabled from the moment the IO expander initialized, amplifying noise on the undriven I2S bus.
+- **Fix:** Changed OUT_SET to 0b01110100 (P1 LOW). Speaker amp now off by default, only enabled when audio playback starts.
+- **Prevention:** Always default power-amplifier enable pins to OFF in IO expander init. Amps should only be enabled when there is a valid audio signal to play.
+
+### Settings Screen WDT Crash (Final Fix)
+- **Date:** 2026-04-10
+- **Symptom:** Navigating to Settings triggers 5s watchdog timeout and reboot.
+- **Root Cause:** LVGL flex layout on s_scroll container with 100+ widgets causes O(n²) layout recalculation on every child addition. On DPI display with PSRAM cache, each recalc takes seconds, cumulative time exceeds any WDT timeout.
+- **Fix:** Complete rewrite — eliminated flex layout, use manual Y positioning with labels placed directly on s_scroll. No row containers. Creation time: 28ms (down from 2+ minutes). Settings is now a fullscreen overlay on the home screen (not a separate lv_screen) because screen transitions also crash the draw pipeline.
+- **Prevention:** Never use LVGL flex layout when adding many children dynamically. Use manual positioning with a running Y offset. For screens with 50+ widgets, always benchmark creation time and ensure it stays under 100ms.
+
+### LVGL Screen Transition Crash
+- **Date:** 2026-04-10
+- **Symptom:** lv_screen_load() from settings screen to home screen causes Guru Meditation (Store/Load access fault) in lv_draw_add_task.
+- **Root Cause:** LVGL's 64KB internal memory pool is too small for the DPI 720x1280 display. Screen transitions require draw buffers for both screens simultaneously, exhausting the pool. Attempted fixes: increased pool to 128KB (binary too large), enabled pool expand (helps but fragments), switched to system malloc (breaks FreeRTOS idle task).
+- **Fix:** Make settings a fullscreen overlay on the home screen (child of home, not separate screen). No screen transitions needed — just hide/show.
+- **Prevention:** Avoid lv_screen_load() on high-resolution displays with limited memory pools. Use overlays (children of the existing screen) instead of separate screens wherever possible.
+
+### LVGL Memory Pool Configuration
+- **Date:** 2026-04-10
+- **Symptom:** N/A (configuration note)
+- **Root Cause:** CONFIG_LV_MEM_SIZE_KILOBYTES=64 with CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64. The expand feature lets LVGL request additional 64KB blocks from system heap when the initial pool is exhausted. Critical for settings screen which creates ~50 objects.
+- **Fix:** Set both values in sdkconfig. The expand feature is the safety net that prevents out-of-memory crashes without requiring an oversized initial pool.
+- **Prevention:** Always enable LV_MEM_POOL_EXPAND on memory-constrained devices with complex UIs. Monitor LVGL memory usage with lv_mem_monitor() during development to verify the expand pool is not being hit excessively.
+
+### WiFi WPA2/WPA3 Mixed Mode Failure
+- **Date:** 2026-04-10
+- **Symptom:** ESP-Hosted C6 WiFi co-processor fails to authenticate with WPA2/WPA3 mixed mode routers (auth=7). Gets reason=2 (AUTH_EXPIRE) and reason=205 (CONNECTION_FAIL) indefinitely. Scan finds AP at -30 RSSI, credentials verified correct.
+- **Root Cause:** ESP-Hosted v1.4.0 C6 firmware has a bug with WPA3 SAE transition on mixed-mode APs.
+- **Fix:** Changed router to WPA2-PSK only. Also fixed auth threshold from WPA2_PSK to WPA_PSK for broader compatibility.
+- **Prevention:** If WiFi authentication fails on a mixed WPA2/WPA3 AP, try WPA2-only first to isolate. Set auth threshold to WPA_PSK (not WPA2_PSK) for maximum compatibility. Track ESP-Hosted firmware updates for WPA3 SAE transition fixes.
+
+### Voice WebSocket Transport Leaks
+- **Date:** 2026-04-10
+- **Symptom:** Memory leak on every voice_connect() call. Heap free decreased monotonically over reconnect cycles.
+- **Root Cause:** TCP transport handle leaked on every voice_connect() call (created TCP+WS wrapper, then immediately destroyed WS but not TCP). SSL transport also leaked on ngrok connect failure.
+- **Fix:** Removed orphaned TCP creation and added proper SSL cleanup paths. Every transport allocation now has a matching destroy on all error paths.
+- **Prevention:** For every esp_transport_*_init() call, ensure a matching esp_transport_destroy() exists on ALL code paths (success, failure, early return). Audit transport lifecycle with heap tracing if leaks are suspected.
+
+### WiFi Event Handler vTaskDelay
+- **Date:** 2026-04-10
+- **Symptom:** WiFi disconnect retry was unreliable. Cascading connection failures after first disconnect. ESP-Hosted SDIO transport errors in logs.
+- **Root Cause:** Calling vTaskDelay(1000) inside the WiFi disconnect event handler blocks the entire ESP-IDF system event loop for 1 second per retry. This starves ESP-Hosted SDIO transport, causing cascading connection failures.
+- **Fix:** Removed all vTaskDelay from event handlers. Retry logic moved to a separate task or timer callback that does not block the event loop.
+- **Prevention:** NEVER call vTaskDelay() or any blocking function inside ESP-IDF event handlers. Event handlers run on the system event task — blocking them starves all other event processing. Use xTimerStart() or xTaskNotifyGive() to defer slow work.
+
 - **Date:** 2026-04-06
 - **Symptom:** Dragon Q6A keeps going offline for 10+ minutes, unreachable via network.
 - **Root Cause:** Dragon uses WiFi (wlan0 at 192.168.1.89), not ethernet. WiFi power save was enabled (`Power save: on`), causing periodic disconnects. Additionally, PingOS services (node/Fastify) competed for port 3500 with our dashboard.
@@ -456,6 +509,27 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** The comment in sdcard.c was incorrect. Tab5 uses SDMMC Slot 0 for SD card and Slot 1 for WiFi SDIO — different slots on different GPIO banks. They coexist fine.
 - **Fix:** Updated sdcard.c comment to reflect verified coexistence. Confirmed: 122GB SD card mounts and operates normally while WiFi is active.
 - **Prevention:** Don't trust hardware conflict comments without testing. The ESP32-P4 SDMMC controller supports 2 independent slots.
+
+### Settings Screen WDT Crash (f_getfree on Large SD Card)
+- **Date:** 2026-04-07
+- **Symptom:** Opening the Settings screen triggered a watchdog timer (WDT) reset. Device rebooted every time Settings was accessed. Only occurred with the 128GB SD card inserted.
+- **Root Cause:** `f_getfree()` on a 128GB FAT32 SD card blocks the calling thread for ~30 seconds while it scans the FAT. This was called inline during settings UI creation on the LVGL thread. The LVGL thread is monitored by the task WDT (5s default), so 30s of blocking triggered a WDT reset.
+- **Fix:** Cache the `f_getfree()` result at boot (called once during SD init, before LVGL starts). Settings UI reads the cached value instead of calling `f_getfree()` directly. Additionally, feed `esp_task_wdt_reset()` between settings section creation to prevent WDT trips during the (still moderately slow) settings UI build.
+- **Prevention:** Never call `f_getfree()` or any blocking filesystem operation from the LVGL thread. Cache slow filesystem queries at boot. Feed the WDT explicitly in any long-running UI creation sequence.
+
+### Tool Parser Stray > After </args>
+- **Date:** 2026-04-07
+- **Symptom:** Tool calls from qwen3:1.7b were not parsed. The LLM generated valid tool XML but with a stray `>` character after the closing `</args>` tag.
+- **Root Cause:** qwen3:1.7b (and other small quantized models) sometimes produce slightly malformed XML: `<tool>datetime</tool><args>{"query":"time"}</args>>` — note the extra `>` at the end. The strict regex parser required exact XML format and rejected these.
+- **Fix:** Made the tool parser tolerant with a fallback regex pattern. Primary pattern matches strict XML. If it fails, fallback pattern strips trailing `>`, handles missing `</args>` closing tag, and extracts tool name + args JSON more loosely. Tested across 12 tool-calling scenarios.
+- **Prevention:** When using small local LLMs for structured output (XML, JSON), always implement tolerant parsing with fallback patterns. Don't assume clean formatting from models under 4B parameters.
+
+### Response Timeout Local vs Cloud Mode
+- **Date:** 2026-04-07
+- **Symptom:** Tab5 auto-cancelled voice requests during local-mode tool-calling chains. The LLM was still processing but Tab5 timed out and sent `cancel`.
+- **Root Cause:** The 35-second response timeout was designed for cloud mode (fast inference). In local mode with qwen3:1.7b at 7.1 tok/s, a tool-calling chain (LLM generates tool call → tool executes → LLM re-queries with result) can take 2-4 minutes total. The 35s timeout fired mid-chain.
+- **Fix:** Made the response timeout mode-aware: 5 minutes for local mode (voice_mode=0), 35 seconds for cloud mode (voice_mode=2). Hybrid mode (voice_mode=1) uses 35s since the LLM is still local but STT/TTS are cloud-fast.
+- **Prevention:** Response timeouts must account for the slowest component in the pipeline. Local LLM inference with tool-calling chains is 10-50x slower than cloud. Always parameterize timeouts by mode.
 
 ### Dragon Q6A 15-Minute Reboot Cycle
 
@@ -512,3 +586,19 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** The `/mode` endpoint uses `voice_send_cloud_mode(bool)` as a bridge — both hybrid (1) and cloud (2) send `cloud_mode=true`. Dragon's backward compat maps `cloud_mode=true` to voice_mode=2, but the ACK timing vs NVS write created a race.
 - **Fix:** Document the limitation. For proper three-tier, Tab5 should send `voice_mode` integer directly (not boolean bridge). The current implementation works for Local↔Hybrid switching; Full Cloud model selection needs the integer protocol.
 - **Prevention:** Don't use boolean bridges for multi-valued enums. Send the actual value.
+
+### camera.c Format String Errors (V4L2 __u32 Types)
+
+- **Date:** 2026-04-07
+- **Symptom:** Compiler warnings: format specifier `%d` / `%x` expects `int`, but argument has type `__u32` (unsigned 32-bit). On some platforms this could produce garbled log output or undefined behavior if `__u32` has a different size than `int`.
+- **Root Cause:** V4L2 structures (`struct v4l2_format`, `struct v4l2_capability`, etc.) use `__u32` for pixel format, width, height, and capability fields. These were printed with `%d` and `%x` format specifiers, which expect `int` and `unsigned int` respectively. On ESP32-P4 (ILP32), `__u32` is `unsigned long` (4 bytes) — same size as `int` but different type, triggering warnings and potential UB under strict aliasing.
+- **Fix:** Cast `__u32` values to `(unsigned long)` and use `%lu` / `%lx` format specifiers in all `ESP_LOGI` / `ESP_LOGE` calls in camera.c.
+- **Prevention:** Always cast V4L2 `__u32` fields before passing to printf-family functions. Use `(unsigned long)` + `%lu` / `%lx` as the standard pattern. Enable `-Wformat` warnings and treat them as errors.
+
+### Three-Tier Boolean Bridge Replaced with Full config_update
+
+- **Date:** 2026-04-07
+- **Symptom:** ui_settings.c used `voice_send_cloud_mode(bool)` to switch voice modes. This only sent `cloud_mode=true/false` — a boolean that collapsed three modes (Local/Hybrid/Cloud) into two states. Dragon had to guess whether `cloud_mode=true` meant Hybrid or Full Cloud. Model selection was not transmitted at all.
+- **Root Cause:** The original cloud mode was a simple on/off toggle. When three-tier mode was added (Local=0, Hybrid=1, Full Cloud=2), the settings UI still used the boolean bridge function instead of sending the integer `voice_mode` + string `llm_model` directly.
+- **Fix:** Created `voice_send_config_update(int voice_mode, const char *llm_model)` which sends the full `{"type":"config_update","voice_mode":0|1|2,"llm_model":"..."}` message. Updated ui_settings.c to call this new function with the actual integer mode and selected model string. Dragon receives the exact mode and model — no guessing.
+- **Prevention:** When extending a protocol from binary (on/off) to multi-valued, replace the old boolean API entirely. Don't add a new integer on top of the old boolean — it creates ambiguity. The protocol message should carry the exact value the server needs.

@@ -85,25 +85,25 @@ Commit hash + PR if applicable.
 - Never batch multiple unrelated fixes into one commit
 
 ## Dragon Access (for deploying/testing)
-- **Host:** 192.168.1.89
+- **Host:** 192.168.70.242
 - **User:** radxa (NOT rock — user was migrated)
 - **Password:** radxa
-- **SSH:** `sshpass -p 'radxa' ssh radxa@192.168.1.89`
+- **SSH:** `sshpass -p 'radxa' ssh radxa@192.168.70.242`
 ```bash
-sshpass -p 'radxa' ssh radxa@192.168.1.89
+sshpass -p 'radxa' ssh radxa@192.168.70.242
 echo radxa | sudo -S systemctl status tinkerclaw-voice
 echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
 ### Dragon Stability
-- **Ethernet only** — WiFi disabled (`nmcli radio wifi off`), static IP 192.168.1.89 on enp1s0
+- **Ethernet only** — WiFi disabled (`nmcli radio wifi off`), DHCP IP 192.168.70.242 on enp1s0
 - **Stripped services** — gdm3, snapd, ollama, nanobot, rustdesk, fwupd all masked. Only tinkerclaw-* services run.
-- **ngrok tunnel** — `tinkerclaw-ngrok.service` maintains `tinkerbox.ngrok.dev` → localhost:3502
-- **Tab5 ngrok fallback** — voice.c tries local WS first, falls back to wss://tinkerbox.ngrok.dev:443
+- **ngrok tunnel** — `tinkerclaw-ngrok.service` maintains `tinkertab.ngrok.dev` → localhost:3502
+- **Tab5 ngrok fallback** — voice.c tries local WS first, falls back to wss://tinkertab.ngrok.dev:443
 
 ## Build & Flash
 ```bash
-# Always use ESP-IDF v5.5.2 — matches dependencies.lock
+# Always use ESP-IDF v5.4.3 — matches dependencies.lock
 . /home/rebelforce/esp/esp-idf/export.sh
 
 cd /home/rebelforce/projects/TinkerTab
@@ -134,40 +134,53 @@ while True:
 ```
 
 ## Debug Server (ADB-style Remote Control)
-Full HTTP API on port 8080 for remote testing and control:
+Full HTTP API on port 8080 for remote testing and control.
+**Note:** Tab5 IP is DHCP-assigned. Current lease: 192.168.70.128. Update if it changes.
 
 ```bash
 # Display
-curl -s -o screen.bmp http://192.168.1.90:8080/screenshot     # BMP screenshot
-curl -s http://192.168.1.90:8080/info | python3 -m json.tool   # Device info JSON
+curl -s -o screen.bmp http://192.168.70.128:8080/screenshot     # BMP screenshot
+curl -s http://192.168.70.128:8080/info | python3 -m json.tool   # Device info JSON
 
 # Touch
-curl -s -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
+curl -s -X POST http://192.168.70.128:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
 
 # Settings (read all NVS settings as JSON)
-curl -s http://192.168.1.90:8080/settings | python3 -m json.tool
+curl -s http://192.168.70.128:8080/settings | python3 -m json.tool
 
 # Voice Mode (switch Local/Hybrid/Cloud remotely)
-curl -s -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
-curl -s -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
-curl -s -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
+curl -s -X POST "http://192.168.70.128:8080/mode?m=0"  # Local
+curl -s -X POST "http://192.168.70.128:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
+curl -s -X POST "http://192.168.70.128:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
 
 # Navigation (force screen change — bypasses tileview)
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=settings"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=notes"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=chat"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=camera"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=home"
+curl -s -X POST "http://192.168.70.128:8080/navigate?screen=settings"
+curl -s -X POST "http://192.168.70.128:8080/navigate?screen=notes"
+curl -s -X POST "http://192.168.70.128:8080/navigate?screen=chat"
+curl -s -X POST "http://192.168.70.128:8080/navigate?screen=camera"
+curl -s -X POST "http://192.168.70.128:8080/navigate?screen=home"
 
 # Camera (capture live frame as BMP)
-curl -s -o frame.bmp http://192.168.1.90:8080/camera
+curl -s -o frame.bmp http://192.168.70.128:8080/camera
 
 # OTA
-curl -s http://192.168.1.90:8080/ota/check | python3 -m json.tool
-curl -s -X POST http://192.168.1.90:8080/ota/apply
+curl -s http://192.168.70.128:8080/ota/check | python3 -m json.tool
+curl -s -X POST http://192.168.70.128:8080/ota/apply
 
 # Wake word (toggle AFE always-listening)
-curl -s -X POST http://192.168.1.90:8080/wake
+curl -s -X POST http://192.168.70.128:8080/wake
+
+# Chat (send text to Dragon via voice WS)
+curl -s -X POST http://192.168.70.128:8080/chat -d '{"text":"What time is it?"}'
+
+# Voice state (connected, state_name, last_llm_text, last_stt_text)
+curl -s http://192.168.70.128:8080/voice | python3 -m json.tool
+
+# Force voice WS reconnect
+curl -s -X POST http://192.168.70.128:8080/voice/reconnect
+
+# Self-test (8-point subsystem check: WiFi, Dragon, voice WS, display, audio, SD, camera, IMU)
+curl -s http://192.168.70.128:8080/selftest | python3 -m json.tool
 ```
 
 ## ESP32-P4 Memory Rules
@@ -187,7 +200,7 @@ curl -s -X POST http://192.168.1.90:8080/wake
 - **Mic audio:** Slot 0 = MIC-L (primary). Extract from 4-ch TDM interleaved buffer.
 
 ## IDF Version
-- **Use IDF v5.5.2** — matches `dependencies.lock`. Build always requires `idf.py set-target esp32p4` after any clean build or target change. Run `idf.py fullclean build` when in doubt.
+- **Use IDF v5.4.3** — matches `dependencies.lock`. Build always requires `idf.py set-target esp32p4` after any clean build or target change. Run `idf.py fullclean build` when in doubt.
 - Tab5 camera is SC202CS at SCCB 0x36 (NOT SC2336 at 0x30)
 - SD card uses SDMMC SLOT 0 with LDO channel 4
 
@@ -205,7 +218,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 
 | Mode | STT | LLM | TTS | Latency | Cost |
 |------|-----|-----|-----|---------|------|
-| Local (0) | Moonshine | NPU/Ollama | Piper | 2-5s | Free |
+| Local (0) | Moonshine | NPU/Ollama (default: qwen3:1.7b, 7.1 tok/s) | Piper | 2-5s | Free |
 | Hybrid (1) | OpenRouter gpt-audio-mini | Local (unchanged) | OpenRouter gpt-audio-mini | 4-8s | ~$0.02/req |
 | Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
 
@@ -223,8 +236,8 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 - **Debug:** `/ota/check` and `/ota/apply` endpoints on debug server
 - **Deploy new firmware:**
   ```bash
-  scp build/tinkertab.bin radxa@192.168.1.89:/home/radxa/ota/
-  echo '{"version":"0.6.1","sha256":""}' | ssh radxa@192.168.1.89 'cat > /home/radxa/ota/version.json'
+  scp build/tinkertab.bin radxa@192.168.70.242:/home/radxa/ota/
+  echo '{"version":"0.6.1","sha256":""}' | ssh radxa@192.168.70.242 'cat > /home/radxa/ota/version.json'
   # Tab5 checks hourly or user taps "Check Update" in Settings
   ```
 
@@ -249,6 +262,16 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 - `lv_screen_load_anim()` with auto_delete=false when returning to existing home screen
 - sdkconfig changes always require `idf.py fullclean build` — incremental builds cache stale config
 
+### Key Fixes (April 2026)
+- **Settings WDT crash fixed:** `f_getfree()` on a 128GB SD card blocks the LVGL thread for ~30s, triggering the watchdog. Fix: cache the `f_getfree` result from boot, feed `esp_task_wdt_reset()` between settings UI sections during creation.
+- **Response timeout (local vs cloud):** Local mode needs 5 min timeout for tool-calling chains (small models are slow). Cloud mode keeps 35s timeout. Timeout is mode-aware.
+- **Tool parser tolerant of small model quirks:** qwen3:1.7b adds stray `>` after `</args>`, sometimes omits closing tags. Parser uses tolerant regex with fallback patterns to handle these gracefully.
+- **Speaker buzzing fixed:** IO expander P1 (SPK_EN) now initialized LOW at boot to prevent speaker buzzing on startup.
+- **Settings rewrite:** Replaced with fullscreen overlay using manual Y positioning. No flex layout, no separate screen. Eliminates WDT crash + draw buffer exhaustion.
+- **WiFi:** Switched to DHCP, WPA2-PSK router, lowered auth threshold.
+- **Voice WS:** Added TLS cert bundle for ngrok, fixed TCP/SSL transport leaks.
+- **LVGL memory:** 128KB pool + 64KB expand (was 64KB, caused draw pipeline crashes).
+
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 
@@ -265,11 +288,14 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 1. **session_start** — session_id for NVS persistence
 2. **stt** / **stt_partial** — transcription results (partial for dictation streaming)
 3. **llm** — LLM response text (streamed)
-4. **tts_start** / binary TTS / **tts_end** — TTS audio playback
-5. **dictation_summary** — post-processing results: `{"title":"...","summary":"..."}`
-6. **pong** — keepalive response
-7. **config_update** — ACK with applied backend config + cloud_mode state
-8. **error** — error details
+4. **llm_done** — LLM generation complete with timing
+5. **tool_call** — tool invocation event: `{"type":"tool_call","tool":"web_search","args":{"query":"..."}}` — display tool activity indicator
+6. **tool_result** — tool completion event: `{"type":"tool_result","tool":"web_search","result":{...},"execution_ms":234}` — display tool result
+7. **tts_start** / binary TTS / **tts_end** — TTS audio playback
+8. **dictation_summary** — post-processing results: `{"title":"...","summary":"..."}`
+9. **pong** — keepalive response
+10. **config_update** — ACK with applied backend config + cloud_mode state
+11. **error** — error details
 
 ### Not Yet Implemented (planned)
 - **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
@@ -277,11 +303,11 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 
 ## Key Files
 ```
-main/voice.c           — Voice WS client, mic capture, TTS playback, dictation, reconnect watchdog, three-tier mode
+main/voice.c           — Voice WS client, mic capture, TTS playback, dictation, reconnect watchdog, three-tier mode, tool event handling (tool_call/tool_result)
 main/voice.h           — Voice API: connect, listen, dictate, cancel, mode switch, reconnect watchdog
 main/ota.c             — OTA: check Dragon for updates, download via esp_https_ota, auto-rollback
 main/ota.h             — OTA API: tab5_ota_check(), tab5_ota_apply(), tab5_ota_mark_valid()
-main/camera.c          — Camera: esp_video V4L2 stack, SC202CS sensor, MMAP capture, exposure tuning
+main/camera.c          — Camera: esp_video V4L2 stack, SC202CS sensor, MMAP capture, exposure tuning. V4L2 format string issues resolved (cast __u32 to unsigned long for %lu/%lx).
 main/camera.h          — Camera API: init, capture, save_jpeg, set_resolution
 main/afe.c             — ESP-SR Audio Front End wrapper (AEC + WakeNet9, parked)
 main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
@@ -295,7 +321,7 @@ main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat b
 main/ui_home.c         — Home screen (clock, orb, Ask Tinker, Camera, Files, notes card, nav bar)
 main/ui_chat.c         — Chat overlay (text conversation, mic button, message persistence across close/open)
 main/ui_notes.c        — Notes screen (search, compact cards, edit overlay, voice/text, SD storage, Dragon sync)
-main/ui_settings.c     — Settings (Display, Network+WiFi+Dragon host, Voice mode+model, Storage, Battery, OTA, About)
+main/ui_settings.c     — Settings fullscreen overlay with manual Y positioning (no flex layout, no separate screen). Sections: Display, Network+WiFi+Dragon host, Voice mode+model, Storage, Battery, OTA, About. Uses voice_send_config_update(mode, model) for full three-tier config_update (integer voice_mode + llm_model string, not boolean bridge).
 main/ui_camera.c       — Camera viewfinder (1280x720 canvas, capture to SD, resolution picker, gallery)
 main/ui_files.c        — SD card file browser (directories, WAV playback, image preview)
 main/ui_wifi.c         — WiFi setup (scan, select, password entry)
@@ -316,7 +342,7 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 | Home | ui_home.c | 4-page tileview (main launcher) |
 | Chat | ui_chat.c | Text conversation with Tinker (user/assistant bubbles) |
 | Notes | ui_notes.c | Voice dictation + typed notes, SD card backed |
-| Settings | ui_settings.c | WiFi, Dragon host, brightness, volume, cloud mode |
+| Settings | ui_settings.c | Fullscreen overlay with manual Y positioning (not a separate screen). WiFi, Dragon host, brightness, volume, voice mode |
 | Camera | ui_camera.c | SC202CS viewfinder |
 | Files | ui_files.c | SD card file browser |
 | Keyboard | ui_keyboard.c | On-screen keyboard overlay (shared) |

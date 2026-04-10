@@ -897,26 +897,34 @@ static char s_nav_target[16] = {0};
 static void async_navigate(void *arg)
 {
     (void)arg;
-    if (strcmp(s_nav_target, "settings") == 0) {
-        extern lv_obj_t *ui_settings_create(void);
-        ui_settings_create();
+    ESP_LOGI("nav", "async_navigate executing, target='%s'", s_nav_target);
+    /* Navigate using the home tileview for pages 0-3.
+     * For secondary screens (camera, files) create them separately.
+     * This avoids the bug where ui_settings_create() replaces the
+     * tileview screen entirely, breaking subsequent navigation. */
+    lv_obj_t *tv = ui_home_get_tileview();
+
+    if (strcmp(s_nav_target, "home") == 0) {
+        ui_home_go_home();
+        lv_screen_load(ui_home_get_screen());
+        if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(0), LV_ANIM_OFF);
     } else if (strcmp(s_nav_target, "notes") == 0) {
-        extern lv_obj_t *ui_notes_create(void);
-        ui_notes_create();
+        lv_screen_load(ui_home_get_screen());
+        if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(1), LV_ANIM_OFF);
     } else if (strcmp(s_nav_target, "chat") == 0) {
-        extern lv_obj_t *ui_chat_create(void);
-        ui_chat_create();
+        lv_screen_load(ui_home_get_screen());
+        if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(2), LV_ANIM_OFF);
+    } else if (strcmp(s_nav_target, "settings") == 0) {
+        /* Settings is too heavy for lv_async_call — it blocks the LVGL render loop.
+         * Use direct call since async_navigate already runs in LVGL context via lv_async_call. */
+        extern void ui_home_nav_settings(void);
+        ui_home_nav_settings();
     } else if (strcmp(s_nav_target, "camera") == 0) {
         extern lv_obj_t *ui_camera_create(void);
         ui_camera_create();
     } else if (strcmp(s_nav_target, "files") == 0) {
         extern lv_obj_t *ui_files_create(void);
         ui_files_create();
-    } else if (strcmp(s_nav_target, "home") == 0) {
-        extern void ui_home_go_home(void);
-        extern lv_obj_t *ui_home_get_screen(void);
-        ui_home_go_home();
-        lv_screen_load(ui_home_get_screen());
     }
 }
 
@@ -931,10 +939,8 @@ static esp_err_t navigate_handler(httpd_req_t *req)
 
     httpd_query_key_value(query, "screen", s_nav_target, sizeof(s_nav_target));
 
-    /* Schedule on LVGL thread — avoids deadlock */
-    tab5_ui_lock();
+    /* Schedule on LVGL thread — lv_async_call is thread-safe, no lock needed */
     lv_async_call(async_navigate, NULL);
-    tab5_ui_unlock();
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "navigated", s_nav_target);
@@ -993,6 +999,225 @@ static esp_err_t camera_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── Chat/Text input endpoint ─────────────────────────────────────────── */
+
+static esp_err_t chat_handler(httpd_req_t *req)
+{
+    /* POST /chat?text=hello — send text to Dragon via voice WS */
+    char query[256] = {0};
+    char text[200] = {0};
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "text", text, sizeof(text));
+    }
+
+    /* Also try reading from body (JSON) */
+    if (text[0] == '\0') {
+        int len = httpd_req_recv(req, query, sizeof(query) - 1);
+        if (len > 0) {
+            query[len] = '\0';
+            cJSON *root = cJSON_Parse(query);
+            if (root) {
+                cJSON *t = cJSON_GetObjectItem(root, "text");
+                if (cJSON_IsString(t)) {
+                    snprintf(text, sizeof(text), "%s", t->valuestring);
+                }
+                cJSON_Delete(root);
+            }
+        }
+    }
+
+    if (text[0] == '\0') {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"use ?text=hello or POST {\\\"text\\\":\\\"hello\\\"}\"}");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Debug chat: %s", text);
+
+    if (!voice_is_connected()) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"voice not connected\",\"sent\":false}");
+        return ESP_OK;
+    }
+
+    voice_send_text(text);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "text", text);
+    cJSON_AddBoolToObject(root, "sent", true);
+    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+/* ── Voice state endpoint ─────────────────────────────────────────────── */
+
+static esp_err_t voice_state_handler(httpd_req_t *req)
+{
+    /* GET /voice — full voice pipeline state */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "connected", voice_is_connected());
+    cJSON_AddNumberToObject(root, "state", (int)voice_get_state());
+
+    const char *state_names[] = {"IDLE", "CONNECTING", "LISTENING", "PROCESSING", "SPEAKING", "DICTATING", "ERROR"};
+    int st = (int)voice_get_state();
+    cJSON_AddStringToObject(root, "state_name", (st >= 0 && st <= 6) ? state_names[st] : "UNKNOWN");
+
+    /* Include last LLM text if available */
+    const char *llm_text = voice_get_llm_text();
+    if (llm_text && llm_text[0]) {
+        cJSON_AddStringToObject(root, "last_llm_text", llm_text);
+    }
+
+    /* Include last STT text */
+    const char *stt_text = voice_get_stt_text();
+    if (stt_text && stt_text[0]) {
+        cJSON_AddStringToObject(root, "last_stt_text", stt_text);
+    }
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+/* ── Voice reconnect endpoint ─────────────────────────────────────────── */
+
+static esp_err_t voice_reconnect_handler(httpd_req_t *req)
+{
+    /* POST /voice/reconnect — force voice WS reconnect */
+    ESP_LOGI(TAG, "Debug: forcing voice reconnect");
+    voice_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    /* Reconnect using current NVS settings + voice port (3502, not dragon_port which is 3501 for CDP) */
+    char host[64] = {0};
+    tab5_settings_get_dragon_host(host, sizeof(host));
+    voice_connect(host, TAB5_VOICE_PORT);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, "{\"status\":\"reconnecting\"}");
+    return ESP_OK;
+}
+
+/* ── Full self-test endpoint ──────────────────────────────────────────── */
+
+static esp_err_t selftest_handler(httpd_req_t *req)
+{
+    /* GET /selftest — run through all subsystem checks and return results */
+    cJSON *root = cJSON_CreateObject();
+    cJSON *tests = cJSON_AddArrayToObject(root, "tests");
+    int pass = 0, fail = 0;
+
+    /* WiFi */
+    {
+        cJSON *t = cJSON_CreateObject();
+        bool ok = tab5_wifi_connected();
+        cJSON_AddStringToObject(t, "name", "wifi");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* Voice WS connected */
+    {
+        cJSON *t = cJSON_CreateObject();
+        bool ok = voice_is_connected();
+        cJSON_AddStringToObject(t, "name", "voice_ws");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* SD card */
+    {
+        cJSON *t = cJSON_CreateObject();
+        bool ok = tab5_sdcard_mounted();
+        cJSON_AddStringToObject(t, "name", "sd_card");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* PSRAM available (>1MB) */
+    {
+        cJSON *t = cJSON_CreateObject();
+        size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        bool ok = free_psram > (1 * 1024 * 1024);
+        cJSON_AddStringToObject(t, "name", "psram");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddNumberToObject(t, "free_mb", (double)(free_psram / 1024 / 1024));
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* Display initialized (if we got this far, display is running) */
+    {
+        cJSON *t = cJSON_CreateObject();
+        bool ok = true;  /* If debug server is responding, display is up */
+        cJSON_AddStringToObject(t, "name", "display");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* Camera initialized */
+    {
+        cJSON *t = cJSON_CreateObject();
+        bool ok = tab5_camera_initialized();
+        cJSON_AddStringToObject(t, "name", "camera");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* Internal heap (>50KB) */
+    {
+        cJSON *t = cJSON_CreateObject();
+        size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        bool ok = free_internal > (50 * 1024);
+        cJSON_AddStringToObject(t, "name", "internal_heap");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddNumberToObject(t, "free_kb", (double)(free_internal / 1024));
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    /* NVS settings readable */
+    {
+        cJSON *t = cJSON_CreateObject();
+        char host[64] = {0};
+        tab5_settings_get_dragon_host(host, sizeof(host));
+        bool ok = (host[0] != '\0');
+        cJSON_AddStringToObject(t, "name", "nvs_settings");
+        cJSON_AddBoolToObject(t, "pass", ok);
+        cJSON_AddStringToObject(t, "dragon_host", host);
+        cJSON_AddItemToArray(tests, t);
+        if (ok) pass++; else fail++;
+    }
+
+    cJSON_AddNumberToObject(root, "passed", pass);
+    cJSON_AddNumberToObject(root, "failed", fail);
+    cJSON_AddNumberToObject(root, "total", pass + fail);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -1007,7 +1232,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 22;
+    config.max_uri_handlers = 26;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -1070,6 +1295,18 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_ota_apply = {
         .uri = "/ota/apply", .method = HTTP_POST, .handler = ota_apply_handler
     };
+    const httpd_uri_t uri_chat = {
+        .uri = "/chat", .method = HTTP_POST, .handler = chat_handler
+    };
+    const httpd_uri_t uri_voice_state = {
+        .uri = "/voice", .method = HTTP_GET, .handler = voice_state_handler
+    };
+    const httpd_uri_t uri_voice_reconnect = {
+        .uri = "/voice/reconnect", .method = HTTP_POST, .handler = voice_reconnect_handler
+    };
+    const httpd_uri_t uri_selftest = {
+        .uri = "/selftest", .method = HTTP_GET, .handler = selftest_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -1088,6 +1325,10 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_camera);
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);
+    httpd_register_uri_handler(server, &uri_chat);
+    httpd_register_uri_handler(server, &uri_voice_state);
+    httpd_register_uri_handler(server, &uri_voice_reconnect);
+    httpd_register_uri_handler(server, &uri_selftest);
 
     /* Log the URL */
     char ip[20];

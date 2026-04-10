@@ -23,6 +23,9 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # FreeRTOS tick rate
 CONFIG_FREERTOS_HZ=1000
 
+# Task WDT — 30s timeout (settings screen creation takes 5-10s with feed_wdt yields)
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
+
 # Partition table — custom for 16MB flash (4MB app + 12MB storage)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -54,10 +57,10 @@ CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 # ---------------------------------------------------------------------------
 # WiFi credentials and Dragon server (overridable via menuconfig)
 # ---------------------------------------------------------------------------
-CONFIG_TAB5_WIFI_SSID="Sawaya-2.4G"
-CONFIG_TAB5_WIFI_PASS="Jx3dzz8t///"
-CONFIG_TAB5_DRAGON_HOST="192.168.1.89"
-CONFIG_TAB5_DRAGON_PORT=3501
+CONFIG_TAB5_WIFI_SSID="X28P-2.4G-C80EF2"
+CONFIG_TAB5_WIFI_PASS="E2D9025B"
+CONFIG_TAB5_DRAGON_HOST="192.168.70.242"
+CONFIG_TAB5_DRAGON_PORT=3502
 
 # ---------------------------------------------------------------------------
 # LVGL Configuration

@@ -299,10 +299,10 @@ The 16 MB flash is partitioned as follows:
 Default credentials are set in `sdkconfig.defaults`:
 
 ```
-CONFIG_TAB5_WIFI_SSID="YourSSID"
+CONFIG_TAB5_WIFI_SSID="TinkerNet"
 CONFIG_TAB5_WIFI_PASS="YourPassword"
-CONFIG_TAB5_DRAGON_HOST="192.168.1.89"
-CONFIG_TAB5_DRAGON_PORT=3501
+CONFIG_TAB5_DRAGON_HOST="192.168.70.242"
+CONFIG_TAB5_DRAGON_PORT=3502
 ```
 
 You can also change these at runtime via:
@@ -326,7 +326,7 @@ All runtime settings persist in NVS flash. The API is in [`main/settings.h`](mai
 | WiFi SSID        | string   | from sdkconfig | WiFi network name              |
 | WiFi Password    | string   | from sdkconfig | WiFi password                  |
 | Dragon Host      | string   | from sdkconfig | Dragon server IP/hostname      |
-| Dragon Port      | uint16   | 3501           | Dragon server port             |
+| Dragon Port      | uint16   | 3502           | Dragon server port             |
 | Brightness       | uint8    | 80             | Display brightness (0-100%)    |
 | Volume           | uint8    | 70             | Speaker volume (0-100%)        |
 | Device ID        | string   | auto (MAC)     | Generated on first boot        |
@@ -439,20 +439,20 @@ When WiFi is connected, an HTTP debug server runs on **port 8080**. Access it at
 
 ```bash
 # Take a screenshot
-curl -s -o screen.bmp http://192.168.1.90:8080/screenshot
+curl -s -o screen.bmp http://192.168.70.128:8080/screenshot
 
 # Get device info
-curl -s http://192.168.1.90:8080/info | python3 -m json.tool
+curl -s http://192.168.70.128:8080/info | python3 -m json.tool
 
 # Inject a tap at coordinates (360, 640)
-curl -s -X POST http://192.168.1.90:8080/touch \
+curl -s -X POST http://192.168.70.128:8080/touch \
   -d '{"x":360,"y":640,"action":"tap"}'
 
 # Reboot the device
-curl -s -X POST http://192.168.1.90:8080/reboot
+curl -s -X POST http://192.168.70.128:8080/reboot
 
 # Navigate to a screen
-curl -s -X POST http://192.168.1.90:8080/open -d '{"screen":"settings"}'
+curl -s -X POST http://192.168.70.128:8080/open -d '{"screen":"settings"}'
 ```
 
 ---
@@ -518,8 +518,9 @@ Full voice overlay with animated orb. Push-to-talk interface for Ask mode and Di
 mode. Shows STT transcript and LLM response text in real-time.
 
 ### Settings (Page 3)
-Device configuration: WiFi SSID/password, Dragon host/port, volume, brightness, cloud
-mode toggle. All changes persist to NVS immediately.
+Overlay-based device configuration with sectioned layout: Display (brightness), Network
+(WiFi SSID/password, Dragon host/port), Voice (mode, LLM model), Storage, Battery, OTA,
+and About. All changes persist to NVS immediately.
 
 ### WiFi
 Network scanning and selection. Shows available SSIDs, signal strength, and connection

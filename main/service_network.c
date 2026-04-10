@@ -25,7 +25,7 @@ esp_err_t network_service_start(void)
     tab5_settings_get_wifi_ssid(ssid, sizeof(ssid));
     ESP_LOGI(TAG, "Connecting to %s...", ssid);
 
-    esp_err_t ret = tab5_wifi_wait_connected(15000);
+    esp_err_t ret = tab5_wifi_wait_connected(60000);  /* ESP-Hosted C6 needs up to 45s */
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "WiFi connect timeout: %s", esp_err_to_name(ret));
         return ret;
