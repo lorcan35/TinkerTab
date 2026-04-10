@@ -105,7 +105,9 @@ static lv_timer_t *s_refresh_timer = NULL;
 static void settings_refresh_cb(lv_timer_t *t) {
     (void)t;
     feed_wdt();
-    if (!s_destroying) ui_settings_update();
+    if (s_destroying) return;
+    if (s_screen && lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN)) return;
+    ui_settings_update();
 }
 
 /* ── Forward declarations ───────────────────────────────────────────── */

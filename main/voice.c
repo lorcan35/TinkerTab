@@ -138,6 +138,7 @@ static volatile bool s_ws_running = false;
 // Playback drain task — pulls from ring buffer, blocks on i2s_channel_write
 static TaskHandle_t  s_play_task = NULL;
 static volatile bool s_play_running = false;
+static volatile bool s_tts_done = false;     // set by tts_end, drain task transitions to READY
 static SemaphoreHandle_t s_play_sem = NULL;  // signalled when data is written to ring buf
 
 // Playback ring buffer (smooths network jitter) — allocated in PSRAM
@@ -209,9 +210,13 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
         ESP_LOGI(TAG, "State: %d -> %d (%s)", old, new_state,
                  detail ? detail : "");
         if (s_state_cb) {
-            tab5_ui_lock();
-            s_state_cb(new_state, detail);
-            tab5_ui_unlock();
+            if (tab5_ui_try_lock(200)) {
+                s_state_cb(new_state, detail);
+                tab5_ui_unlock();
+            } else {
+                ESP_LOGW(TAG, "State %d->%d: LVGL lock busy, UI callback skipped",
+                         old, new_state);
+            }
         }
     }
 }
@@ -475,18 +480,11 @@ static void handle_text_message(const char *data, int len)
         playback_buf_reset();
         voice_set_state(VOICE_STATE_SPEAKING, NULL);
     } else if (strcmp(type_str, "tts_end") == 0) {
-        // TTS audio stream complete — let the drain task finish playing the buffer.
-        // Wake it once more, then wait for the buffer to empty.
-        ESP_LOGI(TAG, "TTS end — waiting for playback drain");
-        if (s_play_sem) xSemaphoreGive(s_play_sem);
-
-        // Spin-wait for drain task to empty the ring buffer (check every 50ms)
-        for (int i = 0; i < 200 && s_play_count > 0; i++) {  // max 10s
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-
-        tab5_audio_speaker_enable(false);
-        voice_set_state(VOICE_STATE_READY, NULL);
+        // TTS audio stream complete — drain task will transition to READY
+        // when the playback buffer empties. Don't block the WS receive task.
+        ESP_LOGI(TAG, "TTS end — drain task will finish playback");
+        s_tts_done = true;
+        if (s_play_sem) xSemaphoreGive(s_play_sem);  // wake drain task
     } else if (strcmp(type_str, "llm") == 0) {
         // Streaming LLM response token — append to LLM buffer
         cJSON *text = cJSON_GetObjectItem(root, "text");
@@ -1031,7 +1029,16 @@ static void playback_drain_task(void *arg)
         // Drain loop: keep pulling from ring buffer until empty
         while (s_play_running) {
             size_t avail = playback_buf_read(chunk, VOICE_CHUNK_SAMPLES);
-            if (avail == 0) break;
+            if (avail == 0) {
+                // Buffer empty — if TTS is done, transition to READY
+                if (s_tts_done) {
+                    s_tts_done = false;
+                    ESP_LOGI(TAG, "Playback drain complete — transitioning to READY");
+                    tab5_audio_speaker_enable(false);
+                    voice_set_state(VOICE_STATE_READY, NULL);
+                }
+                break;
+            }
 
             // This blocks until I2S DMA has room — the backpressure we need.
             tab5_audio_play_raw(chunk, avail);
@@ -1069,6 +1076,9 @@ static void ws_receive_task(void *arg)
     s_last_activity_us = esp_timer_get_time();
 
     while (s_ws_connected && !s_stop_flag) {
+        /* Yield every iteration to prevent starving lower-priority tasks on core 1 */
+        vTaskDelay(pdMS_TO_TICKS(1));
+
         int poll = esp_transport_poll_read(s_ws, 100);
         if (poll < 0) {
             ESP_LOGW(TAG, "WS poll error, connection lost");
@@ -1076,7 +1086,9 @@ static void ws_receive_task(void *arg)
             break;
         }
         if (poll == 0) {
-            // No data available — playback drain task handles I2S writes separately.
+            // No data available — yield to prevent tight loop if poll returns immediately
+            // (can happen when TCP socket is in degraded state, starving CPU1 idle task WDT)
+            vTaskDelay(pdMS_TO_TICKS(10));
             int64_t now_us = esp_timer_get_time();
             static int64_t s_last_keepalive_us = 0;
 
