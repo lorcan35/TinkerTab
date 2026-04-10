@@ -395,10 +395,18 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         }
         stop_all_anims();
 
-        /* If chat bubbles have content, this is a follow-up turn */
+        /* If chat bubbles have content, this is a follow-up turn.
+         * Auto-hide overlay after 4s so user can see home/chat screen. */
         bool has_conversation = s_has_llm_text;
         if (has_conversation) {
-            lv_label_set_text(s_lbl_status, "Ask a follow-up...");
+            lv_label_set_text(s_lbl_status, "");
+            /* Auto-dismiss: hide after 4 seconds */
+            static lv_timer_t *s_auto_hide = NULL;
+            if (s_auto_hide) { lv_timer_delete(s_auto_hide); s_auto_hide = NULL; }
+            s_auto_hide = lv_timer_create(
+                (lv_timer_cb_t)ui_voice_hide, 4000, NULL);
+            lv_timer_set_repeat_count(s_auto_hide, 1);
+            lv_timer_set_auto_delete(s_auto_hide, true);
         } else {
             lv_label_set_text(s_lbl_status, "Tap to Record");
         }

@@ -905,15 +905,17 @@ static void async_navigate(void *arg)
     lv_obj_t *tv = ui_home_get_tileview();
 
     if (strcmp(s_nav_target, "home") == 0) {
+        /* Hide any overlays (chat, settings) before showing home */
+        extern void ui_chat_destroy(void);
+        ui_chat_destroy();
         ui_home_go_home();
-        lv_screen_load(ui_home_get_screen());
         if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(0), LV_ANIM_OFF);
     } else if (strcmp(s_nav_target, "notes") == 0) {
         lv_screen_load(ui_home_get_screen());
         if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(1), LV_ANIM_OFF);
     } else if (strcmp(s_nav_target, "chat") == 0) {
-        lv_screen_load(ui_home_get_screen());
-        if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(2), LV_ANIM_OFF);
+        extern lv_obj_t *ui_chat_create(void);
+        ui_chat_create();
     } else if (strcmp(s_nav_target, "settings") == 0) {
         /* Settings is too heavy for lv_async_call — it blocks the LVGL render loop.
          * Use direct call since async_navigate already runs in LVGL context via lv_async_call. */

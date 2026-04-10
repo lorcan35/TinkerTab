@@ -674,11 +674,23 @@ void ui_home_nav_settings(void)
     lv_async_call(_async_settings, NULL);
 }
 
+static void _async_chat(void *arg)
+{
+    (void)arg;
+    extern lv_obj_t *ui_chat_create(void);
+    ui_chat_create();
+}
+
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg < 0 || pg >= NUM_PAGES) return;
     ui_keyboard_hide();
+    if (pg == 2) {
+        /* Chat is a fullscreen overlay, same pattern as settings */
+        lv_async_call(_async_chat, NULL);
+        return;
+    }
     if (pg == 3) {
         ui_home_nav_settings();
         return;
