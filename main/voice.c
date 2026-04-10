@@ -535,9 +535,16 @@ static void handle_text_message(const char *data, int len)
             voice_set_state(VOICE_STATE_READY, NULL);
             ESP_LOGI(TAG, "Connected to Dragon voice server");
 
-            // Cloud mode is toggled via Settings UI, not auto-restored.
-            // Auto-restore was causing Dragon pipeline hot-swap during
-            // connection, delaying session_start and breaking voice tests.
+            /* Restore voice mode from NVS — send config_update to Dragon
+             * so it matches the user's saved preference after reconnect. */
+            uint8_t saved_mode = tab5_settings_get_voice_mode();
+            if (saved_mode != 0) {
+                char saved_model[64] = {0};
+                tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
+                ESP_LOGI(TAG, "Restoring voice_mode=%d on reconnect", saved_mode);
+                voice_send_config_update((int)saved_mode,
+                                         saved_model[0] ? saved_model : NULL);
+            }
         }
     } else if (strcmp(type_str, "dictation_summary") == 0) {
         cJSON *title = cJSON_GetObjectItem(root, "title");
@@ -1809,23 +1816,6 @@ esp_err_t voice_send_text(const char *text)
     if (ret == ESP_OK) {
         voice_set_state(VOICE_STATE_PROCESSING, text);
     }
-    return ret;
-}
-
-esp_err_t voice_send_cloud_mode(bool enabled)
-{
-    if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
-
-    cJSON *msg = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg, "type", "config_update");
-    cJSON_AddBoolToObject(msg, "cloud_mode", enabled);
-    char *json = cJSON_PrintUnformatted(msg);
-    cJSON_Delete(msg);
-    if (!json) return ESP_ERR_NO_MEM;
-
-    ESP_LOGI(TAG, "Sending cloud_mode=%d to Dragon", enabled);
-    esp_err_t ret = ws_send_text(json);
-    cJSON_free(json);
     return ret;
 }
 

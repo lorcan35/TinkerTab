@@ -868,7 +868,7 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
 
     /* Send config_update to Dragon via voice WS */
     if (voice_is_connected()) {
-        voice_send_cloud_mode(mode >= 1);  /* triggers config_update on Dragon */
+        voice_send_config_update((int)mode, model[0] ? model : NULL);
     }
 
     /* Return current state */
