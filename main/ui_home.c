@@ -371,7 +371,8 @@ lv_obj_t *ui_home_create(void)
 
     /* ── TILEVIEW ────────────────────────────────────────────── */
     tileview = lv_tileview_create(scr);
-    lv_obj_set_size(tileview, SW, SH);
+    /* Leave room at bottom for nav bar (120px) + page dots (36px) */
+    lv_obj_set_size(tileview, SW, SH - NAV_H - 36);
     lv_obj_set_pos(tileview, 0, 0);
     lv_obj_set_style_bg_color(tileview, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(tileview, LV_OPA_COVER, 0);

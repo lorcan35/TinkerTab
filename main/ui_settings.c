@@ -982,3 +982,5 @@ void ui_settings_destroy(void)
 
     ESP_LOGI(TAG, "Settings screen destroyed");
 }
+
+lv_obj_t *ui_settings_get_screen(void) { return s_screen; }

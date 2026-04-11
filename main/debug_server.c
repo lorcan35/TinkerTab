@@ -905,11 +905,18 @@ static void async_navigate(void *arg)
     lv_obj_t *tv = ui_home_get_tileview();
 
     if (strcmp(s_nav_target, "home") == 0) {
-        /* Hide any overlays (chat, settings) before showing home */
+        /* Hide all overlays before showing home */
         extern void ui_chat_destroy(void);
+        extern void cb_settings_back(void);
         ui_chat_destroy();
+        /* Hide settings if visible */
+        extern lv_obj_t *ui_settings_get_screen(void);
+        lv_obj_t *ss = ui_settings_get_screen();
+        if (ss && !lv_obj_has_flag(ss, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(ss, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(ss, LV_OBJ_FLAG_CLICKABLE);
+        }
         ui_home_go_home();
-        if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(0), LV_ANIM_OFF);
     } else if (strcmp(s_nav_target, "notes") == 0) {
         lv_screen_load(ui_home_get_screen());
         if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(1), LV_ANIM_OFF);
