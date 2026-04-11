@@ -984,3 +984,10 @@ void ui_settings_destroy(void)
 }
 
 lv_obj_t *ui_settings_get_screen(void) { return s_screen; }
+
+void ui_settings_hide(void)
+{
+    /* Destroy the entire settings overlay to free memory and ensure
+     * no stale pixels remain. Next open re-creates from scratch. */
+    ui_settings_destroy();
+}

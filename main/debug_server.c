@@ -907,15 +907,9 @@ static void async_navigate(void *arg)
     if (strcmp(s_nav_target, "home") == 0) {
         /* Hide all overlays before showing home */
         extern void ui_chat_destroy(void);
-        extern void cb_settings_back(void);
+        extern void ui_settings_hide(void);
         ui_chat_destroy();
-        /* Hide settings if visible */
-        extern lv_obj_t *ui_settings_get_screen(void);
-        lv_obj_t *ss = ui_settings_get_screen();
-        if (ss && !lv_obj_has_flag(ss, LV_OBJ_FLAG_HIDDEN)) {
-            lv_obj_add_flag(ss, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(ss, LV_OBJ_FLAG_CLICKABLE);
-        }
+        ui_settings_hide();
         ui_home_go_home();
     } else if (strcmp(s_nav_target, "notes") == 0) {
         lv_screen_load(ui_home_get_screen());
@@ -953,6 +947,52 @@ static esp_err_t navigate_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "navigated", s_nav_target);
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
+
+/* POST /navtouch?screen=home|notes|chat|settings
+ * Same as /navigate but also dismisses overlays and reports tap coordinates.
+ * Useful for testing touch-based navigation flow. */
+static esp_err_t navtouch_handler(httpd_req_t *req)
+{
+    char query[64] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"use ?screen=home|notes|chat|settings\"}");
+        return ESP_OK;
+    }
+    char screen[16] = {0};
+    httpd_query_key_value(query, "screen", screen, sizeof(screen));
+
+    int tap_x = -1;
+    if (strcmp(screen, "home") == 0)          tap_x = 90;
+    else if (strcmp(screen, "notes") == 0)    tap_x = 270;
+    else if (strcmp(screen, "chat") == 0)     tap_x = 450;
+    else if (strcmp(screen, "settings") == 0) tap_x = 630;
+
+    if (tap_x < 0) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"unknown screen\"}");
+        return ESP_OK;
+    }
+
+    /* Schedule on LVGL thread — same path as /navigate */
+    memset(s_nav_target, 0, sizeof(s_nav_target));
+    memcpy(s_nav_target, screen, strlen(screen) < sizeof(s_nav_target) ? strlen(screen) : sizeof(s_nav_target) - 1);
+    lv_async_call(async_navigate, NULL);
+
+    ESP_LOGI("debug", "NavTouch: %s (tap equiv %d,1220)", screen, tap_x);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "screen", screen);
+    cJSON_AddNumberToObject(root, "tap_x", tap_x);
+    cJSON_AddNumberToObject(root, "tap_y", 1220);
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
@@ -1241,7 +1281,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
-    config.max_uri_handlers = 26;
+    config.max_uri_handlers = 28;
     config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
@@ -1316,6 +1356,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_selftest = {
         .uri = "/selftest", .method = HTTP_GET, .handler = selftest_handler
     };
+    const httpd_uri_t uri_navtouch = {
+        .uri = "/navtouch", .method = HTTP_POST, .handler = navtouch_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -1338,6 +1381,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_selftest);
+    httpd_register_uri_handler(server, &uri_navtouch);
 
     /* Log the URL */
     char ip[20];
