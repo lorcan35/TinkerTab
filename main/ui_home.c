@@ -470,7 +470,7 @@ lv_obj_t *ui_home_create(void)
             lv_obj_set_width(nav_icons[i], slot);
             lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID, slot * i, 0);
             lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(nav_icons[i], 20);
+            lv_obj_set_ext_click_area(nav_icons[i], 8);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                (void *)(intptr_t)i);
         }

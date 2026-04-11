@@ -488,6 +488,7 @@ void ui_voice_show(void)
     s_visible = true;
 
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);  /* re-enable tap capture */
     lv_obj_set_style_opa(s_overlay, LV_OPA_TRANSP, 0);
 
     /* Fade in */
@@ -1342,6 +1343,8 @@ static void fade_overlay_cb(void *obj, int32_t val)
 static void fade_done_hide_cb(lv_anim_t *a)
 {
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+    /* Stop intercepting taps when hidden — otherwise nav bar is blocked */
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
     /* Reset overlay opacity for next show */
     lv_obj_set_style_opa(s_overlay, LV_OPA_COVER, 0);
 }

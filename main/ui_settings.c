@@ -126,7 +126,10 @@ static void cb_back_btn(lv_event_t *e)
     if (s_refresh_timer) { lv_timer_pause(s_refresh_timer); }
 
     /* Settings is an overlay on the home screen — just hide it */
-    if (s_screen) lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+    if (s_screen) {
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+    }
 }
 
 static void cb_brightness(lv_event_t *e)
@@ -435,6 +438,7 @@ lv_obj_t *ui_settings_create(void)
         ESP_LOGI(TAG, "Settings screen resumed");
         s_destroying = false;
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_move_foreground(s_screen);
         if (s_refresh_timer) lv_timer_resume(s_refresh_timer);
         ui_settings_update();
