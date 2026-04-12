@@ -39,7 +39,7 @@ static int          s_next_y     = 0;      /* Running Y offset in scroll area */
 static voice_state_t s_last_state = VOICE_STATE_IDLE;
 
 #define MAX_MESSAGES     50
-#define BUBBLE_MAX_W    500
+#define BUBBLE_MAX_W    480
 #define BUBBLE_PAD       16
 #define BUBBLE_GAP        8
 #define LABEL_MAX_W     (BUBBLE_MAX_W - 2 * BUBBLE_PAD)  /* 468 */
@@ -48,13 +48,16 @@ static voice_state_t s_last_state = VOICE_STATE_IDLE;
 #define INPUT_BAR_H      80
 #define MSG_AREA_H      (1280 - TOPBAR_H - INPUT_BAR_H)  /* 1140 */
 
-#define CLR_BG           0x111111
-#define CLR_TOPBAR       0x1A1A1A
+#define CLR_BG           0x0A0A0F   /* Material Dark near-black */
+#define CLR_TOPBAR       0x0A0A0F   /* matches overlay bg */
+#define CLR_BORDER       0x1A1A2E   /* subtle indigo border */
 #define CLR_USER_BUB     0xF5A623   /* golden/amber */
-#define CLR_TINKER_BUB   0x2C2C2E   /* dark gray */
+#define CLR_TINKER_BUB   0x1A1A2E   /* indigo-tinted dark */
 #define CLR_CYAN         0x00E5FF
 #define CLR_AMBER        0xF5A623
-#define CLR_TOOL_DIM     0x66D9EF   /* dim cyan for tool indicator */
+#define CLR_INPUT_BG     0x1A1A2E   /* text input bg */
+#define CLR_INPUT_BORDER 0x333333   /* text input border */
+#define CLR_TOOL_DIM     0x00E5FF   /* dim cyan for tool indicator */
 
 /* ── Helpers ───────────────────────────────────────────────────── */
 
@@ -349,8 +352,8 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_t *back_btn = lv_button_create(s_overlay);
     lv_obj_set_size(back_btn, 80, 44);
     lv_obj_set_pos(back_btn, 12, 8);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(CLR_TINKER_BUB), 0);
-    lv_obj_set_style_radius(back_btn, 14, 0);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(CLR_BORDER), 0);
+    lv_obj_set_style_radius(back_btn, 8, 0);
     lv_obj_set_style_border_width(back_btn, 0, 0);
     lv_obj_add_event_cb(back_btn, cb_close, LV_EVENT_CLICKED, NULL);
 
@@ -379,7 +382,7 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_remove_style_all(sep);
     lv_obj_set_size(sep, 720, 1);
     lv_obj_set_pos(sep, 0, TOPBAR_H - 1);
-    lv_obj_set_style_bg_color(sep, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_color(sep, lv_color_hex(CLR_BORDER), 0);
     lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
 
     /* ── Message scroll area ────────────────────────────────── */
@@ -401,14 +404,17 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, 720, INPUT_BAR_H);
     lv_obj_set_pos(bar, 0, 1280 - INPUT_BAR_H);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(CLR_TOPBAR), 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(CLR_BORDER), 0);
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Mic button — 56px circle, cyan */
+    /* Mic button — 48px circle, cyan */
     lv_obj_t *mic_btn = lv_button_create(bar);
-    lv_obj_set_size(mic_btn, 56, 56);
-    lv_obj_set_pos(mic_btn, 10, 12);
+    lv_obj_set_size(mic_btn, 48, 48);
+    lv_obj_set_pos(mic_btn, 12, 16);
     lv_obj_set_style_bg_color(mic_btn, lv_color_hex(CLR_CYAN), 0);
     lv_obj_set_style_radius(mic_btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(mic_btn, 0, 0);
@@ -422,24 +428,27 @@ lv_obj_t *ui_chat_create(void)
 
     /* Text input */
     s_textarea = lv_textarea_create(bar);
-    lv_obj_set_size(s_textarea, 440, 56);
-    lv_obj_set_pos(s_textarea, 76, 12);
+    lv_obj_set_size(s_textarea, 440, 48);
+    lv_obj_set_pos(s_textarea, 72, 16);
     lv_textarea_set_placeholder_text(s_textarea, "Type a message...");
     lv_textarea_set_one_line(s_textarea, true);
-    lv_obj_set_style_bg_color(s_textarea, lv_color_hex(CLR_TINKER_BUB), 0);
+    lv_obj_set_style_bg_color(s_textarea, lv_color_hex(CLR_INPUT_BG), 0);
     lv_obj_set_style_text_color(s_textarea, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(s_textarea, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_border_width(s_textarea, 0, 0);
-    lv_obj_set_style_radius(s_textarea, 28, 0);
+    lv_obj_set_style_border_color(s_textarea, lv_color_hex(CLR_INPUT_BORDER), 0);
+    lv_obj_set_style_border_width(s_textarea, 1, 0);
+    lv_obj_set_style_radius(s_textarea, 24, 0);
     lv_obj_set_style_pad_left(s_textarea, 20, 0);
+    /* Placeholder dim gray */
+    lv_obj_set_style_text_color(s_textarea, lv_color_hex(0x666666), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_event_cb(s_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
 
     /* Send button — amber */
     lv_obj_t *send_btn = lv_button_create(bar);
-    lv_obj_set_size(send_btn, 100, 56);
-    lv_obj_set_pos(send_btn, 526, 12);
+    lv_obj_set_size(send_btn, 100, 48);
+    lv_obj_set_pos(send_btn, 524, 16);
     lv_obj_set_style_bg_color(send_btn, lv_color_hex(CLR_AMBER), 0);
-    lv_obj_set_style_radius(send_btn, 28, 0);
+    lv_obj_set_style_radius(send_btn, 24, 0);
     lv_obj_set_style_border_width(send_btn, 0, 0);
     lv_obj_add_event_cb(send_btn, cb_send, LV_EVENT_CLICKED, NULL);
 
@@ -498,7 +507,7 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_obj_set_size(bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(bubble, lv_color_hex(is_user ? CLR_USER_BUB : CLR_TINKER_BUB), 0);
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bubble, 20, 0);
+    lv_obj_set_style_radius(bubble, 16, 0);
     lv_obj_set_style_pad_all(bubble, BUBBLE_PAD, 0);
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -508,7 +517,7 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(lbl, LABEL_MAX_W);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(is_user ? 0x1A1A1A : 0xFFFFFF), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(is_user ? 0x000000 : 0xFFFFFF), 0);
 
     /* Force layout so we can measure height */
     lv_obj_update_layout(bubble);

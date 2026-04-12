@@ -912,8 +912,8 @@ static void async_navigate(void *arg)
         ui_settings_hide();
         ui_home_go_home();
     } else if (strcmp(s_nav_target, "notes") == 0) {
-        lv_screen_load(ui_home_get_screen());
-        if (tv) lv_tileview_set_tile(tv, ui_home_get_tile(1), LV_ANIM_OFF);
+        extern lv_obj_t *ui_notes_create(void);
+        ui_notes_create();
     } else if (strcmp(s_nav_target, "chat") == 0) {
         extern lv_obj_t *ui_chat_create(void);
         ui_chat_create();

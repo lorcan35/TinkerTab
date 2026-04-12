@@ -52,7 +52,7 @@ static const char *TAG = "ui_notes";
 
 /* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW             720
-#define SH             1280
+#define SH             1124     /* Tileview page height (1280 - NAV_H - 36) */
 #define TOPBAR_H       120     /* was 56 */
 #define INPUT_H        140     /* was 64 */
 #define NAV_H          140     /* was 64 */
