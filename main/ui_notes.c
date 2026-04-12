@@ -1136,6 +1136,7 @@ static void show_input_area(void)
     lv_obj_set_style_radius(s_input_area, 16, 0);
     lv_obj_set_style_border_width(s_input_area, 0, 0);
     lv_obj_set_style_pad_hor(s_input_area, 20, 0);
+    lv_obj_add_flag(s_input_area, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_input_area, cb_input_send, LV_EVENT_READY, NULL);
 
     /* Save button — huge touch target */
@@ -1376,6 +1377,20 @@ static void cb_search_changed(lv_event_t *e)
     refresh_list();
 }
 
+/* Bug fix: proper click callback for search bar keyboard popup */
+static void cb_search_tap(lv_event_t *e)
+{
+    (void)e;
+    if (s_search_ta) ui_keyboard_show(s_search_ta);
+}
+
+/* Bug fix: proper click callback for edit overlay keyboard popup */
+static void cb_edit_ta_tap(lv_event_t *e)
+{
+    (void)e;
+    if (s_edit_ta) ui_keyboard_show(s_edit_ta);
+}
+
 /* M1: Edit overlay — save callback (uses static s_edit_* variables) */
 static void cb_edit_save(lv_event_t *e)
 {
@@ -1509,8 +1524,9 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_border_color(s_edit_ta, lv_color_hex(COL_BORDER), 0);
     lv_obj_set_style_radius(s_edit_ta, 8, 0);
     lv_obj_set_style_pad_all(s_edit_ta, 16, 0);
-    lv_obj_add_event_cb(s_edit_ta, (lv_event_cb_t)ui_keyboard_show,
-                        LV_EVENT_CLICKED, s_edit_ta);
+    lv_obj_add_flag(s_edit_ta, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_event_cb(s_edit_ta, cb_edit_ta_tap, LV_EVENT_CLICKED, NULL);
+    ui_keyboard_show(s_edit_ta);  /* Bug fix: show keyboard immediately when edit overlay opens */
 }
 
 /* Delete confirmation callbacks */
@@ -1689,6 +1705,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_GESTURE_BUBBLE);  /* Bug fix: prevent gesture bubbling to s_screen cb_back */
     lv_obj_set_ext_click_area(card, 10);
     lv_obj_add_event_cb(card, cb_note_tap, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
@@ -1948,8 +1965,9 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_pad_left(s_search_ta, 16, 0);
     lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_LABEL3),
                                 LV_PART_TEXTAREA_PLACEHOLDER);
+    lv_obj_add_flag(s_search_ta, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
     if (s_search_text[0]) lv_textarea_set_text(s_search_ta, s_search_text);
-    lv_obj_add_event_cb(s_search_ta, (lv_event_cb_t)ui_keyboard_show, LV_EVENT_CLICKED, s_search_ta);
+    lv_obj_add_event_cb(s_search_ta, cb_search_tap, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(s_search_ta, cb_search_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* Divider */

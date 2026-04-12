@@ -81,8 +81,11 @@ static void ask_tap_cb(lv_event_t *e);
 static void cb_last_note_tap(lv_event_t *e);
 static void cb_camera_launch(lv_event_t *e);
 static void cb_files_launch(lv_event_t *e);
+static void dismiss_all_overlays(void);
+static void async_notes_create(void *arg);
 
 /* ── State ───────────────────────────────────────────────────── */
+static uint8_t    s_badge_mode = 0;   /* local cycling state for mode badge */
 static lv_obj_t  *scr        = NULL;
 static lv_obj_t  *tileview   = NULL;
 static lv_obj_t  *tiles[NUM_PAGES] = {NULL};
@@ -516,6 +519,9 @@ lv_obj_t *ui_home_create(void)
 
     lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
+    /* Seed local badge mode from NVS so it starts in sync */
+    s_badge_mode = tab5_settings_get_voice_mode();
+
     ui_home_update_status();
     tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
 
@@ -591,10 +597,9 @@ static void cb_files_launch(lv_event_t *e)
 static void cb_last_note_tap(lv_event_t *e)
 {
     (void)e;
-    /* Navigate to notes page */
-    if (tileview && tiles[1]) {
-        lv_tileview_set_tile(tileview, tiles[1], LV_ANIM_ON);
-    }
+    /* Open Notes overlay (same as nav bar Notes button) */
+    dismiss_all_overlays();
+    lv_async_call(async_notes_create, NULL);
 }
 
 static void update_mode_badge(uint8_t mode)
@@ -623,27 +628,29 @@ static void update_mode_badge(uint8_t mode)
 static void privacy_tap_cb(lv_event_t *e)
 {
     (void)e;
-    /* Cycle: Local(0) → Hybrid(1) → Cloud(2) → Local(0) */
-    uint8_t cur = tab5_settings_get_voice_mode();
-    uint8_t next = (cur + 1) % 3;
+    /* Cycle: Local(0) → Hybrid(1) → Cloud(2) → Local(0)
+     * Use local s_badge_mode instead of reading NVS — avoids race
+     * where Dragon ACK overwrites NVS before next tap is processed. */
+    uint8_t prev = s_badge_mode;
+    s_badge_mode = (s_badge_mode + 1) % 3;
 
-    tab5_settings_set_voice_mode(next);
+    tab5_settings_set_voice_mode(s_badge_mode);
 
     /* Send config_update to Dragon */
     if (voice_is_connected()) {
         char model[64] = {0};
         tab5_settings_get_llm_model(model, sizeof(model));
-        voice_send_config_update((int)next, next == 2 ? model : NULL);
+        voice_send_config_update((int)s_badge_mode, s_badge_mode == 2 ? model : NULL);
     }
 
     /* Update badge */
-    update_mode_badge(next);
+    update_mode_badge(s_badge_mode);
 
     /* Toast */
     const char *names[] = {"Local — all on-device", "Hybrid — cloud STT+TTS", "Cloud — all cloud"};
-    show_toast(names[next]);
+    show_toast(names[s_badge_mode]);
 
-    ESP_LOGI(TAG, "Mode cycled: %d → %d", cur, next);
+    ESP_LOGI(TAG, "Mode cycled: %d → %d", prev, s_badge_mode);
 }
 
 static void brain_pulse_cb(void *obj, int32_t val)
@@ -861,7 +868,8 @@ void ui_home_update_status(void)
     }
 
     /* Mode badge — keep in sync with NVS */
-    update_mode_badge(tab5_settings_get_voice_mode());
+    /* Use local s_badge_mode — NVS gets overwritten by Dragon ACK */
+    update_mode_badge(s_badge_mode);
 
     /* Low battery warnings */
     {
