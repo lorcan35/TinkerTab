@@ -1055,9 +1055,11 @@ static void cb_back(lv_event_t *e)
         if (dir != LV_DIR_RIGHT) return;  /* only swipe-right triggers back */
     }
     hide_input_area();
-    ui_notes_destroy();
-    ui_home_go_home();
-    lv_screen_load(ui_home_get_screen());
+    /* Hide overlay — don't destroy (preserve note list for quick re-open) */
+    if (s_screen) {
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+    }
 }
 
 /* FreeRTOS task to switch to VOICE mode (connects to Dragon) */
@@ -1704,11 +1706,26 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
 /* ── Screen create/destroy ─────────────────────────────── */
 lv_obj_t *ui_notes_create(void)
 {
-    s_screen = lv_obj_create(NULL);
+    if (s_screen) {
+        /* Already exists — just unhide */
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_move_foreground(s_screen);
+        refresh_list();
+        ESP_LOGI(TAG, "Notes screen resumed");
+        return s_screen;
+    }
+
+    /* Fullscreen overlay on home screen (NOT a separate lv_screen) */
+    extern lv_obj_t *ui_home_get_screen(void);
+    s_screen = lv_obj_create(ui_home_get_screen());
+    lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, SW, SH);
+    lv_obj_set_pos(s_screen, 0, 0);
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_foreground(s_screen);
 
     /* L5: Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back, LV_EVENT_GESTURE, NULL);
@@ -1795,7 +1812,6 @@ lv_obj_t *ui_notes_create(void)
 
     refresh_list();
 
-    lv_screen_load(s_screen);
     ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
     return s_screen;
 }
@@ -1813,3 +1829,14 @@ void ui_notes_destroy(void)
     s_input_visible = false;
     s_voice_recording = false;
 }
+
+void ui_notes_hide(void)
+{
+    hide_input_area();
+    if (s_screen) {
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+    }
+}
+
+lv_obj_t *ui_notes_get_screen(void) { return s_screen; }
