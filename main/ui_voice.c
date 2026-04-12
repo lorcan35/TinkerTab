@@ -511,18 +511,19 @@ void ui_voice_hide(void)
 
     stop_all_anims();
 
-    /* Fade out */
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, s_overlay);
-    lv_anim_set_values(&a, VO_BG_OPA, 0);
-    lv_anim_set_duration(&a, ANIM_FADE_OUT_MS);
-    lv_anim_set_exec_cb(&a, fade_overlay_cb);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
-    lv_anim_set_ready_cb(&a, fade_done_hide_cb);
-    lv_anim_start(&a);
+    /* Cancel any in-flight fade animation to prevent callbacks on stale objects */
+    lv_anim_delete(s_overlay, fade_overlay_cb);
 
-    ESP_LOGI(TAG, "Voice overlay hiding");
+    /* Hide immediately — no fade animation.
+     * During rapid navigation, async fade-out causes race conditions
+     * where callbacks fire on deleted objects. Instant hide is safe. */
+    if (s_overlay) {
+        lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_opa(s_overlay, LV_OPA_COVER, 0);
+    }
+
+    ESP_LOGI(TAG, "Voice overlay hidden");
 }
 
 bool ui_voice_is_visible(void)
@@ -1333,6 +1334,7 @@ static void mic_dot_pulse_cb(void *obj, int32_t val)
 
 static void fade_overlay_cb(void *obj, int32_t val)
 {
+    if (!obj || !s_overlay) return;  /* Guard against deleted overlay */
     lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 
     /* Scale child content opacity proportionally */
@@ -1342,6 +1344,7 @@ static void fade_overlay_cb(void *obj, int32_t val)
 
 static void fade_done_hide_cb(lv_anim_t *a)
 {
+    if (!s_overlay) return;  /* Guard against deleted overlay */
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     /* Stop intercepting taps when hidden — otherwise nav bar is blocked */
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);

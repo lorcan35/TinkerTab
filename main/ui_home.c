@@ -761,10 +761,19 @@ static void dismiss_all_overlays(void)
     ui_chat_destroy();
 }
 
+static uint32_t s_last_nav_ms = 0;
+#define NAV_DEBOUNCE_MS 300
+
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg < 0 || pg >= NUM_PAGES) return;
+
+    /* Debounce: ignore rapid navigation taps to prevent animation/mutex races */
+    uint32_t now = lv_tick_get();
+    if (now - s_last_nav_ms < NAV_DEBOUNCE_MS) return;
+    s_last_nav_ms = now;
+
     dismiss_all_overlays();
     if (pg == 1) {
         lv_async_call(async_notes_create, NULL);
