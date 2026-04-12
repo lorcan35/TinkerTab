@@ -185,7 +185,7 @@ Services: `STORAGE`, `DISPLAY`, `AUDIO`, `NETWORK`, `DRAGON`
 
 | Requirement               | Version          | Notes                                       |
 |---------------------------|------------------|---------------------------------------------|
-| ESP-IDF                   | v5.5.2           | Must match `dependencies.lock`              |
+| ESP-IDF                   | v5.4.3           | Must match `dependencies.lock`              |
 | Python                    | 3.12+            | For esptool, serial monitor                 |
 | M5Stack Tab5              | --               | ESP32-P4 hardware                           |
 | Dragon Q6A server         | --               | Running [TinkerBox](https://github.com/lorcan35/TinkerBox) |
@@ -193,12 +193,12 @@ Services: `STORAGE`, `DISPLAY`, `AUDIO`, `NETWORK`, `DRAGON`
 
 ### Install ESP-IDF
 
-Follow the [ESP-IDF Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/v5.5.2/esp32p4/get-started/index.html)
+Follow the [ESP-IDF Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/v5.4.3/esp32p4/get-started/index.html)
 or use the one-liner:
 
 ```bash
 mkdir -p ~/esp && cd ~/esp
-git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git
+git clone -b v5.4.3 --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf && ./install.sh esp32p4
 ```
 
@@ -301,7 +301,7 @@ Default credentials are set in `sdkconfig.defaults`:
 ```
 CONFIG_TAB5_WIFI_SSID="TinkerNet"
 CONFIG_TAB5_WIFI_PASS="YourPassword"
-CONFIG_TAB5_DRAGON_HOST="192.168.70.242"
+CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
 CONFIG_TAB5_DRAGON_PORT=3502
 ```
 
