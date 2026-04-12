@@ -389,10 +389,8 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             break;
         }
 
-        /* Show prompt — if we had a conversation, offer follow-up */
-        if (!s_visible) {
-            ui_voice_show();
-        }
+        /* Don't auto-show overlay on READY — only show when user taps mic/orb.
+         * Just update the overlay state if it's already visible. */
         stop_all_anims();
 
         /* If chat bubbles have content, this is a follow-up turn.

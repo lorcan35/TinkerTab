@@ -1114,7 +1114,7 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "connected", voice_is_connected());
     cJSON_AddNumberToObject(root, "state", (int)voice_get_state());
 
-    const char *state_names[] = {"IDLE", "CONNECTING", "LISTENING", "PROCESSING", "SPEAKING", "DICTATING", "ERROR"};
+    const char *state_names[] = {"IDLE", "CONNECTING", "READY", "LISTENING", "PROCESSING", "SPEAKING", "DICTATING"};
     int st = (int)voice_get_state();
     cJSON_AddStringToObject(root, "state_name", (st >= 0 && st <= 6) ? state_names[st] : "UNKNOWN");
 
