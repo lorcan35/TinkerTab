@@ -22,6 +22,7 @@
 #include "ui_keyboard.h"
 #include "mode_manager.h"
 #include "voice.h"
+#include "settings.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
 #include "ui_files.h"
@@ -580,10 +581,53 @@ static void cb_last_note_tap(lv_event_t *e)
     }
 }
 
+static void update_mode_badge(uint8_t mode)
+{
+    if (!lbl_privacy) return;
+    switch (mode) {
+    case 0:
+        lv_label_set_text(lbl_privacy, "  Local  ");
+        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(0x22C55E), 0);  /* green */
+        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(0x22C55E), 0);
+        break;
+    case 1:
+        lv_label_set_text(lbl_privacy, " Hybrid ");
+        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(0xF59E0B), 0);  /* amber */
+        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(0xF59E0B), 0);
+        break;
+    case 2:
+        lv_label_set_text(lbl_privacy, "  Cloud  ");
+        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(0x3B82F6), 0);  /* blue */
+        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(0x3B82F6), 0);
+        break;
+    }
+    lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
+}
+
 static void privacy_tap_cb(lv_event_t *e)
 {
     (void)e;
-    show_toast("Local mode: all data stays on your network");
+    /* Cycle: Local(0) → Hybrid(1) → Cloud(2) → Local(0) */
+    uint8_t cur = tab5_settings_get_voice_mode();
+    uint8_t next = (cur + 1) % 3;
+
+    tab5_settings_set_voice_mode(next);
+
+    /* Send config_update to Dragon */
+    if (voice_is_connected()) {
+        char model[64] = {0};
+        tab5_settings_get_llm_model(model, sizeof(model));
+        voice_send_config_update((int)next, next == 2 ? model : NULL);
+    }
+
+    /* Update badge */
+    update_mode_badge(next);
+
+    /* Toast */
+    const char *names[] = {"Local — all on-device", "Hybrid — cloud STT+TTS", "Cloud — all cloud"};
+    show_toast(names[next]);
+
+    ESP_LOGI(TAG, "Mode cycled: %d → %d", cur, next);
 }
 
 static void brain_pulse_cb(void *obj, int32_t val)
@@ -774,6 +818,9 @@ void ui_home_update_status(void)
         lv_obj_set_style_bg_color(lbl_sbar_dragon,
             lv_color_hex(voice_ok ? COL_MINT : COL_RED), 0);
     }
+
+    /* Mode badge — keep in sync with NVS */
+    update_mode_badge(tab5_settings_get_voice_mode());
 
     /* Low battery warnings */
     {
