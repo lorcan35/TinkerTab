@@ -96,6 +96,10 @@ static char      s_ota_url[256]   = {0};
 static lv_obj_t *s_slider_bright  = NULL;
 static lv_obj_t *s_slider_volume  = NULL;
 
+/* Slider value labels */
+static lv_obj_t *s_lbl_bright_val = NULL;
+static lv_obj_t *s_lbl_vol_val    = NULL;
+
 /* Auto-rotate switch */
 static lv_obj_t *s_sw_autorot     = NULL;
 
@@ -209,6 +213,7 @@ static void cb_brightness(lv_event_t *e)
     int val = lv_slider_get_value(slider);
     tab5_display_set_brightness(val);
     tab5_settings_set_brightness((uint8_t)val);
+    if (s_lbl_bright_val) lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", val);
     ESP_LOGI(TAG, "Brightness set to %d%% (saved)", val);
 }
 
@@ -218,6 +223,7 @@ static void cb_volume(lv_event_t *e)
     int val = lv_slider_get_value(slider);
     tab5_audio_set_volume((uint8_t)val);
     tab5_settings_set_volume((uint8_t)val);
+    if (s_lbl_vol_val) lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", val);
     ESP_LOGI(TAG, "Volume set to %d%% (saved)", val);
 }
 
@@ -633,12 +639,22 @@ lv_obj_t *ui_settings_create(void)
     mk_row_label(s_scroll, "Brightness", y);
     s_slider_bright = mk_slider(s_scroll, acc_display, RIGHT_X, y,
                                 0, 100, tab5_settings_get_brightness(), cb_brightness);
+    s_lbl_bright_val = lv_label_create(s_scroll);
+    lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 210, y + 4);
+    lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
+    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_font(s_lbl_bright_val, &lv_font_montserrat_16, 0);
     y += ROW_H + 4;
 
     /* Volume */
     mk_row_label(s_scroll, "Volume", y);
     s_slider_volume = mk_slider(s_scroll, acc_display, RIGHT_X, y,
                                 0, 100, tab5_settings_get_volume(), cb_volume);
+    s_lbl_vol_val = lv_label_create(s_scroll);
+    lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 210, y + 4);
+    lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
+    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_font(s_lbl_vol_val, &lv_font_montserrat_16, 0);
     y += ROW_H + 4;
 
     /* Auto-rotate */
@@ -1168,6 +1184,8 @@ void ui_settings_destroy(void)
     s_ntp_btn_label = NULL;
     s_slider_bright = NULL;
     s_slider_volume = NULL;
+    s_lbl_bright_val = NULL;
+    s_lbl_vol_val    = NULL;
     s_sw_autorot    = NULL;
     s_tab_local     = NULL;
     s_tab_hybrid    = NULL;

@@ -1522,10 +1522,11 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_max_height(card, 160, 0);  /* FIX N1: cap card height */
-    lv_obj_set_style_bg_color(card, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, CARD_RAD, 0);
-    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x333333), 0);
     lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */
@@ -1726,7 +1727,7 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_t *vbtn = lv_button_create(btn_row);
     lv_obj_set_size(vbtn, SW/2 - 24, 120);
     lv_obj_align(vbtn, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_set_style_bg_color(vbtn, lv_color_hex(COL_CYAN), 0);
+    lv_obj_set_style_bg_color(vbtn, lv_color_hex(0xF5A623), 0);
     lv_obj_set_style_bg_opa(vbtn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(vbtn, 20, 0);
     lv_obj_set_style_border_width(vbtn, 0, 0);
@@ -1743,10 +1744,11 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_t *tbtn = lv_button_create(btn_row);
     lv_obj_set_size(tbtn, SW/2 - 24, 120);
     lv_obj_align(tbtn, LV_ALIGN_RIGHT_MID, -12, 0);
-    lv_obj_set_style_bg_color(tbtn, lv_color_hex(COL_CARD2), 0);
+    lv_obj_set_style_bg_color(tbtn, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_bg_opa(tbtn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(tbtn, 20, 0);
-    lv_obj_set_style_border_width(tbtn, 0, 0);
+    lv_obj_set_style_border_width(tbtn, 1, 0);
+    lv_obj_set_style_border_color(tbtn, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(tbtn, cb_new_text, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *ticon = lv_label_create(tbtn);

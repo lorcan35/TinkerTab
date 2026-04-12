@@ -9,6 +9,7 @@
 #include "voice.h"
 #include "ui_keyboard.h"
 #include "settings.h"
+#include "rtc.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "lvgl.h"
@@ -32,6 +33,12 @@ static lv_obj_t  *s_assist_label  = NULL;
 
 /* Tool indicator */
 static lv_obj_t  *s_tool_label   = NULL;
+
+/* Typing indicator */
+static lv_obj_t  *s_typing_lbl   = NULL;
+
+/* Empty state hint */
+static lv_obj_t  *s_empty_hint   = NULL;
 
 static bool         s_active     = false;
 static int          s_msg_count  = 0;
@@ -60,6 +67,19 @@ static voice_state_t s_last_state = VOICE_STATE_IDLE;
 #define CLR_TOOL_DIM     0x00E5FF   /* dim cyan for tool indicator */
 
 /* ── Helpers ───────────────────────────────────────────────────── */
+
+/**
+ * Get current time as "HH:MM" string. Returns false if RTC unavailable.
+ */
+static bool get_time_str(char *buf, size_t buf_sz)
+{
+    tab5_rtc_time_t now;
+    if (tab5_rtc_get_time(&now) == ESP_OK) {
+        snprintf(buf, buf_sz, "%02d:%02d", now.hour, now.minute);
+        return true;
+    }
+    return false;
+}
 
 /**
  * Strip <tool>...</tool> and everything from <tool> to end-of-string.
@@ -116,6 +136,31 @@ static void update_mode_badge(void)
         lv_label_set_text(s_mode_badge, "Cloud");
 }
 
+/* ── Typing indicator management ──────────────────────────────── */
+
+static void show_typing_indicator(void)
+{
+    if (s_typing_lbl || !s_msg_scroll) return;
+
+    s_typing_lbl = lv_label_create(s_msg_scroll);
+    lv_label_set_text(s_typing_lbl, "Tinker is thinking...");
+    lv_obj_set_pos(s_typing_lbl, 16, s_next_y);
+    lv_obj_set_style_text_color(s_typing_lbl, lv_color_hex(CLR_CYAN), 0);
+    lv_obj_set_style_text_font(s_typing_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_opa(s_typing_lbl, LV_OPA_50, 0);
+
+    /* Scroll so the indicator is visible */
+    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+}
+
+static void hide_typing_indicator(void)
+{
+    if (s_typing_lbl) {
+        lv_obj_del(s_typing_lbl);
+        s_typing_lbl = NULL;
+    }
+}
+
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
 static void cb_close(lv_event_t *e)
@@ -137,6 +182,7 @@ static void cb_close(lv_event_t *e)
     s_assist_bubble = NULL;
     s_assist_label  = NULL;
     s_tool_label    = NULL;
+    s_typing_lbl    = NULL;
     s_active        = false;
     ESP_LOGI(TAG, "Chat hidden (messages preserved)");
 }
@@ -259,6 +305,8 @@ static void poll_voice_cb(lv_timer_t *t)
 
             if (stripped[0]) {
                 hide_tool_indicator();
+                /* Remove typing indicator once real text arrives */
+                hide_typing_indicator();
 
                 if (!s_assist_bubble) {
                     /* Create new assistant bubble */
@@ -280,10 +328,13 @@ static void poll_voice_cb(lv_timer_t *t)
                     lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
                 }
             }
+        } else if (!s_assist_bubble && !s_tool_label) {
+            /* PROCESSING but no LLM text yet and no tool indicator — show typing */
+            show_typing_indicator();
         }
     }
 
-    /* Transition: PROCESSING/SPEAKING → READY/IDLE = finalize */
+    /* Transition: PROCESSING/SPEAKING -> READY/IDLE = finalize */
     if (s_last_state == VOICE_STATE_PROCESSING || s_last_state == VOICE_STATE_SPEAKING) {
         if (st == VOICE_STATE_READY || st == VOICE_STATE_IDLE) {
             const char *llm = voice_get_llm_text();
@@ -299,6 +350,7 @@ static void poll_voice_cb(lv_timer_t *t)
                 }
             }
             hide_tool_indicator();
+            hide_typing_indicator();
             s_assist_bubble = NULL;
             s_assist_label  = NULL;
         }
@@ -465,6 +517,14 @@ lv_obj_t *ui_chat_create(void)
     /* Welcome message */
     ui_chat_add_message("Hi! I'm Tinker. Type or tap the mic to chat.", false);
 
+    /* Empty state hint — shown until a real conversation starts */
+    s_empty_hint = lv_label_create(s_msg_scroll);
+    lv_label_set_text(s_empty_hint, "Ask me anything!\nI can search the web,\ndo math, check weather,\nand remember things.");
+    lv_obj_set_style_text_color(s_empty_hint, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_font(s_empty_hint, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_align(s_empty_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_empty_hint, 120, 300);
+
     /* Start polling for streaming LLM responses */
     s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
 
@@ -509,6 +569,7 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(bubble, 16, 0);
     lv_obj_set_style_pad_all(bubble, BUBBLE_PAD, 0);
+    lv_obj_set_style_pad_bottom(bubble, 8, 0);  /* tighter bottom for timestamp */
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Tinker bubbles get a visible border for OLED contrast */
@@ -525,12 +586,28 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(is_user ? 0x000000 : 0xFFFFFF), 0);
 
+    /* Timestamp label — right-aligned inside bubble, below message text */
+    char time_buf[8];
+    if (get_time_str(time_buf, sizeof(time_buf))) {
+        lv_obj_t *ts = lv_label_create(bubble);
+        lv_label_set_text(ts, time_buf);
+        lv_obj_set_style_text_font(ts, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(ts, lv_color_hex(is_user ? 0x333333 : 0x666666), 0);
+        lv_obj_set_width(ts, LABEL_MAX_W);
+        lv_obj_set_style_text_align(ts, LV_TEXT_ALIGN_RIGHT, 0);
+    }
+
     /* Force layout so we can measure height */
     lv_obj_update_layout(bubble);
     int bh = lv_obj_get_height(bubble);
 
     s_next_y += bh + BUBBLE_GAP;
     s_msg_count++;
+
+    /* Hide empty state hint once a real conversation starts */
+    if (s_empty_hint && s_msg_count >= 2) {
+        lv_obj_add_flag(s_empty_hint, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* Auto-scroll to bottom */
     lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_ON);
@@ -552,6 +629,8 @@ void ui_chat_destroy(void)
     s_assist_bubble = NULL;
     s_assist_label  = NULL;
     s_tool_label    = NULL;
+    s_typing_lbl    = NULL;
+    s_empty_hint    = NULL;
     s_active        = false;
     s_msg_count     = 0;
     s_next_y        = 0;

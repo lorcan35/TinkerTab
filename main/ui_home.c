@@ -94,6 +94,9 @@ static lv_obj_t  *lbl_sbar_batt  = NULL;
 static lv_obj_t  *lbl_privacy    = NULL;   /* "Local" badge */
 static lv_obj_t  *lbl_sbar_dragon = NULL;  /* Dragon connection dot */
 
+/* Disconnect banner */
+static lv_obj_t  *s_disconnect_banner = NULL;
+
 /* Home page (Page 0) */
 static lv_obj_t  *lbl_clock     = NULL;
 static lv_obj_t  *lbl_date      = NULL;
@@ -446,6 +449,18 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_text_font(lbl_sbar_batt, &lv_font_montserrat_24, 0);
         lv_obj_align(lbl_sbar_batt, LV_ALIGN_RIGHT_MID, -16, 0);
     }
+
+    /* ── DISCONNECT BANNER (hidden by default) ────────────── */
+    s_disconnect_banner = lv_label_create(scr);
+    lv_label_set_text(s_disconnect_banner, "  " LV_SYMBOL_WARNING " Dragon disconnected — reconnecting...");
+    lv_obj_set_pos(s_disconnect_banner, 0, 56);
+    lv_obj_set_size(s_disconnect_banner, 720, 32);
+    lv_obj_set_style_bg_color(s_disconnect_banner, lv_color_hex(0xEF4444), 0);
+    lv_obj_set_style_bg_opa(s_disconnect_banner, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_disconnect_banner, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_disconnect_banner, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_pad_left(s_disconnect_banner, 12, 0);
+    lv_obj_add_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
 
     /* ── BOTTOM NAV ─────────────────────────────────────────── */
     {
@@ -819,10 +834,19 @@ void ui_home_update_status(void)
     }
 
     /* S4: Connection dot reflects voice WS state (the real indicator) */
-    if (lbl_sbar_dragon) {
+    {
         bool voice_ok = voice_is_connected();
-        lv_obj_set_style_bg_color(lbl_sbar_dragon,
-            lv_color_hex(voice_ok ? COL_MINT : COL_RED), 0);
+        if (lbl_sbar_dragon) {
+            lv_obj_set_style_bg_color(lbl_sbar_dragon,
+                lv_color_hex(voice_ok ? COL_MINT : COL_RED), 0);
+        }
+        if (s_disconnect_banner) {
+            if (!voice_ok) {
+                lv_obj_clear_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
     }
 
     /* Mode badge — keep in sync with NVS */
@@ -875,6 +899,7 @@ void ui_home_destroy(void)
         lbl_clock = lbl_date = NULL;
         lbl_sbar_time = lbl_sbar_wifi = lbl_sbar_batt = NULL;
         lbl_sbar_dragon = NULL;
+        s_disconnect_banner = NULL;
         lbl_privacy = NULL;
         lbl_last_note = NULL;
         last_note_card = NULL;
