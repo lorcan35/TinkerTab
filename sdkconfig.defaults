@@ -57,9 +57,9 @@ CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 # ---------------------------------------------------------------------------
 # WiFi credentials and Dragon server (overridable via menuconfig)
 # ---------------------------------------------------------------------------
-CONFIG_TAB5_WIFI_SSID="X28P-2.4G-C80EF2"
-CONFIG_TAB5_WIFI_PASS="E2D9025B"
-CONFIG_TAB5_DRAGON_HOST="192.168.70.242"
+CONFIG_TAB5_WIFI_SSID="Sawaya-2.4G"
+CONFIG_TAB5_WIFI_PASS="Jx3dzz8t///"
+CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
 CONFIG_TAB5_DRAGON_PORT=3502
 
 # ---------------------------------------------------------------------------
