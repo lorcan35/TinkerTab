@@ -52,7 +52,7 @@ static voice_state_t s_last_state = VOICE_STATE_IDLE;
 #define CLR_TOPBAR       0x0A0A0F   /* matches overlay bg */
 #define CLR_BORDER       0x1A1A2E   /* subtle indigo border */
 #define CLR_USER_BUB     0xF5A623   /* golden/amber */
-#define CLR_TINKER_BUB   0x1A1A2E   /* indigo-tinted dark */
+#define CLR_TINKER_BUB   0x2A2A3E   /* lighter indigo — visible on OLED */
 #define CLR_CYAN         0x00E5FF
 #define CLR_AMBER        0xF5A623
 #define CLR_INPUT_BG     0x1A1A2E   /* text input bg */
@@ -510,6 +510,12 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_obj_set_style_radius(bubble, 16, 0);
     lv_obj_set_style_pad_all(bubble, BUBBLE_PAD, 0);
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Tinker bubbles get a visible border for OLED contrast */
+    if (!is_user) {
+        lv_obj_set_style_border_width(bubble, 1, 0);
+        lv_obj_set_style_border_color(bubble, lv_color_hex(0x333333), 0);
+    }
 
     /* Label inside bubble */
     lv_obj_t *lbl = lv_label_create(bubble);

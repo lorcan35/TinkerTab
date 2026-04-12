@@ -140,7 +140,7 @@ static lv_obj_t *build_page_home(void)
     /* Outer ring (breathing animation) */
     orb_ring = lv_obj_create(pg);
     lv_obj_set_size(orb_ring, 200, 200);
-    lv_obj_align(orb_ring, LV_ALIGN_CENTER, 0, -80);
+    lv_obj_align(orb_ring, LV_ALIGN_CENTER, 0, -40);
     lv_obj_set_style_bg_opa(orb_ring, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(orb_ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(orb_ring, 3, 0);
@@ -151,7 +151,7 @@ static lv_obj_t *build_page_home(void)
     /* Inner orb — CLICKABLE (tappable to start voice) */
     lv_obj_t *orb = lv_obj_create(pg);
     lv_obj_set_size(orb, 160, 160);
-    lv_obj_align(orb, LV_ALIGN_CENTER, 0, -80);
+    lv_obj_align(orb, LV_ALIGN_CENTER, 0, -40);
     lv_obj_set_style_bg_color(orb, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(orb, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
@@ -172,14 +172,14 @@ static lv_obj_t *build_page_home(void)
     /* Orb label — "Tap to ask" with long-press hint */
     lv_obj_t *orb_lbl = lv_label_create(pg);
     lv_label_set_text(orb_lbl, "Tap to ask");
-    lv_obj_set_style_text_color(orb_lbl, lv_color_hex(COL_LABEL2), 0);
+    lv_obj_set_style_text_color(orb_lbl, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_28, 0);
     lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 40);
 
     /* H1: Long-press hint — brighter, more descriptive */
     lv_obj_t *hold_hint = lv_label_create(pg);
     lv_label_set_text(hold_hint, LV_SYMBOL_EDIT "  Long-press to dictate");
-    lv_obj_set_style_text_color(hold_hint, lv_color_hex(COL_LABEL2), 0);  /* brighter than COL_LABEL3 */
+    lv_obj_set_style_text_color(hold_hint, lv_color_hex(0x777777), 0);
     lv_obj_set_style_text_font(hold_hint, &lv_font_montserrat_20, 0);
     lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, 75);
 
@@ -481,7 +481,7 @@ lv_obj_t *ui_home_create(void)
 
     /* ── PAGE DOTS — BIG ───────────────────────────────────── */
     {
-        int dot_sz = 16;
+        int dot_sz = 20;
         int dot_gap = 12;
         int total = NUM_PAGES * dot_sz + (NUM_PAGES - 1) * dot_gap;
         int x0 = (SW - total) / 2;
@@ -675,7 +675,7 @@ static void update_nav_ui(int page)
     for (int i = 0; i < NUM_PAGES; i++) {
         if (page_dots[i]) {
             lv_obj_set_style_bg_color(page_dots[i],
-                lv_color_hex(i == page ? COL_AMBER : COL_LABEL3), 0);
+                lv_color_hex(i == page ? 0xF5A623 : 0x333333), 0);
         }
         if (nav_icons[i]) {
             lv_obj_set_style_text_color(nav_icons[i],

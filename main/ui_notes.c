@@ -52,8 +52,8 @@ static const char *TAG = "ui_notes";
 
 /* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW             720
-#define SH             1124     /* Tileview page height (1280 - NAV_H - 36) */
-#define TOPBAR_H       120     /* was 56 */
+#define SH             1280     /* Notes is a separate screen, not tileview page */
+#define TOPBAR_H       48      /* match Settings style */
 #define INPUT_H        140     /* was 64 */
 #define NAV_H          140     /* was 64 */
 #define CARD_PAD       48      /* was 16 */
@@ -1674,26 +1674,27 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_border_width(tb, 0, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back button — big touch target */
+    /* Back arrow button (36x36, rounded 8px, bg #1A1A2E — matches Settings) */
     lv_obj_t *btn = lv_button_create(tb);
-    lv_obj_set_size(btn, 120, 64);
-    lv_obj_align(btn, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(COL_CARD2), 0);
-    lv_obj_set_style_radius(btn, 16, 0);
-    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_remove_style_all(btn);
+    lv_obj_set_size(btn, 36, 36);
+    lv_obj_set_pos(btn, 16, (TOPBAR_H - 36) / 2);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(btn, 8, 0);
     lv_obj_add_event_cb(btn, cb_back, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *btn_lbl = lv_label_create(btn);
-    lv_label_set_text(btn_lbl, "< Home");
-    lv_obj_set_style_text_color(btn_lbl, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_36, 0);
-    lv_obj_center(btn_lbl);
+    lv_obj_t *arrow = lv_label_create(btn);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_16, 0);
+    lv_obj_center(arrow);
 
-    /* Title — big and centered */
+    /* Title — centered in topbar */
     lv_obj_t *title = lv_label_create(tb);
     lv_label_set_text(title, "Notes");
     lv_obj_set_style_text_color(title, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_center(title);
 
     return tb;
