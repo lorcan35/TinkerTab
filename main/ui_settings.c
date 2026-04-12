@@ -198,13 +198,8 @@ static void cb_back_btn(lv_event_t *e)
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;
     }
-    s_destroying = true;
-    if (s_refresh_timer) { lv_timer_pause(s_refresh_timer); }
-
-    if (s_screen) {
-        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
-    }
+    /* Destroy fully — hiding leaves stale pixels in DPI framebuffer */
+    ui_settings_destroy();
 }
 
 static void cb_brightness(lv_event_t *e)
