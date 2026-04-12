@@ -339,10 +339,10 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 | Screen | File | Description |
 |--------|------|-------------|
 | Splash | ui_splash.c | Boot animation, shown during init |
-| Home | ui_home.c | 4-page tileview (main launcher) |
-| Chat | ui_chat.c | Text conversation with Tinker (user/assistant bubbles) |
-| Notes | ui_notes.c | Voice dictation + typed notes, SD card backed |
-| Settings | ui_settings.c | Fullscreen overlay with manual Y positioning (not a separate screen). WiFi, Dragon host, brightness, volume, voice mode |
+| Home | ui_home.c | 4-page tileview (Material Dark polish) |
+| Chat | ui_chat.c | Fullscreen overlay on home (iMessage-style Material Dark) |
+| Notes | ui_notes.c | Separate lv_screen (loaded via lv_screen_load) |
+| Settings | ui_settings.c | Fullscreen overlay on home (Material Dark, 55 objects) |
 | Camera | ui_camera.c | SC202CS viewfinder |
 | Files | ui_files.c | SD card file browser |
 | Keyboard | ui_keyboard.c | On-screen keyboard overlay (shared) |

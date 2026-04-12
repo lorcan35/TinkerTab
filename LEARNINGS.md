@@ -504,6 +504,7 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** `iw wlan0 set power_save off` + NetworkManager dispatcher script at `/etc/NetworkManager/dispatcher.d/99-wifi-powersave.sh`. Disabled PingOS services (`systemctl disable pingos-dashboard pingos-gateway pingos-chromium pingos-xvfb`). Also disabled EEE on ethernet (`ethtool --set-eee enp1s0 eee off`) as belt-and-suspenders.
 - **Prevention:** Always check `iw wlan0 get power_save` on ARM SBCs using WiFi. Set power save off immediately after any reboot. The dispatcher script should handle this automatically but verify after updates.
 
+### SD Card and WiFi SDIO Coexistence
 - **Date:** 2026-04-06
 - **Symptom:** SD card and WiFi SDIO were documented as conflicting (can't use simultaneously).
 - **Root Cause:** The comment in sdcard.c was incorrect. Tab5 uses SDMMC Slot 0 for SD card and Slot 1 for WiFi SDIO — different slots on different GPIO banks. They coexist fine.
@@ -602,3 +603,42 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** The original cloud mode was a simple on/off toggle. When three-tier mode was added (Local=0, Hybrid=1, Full Cloud=2), the settings UI still used the boolean bridge function instead of sending the integer `voice_mode` + string `llm_model` directly.
 - **Fix:** Created `voice_send_config_update(int voice_mode, const char *llm_model)` which sends the full `{"type":"config_update","voice_mode":0|1|2,"llm_model":"..."}` message. Updated ui_settings.c to call this new function with the actual integer mode and selected model string. Dragon receives the exact mode and model — no guessing.
 - **Prevention:** When extending a protocol from binary (on/off) to multi-valued, replace the old boolean API entirely. Don't add a new integer on top of the old boolean — it creates ambiguity. The protocol message should carry the exact value the server needs.
+
+---
+
+## UI/UX Redesign (2026-04-12)
+
+### LVGL Object Count Limit
+- **Date:** 2026-04-12
+- **Symptom:** Memory exhaustion crash when screens had too many LVGL objects.
+- **Root Cause:** On ESP32-P4 with 128KB+64KB LVGL memory pool and DPI PSRAM framebuffer, maximum ~55 LVGL objects per screen before memory exhaustion crashes. Decorative objects (divider lines, subtitle labels, accent lines) consume object slots that push past this limit.
+- **Fix:** Eliminated all decorative objects — use spacing and color for visual hierarchy instead of divider lines, subtitle labels, and accent lines.
+- **Prevention:** Keep LVGL object count per screen under 55. Never add decorative-only objects. Use padding, margins, and color contrast for hierarchy. Count objects with `lv_obj_get_child_count()` during development.
+
+### Settings as Overlay Not Screen
+- **Date:** 2026-04-12
+- **Symptom:** `lv_screen_load()` crashes when transitioning between screens with many objects (draw buffer exhaustion).
+- **Root Cause:** LVGL screen transitions require draw buffers for both screens simultaneously, exceeding the 128KB+64KB memory pool on the DPI 720x1280 display.
+- **Fix:** Settings is a fullscreen overlay (child of home screen) with hide/show, not a separate `lv_screen`. No screen transitions needed.
+- **Prevention:** Use overlays (children of the existing screen) instead of separate screens for complex UIs. Reserve `lv_screen_load()` for screens with low object counts.
+
+### Notes Uses Separate Screen
+- **Date:** 2026-04-12
+- **Symptom:** N/A (architecture note)
+- **Root Cause:** Unlike Chat/Settings which are overlays on the home screen, Notes uses `lv_screen_load()` because it was built as a standalone 1812-line module. This works because Notes has fewer total objects than Settings/Chat.
+- **Fix:** No change — converting Notes to an overlay would require a major refactor of the entire 1812-line module.
+- **Prevention:** New screens should default to overlay architecture. Only use `lv_screen_load()` if the screen is simple (low object count) and self-contained.
+
+### Material Dark Design Language
+- **Date:** 2026-04-12
+- **Symptom:** N/A (design decision)
+- **Root Cause:** Needed a consistent design language across all screens that looks polished on the 720x1280 DPI display.
+- **Fix:** Adopted Material Dark across all screens: background #0A0A0F, cards #1A1A2E with #333 borders, colored uppercase section headers, amber accent (#F5A623), pill-shaped tabs, 12px radius on cards, no divider objects.
+- **Prevention:** All new UI elements must follow this palette. No divider line objects — use spacing. No shadow objects (P4 shadow rendering crashes). Cards use 12px radius + #333 border.
+
+### Tileview Height Must Exclude Nav Bar
+- **Date:** 2026-04-12
+- **Symptom:** Tileview covered the nav bar, making bottom navigation inaccessible.
+- **Root Cause:** Tileview was created at 720x1280 (full screen) but the nav bar (120px) and page dots (36px) sit at the bottom. The tileview overlapped them.
+- **Fix:** Set tileview height to 720x1124 (1280 - 120 nav - 36 dots). Pages that use separate screens (Notes, Camera, Files) can use the full 1280 height since they have their own back navigation.
+- **Prevention:** Any scrollable container on the home screen must account for the nav bar (120px) and page dots (36px). Full-height = 1124px, not 1280px. Separate screens (loaded via `lv_screen_load()`) can use full 1280px.
