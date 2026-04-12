@@ -336,12 +336,12 @@ static esp_err_t touch_handler(httpd_req_t *req)
         s_inject_active = true;
         /* Leave active — caller must POST release to end it */
     } else {
-        /* tap: press, hold 100ms, release */
+        /* tap: press, hold 200ms, release (needs 2+ LVGL ticks for CLICKED) */
         s_inject_x = x;
         s_inject_y = y;
         s_inject_pressed = true;
         s_inject_active = true;
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(200));
         s_inject_pressed = false;
         vTaskDelay(pdMS_TO_TICKS(100));
         s_inject_active = false;

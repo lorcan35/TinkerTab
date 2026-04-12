@@ -190,6 +190,7 @@ static void cb_close(lv_event_t *e)
 static void cb_textarea_click(lv_event_t *e)
 {
     (void)e;
+    ESP_LOGI(TAG, "Textarea tapped — showing keyboard");
     if (s_textarea) ui_keyboard_show(s_textarea);
 }
 
@@ -493,6 +494,7 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_pad_left(s_textarea, 20, 0);
     /* Placeholder dim gray */
     lv_obj_set_style_text_color(s_textarea, lv_color_hex(0x666666), LV_PART_TEXTAREA_PLACEHOLDER);
+    lv_obj_add_flag(s_textarea, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
 
     /* Send button — amber */
