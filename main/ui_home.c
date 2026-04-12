@@ -742,13 +742,24 @@ static void _async_chat(void *arg)
     ui_chat_create();
 }
 
+/* Dismiss ALL overlays before opening any screen */
+static void dismiss_all_overlays(void)
+{
+    ui_keyboard_hide();
+    extern void ui_settings_hide(void);
+    extern void ui_notes_hide(void);
+    extern void ui_chat_destroy(void);
+    ui_settings_hide();
+    ui_notes_hide();
+    ui_chat_destroy();
+}
+
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg < 0 || pg >= NUM_PAGES) return;
-    ui_keyboard_hide();
+    dismiss_all_overlays();
     if (pg == 1) {
-        /* Notes is a separate screen — open as overlay */
         lv_async_call(async_notes_create, NULL);
         return;
     }

@@ -904,14 +904,16 @@ static void async_navigate(void *arg)
      * tileview screen entirely, breaking subsequent navigation. */
     lv_obj_t *tv = ui_home_get_tileview();
 
+    /* Always dismiss ALL overlays before any navigation */
+    extern void ui_chat_destroy(void);
+    extern void ui_settings_hide(void);
+    extern void ui_notes_hide(void);
+    ui_chat_destroy();
+    ui_settings_hide();
+    ui_notes_hide();
+    ui_keyboard_hide();
+
     if (strcmp(s_nav_target, "home") == 0) {
-        /* Hide all overlays before showing home */
-        extern void ui_chat_destroy(void);
-        extern void ui_settings_hide(void);
-        extern void ui_notes_hide(void);
-        ui_chat_destroy();
-        ui_settings_hide();
-        ui_notes_hide();
         ui_home_go_home();
     } else if (strcmp(s_nav_target, "notes") == 0) {
         extern lv_obj_t *ui_notes_create(void);
