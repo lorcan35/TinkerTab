@@ -443,7 +443,9 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         }
         break;
     case VOICE_STATE_LISTENING:
-        if (!s_visible) {
+        /* Only show voice overlay if user initiated from mic button.
+         * If dictation started from Notes screen, Notes has its own UI. */
+        if (!s_visible && (s_pending_ask || s_dictation_from_anywhere)) {
             ui_voice_show();
         }
         if (voice_get_mode() == VOICE_MODE_DICTATE && detail && detail[0]) {
