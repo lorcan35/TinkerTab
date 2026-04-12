@@ -167,17 +167,28 @@ static void cb_autorotate(lv_event_t *e)
     }
 }
 
-/* Three-tier voice mode + LLM model picker */
-static lv_obj_t *s_dd_voice_mode = NULL;
-static lv_obj_t *s_dd_llm_model = NULL;
+/* Voice section tab system */
+static lv_obj_t *s_tab_local   = NULL;
+static lv_obj_t *s_tab_hybrid  = NULL;
+static lv_obj_t *s_tab_cloud   = NULL;
+static lv_obj_t *s_local_content[4]  = {NULL};
+static lv_obj_t *s_hybrid_content[4] = {NULL};
+static lv_obj_t *s_cloud_content[4]  = {NULL};
+static uint8_t   s_active_tab  = 0;
 
-/* LLM model IDs matching dropdown order */
-static const char *s_llm_model_ids[] = {
-    "",                                    /* Local NPU — empty = use local */
-    "",                                    /* Local Ollama — empty = use local */
-    "anthropic/claude-3-haiku",
+/* Cloud model IDs matching dropdown order */
+static const char *s_cloud_model_ids[] = {
+    "anthropic/claude-3.5-haiku",
     "anthropic/claude-sonnet-4-20250514",
     "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+};
+
+/* Local model names matching dropdown order */
+static const char *s_local_model_names[] = {
+    "qwen3:1.7b",
+    "qwen3:4b",
+    "qwen3:0.6b",
 };
 
 static void send_voice_config(void)
@@ -199,36 +210,61 @@ static void send_voice_config(void)
     }
 }
 
-static void cb_voice_mode(lv_event_t *e)
+/** Hide all items in a content array, show all items in another */
+static void voice_tab_switch(uint8_t new_tab)
 {
-    (void)e;
-    if (!s_dd_voice_mode) return;
-    uint8_t mode = lv_dropdown_get_selected(s_dd_voice_mode);
-    tab5_settings_set_voice_mode(mode);
-    ESP_LOGI(TAG, "Voice mode: %d (%s)", mode, mode == 0 ? "local" : mode == 1 ? "hybrid" : "cloud");
+    if (new_tab == s_active_tab) return;
 
-    /* Enable/disable model dropdown based on mode */
-    if (s_dd_llm_model) {
-        if (mode == 2) {
-            lv_obj_clear_state(s_dd_llm_model, LV_STATE_DISABLED);
-            lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_COVER, 0);
-        } else {
-            lv_obj_add_state(s_dd_llm_model, LV_STATE_DISABLED);
-            lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_40, 0);
-        }
+    lv_obj_t *tabs[] = { s_tab_local, s_tab_hybrid, s_tab_cloud };
+    lv_obj_t *(*contents[])[4] = { &s_local_content, &s_hybrid_content, &s_cloud_content };
+
+    /* Hide old tab content, dim old tab label */
+    for (int i = 0; i < 4; i++) {
+        if ((*contents[s_active_tab])[i])
+            lv_obj_add_flag((*contents[s_active_tab])[i], LV_OBJ_FLAG_HIDDEN);
     }
+    if (tabs[s_active_tab])
+        lv_obj_set_style_opa(tabs[s_active_tab], LV_OPA_30, 0);
 
+    /* Show new tab content, full opacity on new tab label */
+    for (int i = 0; i < 4; i++) {
+        if ((*contents[new_tab])[i])
+            lv_obj_clear_flag((*contents[new_tab])[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    if (tabs[new_tab])
+        lv_obj_set_style_opa(tabs[new_tab], LV_OPA_COVER, 0);
+
+    s_active_tab = new_tab;
+
+    /* Persist and send */
+    tab5_settings_set_voice_mode(new_tab);
+    ESP_LOGI(TAG, "Voice tab: %d (%s)", new_tab,
+             new_tab == 0 ? "local" : new_tab == 1 ? "hybrid" : "cloud");
     send_voice_config();
 }
 
-static void cb_llm_model(lv_event_t *e)
+static void cb_tab_local(lv_event_t *e)  { (void)e; voice_tab_switch(0); }
+static void cb_tab_hybrid(lv_event_t *e) { (void)e; voice_tab_switch(1); }
+static void cb_tab_cloud(lv_event_t *e)  { (void)e; voice_tab_switch(2); }
+
+static void cb_local_model(lv_event_t *e)
 {
-    (void)e;
-    if (!s_dd_llm_model) return;
-    uint32_t sel = lv_dropdown_get_selected(s_dd_llm_model);
-    if (sel < sizeof(s_llm_model_ids)/sizeof(s_llm_model_ids[0])) {
-        tab5_settings_set_llm_model(s_llm_model_ids[sel]);
-        ESP_LOGI(TAG, "LLM model: %s", s_llm_model_ids[sel]);
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t sel = lv_dropdown_get_selected(dd);
+    if (sel < sizeof(s_local_model_names)/sizeof(s_local_model_names[0])) {
+        tab5_settings_set_llm_model(s_local_model_names[sel]);
+        ESP_LOGI(TAG, "Local LLM model: %s", s_local_model_names[sel]);
+        send_voice_config();
+    }
+}
+
+static void cb_cloud_model(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t sel = lv_dropdown_get_selected(dd);
+    if (sel < sizeof(s_cloud_model_ids)/sizeof(s_cloud_model_ids[0])) {
+        tab5_settings_set_llm_model(s_cloud_model_ids[sel]);
+        ESP_LOGI(TAG, "Cloud LLM model: %s", s_cloud_model_ids[sel]);
         send_voice_config();
     }
 }
@@ -649,56 +685,157 @@ lv_obj_t *ui_settings_create(void)
     ESP_LOGI(TAG, "Section: Voice");
 
     /* ════════════════════════════════════════════════════════════════
-     *  SECTION: Voice
+     *  SECTION: Voice (tabbed per-mode subsections)
      * ════════════════════════════════════════════════════════════════ */
     mk_hdr(s_scroll, "Voice", LEFT_X, y);
     y += HDR_STEP;
 
-    /* Voice Mode dropdown */
-    mk_key(s_scroll, "Mode", LEFT_X, y + 6);
-    s_dd_voice_mode = lv_dropdown_create(s_scroll);
-    lv_obj_set_pos(s_dd_voice_mode, RIGHT_X, y);
-    lv_obj_set_size(s_dd_voice_mode, 200, 38);
-    lv_dropdown_set_options(s_dd_voice_mode, "Local\nHybrid\nFull Cloud");
-    lv_obj_set_style_bg_color(s_dd_voice_mode, lv_color_hex(0x1E1E2E), 0);
-    lv_obj_set_style_text_color(s_dd_voice_mode, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_dd_voice_mode, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_border_width(s_dd_voice_mode, 1, 0);
-    lv_obj_set_style_border_color(s_dd_voice_mode, COL_ACCENT, 0);
-    lv_obj_set_style_radius(s_dd_voice_mode, 6, 0);
-    lv_dropdown_set_selected(s_dd_voice_mode, tab5_settings_get_voice_mode());
-    lv_obj_add_event_cb(s_dd_voice_mode, cb_voice_mode, LV_EVENT_VALUE_CHANGED, NULL);
-    y += ROW_STEP;
+    /* ── Mode tab selector: [Local] [Hybrid] [Cloud] ─────────────── */
+    s_active_tab = tab5_settings_get_voice_mode();
+    if (s_active_tab > 2) s_active_tab = 0;
 
-    /* AI Model dropdown */
-    mk_key(s_scroll, "AI Model", LEFT_X, y + 6);
-    s_dd_llm_model = lv_dropdown_create(s_scroll);
-    lv_obj_set_pos(s_dd_llm_model, RIGHT_X, y);
-    lv_obj_set_size(s_dd_llm_model, 240, 38);
-    lv_dropdown_set_options(s_dd_llm_model,
-        "Local NPU\nLocal Ollama\nClaude Haiku\nClaude Sonnet\nGPT-4o mini");
-    lv_obj_set_style_bg_color(s_dd_llm_model, lv_color_hex(0x1E1E2E), 0);
-    lv_obj_set_style_text_color(s_dd_llm_model, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_dd_llm_model, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_border_width(s_dd_llm_model, 1, 0);
-    lv_obj_set_style_border_color(s_dd_llm_model, COL_ACCENT, 0);
-    lv_obj_set_style_radius(s_dd_llm_model, 6, 0);
     {
-        char saved_model[64] = {0};
-        tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
-        for (int i = 0; i < 5; i++) {
-            if (s_llm_model_ids[i][0] && strcmp(s_llm_model_ids[i], saved_model) == 0) {
-                lv_dropdown_set_selected(s_dd_llm_model, i);
-                break;
+        /* Tab button helper macro — creates a clickable label with colored bg */
+        #define MK_TAB(obj, text, xpos, color, cb_fn, idx) do { \
+            obj = lv_label_create(s_scroll); \
+            lv_label_set_text(obj, text); \
+            lv_obj_set_pos(obj, xpos, y); \
+            lv_obj_set_size(obj, 200, 38); \
+            lv_obj_set_style_text_color(obj, lv_color_hex(0xFFFFFF), 0); \
+            lv_obj_set_style_text_font(obj, &lv_font_montserrat_18, 0); \
+            lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_CENTER, 0); \
+            lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0); \
+            lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0); \
+            lv_obj_set_style_radius(obj, 6, 0); \
+            lv_obj_set_style_pad_top(obj, 8, 0); \
+            lv_obj_set_style_pad_bottom(obj, 8, 0); \
+            lv_obj_set_style_opa(obj, (idx == s_active_tab) ? LV_OPA_COVER : LV_OPA_30, 0); \
+            lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE); \
+            lv_obj_add_event_cb(obj, cb_fn, LV_EVENT_CLICKED, NULL); \
+        } while (0)
+
+        MK_TAB(s_tab_local,  "Local",  LEFT_X,       0x22C55E, cb_tab_local,  0);
+        MK_TAB(s_tab_hybrid, "Hybrid", LEFT_X + 220,  0xEAB308, cb_tab_hybrid, 1);
+        MK_TAB(s_tab_cloud,  "Cloud",  LEFT_X + 440,  0x3B82F6, cb_tab_cloud,  2);
+        #undef MK_TAB
+    }
+    y += ROW_STEP + 4;
+
+    /* All three tab contents share the same Y range. Two are hidden. */
+    int tab_content_y = y;
+
+    /* ── LOCAL tab content (green accent) ─────────────────────────── */
+    {
+        lv_obj_t *k = mk_key(s_scroll, "LLM Model", LEFT_X, tab_content_y + 6);
+        lv_obj_set_style_text_color(k, lv_color_hex(0x22C55E), 0);
+        s_local_content[0] = k;
+
+        lv_obj_t *dd = lv_dropdown_create(s_scroll);
+        lv_obj_set_pos(dd, RIGHT_X, tab_content_y);
+        lv_obj_set_size(dd, 240, 38);
+        lv_dropdown_set_options(dd, "qwen3:1.7b\nqwen3:4b\nqwen3:0.6b");
+        lv_obj_set_style_bg_color(dd, lv_color_hex(0x1E1E2E), 0);
+        lv_obj_set_style_text_color(dd, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(dd, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_border_width(dd, 1, 0);
+        lv_obj_set_style_border_color(dd, lv_color_hex(0x22C55E), 0);
+        lv_obj_set_style_radius(dd, 6, 0);
+        /* Pre-select saved model */
+        {
+            char saved[64] = {0};
+            tab5_settings_get_llm_model(saved, sizeof(saved));
+            for (int i = 0; i < 3; i++) {
+                if (strcmp(s_local_model_names[i], saved) == 0) {
+                    lv_dropdown_set_selected(dd, i);
+                    break;
+                }
+            }
+        }
+        lv_obj_add_event_cb(dd, cb_local_model, LV_EVENT_VALUE_CHANGED, NULL);
+        s_local_content[1] = dd;
+
+        lv_obj_t *tk = mk_key(s_scroll, "Temperature", LEFT_X, tab_content_y + ROW_STEP + 6);
+        lv_obj_set_style_text_color(tk, lv_color_hex(0x22C55E), 0);
+        s_local_content[2] = tk;
+
+        lv_obj_t *tv = mk_val(s_scroll, "0.7", RIGHT_X, tab_content_y + ROW_STEP + 6);
+        lv_obj_set_style_text_color(tv, lv_color_hex(0x22C55E), 0);
+        s_local_content[3] = tv;
+    }
+
+    /* ── HYBRID tab content (amber accent) ────────────────────────── */
+    {
+        lv_obj_t *k1 = mk_key(s_scroll, "STT/TTS", LEFT_X, tab_content_y + 6);
+        lv_obj_set_style_text_color(k1, lv_color_hex(0xEAB308), 0);
+        s_hybrid_content[0] = k1;
+
+        lv_obj_t *v1 = mk_val(s_scroll, "OpenRouter Cloud", RIGHT_X, tab_content_y + 6);
+        lv_obj_set_style_text_color(v1, lv_color_hex(0xEAB308), 0);
+        s_hybrid_content[1] = v1;
+
+        lv_obj_t *k2 = mk_key(s_scroll, "LLM", LEFT_X, tab_content_y + ROW_STEP + 6);
+        lv_obj_set_style_text_color(k2, lv_color_hex(0xEAB308), 0);
+        s_hybrid_content[2] = k2;
+
+        lv_obj_t *v2 = mk_val(s_scroll, "Local (Ollama)", RIGHT_X, tab_content_y + ROW_STEP + 6);
+        lv_obj_set_style_text_color(v2, lv_color_hex(0xEAB308), 0);
+        s_hybrid_content[3] = v2;
+    }
+
+    /* ── CLOUD tab content (blue accent) ──────────────────────────── */
+    {
+        lv_obj_t *k1 = mk_key(s_scroll, "AI Model", LEFT_X, tab_content_y + 6);
+        lv_obj_set_style_text_color(k1, lv_color_hex(0x3B82F6), 0);
+        s_cloud_content[0] = k1;
+
+        lv_obj_t *dd = lv_dropdown_create(s_scroll);
+        lv_obj_set_pos(dd, RIGHT_X, tab_content_y);
+        lv_obj_set_size(dd, 280, 38);
+        lv_dropdown_set_options(dd, "Claude 3.5 Haiku\nClaude Sonnet\nGPT-4o mini\nGPT-4o");
+        lv_obj_set_style_bg_color(dd, lv_color_hex(0x1E1E2E), 0);
+        lv_obj_set_style_text_color(dd, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_font(dd, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_border_width(dd, 1, 0);
+        lv_obj_set_style_border_color(dd, lv_color_hex(0x3B82F6), 0);
+        lv_obj_set_style_radius(dd, 6, 0);
+        /* Pre-select saved cloud model */
+        {
+            char saved[64] = {0};
+            tab5_settings_get_llm_model(saved, sizeof(saved));
+            for (int i = 0; i < 4; i++) {
+                if (strcmp(s_cloud_model_ids[i], saved) == 0) {
+                    lv_dropdown_set_selected(dd, i);
+                    break;
+                }
+            }
+        }
+        lv_obj_add_event_cb(dd, cb_cloud_model, LV_EVENT_VALUE_CHANGED, NULL);
+        s_cloud_content[1] = dd;
+
+        lv_obj_t *k2 = mk_key(s_scroll, "API Key", LEFT_X, tab_content_y + ROW_STEP + 6);
+        lv_obj_set_style_text_color(k2, lv_color_hex(0x3B82F6), 0);
+        s_cloud_content[2] = k2;
+
+        /* TODO: check actual API key status from Dragon */
+        lv_obj_t *v2 = mk_val(s_scroll, "Set", RIGHT_X, tab_content_y + ROW_STEP + 6);
+        lv_obj_set_style_text_color(v2, COL_GREEN, 0);
+        s_cloud_content[3] = v2;
+    }
+
+    /* Hide inactive tabs */
+    {
+        lv_obj_t *(*all_content[])[4] = { &s_local_content, &s_hybrid_content, &s_cloud_content };
+        for (int t = 0; t < 3; t++) {
+            if (t == s_active_tab) continue;
+            for (int i = 0; i < 4; i++) {
+                if ((*all_content[t])[i])
+                    lv_obj_add_flag((*all_content[t])[i], LV_OBJ_FLAG_HIDDEN);
             }
         }
     }
-    lv_obj_add_event_cb(s_dd_llm_model, cb_llm_model, LV_EVENT_VALUE_CHANGED, NULL);
-    if (tab5_settings_get_voice_mode() != 2) {
-        lv_obj_add_state(s_dd_llm_model, LV_STATE_DISABLED);
-        lv_obj_set_style_opa(s_dd_llm_model, LV_OPA_40, 0);
-    }
-    y += ROW_STEP;
+
+    /* Advance Y past two rows of tab content */
+    y = tab_content_y + ROW_STEP * 2 + 8;
 
     /* Wake Word toggle */
     mk_key(s_scroll, "Wake Word", LEFT_X, y + 6);
@@ -974,8 +1111,12 @@ void ui_settings_destroy(void)
     s_slider_bright = NULL;
     s_slider_volume = NULL;
     s_sw_autorot    = NULL;
-    s_dd_voice_mode = NULL;
-    s_dd_llm_model  = NULL;
+    s_tab_local     = NULL;
+    s_tab_hybrid    = NULL;
+    s_tab_cloud     = NULL;
+    memset(s_local_content,  0, sizeof(s_local_content));
+    memset(s_hybrid_content, 0, sizeof(s_hybrid_content));
+    memset(s_cloud_content,  0, sizeof(s_cloud_content));
     s_dragon_ta     = NULL;
     s_ota_btn_label = NULL;
     s_ota_apply_btn = NULL;

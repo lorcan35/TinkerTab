@@ -244,7 +244,7 @@ esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 
 esp_err_t tab5_settings_get_llm_model(char *buf, size_t len)
 {
-    return get_str("llm_mdl", buf, len, "anthropic/claude-3-haiku");
+    return get_str("llm_mdl", buf, len, "anthropic/claude-3.5-haiku");
 }
 
 esp_err_t tab5_settings_set_llm_model(const char *model)
