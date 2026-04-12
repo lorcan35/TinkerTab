@@ -242,6 +242,7 @@ static void notes_save(void)
         cJSON_AddNumberToObject(obj, "mo", n->month);
         cJSON_AddNumberToObject(obj, "y", n->year);
         cJSON_AddNumberToObject(obj, "i", i);
+        if (n->needs_sync) cJSON_AddNumberToObject(obj, "ns", 1);
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -397,6 +398,8 @@ static void notes_load(void)
         n->day      = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "d"));
         n->month    = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "mo"));
         n->year     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
+        cJSON *jns = cJSON_GetObjectItem(item, "ns");
+        n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
         n->used = true;
         loaded++;
     }
@@ -450,6 +453,20 @@ static bool s_voice_recording  = false;
 static bool s_pending_dictation = false;  /* waiting for READY to start dictation */
 static volatile bool s_sd_rec_running = false;  /* standalone SD recording active */
 
+/* ── Recording indicator ──────────────────────────────── */
+static lv_obj_t *s_rec_indicator = NULL;  /* container for the recording bar */
+static lv_obj_t *s_rec_dot = NULL;        /* red pulsing dot */
+static lv_obj_t *s_rec_time_lbl = NULL;   /* "0:05" timer */
+static lv_obj_t *s_rec_text_lbl = NULL;   /* "Recording..." or "Paused" */
+static lv_timer_t *s_rec_timer = NULL;    /* 1s update timer */
+static int s_rec_seconds = 0;
+static bool s_rec_paused = false;         /* TODO: pause/resume not yet implemented */
+
+/* ── Edit overlay state ────────────────────────────────── */
+static lv_obj_t *s_edit_overlay = NULL;
+static lv_obj_t *s_edit_ta     = NULL;
+static int       s_edit_idx    = -1;
+
 /* ── Forward decls ─────────────────────────────────────── */
 static void cb_back(lv_event_t *e);
 static void cb_new_voice(lv_event_t *e);
@@ -465,6 +482,112 @@ static lv_obj_t *make_topbar(lv_obj_t *parent);
 static void show_input_area(void);
 static void hide_input_area(void);
 static void voice_session_done(void);
+static void show_recording_indicator(void);
+static void hide_recording_indicator(void);
+
+/* ── Recording indicator timer callback ────────────────── */
+static void rec_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_rec_paused) return;
+    s_rec_seconds++;
+    if (s_rec_time_lbl) {
+        lv_label_set_text_fmt(s_rec_time_lbl, "%d:%02d", s_rec_seconds / 60, s_rec_seconds % 60);
+    }
+    /* Pulse the dot (toggle opacity) */
+    if (s_rec_dot) {
+        static bool dot_on = true;
+        dot_on = !dot_on;
+        lv_obj_set_style_bg_opa(s_rec_dot, dot_on ? LV_OPA_COVER : LV_OPA_30, 0);
+    }
+}
+
+/* ── Recording indicator show/hide ─────────────────────── */
+static void show_recording_indicator(void)
+{
+    if (!s_screen) return;
+    if (s_rec_indicator) return;  /* already showing */
+
+    s_rec_seconds = 0;
+    s_rec_paused = false;
+
+    /* Bar: full width, 40px tall, positioned below search bar above notes list.
+     * Search bar ends at TOPBAR_H + 160 + SEARCH_H + 4.
+     * We insert the indicator right there and push list down. */
+    #define REC_BAR_Y  (TOPBAR_H + 160 + 64 /* SEARCH_H */ + 8)
+    #define REC_BAR_H  40
+
+    s_rec_indicator = lv_obj_create(s_screen);
+    lv_obj_set_size(s_rec_indicator, SW - 32, REC_BAR_H);
+    lv_obj_set_pos(s_rec_indicator, 16, REC_BAR_Y);
+    lv_obj_set_style_bg_color(s_rec_indicator, lv_color_hex(0x1C0808), 0);
+    lv_obj_set_style_bg_opa(s_rec_indicator, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_rec_indicator, 10, 0);
+    lv_obj_set_style_border_width(s_rec_indicator, 1, 0);
+    lv_obj_set_style_border_color(s_rec_indicator, lv_color_hex(0xEF4444), 0);
+    lv_obj_set_style_border_opa(s_rec_indicator, LV_OPA_40, 0);
+    lv_obj_clear_flag(s_rec_indicator, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Red pulsing dot — 8px circle */
+    s_rec_dot = lv_obj_create(s_rec_indicator);
+    lv_obj_remove_style_all(s_rec_dot);
+    lv_obj_set_size(s_rec_dot, 12, 12);
+    lv_obj_align(s_rec_dot, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_set_style_bg_color(s_rec_dot, lv_color_hex(0xEF4444), 0);
+    lv_obj_set_style_bg_opa(s_rec_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_rec_dot, LV_RADIUS_CIRCLE, 0);
+
+    /* "Recording..." text */
+    s_rec_text_lbl = lv_label_create(s_rec_indicator);
+    lv_label_set_text(s_rec_text_lbl, "Recording...");
+    lv_obj_set_style_text_color(s_rec_text_lbl, lv_color_hex(0xEF4444), 0);
+    lv_obj_set_style_text_font(s_rec_text_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_rec_text_lbl, LV_ALIGN_LEFT_MID, 32, 0);
+
+    /* Elapsed time */
+    s_rec_time_lbl = lv_label_create(s_rec_indicator);
+    lv_label_set_text(s_rec_time_lbl, "0:00");
+    lv_obj_set_style_text_color(s_rec_time_lbl, lv_color_hex(COL_LABEL2), 0);
+    lv_obj_set_style_text_font(s_rec_time_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_align(s_rec_time_lbl, LV_ALIGN_RIGHT_MID, -12, 0);
+
+    /* Push the notes list down to make room */
+    if (s_list) {
+        lv_obj_set_pos(s_list, 0, REC_BAR_Y + REC_BAR_H + 4);
+        lv_obj_set_height(s_list, SH - (REC_BAR_Y + REC_BAR_H + 4));
+    }
+
+    /* Start 1-second update timer */
+    s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
+
+    ESP_LOGI(TAG, "Recording indicator shown");
+}
+
+static void hide_recording_indicator(void)
+{
+    if (s_rec_timer) {
+        lv_timer_delete(s_rec_timer);
+        s_rec_timer = NULL;
+    }
+    if (s_rec_indicator) {
+        lv_obj_del(s_rec_indicator);
+        s_rec_indicator = NULL;
+    }
+    s_rec_dot = NULL;
+    s_rec_text_lbl = NULL;
+    s_rec_time_lbl = NULL;
+    s_rec_seconds = 0;
+    s_rec_paused = false;
+
+    /* Restore list position */
+    if (s_list) {
+        #define LIST_Y_NORMAL (TOPBAR_H + 160 + 64 /* SEARCH_H */ + 10)
+        lv_obj_set_pos(s_list, 0, LIST_Y_NORMAL);
+        lv_obj_set_height(s_list, SH - LIST_Y_NORMAL);
+    }
+
+    ESP_LOGI(TAG, "Recording indicator hidden");
+}
 
 /* ── Voice state callback (used by dictation connect flow) ── */
 static void __attribute__((unused)) voice_state_cb(voice_state_t state, const char *detail)
@@ -482,11 +605,13 @@ static void __attribute__((unused)) voice_state_cb(voice_state_t state, const ch
         && voice_get_mode() == VOICE_MODE_DICTATE
         && detail && strcmp(detail, "dictation_done") == 0) {
         s_voice_recording = false;
+        hide_recording_indicator();
         voice_session_done();
     }
     /* Ask mode ends with IDLE */
     if (state == VOICE_STATE_IDLE && s_voice_recording) {
         s_voice_recording = false;
+        hide_recording_indicator();
         voice_session_done();
     }
 }
@@ -1157,6 +1282,7 @@ static void cb_new_voice(lv_event_t *e)
     (void)e;
     if (s_sd_rec_running || s_voice_recording) {
         /* Stop current recording */
+        hide_recording_indicator();
         s_sd_rec_running = false;  /* signal task to exit */
         if (voice_get_state() == VOICE_STATE_LISTENING) {
             voice_stop_listening();
@@ -1194,6 +1320,7 @@ static void cb_new_voice(lv_event_t *e)
     }
 
     s_voice_recording = true;
+    show_recording_indicator();
 
     if (st == VOICE_STATE_READY) {
         /* Dragon online — dual-write: SD + live dictation via voice module */
@@ -1247,115 +1374,139 @@ static void cb_search_changed(lv_event_t *e)
     refresh_list();
 }
 
-/* M1: Edit overlay — save callback */
+/* M1: Edit overlay — save callback (uses static s_edit_* variables) */
 static void cb_edit_save(lv_event_t *e)
 {
-    lv_obj_t *overlay = (lv_obj_t *)lv_event_get_user_data(e);
-    int note_idx = (int)(intptr_t)lv_obj_get_user_data(overlay);
-    lv_obj_t *ta = lv_obj_get_child(overlay, 2);  /* textarea is 3rd child (ts, hint, ta, btn) */
-    if (!ta || note_idx < 0 || note_idx >= MAX_NOTES || !s_notes[note_idx].used) {
-        lv_obj_del(overlay);
-        return;
+    (void)e;
+    if (!s_edit_ta || s_edit_idx < 0 || s_edit_idx >= MAX_NOTES
+        || !s_notes[s_edit_idx].used) {
+        goto close;
     }
-    const char *txt = lv_textarea_get_text(ta);
-    if (txt && txt[0]) {
-        strncpy(s_notes[note_idx].text, txt, MAX_NOTE_LEN - 1);
-        s_notes[note_idx].text[MAX_NOTE_LEN - 1] = '\0';
-        notes_save();
-        sync_note_to_dragon("", txt);
-        ESP_LOGI(TAG, "Note %d edited: %.40s", note_idx, txt);
+    {
+        const char *txt = lv_textarea_get_text(s_edit_ta);
+        if (txt && txt[0]) {
+            strncpy(s_notes[s_edit_idx].text, txt, MAX_NOTE_LEN - 1);
+            s_notes[s_edit_idx].text[MAX_NOTE_LEN - 1] = '\0';
+            notes_save();
+            sync_note_to_dragon("", txt);
+            ESP_LOGI(TAG, "Note %d edited: %.40s", s_edit_idx, txt);
+        }
     }
+close:
     ui_keyboard_hide();
-    lv_obj_del(overlay);
-    /* Refresh notes list */
-    if (s_screen) ui_notes_create();
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; }
+    s_edit_ta = NULL;
+    s_edit_idx = -1;
+    refresh_list();
 }
 
 static void cb_edit_close(lv_event_t *e)
 {
-    lv_obj_t *overlay = (lv_obj_t *)lv_event_get_user_data(e);
+    (void)e;
     ui_keyboard_hide();
-    lv_obj_del(overlay);
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; }
+    s_edit_ta = NULL;
+    s_edit_idx = -1;
 }
 
 static void cb_note_tap(lv_event_t *e)
 {
     int note_idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (note_idx < 0 || note_idx >= MAX_NOTES || !s_notes[note_idx].used) return;
+    if (!s_screen) return;
+
+    /* Close any existing edit overlay first */
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; }
 
     note_entry_t *n = &s_notes[note_idx];
-    lv_obj_t *overlay = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(overlay, 660, 800);  /* fixed size, not percentage */
-    lv_obj_align(overlay, LV_ALIGN_CENTER, 0, -60);  /* shifted up for keyboard */
-    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x1C1C2E), 0);
-    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(overlay, 24, 0);
-    lv_obj_set_style_border_width(overlay, 1, 0);
-    lv_obj_set_style_border_color(overlay, lv_color_hex(0x333344), 0);
-    lv_obj_set_style_pad_all(overlay, 24, 0);
-    lv_obj_set_style_pad_row(overlay, 12, 0);
-    lv_obj_set_flex_flow(overlay, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_user_data(overlay, (void *)(intptr_t)note_idx);
+    s_edit_idx = note_idx;
 
-    /* Timestamp */
+    /* Fullscreen overlay — child of s_screen so it covers the notes list */
+    s_edit_overlay = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_edit_overlay);
+    lv_obj_set_size(s_edit_overlay, SW, SH);
+    lv_obj_set_pos(s_edit_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_edit_overlay, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(s_edit_overlay, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_edit_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_foreground(s_edit_overlay);
+
+    /* ── Topbar: Cancel (left) | "Edit Note" (center) | Save (right) ── */
+    lv_obj_t *tb = lv_obj_create(s_edit_overlay);
+    lv_obj_set_size(tb, SW, TOPBAR_H + 16);
+    lv_obj_set_pos(tb, 0, 0);
+    lv_obj_set_style_bg_color(tb, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(tb, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(tb, 0, 0);
+    lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Cancel button — left */
+    lv_obj_t *cancel_btn = lv_button_create(tb);
+    lv_obj_remove_style_all(cancel_btn);
+    lv_obj_set_size(cancel_btn, 120, TOPBAR_H);
+    lv_obj_align(cancel_btn, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x333340), 0);
+    lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(cancel_btn, 10, 0);
+    lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_lbl, "Cancel");
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(cancel_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(cancel_lbl);
+
+    /* Title — center */
+    lv_obj_t *title = lv_label_create(tb);
+    lv_label_set_text(title, "Edit Note");
+    lv_obj_set_style_text_color(title, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_center(title);
+
+    /* Save button — right */
+    lv_obj_t *save_btn = lv_button_create(tb);
+    lv_obj_remove_style_all(save_btn);
+    lv_obj_set_size(save_btn, 100, TOPBAR_H);
+    lv_obj_align(save_btn, LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(COL_CYAN), 0);
+    lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(save_btn, 10, 0);
+    lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *save_lbl = lv_label_create(save_btn);
+    lv_label_set_text(save_lbl, "Save");
+    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_font(save_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(save_lbl);
+
+    /* ── Timestamp hint ── */
     char ts_buf[64];
     static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
                                 "Jul","Aug","Sep","Oct","Nov","Dec"};
     int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
-    snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d — %s note  " LV_SYMBOL_EDIT,
+    snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d — %s note",
              mn[mi], n->day, n->hour, n->minute,
              n->is_voice ? "Voice" : "Text");
-    lv_obj_t *ts = lv_label_create(overlay);
+    lv_obj_t *ts = lv_label_create(s_edit_overlay);
     lv_label_set_text(ts, ts_buf);
     lv_obj_set_style_text_color(ts, lv_color_hex(0x8888AA), 0);
     lv_obj_set_style_text_font(ts, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(ts, 24, TOPBAR_H + 24);
 
-    /* Editable textarea */
-    lv_obj_t *ta = lv_textarea_create(overlay);
-    lv_obj_set_size(ta, lv_pct(100), 480);
-    lv_textarea_set_text(ta, n->text);
-    lv_obj_set_style_bg_color(ta, lv_color_hex(0x1A1A30), 0);
-    lv_obj_set_style_text_color(ta, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(ta, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_border_width(ta, 1, 0);
-    lv_obj_set_style_border_color(ta, lv_color_hex(0x444466), 0);
-    lv_obj_set_style_radius(ta, 16, 0);
-    lv_obj_set_style_pad_all(ta, 16, 0);
-    lv_obj_add_event_cb(ta, (lv_event_cb_t)ui_keyboard_show, LV_EVENT_CLICKED, ta);
-
-    /* Button row */
-    lv_obj_t *btn_row = lv_obj_create(overlay);
-    lv_obj_remove_style_all(btn_row);
-    lv_obj_set_size(btn_row, lv_pct(100), 60);
-    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(btn_row, 16, 0);
-    lv_obj_set_style_pad_top(btn_row, 8, 0);
-    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    /* Save button */
-    lv_obj_t *save_btn = lv_button_create(btn_row);
-    lv_obj_set_size(save_btn, 200, 56);
-    lv_obj_set_style_bg_color(save_btn, lv_color_hex(COL_CYAN), 0);
-    lv_obj_set_style_radius(save_btn, 12, 0);
-    lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, overlay);
-    lv_obj_t *save_lbl = lv_label_create(save_btn);
-    lv_label_set_text(save_lbl, "Save");
-    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(save_lbl, &lv_font_montserrat_24, 0);
-    lv_obj_center(save_lbl);
-
-    /* Cancel button */
-    lv_obj_t *cancel_btn = lv_button_create(btn_row);
-    lv_obj_set_size(cancel_btn, 200, 56);
-    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x333340), 0);
-    lv_obj_set_style_radius(cancel_btn, 12, 0);
-    lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, overlay);
-    lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
-    lv_label_set_text(cancel_lbl, "Cancel");
-    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(cancel_lbl, &lv_font_montserrat_24, 0);
-    lv_obj_center(cancel_lbl);
+    /* ── Large textarea — full width, most of the screen ── */
+    int ta_y = TOPBAR_H + 56;
+    int ta_h = SH - ta_y - 24;
+    s_edit_ta = lv_textarea_create(s_edit_overlay);
+    lv_obj_set_size(s_edit_ta, SW - 32, ta_h);
+    lv_obj_set_pos(s_edit_ta, 16, ta_y);
+    lv_textarea_set_text(s_edit_ta, n->text);
+    lv_obj_set_style_bg_color(s_edit_ta, lv_color_hex(0x1A1A30), 0);
+    lv_obj_set_style_text_color(s_edit_ta, lv_color_hex(COL_LABEL), 0);
+    lv_obj_set_style_text_font(s_edit_ta, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_border_width(s_edit_ta, 1, 0);
+    lv_obj_set_style_border_color(s_edit_ta, lv_color_hex(0x444466), 0);
+    lv_obj_set_style_radius(s_edit_ta, 16, 0);
+    lv_obj_set_style_pad_all(s_edit_ta, 16, 0);
+    lv_obj_add_event_cb(s_edit_ta, (lv_event_cb_t)ui_keyboard_show,
+                        LV_EVENT_CLICKED, s_edit_ta);
 }
 
 /* Delete confirmation callbacks */
@@ -1818,7 +1969,13 @@ lv_obj_t *ui_notes_create(void)
 
 void ui_notes_destroy(void)
 {
+    hide_recording_indicator();
     hide_input_area();
+    /* Edit overlay is a child of s_screen, so lv_obj_del(s_screen) destroys it.
+     * Just clear the pointers. */
+    s_edit_overlay = NULL;
+    s_edit_ta = NULL;
+    s_edit_idx = -1;
     if (s_screen) {
         lv_obj_del(s_screen);
         s_screen = NULL;
