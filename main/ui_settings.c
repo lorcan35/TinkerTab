@@ -1203,5 +1203,12 @@ lv_obj_t *ui_settings_get_screen(void) { return s_screen; }
 
 void ui_settings_hide(void)
 {
-    ui_settings_destroy();
+    /* Hide instead of destroy — rapid open/close cycles exhaust LVGL pool
+     * if we destroy+recreate ~55 objects each time. Hidden overlay stays
+     * in memory but doesn't render or intercept touch. */
+    if (s_screen) {
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+    }
+    s_destroying = false;
 }
