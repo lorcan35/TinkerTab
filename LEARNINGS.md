@@ -816,3 +816,17 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** `find /home/radxa/dragon_voice -name '__pycache__' -type d -exec rm -rf {} +` after every deploy, before restarting the service.
 - **Prevention:** Add pycache cleanup to the deploy script. Or add `PYTHONDONTWRITEBYTECODE=1` to the systemd service environment.
 - **Prevention:** Any scrollable container on the home screen must account for the nav bar (120px) and page dots (36px). Full-height = 1124px, not 1280px. Separate screens (loaded via `lv_screen_load()`) can use full 1280px.
+
+### CONFIG_LV_USE_ASSERT_MALLOC=n Prevents while(1) WDT Hang
+- **Date:** 2026-04-13
+- **Symptom:** When LVGL `lv_malloc` returned NULL (pool exhausted), the device hung for 60 seconds then rebooted via WDT. No useful crash backtrace — just `task_wdt` on `ui_task`.
+- **Root Cause:** `LV_ASSERT_MALLOC` default implementation is `while(1){}` — an infinite loop that blocks the LVGL task until the watchdog kills it. This produces no backtrace, no fault address, no useful debug info.
+- **Fix:** Set `CONFIG_LV_USE_ASSERT_MALLOC=n` and `CONFIG_LV_USE_ASSERT_NULL=n` in `sdkconfig.defaults`. With asserts disabled, NULL from `lv_malloc` propagates to the caller, which dereferences it and produces a `Store access fault` with a full backtrace pointing to the exact line.
+- **Prevention:** Always disable LVGL assert macros on production firmware. A crash with a backtrace is infinitely more useful than a silent `while(1)` hang. Fix the OOM root cause (increase pool, reduce objects) rather than relying on asserts.
+
+### Chat Hide-Not-Destroy in dismiss_all_overlays Prevents Timer Linked List Corruption
+- **Date:** 2026-04-13
+- **Symptom:** Navigating away from Chat (e.g., Chat -> Notes) caused sporadic crashes in `lv_timer_handler` or `lv_draw_sw_fill` on the next LVGL tick.
+- **Root Cause:** `ui_chat_destroy()` deletes the Chat overlay and all its children synchronously. If any child had an active `lv_timer` (e.g., status bar blink timer, message animation), the timer's linked list node was freed but the timer handler still iterated through it on the next tick — classic use-after-free on a linked list.
+- **Fix:** Changed `dismiss_all_overlays()` to call `ui_chat_hide()` (sets HIDDEN flag, clears CLICKABLE) instead of `ui_chat_destroy()`. The Chat overlay stays allocated but invisible and non-interactive. Its timers remain valid. Destroy only happens when Chat is explicitly replaced (e.g., New Chat button).
+- **Prevention:** Overlays with active timers or animations should be hidden, not destroyed, during navigation. Only destroy when the overlay is being permanently replaced. If you must destroy, cancel all timers first with `lv_timer_del()`.

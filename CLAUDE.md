@@ -250,6 +250,11 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 - **Debug:** `GET /camera` returns live frame as BMP
 - **CONFIG_CAMERA_SC202CS=y** must be set in sdkconfig (sensor won't compile without it!)
 
+### Dragon Server Intelligence
+- **Mode-aware system prompts:** Local=concise (128 tokens), Hybrid=medium (256 tokens), Cloud=rich (512 tokens). Prompt matches model capability.
+- **SearXNG web search:** Self-hosted on Dragon port 8888, aggregates Google+Bing+DDG (44 results/query). Falls back to DuckDuckGo if SearXNG unavailable.
+- **Compact tool format:** `format_for_llm(compact=True)` for local models — 5 priority tools, ~150 tokens vs ~500 for full format.
+
 ### Remaining Gaps
 - **AEC + Wake Word:** ESP-SR integrated, AFE runs, but wake word detection not triggering (TDM slot mapping issue). Parked.
 - **OPUS encoding:** 16kHz PCM = 256kbps. OPUS would cut to ~16kbps. Future optimization.
@@ -266,8 +271,9 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
 
 Current LVGL settings in `sdkconfig.defaults`:
-- **Memory pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64` = 160KB total. 96KB is the MAX base pool — 128KB causes linker error (exceeds internal SRAM BSS). The expand pool auto-allocates from system heap (PSRAM).
+- **Memory pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=256` = 352KB total. 96KB is the MAX base pool — 128KB causes linker error (exceeds internal SRAM BSS). The expand pool auto-allocates from system heap (PSRAM).
 - **Circle cache:** `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32`. Default 4 causes crashes when 5+ rounded objects render simultaneously.
+- **Asserts disabled:** `CONFIG_LV_USE_ASSERT_MALLOC=n` and `CONFIG_LV_USE_ASSERT_NULL=n` — prevents `while(1)` hang on alloc failure (which triggers 60s WDT reboot). With asserts off, NULL propagates and crashes faster with a useful backtrace instead of a silent WDT hang.
 - **Render mode:** `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM. Do NOT use DIRECT mode (causes tearing on DPI).
 
 ### Key Fixes (April 2026)
@@ -280,6 +286,10 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Settings rewrite:** Replaced with fullscreen overlay using manual Y positioning. No flex layout, no separate screen. Eliminates WDT crash + draw buffer exhaustion.
 - **WiFi:** Switched to DHCP, WPA2-PSK router, lowered auth threshold.
 - **Voice WS:** Added TLS cert bundle for ngrok, fixed TCP/SSL transport leaks.
+- **Chat UI overhaul:** Live status bar (Ready/Processing/Speaking), tappable mode badge to cycle Local/Hybrid/Cloud, New Chat button, thinking + tool indicator bubbles during LLM processing.
+- **Touch feedback system:** `ui_feedback.h/c` module with pressed states on 30+ interactive elements — buttons darken, cards lighten border, icons dim, nav items brighten. 100ms ease-out transitions.
+- **Nav debounce 300ms:** Prevents rapid-tap crashes from animation race conditions (dismiss + create overlapping).
+- **Voice overlay instant hide:** Removed async 150ms fade animation from `ui_voice_hide()` — prevents timer callback races with navigation dismiss.
 
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
@@ -349,7 +359,7 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 |--------|------|-------------|
 | Splash | ui_splash.c | Boot animation, shown during init |
 | Home | ui_home.c | 4-page tileview (Material Dark polish) |
-| Chat | ui_chat.c | Fullscreen overlay on home (iMessage-style Material Dark) |
+| Chat | ui_chat.c | Fullscreen overlay on home (iMessage-style Material Dark). Live status bar (Ready/Processing/Speaking), tappable mode badge cycles Local/Hybrid/Cloud, New Chat button, thinking + tool indicator bubbles |
 | Notes | ui_notes.c | Separate lv_screen (loaded via lv_screen_load) |
 | Settings | ui_settings.c | Fullscreen overlay on home (Material Dark, 55 objects) |
 | Camera | ui_camera.c | SC202CS viewfinder |
