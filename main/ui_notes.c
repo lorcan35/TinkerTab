@@ -24,6 +24,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdlib.h>
@@ -1812,6 +1813,9 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 }
 
 /* ── Refresh list ───────────────────────────────────────── */
+/* Feed WDT to prevent timeout during heavy UI creation */
+static inline void feed_wdt(void) { esp_task_wdt_reset(); }
+
 static void refresh_list(void)
 {
     if (!s_list) return;
@@ -1837,6 +1841,7 @@ static void refresh_list(void)
         }
         add_note_card(s_list, &s_notes[idx], idx);
         shown++;
+        if (shown % 3 == 0) feed_wdt();  /* Prevent WDT during heavy card creation */
     }
     if (shown == 0 && s_search_text[0]) {
         lv_obj_t *nf = lv_label_create(s_list);
@@ -1895,26 +1900,42 @@ lv_obj_t *ui_notes_create(void)
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_move_foreground(s_screen);
+        /* Hide tileview so home content doesn't bleed through overlay */
+        extern lv_obj_t *ui_home_get_tileview(void);
+        lv_obj_t *tv = ui_home_get_tileview();
+        if (tv) lv_obj_add_flag(tv, LV_OBJ_FLAG_HIDDEN);
+        feed_wdt();
         refresh_list();
         ESP_LOGI(TAG, "Notes screen resumed");
         return s_screen;
     }
 
-    /* Fullscreen overlay on home screen (NOT a separate lv_screen) */
+    /* Fullscreen overlay on home screen — EXACT same pattern as Chat overlay */
     extern lv_obj_t *ui_home_get_screen(void);
-    s_screen = lv_obj_create(ui_home_get_screen());
-    lv_obj_remove_style_all(s_screen);
-    lv_obj_set_size(s_screen, SW, SH);
+    lv_obj_t *parent = ui_home_get_screen();
+    if (!parent) parent = lv_screen_active();
+
+    s_screen = lv_obj_create(parent);
+    lv_obj_set_size(s_screen, 720, 1280);
     lv_obj_set_pos(s_screen, 0, 0);
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(s_screen, 0, 0);
+    lv_obj_set_style_border_width(s_screen, 0, 0);
+    lv_obj_set_style_radius(s_screen, 0, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_foreground(s_screen);
+
+    /* Hide tileview so home content doesn't bleed through overlay */
+    extern lv_obj_t *ui_home_get_tileview(void);
+    lv_obj_t *tv = ui_home_get_tileview();
+    if (tv) lv_obj_add_flag(tv, LV_OBJ_FLAG_HIDDEN);
 
     /* L5: Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back, LV_EVENT_GESTURE, NULL);
 
     make_topbar(s_screen);
+    feed_wdt();
 
     /* ── Big Voice + Text buttons ──────────────────────── */
     lv_obj_t *btn_row = lv_obj_create(s_screen);
@@ -1992,14 +2013,17 @@ lv_obj_t *ui_notes_create(void)
     s_list = lv_obj_create(s_screen);
     lv_obj_set_size(s_list, SW, SH - TOPBAR_H - 160 - SEARCH_H - 10);
     lv_obj_set_pos(s_list, 0, TOPBAR_H + 160 + SEARCH_H + 10);
-    lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(s_list, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_bg_opa(s_list, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_list, 20, 0);
     lv_obj_set_style_pad_hor(s_list, 16, 0);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
 
+    feed_wdt();
     refresh_list();
+    feed_wdt();
 
     ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
     return s_screen;
@@ -2032,6 +2056,10 @@ void ui_notes_hide(void)
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
     }
+    /* Restore tileview visibility */
+    extern lv_obj_t *ui_home_get_tileview(void);
+    lv_obj_t *tv = ui_home_get_tileview();
+    if (tv) lv_obj_clear_flag(tv, LV_OBJ_FLAG_HIDDEN);
 }
 
 lv_obj_t *ui_notes_get_screen(void) { return s_screen; }
