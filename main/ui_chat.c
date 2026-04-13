@@ -6,6 +6,7 @@
  * Show/hide via LV_OBJ_FLAG_HIDDEN + lv_obj_move_foreground().
  */
 #include "ui_chat.h"
+#include "ui_feedback.h"
 #include "voice.h"
 #include "ui_keyboard.h"
 #include "settings.h"
@@ -126,15 +127,77 @@ static const char *detect_tool_name(const char *text)
     return "a tool";
 }
 
+/* Status label below topbar — shows connection + voice state */
+static lv_obj_t *s_status_lbl = NULL;
+static lv_obj_t *s_status_dot = NULL;
+
 static void update_mode_badge(void)
 {
     if (!s_mode_badge) return;
     uint8_t mode = tab5_settings_get_voice_mode();
-    if (mode == 0)
-        lv_label_set_text(s_mode_badge, "Local");
-    else
-        lv_label_set_text(s_mode_badge, "Cloud");
+    const char *labels[] = {"Local", "Hybrid", "Cloud"};
+    const uint32_t colors[] = {0x22C55E, 0xF5A623, 0x06B6D4};
+    if (mode > 2) mode = 0;
+    lv_label_set_text(s_mode_badge, labels[mode]);
+    lv_obj_set_style_text_color(s_mode_badge, lv_color_hex(colors[mode]), 0);
 }
+
+static void update_status_bar(void)
+{
+    if (!s_status_lbl || !s_status_dot) return;
+    voice_state_t st = voice_get_state();
+    bool connected = voice_is_connected();
+    /* Connection dot */
+    lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(connected ? 0x22C55E : 0xFF453A), 0);
+    /* State text */
+    const char *state_text = "Offline";
+    uint32_t state_color = 0x666666;
+    switch (st) {
+        case VOICE_STATE_IDLE:       state_text = connected ? "Ready" : "Offline"; state_color = connected ? 0x666666 : 0xFF453A; break;
+        case VOICE_STATE_CONNECTING: state_text = "Connecting..."; state_color = 0xF5A623; break;
+        case VOICE_STATE_READY:      state_text = "Ready"; state_color = 0x22C55E; break;
+        case VOICE_STATE_LISTENING:  state_text = "Listening..."; state_color = 0x06B6D4; break;
+        case VOICE_STATE_PROCESSING: state_text = "Processing..."; state_color = 0xF5A623; break;
+        case VOICE_STATE_SPEAKING:   state_text = "Speaking..."; state_color = 0xBF5AF2; break;
+    }
+    lv_label_set_text(s_status_lbl, state_text);
+    lv_obj_set_style_text_color(s_status_lbl, lv_color_hex(state_color), 0);
+}
+
+static void cb_mode_cycle(lv_event_t *e)
+{
+    (void)e;
+    uint8_t mode = tab5_settings_get_voice_mode();
+    mode = (mode + 1) % 3;
+    tab5_settings_set_voice_mode(mode);
+    char model_buf[64];
+    tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
+    voice_send_config_update(mode, model_buf);
+    update_mode_badge();
+    ESP_LOGI(TAG, "Mode cycled to %d", mode);
+}
+
+static void cb_new_chat(lv_event_t *e)
+{
+    (void)e;
+    voice_clear_history();
+    /* Clear all messages from scroll */
+    if (s_msg_scroll) lv_obj_clean(s_msg_scroll);
+    s_msg_count = 0;
+    s_next_y = 12;
+    s_assist_bubble = NULL;
+    s_assist_label = NULL;
+    s_tool_label = NULL;
+    s_typing_lbl = NULL;
+    s_empty_hint = NULL;
+    /* Re-add welcome */
+    ui_chat_add_message("Fresh conversation started!", false);
+    ESP_LOGI(TAG, "New chat — history cleared");
+}
+
+/* ── Forward declarations ──────────────────────────────────────── */
+static void hide_typing_indicator(void);
+static void hide_tool_indicator(void);
 
 /* ── Typing indicator management ──────────────────────────────── */
 
@@ -142,15 +205,62 @@ static void show_typing_indicator(void)
 {
     if (s_typing_lbl || !s_msg_scroll) return;
 
-    s_typing_lbl = lv_label_create(s_msg_scroll);
-    lv_label_set_text(s_typing_lbl, "Tinker is thinking...");
+    /* Create a small bubble-style indicator */
+    s_typing_lbl = lv_obj_create(s_msg_scroll);
+    lv_obj_remove_style_all(s_typing_lbl);
+    lv_obj_set_size(s_typing_lbl, 200, 36);
     lv_obj_set_pos(s_typing_lbl, 16, s_next_y);
-    lv_obj_set_style_text_color(s_typing_lbl, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(s_typing_lbl, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_opa(s_typing_lbl, LV_OPA_50, 0);
+    lv_obj_set_style_bg_color(s_typing_lbl, lv_color_hex(CLR_TINKER_BUB), 0);
+    lv_obj_set_style_bg_opa(s_typing_lbl, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_typing_lbl, 18, 0);
+    lv_obj_set_style_pad_left(s_typing_lbl, 16, 0);
+    lv_obj_clear_flag(s_typing_lbl, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Scroll so the indicator is visible */
+    lv_obj_t *lbl = lv_label_create(s_typing_lbl);
+    lv_label_set_text(lbl, LV_SYMBOL_REFRESH "  Tinker is thinking...");
+    lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_CYAN), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+    /* No animation — keep it simple to avoid LVGL type cast issues */
+
     lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+}
+
+static void show_tool_indicator(const char *tool_name)
+{
+    hide_typing_indicator();
+    if (s_tool_label || !s_msg_scroll) return;
+
+    s_tool_label = lv_obj_create(s_msg_scroll);
+    lv_obj_remove_style_all(s_tool_label);
+    lv_obj_set_size(s_tool_label, 300, 36);
+    lv_obj_set_pos(s_tool_label, 16, s_next_y);
+    lv_obj_set_style_bg_color(s_tool_label, lv_color_hex(0x0A2030), 0);
+    lv_obj_set_style_bg_opa(s_tool_label, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_tool_label, 18, 0);
+    lv_obj_set_style_border_width(s_tool_label, 1, 0);
+    lv_obj_set_style_border_color(s_tool_label, lv_color_hex(CLR_CYAN), 0);
+    lv_obj_set_style_pad_left(s_tool_label, 16, 0);
+    lv_obj_clear_flag(s_tool_label, LV_OBJ_FLAG_SCROLLABLE);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI "  Using %s...", tool_name ? tool_name : "tool");
+    lv_obj_t *lbl = lv_label_create(s_tool_label);
+    lv_label_set_text(lbl, buf);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_CYAN), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+}
+
+static void hide_tool_indicator(void)
+{
+    if (s_tool_label) {
+        lv_obj_del(s_tool_label);
+        s_tool_label = NULL;
+    }
 }
 
 static void hide_typing_indicator(void)
@@ -232,54 +342,7 @@ static void cb_send(lv_event_t *e)
     lv_textarea_set_text(s_textarea, "");
 }
 
-/* ── Tool indicator management ─────────────────────────────────── */
-
-static void show_tool_indicator(const char *tool_name)
-{
-    if (!s_msg_scroll) return;
-
-    /* Build text like "Searching the web..." */
-    char buf[128];
-    if (tool_name && strncmp(tool_name, "web_search", 10) == 0) {
-        snprintf(buf, sizeof(buf), "Searching the web...");
-    } else if (tool_name && strncmp(tool_name, "a tool", 6) == 0) {
-        snprintf(buf, sizeof(buf), "Using a tool...");
-    } else if (tool_name) {
-        /* Extract tool name up to quote */
-        char name[48];
-        int i = 0;
-        while (tool_name[i] && tool_name[i] != '"' && i < 47) {
-            name[i] = tool_name[i]; i++;
-        }
-        name[i] = '\0';
-        snprintf(buf, sizeof(buf), "Using %s...", name);
-    } else {
-        snprintf(buf, sizeof(buf), "Thinking...");
-    }
-
-    if (s_tool_label) {
-        lv_label_set_text(s_tool_label, buf);
-        return;
-    }
-
-    /* Create a small italic-style label directly in scroll area */
-    s_tool_label = lv_label_create(s_msg_scroll);
-    lv_label_set_text(s_tool_label, buf);
-    lv_obj_set_pos(s_tool_label, 16, s_next_y);
-    lv_obj_set_style_text_color(s_tool_label, lv_color_hex(CLR_TOOL_DIM), 0);
-    lv_obj_set_style_text_font(s_tool_label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_opa(s_tool_label, LV_OPA_70, 0);
-
-    /* Don't advance s_next_y — tool label will be removed when response arrives */
-}
-
-static void hide_tool_indicator(void)
-{
-    if (s_tool_label) {
-        lv_obj_del(s_tool_label);
-        s_tool_label = NULL;
-    }
-}
+/* Old tool indicator removed — new one defined above with bubble style */
 
 /* ── Voice polling timer ───────────────────────────────────────── */
 
@@ -290,13 +353,18 @@ static void poll_voice_cb(lv_timer_t *t)
 
     voice_state_t st = voice_get_state();
 
+    /* Update status bar on every poll — shows live state */
+    update_status_bar();
+    /* Update mode badge in case it changed externally */
+    update_mode_badge();
+
     /* Stream LLM tokens into assistant bubble */
     if (st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING) {
         const char *llm = voice_get_llm_text();
         if (llm && llm[0]) {
             /* Check for tool tags */
             const char *tool = detect_tool_name(llm);
-            if (tool) {
+            if (tool && !s_tool_label) {
                 show_tool_indicator(tool);
             }
 
@@ -305,8 +373,7 @@ static void poll_voice_cb(lv_timer_t *t)
             strip_tool_tags(llm, stripped, sizeof(stripped));
 
             if (stripped[0]) {
-                hide_tool_indicator();
-                /* Remove typing indicator once real text arrives */
+                /* Remove typing indicator once real text arrives (keep tool indicator) */
                 hide_typing_indicator();
 
                 if (!s_assist_bubble) {
@@ -419,15 +486,53 @@ lv_obj_t *ui_chat_create(void)
     /* "Chat" title — center */
     lv_obj_t *title = lv_label_create(s_overlay);
     lv_label_set_text(title, "Chat");
-    lv_obj_set_pos(title, 310, 16);
+    lv_obj_set_pos(title, 110, 8);
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
 
-    /* Mode badge — right */
+    /* Connection dot + status text below title */
+    s_status_dot = lv_obj_create(s_overlay);
+    lv_obj_remove_style_all(s_status_dot);
+    lv_obj_set_size(s_status_dot, 8, 8);
+    lv_obj_set_pos(s_status_dot, 112, 36);
+    lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(0x22C55E), 0);
+    lv_obj_set_style_bg_opa(s_status_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_status_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(s_status_dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    s_status_lbl = lv_label_create(s_overlay);
+    lv_label_set_text(s_status_lbl, "Ready");
+    lv_obj_set_pos(s_status_lbl, 126, 32);
+    lv_obj_set_style_text_color(s_status_lbl, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_font(s_status_lbl, &lv_font_montserrat_14, 0);
+
+    /* New chat button */
+    lv_obj_t *new_btn = lv_button_create(s_overlay);
+    lv_obj_set_size(new_btn, 36, 36);
+    lv_obj_set_pos(new_btn, 400, 12);
+    lv_obj_set_style_bg_color(new_btn, lv_color_hex(CLR_BORDER), 0);
+    lv_obj_set_style_bg_opa(new_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(new_btn, 8, 0);
+    lv_obj_set_style_border_width(new_btn, 0, 0);
+    lv_obj_add_event_cb(new_btn, cb_new_chat, LV_EVENT_CLICKED, NULL);
+    ui_fb_button(new_btn);
+    lv_obj_t *new_lbl = lv_label_create(new_btn);
+    lv_label_set_text(new_lbl, LV_SYMBOL_PLUS);
+    lv_obj_set_style_text_color(new_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(new_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(new_lbl);
+
+    /* Mode badge — tappable to cycle modes */
     s_mode_badge = lv_label_create(s_overlay);
-    lv_obj_set_pos(s_mode_badge, 610, 20);
-    lv_obj_set_style_text_color(s_mode_badge, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(s_mode_badge, &lv_font_montserrat_16, 0);
+    lv_obj_set_pos(s_mode_badge, 540, 12);
+    lv_obj_set_style_text_font(s_mode_badge, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_bg_opa(s_mode_badge, LV_OPA_20, 0);
+    lv_obj_set_style_radius(s_mode_badge, 12, 0);
+    lv_obj_set_style_pad_hor(s_mode_badge, 12, 0);
+    lv_obj_set_style_pad_ver(s_mode_badge, 4, 0);
+    lv_obj_add_flag(s_mode_badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_mode_badge, 10);
+    lv_obj_add_event_cb(s_mode_badge, cb_mode_cycle, LV_EVENT_CLICKED, NULL);
     update_mode_badge();
 
     /* Topbar separator line */
