@@ -139,7 +139,6 @@ static void orb_breathe_cb(void *obj, int32_t val);
 static void orb_ring_opa_cb(void *obj, int32_t val);
 static void wave_bar_cb(void *obj, int32_t val);
 static void fade_overlay_cb(void *obj, int32_t val);
-static void fade_done_hide_cb(lv_anim_t *a);
 static void dot_timer_cb(lv_timer_t *t);
 static void auto_hide_timer_cb(lv_timer_t *t);
 static void rec_timer_cb(lv_timer_t *t);
@@ -201,6 +200,7 @@ static int         s_rec_seconds  = 0;
 static lv_timer_t *s_dot_timer    = NULL;
 static lv_timer_t *s_hide_timer   = NULL;
 static lv_timer_t *s_stuck_timer  = NULL;  /* watchdog for stuck PROCESSING state */
+static lv_timer_t *s_auto_hide   = NULL;   /* READY-state auto-dismiss (was local static — caused UAF) */
 static int         s_dot_phase    = 0;
 
 /* Current state tracking */
@@ -398,13 +398,12 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         bool has_conversation = s_has_llm_text;
         if (has_conversation) {
             lv_label_set_text(s_lbl_status, "");
-            /* Auto-dismiss: hide after 4 seconds */
-            static lv_timer_t *s_auto_hide = NULL;
+            /* Auto-dismiss: hide after 4 seconds.
+             * Uses file-scope s_auto_hide — cleaned up in stop_all_anims().
+             * NEVER use auto_delete — leaves dangling pointer → UAF crash. */
             if (s_auto_hide) { lv_timer_delete(s_auto_hide); s_auto_hide = NULL; }
-            s_auto_hide = lv_timer_create(
-                (lv_timer_cb_t)ui_voice_hide, 4000, NULL);
+            s_auto_hide = lv_timer_create(auto_hide_timer_cb, 4000, NULL);
             lv_timer_set_repeat_count(s_auto_hide, 1);
-            lv_timer_set_auto_delete(s_auto_hide, true);
         } else {
             lv_label_set_text(s_lbl_status, "Tap to Record");
         }
@@ -511,18 +510,17 @@ void ui_voice_hide(void)
 
     stop_all_anims();
 
-    /* Fade out */
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, s_overlay);
-    lv_anim_set_values(&a, VO_BG_OPA, 0);
-    lv_anim_set_duration(&a, ANIM_FADE_OUT_MS);
-    lv_anim_set_exec_cb(&a, fade_overlay_cb);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
-    lv_anim_set_ready_cb(&a, fade_done_hide_cb);
-    lv_anim_start(&a);
+    /* Cancel any in-flight fade animation */
+    lv_anim_delete(s_overlay, fade_overlay_cb);
 
-    ESP_LOGI(TAG, "Voice overlay hiding");
+    /* INSTANT hide — no fade animation.
+     * Fade-out caused crash: 150ms window where fade_done_hide_cb fires
+     * after navigation changed screen state underneath. */
+    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(s_overlay, LV_OPA_COVER, 0);
+
+    ESP_LOGI(TAG, "Voice overlay hidden (instant)");
 }
 
 bool ui_voice_is_visible(void)
@@ -1026,8 +1024,10 @@ static void show_state_speaking(void)
     set_orb_color(VO_GREEN, VO_GREEN, LV_OPA_50);
     set_orb_size(ORB_SZ_SPEAK);
 
-    /* Make orb tappable to interrupt TTS */
+    /* Make orb tappable to interrupt TTS.
+     * Remove first to avoid stacking duplicate callbacks on re-entry. */
     lv_obj_add_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_event_cb(s_orb_container, orb_speak_click_cb);
     lv_obj_add_event_cb(s_orb_container, orb_speak_click_cb, LV_EVENT_CLICKED, NULL);
 
     /* Hide status label and dots — chat bubbles show the content now */
@@ -1304,6 +1304,12 @@ static void stop_all_anims(void)
         s_stuck_timer = NULL;
     }
 
+    /* Cancel READY auto-hide timer — prevents dangling pointer UAF */
+    if (s_auto_hide) {
+        lv_timer_delete(s_auto_hide);
+        s_auto_hide = NULL;
+    }
+
     /* Remove orb click handler if set (Fix #4 cleanup) */
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_event_cb(s_orb_container, orb_speak_click_cb);
@@ -1340,14 +1346,8 @@ static void fade_overlay_cb(void *obj, int32_t val)
     lv_obj_set_style_opa((lv_obj_t *)obj, child_opa, 0);
 }
 
-static void fade_done_hide_cb(lv_anim_t *a)
-{
-    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
-    /* Stop intercepting taps when hidden — otherwise nav bar is blocked */
-    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
-    /* Reset overlay opacity for next show */
-    lv_obj_set_style_opa(s_overlay, LV_OPA_COVER, 0);
-}
+/* fade_done_hide_cb removed — ui_voice_hide() is now instant (no fade animation).
+ * The 150ms fade window caused crash: callback fired after navigation changed state. */
 
 /* ── Timer callbacks ──────────────────────────────────────────── */
 
@@ -1361,11 +1361,12 @@ static void dot_timer_cb(lv_timer_t *t)
 
 static void auto_hide_timer_cb(lv_timer_t *t)
 {
-    s_hide_timer = NULL;
-    /* Only auto-hide on error/timeout (IDLE state).
-     * NEVER auto-hide from READY — user should see conversation + close manually. */
-    if (s_visible && s_cur_state == VOICE_STATE_IDLE) {
-        ESP_LOGI(TAG, "Auto-hiding overlay (error/timeout)");
+    /* Clear whichever timer pointer triggered us */
+    if (t == s_hide_timer) s_hide_timer = NULL;
+    if (t == s_auto_hide) s_auto_hide = NULL;
+
+    if (s_visible) {
+        ESP_LOGI(TAG, "Auto-hiding overlay (state=%d)", s_cur_state);
         ui_voice_hide();
     }
 }
