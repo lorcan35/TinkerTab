@@ -546,7 +546,9 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_move_foreground(s_screen);
-        if (s_refresh_timer) lv_timer_resume(s_refresh_timer);
+        /* Recreate refresh timer (deleted on hide to prevent race conditions) */
+        if (!s_refresh_timer) s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
+        else lv_timer_resume(s_refresh_timer);
         ui_settings_update();
         return s_screen;
     }
@@ -1206,7 +1208,7 @@ void ui_settings_hide(void)
     /* Hide instead of destroy — rapid open/close cycles exhaust LVGL pool.
      * PAUSE refresh timer to prevent it updating hidden objects during
      * other overlay creation (Settings timer + Notes creation = WDT). */
-    if (s_refresh_timer) lv_timer_pause(s_refresh_timer);
+    if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
     if (s_screen) {
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);

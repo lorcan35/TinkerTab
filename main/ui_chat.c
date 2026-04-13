@@ -1398,9 +1398,9 @@ void ui_chat_hide(void)
 {
     if (!s_overlay) return;
     ui_keyboard_hide();
-    /* Pause poll timer — prevents 200ms polling on hidden overlay objects
-     * which competes with other overlay creation for LVGL task time */
-    if (s_poll_timer) lv_timer_pause(s_poll_timer);
+    /* Delete poll timer — pausing alone is insufficient because the timer
+     * can fire between pause call and LVGL processing it. Timer recreated on show. */
+    if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
     s_active = false;
