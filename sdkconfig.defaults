@@ -78,6 +78,16 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
+# Circle mask cache — default 4 is too small. Notes(7 cards) + dialogs + overlays
+# need 20+ simultaneous radius entries. Overflow → Store access fault in circ_calc_aa4.
+CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
+# Disable LVGL asserts entirely — default assert is while(1) which hangs forever.
+# Better to crash with a NULL dereference (instant reboot) than hang for 60s WDT.
+CONFIG_LV_USE_ASSERT_NULL=n
+CONFIG_LV_USE_ASSERT_MALLOC=n
+CONFIG_LV_USE_ASSERT_STYLE=n
+CONFIG_LV_USE_ASSERT_MEM_INTEGRITY=n
+CONFIG_LV_USE_ASSERT_OBJ=n
 
 # ---------------------------------------------------------------------------
 # Crash diagnostics and stability
