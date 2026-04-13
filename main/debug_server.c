@@ -1286,9 +1286,13 @@ esp_err_t tab5_debug_server_init(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
-    config.stack_size  = 12288;  /* 12 KB — was 8 KB, tight with concurrent WiFi scan */
+    config.stack_size  = 12288;
     config.max_uri_handlers = 28;
     config.lru_purge_enable = true;
+    config.max_open_sockets = 13;         /* Default 7 too low for rapid stress tests */
+    config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
+    config.send_wait_timeout = 5;         /* 5s send timeout (default 5) */
+    config.close_fn = NULL;               /* Use default close */
 
     httpd_handle_t server = NULL;
     esp_err_t ret = httpd_start(&server, &config);
