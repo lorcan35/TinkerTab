@@ -758,7 +758,8 @@ static void dismiss_all_overlays(void)
     extern void ui_chat_destroy(void);
     ui_settings_hide();
     ui_notes_hide();
-    ui_chat_destroy();
+    extern void ui_chat_hide(void);
+    ui_chat_hide();
 }
 
 static void nav_click_cb(lv_event_t *e)
