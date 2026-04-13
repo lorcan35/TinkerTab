@@ -756,16 +756,19 @@ static void _async_chat(void *arg)
     ui_chat_create();
 }
 
-/* Dismiss ALL overlays before opening any screen. */
+/* Dismiss ALL overlays before opening any screen.
+ * HIDE overlays (don't destroy) to avoid LVGL draw pipeline crashes.
+ * Destroying objects while LVGL has queued draw commands causes
+ * Store access fault in lv_draw_sw_fill/lv_draw_sw_mask_radius_init. */
 static void dismiss_all_overlays(void)
 {
     ui_keyboard_hide();
     extern void ui_settings_hide(void);
     extern void ui_notes_hide(void);
-    extern void ui_chat_destroy(void);
+    extern void ui_chat_hide(void);
     ui_settings_hide();
     ui_notes_hide();
-    ui_chat_destroy();
+    ui_chat_hide();
 }
 
 static uint32_t s_last_nav_ms = 0;
