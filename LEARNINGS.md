@@ -646,12 +646,27 @@ Every entry here was learned the hard way. Read this before touching the codebas
 
 ## Critical LVGL + DPI Rendering Lessons (2026-04-13)
 
-### LVGL Circle Cache Exhaustion → Store Access Fault
+### ⚠️ CONFIG_LV_CONF_SKIP=1 — lv_conf.h IS COMPLETELY IGNORED
 - **Date:** 2026-04-13
-- **Symptom:** Device reboots with `Store access fault` (MCAUSE=7, MTVAL=0x00000000) when opening Notes screen. Crash in `circ_calc_aa4` → `lv_draw_sw_mask_radius_init`. Also occurs intermittently during any screen with 5+ rounded-corner objects rendered simultaneously.
-- **Root Cause:** `LV_DRAW_SW_CIRCLE_CACHE_SIZE` defaults to **4** in LVGL v9. Notes screen creates 7 cards with `radius=12`, each needing an anti-aliased radius mask. When all 4 cache slots are in use, LVGL calls `lv_malloc_zeroed()` for a temporary entry. If malloc returns NULL, the code writes `entry->life = -1` to address 0x00000000 → Store access fault → reboot. Even when malloc succeeds, the temporary allocations fragment memory under load.
-- **Fix:** Set `LV_DRAW_SW_CIRCLE_CACHE_SIZE 16` in `lv_conf.h`. Costs ~2KB additional memory but eliminates all overflow allocations for normal UI (up to 16 different radii on screen simultaneously).
-- **Prevention:** ANY screen with more than 4 unique radius values will hit this. If you add rounded corners to objects, count how many unique radii are on screen at once. The cache must be >= that count. Current screens: Home (3 radii: orb circle, card 12px, button 12px), Settings (2: 8px, 12px), Notes (2: 8px, 12px), Chat (2: 8px, 12px). With overlays sharing the screen, peak is ~8 unique radii → 16 cache entries provides 2x safety margin.
+- **Symptom:** Every change made to `main/lv_conf.h` (circle cache, assert handler, custom allocator, memory pool size) had ZERO effect. Builds compiled fine but the runtime behavior didn't change. Spent hours debugging why "fixes" didn't work.
+- **Root Cause:** ESP-IDF's LVGL component sets `CONFIG_LV_CONF_SKIP=1` via Kconfig. This makes `lv_conf_internal.h` skip `#include "lv_conf.h"` entirely. ALL LVGL configuration comes from Kconfig (`sdkconfig`/`sdkconfig.defaults`), NOT from `lv_conf.h`. The `lv_conf.h` file in `main/` is a dead file — it compiles into `main` component but LVGL never reads it.
+- **Fix:** Put ALL LVGL configuration in `sdkconfig.defaults` using `CONFIG_LV_*` Kconfig keys. Do NOT edit `lv_conf.h` — it has no effect.
+- **Prevention:** **BEFORE making any LVGL config change, verify it appears in `build/config/sdkconfig.h` after building.** If `grep "YOUR_SETTING" build/config/sdkconfig.h` returns nothing, the setting is NOT active. Setting `CONFIG_LV_CONF_SKIP=n` breaks the build (LVGL component can't find `lv_conf.h` from `main` component without adding REQUIRES dependency).
+
+### LVGL Memory Pool Exhaustion — THE Root Cause of Note Tap Crashes
+- **Date:** 2026-04-13
+- **Symptom:** Tapping a note card to open the edit overlay crashes the device. Two crash modes: (1) `task_wdt` timeout — ui_task stuck in `while(1)` inside `LV_ASSERT_MALLOC` at `lv_label_set_text:166` or `draw_letter:427`. (2) `Store access fault` — NULL pointer propagation after failed `lv_malloc`.
+- **Root Cause:** LVGL's builtin allocator had a **64KB fixed pool** (`CONFIG_LV_MEM_SIZE_KILOBYTES=64`) with **0KB expand** (`CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=0`). Notes screen with 7 cards + topbar + search + buttons consumed ~50KB. Opening the edit overlay (textarea + labels + buttons) needed ~15KB more → pool exhausted → `lv_malloc` returns NULL → `LV_ASSERT_MALLOC` fires `while(1)` → WDT kills device after 60s.
+- **Fix:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64` = 160KB total. The 96KB base pool fits in internal SRAM BSS. The 64KB expand auto-allocates from system heap (PSRAM) when base pool is full.
+- **Prevention:** Monitor LVGL memory usage: `lv_mem_monitor_t mon; lv_mem_monitor(&mon); ESP_LOGI("LVGL", "used=%d%% frag=%d%%", mon.used_pct, mon.frag_pct);`. If `used_pct > 80%`, increase pool or simplify UI. NEVER go above 96KB base pool — 128KB causes linker error on ESP32-P4 (exceeds internal SRAM BSS capacity). Use expand pool for overflow.
+- **Why it worked before:** The edit overlay feature was added but never tested with physical taps on the device. API navigation created the Notes list (which fits in 64KB) but never triggered `cb_note_tap` which creates the edit overlay.
+
+### LVGL Circle Cache — Set via Kconfig, NOT lv_conf.h
+- **Date:** 2026-04-13
+- **Symptom:** Device reboots with `Store access fault` in `circ_calc_aa4` → `lv_draw_sw_mask_radius_init` when too many rounded-corner objects are on screen.
+- **Root Cause:** `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE` defaults to **4**. Notes (7 cards) + dialogs + overlays need 20+ simultaneous radius masks. Overflow triggers `lv_malloc_zeroed` which fails (64KB pool exhausted) → writes to NULL → crash.
+- **Fix:** `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32` in `sdkconfig.defaults`. Costs ~4KB but handles any realistic UI combination.
+- **Prevention:** Count max simultaneous rounded objects across all visible screens + overlays. Cache must be >= that count. Current peak: ~20 (Notes list + edit overlay + keyboard).
 
 ### Notes WDT Crash During Card Creation
 - **Date:** 2026-04-13

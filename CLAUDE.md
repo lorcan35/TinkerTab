@@ -262,7 +262,17 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 - `lv_screen_load_anim()` with auto_delete=false when returning to existing home screen
 - sdkconfig changes always require `idf.py fullclean build` — incremental builds cache stale config
 
+### ⚠️ LVGL Configuration — CRITICAL
+**ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
+
+Current LVGL settings in `sdkconfig.defaults`:
+- **Memory pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64` = 160KB total. 96KB is the MAX base pool — 128KB causes linker error (exceeds internal SRAM BSS). The expand pool auto-allocates from system heap (PSRAM).
+- **Circle cache:** `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32`. Default 4 causes crashes when 5+ rounded objects render simultaneously.
+- **Render mode:** `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM. Do NOT use DIRECT mode (causes tearing on DPI).
+
 ### Key Fixes (April 2026)
+- **LVGL pool OOM crash fixed:** Notes edit overlay exhausted 64KB LVGL pool → `lv_malloc` NULL → `LV_ASSERT_MALLOC while(1)` → 60s WDT → reboot. Fix: 96KB pool + 64KB expand in `sdkconfig.defaults`.
+- **Circle cache crash fixed:** 4 cache entries overflowed with 7+ rounded cards → `circ_calc_aa4` NULL dereference. Fix: `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32` in `sdkconfig.defaults`.
 - **Settings WDT crash fixed:** `f_getfree()` on a 128GB SD card blocks the LVGL thread for ~30s, triggering the watchdog. Fix: cache the `f_getfree` result from boot, feed `esp_task_wdt_reset()` between settings UI sections during creation.
 - **Response timeout (local vs cloud):** Local mode needs 5 min timeout for tool-calling chains (small models are slow). Cloud mode keeps 35s timeout. Timeout is mode-aware.
 - **Tool parser tolerant of small model quirks:** qwen3:1.7b adds stray `>` after `</args>`, sometimes omits closing tags. Parser uses tolerant regex with fallback patterns to handle these gracefully.
@@ -270,7 +280,6 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 - **Settings rewrite:** Replaced with fullscreen overlay using manual Y positioning. No flex layout, no separate screen. Eliminates WDT crash + draw buffer exhaustion.
 - **WiFi:** Switched to DHCP, WPA2-PSK router, lowered auth threshold.
 - **Voice WS:** Added TLS cert bundle for ngrok, fixed TCP/SSL transport leaks.
-- **LVGL memory:** 128KB pool + 64KB expand (was 64KB, caused draw pipeline crashes).
 
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
