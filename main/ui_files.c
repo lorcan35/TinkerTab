@@ -571,6 +571,12 @@ static void show_file_info(const char *filepath, off_t size)
  * ================================================================ */
 lv_obj_t *ui_files_create(void)
 {
+    /* If already exists, just reload */
+    if (scr_files) {
+        lv_screen_load(scr_files);
+        return scr_files;
+    }
+
     strncpy(current_path, ROOT_PATH, MAX_PATH_LEN - 1);
     current_path[MAX_PATH_LEN - 1] = '\0';
 
