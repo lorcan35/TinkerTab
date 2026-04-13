@@ -1171,6 +1171,8 @@ void ui_settings_destroy(void)
 
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
 
+    /* Hide before delete to stop draw pipeline from rendering stale objects */
+    lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_delete(s_screen);
 
     s_screen        = NULL;

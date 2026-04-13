@@ -625,6 +625,11 @@ void ui_chat_destroy(void)
     ui_keyboard_hide();
 
     if (s_overlay) {
+        /* Hide first, then delete — ensures LVGL's draw pipeline
+         * stops rendering this object before its memory is freed.
+         * Prevents Store access fault in lv_draw_sw_fill. */
+        lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(s_overlay);
         lv_obj_del(s_overlay);
         s_overlay = NULL;
     }

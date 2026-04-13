@@ -756,7 +756,7 @@ static void _async_chat(void *arg)
     ui_chat_create();
 }
 
-/* Dismiss ALL overlays before opening any screen */
+/* Dismiss ALL overlays before opening any screen. */
 static void dismiss_all_overlays(void)
 {
     ui_keyboard_hide();
@@ -782,17 +782,22 @@ static void nav_click_cb(lv_event_t *e)
     s_last_nav_ms = now;
 
     dismiss_all_overlays();
+
+    /* Defer screen creation to next LVGL tick via lv_async_call.
+     * This ensures destroyed overlay objects are fully cleaned up
+     * before new objects are created, preventing draw buffer crashes
+     * (Store access fault in lv_draw_sw_fill when old draw commands
+     * reference freed objects). */
     if (pg == 1) {
         lv_async_call(async_notes_create, NULL);
         return;
     }
     if (pg == 2) {
-        /* Chat is a fullscreen overlay, same pattern as settings */
         lv_async_call(_async_chat, NULL);
         return;
     }
     if (pg == 3) {
-        ui_home_nav_settings();
+        lv_async_call(_async_settings, NULL);
         return;
     }
     if (tiles[pg] && tileview) {
