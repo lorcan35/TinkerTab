@@ -21,9 +21,27 @@
  *====================*/
 #define LV_MEM_CUSTOM 1
 #define LV_MEM_CUSTOM_INCLUDE "esp_heap_caps.h"
-#define LV_MEM_CUSTOM_ALLOC(size)   heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
+/* Robust allocator: PSRAM first, then internal RAM, then DEFAULT.
+ * LVGL font glyph rendering MUST NOT fail or the device hangs/crashes.
+ * The assert handler can't save us if draw_letter gets a NULL draw_buf. */
+static inline void *_lv_robust_alloc(size_t size) {
+    if (size == 0) return NULL;
+    void *p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (p) return p;
+    /* PSRAM failed — try any available RAM */
+    p = heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+    return p;
+}
+static inline void *_lv_robust_realloc(void *ptr, size_t size) {
+    if (size == 0) { heap_caps_free(ptr); return NULL; }
+    void *p = heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM);
+    if (p) return p;
+    p = heap_caps_realloc(ptr, size, MALLOC_CAP_DEFAULT);
+    return p;
+}
+#define LV_MEM_CUSTOM_ALLOC(size)   _lv_robust_alloc(size)
 #define LV_MEM_CUSTOM_FREE(p)       heap_caps_free(p)
-#define LV_MEM_CUSTOM_REALLOC(p, s) heap_caps_realloc(p, s, MALLOC_CAP_SPIRAM)
+#define LV_MEM_CUSTOM_REALLOC(p, s) _lv_robust_realloc(p, s)
 
 /*====================
    DISPLAY SETTINGS
@@ -49,11 +67,11 @@
    DRAWING
  *====================*/
 #define LV_USE_DRAW_SW 1
-/* Circle cache for anti-aliased radius masks. Default 4 is too small —
- * Notes screen creates 7 cards with radius=12 simultaneously, exhausting
- * the cache. Overflow triggers lv_malloc_zeroed which can return NULL
- * causing Store access fault in circ_calc_aa4. 16 entries = ~2KB. */
-#define LV_DRAW_SW_CIRCLE_CACHE_SIZE 16
+/* Circle cache for anti-aliased radius masks. Default 4 is way too small.
+ * Notes screen: 7 cards (radius 12+8) = ~14 entries. Delete dialog adds 3 more.
+ * Edit overlay adds 3 more. Settings has ~10. Overlays stack on existing screen.
+ * 32 entries = ~4KB — handles any realistic screen combination. */
+#define LV_DRAW_SW_CIRCLE_CACHE_SIZE 32
 
 /*====================
    THEME
@@ -129,6 +147,16 @@
 #define LV_USE_MONKEY    0
 #define LV_USE_PROFILER  0
 #define LV_USE_SYSMON    0
+
+/*====================
+   ASSERT HANDLER
+ *====================*/
+/* Default LVGL assert is while(1) which hangs the device forever.
+ * Override to log + return so the device stays alive on malloc failure. */
+#define LV_ASSERT_HANDLER do { \
+    LV_LOG_ERROR("LVGL ASSERT FAILED"); \
+    return; \
+} while(0)
 
 /* Required by LVGL build system */
 #define LV_USE_STDLIB_MALLOC    LV_STDLIB_CUSTOM

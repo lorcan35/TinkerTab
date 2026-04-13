@@ -1432,6 +1432,14 @@ static void cb_note_tap(lv_event_t *e)
     if (note_idx < 0 || note_idx >= MAX_NOTES || !s_notes[note_idx].used) return;
     if (!s_screen) return;
 
+    /* Heap diagnostics before creating edit overlay */
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t largest_psram = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    ESP_LOGW(TAG, "EDIT OPEN: psram_free=%u largest_block=%u internal_free=%u note_len=%u",
+             (unsigned)free_psram, (unsigned)largest_psram,
+             (unsigned)free_internal, (unsigned)strlen(s_notes[note_idx].text));
+
     /* Close any existing edit overlay first */
     if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; }
 
