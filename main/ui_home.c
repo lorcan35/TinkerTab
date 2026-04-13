@@ -32,6 +32,7 @@
 #include "ui_core.h"
 #include "wifi.h"
 #include "display.h"
+#include "ui_feedback.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -167,6 +168,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_add_flag(orb, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(orb, 20);
     lv_obj_add_event_cb(orb, orb_tap_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_button_colored(orb, 0xD48B1A);  /* Darken amber on press */
 
     /* L1: Orb icon — audio waveform (closest to mic in LVGL built-in set) */
     lv_obj_t *orb_icon = lv_label_create(orb);
@@ -220,6 +222,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_border_width(cam_btn, 1, 0);
     lv_obj_set_style_border_color(cam_btn, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(cam_btn, cb_camera_launch, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(cam_btn);
     lv_obj_t *cam_lbl = lv_label_create(cam_btn);
     lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
     lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_WHITE), 0);
@@ -234,6 +237,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_border_width(files_btn, 1, 0);
     lv_obj_set_style_border_color(files_btn, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(files_btn, cb_files_launch, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(files_btn);
     lv_obj_t *files_lbl = lv_label_create(files_btn);
     lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
     lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_WHITE), 0);
@@ -249,6 +253,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_radius(ask_btn, 12, 0);
     lv_obj_set_style_border_width(ask_btn, 0, 0);
     lv_obj_add_event_cb(ask_btn, ask_tap_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_button_colored(ask_btn, 0xD48B1A);  /* Darken amber on press */
 
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
     lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
@@ -270,6 +275,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(last_note_card, 10);
     lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(last_note_card);
 
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
@@ -494,6 +500,7 @@ lv_obj_t *ui_home_create(void)
             lv_obj_set_ext_click_area(nav_icons[i], 8);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                (void *)(intptr_t)i);
+            ui_fb_nav(nav_icons[i]);
         }
     }
 

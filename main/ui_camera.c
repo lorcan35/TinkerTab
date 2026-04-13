@@ -10,6 +10,7 @@
 #include "ui_camera.h"
 #include "ui_home.h"
 #include "ui_files.h"
+#include "ui_feedback.h"
 #include "camera.h"
 #include "sdcard.h"
 #include "config.h"
@@ -196,6 +197,7 @@ lv_obj_t *ui_camera_create(void)
         lv_obj_set_style_radius(btn_back, 12, 0);
         lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 8, 0);
         lv_obj_add_event_cb(btn_back, cb_back_btn, LV_EVENT_CLICKED, NULL);
+        ui_fb_button(btn_back);
 
         lv_obj_t *arrow = lv_label_create(btn_back);
         lv_label_set_text(arrow, LV_SYMBOL_LEFT);
@@ -285,6 +287,7 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_clear_flag(btn_inner, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_add_event_cb(btn_capture, capture_btn_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_button_colored(btn_capture, 0xCCCCCC);  /* Darken white on press */
 
     /* ── "No SD" label below capture button (hidden by default) ── */
     lbl_no_sd = lv_label_create(bar);
@@ -343,6 +346,7 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_add_flag(btn_gallery, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_add_event_cb(btn_gallery, gallery_btn_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(btn_gallery);
 
     lbl_gallery = lv_label_create(btn_gallery);
     lv_label_set_text(lbl_gallery, "Gallery");

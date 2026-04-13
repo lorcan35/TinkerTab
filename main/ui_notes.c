@@ -12,6 +12,7 @@
 #include "ui_notes.h"
 #include "ui_home.h"
 #include "ui_core.h"
+#include "ui_feedback.h"
 #include "ui_voice.h"
 #include "ui_keyboard.h"
 #include "voice.h"
@@ -1148,6 +1149,7 @@ static void show_input_area(void)
     lv_obj_set_style_radius(s_input_btn, 16, 0);
     lv_obj_set_style_border_width(s_input_btn, 0, 0);
     lv_obj_add_event_cb(s_input_btn, cb_input_send, LV_EVENT_CLICKED, NULL);
+    ui_fb_button_colored(s_input_btn, 0xD48B1A);
 
     lv_obj_t *btn_lbl = lv_label_create(s_input_btn);
     lv_label_set_text(btn_lbl, "Save");
@@ -1468,6 +1470,7 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cancel_btn, 8, 0);
     lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, NULL);
+    ui_fb_button(cancel_btn);
     lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
     lv_label_set_text(cancel_lbl, "Cancel");
     lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(COL_WHITE), 0);
@@ -1490,6 +1493,7 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(save_btn, 8, 0);
     lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, NULL);
+    ui_fb_button_colored(save_btn, 0x28A745);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
     lv_label_set_text(save_lbl, "Save");
     lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
@@ -1574,6 +1578,7 @@ static void cb_note_delete(lv_event_t *e)
     lv_obj_set_style_bg_color(yes, lv_color_hex(COL_RED), 0);
     lv_obj_set_style_radius(yes, 16, 0);
     lv_obj_add_event_cb(yes, cb_confirm_delete_yes, LV_EVENT_CLICKED, dialog);
+    ui_fb_button_colored(yes, 0xCC3333);
     lv_obj_t *yes_lbl = lv_label_create(yes);
     lv_label_set_text(yes_lbl, "Delete");
     lv_obj_set_style_text_color(yes_lbl, lv_color_hex(COL_WHITE), 0);
@@ -1587,6 +1592,7 @@ static void cb_note_delete(lv_event_t *e)
     lv_obj_set_style_bg_color(no, lv_color_hex(COL_CARD2), 0);
     lv_obj_set_style_radius(no, 16, 0);
     lv_obj_add_event_cb(no, cb_confirm_delete_no, LV_EVENT_CLICKED, dialog);
+    ui_fb_button(no);
     lv_obj_t *no_lbl = lv_label_create(no);
     lv_label_set_text(no_lbl, "Cancel");
     lv_obj_set_style_text_color(no_lbl, lv_color_hex(COL_LABEL), 0);
@@ -1709,6 +1715,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_ext_click_area(card, 10);
     lv_obj_add_event_cb(card, cb_note_tap, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
+    ui_fb_card(card);
 
     /* Row 1: timestamp + badge + action buttons (all in one line) */
     lv_obj_t *header = lv_obj_create(card);
@@ -1759,6 +1766,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_border_width(del, 0, 0);
     lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
+    ui_fb_button_colored(del, 0xCC3333);
     lv_obj_t *del_lbl = lv_label_create(del);
     lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(COL_RED), 0);
@@ -1776,6 +1784,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
         lv_obj_set_style_border_width(play, 0, 0);
         lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
                            (void *)(intptr_t)note_idx);
+        ui_fb_button_colored(play, 0x28A745);
         lv_obj_t *play_lbl = lv_label_create(play);
         lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
         lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
@@ -1860,6 +1869,7 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, 8, 0);
     lv_obj_add_event_cb(btn, cb_back, LV_EVENT_CLICKED, NULL);
+    ui_fb_button(btn);
 
     lv_obj_t *arrow = lv_label_create(btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
@@ -1923,6 +1933,7 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_radius(vbtn, 12, 0);
     lv_obj_set_style_border_width(vbtn, 0, 0);
     lv_obj_add_event_cb(vbtn, cb_new_voice, LV_EVENT_CLICKED, NULL);
+    ui_fb_button_colored(vbtn, 0xD48B1A);
 
     lv_obj_t *vicon = lv_label_create(vbtn);
     lv_label_set_text(vicon, LV_SYMBOL_AUDIO "  Voice");
@@ -1941,6 +1952,7 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_border_width(tbtn, 1, 0);
     lv_obj_set_style_border_color(tbtn, lv_color_hex(COL_BORDER), 0);
     lv_obj_add_event_cb(tbtn, cb_new_text, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(tbtn);
 
     lv_obj_t *ticon = lv_label_create(tbtn);
     lv_label_set_text(ticon, LV_SYMBOL_EDIT "  Type");
