@@ -537,8 +537,7 @@ static void deferred_open_cb(lv_timer_t *t)
     lv_timer_delete(t);
 
     /* Dismiss any overlays (chat, voice, keyboard) before switching */
-    extern void ui_chat_hide(void);
-    if (ui_chat_is_active()) ui_chat_hide();
+    if (ui_chat_is_active()) ui_chat_destroy();
     ui_keyboard_hide();
 
     switch (scr_id) {
@@ -905,14 +904,11 @@ static void async_navigate(void *arg)
      * tileview screen entirely, breaking subsequent navigation. */
     lv_obj_t *tv = ui_home_get_tileview();
 
-    /* Always dismiss ALL overlays before any navigation.
-     * HIDE (not destroy) to avoid LVGL draw pipeline crash —
-     * destroying objects while draw commands are queued causes
-     * Store access fault in lv_draw_sw_mask_radius_init. */
-    extern void ui_chat_hide(void);
+    /* Always dismiss ALL overlays before any navigation */
+    extern void ui_chat_destroy(void);
     extern void ui_settings_hide(void);
     extern void ui_notes_hide(void);
-    ui_chat_hide();
+    ui_chat_destroy();
     ui_settings_hide();
     ui_notes_hide();
     ui_keyboard_hide();

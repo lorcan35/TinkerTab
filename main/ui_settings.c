@@ -12,7 +12,6 @@
 #include "ui_core.h"
 #include "ui_settings.h"
 #include "ui_home.h"
-#include "ui_feedback.h"
 #include "display.h"
 #include "battery.h"
 #include "wifi.h"
@@ -524,7 +523,6 @@ static lv_obj_t *mk_pill_btn(lv_obj_t *parent, const char *text, lv_color_t bg,
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, radius, 0);
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
-    ui_fb_button(btn);
 
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, text);
@@ -593,7 +591,6 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_bg_opa(back_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(back_btn, 8, 0);
     lv_obj_add_event_cb(back_btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
-    ui_fb_button(back_btn);
 
     lv_obj_t *arrow = lv_label_create(back_btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
@@ -753,7 +750,6 @@ lv_obj_t *ui_settings_create(void)
             lv_obj_set_style_text_color(s_tab_local, lv_color_hex(0x666666), 0);
         }
         lv_obj_add_event_cb(s_tab_local, cb_tab_local, LV_EVENT_CLICKED, NULL);
-        ui_fb_button(s_tab_local);
         lv_obj_t *tl = lv_label_create(s_tab_local);
         lv_label_set_text(tl, "Local");
         lv_obj_set_style_text_font(tl, &lv_font_montserrat_16, 0);
@@ -774,7 +770,6 @@ lv_obj_t *ui_settings_create(void)
             lv_obj_set_style_text_color(s_tab_hybrid, lv_color_hex(0x666666), 0);
         }
         lv_obj_add_event_cb(s_tab_hybrid, cb_tab_hybrid, LV_EVENT_CLICKED, NULL);
-        ui_fb_button(s_tab_hybrid);
         lv_obj_t *th = lv_label_create(s_tab_hybrid);
         lv_label_set_text(th, "Hybrid");
         lv_obj_set_style_text_font(th, &lv_font_montserrat_16, 0);
@@ -795,7 +790,6 @@ lv_obj_t *ui_settings_create(void)
             lv_obj_set_style_text_color(s_tab_cloud, lv_color_hex(0x666666), 0);
         }
         lv_obj_add_event_cb(s_tab_cloud, cb_tab_cloud, LV_EVENT_CLICKED, NULL);
-        ui_fb_button(s_tab_cloud);
         lv_obj_t *tc = lv_label_create(s_tab_cloud);
         lv_label_set_text(tc, "Cloud");
         lv_obj_set_style_text_font(tc, &lv_font_montserrat_16, 0);
@@ -1171,8 +1165,6 @@ void ui_settings_destroy(void)
 
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
 
-    /* Hide before delete to stop draw pipeline from rendering stale objects */
-    lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
     lv_obj_delete(s_screen);
 
     s_screen        = NULL;

@@ -32,7 +32,6 @@
 #include "ui_core.h"
 #include "wifi.h"
 #include "display.h"
-#include "ui_feedback.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -168,7 +167,6 @@ static lv_obj_t *build_page_home(void)
     lv_obj_add_flag(orb, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(orb, 20);
     lv_obj_add_event_cb(orb, orb_tap_cb, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(orb, 0xD48B1A);  /* Darken amber on press */
 
     /* L1: Orb icon — audio waveform (closest to mic in LVGL built-in set) */
     lv_obj_t *orb_icon = lv_label_create(orb);
@@ -222,7 +220,6 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_border_width(cam_btn, 1, 0);
     lv_obj_set_style_border_color(cam_btn, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(cam_btn, cb_camera_launch, LV_EVENT_CLICKED, NULL);
-    ui_fb_card(cam_btn);
     lv_obj_t *cam_lbl = lv_label_create(cam_btn);
     lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
     lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_WHITE), 0);
@@ -237,7 +234,6 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_border_width(files_btn, 1, 0);
     lv_obj_set_style_border_color(files_btn, lv_color_hex(0x333333), 0);
     lv_obj_add_event_cb(files_btn, cb_files_launch, LV_EVENT_CLICKED, NULL);
-    ui_fb_card(files_btn);
     lv_obj_t *files_lbl = lv_label_create(files_btn);
     lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
     lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_WHITE), 0);
@@ -253,7 +249,6 @@ static lv_obj_t *build_page_home(void)
     lv_obj_set_style_radius(ask_btn, 12, 0);
     lv_obj_set_style_border_width(ask_btn, 0, 0);
     lv_obj_add_event_cb(ask_btn, ask_tap_cb, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(ask_btn, 0xD48B1A);  /* Darken amber on press */
 
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
     lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
@@ -275,7 +270,6 @@ static lv_obj_t *build_page_home(void)
     lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(last_note_card, 10);
     lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
-    ui_fb_card(last_note_card);
 
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
@@ -500,7 +494,6 @@ lv_obj_t *ui_home_create(void)
             lv_obj_set_ext_click_area(nav_icons[i], 8);
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                (void *)(intptr_t)i);
-            ui_fb_nav(nav_icons[i]);
         }
     }
 
@@ -756,51 +749,34 @@ static void _async_chat(void *arg)
     ui_chat_create();
 }
 
-/* Dismiss ALL overlays before opening any screen.
- * HIDE overlays (don't destroy) to avoid LVGL draw pipeline crashes.
- * Destroying objects while LVGL has queued draw commands causes
- * Store access fault in lv_draw_sw_fill/lv_draw_sw_mask_radius_init. */
+/* Dismiss ALL overlays before opening any screen */
 static void dismiss_all_overlays(void)
 {
     ui_keyboard_hide();
     extern void ui_settings_hide(void);
     extern void ui_notes_hide(void);
-    extern void ui_chat_hide(void);
+    extern void ui_chat_destroy(void);
     ui_settings_hide();
     ui_notes_hide();
-    ui_chat_hide();
+    ui_chat_destroy();
 }
-
-static uint32_t s_last_nav_ms = 0;
-#define NAV_DEBOUNCE_MS 300
 
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg < 0 || pg >= NUM_PAGES) return;
-
-    /* Debounce: ignore rapid navigation taps to prevent animation/mutex races */
-    uint32_t now = lv_tick_get();
-    if (now - s_last_nav_ms < NAV_DEBOUNCE_MS) return;
-    s_last_nav_ms = now;
-
     dismiss_all_overlays();
-
-    /* Defer screen creation to next LVGL tick via lv_async_call.
-     * This ensures destroyed overlay objects are fully cleaned up
-     * before new objects are created, preventing draw buffer crashes
-     * (Store access fault in lv_draw_sw_fill when old draw commands
-     * reference freed objects). */
     if (pg == 1) {
         lv_async_call(async_notes_create, NULL);
         return;
     }
     if (pg == 2) {
+        /* Chat is a fullscreen overlay, same pattern as settings */
         lv_async_call(_async_chat, NULL);
         return;
     }
     if (pg == 3) {
-        lv_async_call(_async_settings, NULL);
+        ui_home_nav_settings();
         return;
     }
     if (tiles[pg] && tileview) {

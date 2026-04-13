@@ -12,7 +12,6 @@
 #include "ui_notes.h"
 #include "ui_home.h"
 #include "ui_core.h"
-#include "ui_feedback.h"
 #include "ui_voice.h"
 #include "ui_keyboard.h"
 #include "voice.h"
@@ -24,7 +23,6 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
-#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdlib.h>
@@ -1150,7 +1148,6 @@ static void show_input_area(void)
     lv_obj_set_style_radius(s_input_btn, 16, 0);
     lv_obj_set_style_border_width(s_input_btn, 0, 0);
     lv_obj_add_event_cb(s_input_btn, cb_input_send, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(s_input_btn, 0xD48B1A);
 
     lv_obj_t *btn_lbl = lv_label_create(s_input_btn);
     lv_label_set_text(btn_lbl, "Save");
@@ -1471,7 +1468,6 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cancel_btn, 8, 0);
     lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, NULL);
-    ui_fb_button(cancel_btn);
     lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
     lv_label_set_text(cancel_lbl, "Cancel");
     lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(COL_WHITE), 0);
@@ -1494,7 +1490,6 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(save_btn, 8, 0);
     lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(save_btn, 0x28A745);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
     lv_label_set_text(save_lbl, "Save");
     lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
@@ -1579,7 +1574,6 @@ static void cb_note_delete(lv_event_t *e)
     lv_obj_set_style_bg_color(yes, lv_color_hex(COL_RED), 0);
     lv_obj_set_style_radius(yes, 16, 0);
     lv_obj_add_event_cb(yes, cb_confirm_delete_yes, LV_EVENT_CLICKED, dialog);
-    ui_fb_button_colored(yes, 0xCC3333);
     lv_obj_t *yes_lbl = lv_label_create(yes);
     lv_label_set_text(yes_lbl, "Delete");
     lv_obj_set_style_text_color(yes_lbl, lv_color_hex(COL_WHITE), 0);
@@ -1593,7 +1587,6 @@ static void cb_note_delete(lv_event_t *e)
     lv_obj_set_style_bg_color(no, lv_color_hex(COL_CARD2), 0);
     lv_obj_set_style_radius(no, 16, 0);
     lv_obj_add_event_cb(no, cb_confirm_delete_no, LV_EVENT_CLICKED, dialog);
-    ui_fb_button(no);
     lv_obj_t *no_lbl = lv_label_create(no);
     lv_label_set_text(no_lbl, "Cancel");
     lv_obj_set_style_text_color(no_lbl, lv_color_hex(COL_LABEL), 0);
@@ -1716,7 +1709,6 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_ext_click_area(card, 10);
     lv_obj_add_event_cb(card, cb_note_tap, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
-    ui_fb_card(card);
 
     /* Row 1: timestamp + badge + action buttons (all in one line) */
     lv_obj_t *header = lv_obj_create(card);
@@ -1767,7 +1759,6 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_border_width(del, 0, 0);
     lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
-    ui_fb_button_colored(del, 0xCC3333);
     lv_obj_t *del_lbl = lv_label_create(del);
     lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(COL_RED), 0);
@@ -1785,7 +1776,6 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
         lv_obj_set_style_border_width(play, 0, 0);
         lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
                            (void *)(intptr_t)note_idx);
-        ui_fb_button_colored(play, 0x28A745);
         lv_obj_t *play_lbl = lv_label_create(play);
         lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
         lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
@@ -1813,9 +1803,6 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 }
 
 /* ── Refresh list ───────────────────────────────────────── */
-/* Feed WDT to prevent timeout during heavy UI creation */
-static inline void feed_wdt(void) { esp_task_wdt_reset(); }
-
 static void refresh_list(void)
 {
     if (!s_list) return;
@@ -1841,7 +1828,6 @@ static void refresh_list(void)
         }
         add_note_card(s_list, &s_notes[idx], idx);
         shown++;
-        if (shown % 3 == 0) feed_wdt();  /* Prevent WDT during heavy card creation */
     }
     if (shown == 0 && s_search_text[0]) {
         lv_obj_t *nf = lv_label_create(s_list);
@@ -1874,7 +1860,6 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, 8, 0);
     lv_obj_add_event_cb(btn, cb_back, LV_EVENT_CLICKED, NULL);
-    ui_fb_button(btn);
 
     lv_obj_t *arrow = lv_label_create(btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
@@ -1900,42 +1885,26 @@ lv_obj_t *ui_notes_create(void)
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_move_foreground(s_screen);
-        /* Hide tileview so home content doesn't bleed through overlay */
-        extern lv_obj_t *ui_home_get_tileview(void);
-        lv_obj_t *tv = ui_home_get_tileview();
-        if (tv) lv_obj_add_flag(tv, LV_OBJ_FLAG_HIDDEN);
-        feed_wdt();
         refresh_list();
         ESP_LOGI(TAG, "Notes screen resumed");
         return s_screen;
     }
 
-    /* Fullscreen overlay on home screen — EXACT same pattern as Chat overlay */
+    /* Fullscreen overlay on home screen (NOT a separate lv_screen) */
     extern lv_obj_t *ui_home_get_screen(void);
-    lv_obj_t *parent = ui_home_get_screen();
-    if (!parent) parent = lv_screen_active();
-
-    s_screen = lv_obj_create(parent);
-    lv_obj_set_size(s_screen, 720, 1280);
+    s_screen = lv_obj_create(ui_home_get_screen());
+    lv_obj_remove_style_all(s_screen);
+    lv_obj_set_size(s_screen, SW, SH);
     lv_obj_set_pos(s_screen, 0, 0);
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(s_screen, 0, 0);
-    lv_obj_set_style_border_width(s_screen, 0, 0);
-    lv_obj_set_style_radius(s_screen, 0, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_foreground(s_screen);
-
-    /* Hide tileview so home content doesn't bleed through overlay */
-    extern lv_obj_t *ui_home_get_tileview(void);
-    lv_obj_t *tv = ui_home_get_tileview();
-    if (tv) lv_obj_add_flag(tv, LV_OBJ_FLAG_HIDDEN);
 
     /* L5: Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back, LV_EVENT_GESTURE, NULL);
 
     make_topbar(s_screen);
-    feed_wdt();
 
     /* ── Big Voice + Text buttons ──────────────────────── */
     lv_obj_t *btn_row = lv_obj_create(s_screen);
@@ -1954,7 +1923,6 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_radius(vbtn, 12, 0);
     lv_obj_set_style_border_width(vbtn, 0, 0);
     lv_obj_add_event_cb(vbtn, cb_new_voice, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(vbtn, 0xD48B1A);
 
     lv_obj_t *vicon = lv_label_create(vbtn);
     lv_label_set_text(vicon, LV_SYMBOL_AUDIO "  Voice");
@@ -1973,7 +1941,6 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_border_width(tbtn, 1, 0);
     lv_obj_set_style_border_color(tbtn, lv_color_hex(COL_BORDER), 0);
     lv_obj_add_event_cb(tbtn, cb_new_text, LV_EVENT_CLICKED, NULL);
-    ui_fb_card(tbtn);
 
     lv_obj_t *ticon = lv_label_create(tbtn);
     lv_label_set_text(ticon, LV_SYMBOL_EDIT "  Type");
@@ -2013,17 +1980,14 @@ lv_obj_t *ui_notes_create(void)
     s_list = lv_obj_create(s_screen);
     lv_obj_set_size(s_list, SW, SH - TOPBAR_H - 160 - SEARCH_H - 10);
     lv_obj_set_pos(s_list, 0, TOPBAR_H + 160 + SEARCH_H + 10);
-    lv_obj_set_style_bg_color(s_list, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_bg_opa(s_list, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_list, 20, 0);
     lv_obj_set_style_pad_hor(s_list, 16, 0);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
 
-    feed_wdt();
     refresh_list();
-    feed_wdt();
 
     ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
     return s_screen;
@@ -2056,10 +2020,6 @@ void ui_notes_hide(void)
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
     }
-    /* Restore tileview visibility */
-    extern lv_obj_t *ui_home_get_tileview(void);
-    lv_obj_t *tv = ui_home_get_tileview();
-    if (tv) lv_obj_clear_flag(tv, LV_OBJ_FLAG_HIDDEN);
 }
 
 lv_obj_t *ui_notes_get_screen(void) { return s_screen; }

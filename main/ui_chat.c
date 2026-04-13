@@ -6,7 +6,6 @@
  * Show/hide via LV_OBJ_FLAG_HIDDEN + lv_obj_move_foreground().
  */
 #include "ui_chat.h"
-#include "ui_feedback.h"
 #include "voice.h"
 #include "ui_keyboard.h"
 #include "settings.h"
@@ -410,7 +409,6 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_radius(back_btn, 8, 0);
     lv_obj_set_style_border_width(back_btn, 0, 0);
     lv_obj_add_event_cb(back_btn, cb_close, LV_EVENT_CLICKED, NULL);
-    ui_fb_button(back_btn);
 
     lv_obj_t *back_lbl = lv_label_create(back_btn);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
@@ -474,7 +472,6 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_radius(mic_btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(mic_btn, 0, 0);
     lv_obj_add_event_cb(mic_btn, cb_mic, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(mic_btn, 0x00B4D8);  /* Darken cyan on press */
 
     lv_obj_t *mic_icon = lv_label_create(mic_btn);
     lv_label_set_text(mic_icon, LV_SYMBOL_AUDIO);
@@ -508,7 +505,6 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_radius(send_btn, 24, 0);
     lv_obj_set_style_border_width(send_btn, 0, 0);
     lv_obj_add_event_cb(send_btn, cb_send, LV_EVENT_CLICKED, NULL);
-    ui_fb_button_colored(send_btn, 0xD48B1A);  /* Darken amber on press */
 
     lv_obj_t *send_lbl = lv_label_create(send_btn);
     lv_label_set_text(send_lbl, "Send");
@@ -619,23 +615,12 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_ON);
 }
 
-void ui_chat_hide(void)
-{
-    if (!s_overlay) return;
-    ui_keyboard_hide();
-    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
-    s_active = false;
-    ESP_LOGI(TAG, "Chat hidden (messages preserved)");
-}
-
 void ui_chat_destroy(void)
 {
     if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
     ui_keyboard_hide();
 
     if (s_overlay) {
-        lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_del(s_overlay);
         s_overlay = NULL;
     }
