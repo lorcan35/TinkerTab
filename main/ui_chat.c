@@ -1257,7 +1257,9 @@ lv_obj_t *ui_chat_create(void)
         lv_obj_move_foreground(s_overlay);
         s_active = true;
         s_last_state = voice_get_state();
-        s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
+        /* Resume existing poll timer (don't create new — causes timer leak) */
+        if (s_poll_timer) lv_timer_resume(s_poll_timer);
+        else s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
         update_mode_badge();
         update_status_bar();
 
@@ -1396,6 +1398,9 @@ void ui_chat_hide(void)
 {
     if (!s_overlay) return;
     ui_keyboard_hide();
+    /* Pause poll timer — prevents 200ms polling on hidden overlay objects
+     * which competes with other overlay creation for LVGL task time */
+    if (s_poll_timer) lv_timer_pause(s_poll_timer);
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
     s_active = false;
