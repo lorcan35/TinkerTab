@@ -737,10 +737,10 @@ Every entry here was learned the hard way. Read this before touching the codebas
 
 ### Voice Overlay Must Hide Instantly (No Fade Animation)
 - **Date:** 2026-04-13
-- **Symptom:** Voice overlay fade-out animation (150ms) raced with navigation dismiss, causing `fade_overlay_cb` and `fade_done_hide_cb` to access the overlay after it was hidden/deleted.
-- **Root Cause:** `ui_voice_hide()` started a 150ms fade-out animation. If `dismiss_all_overlays()` was called during the fade, the animation callbacks (`fade_overlay_cb`, `fade_done_hide_cb`) would fire on an object that was already in an inconsistent state.
-- **Fix:** `ui_voice_hide()` now hides instantly (no animation): cancel any in-flight fade, set HIDDEN flag, clear CLICKABLE, reset opacity. Added null guards in `fade_overlay_cb` and `fade_done_hide_cb`.
-- **Prevention:** Overlays that can be dismissed externally (by navigation) should NEVER use async animations for hide. Show animations (fade-in) are fine. Hide must be synchronous and immediate.
+- **Symptom:** Voice overlay fade-out animation (150ms) raced with navigation dismiss, causing `fade_overlay_cb` and `fade_done_hide_cb` to access the overlay after it was hidden/deleted. Also: dangling `s_auto_hide` timer caused use-after-free crash on next voice session (see dedicated entry above).
+- **Root Cause:** `ui_voice_hide()` started a 150ms fade-out animation. If navigation happened during the fade window, callbacks fired on stale state. Combined with a dangling timer pointer from local-static `s_auto_hide` with `auto_delete=true`.
+- **Fix:** `ui_voice_hide()` now hides instantly (no animation): cancel any in-flight fade via `lv_anim_delete()`, set HIDDEN flag, clear CLICKABLE, reset opacity. Removed `fade_done_hide_cb` entirely. Moved `s_auto_hide` to file scope, cleaned up in `stop_all_anims()`.
+- **Prevention:** Overlays that can be dismissed externally (by navigation) should NEVER use async animations for hide. Show animations (fade-in) are fine. Hide must be synchronous and immediate. NEVER use `lv_timer_set_auto_delete(true)` when storing the timer pointer — it creates dangling pointers.
 
 ---
 
@@ -823,6 +823,19 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** `LV_ASSERT_MALLOC` default implementation is `while(1){}` — an infinite loop that blocks the LVGL task until the watchdog kills it. This produces no backtrace, no fault address, no useful debug info.
 - **Fix:** Set `CONFIG_LV_USE_ASSERT_MALLOC=n` and `CONFIG_LV_USE_ASSERT_NULL=n` in `sdkconfig.defaults`. With asserts disabled, NULL from `lv_malloc` propagates to the caller, which dereferences it and produces a `Store access fault` with a full backtrace pointing to the exact line.
 - **Prevention:** Always disable LVGL assert macros on production firmware. A crash with a backtrace is infinitely more useful than a silent `while(1)` hang. Fix the OOM root cause (increase pool, reduce objects) rather than relying on asserts.
+
+### Voice Overlay Dangling Timer Pointer — Use-After-Free Crash
+- **Date:** 2026-04-13
+- **Symptom:** Device crashes when closing voice overlay and navigating to another screen within 0.3s. Cascade failure: once crashed, all subsequent tests fail (device rebooting).
+- **Root Cause:** THREE compounding bugs in `ui_voice.c`:
+  1. **Dangling `s_auto_hide` timer (UAF):** `s_auto_hide` was a `static` local variable inside the READY state handler, created with `lv_timer_set_auto_delete(true)` and `repeat_count=1`. After firing, LVGL auto-freed the timer struct, but `s_auto_hide` still held the old pointer. Next READY entry: `lv_timer_delete(dangling_pointer)` → use-after-free → heap corruption → crash.
+  2. **Fade animation race:** `ui_voice_hide()` started a 150ms fade-out animation with `fade_done_hide_cb`. If navigation changed screen state during the 150ms window, the callback accessed stale LVGL objects.
+  3. **Event callback stacking:** `show_state_speaking()` called `lv_obj_add_event_cb(orb, orb_speak_click_cb)` without removing first. Re-entering SPEAKING state stacked duplicate handlers → double-fire on tap.
+- **Fix:**
+  1. Moved `s_auto_hide` to file scope, cleaned up in `stop_all_anims()`, removed `auto_delete=true`.
+  2. Made `ui_voice_hide()` instant: no animation, just HIDDEN flag + clear CLICKABLE + reset opacity.
+  3. Added `lv_obj_remove_event_cb()` before `lv_obj_add_event_cb()` for orb click handlers.
+- **Prevention:** NEVER use `lv_timer_set_auto_delete(true)` with a stored pointer — LVGL frees the memory but your pointer becomes dangling. NEVER use local static for timer pointers — use file-scope statics cleaned up in a central teardown function. NEVER add LVGL event callbacks without removing first to prevent stacking. Overlays dismissed by external navigation must hide instantly (no async animations).
 
 ### Chat Hide-Not-Destroy in dismiss_all_overlays Prevents Timer Linked List Corruption
 - **Date:** 2026-04-13

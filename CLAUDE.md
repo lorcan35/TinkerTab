@@ -85,18 +85,18 @@ Commit hash + PR if applicable.
 - Never batch multiple unrelated fixes into one commit
 
 ## Dragon Access (for deploying/testing)
-- **Host:** 192.168.70.242
+- **Host:** 192.168.1.91
 - **User:** radxa (NOT rock — user was migrated)
 - **Password:** radxa
-- **SSH:** `sshpass -p 'radxa' ssh radxa@192.168.70.242`
+- **SSH:** `sshpass -p 'radxa' ssh radxa@192.168.1.91`
 ```bash
-sshpass -p 'radxa' ssh radxa@192.168.70.242
+sshpass -p 'radxa' ssh radxa@192.168.1.91
 echo radxa | sudo -S systemctl status tinkerclaw-voice
 echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
 ### Dragon Stability
-- **Ethernet only** — WiFi disabled (`nmcli radio wifi off`), DHCP IP 192.168.70.242 on enp1s0
+- **Ethernet** — DHCP IP 192.168.1.91 on enp1s0
 - **Stripped services** — gdm3, snapd, ollama, nanobot, rustdesk, fwupd all masked. Only tinkerclaw-* services run.
 - **ngrok tunnel** — `tinkerclaw-ngrok.service` maintains `tinkertab.ngrok.dev` → localhost:3502
 - **Tab5 ngrok fallback** — voice.c tries local WS first, falls back to wss://tinkertab.ngrok.dev:443
@@ -135,52 +135,52 @@ while True:
 
 ## Debug Server (ADB-style Remote Control)
 Full HTTP API on port 8080 for remote testing and control.
-**Note:** Tab5 IP is DHCP-assigned. Current lease: 192.168.70.128. Update if it changes.
+**Note:** Tab5 IP is DHCP-assigned. Current lease: 192.168.1.90. Update if it changes.
 
 ```bash
 # Display
-curl -s -o screen.bmp http://192.168.70.128:8080/screenshot     # BMP screenshot
-curl -s http://192.168.70.128:8080/info | python3 -m json.tool   # Device info JSON
+curl -s -o screen.bmp http://192.168.1.90:8080/screenshot     # BMP screenshot
+curl -s http://192.168.1.90:8080/info | python3 -m json.tool   # Device info JSON
 
 # Touch
-curl -s -X POST http://192.168.70.128:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
+curl -s -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
 
 # Settings (read all NVS settings as JSON)
-curl -s http://192.168.70.128:8080/settings | python3 -m json.tool
+curl -s http://192.168.1.90:8080/settings | python3 -m json.tool
 
 # Voice Mode (switch Local/Hybrid/Cloud remotely)
-curl -s -X POST "http://192.168.70.128:8080/mode?m=0"  # Local
-curl -s -X POST "http://192.168.70.128:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
-curl -s -X POST "http://192.168.70.128:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
+curl -s -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
+curl -s -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
+curl -s -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
 
 # Navigation (force screen change — bypasses tileview)
-curl -s -X POST "http://192.168.70.128:8080/navigate?screen=settings"
-curl -s -X POST "http://192.168.70.128:8080/navigate?screen=notes"
-curl -s -X POST "http://192.168.70.128:8080/navigate?screen=chat"
-curl -s -X POST "http://192.168.70.128:8080/navigate?screen=camera"
-curl -s -X POST "http://192.168.70.128:8080/navigate?screen=home"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=settings"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=notes"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=chat"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=camera"
+curl -s -X POST "http://192.168.1.90:8080/navigate?screen=home"
 
 # Camera (capture live frame as BMP)
-curl -s -o frame.bmp http://192.168.70.128:8080/camera
+curl -s -o frame.bmp http://192.168.1.90:8080/camera
 
 # OTA
-curl -s http://192.168.70.128:8080/ota/check | python3 -m json.tool
-curl -s -X POST http://192.168.70.128:8080/ota/apply
+curl -s http://192.168.1.90:8080/ota/check | python3 -m json.tool
+curl -s -X POST http://192.168.1.90:8080/ota/apply
 
 # Wake word (toggle AFE always-listening)
-curl -s -X POST http://192.168.70.128:8080/wake
+curl -s -X POST http://192.168.1.90:8080/wake
 
 # Chat (send text to Dragon via voice WS)
-curl -s -X POST http://192.168.70.128:8080/chat -d '{"text":"What time is it?"}'
+curl -s -X POST http://192.168.1.90:8080/chat -d '{"text":"What time is it?"}'
 
 # Voice state (connected, state_name, last_llm_text, last_stt_text)
-curl -s http://192.168.70.128:8080/voice | python3 -m json.tool
+curl -s http://192.168.1.90:8080/voice | python3 -m json.tool
 
 # Force voice WS reconnect
-curl -s -X POST http://192.168.70.128:8080/voice/reconnect
+curl -s -X POST http://192.168.1.90:8080/voice/reconnect
 
 # Self-test (8-point subsystem check: WiFi, Dragon, voice WS, display, audio, SD, camera, IMU)
-curl -s http://192.168.70.128:8080/selftest | python3 -m json.tool
+curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 ```
 
 ## ESP32-P4 Memory Rules
@@ -236,8 +236,8 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 - **Debug:** `/ota/check` and `/ota/apply` endpoints on debug server
 - **Deploy new firmware:**
   ```bash
-  scp build/tinkertab.bin radxa@192.168.70.242:/home/radxa/ota/
-  echo '{"version":"0.6.1","sha256":""}' | ssh radxa@192.168.70.242 'cat > /home/radxa/ota/version.json'
+  scp build/tinkertab.bin radxa@192.168.1.91:/home/radxa/ota/
+  echo '{"version":"0.6.1","sha256":""}' | ssh radxa@192.168.1.91 'cat > /home/radxa/ota/version.json'
   # Tab5 checks hourly or user taps "Check Update" in Settings
   ```
 
@@ -271,7 +271,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud**
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
 
 Current LVGL settings in `sdkconfig.defaults`:
-- **Memory pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=256` = 352KB total. 96KB is the MAX base pool — 128KB causes linker error (exceeds internal SRAM BSS). The expand pool auto-allocates from system heap (PSRAM).
+- **Memory pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=1024` = 1120KB total capacity. 96KB is the MAX base pool — 128KB causes linker error (exceeds internal SRAM BSS). The 1024KB expand pool auto-allocates from system heap (PSRAM) on demand.
 - **Circle cache:** `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32`. Default 4 causes crashes when 5+ rounded objects render simultaneously.
 - **Asserts disabled:** `CONFIG_LV_USE_ASSERT_MALLOC=n` and `CONFIG_LV_USE_ASSERT_NULL=n` — prevents `while(1)` hang on alloc failure (which triggers 60s WDT reboot). With asserts off, NULL propagates and crashes faster with a useful backtrace instead of a silent WDT hang.
 - **Render mode:** `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM. Do NOT use DIRECT mode (causes tearing on DPI).
@@ -289,7 +289,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Chat UI overhaul:** Live status bar (Ready/Processing/Speaking), tappable mode badge to cycle Local/Hybrid/Cloud, New Chat button, thinking + tool indicator bubbles during LLM processing.
 - **Touch feedback system:** `ui_feedback.h/c` module with pressed states on 30+ interactive elements — buttons darken, cards lighten border, icons dim, nav items brighten. 100ms ease-out transitions.
 - **Nav debounce 300ms:** Prevents rapid-tap crashes from animation race conditions (dismiss + create overlapping).
-- **Voice overlay instant hide:** Removed async 150ms fade animation from `ui_voice_hide()` — prevents timer callback races with navigation dismiss.
+- **Voice overlay instant hide:** `ui_voice_hide()` is instant — no fade animation. The 150ms fade-out caused three bugs: (1) dangling `s_auto_hide` timer pointer (local static with `auto_delete=true` → use-after-free on next READY entry), (2) `fade_done_hide_cb` firing during navigation state changes, (3) `orb_speak_click_cb` stacking on SPEAKING re-entry. All three fixed April 2026.
 
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
