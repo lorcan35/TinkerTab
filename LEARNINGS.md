@@ -641,4 +641,163 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Symptom:** Tileview covered the nav bar, making bottom navigation inaccessible.
 - **Root Cause:** Tileview was created at 720x1280 (full screen) but the nav bar (120px) and page dots (36px) sit at the bottom. The tileview overlapped them.
 - **Fix:** Set tileview height to 720x1124 (1280 - 120 nav - 36 dots). Pages that use separate screens (Notes, Camera, Files) can use the full 1280 height since they have their own back navigation.
+
+---
+
+## Critical LVGL + DPI Rendering Lessons (2026-04-13)
+
+### LVGL Circle Cache Exhaustion → Store Access Fault
+- **Date:** 2026-04-13
+- **Symptom:** Device reboots with `Store access fault` (MCAUSE=7, MTVAL=0x00000000) when opening Notes screen. Crash in `circ_calc_aa4` → `lv_draw_sw_mask_radius_init`. Also occurs intermittently during any screen with 5+ rounded-corner objects rendered simultaneously.
+- **Root Cause:** `LV_DRAW_SW_CIRCLE_CACHE_SIZE` defaults to **4** in LVGL v9. Notes screen creates 7 cards with `radius=12`, each needing an anti-aliased radius mask. When all 4 cache slots are in use, LVGL calls `lv_malloc_zeroed()` for a temporary entry. If malloc returns NULL, the code writes `entry->life = -1` to address 0x00000000 → Store access fault → reboot. Even when malloc succeeds, the temporary allocations fragment memory under load.
+- **Fix:** Set `LV_DRAW_SW_CIRCLE_CACHE_SIZE 16` in `lv_conf.h`. Costs ~2KB additional memory but eliminates all overflow allocations for normal UI (up to 16 different radii on screen simultaneously).
+- **Prevention:** ANY screen with more than 4 unique radius values will hit this. If you add rounded corners to objects, count how many unique radii are on screen at once. The cache must be >= that count. Current screens: Home (3 radii: orb circle, card 12px, button 12px), Settings (2: 8px, 12px), Notes (2: 8px, 12px), Chat (2: 8px, 12px). With overlays sharing the screen, peak is ~8 unique radii → 16 cache entries provides 2x safety margin.
+
+### Notes WDT Crash During Card Creation
+- **Date:** 2026-04-13
+- **Symptom:** Device reboots with `Task watchdog got triggered` on `ui_task` when opening Notes with 7+ notes. No panic/fault, just WDT timeout.
+- **Root Cause:** Notes `ui_notes_create()` creates ~50 LVGL objects synchronously (topbar + 2 buttons + search + divider + scrollable list + 7 note cards with children). On ESP32-P4, creating and rendering all these objects takes long enough to exceed the 60s WDT timeout. The UI task holds the LVGL mutex the entire time, preventing the WDT from being fed.
+- **Fix:** Added `esp_task_wdt_reset()` calls between major UI sections (after topbar, after buttons, every 3 note cards, before/after refresh_list).
+- **Prevention:** Any UI creation that builds >20 LVGL objects must feed the WDT periodically. Settings already does this. Pattern: `static inline void feed_wdt(void) { esp_task_wdt_reset(); }` then call every ~10 objects or between sections.
+
+### NEVER Change Notes Overlay Creation Pattern
+- **Date:** 2026-04-13
+- **Symptom:** Notes screen showed only the topbar (title, back button, Voice/Type buttons) but the main content area was transparent — home screen content (orb, Ask Tinker, Camera/Files buttons) bled through below the topbar.
+- **Root Cause:** The original Notes creation code uses this EXACT pattern that works:
+  ```c
+  s_screen = lv_obj_create(ui_home_get_screen());
+  lv_obj_remove_style_all(s_screen);      // ← CRITICAL: must keep this
+  lv_obj_set_size(s_screen, SW, SH);
+  lv_obj_set_pos(s_screen, 0, 0);
+  lv_obj_set_style_bg_color(s_screen, ...);
+  lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_move_foreground(s_screen);
+  ```
+  Multiple changes were attempted that ALL broke rendering:
+  1. **Removing `lv_obj_remove_style_all()`** → Background didn't cover full screen
+  2. **Changing parent to `lv_layer_top()`** → DPI framebuffer doesn't render layers correctly
+  3. **Changing to separate `lv_screen` with `lv_screen_load()`** → Background didn't repaint over DPI framebuffer
+  4. **Using `LV_DISPLAY_RENDER_MODE_DIRECT`** → Severe horizontal tearing artifacts
+  5. **Adding `lv_obj_invalidate()` or `lv_refr_now()`** → Either no effect or caused internal heap exhaustion
+  6. **Hiding the tileview** → Home content still showed through from status bar, nav bar, page dots
+  
+  The original code with `lv_obj_remove_style_all()` + `PARTIAL` render mode + overlay on `ui_home_get_screen()` is the ONLY combination that renders correctly on ESP32-P4 DPI.
+- **Fix:** Reverted ALL changes back to the known-good pattern (commit ae7d4ad).
+- **Prevention:** **DO NOT modify the Notes overlay creation code.** If you need to change how Notes renders, test EVERY change by navigating to Notes and taking a screenshot. The DPI framebuffer on ESP32-P4 has subtle rendering behavior where LVGL partial updates don't cover the full screen background unless the exact combination of `remove_style_all` + overlay-on-screen + `move_foreground` is used.
+
+### PARTIAL Render Mode Is Required for DPI Display
+- **Date:** 2026-04-13
+- **Symptom:** Switching to `LV_DISPLAY_RENDER_MODE_DIRECT` (using DPI framebuffer directly as LVGL draw buffer) caused severe horizontal line tearing on all screens.
+- **Root Cause:** DPI peripheral reads the framebuffer via DMA continuously. In DIRECT mode, LVGL writes directly to the same memory that DPI is reading → tearing when write and read happen on same scanline. PARTIAL mode uses separate draw buffers and copies finished renders to the framebuffer, which minimizes the DMA read/write conflict window.
+- **Fix:** Keep `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM.
+- **Prevention:** NEVER switch to DIRECT or FULL render mode on ESP32-P4 DPI. The M5Stack Tab5 hardware requires PARTIAL mode with the copy-to-framebuffer flush callback. If you need tear-free rendering, the correct approach is double-buffered DPI with vsync (not implemented yet).
+
+### lv_refr_now() Causes Internal Heap Exhaustion
+- **Date:** 2026-04-13
+- **Symptom:** After adding `lv_refr_now(NULL)` to force a synchronous screen refresh in `dismiss_all_overlays()`, the voice task failed to create with "task create failed" error.
+- **Root Cause:** `lv_refr_now()` forces a synchronous full-screen re-render. On 720x1280 DPI, this temporarily allocates large draw buffers from internal SRAM (not PSRAM) for the render pipeline. This exhausts the ~292KB internal heap, leaving insufficient memory for FreeRTOS task stack allocation (voice task needs 8KB internal RAM).
+- **Fix:** Removed `lv_refr_now()` — never force synchronous full-screen refresh.
+- **Prevention:** NEVER call `lv_refr_now()` on ESP32-P4 with DPI display. Let LVGL handle refresh timing naturally through `lv_timer_handler()`. If you need to ensure a redraw, use `lv_obj_invalidate()` and let the next timer cycle handle it.
+
+### ui_chat_destroy() in Navigation Paths Causes Crashes
+- **Date:** 2026-04-13
+- **Symptom:** Navigating from Chat → Notes crashed with Store access fault in `lv_draw_sw_fill` or `lv_draw_sw_mask_radius_init`.
+- **Root Cause:** `dismiss_all_overlays()` called `ui_chat_destroy()` which calls `lv_obj_del(s_overlay)`, freeing the Chat overlay's LVGL objects synchronously. When Notes then creates its 7 rounded cards, LVGL's draw pipeline encounters stale references to the just-freed Chat objects.
+- **Fix:** The original code uses `ui_chat_destroy()` in `dismiss_all_overlays()` and it works with the circle cache fix (LV_DRAW_SW_CIRCLE_CACHE_SIZE=16). The crash was actually the circle cache exhaustion, not the destroy. With sufficient cache, destroy is safe because LVGL processes the object tree cleanup before the next render.
+- **Prevention:** The circle cache fix is the real solution. If crashes return in `lv_draw_sw_mask_radius_init`, increase `LV_DRAW_SW_CIRCLE_CACHE_SIZE` further. Don't change `dismiss_all_overlays()` to use hide-instead-of-destroy unless you verify Notes still renders correctly afterward.
+
+### Nav Debounce Prevents Animation Race Conditions
+- **Date:** 2026-04-13
+- **Symptom:** Rapidly tapping nav bar buttons caused LVGL animation callbacks to fire on deleted objects, or multiple overlays to be created simultaneously.
+- **Root Cause:** Each nav tap calls `dismiss_all_overlays()` + `lv_async_call(create_screen)`. If tapped faster than the 150ms fade-out animation, the old animation callbacks reference objects that were already deleted by the next tap's dismiss.
+- **Fix:** 300ms debounce on `nav_click_cb()`:
+  ```c
+  static uint32_t s_last_nav_ms = 0;
+  uint32_t now = lv_tick_get();
+  if (now - s_last_nav_ms < 300) return;
+  s_last_nav_ms = now;
+  ```
+- **Prevention:** All navigation entry points (nav bar taps, debug server /navigate, screen callbacks) should debounce. 300ms is the right threshold — long enough to prevent double-taps, short enough to feel responsive.
+
+### Voice Overlay Must Hide Instantly (No Fade Animation)
+- **Date:** 2026-04-13
+- **Symptom:** Voice overlay fade-out animation (150ms) raced with navigation dismiss, causing `fade_overlay_cb` and `fade_done_hide_cb` to access the overlay after it was hidden/deleted.
+- **Root Cause:** `ui_voice_hide()` started a 150ms fade-out animation. If `dismiss_all_overlays()` was called during the fade, the animation callbacks (`fade_overlay_cb`, `fade_done_hide_cb`) would fire on an object that was already in an inconsistent state.
+- **Fix:** `ui_voice_hide()` now hides instantly (no animation): cancel any in-flight fade, set HIDDEN flag, clear CLICKABLE, reset opacity. Added null guards in `fade_overlay_cb` and `fade_done_hide_cb`.
+- **Prevention:** Overlays that can be dismissed externally (by navigation) should NEVER use async animations for hide. Show animations (fade-in) are fine. Hide must be synchronous and immediate.
+
+---
+
+## Touch Feedback System (2026-04-13)
+
+### Pressed State Feedback Required on ALL Interactive Elements
+- **Date:** 2026-04-13
+- **Symptom:** User reported "I don't know where I'm touching" — tapping buttons, cards, nav items produced no visual response. Only the keyboard keys and voice mic button had pressed-state styles.
+- **Root Cause:** 30+ interactive elements across Home, Chat, Notes, Settings, Camera screens had no `LV_STATE_PRESSED` style defined. LVGL's default theme provides minimal pressed feedback (a subtle gray overlay) that's invisible on the dark OLED display.
+- **Fix:** Created `ui_feedback.h/c` module with shared static styles (one per feedback type, ~200 bytes total):
+  - `ui_fb_button(obj)` — darken to 80% opacity, 100ms ease-out transition
+  - `ui_fb_button_colored(obj, hex)` — explicit pressed color
+  - `ui_fb_card(obj)` — lighten border + bg shift to #252540
+  - `ui_fb_icon(obj)` — dim to 60% opacity
+  - `ui_fb_nav(obj)` — brighten text to white
+  Applied to all buttons, cards, nav items across all screens.
+- **Prevention:** Every new `lv_obj_add_event_cb(..., LV_EVENT_CLICKED, ...)` MUST be followed by a `ui_fb_*()` call. Add it as part of the button creation pattern. No interactive element should exist without pressed feedback.
+
+### No Transition Animations Defined Anywhere
+- **Date:** 2026-04-13
+- **Symptom:** Pressed states (where they existed) snapped instantly with no smooth animation.
+- **Root Cause:** Zero `lv_style_transition_dsc_t` instances in the entire codebase before ui_feedback.c was added. LVGL requires explicit transition descriptors for smooth state changes.
+- **Fix:** ui_feedback.c defines one shared transition: 100ms ease-out for `bg_color`, `bg_opa`, `border_color`. Applied via shared static styles.
+- **Prevention:** All new pressed-state styles should use `ui_fb_*()` functions which include the transition. Don't set `LV_STATE_PRESSED` styles inline without also setting a transition.
+
+---
+
+## Dragon Server Lessons (2026-04-13)
+
+### Mode-Aware System Prompts and Token Limits
+- **Date:** 2026-04-13
+- **Symptom:** Local mode (qwen3:1.7b at 7 tok/s) used the same system prompt and max_tokens as cloud mode (Claude 3.5 Haiku). Small local model was being asked to give detailed responses it couldn't deliver, wasting tokens and time.
+- **Root Cause:** Single system prompt "Reply in 1-2 sentences maximum" applied to all modes. No token limit differentiation.
+- **Fix:** Three mode-specific prompts in `config.py`: Local (concise, 128 tokens), Hybrid (medium, 256 tokens), Cloud (rich, 512 tokens). Applied during `config_update` handler in `server.py`. Session's system_prompt updated in DB so conversation engine uses it.
+- **Prevention:** Any new voice mode or model tier should define its own prompt+token config. The prompt must match the model's capability — small models need tight constraints, large models can be given more freedom.
+
+### Pipeline Init Should Default to Local Backends
+- **Date:** 2026-04-13
+- **Symptom:** On Tab5 reconnect, Dragon initialized the pipeline with whatever backends were set from the PREVIOUS connection (e.g., OpenRouter STT+TTS+LLM for mode 2). Tab5 then immediately sent `config_update voice_mode=1` which swapped the LLM back to Ollama — wasting time initializing cloud backends that get immediately replaced.
+- **Root Cause:** `self._config` retained the previous connection's backend settings. New pipeline used those stale settings.
+- **Fix:** Reset `self._config` to local defaults (moonshine/piper/ollama) before pipeline init in `_handle_register()`.
+- **Prevention:** Pipeline init should always use local defaults. Tab5 sends its actual mode in `config_update` immediately after registration.
+
+### SearXNG vs DuckDuckGo Web Search
+- **Date:** 2026-04-13
+- **Symptom:** DuckDuckGo search returned 3 results max with no engine diversity. Wanted better search coverage.
+- **Root Cause:** DuckDuckGo client library (`ddgs`) is single-engine with low result count.
+- **Fix:** Installed SearXNG from git on Dragon (not pip — the pip `searxng` package is an MCP server, NOT the search engine). SearXNG aggregates Google+Bing+DDG → 44 results per query. Runs on port 8888 as systemd service. `web_search.py` tries SearXNG first, falls back to DDG.
+- **Prevention:** The pip package `searxng` (PyPI) is NOT the SearXNG search engine. Install from https://github.com/searxng/searxng.git with `pip install -e .` from the cloned repo. Requires `msgspec` installed first.
+
+### Compact Tool Format for Small Local Models
+- **Date:** 2026-04-13
+- **Symptom:** qwen3:1.7b struggled with the full tool description format — too many tokens in the system prompt consumed context window and confused the model.
+- **Root Cause:** Full tool format listed all 10 tools with detailed descriptions, multiple examples, and verbose instructions. This used ~500 tokens of the model's 2048 context window.
+- **Fix:** `registry.py` now has `format_for_llm(compact=True)` for local models: shows only 5 priority tools (web_search, datetime, remember, recall, calculator) with minimal one-line descriptions and single examples. ~150 tokens.
+- **Prevention:** When adding new tools, also add them to the priority list in `_format_compact()` if they're commonly used. Keep compact format under 200 tokens total.
+
+### SCP Overwrites Live Config — Always Restore API Keys After Deploy
+- **Date:** 2026-04-13
+- **Symptom:** After `scp -r dragon_voice/ radxa@dragon:/home/radxa/`, Dragon voice service started with empty OpenRouter API key and empty SearXNG URL. Cloud mode rejected with "No API key configured".
+- **Root Cause:** `scp -r` copies the REPO version of `config.yaml` which has empty/placeholder values. The LIVE `config.yaml` has the real API key and SearXNG URL.
+- **Fix:** After every deploy, restore the API key and SearXNG URL on the live config:
+  ```bash
+  sed -i 's|openrouter_api_key: ""|openrouter_api_key: "sk-or-v1-..."|' /home/radxa/dragon_voice/config.yaml
+  sed -i 's|searxng_url: ""|searxng_url: "http://localhost:8888"|' /home/radxa/dragon_voice/config.yaml
+  ```
+- **Prevention:** Use environment variables for secrets instead of config.yaml. Or create a `config.local.yaml` override that's in `.gitignore` and loaded after the base config. NEVER commit API keys to the repo.
+
+### Clear __pycache__ After Deploy
+- **Date:** 2026-04-13
+- **Symptom:** After deploying new Python files to Dragon, the old `.pyc` bytecode was still used. New `WebSearchTool.__init__(searxng_url)` parameter caused "takes no arguments" error because the cached `.pyc` had the old class without `__init__`.
+- **Root Cause:** Python caches compiled bytecode in `__pycache__/` directories. `scp` copies new `.py` files but the existing `.pyc` files have newer timestamps, so Python uses the stale cached version.
+- **Fix:** `find /home/radxa/dragon_voice -name '__pycache__' -type d -exec rm -rf {} +` after every deploy, before restarting the service.
+- **Prevention:** Add pycache cleanup to the deploy script. Or add `PYTHONDONTWRITEBYTECODE=1` to the systemd service environment.
 - **Prevention:** Any scrollable container on the home screen must account for the nav bar (120px) and page dots (36px). Full-height = 1124px, not 1280px. Separate screens (loaded via `lv_screen_load()`) can use full 1280px.
