@@ -79,9 +79,10 @@ CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
 CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
-# Disable malloc assert — default while(1) hangs forever on alloc failure
-CONFIG_LV_USE_ASSERT_NULL=n
-CONFIG_LV_USE_ASSERT_MALLOC=n
+# LVGL memory — 96KB base + 64KB expand = 160KB total.
+# 64KB was too small (Notes edit overlay OOM). 128KB caused linker error.
+CONFIG_LV_MEM_SIZE_KILOBYTES=96
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64
 
 # ---------------------------------------------------------------------------
 # Crash diagnostics and stability
