@@ -49,6 +49,11 @@
    DRAWING
  *====================*/
 #define LV_USE_DRAW_SW 1
+/* Circle cache for anti-aliased radius masks. Default 4 is too small —
+ * Notes screen creates 7 cards with radius=12 simultaneously, exhausting
+ * the cache. Overflow triggers lv_malloc_zeroed which can return NULL
+ * causing Store access fault in circ_calc_aa4. 16 entries = ~2KB. */
+#define LV_DRAW_SW_CIRCLE_CACHE_SIZE 16
 
 /*====================
    THEME
