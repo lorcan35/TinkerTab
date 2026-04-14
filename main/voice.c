@@ -81,7 +81,7 @@ static const char *TAG = "tab5_voice";
 #define VOICE_RECONNECT_MAX_MS   15000
 #define VOICE_CONNECT_TIMEOUT_MS 5000
 // Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
-#define VOICE_KEEPALIVE_MS       15000
+#define VOICE_KEEPALIVE_MS       8000   /* ping every 8s during PROCESSING (was 15s — ngrok needs <20s) */
 // Dragon response timeout: auto-cancel if no STT/LLM response after stop
 #define VOICE_RESPONSE_TIMEOUT_MS 35000  /* Must exceed Dragon's 30s TTS timeout */
 
@@ -176,7 +176,7 @@ static TaskHandle_t  s_reconnect_task = NULL;
 static volatile bool s_reconnect_enabled = false;
 #define RECONNECT_CHECK_MS     5000   /* check connection every 5s */
 #define RECONNECT_BACKOFF_MS   10000  /* wait 10s between reconnect attempts */
-#define IDLE_PING_INTERVAL_MS  10000  /* ping every 10s when idle/ready */
+#define IDLE_PING_INTERVAL_MS  8000   /* ping every 8s when idle/ready (was 10s — ngrok needs <20s) */
 
 // ---------------------------------------------------------------------------
 // Forward declarations
