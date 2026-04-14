@@ -618,9 +618,10 @@ static void update_mode_badge(uint8_t mode)
     lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(colors[mode]), 0);
     lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
 
-    /* Update home orb ring color to match mode */
+    /* Update home orb ring color to match mode (US-PR14) */
     if (orb_ring) {
-        uint32_t orb_color = (mode == VOICE_MODE_TINKERCLAW) ? 0xE11D48 : 0xF5A623;
+        static const uint32_t ring_colors[] = {0x22C55E, 0xEAB308, 0x3B82F6, 0xE11D48};
+        uint32_t orb_color = ring_colors[mode];
         lv_obj_set_style_border_color(orb_ring, lv_color_hex(orb_color), 0);
     }
 }

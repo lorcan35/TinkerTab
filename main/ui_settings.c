@@ -266,6 +266,13 @@ static void cb_volume(lv_event_t *e)
     lv_timer_set_repeat_count(s_vol_save_timer, 1);
 }
 
+/* Play a short preview tone on slider release so user hears the new volume (US-PR12) */
+static void cb_volume_released(lv_event_t *e)
+{
+    (void)e;
+    tab5_audio_test_tone(440, 200);  /* 440Hz A4 for 200ms */
+}
+
 static void cb_autorotate(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -405,6 +412,8 @@ static void cb_conn_mode(lv_event_t *e)
 
 /* ── Dragon host ────────────────────────────────────────────────────── */
 
+static lv_obj_t *s_dragon_status_lbl = NULL;  /* reconnect feedback label (US-PR09) */
+
 static void cb_dragon_host_done(lv_event_t *e)
 {
     (void)e;
@@ -416,6 +425,14 @@ static void cb_dragon_host_done(lv_event_t *e)
         if (voice_is_connected()) {
             ESP_LOGI(TAG, "Disconnecting voice for host change -> watchdog will reconnect");
             voice_disconnect();
+        }
+        /* US-PR09: Show reconnect feedback below Dragon host field */
+        if (s_dragon_status_lbl) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Reconnecting to %s...", txt);
+            lv_label_set_text(s_dragon_status_lbl, msg);
+            lv_obj_set_style_text_color(s_dragon_status_lbl, lv_color_hex(ACC_NETWORK), 0);
+            lv_obj_clear_flag(s_dragon_status_lbl, LV_OBJ_FLAG_HIDDEN);
         }
     }
     ui_keyboard_hide();
@@ -764,6 +781,7 @@ lv_obj_t *ui_settings_create(void)
     mk_row_label(s_scroll, "Volume", y);
     s_slider_volume = mk_slider(s_scroll, acc_display, RIGHT_X, y,
                                 0, 100, tab5_settings_get_volume(), cb_volume);
+    lv_obj_add_event_cb(s_slider_volume, cb_volume_released, LV_EVENT_RELEASED, NULL);
     s_lbl_vol_val = lv_label_create(s_scroll);
     lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 210, y + 4);
     lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
@@ -835,7 +853,16 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
     lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
-    y += ROW_H + 8;
+    y += ROW_H + 4;
+
+    /* US-PR09: Reconnect status label (hidden until host change) */
+    s_dragon_status_lbl = lv_label_create(s_scroll);
+    lv_label_set_text(s_dragon_status_lbl, "");
+    lv_obj_set_pos(s_dragon_status_lbl, SIDE_PAD, y);
+    lv_obj_set_style_text_color(s_dragon_status_lbl, lv_color_hex(ACC_NETWORK), 0);
+    lv_obj_set_style_text_font(s_dragon_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_add_flag(s_dragon_status_lbl, LV_OBJ_FLAG_HIDDEN);
+    y += 4;
 
     /* Connection mode: Auto / Local / Remote */
     {
@@ -847,7 +874,7 @@ lv_obj_t *ui_settings_create(void)
 
         static lv_obj_t *s_conn_dd = NULL;
         s_conn_dd = lv_dropdown_create(s_scroll);
-        lv_dropdown_set_options(s_conn_dd, "Auto (ngrok+LAN)\nLocal only\nRemote only");
+        lv_dropdown_set_options(s_conn_dd, "Automatic\nHome Network\nInternet Only");
         lv_dropdown_set_selected(s_conn_dd, tab5_settings_get_connection_mode());
         lv_obj_set_pos(s_conn_dd, 340, y);
         lv_obj_set_size(s_conn_dd, 340, 36);
@@ -1302,6 +1329,14 @@ void ui_settings_update(void)
         }
     }
 
+    /* US-PR09: Hide reconnect label once voice is back up */
+    if (s_dragon_status_lbl && !lv_obj_has_flag(s_dragon_status_lbl, LV_OBJ_FLAG_HIDDEN)) {
+        if (voice_is_connected()) {
+            lv_label_set_text(s_dragon_status_lbl, "Connected");
+            lv_obj_set_style_text_color(s_dragon_status_lbl, lv_color_hex(TAB_LOCAL), 0);
+        }
+    }
+
     /* SD card info */
     if (s_lbl_sd_info) {
         if (tab5_sdcard_mounted()) {
@@ -1416,6 +1451,7 @@ void ui_settings_destroy(void)
     memset(s_cloud_content,  0, sizeof(s_cloud_content));
     memset(s_tinkerclaw_content, 0, sizeof(s_tinkerclaw_content));
     s_dragon_ta     = NULL;
+    s_dragon_status_lbl = NULL;
     s_ota_btn_label = NULL;
     s_ota_apply_btn = NULL;
 

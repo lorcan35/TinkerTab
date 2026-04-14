@@ -661,29 +661,32 @@ static void cb_suggestion(lv_event_t *e)
     voice_send_text(text);
 }
 
-/* Quick action callbacks */
+/* Quick action callbacks — pre-fill textarea instead of auto-sending (US-PR10) */
 static void cb_quick_web(lv_event_t *e)
 {
     (void)e;
     enter_conversation();
-    ui_chat_add_message("Search the web for...", true);
-    voice_send_text("Search the web for the latest news");
+    lv_textarea_set_text(s_conv_textarea, "Search the web for ");
+    lv_textarea_set_cursor_pos(s_conv_textarea, LV_TEXTAREA_CURSOR_LAST);
+    ui_keyboard_show(s_conv_textarea);
 }
 
 static void cb_quick_remember(lv_event_t *e)
 {
     (void)e;
     enter_conversation();
-    ui_chat_add_message("What do you remember about me?", true);
-    voice_send_text("What do you remember about me?");
+    lv_textarea_set_text(s_conv_textarea, "Remember that ");
+    lv_textarea_set_cursor_pos(s_conv_textarea, LV_TEXTAREA_CURSOR_LAST);
+    ui_keyboard_show(s_conv_textarea);
 }
 
 static void cb_quick_timer(lv_event_t *e)
 {
     (void)e;
     enter_conversation();
-    ui_chat_add_message("Set a timer for 5 minutes", true);
-    voice_send_text("Set a timer for 5 minutes");
+    lv_textarea_set_text(s_conv_textarea, "Set a timer for ");
+    lv_textarea_set_cursor_pos(s_conv_textarea, LV_TEXTAREA_CURSOR_LAST);
+    ui_keyboard_show(s_conv_textarea);
 }
 
 /* ── Voice polling timer ───────────────────────────────────────── */
@@ -848,6 +851,17 @@ static void enter_conversation(void)
     /* Build conversation UI if it hasn't been created yet */
     if (!s_conv_created) {
         build_conversation_ui();
+    }
+
+    /* Preserve pending text from home textarea (US-PR16) */
+    if (s_home_textarea && s_conv_textarea) {
+        const char *pending = lv_textarea_get_text(s_home_textarea);
+        if (pending && pending[0]) {
+            lv_textarea_set_text(s_conv_textarea, pending);
+            lv_textarea_set_cursor_pos(s_conv_textarea, LV_TEXTAREA_CURSOR_LAST);
+            lv_textarea_set_text(s_home_textarea, "");
+            ESP_LOGI(TAG, "Transferred pending text to conversation: '%s'", pending);
+        }
     }
 
     if (s_conv_panel) {
