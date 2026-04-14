@@ -473,7 +473,7 @@ Every entry here was learned the hard way. Read this before touching the codebas
 ### LVGL Memory Pool Configuration
 - **Date:** 2026-04-10
 - **Symptom:** N/A (configuration note)
-- **Root Cause:** CONFIG_LV_MEM_SIZE_KILOBYTES=64 with CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64. The expand feature lets LVGL request additional 64KB blocks from system heap when the initial pool is exhausted. Critical for settings screen which creates ~50 objects.
+- **Root Cause:** CONFIG_LV_MEM_SIZE_KILOBYTES=96 with CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=1024. The 96KB base pool fits in internal SRAM BSS. The 1024KB expand feature lets LVGL request additional blocks from system heap (PSRAM) when the initial pool is exhausted. Critical for settings screen which creates ~50 objects.
 - **Fix:** Set both values in sdkconfig. The expand feature is the safety net that prevents out-of-memory crashes without requiring an oversized initial pool.
 - **Prevention:** Always enable LV_MEM_POOL_EXPAND on memory-constrained devices with complex UIs. Monitor LVGL memory usage with lv_mem_monitor() during development to verify the expand pool is not being hit excessively.
 
@@ -657,7 +657,7 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Date:** 2026-04-13
 - **Symptom:** Tapping a note card to open the edit overlay crashes the device. Two crash modes: (1) `task_wdt` timeout — ui_task stuck in `while(1)` inside `LV_ASSERT_MALLOC` at `lv_label_set_text:166` or `draw_letter:427`. (2) `Store access fault` — NULL pointer propagation after failed `lv_malloc`.
 - **Root Cause:** LVGL's builtin allocator had a **64KB fixed pool** (`CONFIG_LV_MEM_SIZE_KILOBYTES=64`) with **0KB expand** (`CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=0`). Notes screen with 7 cards + topbar + search + buttons consumed ~50KB. Opening the edit overlay (textarea + labels + buttons) needed ~15KB more → pool exhausted → `lv_malloc` returns NULL → `LV_ASSERT_MALLOC` fires `while(1)` → WDT kills device after 60s.
-- **Fix:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=64` = 160KB total. The 96KB base pool fits in internal SRAM BSS. The 64KB expand auto-allocates from system heap (PSRAM) when base pool is full.
+- **Fix:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=1024` = 1120KB total. The 96KB base pool fits in internal SRAM BSS. The 1024KB expand auto-allocates from system heap (PSRAM) when base pool is full.
 - **Prevention:** Monitor LVGL memory usage: `lv_mem_monitor_t mon; lv_mem_monitor(&mon); ESP_LOGI("LVGL", "used=%d%% frag=%d%%", mon.used_pct, mon.frag_pct);`. If `used_pct > 80%`, increase pool or simplify UI. NEVER go above 96KB base pool — 128KB causes linker error on ESP32-P4 (exceeds internal SRAM BSS capacity). Use expand pool for overflow.
 - **Why it worked before:** The edit overlay feature was added but never tested with physical taps on the device. API navigation created the Notes list (which fits in 64KB) but never triggered `cb_note_tap` which creates the edit overlay.
 
@@ -843,3 +843,21 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** `ui_chat_destroy()` deletes the Chat overlay and all its children synchronously. If any child had an active `lv_timer` (e.g., status bar blink timer, message animation), the timer's linked list node was freed but the timer handler still iterated through it on the next tick — classic use-after-free on a linked list.
 - **Fix:** Changed `dismiss_all_overlays()` to call `ui_chat_hide()` (sets HIDDEN flag, clears CLICKABLE) instead of `ui_chat_destroy()`. The Chat overlay stays allocated but invisible and non-interactive. Its timers remain valid. Destroy only happens when Chat is explicitly replaced (e.g., New Chat button).
 - **Prevention:** Overlays with active timers or animations should be hidden, not destroyed, during navigation. Only destroy when the overlay is being permanently replaced. If you must destroy, cancel all timers first with `lv_timer_del()`.
+
+---
+
+## ngrok WebSocket Stability (2026-04-14)
+
+### WS Connection Drops Every 30s Through ngrok Tunnel
+- **Date:** 2026-04-14
+- **Symptom:** WebSocket connection drops every 30s through ngrok tunnel. Tab5 reconnects but the cycle repeats indefinitely.
+- **Root Cause:** Three compounding issues: (1) `vTaskSuspend` leaked tasks on reconnect — suspended tasks accumulated and were never cleaned up. (2) Protocol-level `ws.ping()` frames were not counted as ngrok activity — ngrok's idle timeout only monitors data frames, not WebSocket control frames. (3) aiohttp `heartbeat` parameter was too aggressive for ngrok latency, causing premature timeout detection.
+- **Fix:** (1) `vTaskDelete` is now safe with TLSP callbacks disabled (`CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=n`). (2) Dragon sends JSON `{"type":"pong"}` data frames every 15s instead of relying on protocol-level pings. (3) Set `heartbeat=None` in aiohttp WebSocket handler to disable aiohttp's own ping/pong mechanism.
+- **Prevention:** Always send DATA frames for keepalive through proxies/tunnels — never rely on WebSocket protocol pings alone. Proxies like ngrok, Cloudflare Tunnel, and nginx may not forward or count control frames as activity.
+
+### Connection Mode Toggle (Auto/Local/Remote)
+- **Date:** 2026-04-14
+- **Symptom:** N/A (feature addition)
+- **Root Cause:** Users needed control over whether Tab5 connects locally or through ngrok, with an automatic fallback option.
+- **Fix:** Added Connection Mode setting with three options: Auto (local first, ngrok fallback), Local only, Remote only. Stored in NVS key `conn_m`. Exposed in Settings dropdown under the Network section.
+- **Prevention:** When adding new NVS settings, always add a corresponding UI control in the Settings screen and document the NVS key name and valid values.

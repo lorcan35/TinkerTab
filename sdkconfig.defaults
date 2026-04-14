@@ -23,7 +23,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # FreeRTOS tick rate
 CONFIG_FREERTOS_HZ=1000
 
-# Task WDT — 30s timeout (settings screen creation takes 5-10s with feed_wdt yields)
+# Task WDT — 60s timeout (settings screen creation takes 5-10s with feed_wdt yields)
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 
 # Partition table — custom for 16MB flash (4MB app + 12MB storage)
@@ -79,7 +79,7 @@ CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
 CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
-# LVGL memory — 96KB base + 256KB expand = 352KB total capacity.
+# LVGL memory — 96KB base + 1024KB expand = 1120KB total capacity.
 # 96KB is max safe BSS size for internal SRAM. Expand uses system heap (PSRAM).
 CONFIG_LV_MEM_SIZE_KILOBYTES=96
 CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=1024

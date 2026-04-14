@@ -98,8 +98,11 @@ echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
 ### Dragon Stability
 - **Ethernet** — DHCP IP 192.168.1.91 on enp1s0
 - **Stripped services** — gdm3, snapd, ollama, nanobot, rustdesk, fwupd all masked. Only tinkerclaw-* services run.
-- **ngrok tunnel** — `tinkerclaw-ngrok.service` maintains `tinkertab.ngrok.dev` → localhost:3502
-- **Tab5 ngrok fallback** — voice.c tries local WS first, falls back to wss://tinkertab.ngrok.dev:443
+- **ngrok tunnels** — `tinkerclaw-ngrok.service` maintains three tunnels:
+  - `tinkerclaw-dashboard.ngrok.dev` → localhost:3500 (dashboard)
+  - `tinkerclaw-voice.ngrok.dev` → localhost:3502 (voice WS)
+  - `tinkerclaw-gateway.ngrok.dev` → localhost:18789 (TinkerClaw gateway)
+- **Tab5 ngrok fallback** — voice.c tries local WS first, falls back to wss://tinkerclaw-voice.ngrok.dev:443
 
 ## Build & Flash
 ```bash
@@ -152,6 +155,7 @@ curl -s http://192.168.1.90:8080/settings | python3 -m json.tool
 curl -s -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
 curl -s -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
 curl -s -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
+curl -s -X POST "http://192.168.1.90:8080/mode?m=3"                                        # TinkerClaw
 
 # Navigation (force screen change — bypasses tileview)
 curl -s -X POST "http://192.168.1.90:8080/navigate?screen=settings"
@@ -230,7 +234,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 
 ## OTA Firmware Updates
 - **Dual OTA partitions:** ota_0 (3MB) + ota_1 (3MB) with otadata boot selector
-- **Check:** `tab5_ota_check()` → GET `http://dragon:3502/api/ota/check?current=0.6.0`
+- **Check:** `tab5_ota_check()` → GET `http://dragon:3502/api/ota/check?current=0.7.0`
 - **Apply:** `tab5_ota_apply(url)` → downloads via `esp_https_ota()`, writes inactive slot, reboots
 - **Auto-rollback:** New firmware boots in PENDING_VERIFY. If crash before `tab5_ota_mark_valid()`, bootloader reverts.
 - **Settings UI:** "Check Update" button shows version + partition. "Apply Update" green button appears when update available.
@@ -238,7 +242,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 - **Deploy new firmware:**
   ```bash
   scp build/tinkertab.bin radxa@192.168.1.91:/home/radxa/ota/
-  echo '{"version":"0.6.1","sha256":""}' | ssh radxa@192.168.1.91 'cat > /home/radxa/ota/version.json'
+  echo '{"version":"0.7.1","sha256":""}' | ssh radxa@192.168.1.91 'cat > /home/radxa/ota/version.json'
   # Tab5 checks hourly or user taps "Check Update" in Settings
   ```
 
@@ -278,7 +282,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Render mode:** `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM. Do NOT use DIRECT mode (causes tearing on DPI).
 
 ### Key Fixes (April 2026)
-- **LVGL pool OOM crash fixed:** Notes edit overlay exhausted 64KB LVGL pool → `lv_malloc` NULL → `LV_ASSERT_MALLOC while(1)` → 60s WDT → reboot. Fix: 96KB pool + 64KB expand in `sdkconfig.defaults`.
+- **LVGL pool OOM crash fixed:** Notes edit overlay exhausted 64KB LVGL pool → `lv_malloc` NULL → `LV_ASSERT_MALLOC while(1)` → 60s WDT → reboot. Fix: 96KB pool + 1024KB expand in `sdkconfig.defaults`.
 - **Circle cache crash fixed:** 4 cache entries overflowed with 7+ rounded cards → `circ_calc_aa4` NULL dereference. Fix: `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32` in `sdkconfig.defaults`.
 - **Settings WDT crash fixed:** `f_getfree()` on a 128GB SD card blocks the LVGL thread for ~30s, triggering the watchdog. Fix: cache the `f_getfree` result from boot, feed `esp_task_wdt_reset()` between settings UI sections during creation.
 - **Response timeout (local vs cloud):** Local mode needs 5 min timeout for tool-calling chains (small models are slow). Cloud mode keeps 35s timeout. Timeout is mode-aware.
@@ -335,7 +339,7 @@ main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c             — ES7210 quad-mic via esp_codec_dev
 main/dragon_link.c     — Dragon mDNS discovery + CDP connection state
 main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING), voice WS kept across transitions
-main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.6.0), VOICE_MODE_TINKERCLAW=3
+main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.7.0), VOICE_MODE_TINKERCLAW=3
 main/settings.c        — NVS: WiFi, Dragon host, volume, brightness, voice_mode, llm_model, session_id
 main/settings.h        — Settings API including three-tier voice_mode + llm_model
 main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat bubbles, stop button)
