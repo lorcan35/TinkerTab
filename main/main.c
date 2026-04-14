@@ -103,6 +103,13 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
 
     ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
 
+    /* NOTE: Pre-creating overlays at boot was tried but made things WORSE.
+     * Multiple heavy overlays competing for PSRAM cache during boot causes
+     * more HTTP timeouts than lazy creation. The fix is Core 1 pinning for
+     * httpd + LWIP, plus vTaskDelay yields in Settings/Chat creation.
+     * First-time creation of each overlay causes a one-time ~1s HTTP stall,
+     * but subsequent navigations are instant (hide-not-destroy caching). */
+
     /* C1+C2: Auto-connect voice WS at boot for persistent session +
      * device registration. Silent mode = no overlay popup on connect. */
     if (tab5_wifi_connected()) {
