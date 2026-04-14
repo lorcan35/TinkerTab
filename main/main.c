@@ -103,12 +103,10 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
 
     ESP_LOGI(TAG, "Keyboard + Voice UI overlays initialized");
 
-    /* NOTE: Pre-creating overlays at boot was tried but made things WORSE.
-     * Multiple heavy overlays competing for PSRAM cache during boot causes
-     * more HTTP timeouts than lazy creation. The fix is Core 1 pinning for
-     * httpd + LWIP, plus vTaskDelay yields in Settings/Chat creation.
-     * First-time creation of each overlay causes a one-time ~1s HTTP stall,
-     * but subsequent navigations are instant (hide-not-destroy caching). */
+    /* NOTE: Pre-creating all 3 overlays at boot CRASHES — too many LVGL
+     * objects simultaneously (Settings 55 + Chat 40 + Notes 30 = 125 objects
+     * on one screen exceeds LVGL memory/object limits). Don't do it.
+     * The HTTP timeout fix is Core 1 httpd+LWIP + vTaskDelay yields. */
 
     /* C1+C2: Auto-connect voice WS at boot for persistent session +
      * device registration. Silent mode = no overlay popup on connect. */
