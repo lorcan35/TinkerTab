@@ -984,8 +984,11 @@ static void show_state_processing(const char *detail)
         /* Auto-scroll to bottom */
         lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
     } else {
-        /* STT arrived but no LLM yet — show "Thinking..." status */
-        lv_label_set_text(s_lbl_status, "Thinking...");
+        /* STT arrived but no LLM yet — show thinking status.
+         * TinkerClaw mode: "Agent thinking..." to signal agent reasoning */
+        uint8_t vmode = tab5_settings_get_voice_mode();
+        lv_label_set_text(s_lbl_status,
+            vmode == 3 ? "Agent thinking..." : "Thinking...");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_PURPLE_DIM), 0);
         lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,

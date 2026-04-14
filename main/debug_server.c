@@ -840,14 +840,14 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     return ret;
 }
 
-/* POST /mode?m=0|1|2&model=anthropic/claude-3-haiku — switch voice mode */
+/* POST /mode?m=0|1|2|3&model=... — switch voice mode (3=TinkerClaw) */
 static esp_err_t mode_set_handler(httpd_req_t *req)
 {
     /* Parse query string */
     char query[128] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"error\":\"use ?m=0|1|2&model=...\"}");
+        httpd_resp_sendstr(req, "{\"error\":\"use ?m=0|1|2|3&model=... (3=TinkerClaw)\"}");
         return ESP_OK;
     }
 
@@ -857,7 +857,7 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
     httpd_query_key_value(query, "model", model, sizeof(model));
 
     int mode = atoi(val);
-    if (mode < 0 || mode > 2) mode = 0;
+    if (mode < 0 || mode > 3) mode = 0;
 
     /* Save to NVS */
     tab5_settings_set_voice_mode((uint8_t)mode);

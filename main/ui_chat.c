@@ -248,16 +248,23 @@ static void update_model_label(void)
     char model_buf[64];
     tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
     uint8_t mode = tab5_settings_get_voice_mode();
+
+    /* Strip provider prefix for short display name */
+    const char *short_name = model_buf;
     if (model_buf[0]) {
-        /* Show short name: strip "anthropic/" or "openai/" prefix */
-        const char *short_name = model_buf;
         const char *slash = strrchr(model_buf, '/');
         if (slash) short_name = slash + 1;
-        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_EDIT " %s", short_name);
     } else {
-        lv_label_set_text(s_model_lbl,
-            mode == 2 ? LV_SYMBOL_EDIT " claude-3.5-haiku" :
-                        LV_SYMBOL_EDIT " qwen3:1.7b");
+        short_name = (mode >= VOICE_MODE_CLOUD) ? "claude-3.5-haiku" : "qwen3:1.7b";
+    }
+
+    /* TinkerClaw mode: prefix with "Agent:" to signal it's an agent, not just LLM */
+    if (mode == VOICE_MODE_TINKERCLAW) {
+        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_SETTINGS " Agent: %s", short_name);
+        lv_obj_set_style_text_color(s_model_lbl, lv_color_hex(0xE11D48), 0);
+    } else {
+        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_EDIT " %s", short_name);
+        lv_obj_set_style_text_color(s_model_lbl, lv_color_hex(0xAAAAAA), 0);
     }
 }
 

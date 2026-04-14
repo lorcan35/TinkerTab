@@ -23,6 +23,7 @@
 #include "mode_manager.h"
 #include "voice.h"
 #include "settings.h"
+#include "config.h"
 #include "ui_wifi.h"
 #include "ui_camera.h"
 #include "ui_files.h"
@@ -605,34 +606,29 @@ static void cb_last_note_tap(lv_event_t *e)
 static void update_mode_badge(uint8_t mode)
 {
     if (!lbl_privacy) return;
-    switch (mode) {
-    case 0:
-        lv_label_set_text(lbl_privacy, "  Local  ");
-        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(0x22C55E), 0);  /* green */
-        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(0x22C55E), 0);
-        break;
-    case 1:
-        lv_label_set_text(lbl_privacy, " Hybrid ");
-        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(0xF59E0B), 0);  /* amber */
-        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(0xF59E0B), 0);
-        break;
-    case 2:
-        lv_label_set_text(lbl_privacy, "  Cloud  ");
-        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(0x3B82F6), 0);  /* blue */
-        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(0x3B82F6), 0);
-        break;
-    }
+    /* Mode labels, colors, and orb ring accent */
+    static const char *labels[] = {"  Local  ", " Hybrid ", "  Cloud  ", "TinkerClaw"};
+    static const uint32_t colors[] = {0x22C55E, 0xF59E0B, 0x3B82F6, 0xE11D48};
+    if (mode >= VOICE_MODE_COUNT) mode = 0;
+
+    lv_label_set_text(lbl_privacy, labels[mode]);
+    lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(colors[mode]), 0);
+    lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(colors[mode]), 0);
     lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
+
+    /* Update home orb ring color to match mode */
+    if (orb_ring) {
+        uint32_t orb_color = (mode == VOICE_MODE_TINKERCLAW) ? 0xE11D48 : 0xF5A623;
+        lv_obj_set_style_border_color(orb_ring, lv_color_hex(orb_color), 0);
+    }
 }
 
 static void privacy_tap_cb(lv_event_t *e)
 {
     (void)e;
-    /* Cycle: Local(0) → Hybrid(1) → Cloud(2) → Local(0)
-     * Use local s_badge_mode instead of reading NVS — avoids race
-     * where Dragon ACK overwrites NVS before next tap is processed. */
+    /* Cycle: Local(0) → Hybrid(1) → Cloud(2) → TinkerClaw(3) → Local(0) */
     uint8_t prev = s_badge_mode;
-    s_badge_mode = (s_badge_mode + 1) % 3;
+    s_badge_mode = (s_badge_mode + 1) % VOICE_MODE_COUNT;
 
     tab5_settings_set_voice_mode(s_badge_mode);
 
@@ -640,14 +636,20 @@ static void privacy_tap_cb(lv_event_t *e)
     if (voice_is_connected()) {
         char model[64] = {0};
         tab5_settings_get_llm_model(model, sizeof(model));
-        voice_send_config_update((int)s_badge_mode, s_badge_mode == 2 ? model : NULL);
+        voice_send_config_update((int)s_badge_mode,
+            (s_badge_mode >= 2) ? model : NULL);
     }
 
     /* Update badge */
     update_mode_badge(s_badge_mode);
 
     /* Toast */
-    const char *names[] = {"Local — all on-device", "Hybrid — cloud STT+TTS", "Cloud — all cloud"};
+    const char *names[] = {
+        "Local — all on-device",
+        "Hybrid — cloud STT+TTS",
+        "Cloud — all cloud",
+        "TinkerClaw — Agent mode",
+    };
     show_toast(names[s_badge_mode]);
 
     ESP_LOGI(TAG, "Mode cycled: %d → %d", prev, s_badge_mode);
