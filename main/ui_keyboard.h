@@ -15,6 +15,14 @@
  *   ui_keyboard_is_visible();             // Check state
  */
 
+// Keyboard height in pixels (used by screens to adjust layout)
+#define UI_KB_HEIGHT  420
+
+// Callback type for keyboard show/hide notifications.
+// @param visible  true when keyboard is showing, false when hiding
+// @param kb_height  keyboard height in pixels
+typedef void (*ui_keyboard_cb_t)(bool visible, int kb_height);
+
 // Initialize the global keyboard overlay and floating trigger button
 // Call once after LVGL is initialized. Parent should be the top-level screen layer.
 void ui_keyboard_init(lv_obj_t *parent);
@@ -37,3 +45,8 @@ void ui_keyboard_set_target(lv_obj_t *target_textarea);
 
 // Get the floating trigger button (for positioning from other screens)
 lv_obj_t *ui_keyboard_get_trigger_btn(void);
+
+// Register a callback to be notified when keyboard shows/hides.
+// Only one callback active at a time (last registration wins).
+// Pass NULL to unregister.
+void ui_keyboard_set_layout_cb(ui_keyboard_cb_t cb);

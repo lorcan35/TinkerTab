@@ -81,7 +81,7 @@ static void mode_switch_idle_task(void *arg);
 #define CHAT_PAD_X         24         /* horizontal padding */
 #define CHAT_BUBBLE_RAD    16         /* bubble corner radius */
 #define CHAT_BUBBLE_PAD    14         /* text padding inside bubble */
-#define CHAT_BUBBLE_MAX_W  520        /* max bubble width */
+#define CHAT_BUBBLE_MAX_W  500        /* max bubble width */
 #define CHAT_GAP           12         /* vertical gap between bubbles */
 
 /* Bubble colors */

@@ -142,14 +142,14 @@ static lv_obj_t *build_page_home(void)
     lbl_date = lv_label_create(pg);
     lv_label_set_text(lbl_date, "Wednesday, March 26");
     lv_obj_set_style_text_color(lbl_date, lv_color_hex(0xA0A0A8), 0);
-    lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_36, 0);
-    lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 148);
+    lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_24, 0);
+    lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 140);
 
     /* ── Voice Orb (center) — TINKER ─────────────────── */
     /* Outer ring (breathing animation) */
     orb_ring = lv_obj_create(pg);
     lv_obj_set_size(orb_ring, 200, 200);
-    lv_obj_align(orb_ring, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_align(orb_ring, LV_ALIGN_CENTER, 0, -212);
     lv_obj_set_style_bg_opa(orb_ring, LV_OPA_TRANSP, 0);
     lv_obj_set_style_radius(orb_ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(orb_ring, 3, 0);
@@ -160,7 +160,7 @@ static lv_obj_t *build_page_home(void)
     /* Inner orb — CLICKABLE (tappable to start voice) */
     orb_inner = lv_obj_create(pg);
     lv_obj_set_size(orb_inner, 160, 160);
-    lv_obj_align(orb_inner, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_align(orb_inner, LV_ALIGN_CENTER, 0, -212);
     lv_obj_set_style_bg_color(orb_inner, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(orb_inner, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(orb_inner, LV_RADIUS_CIRCLE, 0);
@@ -183,14 +183,14 @@ static lv_obj_t *build_page_home(void)
     lv_label_set_text(lbl_ask, "Tap to ask");
     lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(lbl_ask, &lv_font_montserrat_28, 0);
-    lv_obj_align(lbl_ask, LV_ALIGN_CENTER, 0, 40);
+    lv_obj_align(lbl_ask, LV_ALIGN_CENTER, 0, -92);
 
     /* H1: Long-press hint — brighter, more descriptive */
     lv_obj_t *hold_hint = lv_label_create(pg);
     lv_label_set_text(hold_hint, LV_SYMBOL_EDIT "  Long-press to dictate");
     lv_obj_set_style_text_color(hold_hint, lv_color_hex(0x777777), 0);
     lv_obj_set_style_text_font(hold_hint, &lv_font_montserrat_20, 0);
-    lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, 75);
+    lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, -58);
 
     /* Breathing animation on ring */
     lv_anim_init(&orb_anim);
@@ -204,20 +204,23 @@ static lv_obj_t *build_page_home(void)
     orb_anim_on = true;
 
     /* ── Bottom layout (from bottom up):
-     *   Nav bar:        120px
-     *   Page dots:       40px
-     *   Camera+Files:    80px  (proper touch targets!)
-     *   Ask Tinker:      88px
-     *   Note card:      100px
+     *   Nav bar:        120px  (separate from tileview)
+     *   Page dots:       36px  (separate from tileview)
+     *   Breathing room: ~310px
+     *   Camera+Files:    64px  (proper touch targets)
+     *   16px gap
+     *   Ask Tinker:      64px
+     *   16px gap
+     *   Note card:       90px
      * ─────────────────────────────────────────── */
 
-    /* Camera + Files — FULL WIDTH buttons, proper 80px height */
-    #define BTN_GAP 12
+    /* Camera + Files — FULL WIDTH buttons, 64px height */
+    #define BTN_GAP 16
     int qbtn_w = (SW - 48 - BTN_GAP) / 2;
 
     lv_obj_t *cam_btn = lv_button_create(pg);
-    lv_obj_set_size(cam_btn, qbtn_w, 80);
-    lv_obj_align(cam_btn, LV_ALIGN_BOTTOM_LEFT, 24, -(NAV_H + 44));
+    lv_obj_set_size(cam_btn, qbtn_w, 64);
+    lv_obj_align(cam_btn, LV_ALIGN_BOTTOM_LEFT, 24, -310);
     lv_obj_set_style_bg_color(cam_btn, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_radius(cam_btn, 12, 0);
     lv_obj_set_style_border_width(cam_btn, 1, 0);
@@ -230,8 +233,8 @@ static lv_obj_t *build_page_home(void)
     lv_obj_center(cam_lbl);
 
     lv_obj_t *files_btn = lv_button_create(pg);
-    lv_obj_set_size(files_btn, qbtn_w, 80);
-    lv_obj_align(files_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -(NAV_H + 44));
+    lv_obj_set_size(files_btn, qbtn_w, 64);
+    lv_obj_align(files_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -310);
     lv_obj_set_style_bg_color(files_btn, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_radius(files_btn, 12, 0);
     lv_obj_set_style_border_width(files_btn, 1, 0);
@@ -245,8 +248,8 @@ static lv_obj_t *build_page_home(void)
 
     /* Ask Tinker — above Camera/Files */
     lv_obj_t *ask_btn = lv_button_create(pg);
-    lv_obj_set_size(ask_btn, SW - 48, 88);
-    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 44 + 80 + 12));
+    lv_obj_set_size(ask_btn, SW - 48, 64);
+    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(310 + 64 + 16));
     lv_obj_set_style_bg_color(ask_btn, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(ask_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(ask_btn, 12, 0);
@@ -261,8 +264,8 @@ static lv_obj_t *build_page_home(void)
 
     /* Last Note Card — above Ask Tinker, compact */
     last_note_card = lv_obj_create(pg);
-    lv_obj_set_size(last_note_card, SW - 48, 120);
-    lv_obj_align(last_note_card, LV_ALIGN_BOTTOM_MID, 0, -(NAV_H + 44 + 80 + 12 + 88 + 12));
+    lv_obj_set_size(last_note_card, SW - 48, 90);
+    lv_obj_align(last_note_card, LV_ALIGN_BOTTOM_MID, 0, -(310 + 64 + 16 + 64 + 16));
     lv_obj_set_style_bg_color(last_note_card, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_bg_opa(last_note_card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(last_note_card, 12, 0);

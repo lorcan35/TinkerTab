@@ -88,6 +88,9 @@ static bool       s_caps_lock     = false;  /* double-tap shift */
 static bool       s_num_layer     = false;  /* numbers/symbols layer */
 static bool       s_num_built     = false;  /* lazy: number rows created? */
 
+/* Layout callback — notifies the active screen so it can adjust for keyboard */
+static ui_keyboard_cb_t s_layout_cb = NULL;
+
 /* Key rows — containers for easy show/hide on layer switch */
 static lv_obj_t  *s_letter_rows[4] = {NULL}; /* row0..row3 (letters + bottom) */
 static lv_obj_t  *s_num_rows[4]    = {NULL}; /* row0..row3 (numbers + bottom) */
@@ -152,6 +155,13 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     s_target_ta = target_textarea;
     s_visible = true;
 
+    /* Notify the active screen BEFORE animation so it can adjust layout
+       immediately — the textarea must be visible above the keyboard area
+       from the first frame. */
+    if (s_layout_cb) {
+        s_layout_cb(true, KB_HEIGHT);
+    }
+
     /* Unhide, bring to front (above any overlays), and animate slide-up */
     lv_obj_clear_flag(s_kb_panel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_kb_panel);  /* ensure keyboard is above chat/voice overlays */
@@ -174,11 +184,21 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     ESP_LOGI(TAG, "Keyboard shown");
 }
 
+void ui_keyboard_set_layout_cb(ui_keyboard_cb_t cb)
+{
+    s_layout_cb = cb;
+}
+
 void ui_keyboard_hide(void)
 {
     if (!s_visible) return;
 
     s_visible = false;
+
+    /* Notify the active screen to restore layout */
+    if (s_layout_cb) {
+        s_layout_cb(false, KB_HEIGHT);
+    }
 
     /* Animate slide-down */
     lv_anim_t a;

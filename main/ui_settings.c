@@ -80,7 +80,8 @@ static lv_obj_t *s_scroll          = NULL;
 
 /* Live-updated labels */
 static lv_obj_t *s_lbl_wifi       = NULL;
-static lv_obj_t *s_lbl_bat_volt   = NULL;
+static lv_obj_t *s_lbl_bat_status = NULL;   /* primary: "XX% • Charging" or "USB Powered" */
+static lv_obj_t *s_lbl_bat_volt   = NULL;  /* debug: small dim voltage */
 static lv_obj_t *s_bar_bat_level  = NULL;
 static lv_obj_t *s_lbl_bat_pct    = NULL;
 static lv_obj_t *s_lbl_sd_info    = NULL;
@@ -448,6 +449,25 @@ static void cb_dragon_host_click(lv_event_t *e)
     }
 }
 
+/* ── Keyboard layout callback — shrink scroll area above keyboard ── */
+static void settings_keyboard_layout_cb(bool visible, int kb_height)
+{
+    if (!s_scroll) return;
+
+    if (visible) {
+        /* Shrink scroll container so it ends above keyboard */
+        lv_obj_set_height(s_scroll, 1280 - TOPBAR_H - kb_height);
+
+        /* Scroll to make dragon_ta visible if it exists */
+        if (s_dragon_ta) {
+            lv_obj_scroll_to_view(s_dragon_ta, LV_ANIM_ON);
+        }
+    } else {
+        /* Restore full height */
+        lv_obj_set_height(s_scroll, 1280 - TOPBAR_H);
+    }
+}
+
 /* ── NTP sync ───────────────────────────────────────────────────────── */
 
 static void cb_ntp_sync(lv_event_t *e)
@@ -726,6 +746,7 @@ lv_obj_t *ui_settings_create(void)
         if (!s_refresh_timer) s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
         else lv_timer_resume(s_refresh_timer);
         ui_settings_update();
+        ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
         return s_screen;
     }
     ESP_LOGI(TAG, "Creating settings screen...");
@@ -820,10 +841,10 @@ lv_obj_t *ui_settings_create(void)
     s_slider_bright = mk_slider(s_scroll, acc_display, RIGHT_X, y,
                                 0, 100, tab5_settings_get_brightness(), cb_brightness);
     s_lbl_bright_val = lv_label_create(s_scroll);
-    lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 210, y + 4);
+    lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
     lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_text_font(s_lbl_bright_val, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_lbl_bright_val, &lv_font_montserrat_14, 0);
     y += ROW_H + 4;
 
     /* Volume */
@@ -832,10 +853,10 @@ lv_obj_t *ui_settings_create(void)
                                 0, 100, tab5_settings_get_volume(), cb_volume);
     lv_obj_add_event_cb(s_slider_volume, cb_volume_released, LV_EVENT_RELEASED, NULL);
     s_lbl_vol_val = lv_label_create(s_scroll);
-    lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 210, y + 4);
+    lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
     lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_text_font(s_lbl_vol_val, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_lbl_vol_val, &lv_font_montserrat_14, 0);
     y += ROW_H + 4;
 
     /* Auto-rotate */
@@ -1262,12 +1283,12 @@ lv_obj_t *ui_settings_create(void)
 
     y = mk_section(s_scroll, "BATTERY", acc_battery, y);
 
-    /* Voltage + Status (shown directly under section header) */
-    s_lbl_bat_volt = lv_label_create(s_scroll);
-    lv_label_set_text(s_lbl_bat_volt, "-- V");
-    lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_bat_volt, &lv_font_montserrat_18, 0);
-    lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y + (ROW_H - 18) / 2);
+    /* Primary battery status: "XX% • Charging" or "USB Powered" */
+    s_lbl_bat_status = lv_label_create(s_scroll);
+    lv_label_set_text(s_lbl_bat_status, "Checking...");
+    lv_obj_set_style_text_color(s_lbl_bat_status, lv_color_hex(TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_lbl_bat_status, &lv_font_montserrat_18, 0);
+    lv_obj_set_pos(s_lbl_bat_status, SIDE_PAD, y + (ROW_H - 18) / 2);
     y += ROW_H + 4;
 
     /* Level with bar + percentage */
@@ -1285,7 +1306,15 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_text_color(s_lbl_bat_pct, lv_color_hex(TEXT_DIM), 0);
     lv_obj_set_style_text_font(s_lbl_bat_pct, &lv_font_montserrat_18, 0);
     lv_obj_set_pos(s_lbl_bat_pct, SIDE_PAD + 415, y + (ROW_H - 18) / 2);
-    y += ROW_H + 16;
+    y += ROW_H + 2;
+
+    /* Debug voltage label — small and dim for developers */
+    s_lbl_bat_volt = lv_label_create(s_scroll);
+    lv_label_set_text(s_lbl_bat_volt, "");
+    lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_font(s_lbl_bat_volt, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y);
+    y += 20 + 16;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: ABOUT (violet #8B5CF6)
@@ -1296,41 +1325,52 @@ lv_obj_t *ui_settings_create(void)
 
     y = mk_section(s_scroll, "ABOUT", acc_about, y);
 
-    /* Device info (combined single label) */
+    /* Device info — Line 1: product name + version (prominent) */
     {
-        char info_str[128];
-        snprintf(info_str, sizeof(info_str),
-                 "M5Stack Tab5  |  ESP32-P4 RISC-V 2x400MHz\n"
-                 "TinkerTab v%s (%s)", TAB5_FIRMWARE_VER, tab5_ota_current_partition());
-        lv_obj_t *info = lv_label_create(s_scroll);
-        lv_label_set_text(info, info_str);
-        lv_obj_set_style_text_color(info, acc_about, 0);
-        lv_obj_set_style_text_font(info, &lv_font_montserrat_16, 0);
-        lv_obj_set_pos(info, SIDE_PAD, y + 2);
+        char ver_str[64];
+        snprintf(ver_str, sizeof(ver_str), "TinkerTab v%s", TAB5_FIRMWARE_VER);
+        lv_obj_t *ver_lbl = lv_label_create(s_scroll);
+        lv_label_set_text(ver_lbl, ver_str);
+        lv_obj_set_style_text_color(ver_lbl, lv_color_hex(TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_font(ver_lbl, &lv_font_montserrat_20, 0);
+        lv_obj_set_pos(ver_lbl, SIDE_PAD, y + 2);
     }
-    y += ROW_H + 20;
+    y += 28;
+    /* Device info — Line 2: hardware details (smaller, gray) */
+    {
+        char hw_str[96];
+        snprintf(hw_str, sizeof(hw_str),
+                 "M5Stack Tab5 \xc2\xb7 ESP32-P4 \xc2\xb7 %s", tab5_ota_current_partition());
+        lv_obj_t *hw_lbl = lv_label_create(s_scroll);
+        lv_label_set_text(hw_lbl, hw_str);
+        lv_obj_set_style_text_color(hw_lbl, lv_color_hex(TEXT_DIM), 0);
+        lv_obj_set_style_text_font(hw_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_pos(hw_lbl, SIDE_PAD, y);
+    }
+    y += 24;
 
-    /* OTA Update */
+    /* OTA Update — full-width Check button */
     {
         lv_obj_t *ota_btn = mk_pill_btn(s_scroll, LV_SYMBOL_DOWNLOAD " Check Update",
                                         acc_about, lv_color_hex(TEXT_PRIMARY),
-                                        SIDE_PAD, y + 3, 220, 38, 8, cb_ota_check);
+                                        SIDE_PAD, y + 3, CONTENT_W, 42, 8, cb_ota_check);
         s_ota_btn_label = lv_obj_get_child(ota_btn, 0);
     }
+    y += ROW_H + 8;
     {
         s_ota_apply_btn = mk_pill_btn(s_scroll, LV_SYMBOL_OK " Apply Update",
                                       lv_color_hex(TAB_LOCAL), lv_color_hex(TEXT_PRIMARY),
-                                      SIDE_PAD + 240, y + 3, 220, 38, 8, cb_ota_apply);
+                                      SIDE_PAD, y + 3, CONTENT_W, 42, 8, cb_ota_apply);
         lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     }
     y += ROW_H + 8;
 
-    /* Free Heap + PSRAM (combined into one dynamic label) */
+    /* Free Heap + PSRAM (debug info — small and dim) */
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
-    lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_heap, &lv_font_montserrat_16, 0);
-    lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 16) / 2);
+    lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_font(s_lbl_heap, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 12) / 2);
     y += ROW_H;
 
     /* ── Bottom padding + finalize ───────────────────────────────────── */
@@ -1353,6 +1393,7 @@ lv_obj_t *ui_settings_create(void)
 
     ESP_LOGI(TAG, "Settings screen created");
     s_creating = false;
+    ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
 
     /* U02: Re-enable touch input now that all widgets are fully built */
     if (indev) lv_indev_enable(indev, true);
@@ -1395,13 +1436,20 @@ void ui_settings_update(void)
         if (tab5_sdcard_mounted()) {
             uint64_t total = tab5_sdcard_total_bytes();
             uint64_t free_b = tab5_sdcard_free_bytes();
+            uint64_t used_b = (total > free_b) ? (total - free_b) : 0;
+            int total_gb = (int)((total + 536870912ULL) / 1073741824ULL);  /* round */
+            int free_gb  = (int)((free_b + 536870912ULL) / 1073741824ULL);
+            int used_gb  = (int)((used_b + 536870912ULL) / 1073741824ULL);
             char sd_buf[64];
-            snprintf(sd_buf, sizeof(sd_buf), "SD: %.1f / %.1f GB free",
-                     free_b / 1073741824.0, total / 1073741824.0);
+            if (used_gb == 0) {
+                snprintf(sd_buf, sizeof(sd_buf), "SD Card: %d GB available", free_gb);
+            } else {
+                snprintf(sd_buf, sizeof(sd_buf), "SD Card: %d / %d GB used", used_gb, total_gb);
+            }
             lv_label_set_text(s_lbl_sd_info, sd_buf);
             lv_obj_set_style_text_color(s_lbl_sd_info, lv_color_hex(TAB_LOCAL), 0);
         } else {
-            lv_label_set_text(s_lbl_sd_info, "SD: Not mounted");
+            lv_label_set_text(s_lbl_sd_info, "SD Card: Not mounted");
             lv_obj_set_style_text_color(s_lbl_sd_info, lv_color_hex(TEXT_DIM), 0);
         }
     }
@@ -1410,25 +1458,52 @@ void ui_settings_update(void)
     {
         tab5_battery_info_t bi;
         if (tab5_battery_read(&bi) == ESP_OK) {
-            if (s_lbl_bat_volt) {
-                char vbuf[48];
-                snprintf(vbuf, sizeof(vbuf), "%.2fV  %s", bi.voltage,
-                         bi.charging ? "Charging" : "Discharging");
-                lv_label_set_text(s_lbl_bat_volt, vbuf);
-                lv_obj_set_style_text_color(s_lbl_bat_volt,
-                    bi.charging ? lv_color_hex(TAB_LOCAL) : lv_color_hex(TEXT_DIM), 0);
+            bool no_battery = (bi.voltage < 2.0f && bi.percent == 0);
+
+            /* Primary status label */
+            if (s_lbl_bat_status) {
+                char sbuf[48];
+                if (no_battery) {
+                    snprintf(sbuf, sizeof(sbuf), "USB Powered");
+                    lv_obj_set_style_text_color(s_lbl_bat_status,
+                        lv_color_hex(TAB_LOCAL), 0);
+                } else {
+                    snprintf(sbuf, sizeof(sbuf), "%d%% \xc2\xb7 %s", bi.percent,
+                             bi.charging ? "Charging" : "Discharging");
+                    lv_obj_set_style_text_color(s_lbl_bat_status,
+                        bi.charging ? lv_color_hex(TAB_LOCAL) : lv_color_hex(TEXT_DIM), 0);
+                }
+                lv_label_set_text(s_lbl_bat_status, sbuf);
             }
+            /* Debug voltage (small dim text) */
+            if (s_lbl_bat_volt) {
+                char vbuf[32];
+                snprintf(vbuf, sizeof(vbuf), "%.2fV", bi.voltage);
+                lv_label_set_text(s_lbl_bat_volt, vbuf);
+            }
+            /* Bar + percentage */
             if (s_bar_bat_level) {
-                lv_bar_set_value(s_bar_bat_level, bi.percent, LV_ANIM_ON);
-                lv_color_t bar_col = bi.percent > 20 ? lv_color_hex(TAB_LOCAL) :
-                                     bi.percent > 10 ? lv_color_hex(TAB_HYBRID) :
+                int bar_pct = no_battery ? 0 : bi.percent;
+                lv_bar_set_value(s_bar_bat_level, bar_pct, LV_ANIM_ON);
+                lv_color_t bar_col = bar_pct > 20 ? lv_color_hex(TAB_LOCAL) :
+                                     bar_pct > 10 ? lv_color_hex(TAB_HYBRID) :
                                      lv_color_hex(ACC_BATTERY);
                 lv_obj_set_style_bg_color(s_bar_bat_level, bar_col, LV_PART_INDICATOR);
+                /* Hide bar when USB powered (no battery) */
+                if (no_battery) {
+                    lv_obj_add_flag(s_bar_bat_level, LV_OBJ_FLAG_HIDDEN);
+                } else {
+                    lv_obj_clear_flag(s_bar_bat_level, LV_OBJ_FLAG_HIDDEN);
+                }
             }
             if (s_lbl_bat_pct) {
-                char pbuf[8];
-                snprintf(pbuf, sizeof(pbuf), "%d%%", bi.percent);
-                lv_label_set_text(s_lbl_bat_pct, pbuf);
+                if (no_battery) {
+                    lv_label_set_text(s_lbl_bat_pct, "");
+                } else {
+                    char pbuf[8];
+                    snprintf(pbuf, sizeof(pbuf), "%d%%", bi.percent);
+                    lv_label_set_text(s_lbl_bat_pct, pbuf);
+                }
             }
         }
     }
@@ -1457,6 +1532,7 @@ void ui_settings_destroy(void)
 {
     if (!s_screen) return;
 
+    ui_keyboard_set_layout_cb(NULL);
     s_destroying = true;
     s_creating = false;
 
@@ -1479,6 +1555,7 @@ void ui_settings_destroy(void)
     s_screen        = NULL;
     s_scroll        = NULL;
     s_lbl_wifi      = NULL;
+    s_lbl_bat_status = NULL;
     s_lbl_bat_volt  = NULL;
     s_bar_bat_level = NULL;
     s_lbl_bat_pct   = NULL;
@@ -1517,6 +1594,7 @@ lv_obj_t *ui_settings_get_screen(void) { return s_screen; }
 void ui_settings_hide(void)
 {
     s_creating = false;
+    ui_keyboard_set_layout_cb(NULL);
 
     /* Hide instead of destroy — rapid open/close cycles exhaust LVGL pool.
      * PAUSE refresh timer to prevent it updating hidden objects during

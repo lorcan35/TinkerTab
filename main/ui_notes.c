@@ -60,6 +60,8 @@ static const char *TAG = "ui_notes";
 #define NAV_H          140     /* was 64 */
 #define CARD_PAD       48      /* was 16 */
 #define CARD_RAD       24      /* was 16 */
+#define BTN_ROW_H      80      /* Voice/Type button row height (was 160) */
+#define ACTION_BTN_H   56      /* Voice/Type button height (was 120) */
 #define MAX_NOTES      30
 #define MAX_NOTE_LEN   512
 
@@ -514,9 +516,9 @@ static void show_recording_indicator(void)
     s_rec_paused = false;
 
     /* Bar: full width, 40px tall, positioned below search bar above notes list.
-     * Search bar ends at TOPBAR_H + 160 + SEARCH_H + 4.
+     * Search bar ends at TOPBAR_H + BTN_ROW_H + SEARCH_H + 4.
      * We insert the indicator right there and push list down. */
-    #define REC_BAR_Y  (TOPBAR_H + 160 + 64 /* SEARCH_H */ + 8)
+    #define REC_BAR_Y  (TOPBAR_H + BTN_ROW_H + 48 /* SEARCH_H */ + 8)
     #define REC_BAR_H  40
 
     s_rec_indicator = lv_obj_create(s_screen);
@@ -583,7 +585,7 @@ static void hide_recording_indicator(void)
 
     /* Restore list position */
     if (s_list) {
-        #define LIST_Y_NORMAL (TOPBAR_H + 160 + 64 /* SEARCH_H */ + 10)
+        #define LIST_Y_NORMAL (TOPBAR_H + BTN_ROW_H + 48 /* SEARCH_H */ + 10)
         lv_obj_set_pos(s_list, 0, LIST_Y_NORMAL);
         lv_obj_set_height(s_list, SH - LIST_Y_NORMAL);
     }
@@ -1120,16 +1122,57 @@ static void voice_session_done(void)
              (text && text[0]) ? "transcribed" : "recorded (needs transcription)");
 }
 
+/* ── Keyboard layout callback — move input area / edit TA above keyboard ── */
+static void notes_keyboard_layout_cb(bool visible, int kb_height)
+{
+    if (visible) {
+        int above_kb = SH - kb_height;
+
+        /* Move text input area + save button above keyboard */
+        if (s_input_area) {
+            lv_obj_set_pos(s_input_area, 8, above_kb - INPUT_H - 8);
+        }
+        if (s_input_btn) {
+            lv_obj_set_pos(s_input_btn, SW - 168, above_kb - INPUT_H - 8);
+        }
+
+        /* Shrink edit overlay textarea so bottom doesn't go under keyboard */
+        if (s_edit_ta && s_edit_overlay) {
+            int ta_y = lv_obj_get_y(s_edit_ta);
+            int new_h = above_kb - ta_y - 12;
+            if (new_h > 100) lv_obj_set_height(s_edit_ta, new_h);
+        }
+    } else {
+        /* Restore original positions */
+        if (s_input_area) {
+            lv_obj_set_pos(s_input_area, 8, SH - INPUT_H - 8);
+        }
+        if (s_input_btn) {
+            lv_obj_set_pos(s_input_btn, SW - 168, SH - INPUT_H - 8);
+        }
+
+        /* Restore edit textarea height */
+        if (s_edit_ta && s_edit_overlay) {
+            int ta_y = lv_obj_get_y(s_edit_ta);
+            int ta_h = SH - ta_y - 24;
+            lv_obj_set_height(s_edit_ta, ta_h);
+        }
+    }
+}
+
 /* ── Input area (inline text note creation) ───────────────── */
 static void show_input_area(void)
 {
     if (s_input_visible) return;
     s_input_visible = true;
 
+    /* Position above the keyboard from the start since keyboard will open */
+    int input_y = SH - UI_KB_HEIGHT - INPUT_H - 8;
+
     /* Textarea — big and readable */
     s_input_area = lv_textarea_create(s_screen);
     lv_obj_set_size(s_input_area, SW - 180 - 16, INPUT_H);
-    lv_obj_set_pos(s_input_area, 8, SH - INPUT_H - 8);
+    lv_obj_set_pos(s_input_area, 8, input_y);
     lv_textarea_set_placeholder_text(s_input_area, "Type a note...");
     lv_textarea_set_one_line(s_input_area, true);
     lv_obj_set_style_bg_color(s_input_area, lv_color_hex(COL_CARD2), 0);
@@ -1144,7 +1187,7 @@ static void show_input_area(void)
     /* Save button — huge touch target */
     s_input_btn = lv_button_create(s_screen);
     lv_obj_set_size(s_input_btn, 160, INPUT_H);
-    lv_obj_set_pos(s_input_btn, SW - 168, SH - INPUT_H - 8);
+    lv_obj_set_pos(s_input_btn, SW - 168, input_y);
     lv_obj_set_style_bg_color(s_input_btn, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(s_input_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_input_btn, 16, 0);
@@ -1715,10 +1758,10 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     /* Row 1: timestamp + badge + action buttons (all in one line) */
     lv_obj_t *header = lv_obj_create(card);
     lv_obj_remove_style_all(header);
-    lv_obj_set_size(header, lv_pct(100), 44);
+    lv_obj_set_size(header, lv_pct(100), 44);  /* 44px matches touch target height */
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Timestamp */
+    /* Timestamp — 14pt for compact display */
     lv_obj_t *ts = lv_label_create(header);
     char ts_buf[32];
     static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
@@ -1728,7 +1771,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
              mn[mi], n.day, n.hour, n.minute);
     lv_label_set_text(ts, ts_buf);
     lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(ts, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(ts, &lv_font_montserrat_14, 0);
     lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
 
     /* Badge */
@@ -1751,9 +1794,9 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_radius(badge, 4, 0);
     lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
 
-    /* Delete button — small pill, dark bg, red text */
+    /* Delete button — 44x44 touch target, dark bg, red X */
     lv_obj_t *del = lv_button_create(header);
-    lv_obj_set_size(del, 36, 28);
+    lv_obj_set_size(del, 44, 44);
     lv_obj_align(del, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(del, lv_color_hex(COL_BORDER), 0);
     lv_obj_set_style_bg_opa(del, LV_OPA_COVER, 0);
@@ -1764,14 +1807,14 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_t *del_lbl = lv_label_create(del);
     lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_text_font(del_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(del_lbl, &lv_font_montserrat_16, 0);
     lv_obj_center(del_lbl);
 
-    /* Play button — green pill, next to delete, only for notes with audio */
+    /* Play button — 44x44 touch target, green, next to delete, only for notes with audio */
     if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
         lv_obj_t *play = lv_button_create(header);
-        lv_obj_set_size(play, 36, 28);
-        lv_obj_align(play, LV_ALIGN_RIGHT_MID, -40, 0);
+        lv_obj_set_size(play, 44, 44);
+        lv_obj_align(play, LV_ALIGN_RIGHT_MID, -48, 0);
         lv_obj_set_style_bg_color(play, lv_color_hex(COL_MINT), 0);
         lv_obj_set_style_bg_opa(play, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(play, 8, 0);
@@ -1781,7 +1824,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
         lv_obj_t *play_lbl = lv_label_create(play);
         lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
         lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(play_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(play_lbl, &lv_font_montserrat_16, 0);
         lv_obj_center(play_lbl);
     }
 
@@ -1853,11 +1896,11 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_border_side(tb, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back arrow button (36x36, rounded 8px, bg #1A1A2E — matches Settings) */
+    /* Back arrow button (44x44, rounded 8px, bg #1A1A2E — matches Settings) */
     lv_obj_t *btn = lv_button_create(tb);
     lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 36, 36);
-    lv_obj_set_pos(btn, 16, (TOPBAR_H - 36) / 2);
+    lv_obj_set_size(btn, 44, 44);
+    lv_obj_set_pos(btn, 12, (TOPBAR_H - 44) / 2);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn, 8, 0);
@@ -1866,7 +1909,7 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_t *arrow = lv_label_create(btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_18, 0);
     lv_obj_center(arrow);
 
     /* Title — centered in topbar */
@@ -1888,6 +1931,7 @@ lv_obj_t *ui_notes_create(void)
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_move_foreground(s_screen);
         refresh_list();
+        ui_keyboard_set_layout_cb(notes_keyboard_layout_cb);
         ESP_LOGI(TAG, "Notes screen resumed");
         return s_screen;
     }
@@ -1908,17 +1952,17 @@ lv_obj_t *ui_notes_create(void)
 
     make_topbar(s_screen);
 
-    /* ── Big Voice + Text buttons ──────────────────────── */
+    /* ── Voice + Text buttons (compact row) ─────────────── */
     lv_obj_t *btn_row = lv_obj_create(s_screen);
-    lv_obj_set_size(btn_row, SW, 160);
+    lv_obj_set_size(btn_row, SW, BTN_ROW_H);
     lv_obj_set_pos(btn_row, 0, TOPBAR_H);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btn_row, 0, 0);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Voice button — HUGE */
+    /* Voice button — compact 56px tall */
     lv_obj_t *vbtn = lv_button_create(btn_row);
-    lv_obj_set_size(vbtn, SW/2 - 24, 120);
+    lv_obj_set_size(vbtn, SW/2 - 24, ACTION_BTN_H);
     lv_obj_align(vbtn, LV_ALIGN_LEFT_MID, 12, 0);
     lv_obj_set_style_bg_color(vbtn, lv_color_hex(COL_AMBER), 0);
     lv_obj_set_style_bg_opa(vbtn, LV_OPA_COVER, 0);
@@ -1929,13 +1973,13 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_t *vicon = lv_label_create(vbtn);
     lv_label_set_text(vicon, LV_SYMBOL_AUDIO "  Voice");
     lv_obj_set_style_text_color(vicon, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(vicon, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(vicon, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_align(vicon, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(vicon);
 
-    /* Text button — HUGE */
+    /* Text button — compact 56px tall */
     lv_obj_t *tbtn = lv_button_create(btn_row);
-    lv_obj_set_size(tbtn, SW/2 - 24, 120);
+    lv_obj_set_size(tbtn, SW/2 - 24, ACTION_BTN_H);
     lv_obj_align(tbtn, LV_ALIGN_RIGHT_MID, -12, 0);
     lv_obj_set_style_bg_color(tbtn, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_bg_opa(tbtn, LV_OPA_COVER, 0);
@@ -1947,20 +1991,20 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_t *ticon = lv_label_create(tbtn);
     lv_label_set_text(ticon, LV_SYMBOL_EDIT "  Type");
     lv_obj_set_style_text_color(ticon, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(ticon, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(ticon, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_align(ticon, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(ticon);
 
-    /* M2: Search bar */
-    #define SEARCH_H 64
+    /* M2: Search bar — 48px tall for comfortable touch */
+    #define SEARCH_H 48
     s_search_ta = lv_textarea_create(s_screen);
     lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
-    lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + 160 + 4);
+    lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + BTN_ROW_H + 4);
     lv_textarea_set_one_line(s_search_ta, true);
     lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " Search notes...");
     lv_obj_set_style_bg_color(s_search_ta, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(s_search_ta, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_search_ta, &lv_font_montserrat_20, 0);
     lv_obj_set_style_border_width(s_search_ta, 1, 0);
     lv_obj_set_style_border_color(s_search_ta, lv_color_hex(COL_BORDER), 0);
     lv_obj_set_style_radius(s_search_ta, 8, 0);
@@ -1975,21 +2019,22 @@ lv_obj_t *ui_notes_create(void)
     /* Divider */
     lv_obj_t *div = lv_obj_create(s_screen);
     lv_obj_set_size(div, SW, 2);
-    lv_obj_set_pos(div, 0, TOPBAR_H + 160 + SEARCH_H + 8);
+    lv_obj_set_pos(div, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 8);
     lv_obj_set_style_bg_color(div, lv_color_hex(COL_CARD), 0);
 
-    /* Scrollable notes list */
+    /* Scrollable notes list — gains ~132px from reduced button row + search bar */
     s_list = lv_obj_create(s_screen);
-    lv_obj_set_size(s_list, SW, SH - TOPBAR_H - 160 - SEARCH_H - 10);
-    lv_obj_set_pos(s_list, 0, TOPBAR_H + 160 + SEARCH_H + 10);
+    lv_obj_set_size(s_list, SW, SH - TOPBAR_H - BTN_ROW_H - SEARCH_H - 10);
+    lv_obj_set_pos(s_list, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 10);
     lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(s_list, 20, 0);
+    lv_obj_set_style_pad_row(s_list, 12, 0);
     lv_obj_set_style_pad_hor(s_list, 16, 0);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
 
     refresh_list();
+    ui_keyboard_set_layout_cb(notes_keyboard_layout_cb);
 
     ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
     return s_screen;
@@ -1997,6 +2042,7 @@ lv_obj_t *ui_notes_create(void)
 
 void ui_notes_destroy(void)
 {
+    ui_keyboard_set_layout_cb(NULL);
     hide_recording_indicator();
     hide_input_area();
     /* Edit overlay is a child of s_screen, so lv_obj_del(s_screen) destroys it.
@@ -2017,6 +2063,7 @@ void ui_notes_destroy(void)
 
 void ui_notes_hide(void)
 {
+    ui_keyboard_set_layout_cb(NULL);
     hide_input_area();
     if (s_screen) {
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);

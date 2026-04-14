@@ -62,6 +62,10 @@ static lv_obj_t  *s_conv_textarea = NULL;   /* Textarea on Conversation panel */
 static lv_obj_t  *s_mode_badge   = NULL;   /* "Local" / "Cloud" label in conv */
 static lv_timer_t *s_poll_timer  = NULL;
 
+/* Input bars — need references for keyboard layout adjustment */
+static lv_obj_t  *s_home_input_bar = NULL;
+static lv_obj_t  *s_conv_input_bar = NULL;
+
 /* Streaming assistant response tracking */
 static lv_obj_t  *s_assist_bubble = NULL;
 static lv_obj_t  *s_assist_label  = NULL;
@@ -95,7 +99,7 @@ static bool         s_history_fetched = false; /* Guard: only fetch history once
 
 #define MAX_MESSAGES     30
 #define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
-#define BUBBLE_MAX_W    480
+#define BUBBLE_MAX_W    500
 #define BUBBLE_PAD       16
 #define BUBBLE_GAP        8
 #define LABEL_MAX_W     (BUBBLE_MAX_W - 2 * BUBBLE_PAD)  /* 468 */
@@ -334,6 +338,37 @@ static void validate_model_for_mode(void)
     }
 }
 
+/**
+ * Map technical model identifiers to user-friendly display names.
+ * Returns a static string — do not free.
+ */
+static const char *friendly_model_name(const char *model_id)
+{
+    if (!model_id || !model_id[0]) return "Local AI";
+
+    /* Exact matches first */
+    static const struct { const char *id; const char *friendly; } map[] = {
+        { "qwen3:1.7b",                        "Local AI" },
+        { "qwen3:4b",                          "Local AI" },
+        { "anthropic/claude-3.5-haiku",         "Claude Haiku" },
+        { "anthropic/claude-sonnet-4-20250514", "Claude Sonnet" },
+        { "openai/gpt-4o-mini",                "GPT-4o mini" },
+    };
+    for (int i = 0; i < (int)(sizeof(map) / sizeof(map[0])); i++) {
+        if (strcmp(model_id, map[i].id) == 0) return map[i].friendly;
+    }
+
+    /* Substring matches */
+    if (strstr(model_id, "MiniMax") || strstr(model_id, "minimax"))
+        return "MiniMax Agent";
+    if (strstr(model_id, "qwen"))
+        return "Local AI";
+
+    /* Fallback: strip provider prefix, show as-is */
+    const char *slash = strrchr(model_id, '/');
+    return slash ? slash + 1 : model_id;
+}
+
 static void update_model_label(void)
 {
     if (!s_model_lbl) return;
@@ -345,21 +380,20 @@ static void update_model_label(void)
     tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
     uint8_t mode = tab5_settings_get_voice_mode();
 
-    /* Strip provider prefix for short display name */
-    const char *short_name = model_buf;
-    if (model_buf[0]) {
-        const char *slash = strrchr(model_buf, '/');
-        if (slash) short_name = slash + 1;
+    /* Get friendly display name */
+    const char *display_name;
+    if (!model_buf[0]) {
+        display_name = (mode >= VOICE_MODE_CLOUD) ? "Claude Haiku" : "Local AI";
     } else {
-        short_name = (mode >= VOICE_MODE_CLOUD) ? "claude-3.5-haiku" : "qwen3:1.7b";
+        display_name = friendly_model_name(model_buf);
     }
 
     /* TinkerClaw mode: prefix with "Agent:" to signal it's an agent, not just LLM */
     if (mode == VOICE_MODE_TINKERCLAW) {
-        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_SETTINGS " Agent: %s", short_name);
+        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_SETTINGS " Agent: %s", display_name);
         lv_obj_set_style_text_color(s_model_lbl, lv_color_hex(0xE11D48), 0);
     } else {
-        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_EDIT " %s", short_name);
+        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_EDIT " %s", display_name);
         lv_obj_set_style_text_color(s_model_lbl, lv_color_hex(0xAAAAAA), 0);
     }
 }
@@ -451,11 +485,11 @@ static void show_typing_indicator(void)
 {
     if (s_typing_lbl || !s_msg_scroll) return;
 
-    /* Create a small bubble-style indicator */
+    /* Create a small bubble-style indicator — left-aligned with generous padding */
     s_typing_lbl = lv_obj_create(s_msg_scroll);
     lv_obj_remove_style_all(s_typing_lbl);
-    lv_obj_set_size(s_typing_lbl, 200, 36);
-    lv_obj_set_pos(s_typing_lbl, 16, s_next_y);
+    lv_obj_set_size(s_typing_lbl, 240, 40);
+    lv_obj_set_pos(s_typing_lbl, 20, s_next_y);
     lv_obj_set_style_bg_color(s_typing_lbl, lv_color_hex(CLR_TINKER_BUB), 0);
     lv_obj_set_style_bg_opa(s_typing_lbl, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_typing_lbl, 18, 0);
@@ -546,6 +580,7 @@ static void cb_close(lv_event_t *e)
 
     /* Not in conversation — close entire overlay */
     if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
+    ui_keyboard_set_layout_cb(NULL);
     ui_keyboard_hide();
 
     if (s_overlay) {
@@ -559,6 +594,39 @@ static void cb_close(lv_event_t *e)
     s_typing_lbl    = NULL;
     s_active        = false;
     ESP_LOGI(TAG, "Chat hidden (messages preserved)");
+}
+
+/* ── Keyboard layout callback — move input bar above keyboard ── */
+static void chat_keyboard_layout_cb(bool visible, int kb_height)
+{
+    /* Determine which input bar is active */
+    lv_obj_t *bar = s_in_conversation ? s_conv_input_bar : s_home_input_bar;
+    if (!bar) return;
+
+    if (visible) {
+        /* Move input bar above the keyboard.
+         * Normal position: 1280 - INPUT_BAR_H = 1200
+         * Keyboard top:    1280 - kb_height    =  860
+         * New position:    860 - INPUT_BAR_H   =  780 */
+        int new_y = 1280 - kb_height - INPUT_BAR_H;
+        lv_obj_set_pos(bar, 0, new_y);
+
+        /* Also shrink the message scroll area in conversation mode */
+        if (s_in_conversation && s_msg_scroll) {
+            int new_h = new_y - TOPBAR_H;
+            lv_obj_set_height(s_msg_scroll, new_h);
+            /* Scroll to bottom so latest messages stay visible */
+            lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+        }
+    } else {
+        /* Restore to original position */
+        lv_obj_set_pos(bar, 0, 1280 - INPUT_BAR_H);
+
+        if (s_in_conversation && s_msg_scroll) {
+            lv_obj_set_height(s_msg_scroll, MSG_AREA_H);
+            lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+        }
+    }
 }
 
 static void cb_textarea_click(lv_event_t *e)
@@ -1226,20 +1294,21 @@ static void build_home_panel(void)
 
     y += 44;
 
-    /* ── Quick Actions Bar (56px) ────────────────────────────── */
+    /* ── Quick Actions Bar (64px) ────────────────────────────── */
     int qa_y = y + 8;
     int qa_x = 20;
-    int qa_w = 140;
+    int qa_w = 200;
     int qa_gap = 16;
 
     /* Web search */
     lv_obj_t *qa_web = lv_button_create(s_home_panel);
-    lv_obj_set_size(qa_web, qa_w, 40);
+    lv_obj_set_size(qa_web, qa_w, 48);
     lv_obj_set_pos(qa_web, qa_x, qa_y);
     lv_obj_set_style_bg_color(qa_web, lv_color_hex(CLR_BORDER), 0);
-    lv_obj_set_style_radius(qa_web, 20, 0);
+    lv_obj_set_style_radius(qa_web, 24, 0);
     lv_obj_set_style_border_width(qa_web, 1, 0);
     lv_obj_set_style_border_color(qa_web, lv_color_hex(0x333350), 0);
+    lv_obj_set_style_pad_hor(qa_web, 12, 0);
     lv_obj_add_event_cb(qa_web, cb_quick_web, LV_EVENT_CLICKED, NULL);
     ui_fb_button(qa_web);
     lv_obj_t *qa_web_lbl = lv_label_create(qa_web);
@@ -1250,12 +1319,13 @@ static void build_home_panel(void)
 
     /* Timer */
     lv_obj_t *qa_timer = lv_button_create(s_home_panel);
-    lv_obj_set_size(qa_timer, qa_w, 40);
+    lv_obj_set_size(qa_timer, qa_w, 48);
     lv_obj_set_pos(qa_timer, qa_x + qa_w + qa_gap, qa_y);
     lv_obj_set_style_bg_color(qa_timer, lv_color_hex(CLR_BORDER), 0);
-    lv_obj_set_style_radius(qa_timer, 20, 0);
+    lv_obj_set_style_radius(qa_timer, 24, 0);
     lv_obj_set_style_border_width(qa_timer, 1, 0);
     lv_obj_set_style_border_color(qa_timer, lv_color_hex(0x333350), 0);
+    lv_obj_set_style_pad_hor(qa_timer, 12, 0);
     lv_obj_add_event_cb(qa_timer, cb_quick_timer, LV_EVENT_CLICKED, NULL);
     ui_fb_button(qa_timer);
     lv_obj_t *qa_timer_lbl = lv_label_create(qa_timer);
@@ -1266,12 +1336,13 @@ static void build_home_panel(void)
 
     /* Remember */
     lv_obj_t *qa_mem = lv_button_create(s_home_panel);
-    lv_obj_set_size(qa_mem, qa_w + 20, 40);
+    lv_obj_set_size(qa_mem, 720 - 2 * qa_x - 2 * (qa_w + qa_gap), 48);
     lv_obj_set_pos(qa_mem, qa_x + 2 * (qa_w + qa_gap), qa_y);
     lv_obj_set_style_bg_color(qa_mem, lv_color_hex(CLR_BORDER), 0);
-    lv_obj_set_style_radius(qa_mem, 20, 0);
+    lv_obj_set_style_radius(qa_mem, 24, 0);
     lv_obj_set_style_border_width(qa_mem, 1, 0);
     lv_obj_set_style_border_color(qa_mem, lv_color_hex(0x333350), 0);
+    lv_obj_set_style_pad_hor(qa_mem, 12, 0);
     lv_obj_add_event_cb(qa_mem, cb_quick_remember, LV_EVENT_CLICKED, NULL);
     ui_fb_button(qa_mem);
     lv_obj_t *qa_mem_lbl = lv_label_create(qa_mem);
@@ -1280,13 +1351,13 @@ static void build_home_panel(void)
     lv_obj_set_style_text_font(qa_mem_lbl, &lv_font_montserrat_16, 0);
     lv_obj_center(qa_mem_lbl);
 
-    y += 56;
+    y += 64;
 
     feed_wdt_yield();
 
     /* ── Session Cards (scrollable area) ─────────────────────── */
-    /* Available height: 1280 - topbar(60) - model(44) - quickactions(56) - memory(48) - input(80) = 992 */
-    int cards_h = 1280 - TOPBAR_H - 44 - 56 - 48 - INPUT_BAR_H;  /* 992 */
+    /* Available height: 1280 - topbar(60) - model(44) - quickactions(64) - memory(48) - input(80) = 984 */
+    int cards_h = 1280 - TOPBAR_H - 44 - 64 - 48 - INPUT_BAR_H;  /* 984 */
 
     lv_obj_t *card_scroll = lv_obj_create(s_home_panel);
     lv_obj_remove_style_all(card_scroll);
@@ -1359,7 +1430,11 @@ static void build_home_panel(void)
 
     /* Card 1: message count indicator */
     lv_obj_t *card1_count = lv_label_create(card1);
-    lv_label_set_text_fmt(card1_count, "%d messages", s_msg_count);
+    if (s_msg_count > 0) {
+        lv_label_set_text_fmt(card1_count, "%d message%s", s_msg_count, s_msg_count == 1 ? "" : "s");
+    } else {
+        lv_label_set_text(card1_count, "Tap to chat");
+    }
     lv_obj_set_pos(card1_count, 0, 66);
     lv_obj_set_style_text_color(card1_count, lv_color_hex(0x555555), 0);
     lv_obj_set_style_text_font(card1_count, &lv_font_montserrat_14, 0);
@@ -1424,7 +1499,7 @@ static void build_home_panel(void)
     for (int i = 0; i < 4; i++) {
         lv_obj_t *sug = lv_obj_create(card_scroll);
         lv_obj_remove_style_all(sug);
-        lv_obj_set_size(sug, card_w, 48);
+        lv_obj_set_size(sug, card_w, 56);
         lv_obj_set_pos(sug, card_x, card_y);
         lv_obj_set_style_bg_color(sug, lv_color_hex(CLR_CARD_BG), 0);
         lv_obj_set_style_bg_opa(sug, LV_OPA_COVER, 0);
@@ -1432,6 +1507,7 @@ static void build_home_panel(void)
         lv_obj_set_style_border_width(sug, 1, 0);
         lv_obj_set_style_border_color(sug, lv_color_hex(0x222230), 0);
         lv_obj_set_style_pad_left(sug, 16, 0);
+        lv_obj_set_style_pad_ver(sug, 12, 0);
         lv_obj_clear_flag(sug, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(sug, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_event_cb(sug, cb_suggestion, LV_EVENT_CLICKED, NULL);
@@ -1440,10 +1516,10 @@ static void build_home_panel(void)
         lv_obj_t *sug_lbl = lv_label_create(sug);
         lv_label_set_text(sug_lbl, suggestions[i]);
         lv_obj_set_style_text_color(sug_lbl, lv_color_hex(sug_colors[i]), 0);
-        lv_obj_set_style_text_font(sug_lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(sug_lbl, &lv_font_montserrat_18, 0);
         lv_obj_align(sug_lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
-        card_y += 48 + 8;
+        card_y += 56 + 12;
     }
 
     feed_wdt_yield();
@@ -1464,7 +1540,7 @@ static void build_home_panel(void)
     s_memory_lbl = lv_label_create(mem_bar);
     lv_label_set_text(s_memory_lbl, LV_SYMBOL_EYE_OPEN "  Tinker remembers your preferences");
     lv_obj_set_pos(s_memory_lbl, 20, 0);
-    lv_obj_set_style_text_color(s_memory_lbl, lv_color_hex(0x666688), 0);
+    lv_obj_set_style_text_color(s_memory_lbl, lv_color_hex(0x777777), 0);
     lv_obj_set_style_text_font(s_memory_lbl, &lv_font_montserrat_14, 0);
     lv_obj_align(s_memory_lbl, LV_ALIGN_LEFT_MID, 16, 0);
 
@@ -1481,6 +1557,7 @@ static void build_home_panel(void)
     lv_obj_set_style_border_width(bar, 1, 0);
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    s_home_input_bar = bar;
 
     /* Mic button */
     lv_obj_t *mic_btn = lv_button_create(bar);
@@ -1510,6 +1587,9 @@ static void build_home_panel(void)
     lv_obj_set_style_border_width(s_home_textarea, 1, 0);
     lv_obj_set_style_radius(s_home_textarea, 24, 0);
     lv_obj_set_style_pad_left(s_home_textarea, 20, 0);
+    lv_obj_set_style_pad_right(s_home_textarea, 12, 0);
+    lv_obj_set_style_pad_top(s_home_textarea, 8, 0);
+    lv_obj_set_style_pad_bottom(s_home_textarea, 8, 0);
     lv_obj_set_style_text_color(s_home_textarea, lv_color_hex(0x666666), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_flag(s_home_textarea, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_home_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
@@ -1656,6 +1736,7 @@ static void build_conversation_ui(void)
     lv_obj_set_pos(bar, 0, 1280 - INPUT_BAR_H);
     lv_obj_set_style_bg_color(bar, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    s_conv_input_bar = bar;
     lv_obj_set_style_border_color(bar, lv_color_hex(CLR_BORDER), 0);
     lv_obj_set_style_border_width(bar, 1, 0);
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
@@ -1689,6 +1770,9 @@ static void build_conversation_ui(void)
     lv_obj_set_style_border_width(s_conv_textarea, 1, 0);
     lv_obj_set_style_radius(s_conv_textarea, 24, 0);
     lv_obj_set_style_pad_left(s_conv_textarea, 20, 0);
+    lv_obj_set_style_pad_right(s_conv_textarea, 12, 0);
+    lv_obj_set_style_pad_top(s_conv_textarea, 8, 0);
+    lv_obj_set_style_pad_bottom(s_conv_textarea, 8, 0);
     lv_obj_set_style_text_color(s_conv_textarea, lv_color_hex(0x666666), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_flag(s_conv_textarea, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_conv_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
@@ -1708,8 +1792,31 @@ static void build_conversation_ui(void)
     lv_obj_set_style_text_font(send_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(send_lbl);
 
-    /* Welcome message */
-    ui_chat_add_message("Hi! I'm Tinker. Type or tap the mic to chat.", false);
+    /* Welcome message — smaller and dimmer so real messages stand out */
+    {
+        lv_obj_t *wb = lv_obj_create(s_msg_scroll);
+        lv_obj_remove_style_all(wb);
+        lv_obj_set_pos(wb, 20, s_next_y);
+        lv_obj_set_size(wb, BUBBLE_MAX_W, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(wb, lv_color_hex(CLR_TINKER_BUB), 0);
+        lv_obj_set_style_bg_opa(wb, LV_OPA_60, 0);
+        lv_obj_set_style_radius(wb, 16, 0);
+        lv_obj_set_style_pad_all(wb, 12, 0);
+        lv_obj_set_style_border_width(wb, 1, 0);
+        lv_obj_set_style_border_color(wb, lv_color_hex(0x333333), 0);
+        lv_obj_clear_flag(wb, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *wl = lv_label_create(wb);
+        lv_label_set_text(wl, "Hi! I'm Tinker. Type or tap the mic to chat.");
+        lv_label_set_long_mode(wl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(wl, LABEL_MAX_W);
+        lv_obj_set_style_text_font(wl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(wl, lv_color_hex(0x666666), 0);
+
+        lv_obj_update_layout(wb);
+        s_next_y += lv_obj_get_height(wb) + BUBBLE_GAP;
+        s_msg_count++;
+    }
 
     /* Empty state hint */
     s_empty_hint = lv_label_create(s_msg_scroll);
@@ -1743,6 +1850,7 @@ lv_obj_t *ui_chat_create(void)
         else s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
         update_mode_badge();
         update_status_bar();
+        ui_keyboard_set_layout_cb(chat_keyboard_layout_cb);
 
         /* Always show Chat Home on re-open */
         if (s_in_conversation) {
@@ -1787,6 +1895,7 @@ lv_obj_t *ui_chat_create(void)
     s_active = true;
     s_in_conversation = false;
     s_last_state = voice_get_state();
+    ui_keyboard_set_layout_cb(chat_keyboard_layout_cb);
 
     /* Start polling for streaming LLM responses + status updates */
     s_poll_timer = lv_timer_create(poll_voice_cb, 200, NULL);
@@ -1808,8 +1917,8 @@ void ui_chat_add_message(const char *text, bool is_user)
             lv_obj_set_style_text_color(s_archived_lbl, lv_color_hex(0x555555), 0);
             lv_obj_set_style_text_font(s_archived_lbl, &lv_font_montserrat_14, 0);
             lv_obj_set_style_text_align(s_archived_lbl, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_set_width(s_archived_lbl, 720 - 32);
-            lv_obj_set_pos(s_archived_lbl, 16, 0);
+            lv_obj_set_width(s_archived_lbl, 720 - 40);
+            lv_obj_set_pos(s_archived_lbl, 20, 0);
             s_archived_shown = true;
         }
 
@@ -1840,7 +1949,7 @@ void ui_chat_add_message(const char *text, bool is_user)
     /* Create bubble container */
     lv_obj_t *bubble = lv_obj_create(s_msg_scroll);
     lv_obj_remove_style_all(bubble);
-    int x_pos = is_user ? (720 - BUBBLE_MAX_W - 16) : 16;   /* right or left aligned */
+    int x_pos = is_user ? (720 - BUBBLE_MAX_W - 20) : 20;   /* right or left aligned */
     lv_obj_set_pos(bubble, x_pos, s_next_y);
     lv_obj_set_size(bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(bubble, lv_color_hex(is_user ? CLR_USER_BUB : CLR_TINKER_BUB), 0);
@@ -1870,7 +1979,7 @@ void ui_chat_add_message(const char *text, bool is_user)
         lv_obj_t *ts = lv_label_create(bubble);
         lv_label_set_text(ts, time_buf);
         lv_obj_set_style_text_font(ts, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(ts, lv_color_hex(is_user ? 0x333333 : 0x666666), 0);
+        lv_obj_set_style_text_color(ts, lv_color_hex(0x888888), 0);
         lv_obj_set_width(ts, LABEL_MAX_W);
         lv_obj_set_style_text_align(ts, LV_TEXT_ALIGN_RIGHT, 0);
     }
@@ -1894,6 +2003,7 @@ void ui_chat_add_message(const char *text, bool is_user)
 void ui_chat_hide(void)
 {
     if (!s_overlay) return;
+    ui_keyboard_set_layout_cb(NULL);
     ui_keyboard_hide();
     /* Delete poll timer — pausing alone is insufficient because the timer
      * can fire between pause call and LVGL processing it. Timer recreated on show. */
@@ -1907,6 +2017,7 @@ void ui_chat_hide(void)
 void ui_chat_destroy(void)
 {
     if (s_poll_timer) { lv_timer_delete(s_poll_timer); s_poll_timer = NULL; }
+    ui_keyboard_set_layout_cb(NULL);
     ui_keyboard_hide();
 
     if (s_overlay) {
@@ -1921,6 +2032,8 @@ void ui_chat_destroy(void)
     s_textarea      = NULL;
     s_home_textarea = NULL;
     s_conv_textarea = NULL;
+    s_home_input_bar = NULL;
+    s_conv_input_bar = NULL;
     s_mode_badge    = NULL;
     s_home_mode_badge = NULL;
     s_model_lbl     = NULL;
