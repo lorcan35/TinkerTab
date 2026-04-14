@@ -41,6 +41,10 @@ static const char *TAG = "settings";
 static nvs_handle_t s_nvs = 0;
 static bool         s_inited = false;
 
+/* Forward declarations for init-time seeding */
+static esp_err_t get_str(const char *key, char *buf, size_t len, const char *def);
+static esp_err_t set_str(const char *key, const char *val);
+
 /* US-HW17: NVS write counter — incremented on every nvs_commit() for wear monitoring.
  * Atomic type not needed: all NVS writes go through set_str/set_u8/set_u16 which
  * are only called from the LVGL task (Core 0) or settings init. The counter is
@@ -62,6 +66,21 @@ esp_err_t tab5_settings_init(void)
 
     s_inited = true;
     ESP_LOGI(TAG, "NVS namespace '%s' opened", NVS_NS);
+
+    /* Auto-seed WiFi credentials from compile-time defaults if NVS is empty.
+     * This ensures WiFi works after NVS erase even when sdkconfig.defaults
+     * has placeholder values (SEC02 — creds not committed to public git). */
+    {
+        char ssid[64] = {0};
+        get_str(KEY_WIFI_SSID, ssid, sizeof(ssid), "");
+        if (ssid[0] == '\0' && strlen(TAB5_WIFI_SSID) > 0
+            && strcmp(TAB5_WIFI_SSID, "YOUR_WIFI_SSID") != 0) {
+            ESP_LOGI(TAG, "Seeding WiFi creds from compile-time defaults");
+            set_str(KEY_WIFI_SSID, TAB5_WIFI_SSID);
+            set_str(KEY_WIFI_PASS, TAB5_WIFI_PASS);
+        }
+    }
+
     return ESP_OK;
 }
 
