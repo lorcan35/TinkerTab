@@ -17,6 +17,14 @@ typedef struct {
     char sha256[65];
 } tab5_ota_info_t;
 
+/** OTA progress callback — called from the OTA task during download.
+ *  percent: 0-100 download progress. phase: "download" or "verify". */
+typedef void (*tab5_ota_progress_cb_t)(int percent, const char *phase);
+
+/** Set progress callback (NULL to disable). Thread-safe — callback may be
+ *  invoked from any core. Caller must use lv_async_call for LVGL updates. */
+void tab5_ota_set_progress_cb(tab5_ota_progress_cb_t cb);
+
 /** Check Dragon for available firmware update.
  *  Returns ESP_OK if check succeeded (even if no update available). */
 esp_err_t tab5_ota_check(tab5_ota_info_t *info);

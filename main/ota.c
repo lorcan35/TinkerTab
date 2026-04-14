@@ -24,6 +24,19 @@
 
 static const char *TAG = "ota";
 
+/* Progress callback (set by UI layer, called from OTA task) */
+static tab5_ota_progress_cb_t s_progress_cb = NULL;
+
+void tab5_ota_set_progress_cb(tab5_ota_progress_cb_t cb)
+{
+    s_progress_cb = cb;
+}
+
+static void report_progress(int pct, const char *phase)
+{
+    if (s_progress_cb) s_progress_cb(pct, phase);
+}
+
 esp_err_t tab5_ota_check(tab5_ota_info_t *info)
 {
     if (!info) return ESP_ERR_INVALID_ARG;
@@ -186,8 +199,9 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
         int read_len = esp_https_ota_get_image_len_read(ota_handle);
         if (total > 0) {
             int pct = (int)((int64_t)read_len * 100 / total);
-            if (pct / 10 != last_pct / 10) {
+            if (pct / 5 != last_pct / 5) {
                 ESP_LOGI(TAG, "OTA progress: %d%% (%d / %d bytes)", pct, read_len, total);
+                report_progress(pct, "download");
                 last_pct = pct;
             }
         }
@@ -219,6 +233,7 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
 
         int image_size = esp_https_ota_get_image_len_read(ota_handle);
         ESP_LOGI(TAG, "SHA256: verifying %d bytes from partition %s", image_size, update_part->label);
+        report_progress(100, "verify");
 
         /* Read partition in 4KB chunks and feed to SHA256 */
         const size_t chunk_size = 4096;
@@ -277,6 +292,7 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
     }
 
     ESP_LOGI(TAG, "OTA update successful! Rebooting in 2 seconds...");
+    report_progress(100, "reboot");
     vTaskDelay(pdMS_TO_TICKS(2000));
     esp_restart();
 

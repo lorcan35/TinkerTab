@@ -444,6 +444,19 @@ static esp_err_t ws_send_register(void)
 }
 
 // ---------------------------------------------------------------------------
+// Async toast callback — runs on LVGL thread via lv_async_call
+// ---------------------------------------------------------------------------
+static void async_show_toast_cb(void *arg)
+{
+    char *msg = (char *)arg;
+    if (msg) {
+        extern void ui_home_show_toast(const char *text);
+        ui_home_show_toast(msg);
+        free(msg);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // JSON message handling (Dragon -> Tab5)
 // ---------------------------------------------------------------------------
 static void handle_text_message(const char *data, int len)
@@ -634,6 +647,20 @@ static void handle_text_message(const char *data, int len)
             /* US-PR02: Refresh home badge from LVGL thread on error fallback */
             extern void ui_home_refresh_mode_badge(void);
             lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
+            /* FIX: Show toast with Dragon's error message so user knows WHY
+             * the mode reverted.  Must go through lv_async_call since this
+             * handler runs on the WS receive task (core 1, not LVGL thread).
+             * The heap-allocated string is freed in the async callback. */
+            {
+                size_t elen = strlen(error->valuestring);
+                if (elen > 80) elen = 80;  /* cap toast length for display */
+                char *toast_msg = malloc(elen + 1);
+                if (toast_msg) {
+                    memcpy(toast_msg, error->valuestring, elen);
+                    toast_msg[elen] = '\0';
+                    lv_async_call(async_show_toast_cb, toast_msg);
+                }
+            }
             voice_set_state(VOICE_STATE_READY, error->valuestring);
         }
         /* Normal ACK: persist voice_mode (may be at top level or inside config) */
@@ -1355,6 +1382,16 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
 
     ESP_LOGI(TAG, "Initializing voice module");
 
+    /* FIX: Force state to IDLE on every boot, before anything else.
+     * After a WDT crash-reboot, s_state should already be 0 (IDLE) since
+     * statics reinitialize — but be paranoid.  Any non-IDLE state at init
+     * time means stale state from a previous lifecycle (impossible in
+     * theory, safe in practice). */
+    s_state = VOICE_STATE_IDLE;
+    s_ws_connected = false;
+    s_connect_in_progress = false;
+    s_disconnecting = false;
+
     s_state_cb = state_cb;
 
     s_state_mutex = xSemaphoreCreateMutex();
@@ -1433,6 +1470,15 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     if (s_disconnecting) {
         ESP_LOGW(TAG, "Disconnect in progress — refusing connect");
         return ESP_ERR_INVALID_STATE;
+    }
+
+    /* FIX: If state is stuck in an active state (LISTENING/PROCESSING/SPEAKING)
+     * from a previous lifecycle (e.g. WDT crash-reboot left stale state),
+     * force-reset to IDLE before attempting connection.  Without this, the
+     * orb shows "busy" and refuses taps because it thinks a session is active. */
+    if (s_state != VOICE_STATE_IDLE && s_state != VOICE_STATE_CONNECTING) {
+        ESP_LOGW(TAG, "Stale voice state %d on connect — forcing IDLE", s_state);
+        s_state = VOICE_STATE_IDLE;
     }
 
     // Save connection info

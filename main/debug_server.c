@@ -1002,9 +1002,16 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
  * Uses lv_async_call to avoid LVGL lock deadlock from HTTP context */
 static char s_nav_target[16] = {0};
 
+static volatile bool s_navigating = false;
+
 static void async_navigate(void *arg)
 {
     (void)arg;
+    if (s_navigating) {
+        ESP_LOGW("nav", "Navigation already in progress — skipping");
+        return;
+    }
+    s_navigating = true;
     ESP_LOGI("nav", "async_navigate executing, target='%s'", s_nav_target);
     /* Navigate using the home tileview for pages 0-3.
      * For secondary screens (camera, files) create them separately.
@@ -1042,6 +1049,7 @@ static void async_navigate(void *arg)
         extern lv_obj_t *ui_files_create(void);
         ui_files_create();
     }
+    s_navigating = false;
 }
 
 static esp_err_t navigate_handler(httpd_req_t *req)

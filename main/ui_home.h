@@ -27,3 +27,7 @@ void ui_home_nav_settings(void);
 
 /** Refresh mode badge from NVS (call after debug API mode change). */
 void ui_home_refresh_mode_badge(void);
+
+/** Show a centered toast message on the home screen for ~2 seconds.
+ *  Safe to call from LVGL thread only — use lv_async_call from other cores. */
+void ui_home_show_toast(const char *text);

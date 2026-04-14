@@ -689,7 +689,7 @@ static void show_toast(const char *text)
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(lbl);
 
-    lv_timer_t *tmr = lv_timer_create(toast_timer_cb, 2000, toast);
+    lv_timer_t *tmr = lv_timer_create(toast_timer_cb, 3000, toast);
     lv_timer_set_repeat_count(tmr, 1);
 }
 
@@ -990,4 +990,9 @@ void ui_home_refresh_mode_badge(void)
 {
     s_badge_mode = tab5_settings_get_voice_mode();
     update_mode_badge(s_badge_mode);
+}
+
+void ui_home_show_toast(const char *text)
+{
+    show_toast(text);
 }

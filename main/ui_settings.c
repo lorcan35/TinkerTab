@@ -113,6 +113,8 @@ static lv_obj_t *s_sw_autorot     = NULL;
 
 /* Guard flag for background tasks during destroy */
 static volatile bool s_destroying = false;
+/* Guard flag to prevent double-creation from overlapping navigate calls */
+static volatile bool s_creating = false;
 static lv_timer_t *s_refresh_timer = NULL;
 
 /* NVS write debounce timers — prevent flash wear from slider drag (US-HW17) */
@@ -483,10 +485,45 @@ static void ntp_sync_task(void *arg)
 
 /* ── OTA ────────────────────────────────────────────────────────────── */
 
+/* OTA progress update via lv_async_call (thread-safe LVGL access) */
+typedef struct {
+    int percent;
+    char phase[16];
+} ota_progress_msg_t;
+
+static void ota_progress_async_cb(void *arg)
+{
+    ota_progress_msg_t *msg = (ota_progress_msg_t *)arg;
+    if (!msg) return;
+    if (s_destroying || !s_ota_btn_label) { free(msg); return; }
+
+    if (strcmp(msg->phase, "download") == 0) {
+        lv_label_set_text_fmt(s_ota_btn_label, "Downloading... %d%%", msg->percent);
+    } else if (strcmp(msg->phase, "verify") == 0) {
+        lv_label_set_text(s_ota_btn_label, "Verifying...");
+    } else if (strcmp(msg->phase, "reboot") == 0) {
+        lv_label_set_text(s_ota_btn_label, "Rebooting...");
+    }
+    free(msg);
+}
+
+static void ota_progress_cb(int percent, const char *phase)
+{
+    if (s_destroying) return;
+    ota_progress_msg_t *msg = malloc(sizeof(ota_progress_msg_t));
+    if (!msg) return;
+    msg->percent = percent;
+    strncpy(msg->phase, phase, sizeof(msg->phase) - 1);
+    msg->phase[sizeof(msg->phase) - 1] = '\0';
+    lv_async_call(ota_progress_async_cb, msg);
+}
+
 static void ota_apply_task(void *arg)
 {
     ESP_LOGI(TAG, "OTA apply: downloading from %s", s_ota_url);
+    tab5_ota_set_progress_cb(ota_progress_cb);
     esp_err_t err = tab5_ota_apply(s_ota_url, s_ota_sha256[0] ? s_ota_sha256 : NULL);
+    tab5_ota_set_progress_cb(NULL);
     ESP_LOGE(TAG, "OTA apply failed: %s", esp_err_to_name(err));
     if (s_destroying) { vTaskDelete(NULL); return; }
     tab5_ui_lock();
@@ -673,6 +710,11 @@ static lv_obj_t *mk_pill_btn(lv_obj_t *parent, const char *text, lv_color_t bg,
 
 lv_obj_t *ui_settings_create(void)
 {
+    if (s_creating) {
+        ESP_LOGW(TAG, "Settings creation already in progress — skipping");
+        return s_screen;
+    }
+
     if (s_screen) {
         /* Overlay already exists — just unhide and resume refresh */
         ESP_LOGI(TAG, "Settings screen resumed");
@@ -687,6 +729,7 @@ lv_obj_t *ui_settings_create(void)
         return s_screen;
     }
     ESP_LOGI(TAG, "Creating settings screen...");
+    s_creating = true;
 
     /* Temporarily remove the UI task from WDT */
     TaskHandle_t ui_task = xTaskGetHandle("ui_task");
@@ -1303,6 +1346,7 @@ lv_obj_t *ui_settings_create(void)
     lv_timer_set_auto_delete(init_timer, true);
 
     ESP_LOGI(TAG, "Settings screen created");
+    s_creating = false;
 
     /* Re-subscribe UI task to WDT */
     if (ui_task) esp_task_wdt_add(ui_task);
@@ -1405,6 +1449,7 @@ void ui_settings_destroy(void)
     if (!s_screen) return;
 
     s_destroying = true;
+    s_creating = false;
 
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
 
@@ -1462,6 +1507,8 @@ lv_obj_t *ui_settings_get_screen(void) { return s_screen; }
 
 void ui_settings_hide(void)
 {
+    s_creating = false;
+
     /* Hide instead of destroy — rapid open/close cycles exhaust LVGL pool.
      * PAUSE refresh timer to prevent it updating hidden objects during
      * other overlay creation (Settings timer + Notes creation = WDT). */

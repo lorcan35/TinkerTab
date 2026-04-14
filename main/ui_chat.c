@@ -18,8 +18,13 @@
 #include "rtc.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lvgl.h"
 #include <string.h>
+#include <stdlib.h>
 
 /* Declared in ui_home.c */
 extern lv_obj_t *ui_home_get_screen(void);
@@ -86,6 +91,7 @@ static bool         s_conv_created = false; /* Has conversation UI been built? *
 static int32_t      s_touch_start_x = -1;  /* X at touch-down for edge-swipe gating */
 static bool         s_clear_guard = false;  /* Guard flag: blocks input after New Chat (US-PR03) */
 static lv_timer_t  *s_clear_timer = NULL;   /* 500ms guard timer for clear_history ACK */
+static bool         s_history_fetched = false; /* Guard: only fetch history once per session */
 
 #define MAX_MESSAGES     50
 #define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
@@ -426,6 +432,7 @@ static void cb_new_chat(lv_event_t *e)
     s_empty_hint = NULL;
     s_archived_lbl = NULL;
     s_archived_shown = false;
+    s_history_fetched = false;  /* Allow re-fetch on next enter */
     /* Re-add welcome */
     ui_chat_add_message("Clearing...", false);
     ESP_LOGI(TAG, "New chat — history cleared, 500ms guard active");
@@ -839,6 +846,219 @@ static void show_chat_home(void)
     }
 }
 
+/* ── History fetch from Dragon REST API ────────────────────────── */
+
+/** Max messages to fetch from Dragon history */
+#define HISTORY_FETCH_LIMIT  10
+/** Max HTTP response body size for history (10 messages ~ 10KB) */
+#define HISTORY_BODY_MAX     16384
+
+/** Holds one history message for async delivery to LVGL thread */
+typedef struct {
+    char *role;
+    char *text;
+} history_msg_t;
+
+/** Batch of history messages delivered via lv_async_call */
+typedef struct {
+    history_msg_t *msgs;
+    int count;
+} history_batch_t;
+
+static void history_async_cb(void *arg)
+{
+    history_batch_t *batch = (history_batch_t *)arg;
+    if (!batch) return;
+
+    /* Ensure conversation UI exists */
+    if (!s_conv_created || !s_msg_scroll) {
+        ESP_LOGW(TAG, "history_async: conv not ready, dropping %d msgs", batch->count);
+        goto cleanup;
+    }
+
+    /* Only add if conversation is still empty (no race with voice messages) */
+    if (s_msg_count > 1) {
+        ESP_LOGI(TAG, "history_async: conv already has %d msgs, skipping history", s_msg_count);
+        goto cleanup;
+    }
+
+    ESP_LOGI(TAG, "history_async: adding %d history messages", batch->count);
+    for (int i = 0; i < batch->count; i++) {
+        bool is_user = (batch->msgs[i].role &&
+                        strcmp(batch->msgs[i].role, "user") == 0);
+        if (batch->msgs[i].text && batch->msgs[i].text[0]) {
+            ui_chat_add_message(batch->msgs[i].text, is_user);
+        }
+    }
+
+    /* Scroll to bottom after loading history */
+    if (s_msg_scroll) {
+        lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+    }
+
+    /* Hide the empty state hint if present */
+    if (s_empty_hint && s_msg_count >= 2) {
+        lv_obj_add_flag(s_empty_hint, LV_OBJ_FLAG_HIDDEN);
+    }
+
+cleanup:
+    for (int i = 0; i < batch->count; i++) {
+        free(batch->msgs[i].role);
+        free(batch->msgs[i].text);
+    }
+    free(batch->msgs);
+    free(batch);
+}
+
+static void history_fetch_task(void *arg)
+{
+    (void)arg;
+
+    char dhost[64] = {0};
+    tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+    if (!dhost[0]) {
+        ESP_LOGW(TAG, "history_fetch: no Dragon host configured");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    char session_id[64] = {0};
+    tab5_settings_get_session_id(session_id, sizeof(session_id));
+    if (!session_id[0]) {
+        ESP_LOGW(TAG, "history_fetch: no session_id in NVS");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Build URL: http://{dragon}:3502/api/v1/sessions/{id}/messages?limit=10 */
+    char url[384];
+    snprintf(url, sizeof(url),
+             "http://%s:%d/api/v1/sessions/%s/messages?limit=%d",
+             dhost, TAB5_OTA_PORT, session_id, HISTORY_FETCH_LIMIT);
+
+    ESP_LOGI(TAG, "history_fetch: GET %s", url);
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = 8000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGE(TAG, "history_fetch: http_client_init failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "history_fetch: open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int content_len = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+
+    if (status != 200 || content_len <= 0 || content_len > HISTORY_BODY_MAX) {
+        ESP_LOGW(TAG, "history_fetch: bad response status=%d len=%d", status, content_len);
+        esp_http_client_cleanup(client);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    char *body = malloc(content_len + 1);
+    if (!body) {
+        ESP_LOGE(TAG, "history_fetch: OOM for %d bytes", content_len);
+        esp_http_client_cleanup(client);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int read_total = 0;
+    while (read_total < content_len) {
+        int r = esp_http_client_read(client, body + read_total, content_len - read_total);
+        if (r <= 0) break;
+        read_total += r;
+    }
+    body[read_total] = '\0';
+    esp_http_client_cleanup(client);
+
+    ESP_LOGI(TAG, "history_fetch: got %d bytes", read_total);
+
+    /* Parse JSON — expect {"items":[{"role":"user","content":"..."},...],...} */
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) {
+        ESP_LOGW(TAG, "history_fetch: JSON parse failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    cJSON *items = cJSON_GetObjectItem(root, "items");
+    if (!cJSON_IsArray(items)) {
+        ESP_LOGW(TAG, "history_fetch: no 'items' array in response");
+        cJSON_Delete(root);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int count = cJSON_GetArraySize(items);
+    if (count <= 0) {
+        ESP_LOGI(TAG, "history_fetch: no messages in session");
+        cJSON_Delete(root);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Build batch for async delivery */
+    history_batch_t *batch = malloc(sizeof(history_batch_t));
+    if (!batch) { cJSON_Delete(root); vTaskDelete(NULL); return; }
+    batch->msgs = calloc(count, sizeof(history_msg_t));
+    if (!batch->msgs) { free(batch); cJSON_Delete(root); vTaskDelete(NULL); return; }
+    batch->count = 0;
+
+    for (int i = 0; i < count; i++) {
+        cJSON *msg = cJSON_GetArrayItem(items, i);
+        cJSON *role = cJSON_GetObjectItem(msg, "role");
+        cJSON *content = cJSON_GetObjectItem(msg, "content");
+
+        /* Skip system/tool messages — only show user and assistant */
+        if (!cJSON_IsString(role) || !cJSON_IsString(content)) continue;
+        if (strcmp(role->valuestring, "user") != 0 &&
+            strcmp(role->valuestring, "assistant") != 0) continue;
+        if (!content->valuestring[0]) continue;
+
+        batch->msgs[batch->count].role = strdup(role->valuestring);
+        batch->msgs[batch->count].text = strdup(content->valuestring);
+        batch->count++;
+    }
+
+    cJSON_Delete(root);
+
+    if (batch->count > 0) {
+        ESP_LOGI(TAG, "history_fetch: delivering %d messages to UI", batch->count);
+        lv_async_call(history_async_cb, batch);
+    } else {
+        free(batch->msgs);
+        free(batch);
+    }
+
+    vTaskDelete(NULL);
+}
+
+/** Kick off async history fetch if conversation is empty */
+static void maybe_fetch_history(void)
+{
+    if (s_history_fetched) return;
+    if (s_msg_count > 1) return;  /* Already have messages (beyond welcome) */
+    if (!voice_is_connected()) return;  /* Dragon unreachable */
+
+    s_history_fetched = true;
+    ESP_LOGI(TAG, "Fetching conversation history from Dragon...");
+    xTaskCreate(history_fetch_task, "chat_hist", 6144, NULL, 5, NULL);
+}
+
 static void enter_conversation(void)
 {
     ESP_LOGI(TAG, "Entering conversation");
@@ -873,6 +1093,9 @@ static void enter_conversation(void)
 
     update_mode_badge();
     update_status_bar();
+
+    /* Load history from Dragon if conversation is empty (e.g. after reboot) */
+    maybe_fetch_history();
 }
 
 /* ── Build Chat Home panel ─────────────────────────────────────── */
@@ -1714,6 +1937,7 @@ void ui_chat_destroy(void)
     s_msg_count     = 0;
     s_next_y        = 0;
     s_last_state    = VOICE_STATE_IDLE;
+    s_history_fetched = false;
 
     ESP_LOGI(TAG, "Chat destroyed");
 }
