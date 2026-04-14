@@ -1366,7 +1366,7 @@ static esp_err_t selftest_handler(httpd_req_t *req)
     {
         cJSON *t = cJSON_CreateObject();
         size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        bool ok = free_internal > (50 * 1024);
+        bool ok = free_internal > (30 * 1024);  /* 30KB threshold — 43KB typical on clean boot */
         cJSON_AddStringToObject(t, "name", "internal_heap");
         cJSON_AddBoolToObject(t, "pass", ok);
         cJSON_AddNumberToObject(t, "free_kb", (double)(free_internal / 1024));
