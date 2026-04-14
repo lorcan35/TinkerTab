@@ -268,13 +268,13 @@ esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
 
 uint8_t tab5_settings_get_connection_mode(void)
 {
-    return get_u8("conn_mode", 0);  /* 0=auto, 1=local, 2=remote */
+    return get_u8("conn_m", 0);  /* 0=auto, 1=local, 2=remote — key changed from "conn_mode" to reset stale value */
 }
 
 esp_err_t tab5_settings_set_connection_mode(uint8_t mode)
 {
     if (mode > 2) mode = 0;
-    return set_u8("conn_mode", mode);
+    return set_u8("conn_m", mode);
 }
 
 /* ── Device identity ─────────────────────────────────────────────────── */

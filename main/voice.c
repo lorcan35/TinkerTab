@@ -698,7 +698,7 @@ static void afe_detect_task(void *arg)
 
     ESP_LOGI(TAG, "AFE detect task exiting");
     s_afe_detect_task = NULL;
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
 }
 
 // ---------------------------------------------------------------------------
@@ -785,7 +785,7 @@ static void mic_capture_task(void *arg)
         heap_caps_free(afe_buf);
         s_mic_task = NULL;
         /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
         return;
     }
 
@@ -997,7 +997,7 @@ static void mic_capture_task(void *arg)
 
     ESP_LOGI(TAG, "Mic capture task exiting");
     s_mic_task = NULL;
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,7 +1034,7 @@ static void playback_drain_task(void *arg)
     if (!chunk) {
         ESP_LOGE(TAG, "Playback drain: failed to allocate chunk buffer");
         s_play_task = NULL;
-        vTaskSuspend(NULL);
+        vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
         return;
     }
 
@@ -1066,7 +1066,7 @@ static void playback_drain_task(void *arg)
     heap_caps_free(chunk);
     ESP_LOGI(TAG, "Playback drain task exiting");
     s_play_task = NULL;
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,7 +1086,7 @@ static void ws_receive_task(void *arg)
     if (!upsample_buf) {
         ESP_LOGE(TAG, "Failed to allocate upsample buffer");
         s_ws_task = NULL;
-        vTaskSuspend(NULL);
+        vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
         return;
     }
 
@@ -1240,7 +1240,7 @@ static void ws_receive_task(void *arg)
 
     ESP_LOGI(TAG, "WS receive task exiting");
     /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,19 +1340,42 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
     }
 
-    /* Connection mode: 0=auto (ngrok→local), 1=local only, 2=remote only */
+    /* Connection mode: 0=auto (local first, ngrok fallback), 1=local only, 2=remote only */
     uint8_t conn_mode = tab5_settings_get_connection_mode();
     ESP_LOGI(TAG, "Connection mode: %d (%s)",
              conn_mode, conn_mode == 0 ? "auto" : conn_mode == 1 ? "local" : "remote");
 
     int err = -1;
 
-    /* Try ngrok (remote) if mode is auto(0) or remote(2) */
-    if (conn_mode != 1) {
+    /* ── Step 1: Try LOCAL LAN (modes 0 and 1) ── */
+    if (conn_mode != 2) {
+        esp_transport_handle_t tcp = esp_transport_tcp_init();
+        if (tcp) {
+            s_ws = esp_transport_ws_init(tcp);
+            if (s_ws) {
+                esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
+                ESP_LOGI(TAG, "Trying local ws://%s:%d%s",
+                         dragon_host, dragon_port, TAB5_VOICE_WS_PATH);
+                err = esp_transport_connect(s_ws, dragon_host, dragon_port,
+                                            VOICE_CONNECT_TIMEOUT_MS);
+                if (err >= 0) {
+                    ESP_LOGI(TAG, "Connected via local LAN!");
+                } else {
+                    ESP_LOGW(TAG, "Local connect failed%s",
+                             conn_mode == 1 ? " (local-only mode)" : " — trying ngrok...");
+                    esp_transport_close(s_ws);
+                    esp_transport_destroy(s_ws);
+                    s_ws = NULL;
+                }
+            }
+        }
+    }
+
+    /* ── Step 2: Try NGROK (modes 0 fallback and 2 primary) ── */
+    if (err < 0 && conn_mode != 1) {
         ESP_LOGI(TAG, "Connecting to wss://%s:%d%s (ngrok%s)",
                  TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH,
-                 conn_mode == 2 ? " only" : " primary");
-
+                 conn_mode == 2 ? " only" : " fallback");
         esp_transport_handle_t ssl = esp_transport_ssl_init();
         if (ssl) {
             esp_transport_ssl_crt_bundle_attach(ssl, esp_crt_bundle_attach);
@@ -1366,8 +1389,7 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
                     s_dragon_port = TAB5_NGROK_PORT;
                     ESP_LOGI(TAG, "Connected via ngrok!");
                 } else {
-                    ESP_LOGW(TAG, "ngrok connect failed%s",
-                             conn_mode == 2 ? " (remote-only mode)" : " — trying local...");
+                    ESP_LOGW(TAG, "ngrok connect also failed");
                     esp_transport_close(s_ws);
                     esp_transport_destroy(s_ws);
                     s_ws = NULL;
@@ -1375,37 +1397,13 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
             } else {
                 esp_transport_destroy(ssl);
             }
-        } else {
-            ESP_LOGW(TAG, "SSL transport init failed");
         }
     }
 
-    /* Try local LAN if mode is auto(0) or local(1), and ngrok didn't connect */
-    if (err < 0 && conn_mode != 2) {
-        esp_transport_handle_t tcp_fb = esp_transport_tcp_init();
-        if (tcp_fb) {
-            s_ws = esp_transport_ws_init(tcp_fb);
-            if (s_ws) {
-                esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
-                ESP_LOGI(TAG, "Trying local ws://%s:%d%s",
-                         dragon_host, dragon_port, TAB5_VOICE_WS_PATH);
-                err = esp_transport_connect(s_ws, dragon_host, dragon_port,
-                                            VOICE_CONNECT_TIMEOUT_MS);
-                if (err < 0) {
-                    ESP_LOGE(TAG, "Local fallback also failed");
-                    esp_transport_close(s_ws);
-                    esp_transport_destroy(s_ws);
-                    s_ws = NULL;
-                } else {
-                    ESP_LOGI(TAG, "Connected via local LAN!");
-                }
-            }
-        }
-
-        if (!s_ws || err < 0) {
-            voice_set_state(VOICE_STATE_IDLE, "connect failed");
-            return ESP_FAIL;
-        }
+    /* ── Connection result ── */
+    if (!s_ws || err < 0) {
+        voice_set_state(VOICE_STATE_IDLE, "connect failed");
+        return ESP_FAIL;
     }
 
     s_ws_connected = true;
@@ -1486,7 +1484,7 @@ static void async_connect_task(void *arg)
     s_connect_in_progress = false;
     free(args);
     /* vTaskSuspend instead of vTaskDelete — P4 TLSP crash workaround (#20) */
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
 }
 
 esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
@@ -1724,6 +1722,12 @@ esp_err_t voice_disconnect(void)
 
     tab5_audio_speaker_enable(false);
 
+    /* Clear stuck connect-in-progress flag (reconnect watchdog safety) */
+    if (s_connect_in_progress) {
+        ESP_LOGW(TAG, "s_connect_in_progress was stuck — clearing");
+        s_connect_in_progress = false;
+    }
+
     // Signal tasks to stop — order matters:
     // 1. Stop mic first (it uses ws_send_binary)
     s_stop_flag = true;
@@ -1733,6 +1737,7 @@ esp_err_t voice_disconnect(void)
     for (int i = 0; i < 20 && s_mic_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    s_mic_task = NULL;  /* Force NULL — P4 TLSP workaround suspends, doesn't exit */
 
     // 2. Mark disconnected so no new sends can start
     s_ws_connected = false;
@@ -1750,14 +1755,19 @@ esp_err_t voice_disconnect(void)
     for (int i = 0; i < 30 && s_play_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+    if (s_play_task != NULL) {
+        ESP_LOGW(TAG, "Playback task did not exit cleanly — forcing NULL");
+    }
+    s_play_task = NULL;  /* Force NULL — suspended tasks still hold handle */
 
     // 5. Wait for WS receive task to exit (it checks s_ws_connected + s_stop_flag)
     for (int i = 0; i < 150 && s_ws_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     if (s_ws_task != NULL) {
-        ESP_LOGW(TAG, "WS receive task did not exit in time");
+        ESP_LOGW(TAG, "WS receive task did not exit cleanly — forcing NULL");
     }
+    s_ws_task = NULL;  /* Force NULL — critical for reconnect to work */
 
     // 6. Destroy transport — safe now that all tasks have exited
     xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
@@ -1770,7 +1780,7 @@ esp_err_t voice_disconnect(void)
     playback_buf_reset();
     voice_set_state(VOICE_STATE_IDLE, NULL);
 
-    ESP_LOGI(TAG, "Disconnected");
+    ESP_LOGI(TAG, "Disconnected (all task handles cleared)");
     return ESP_OK;
 }
 
@@ -1928,7 +1938,7 @@ static void reconnect_watchdog_task(void *arg)
 
     ESP_LOGI(TAG, "Reconnect watchdog stopped");
     s_reconnect_task = NULL;
-    vTaskSuspend(NULL);
+    vTaskDelete(NULL);  /* TLSP callbacks disabled — safe to delete (espressif/esp-idf#15997) */
 }
 
 esp_err_t voice_start_reconnect_watchdog(void)
