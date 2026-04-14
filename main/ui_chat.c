@@ -12,6 +12,7 @@
 #include "ui_chat.h"
 #include "ui_feedback.h"
 #include "voice.h"
+#include "config.h"
 #include "ui_keyboard.h"
 #include "settings.h"
 #include "rtc.h"
@@ -168,9 +169,9 @@ static void update_mode_badge_obj(lv_obj_t *badge)
 {
     if (!badge) return;
     uint8_t mode = tab5_settings_get_voice_mode();
-    const char *labels[] = {"Local", "Hybrid", "Cloud"};
-    const uint32_t colors[] = {0x22C55E, 0xF5A623, 0x06B6D4};
-    if (mode > 2) mode = 0;
+    const char *labels[] = {"Local", "Hybrid", "Cloud", "TinkerClaw"};
+    const uint32_t colors[] = {0x22C55E, 0xF5A623, 0x06B6D4, 0xE11D48};
+    if (mode >= VOICE_MODE_COUNT) mode = 0;
     lv_label_set_text(badge, labels[mode]);
     lv_obj_set_style_text_color(badge, lv_color_hex(colors[mode]), 0);
 }
@@ -217,7 +218,7 @@ static void cb_mode_cycle(lv_event_t *e)
 {
     (void)e;
     uint8_t mode = tab5_settings_get_voice_mode();
-    mode = (mode + 1) % 3;
+    mode = (mode + 1) % VOICE_MODE_COUNT;
     tab5_settings_set_voice_mode(mode);
     char model_buf[64];
     tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
@@ -232,8 +233,14 @@ static const char *s_cloud_models[]  = {
     "anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4-20250514",
     "openai/gpt-4o-mini", "openai/gpt-4o",
 };
-#define N_LOCAL_MODELS  (sizeof(s_local_models) / sizeof(s_local_models[0]))
-#define N_CLOUD_MODELS  (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
+static const char *s_tinkerclaw_models[] = {
+    "ollama/qwen3:1.7b", "ollama/qwen3:4b",
+    "anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4-20250514",
+    "openai/gpt-4o-mini",
+};
+#define N_LOCAL_MODELS      (sizeof(s_local_models) / sizeof(s_local_models[0]))
+#define N_CLOUD_MODELS      (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
+#define N_TINKERCLAW_MODELS (sizeof(s_tinkerclaw_models) / sizeof(s_tinkerclaw_models[0]))
 
 static void update_model_label(void)
 {
@@ -263,7 +270,10 @@ static void cb_model_cycle(lv_event_t *e)
 
     const char **models;
     int n;
-    if (mode == 2) {
+    if (mode == VOICE_MODE_TINKERCLAW) {
+        models = s_tinkerclaw_models;
+        n = N_TINKERCLAW_MODELS;
+    } else if (mode == VOICE_MODE_CLOUD) {
         models = s_cloud_models;
         n = N_CLOUD_MODELS;
     } else {

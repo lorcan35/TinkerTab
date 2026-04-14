@@ -170,7 +170,14 @@
 // ---------------------------------------------------------------------------
 // Firmware identity
 // ---------------------------------------------------------------------------
-#define TAB5_FIRMWARE_VER     "0.6.0"
+#define TAB5_FIRMWARE_VER     "0.7.0"
+
+// Voice modes (matches voice_mode in config_update protocol)
+#define VOICE_MODE_LOCAL       0
+#define VOICE_MODE_HYBRID      1
+#define VOICE_MODE_CLOUD       2
+#define VOICE_MODE_TINKERCLAW  3
+#define VOICE_MODE_COUNT       4
 #define TAB5_PLATFORM         "esp32p4-tab5"
 
 // ---------------------------------------------------------------------------
