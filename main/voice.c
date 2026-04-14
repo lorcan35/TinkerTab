@@ -22,6 +22,7 @@
 #include "ui_chat.h"
 #include "audio.h"
 #include "config.h"
+#include "driver/i2s_common.h"  /* US-C13: i2s_channel_disable/enable for safe mic task shutdown */
 #include "settings.h"
 #include "ui_core.h"
 
@@ -120,6 +121,14 @@ static const char *TAG = "tab5_voice";
 static voice_state_t     s_state = VOICE_STATE_IDLE;
 static voice_state_cb_t  s_state_cb = NULL;
 static SemaphoreHandle_t s_state_mutex = NULL;
+
+// US-C02: Session generation counter — monotonically increasing.
+// Incremented on every disconnect and connect.  Every lv_async_call from
+// voice tasks captures this value; the callback checks it against the
+// current generation and silently drops stale calls.  This prevents
+// use-after-free when a voice task queues an async call just before being
+// deleted — by the time LVGL processes it, the session has moved on.
+static volatile uint32_t s_session_gen = 0;
 
 // WebSocket transport
 static esp_transport_handle_t s_ws = NULL;
@@ -444,16 +453,68 @@ static esp_err_t ws_send_register(void)
 }
 
 // ---------------------------------------------------------------------------
-// Async toast callback — runs on LVGL thread via lv_async_call
+// US-C02: Generation-guarded async call wrappers.
+// Every lv_async_call from voice tasks carries the session generation at
+// the time of enqueue.  The callback compares it against s_session_gen;
+// if they differ, the call is stale (voice session ended since enqueue)
+// and the callback silently frees user_data without touching any UI state.
 // ---------------------------------------------------------------------------
+typedef struct {
+    uint32_t gen;       // session generation when enqueued
+    char    *text;      // heap-allocated text (freed by callback)
+} voice_async_toast_t;
+
+typedef struct {
+    uint32_t gen;       // session generation when enqueued
+} voice_async_badge_t;
+
 static void async_show_toast_cb(void *arg)
 {
-    char *msg = (char *)arg;
-    if (msg) {
+    voice_async_toast_t *t = (voice_async_toast_t *)arg;
+    if (!t) return;
+    if (t->gen == s_session_gen && t->text) {
         extern void ui_home_show_toast(const char *text);
-        ui_home_show_toast(msg);
-        free(msg);
+        ui_home_show_toast(t->text);
+    } else if (t->text) {
+        ESP_LOGD(TAG, "Stale async toast dropped (gen %lu vs %lu)",
+                 (unsigned long)t->gen, (unsigned long)s_session_gen);
     }
+    free(t->text);
+    free(t);
+}
+
+static void async_refresh_badge_cb(void *arg)
+{
+    voice_async_badge_t *b = (voice_async_badge_t *)arg;
+    if (!b) return;
+    if (b->gen == s_session_gen) {
+        extern void ui_home_refresh_mode_badge(void);
+        ui_home_refresh_mode_badge();
+    } else {
+        ESP_LOGD(TAG, "Stale async badge refresh dropped (gen %lu vs %lu)",
+                 (unsigned long)b->gen, (unsigned long)s_session_gen);
+    }
+    free(b);
+}
+
+/** Enqueue a toast message via lv_async_call with generation guard.
+ *  @param text  heap-allocated string (ownership transferred, freed by callback) */
+static void voice_async_toast(char *text)
+{
+    voice_async_toast_t *t = malloc(sizeof(voice_async_toast_t));
+    if (!t) { free(text); return; }
+    t->gen = s_session_gen;
+    t->text = text;
+    lv_async_call(async_show_toast_cb, t);
+}
+
+/** Enqueue a mode badge refresh via lv_async_call with generation guard. */
+static void voice_async_refresh_badge(void)
+{
+    voice_async_badge_t *b = malloc(sizeof(voice_async_badge_t));
+    if (!b) return;
+    b->gen = s_session_gen;
+    lv_async_call(async_refresh_badge_cb, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -644,13 +705,13 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGW(TAG, "Config update error from Dragon: %s", error->valuestring);
             /* Auto-disable: revert to local mode */
             tab5_settings_set_voice_mode(0);
-            /* US-PR02: Refresh home badge from LVGL thread on error fallback */
-            extern void ui_home_refresh_mode_badge(void);
-            lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
-            /* FIX: Show toast with Dragon's error message so user knows WHY
+            /* US-PR02: Refresh home badge from LVGL thread on error fallback.
+             * US-C02: Uses generation-guarded wrapper to prevent stale calls
+             * after voice_disconnect() deletes the WS receive task. */
+            voice_async_refresh_badge();
+            /* Show toast with Dragon's error message so user knows WHY
              * the mode reverted.  Must go through lv_async_call since this
-             * handler runs on the WS receive task (core 1, not LVGL thread).
-             * The heap-allocated string is freed in the async callback. */
+             * handler runs on the WS receive task (core 1, not LVGL thread). */
             {
                 size_t elen = strlen(error->valuestring);
                 if (elen > 80) elen = 80;  /* cap toast length for display */
@@ -658,7 +719,7 @@ static void handle_text_message(const char *data, int len)
                 if (toast_msg) {
                     memcpy(toast_msg, error->valuestring, elen);
                     toast_msg[elen] = '\0';
-                    lv_async_call(async_show_toast_cb, toast_msg);
+                    voice_async_toast(toast_msg);  /* ownership transferred */
                 }
             }
             voice_set_state(VOICE_STATE_READY, error->valuestring);
@@ -676,9 +737,8 @@ static void handle_text_message(const char *data, int len)
             uint8_t mode = (uint8_t)vmode->valueint;
             tab5_settings_set_voice_mode(mode);
             ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
-            /* Refresh home badge from LVGL thread */
-            extern void ui_home_refresh_mode_badge(void);
-            lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
+            /* US-C02: Refresh home badge from LVGL thread (generation-guarded) */
+            voice_async_refresh_badge();
         }
         /* Backward compat: cloud_mode bool */
         cJSON *config = cJSON_GetObjectItem(root, "config");
@@ -688,9 +748,8 @@ static void handle_text_message(const char *data, int len)
                 bool is_cloud = cJSON_IsTrue(cloud);
                 if (!cJSON_IsNumber(vmode)) {
                     tab5_settings_set_voice_mode(is_cloud ? 1 : 0);
-                    /* US-PR02: Refresh home badge from LVGL thread (backward compat path) */
-                    extern void ui_home_refresh_mode_badge(void);
-                    lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
+                    /* US-C02: Refresh home badge from LVGL thread (backward compat path) */
+                    voice_async_refresh_badge();
                 }
             }
         }
@@ -1578,6 +1637,10 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     s_ws_connected = true;
     s_stop_flag = false;
 
+    /* US-C02: Bump generation for new session — any stale async calls from
+     * a previous session (that somehow survived) will be discarded. */
+    s_session_gen++;
+
     /* US-A05: Reset keepalive degraded state on fresh connection */
     s_last_pong_us = esp_timer_get_time();
     s_keepalive_miss_count = 0;
@@ -1840,9 +1903,22 @@ esp_err_t voice_stop_listening(void)
 
     // Stop mic capture task
     s_mic_running = false;
-    // Wait briefly for task to finish (it checks s_mic_running each chunk)
-    for (int i = 0; i < 10 && s_mic_task != NULL; i++) {
+
+    /* US-C13: Disable I2S RX to unblock i2s_channel_read() inside the mic task.
+     * Without this, the task could be blocked for up to 1000ms on DMA. */
+    i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
+    if (rx_h) {
+        i2s_channel_disable(rx_h);
+    }
+
+    // Wait for task to finish (it checks s_mic_running each chunk)
+    for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    /* US-C13: Re-enable I2S RX for future mic sessions */
+    if (rx_h) {
+        i2s_channel_enable(rx_h);
     }
 
     // Send stop signal to Dragon
@@ -1871,8 +1947,17 @@ esp_err_t voice_cancel(void)
     // Stop mic if running
     if (s_mic_running) {
         s_mic_running = false;
-        for (int i = 0; i < 10 && s_mic_task != NULL; i++) {
+        /* US-C13: Disable I2S RX to unblock i2s_channel_read() */
+        i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
+        if (rx_h) {
+            i2s_channel_disable(rx_h);
+        }
+        for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
             vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        /* US-C13: Re-enable I2S RX for future mic sessions */
+        if (rx_h) {
+            i2s_channel_enable(rx_h);
         }
     }
 
@@ -1898,7 +1983,13 @@ esp_err_t voice_disconnect(void)
 {
     ESP_LOGI(TAG, "Disconnecting from Dragon voice server");
 
-    /* US-C21: Set disconnecting guard FIRST, before any state changes.
+    /* US-C02: Bump session generation FIRST.  Any lv_async_call already
+     * queued by voice tasks carries the old generation — when LVGL processes
+     * them after task deletion, the callbacks will see gen mismatch and
+     * silently drop, preventing use-after-free on dangling user_data. */
+    s_session_gen++;
+
+    /* US-C21: Set disconnecting guard, before any state changes.
      * This prevents voice_connect/voice_connect_async from starting a new
      * session while we're tearing down the old one. Safe to call from any
      * context — doesn't acquire any mutex, just sets a volatile bool. */
@@ -1917,11 +2008,34 @@ esp_err_t voice_disconnect(void)
     s_stop_flag = true;
     s_mic_running = false;
 
-    // Wait for mic task to exit so it's no longer sending on the WS
-    for (int i = 0; i < 20 && s_mic_task != NULL; i++) {
+    /* US-C13: Disable I2S RX channel BEFORE waiting for mic task exit.
+     * The mic task blocks inside i2s_channel_read() (via esp_codec_dev_read)
+     * with a 1000ms timeout. Disabling the channel forces that read to return
+     * immediately with ESP_ERR_INVALID_STATE, so the task sees s_mic_running
+     * is false and exits promptly. Without this, the 200ms wait below was
+     * shorter than the 1000ms I2S read timeout — the mic task could still be
+     * alive and blocked on DMA when we tear down the WS transport. Worse, if
+     * a DMA RX completion ISR fires for a task that's being deleted, the ISR
+     * may try to context-switch to a freed TCB → scheduler crash. */
+    i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
+    if (rx_h) {
+        i2s_channel_disable(rx_h);
+    }
+
+    // Wait for mic task to exit — 1200ms max (> 1000ms I2S read timeout fallback)
+    for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    s_mic_task = NULL;  /* Force NULL — P4 TLSP workaround suspends, doesn't exit */
+    if (s_mic_task != NULL) {
+        ESP_LOGW(TAG, "Mic task did not exit in 1200ms — forcing handle NULL");
+    }
+    s_mic_task = NULL;
+
+    /* US-C13: Re-enable I2S RX so future mic sessions work.
+     * The channel is stateless — re-enable just restarts DMA. */
+    if (rx_h) {
+        i2s_channel_enable(rx_h);
+    }
 
     // 2. Mark disconnected so no new sends can start
     s_ws_connected = false;
