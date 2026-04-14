@@ -136,6 +136,10 @@ CONFIG_LWIP_TCP_RECVMBOX_SIZE=12
 CONFIG_LWIP_TCP_ACCEPTMBOX_SIZE=12
 CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=8
 CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=4096
+# Pin LWIP to Core 1 — prevents TCP starvation during heavy LVGL rendering on Core 0.
+# Settings creates 55 objects which blocks Core 0 for ~1s. Without this, LWIP
+# gravitates to Core 0 and can't process SYN-ACK, causing 8s HTTP timeouts.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
 # Camera SC202CS sensor
 CONFIG_CAMERA_SC202CS=y
 CONFIG_CAMERA_SC202CS_AUTO_DETECT=y

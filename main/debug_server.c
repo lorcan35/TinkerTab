@@ -1289,10 +1289,15 @@ esp_err_t tab5_debug_server_init(void)
     config.stack_size  = 12288;
     config.max_uri_handlers = 28;
     config.lru_purge_enable = true;
-    config.max_open_sockets = 13;         /* Default 7 too low for rapid stress tests */
+    config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
     config.send_wait_timeout = 5;         /* 5s send timeout (default 5) */
     config.close_fn = NULL;               /* Use default close */
+    /* Run httpd on Core 1 so it doesn't starve when LVGL is busy on Core 0.
+     * Settings screen creates 55 objects (~500ms) which blocks Core 0 entirely.
+     * Without this, /info requests time out during heavy LVGL rendering. */
+    config.core_id = 1;
+    config.task_priority = tskIDLE_PRIORITY + 6;  /* Above LVGL (prio 5) */
 
     httpd_handle_t server = NULL;
     esp_err_t ret = httpd_start(&server, &config);

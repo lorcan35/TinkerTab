@@ -39,6 +39,12 @@ static const char *TAG = "ui_settings";
 
 static inline void feed_wdt(void) {
     esp_task_wdt_reset();
+    /* Yield to let LWIP TCP/IP task process packets on Core 0.
+     * Settings creates 55 LVGL objects in one lv_async_call callback,
+     * monopolizing Core 0. LWIP needs Core 0 cycles to deliver HTTP
+     * requests to the debug server (running on Core 1).
+     * 20ms per yield × 7 sections = 140ms total overhead — acceptable. */
+    vTaskDelay(pdMS_TO_TICKS(20));
 }
 
 /* ── Material Dark Constants ──────────────────────────────────────────── */
@@ -690,6 +696,8 @@ lv_obj_t *ui_settings_create(void)
     }
     y += ROW_H + 4;
 
+    feed_wdt(); /* mid-section yield — Network section */
+
     /* Dragon host input (placeholder text serves as label) */
     s_dragon_ta = lv_textarea_create(s_scroll);
     lv_obj_set_pos(s_dragon_ta, SIDE_PAD, y + 4);
@@ -757,6 +765,8 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_font(tl, &lv_font_montserrat_16, 0);
         lv_obj_center(tl);
 
+        feed_wdt(); /* mid-section yield — Voice Mode is the heaviest section */
+
         /* Hybrid tab */
         s_tab_hybrid = lv_button_create(s_scroll);
         lv_obj_remove_style_all(s_tab_hybrid);
@@ -776,6 +786,8 @@ lv_obj_t *ui_settings_create(void)
         lv_label_set_text(th, "Hybrid");
         lv_obj_set_style_text_font(th, &lv_font_montserrat_16, 0);
         lv_obj_center(th);
+
+        feed_wdt(); /* mid-section yield */
 
         /* Cloud tab */
         s_tab_cloud = lv_button_create(s_scroll);

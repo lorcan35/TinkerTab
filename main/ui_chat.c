@@ -25,6 +25,13 @@ extern lv_obj_t *ui_home_get_screen(void);
 
 static const char *TAG = "ui_chat";
 
+/* Yield to LWIP TCP/IP task during heavy UI creation.
+ * Same pattern as ui_settings.c — prevents HTTP timeout. */
+static inline void feed_wdt_yield(void) {
+    esp_task_wdt_reset();
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+
 /* ── State ─────────────────────────────────────────────────────── */
 static lv_obj_t  *s_overlay      = NULL;
 
@@ -679,7 +686,7 @@ static void enter_conversation(void)
 static void build_home_panel(void)
 {
     ESP_LOGI(TAG, "Building Chat Home panel");
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     s_home_panel = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(s_home_panel);
@@ -754,7 +761,7 @@ static void build_home_panel(void)
 
     y = TOPBAR_H;
 
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* ── Model Bar (44px) ────────────────────────────────────── */
     s_model_lbl = lv_label_create(s_home_panel);
@@ -852,7 +859,7 @@ static void build_home_panel(void)
 
     y += 56;
 
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* ── Session Cards (scrollable area) ─────────────────────── */
     /* Available height: 1280 - topbar(60) - model(44) - quickactions(56) - memory(48) - input(80) = 992 */
@@ -1013,7 +1020,7 @@ static void build_home_panel(void)
         card_y += 48 + 8;
     }
 
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* ── Memory Preview Bar (48px) ───────────────────────────── */
     int mem_y = 1280 - INPUT_BAR_H - 48;
@@ -1112,7 +1119,7 @@ static void build_conversation_ui(void)
     if (s_conv_created) return;
 
     ESP_LOGI(TAG, "Building conversation panel");
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     s_conv_panel = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(s_conv_panel);
@@ -1201,7 +1208,7 @@ static void build_conversation_ui(void)
     lv_obj_set_style_bg_color(sep, lv_color_hex(CLR_BORDER), 0);
     lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
 
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* ── Message scroll area ────────────────────────────────── */
     s_msg_scroll = lv_obj_create(s_conv_panel);
@@ -1319,7 +1326,7 @@ lv_obj_t *ui_chat_create(void)
     }
 
     ESP_LOGI(TAG, "Creating chat overlay");
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* ── Fullscreen overlay on home screen ──────────────────── */
     lv_obj_t *parent = ui_home_get_screen();
@@ -1339,12 +1346,12 @@ lv_obj_t *ui_chat_create(void)
     /* Swipe-right to close / go back */
     lv_obj_add_event_cb(s_overlay, cb_close, LV_EVENT_GESTURE, NULL);
 
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* ── Build both panels ─────────────────────────────────── */
     build_home_panel();
 
-    esp_task_wdt_reset();
+    feed_wdt_yield();
 
     /* Conversation panel is built lazily on first enter */
     /* s_conv_panel created in build_conversation_ui() */
