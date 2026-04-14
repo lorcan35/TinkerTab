@@ -1048,6 +1048,18 @@ static esp_err_t navigate_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
+    /* Debounce: reject rapid navigation requests (same as UI 300ms debounce).
+     * Without this, rapid /navigate calls queue multiple lv_async_call entries
+     * that create/destroy LVGL overlays simultaneously → Load access fault. */
+    static int64_t s_last_nav_us = 0;
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_nav_us < 500000) {  /* 500ms debounce */
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"navigation too fast, wait 500ms\"}");
+        return ESP_OK;
+    }
+    s_last_nav_us = now;
+
     char query[64] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
         httpd_resp_set_type(req, "application/json");

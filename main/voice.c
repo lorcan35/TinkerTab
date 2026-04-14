@@ -313,7 +313,7 @@ static esp_err_t ws_send_text(const char *msg)
     }
     memcpy(buf, msg, len + 1);
 
-    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(2000));
     int ret;
     if (s_ws && s_ws_connected) {
         ret = esp_transport_ws_send_raw(s_ws,
@@ -1254,7 +1254,10 @@ static void ws_receive_task(void *arg)
         }
 
         // Data available — read it (mutex protects WS framing state shared with send)
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        if (xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+            ESP_LOGW(TAG, "WS recv: mutex timeout (2s) — skipping read");
+            continue;  /* Don't block forever — retry next poll cycle */
+        }
         int len = esp_transport_read(s_ws, rx_buf, sizeof(rx_buf), 1000);
         int opcode = (len > 0) ? esp_transport_ws_get_read_opcode(s_ws) : -1;
         xSemaphoreGive(s_ws_mutex);
@@ -1298,7 +1301,7 @@ static void ws_receive_task(void *arg)
                 char *pong_buf = malloc(len);
                 if (pong_buf) {
                     memcpy(pong_buf, rx_buf, len);
-                    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+                    xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(2000));
                     esp_transport_ws_send_raw(s_ws,
                         WS_TRANSPORT_OPCODES_PONG | WS_TRANSPORT_OPCODES_FIN,
                         pong_buf, len, 100);
@@ -1320,7 +1323,7 @@ static void ws_receive_task(void *arg)
     // Clean up transport on unexpected disconnect.
     // Take WS mutex to ensure mic task isn't mid-send when we destroy.
     if (!s_stop_flag && s_ws) {
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(2000));
         esp_transport_handle_t ws_tmp = s_ws;
         s_ws = NULL;  // prevent any new sends
         xSemaphoreGive(s_ws_mutex);
@@ -1454,7 +1457,7 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
      * close and destroy it now to prevent socket descriptor leak on reconnect. */
     if (s_ws) {
         ESP_LOGW(TAG, "Stale s_ws handle found — cleaning up before reconnect");
-        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(2000));
         esp_transport_handle_t stale = s_ws;
         s_ws = NULL;
         xSemaphoreGive(s_ws_mutex);
@@ -1878,11 +1881,15 @@ esp_err_t voice_disconnect(void)
     s_ws_connected = false;
 
     // 3. Close WS under mutex so we don't race with any in-flight send/recv
-    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    if (s_ws) {
-        esp_transport_close(s_ws);
+    if (xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        if (s_ws) {
+            esp_transport_close(s_ws);
+        }
+        xSemaphoreGive(s_ws_mutex);
+    } else {
+        ESP_LOGW(TAG, "disconnect: mutex timeout (5s) — forcing transport NULL");
+        s_ws = NULL;  /* Force-break any stuck recv/send */
     }
-    xSemaphoreGive(s_ws_mutex);
 
     // 4. Stop playback drain task
     s_play_running = false;
@@ -1905,12 +1912,16 @@ esp_err_t voice_disconnect(void)
     s_ws_task = NULL;  /* Force NULL — critical for reconnect to work */
 
     // 6. Destroy transport — safe now that all tasks have exited
-    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
-    if (s_ws) {
-        esp_transport_destroy(s_ws);
+    if (xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        if (s_ws) {
+            esp_transport_destroy(s_ws);
+            s_ws = NULL;
+        }
+        xSemaphoreGive(s_ws_mutex);
+    } else {
+        ESP_LOGW(TAG, "disconnect: destroy mutex timeout — leaking transport");
         s_ws = NULL;
     }
-    xSemaphoreGive(s_ws_mutex);
 
     playback_buf_reset();
     voice_set_state(VOICE_STATE_IDLE, NULL);

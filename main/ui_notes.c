@@ -946,8 +946,10 @@ static void transcription_queue_task(void *arg)
         int slot = -1;
         for (int i = 0; i < MAX_NOTES; i++) {
             if (!s_notes[i].used) continue;
-            bool needs_work = (s_notes[i].state == NOTE_STATE_RECORDED) ||
-                              (s_notes[i].state == NOTE_STATE_FAILED && s_notes[i].audio_path[0]);
+            /* Only retry RECORDED notes — FAILED notes already tried and failed.
+             * Retrying FAILED notes with broken audio (e.g. 44-byte header-only WAV)
+             * creates an infinite 15s retry loop that wastes CPU and SDIO bandwidth. */
+            bool needs_work = (s_notes[i].state == NOTE_STATE_RECORDED);
             if (!needs_work) continue;
             if (!s_notes[i].audio_path[0]) {
                 s_notes[i].state = NOTE_STATE_FAILED;
