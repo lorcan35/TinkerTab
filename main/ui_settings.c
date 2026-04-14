@@ -731,6 +731,12 @@ lv_obj_t *ui_settings_create(void)
     ESP_LOGI(TAG, "Creating settings screen...");
     s_creating = true;
 
+    /* U02: Disable touch input during creation.
+     * Building 55 objects takes ~500ms. Touch events on half-built widgets
+     * cause crashes (dangling parent pointers, missing styles). */
+    lv_indev_t *indev = lv_indev_get_next(NULL);
+    if (indev) lv_indev_enable(indev, false);
+
     /* Temporarily remove the UI task from WDT */
     TaskHandle_t ui_task = xTaskGetHandle("ui_task");
     if (ui_task) esp_task_wdt_delete(ui_task);
@@ -1347,6 +1353,9 @@ lv_obj_t *ui_settings_create(void)
 
     ESP_LOGI(TAG, "Settings screen created");
     s_creating = false;
+
+    /* U02: Re-enable touch input now that all widgets are fully built */
+    if (indev) lv_indev_enable(indev, true);
 
     /* Re-subscribe UI task to WDT */
     if (ui_task) esp_task_wdt_add(ui_task);

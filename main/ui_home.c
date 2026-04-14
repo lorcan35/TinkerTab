@@ -754,7 +754,12 @@ static void _async_chat(void *arg)
     ui_chat_create();
 }
 
-/* Dismiss ALL overlays before opening any screen */
+/* Dismiss ALL overlays before opening any screen.
+ *
+ * C07 audit (April 2026): No use-after-free risk here.
+ * ui_settings_hide() and ui_chat_hide() only set LV_OBJ_FLAG_HIDDEN (no deletion).
+ * ui_settings_destroy() and ui_chat_destroy() use synchronous lv_obj_delete()/lv_obj_del(),
+ * NOT lv_obj_del_async(). All deletion is immediate — no deferred-delete race. */
 static void dismiss_all_overlays(void)
 {
     ui_keyboard_hide();

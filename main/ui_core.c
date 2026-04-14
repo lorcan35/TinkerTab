@@ -33,6 +33,28 @@
 static const char *TAG = "ui_core";
 
 /* ---- State ---- */
+/* C03 Mutex ordering audit (April 2026):
+ *
+ * System mutexes and their contexts:
+ *   1. s_lvgl_mutex (this file) — recursive, protects all LVGL API calls.
+ *      Held by: ui_task (Core 0), tab5_ui_lock/try_lock callers.
+ *   2. s_ws_mutex (voice.c) — protects WebSocket send/recv.
+ *      Held by: voice WS task (Core 1), voice_send_* callers.
+ *      Always bounded: 2000ms or 100ms timeout, never portMAX_DELAY.
+ *   3. s_state_mutex (voice.c) — protects voice state transitions.
+ *      Uses portMAX_DELAY but never acquires s_lvgl_mutex while held.
+ *   4. s_play_mutex (voice.c) — protects TTS playback buffer.
+ *      Uses portMAX_DELAY but never acquires s_lvgl_mutex while held.
+ *
+ * ABBA deadlock analysis:
+ *   - Voice tasks NEVER call tab5_ui_lock(). They use lv_async_call()
+ *     (which is thread-safe without mutex) to schedule LVGL work.
+ *   - Debug server (httpd, Core 1) uses tab5_ui_try_lock(2000) with
+ *     bounded timeout for screenshots only. Never holds s_ws_mutex.
+ *   - No code path holds both s_lvgl_mutex and s_ws_mutex simultaneously.
+ *
+ * Rule: voice/network code must use lv_async_call() for LVGL updates,
+ *       NEVER acquire s_lvgl_mutex directly. This eliminates ABBA risk. */
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t          *s_display = NULL;
 static lv_indev_t            *s_indev = NULL;

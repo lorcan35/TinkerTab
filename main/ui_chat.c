@@ -93,7 +93,7 @@ static bool         s_clear_guard = false;  /* Guard flag: blocks input after Ne
 static lv_timer_t  *s_clear_timer = NULL;   /* 500ms guard timer for clear_history ACK */
 static bool         s_history_fetched = false; /* Guard: only fetch history once per session */
 
-#define MAX_MESSAGES     50
+#define MAX_MESSAGES     30
 #define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
 #define BUBBLE_MAX_W    480
 #define BUBBLE_PAD       16
@@ -615,11 +615,17 @@ static void cb_send(lv_event_t *e)
     /* Show user bubble immediately */
     ui_chat_add_message(txt, true);
 
-    /* Send to Dragon */
+    /* Send to Dragon — voice_send_text rejects if voice pipeline is active (U13) */
     esp_err_t ret = voice_send_text(txt);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "voice_send_text failed: %s", esp_err_to_name(ret));
-        ui_chat_add_message("(Not connected to Dragon)", false);
+        voice_state_t send_st = voice_get_state();
+        if (send_st == VOICE_STATE_LISTENING || send_st == VOICE_STATE_PROCESSING ||
+            send_st == VOICE_STATE_SPEAKING) {
+            ui_chat_add_message("(Voice is active -- wait for it to finish)", false);
+        } else {
+            ui_chat_add_message("(Not connected to Dragon)", false);
+        }
     }
 
     lv_textarea_set_text(s_textarea, "");

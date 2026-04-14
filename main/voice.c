@@ -2129,6 +2129,15 @@ esp_err_t voice_send_text(const char *text)
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
     if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
 
+    /* U13: Reject text send while voice pipeline is active (LISTENING/PROCESSING/SPEAKING).
+     * Both pipelines share the same Dragon WS and conversation context — concurrent
+     * sends corrupt the session state. Only allow text from READY or IDLE+connected. */
+    if (s_state == VOICE_STATE_LISTENING || s_state == VOICE_STATE_PROCESSING ||
+        s_state == VOICE_STATE_SPEAKING) {
+        ESP_LOGW(TAG, "voice_send_text: rejected — voice pipeline active (state=%d)", s_state);
+        return ESP_ERR_INVALID_STATE;
+    }
+
     /* Build JSON: {"type":"text","content":"..."} */
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "type", "text");

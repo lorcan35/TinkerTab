@@ -493,7 +493,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 
 void ui_voice_show(void)
 {
-    if (s_visible) return;
+    if (!s_overlay || s_visible) return;
 
     /* Cancel any in-flight fade-out animation */
     lv_anim_delete(s_overlay, fade_overlay_cb);
@@ -519,7 +519,7 @@ void ui_voice_show(void)
 
 void ui_voice_hide(void)
 {
-    if (!s_visible) return;
+    if (!s_overlay || !s_visible) return;
     s_visible = false;
 
     stop_all_anims();
@@ -600,6 +600,7 @@ static void build_overlay(void)
 
     /* Full-screen overlay backdrop */
     s_overlay = lv_obj_create(layer);
+    if (!s_overlay) { ESP_LOGE(TAG, "OOM creating voice overlay backdrop"); return; }
     lv_obj_set_size(s_overlay, SW, SH);
     lv_obj_set_pos(s_overlay, 0, 0);
     lv_obj_set_style_radius(s_overlay, 0, 0);
@@ -613,15 +614,21 @@ static void build_overlay(void)
      * to widgets below), but no event handler attached. */
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Build child elements */
+    /* Build child elements — bail out if any sub-builder fails (U17) */
     build_orb(s_overlay);
+    if (!s_orb_container) { ESP_LOGE(TAG, "OOM creating voice orb"); return; }
     build_wave_bars(s_overlay);
+    if (!s_wave_cont) { ESP_LOGE(TAG, "OOM creating voice wave bars"); return; }
     build_close_button(s_overlay);
+    if (!s_close_btn) { ESP_LOGE(TAG, "OOM creating voice close btn"); return; }
     build_send_button(s_overlay);
+    if (!s_send_btn) { ESP_LOGE(TAG, "OOM creating voice send btn"); return; }
     build_chat_area(s_overlay);
+    if (!s_chat_cont) { ESP_LOGE(TAG, "OOM creating voice chat area"); return; }
 
     /* Status label — below orb (position adjusts per state) */
     s_lbl_status = lv_label_create(s_overlay);
+    if (!s_lbl_status) { ESP_LOGE(TAG, "OOM creating voice status label"); return; }
     lv_label_set_text(s_lbl_status, "");
     lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
@@ -632,6 +639,7 @@ static void build_overlay(void)
 
     /* Transcript label — kept for backward compat / simple states */
     s_lbl_transcript = lv_label_create(s_overlay);
+    if (!s_lbl_transcript) { ESP_LOGE(TAG, "OOM creating voice transcript label"); return; }
     lv_label_set_text(s_lbl_transcript, "");
     lv_obj_set_style_text_font(s_lbl_transcript, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_lbl_transcript, lv_color_hex(VO_TEXT_MID), 0);
@@ -642,6 +650,7 @@ static void build_overlay(void)
 
     /* Thinking dots label — inside chat area now */
     s_lbl_dots = lv_label_create(s_overlay);
+    if (!s_lbl_dots) { ESP_LOGE(TAG, "OOM creating voice dots label"); return; }
     lv_label_set_text(s_lbl_dots, "");
     lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE_DIM), 0);
@@ -651,6 +660,7 @@ static void build_overlay(void)
 
     /* Recording duration label — shown during LISTENING below status */
     s_lbl_rec_time = lv_label_create(s_overlay);
+    if (!s_lbl_rec_time) { ESP_LOGE(TAG, "OOM creating voice rec time label"); return; }
     lv_label_set_text(s_lbl_rec_time, "0:00");
     lv_obj_set_style_text_font(s_lbl_rec_time, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_TEXT_FAINT), 0);
@@ -668,6 +678,7 @@ static void build_orb(lv_obj_t *parent)
 {
     /* Invisible container for logical grouping (moved up to make room for chat) */
     s_orb_container = lv_obj_create(parent);
+    if (!s_orb_container) { ESP_LOGE(TAG, "OOM creating orb container"); return; }
     lv_obj_set_size(s_orb_container, ORB_SZ_SPEAK + 20, ORB_SZ_SPEAK + 20);
     lv_obj_align(s_orb_container, LV_ALIGN_CENTER, 0, ORB_Y_OFFSET);
     lv_obj_set_style_bg_opa(s_orb_container, LV_OPA_TRANSP, 0);
@@ -688,6 +699,7 @@ static void build_orb(lv_obj_t *parent)
         lv_opa_t opa = (lv_opa_t)(10 + (int)(28.0f * frac));
 
         s_orb_glow[i] = lv_obj_create(s_orb_container);
+        if (!s_orb_glow[i]) { ESP_LOGE(TAG, "OOM creating orb glow layer %d", i); return; }
         lv_obj_set_size(s_orb_glow[i], sz, sz);
         lv_obj_center(s_orb_glow[i]);
         lv_obj_set_style_radius(s_orb_glow[i], LV_RADIUS_CIRCLE, 0);
@@ -700,6 +712,7 @@ static void build_orb(lv_obj_t *parent)
 
     /* Outer ring — thin stroke, breathing animation target */
     s_orb_ring = lv_obj_create(s_orb_container);
+    if (!s_orb_ring) { ESP_LOGE(TAG, "OOM creating orb ring"); return; }
     lv_obj_set_size(s_orb_ring, ORB_SZ_LISTEN, ORB_SZ_LISTEN);
     lv_obj_center(s_orb_ring);
     lv_obj_set_style_radius(s_orb_ring, LV_RADIUS_CIRCLE, 0);
@@ -718,6 +731,7 @@ static void build_wave_bars(lv_obj_t *parent)
     int32_t total_w = WAVE_BARS * WAVE_BAR_W + (WAVE_BARS - 1) * WAVE_BAR_GAP;
 
     s_wave_cont = lv_obj_create(parent);
+    if (!s_wave_cont) { ESP_LOGE(TAG, "OOM creating wave container"); return; }
     lv_obj_set_size(s_wave_cont, total_w, WAVE_BAR_MAX_H);
     lv_obj_align(s_wave_cont, LV_ALIGN_CENTER, 0, ORB_SZ_SPEAK / 2 + ORB_Y_OFFSET + 20);
     lv_obj_set_style_bg_opa(s_wave_cont, LV_OPA_TRANSP, 0);
@@ -732,6 +746,7 @@ static void build_wave_bars(lv_obj_t *parent)
 
     for (int i = 0; i < WAVE_BARS; i++) {
         s_wave_bars[i] = lv_obj_create(s_wave_cont);
+        if (!s_wave_bars[i]) { ESP_LOGE(TAG, "OOM creating wave bar %d", i); return; }
         lv_obj_set_size(s_wave_bars[i], WAVE_BAR_W, WAVE_BAR_MIN_H);
         lv_obj_set_style_radius(s_wave_bars[i], WAVE_BAR_W / 2, 0);
         lv_obj_set_style_bg_color(s_wave_bars[i], lv_color_hex(VO_GREEN), 0);
@@ -749,6 +764,7 @@ static void build_wave_bars(lv_obj_t *parent)
 static void build_close_button(lv_obj_t *parent)
 {
     s_close_btn = lv_obj_create(parent);
+    if (!s_close_btn) { ESP_LOGE(TAG, "OOM creating close button"); return; }
     lv_obj_set_size(s_close_btn, CLOSE_BTN_SZ, CLOSE_BTN_SZ);
     lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT,
                  -(int32_t)CLOSE_BTN_MARGIN, CLOSE_BTN_MARGIN);
@@ -760,6 +776,7 @@ static void build_close_button(lv_obj_t *parent)
     lv_obj_clear_flag(s_close_btn, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *x_lbl = lv_label_create(s_close_btn);
+    if (!x_lbl) { ESP_LOGE(TAG, "OOM creating close label"); return; }
     lv_label_set_text(x_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(x_lbl, lv_color_hex(VO_CLOSE_TEXT), 0);
     lv_obj_set_style_text_font(x_lbl, &lv_font_montserrat_24, 0);
@@ -777,6 +794,7 @@ static void build_close_button(lv_obj_t *parent)
 static void build_send_button(lv_obj_t *parent)
 {
     s_send_btn = lv_obj_create(parent);
+    if (!s_send_btn) { ESP_LOGE(TAG, "OOM creating send button"); return; }
     lv_obj_set_size(s_send_btn, SEND_BTN_SZ, SEND_BTN_SZ);
     lv_obj_set_style_radius(s_send_btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_send_btn, lv_color_hex(0xFF5252), 0); /* coral-red */
@@ -791,6 +809,7 @@ static void build_send_button(lv_obj_t *parent)
 
     /* Inner square "stop" icon */
     lv_obj_t *stop_icon = lv_obj_create(s_send_btn);
+    if (!stop_icon) { ESP_LOGE(TAG, "OOM creating stop icon"); return; }
     lv_obj_set_size(stop_icon, SEND_ICON_SZ, SEND_ICON_SZ);
     lv_obj_set_style_radius(stop_icon, 4, 0);
     lv_obj_set_style_bg_color(stop_icon, lv_color_hex(0xFFFFFF), 0);
@@ -816,6 +835,7 @@ static lv_obj_t *create_bubble(lv_obj_t *parent, uint32_t bg_hex, uint32_t borde
                                 lv_align_t align, lv_obj_t **lbl_out)
 {
     lv_obj_t *bubble = lv_obj_create(parent);
+    if (!bubble) { ESP_LOGE(TAG, "OOM creating chat bubble"); *lbl_out = NULL; return NULL; }
     lv_obj_set_width(bubble, CHAT_BUBBLE_MAX_W);
     lv_obj_set_style_radius(bubble, CHAT_BUBBLE_RAD, 0);
     lv_obj_set_style_bg_color(bubble, lv_color_hex(bg_hex), 0);
@@ -838,6 +858,7 @@ static lv_obj_t *create_bubble(lv_obj_t *parent, uint32_t bg_hex, uint32_t borde
 
     /* Text label inside bubble */
     lv_obj_t *lbl = lv_label_create(bubble);
+    if (!lbl) { ESP_LOGE(TAG, "OOM creating bubble label"); *lbl_out = NULL; return bubble; }
     lv_label_set_text(lbl, "");
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(VO_TEXT_BRIGHT), 0);
@@ -852,6 +873,7 @@ static void build_chat_area(lv_obj_t *parent)
 {
     /* Scrollable chat container */
     s_chat_cont = lv_obj_create(parent);
+    if (!s_chat_cont) { ESP_LOGE(TAG, "OOM creating chat container"); return; }
     lv_obj_set_pos(s_chat_cont, 0, CHAT_TOP);
     lv_obj_set_size(s_chat_cont, SW, CHAT_BOTTOM - CHAT_TOP);
     lv_obj_set_style_bg_opa(s_chat_cont, LV_OPA_TRANSP, 0);
