@@ -238,7 +238,7 @@ uint8_t tab5_settings_get_voice_mode(void)
 
 esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 {
-    if (mode > 2) mode = 0;
+    if (mode > 3) mode = 0;
     return set_u8("vmode", mode);
 }
 

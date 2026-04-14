@@ -840,6 +840,14 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     return ret;
 }
 
+/* Async wrapper for lv_async_call — refreshes home mode badge on LVGL thread */
+static void async_refresh_mode_badge(void *arg)
+{
+    (void)arg;
+    extern void ui_home_refresh_mode_badge(void);
+    ui_home_refresh_mode_badge();
+}
+
 /* POST /mode?m=0|1|2|3&model=... — switch voice mode (3=TinkerClaw) */
 static esp_err_t mode_set_handler(httpd_req_t *req)
 {
@@ -872,10 +880,14 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
         voice_send_config_update((int)mode, model[0] ? model : NULL);
     }
 
+    /* Refresh home screen mode badge (runs on LVGL thread) */
+    lv_async_call(async_refresh_mode_badge, NULL);
+
     /* Return current state */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "voice_mode", mode);
-    cJSON_AddStringToObject(root, "mode_name", mode == 0 ? "local" : mode == 1 ? "hybrid" : "cloud");
+    const char *mode_names[] = {"local", "hybrid", "cloud", "tinkerclaw"};
+    cJSON_AddStringToObject(root, "mode_name", mode <= 3 ? mode_names[mode] : "unknown");
     char cur_model[64];
     tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
     cJSON_AddStringToObject(root, "llm_model", cur_model);

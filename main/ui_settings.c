@@ -72,6 +72,7 @@ static inline void feed_wdt(void) {
 #define TAB_LOCAL    0x22C55E
 #define TAB_HYBRID   0xEAB308
 #define TAB_CLOUD    0x3B82F6
+#define TAB_TINKERCLAW 0xE11D48
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
@@ -117,12 +118,15 @@ static lv_timer_t *s_refresh_timer = NULL;
 static lv_obj_t *s_tab_local      = NULL;
 static lv_obj_t *s_tab_hybrid     = NULL;
 static lv_obj_t *s_tab_cloud      = NULL;
+static lv_obj_t *s_tab_tinkerclaw = NULL;
 static lv_obj_t *s_local_card     = NULL;
 static lv_obj_t *s_hybrid_card    = NULL;
 static lv_obj_t *s_cloud_card     = NULL;
 static lv_obj_t *s_local_content[4]  = {NULL};
 static lv_obj_t *s_hybrid_content[4] = {NULL};
 static lv_obj_t *s_cloud_content[4]  = {NULL};
+static lv_obj_t *s_tinkerclaw_card   = NULL;
+static lv_obj_t *s_tinkerclaw_content[4] = {NULL};
 static uint8_t   s_active_tab     = 0;
 
 /* Cloud model IDs matching dropdown order */
@@ -268,8 +272,8 @@ static void voice_tab_switch(uint8_t new_tab)
 {
     if (new_tab == s_active_tab) return;
 
-    lv_obj_t *tabs[] = { s_tab_local, s_tab_hybrid, s_tab_cloud };
-    lv_obj_t *cards[] = { s_local_card, s_hybrid_card, s_cloud_card };
+    lv_obj_t *tabs[] = { s_tab_local, s_tab_hybrid, s_tab_cloud, s_tab_tinkerclaw };
+    lv_obj_t *cards[] = { s_local_card, s_hybrid_card, s_cloud_card, s_tinkerclaw_card };
 
     /* Style old tab as inactive */
     if (tabs[s_active_tab]) {
@@ -281,7 +285,7 @@ static void voice_tab_switch(uint8_t new_tab)
         lv_obj_add_flag(cards[s_active_tab], LV_OBJ_FLAG_HIDDEN);
 
     /* Style new tab as active */
-    uint32_t tab_colors[] = { TAB_LOCAL, TAB_HYBRID, TAB_CLOUD };
+    uint32_t tab_colors[] = { TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW };
     if (tabs[new_tab]) {
         lv_obj_set_style_bg_color(tabs[new_tab], lv_color_hex(tab_colors[new_tab]), 0);
         lv_obj_set_style_text_color(tabs[new_tab], lv_color_hex(0x000000), 0);
@@ -294,13 +298,15 @@ static void voice_tab_switch(uint8_t new_tab)
 
     tab5_settings_set_voice_mode(new_tab);
     ESP_LOGI(TAG, "Voice tab: %d (%s)", new_tab,
-             new_tab == 0 ? "local" : new_tab == 1 ? "hybrid" : "cloud");
+             new_tab == 0 ? "local" : new_tab == 1 ? "hybrid" :
+             new_tab == 2 ? "cloud" : "tinkerclaw");
     send_voice_config();
 }
 
-static void cb_tab_local(lv_event_t *e)  { (void)e; voice_tab_switch(0); }
-static void cb_tab_hybrid(lv_event_t *e) { (void)e; voice_tab_switch(1); }
-static void cb_tab_cloud(lv_event_t *e)  { (void)e; voice_tab_switch(2); }
+static void cb_tab_local(lv_event_t *e)      { (void)e; voice_tab_switch(0); }
+static void cb_tab_hybrid(lv_event_t *e)     { (void)e; voice_tab_switch(1); }
+static void cb_tab_cloud(lv_event_t *e)      { (void)e; voice_tab_switch(2); }
+static void cb_tab_tinkerclaw(lv_event_t *e) { (void)e; voice_tab_switch(3); }
 
 static void cb_local_model(lv_event_t *e)
 {
@@ -737,9 +743,9 @@ lv_obj_t *ui_settings_create(void)
 
     /* Three pill-shaped tab buttons */
     s_active_tab = tab5_settings_get_voice_mode();
-    if (s_active_tab > 2) s_active_tab = 0;
+    if (s_active_tab > 3) s_active_tab = 0;
 
-    int tab_w = 210;
+    int tab_w = 158;
     int tab_h = 40;
     int tab_gap = 10;
     int tab_x0 = SIDE_PAD;
@@ -808,6 +814,28 @@ lv_obj_t *ui_settings_create(void)
         lv_label_set_text(tc, "Cloud");
         lv_obj_set_style_text_font(tc, &lv_font_montserrat_16, 0);
         lv_obj_center(tc);
+
+        feed_wdt(); /* mid-section yield — before TinkerClaw tab */
+
+        /* TinkerClaw tab */
+        s_tab_tinkerclaw = lv_button_create(s_scroll);
+        lv_obj_remove_style_all(s_tab_tinkerclaw);
+        lv_obj_set_pos(s_tab_tinkerclaw, tab_x0 + 3 * (tab_w + tab_gap), y);
+        lv_obj_set_size(s_tab_tinkerclaw, tab_w, tab_h);
+        lv_obj_set_style_radius(s_tab_tinkerclaw, 20, 0);
+        lv_obj_set_style_bg_opa(s_tab_tinkerclaw, LV_OPA_COVER, 0);
+        if (s_active_tab == 3) {
+            lv_obj_set_style_bg_color(s_tab_tinkerclaw, lv_color_hex(TAB_TINKERCLAW), 0);
+            lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x000000), 0);
+        } else {
+            lv_obj_set_style_bg_color(s_tab_tinkerclaw, lv_color_hex(CARD_COLOR), 0);
+            lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x666666), 0);
+        }
+        lv_obj_add_event_cb(s_tab_tinkerclaw, cb_tab_tinkerclaw, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *tt = lv_label_create(s_tab_tinkerclaw);
+        lv_label_set_text(tt, "TinkerClaw");
+        lv_obj_set_style_text_font(tt, &lv_font_montserrat_16, 0);
+        lv_obj_center(tt);
     }
     y += tab_h + 10;
 
@@ -956,6 +984,39 @@ lv_obj_t *ui_settings_create(void)
         s_cloud_content[3] = NULL;
 
         if (s_active_tab != 2) lv_obj_add_flag(s_cloud_card, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    /* ── TINKERCLAW card (rose tint) ────────────────────────────────────── */
+    {
+        s_tinkerclaw_card = lv_obj_create(s_scroll);
+        lv_obj_remove_style_all(s_tinkerclaw_card);
+        lv_obj_set_pos(s_tinkerclaw_card, SIDE_PAD, card_y);
+        lv_obj_set_size(s_tinkerclaw_card, CONTENT_W, card_h);
+        lv_obj_set_style_bg_color(s_tinkerclaw_card, lv_color_hex(0x1A0D12), 0);
+        lv_obj_set_style_bg_opa(s_tinkerclaw_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(s_tinkerclaw_card, 1, 0);
+        lv_obj_set_style_border_color(s_tinkerclaw_card, lv_color_hex(0xE11D4833), 0);
+        lv_obj_set_style_border_opa(s_tinkerclaw_card, (lv_opa_t)0x33, 0);
+        lv_obj_set_style_radius(s_tinkerclaw_card, 8, 0);
+        lv_obj_clear_flag(s_tinkerclaw_card, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *k1 = lv_label_create(s_tinkerclaw_card);
+        lv_label_set_text(k1, "Agent mode \xe2\x80\x94 TinkerClaw gateway");
+        lv_obj_set_style_text_color(k1, lv_color_hex(TAB_TINKERCLAW), 0);
+        lv_obj_set_style_text_font(k1, &lv_font_montserrat_18, 0);
+        lv_obj_set_pos(k1, 16, 20);
+        s_tinkerclaw_content[0] = k1;
+
+        lv_obj_t *k2 = lv_label_create(s_tinkerclaw_card);
+        lv_label_set_text(k2, "handles skills, memory, and model selection");
+        lv_obj_set_style_text_color(k2, lv_color_hex(TAB_TINKERCLAW), 0);
+        lv_obj_set_style_text_font(k2, &lv_font_montserrat_18, 0);
+        lv_obj_set_pos(k2, 16, 60);
+        s_tinkerclaw_content[1] = k2;
+        s_tinkerclaw_content[2] = NULL;
+        s_tinkerclaw_content[3] = NULL;
+
+        if (s_active_tab != 3) lv_obj_add_flag(s_tinkerclaw_card, LV_OBJ_FLAG_HIDDEN);
     }
 
     y = card_y + card_h + 10;
@@ -1200,12 +1261,15 @@ void ui_settings_destroy(void)
     s_tab_local     = NULL;
     s_tab_hybrid    = NULL;
     s_tab_cloud     = NULL;
+    s_tab_tinkerclaw = NULL;
     s_local_card    = NULL;
     s_hybrid_card   = NULL;
     s_cloud_card    = NULL;
+    s_tinkerclaw_card = NULL;
     memset(s_local_content,  0, sizeof(s_local_content));
     memset(s_hybrid_content, 0, sizeof(s_hybrid_content));
     memset(s_cloud_content,  0, sizeof(s_cloud_content));
+    memset(s_tinkerclaw_content, 0, sizeof(s_tinkerclaw_content));
     s_dragon_ta     = NULL;
     s_ota_btn_label = NULL;
     s_ota_apply_btn = NULL;

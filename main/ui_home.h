@@ -24,3 +24,6 @@ lv_obj_t *ui_home_get_tile(int page);
 
 /** Navigate to settings screen (spawns background task). */
 void ui_home_nav_settings(void);
+
+/** Refresh mode badge from NVS (call after debug API mode change). */
+void ui_home_refresh_mode_badge(void);

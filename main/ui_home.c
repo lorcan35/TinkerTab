@@ -957,3 +957,9 @@ void ui_home_go_home(void)
         update_nav_ui(0);
     }
 }
+
+void ui_home_refresh_mode_badge(void)
+{
+    s_badge_mode = tab5_settings_get_voice_mode();
+    update_mode_badge(s_badge_mode);
+}

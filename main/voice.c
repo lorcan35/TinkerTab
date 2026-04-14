@@ -583,12 +583,22 @@ static void handle_text_message(const char *data, int len)
             tab5_settings_set_voice_mode(0);
             voice_set_state(VOICE_STATE_READY, error->valuestring);
         }
-        /* Normal ACK: persist voice_mode */
+        /* Normal ACK: persist voice_mode (may be at top level or inside config) */
         cJSON *vmode = cJSON_GetObjectItem(root, "voice_mode");
+        if (!cJSON_IsNumber(vmode)) {
+            /* Try inside "config" object (Dragon success ACK nests it there) */
+            cJSON *config_obj = cJSON_GetObjectItem(root, "config");
+            if (config_obj) {
+                vmode = cJSON_GetObjectItem(config_obj, "voice_mode");
+            }
+        }
         if (cJSON_IsNumber(vmode)) {
             uint8_t mode = (uint8_t)vmode->valueint;
             tab5_settings_set_voice_mode(mode);
             ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
+            /* Refresh home badge from LVGL thread */
+            extern void ui_home_refresh_mode_badge(void);
+            lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
         }
         /* Backward compat: cloud_mode bool */
         cJSON *config = cJSON_GetObjectItem(root, "config");
