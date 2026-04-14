@@ -41,6 +41,13 @@ static const char *TAG = "settings";
 static nvs_handle_t s_nvs = 0;
 static bool         s_inited = false;
 
+/* US-HW17: NVS write counter — incremented on every nvs_commit() for wear monitoring.
+ * Atomic type not needed: all NVS writes go through set_str/set_u8/set_u16 which
+ * are only called from the LVGL task (Core 0) or settings init. The counter is
+ * read from the heap watchdog task (Core 1) but a torn read of a uint32_t on
+ * ESP32-P4 (32-bit aligned) is not possible — single-instruction load. */
+static uint32_t s_nvs_write_count = 0;
+
 /* ── Init ─────────────────────────────────────────────────────────────── */
 
 esp_err_t tab5_settings_init(void)
@@ -96,6 +103,7 @@ static esp_err_t set_str(const char *key, const char *val)
     esp_err_t err = nvs_set_str(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
+        if (err == ESP_OK) s_nvs_write_count++;
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s", key, esp_err_to_name(err));
@@ -124,6 +132,7 @@ static esp_err_t set_u8(const char *key, uint8_t val)
     esp_err_t err = nvs_set_u8(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
+        if (err == ESP_OK) s_nvs_write_count++;
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u8(%s) failed: %s", key, esp_err_to_name(err));
@@ -152,6 +161,7 @@ static esp_err_t set_u16(const char *key, uint16_t val)
     esp_err_t err = nvs_set_u16(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
+        if (err == ESP_OK) s_nvs_write_count++;
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u16(%s) failed: %s", key, esp_err_to_name(err));
@@ -346,4 +356,11 @@ esp_err_t tab5_settings_get_auth_token(char *buf, size_t len)
 esp_err_t tab5_settings_set_auth_token(const char *token)
 {
     return set_str("auth_tok", token);
+}
+
+/* ── NVS write counter (US-HW17) ────────────────────────────────────────── */
+
+uint32_t tab5_settings_get_nvs_write_count(void)
+{
+    return s_nvs_write_count;
 }

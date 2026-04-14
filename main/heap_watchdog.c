@@ -14,6 +14,7 @@
  */
 
 #include "heap_watchdog.h"
+#include "settings.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -47,6 +48,10 @@ static void heap_watchdog_task(void *arg)
                  (unsigned)(psram_largest / 1024),
                  (unsigned)(psram_free / 1024),
                  (unsigned)(internal_free / 1024));
+
+        /* US-HW17: Log NVS write count for flash wear monitoring */
+        ESP_LOGI(TAG, "NVS writes this session: %lu",
+                 (unsigned long)tab5_settings_get_nvs_write_count());
 
         /* Classic fragmentation: plenty of total free space but no large contiguous block */
         if (psram_largest < HEAP_WD_FRAG_BLOCK_MIN && psram_free > HEAP_WD_FRAG_TOTAL_MIN) {

@@ -31,3 +31,10 @@ lv_obj_t *ui_voice_get_mic_btn(void);
 
 // Suppress overlay during boot auto-connect (only update mic dot state)
 void ui_voice_set_boot_connect(bool silent);
+
+/**
+ * Show dictation auto-stop countdown warning on the status label.
+ * Called from voice.c mic task via lv_async_call when silence exceeds 3s/4s.
+ * @param seconds_remaining  2 or 1 (seconds until auto-stop), or 0 to clear warning.
+ */
+void ui_voice_show_auto_stop_warning(int seconds_remaining);

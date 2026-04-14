@@ -24,6 +24,7 @@
 #include "freertos/task.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 
 static const char *TAG = "ui_voice";
 
@@ -1538,4 +1539,46 @@ static void orb_speak_click_cb(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Orb tapped during speaking — interrupting TTS");
     voice_cancel();
+}
+
+/* ================================================================
+ *  Dictation auto-stop countdown warning (US-PR18)
+ *
+ *  Called from voice.c mic task via lv_async_call. Updates the status
+ *  label to warn user that dictation will auto-stop due to silence.
+ * ================================================================ */
+
+/* Async callback data — encoded as (void*)(intptr_t) seconds_remaining */
+static void async_auto_stop_warning(void *arg)
+{
+    int secs = (int)(intptr_t)arg;
+
+    /* Only update if we're still in LISTENING/dictation state */
+    if (s_cur_state != VOICE_STATE_LISTENING) return;
+    if (!s_lbl_status) return;
+
+    if (secs <= 0) {
+        /* Clear warning — user started speaking again */
+        if (voice_get_mode() == VOICE_MODE_DICTATE) {
+            lv_label_set_text(s_lbl_status, "Dictating...");
+            lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
+            lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        }
+    } else {
+        /* Show countdown: "Stopping in 2..." or "Stopping in 1..." */
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Stopping in %d...", secs);
+        lv_label_set_text(s_lbl_status, buf);
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF5252), 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+    }
+    lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
+                 ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
+    lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ui_voice_show_auto_stop_warning(int seconds_remaining)
+{
+    /* Thread-safe: schedules LVGL update on Core 0 via async call */
+    lv_async_call(async_auto_stop_warning, (void *)(intptr_t)seconds_remaining);
 }

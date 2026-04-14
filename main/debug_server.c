@@ -1383,6 +1383,8 @@ static esp_err_t selftest_handler(httpd_req_t *req)
         cJSON_AddStringToObject(t, "name", "nvs_settings");
         cJSON_AddBoolToObject(t, "pass", ok);
         cJSON_AddStringToObject(t, "dragon_host", host);
+        cJSON_AddNumberToObject(t, "nvs_writes_this_session",
+                                (double)tab5_settings_get_nvs_write_count());
         cJSON_AddItemToArray(tests, t);
         if (ok) pass++; else fail++;
     }

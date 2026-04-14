@@ -96,3 +96,8 @@ esp_err_t tab5_settings_set_wake_word(uint8_t enabled);
 /** Read auth token from NVS. Returns ESP_OK if found and non-empty. */
 esp_err_t tab5_settings_get_auth_token(char *buf, size_t len);
 esp_err_t tab5_settings_set_auth_token(const char *token);
+
+/* ── NVS write counter (US-HW17) ────────────────────────────────────────── */
+
+/** Return the number of successful nvs_commit() calls this session (wear monitoring). */
+uint32_t tab5_settings_get_nvs_write_count(void);

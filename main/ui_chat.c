@@ -84,6 +84,8 @@ static int          s_next_y     = 0;      /* Running Y offset in scroll area */
 static voice_state_t s_last_state = VOICE_STATE_IDLE;
 static bool         s_conv_created = false; /* Has conversation UI been built? */
 static int32_t      s_touch_start_x = -1;  /* X at touch-down for edge-swipe gating */
+static bool         s_clear_guard = false;  /* Guard flag: blocks input after New Chat (US-PR03) */
+static lv_timer_t  *s_clear_timer = NULL;   /* 500ms guard timer for clear_history ACK */
 
 #define MAX_MESSAGES     50
 #define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
@@ -287,9 +289,52 @@ static const char *s_tinkerclaw_models[] = {
 #define N_CLOUD_MODELS      (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
 #define N_TINKERCLAW_MODELS (sizeof(s_tinkerclaw_models) / sizeof(s_tinkerclaw_models[0]))
 
+/**
+ * Validate that the NVS-stored llm_mdl belongs to the current voice mode's
+ * model list.  If not (e.g. mode changed since the model was saved), reset
+ * to the first model in the current mode's list and persist + notify Dragon.
+ * (US-PR05)
+ */
+static void validate_model_for_mode(void)
+{
+    uint8_t mode = tab5_settings_get_voice_mode();
+    char cur_model[64];
+    tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+
+    const char **models;
+    int n;
+    if (mode == VOICE_MODE_TINKERCLAW) {
+        models = s_tinkerclaw_models;
+        n = N_TINKERCLAW_MODELS;
+    } else if (mode == VOICE_MODE_CLOUD) {
+        models = s_cloud_models;
+        n = N_CLOUD_MODELS;
+    } else {
+        models = s_local_models;
+        n = N_LOCAL_MODELS;
+    }
+
+    /* Check if current model is in the mode's list */
+    bool found = false;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(cur_model, models[i]) == 0) { found = true; break; }
+    }
+
+    if (!found) {
+        ESP_LOGW(TAG, "NVS model '%s' invalid for mode %d — resetting to '%s'",
+                 cur_model, mode, models[0]);
+        tab5_settings_set_llm_model(models[0]);
+        voice_send_config_update(mode, models[0]);
+    }
+}
+
 static void update_model_label(void)
 {
     if (!s_model_lbl) return;
+
+    /* Ensure NVS model matches current voice mode (US-PR05) */
+    validate_model_for_mode();
+
     char model_buf[64];
     tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
     uint8_t mode = tab5_settings_get_voice_mode();
@@ -346,10 +391,30 @@ static void cb_model_cycle(lv_event_t *e)
     ESP_LOGI(TAG, "Model cycled to: %s (mode=%d)", models[idx], mode);
 }
 
+/* Timer callback: lift the clear_history guard after 500ms (US-PR03) */
+static void clear_guard_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    s_clear_guard = false;
+    s_clear_timer = NULL;
+    ESP_LOGI(TAG, "New-chat guard lifted — input re-enabled");
+}
+
 static void cb_new_chat(lv_event_t *e)
 {
     (void)e;
+
+    /* Prevent rapid double-taps while guard is active */
+    if (s_clear_guard) return;
+
     voice_clear_history();
+
+    /* Engage 500ms guard — blocks send/mic until Dragon processes the clear (US-PR03) */
+    s_clear_guard = true;
+    if (s_clear_timer) { lv_timer_delete(s_clear_timer); s_clear_timer = NULL; }
+    s_clear_timer = lv_timer_create(clear_guard_timer_cb, 500, NULL);
+    lv_timer_set_repeat_count(s_clear_timer, 1);
+
     /* Clear all messages from scroll */
     if (s_msg_scroll) lv_obj_clean(s_msg_scroll);
     s_msg_count = 0;
@@ -362,8 +427,8 @@ static void cb_new_chat(lv_event_t *e)
     s_archived_lbl = NULL;
     s_archived_shown = false;
     /* Re-add welcome */
-    ui_chat_add_message("Fresh conversation started!", false);
-    ESP_LOGI(TAG, "New chat — history cleared");
+    ui_chat_add_message("Clearing...", false);
+    ESP_LOGI(TAG, "New chat — history cleared, 500ms guard active");
 }
 
 /* ── Forward declarations ──────────────────────────────────────── */
@@ -499,6 +564,11 @@ static void cb_textarea_click(lv_event_t *e)
 static void cb_mic(lv_event_t *e)
 {
     (void)e;
+    /* Block input during New Chat guard window (US-PR03) */
+    if (s_clear_guard) {
+        ESP_LOGI(TAG, "Mic blocked — clear_history guard active");
+        return;
+    }
     /* If on Chat Home, enter conversation first */
     if (!s_in_conversation) {
         enter_conversation();
@@ -521,6 +591,11 @@ static void cb_send(lv_event_t *e)
 {
     (void)e;
     if (!s_textarea) return;
+    /* Block input during New Chat guard window (US-PR03) */
+    if (s_clear_guard) {
+        ESP_LOGI(TAG, "Send blocked — clear_history guard active");
+        return;
+    }
     ui_keyboard_hide();
     const char *txt = lv_textarea_get_text(s_textarea);
     if (!txt || !txt[0]) return;

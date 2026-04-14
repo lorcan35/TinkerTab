@@ -17,6 +17,7 @@
 
 #include "voice.h"
 #include "afe.h"
+#include "ui_voice.h"
 #include "ui_notes.h"
 #include "ui_chat.h"
 #include "audio.h"
@@ -79,7 +80,7 @@ static const char *TAG = "tab5_voice";
 
 // Reconnect parameters
 #define VOICE_RECONNECT_BASE_MS  2000
-#define VOICE_RECONNECT_MAX_MS   15000
+#define VOICE_RECONNECT_MAX_MS   60000
 #define VOICE_CONNECT_TIMEOUT_MS 5000
 // Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
 #define VOICE_KEEPALIVE_MS       8000   /* ping every 8s during PROCESSING (was 15s — ngrok needs <20s) */
@@ -108,6 +109,8 @@ static const char *TAG = "tab5_voice";
 #define DICTATION_SILENCE_THRESHOLD  800   /* RMS below this = silence (Tab5 mic has higher noise floor) */
 #define DICTATION_SILENCE_FRAMES     25    /* 25 × 20ms = 500ms silence before segment (was 800ms) */
 #define DICTATION_AUTO_STOP_FRAMES   250   /* 250 × 20ms = 5s total silence → auto-stop */
+#define DICTATION_WARN_3S_FRAMES     150   /* 150 × 20ms = 3s silence → "Stopping in 2..." */
+#define DICTATION_WARN_4S_FRAMES     200   /* 200 × 20ms = 4s silence → "Stopping in 1..." */
 #define DICTATION_TEXT_SIZE          65536  /* 64KB for accumulated transcript (~2hrs, PSRAM) */
 #define MAX_RECORD_FRAMES_ASK        1500  /* 30s limit for Ask mode only */
 
@@ -177,8 +180,14 @@ static volatile bool s_disconnecting = false;  /* US-C21: guard against connect-
 static TaskHandle_t  s_reconnect_task = NULL;
 static volatile bool s_reconnect_enabled = false;
 #define RECONNECT_CHECK_MS     5000   /* check connection every 5s */
-#define RECONNECT_BACKOFF_MS   10000  /* wait 10s between reconnect attempts */
+#define RECONNECT_BACKOFF_MIN_MS  2000   /* initial backoff after failed reconnect (US-A01) */
+#define RECONNECT_BACKOFF_MAX_MS  60000  /* max backoff cap (US-A01) */
 #define IDLE_PING_INTERVAL_MS  8000   /* ping every 8s when idle/ready (was 10s — ngrok needs <20s) */
+
+// Keepalive degraded state (US-A05) — tolerance for missed pongs before disconnect
+#define KEEPALIVE_MISS_MAX     3      /* disconnect after 3 consecutive missed pongs (~24s) */
+static volatile int64_t s_last_pong_us = 0;          /* timestamp of last received pong */
+static volatile int     s_keepalive_miss_count = 0;   /* consecutive missed pong counter */
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -601,7 +610,12 @@ static void handle_text_message(const char *data, int len)
             ui_chat_push_message("assistant", s_llm_text);
         }
     } else if (strcmp(type_str, "pong") == 0) {
-        /* Dragon keepalive response — no action needed */
+        /* Dragon keepalive response — reset degraded state (US-A05) */
+        s_last_pong_us = esp_timer_get_time();
+        if (s_keepalive_miss_count > 0) {
+            ESP_LOGI(TAG, "Pong received — exiting degraded state (was %d missed)", s_keepalive_miss_count);
+            s_keepalive_miss_count = 0;
+        }
     } else if (strcmp(type_str, "config_update") == 0) {
         /* Check for error (auto-fallback notification from Dragon) */
         cJSON *error = cJSON_GetObjectItem(root, "error");
@@ -830,6 +844,7 @@ static void mic_capture_task(void *arg)
     int silence_frames = 0;
     int total_silence_frames = 0;
     bool had_speech = false;
+    bool auto_stop_warning_shown = false;  /* US-PR18: track if countdown warning is active */
 
     /* Adaptive VAD: calibrate threshold from first 500ms of ambient noise */
     #define CALIBRATION_FRAMES 25
@@ -994,11 +1009,24 @@ static void mic_capture_task(void *arg)
             if (rms < dictation_threshold) {
                 silence_frames++;
                 total_silence_frames++;
+
+                /* US-PR18: Visual countdown warning before auto-stop */
+                if (had_speech && total_silence_frames == DICTATION_WARN_3S_FRAMES) {
+                    ui_voice_show_auto_stop_warning(2);  /* "Stopping in 2..." */
+                    auto_stop_warning_shown = true;
+                } else if (had_speech && total_silence_frames == DICTATION_WARN_4S_FRAMES) {
+                    ui_voice_show_auto_stop_warning(1);  /* "Stopping in 1..." */
+                }
             } else {
                 if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
                     ESP_LOGI(TAG, "Dictation: pause (%dms), sending segment",
                              silence_frames * TAB5_VOICE_CHUNK_MS);
                     ws_send_text("{\"type\":\"segment\"}");
+                }
+                /* US-PR18: Clear countdown warning if user starts speaking again */
+                if (auto_stop_warning_shown) {
+                    ui_voice_show_auto_stop_warning(0);
+                    auto_stop_warning_shown = false;
                 }
                 silence_frames = 0;
                 total_silence_frames = 0;
@@ -1177,12 +1205,38 @@ static void ws_receive_task(void *arg)
             } else if (s_state == VOICE_STATE_READY) {
                 /* N1: Idle keepalive — detect dead TCP connections while READY.
                  * If Dragon restarts, TCP stays open but WS is dead. Periodic
-                 * ping detects this and triggers reconnect via watchdog. */
+                 * ping detects this and triggers reconnect via watchdog.
+                 *
+                 * US-A05: Degraded state — don't disconnect on first missed pong.
+                 * Track consecutive misses. After KEEPALIVE_MISS_MAX (3) misses,
+                 * THEN disconnect. During degraded state, send extra pings to
+                 * give Dragon a chance to recover. */
                 if ((now_us - s_last_keepalive_us) > (int64_t)IDLE_PING_INTERVAL_MS * 1000) {
+                    /* Check if previous ping got a pong (US-A05).
+                     * If s_last_pong_us < s_last_keepalive_us, the last ping
+                     * went unanswered — that's a missed pong. */
+                    if (s_last_keepalive_us > 0 && s_last_pong_us < s_last_keepalive_us) {
+                        s_keepalive_miss_count++;
+                        ESP_LOGW(TAG, "Keepalive: pong missed (%d/%d) — %s",
+                                 s_keepalive_miss_count, KEEPALIVE_MISS_MAX,
+                                 s_keepalive_miss_count >= KEEPALIVE_MISS_MAX
+                                     ? "disconnecting" : "degraded");
+
+                        if (s_keepalive_miss_count >= KEEPALIVE_MISS_MAX) {
+                            ESP_LOGW(TAG, "Keepalive: %d consecutive pongs missed — connection dead",
+                                     KEEPALIVE_MISS_MAX);
+                            s_keepalive_miss_count = 0;
+                            s_ws_connected = false;
+                            break;
+                        }
+                        /* Degraded: send another ping to probe (don't give up yet) */
+                    }
+
                     esp_err_t ping_err = ws_send_text("{\"type\":\"ping\"}");
                     s_last_keepalive_us = now_us;
                     if (ping_err != ESP_OK) {
-                        ESP_LOGW(TAG, "Idle ping failed — connection dead");
+                        ESP_LOGW(TAG, "Idle ping send failed — connection dead");
+                        s_keepalive_miss_count = 0;
                         s_ws_connected = false;
                         break;
                     }
@@ -1466,6 +1520,10 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
 
     s_ws_connected = true;
     s_stop_flag = false;
+
+    /* US-A05: Reset keepalive degraded state on fresh connection */
+    s_last_pong_us = esp_timer_get_time();
+    s_keepalive_miss_count = 0;
 
     // Send device registration as FIRST text frame (per protocol.md §1.1).
     // Must happen before spawning the receive task to guarantee ordering.
@@ -1965,7 +2023,7 @@ const char *voice_get_dictation_summary(void)
 static void reconnect_watchdog_task(void *arg)
 {
     ESP_LOGI(TAG, "Reconnect watchdog started");
-    int backoff_ms = RECONNECT_BACKOFF_MS;
+    uint32_t backoff_ms = RECONNECT_BACKOFF_MIN_MS;
 
     while (s_reconnect_enabled) {
         vTaskDelay(pdMS_TO_TICKS(RECONNECT_CHECK_MS));
@@ -1976,9 +2034,16 @@ static void reconnect_watchdog_task(void *arg)
          * not intentionally stopped (s_stop_flag), and not mid-disconnect (US-C21) */
         if (s_initialized && !s_ws_connected && !s_connect_in_progress
             && !s_stop_flag && !s_disconnecting) {
-            ESP_LOGI(TAG, "Watchdog: voice WS disconnected — reconnecting (backoff %dms)", backoff_ms);
+            /* US-A01: Exponential backoff with jitter.
+             * Prevents reconnect storm when Dragon is down or ngrok is flapping.
+             * Sequence: 2s, 4s, 8s, 16s, 32s, 60s (each + 0-1s random jitter).
+             * Without jitter, multiple devices reconnect in lockstep. */
+            uint32_t jitter = esp_random() % 1000;
+            uint32_t delay = backoff_ms + jitter;
+            ESP_LOGI(TAG, "Watchdog: voice WS disconnected — reconnecting in %lums (backoff %lu + jitter %lu)",
+                     (unsigned long)delay, (unsigned long)backoff_ms, (unsigned long)jitter);
 
-            vTaskDelay(pdMS_TO_TICKS(backoff_ms));
+            vTaskDelay(pdMS_TO_TICKS(delay));
             if (!s_reconnect_enabled || s_ws_connected) continue;
 
             char dhost[64];
@@ -1996,17 +2061,22 @@ static void reconnect_watchdog_task(void *arg)
 
                 if (s_ws_connected) {
                     ESP_LOGI(TAG, "Watchdog: reconnected successfully!");
-                    backoff_ms = RECONNECT_BACKOFF_MS;  /* reset backoff */
+                    backoff_ms = RECONNECT_BACKOFF_MIN_MS;  /* reset backoff on success */
                     /* S6: Sync pending notes that were created while offline */
                     extern void ui_notes_sync_pending(void);
                     ui_notes_sync_pending();
                 } else {
-                    ESP_LOGW(TAG, "Watchdog: reconnect failed");
-                    backoff_ms = (backoff_ms < 60000) ? backoff_ms * 2 : 60000;
+                    /* US-A01: Double backoff, cap at max */
+                    backoff_ms = backoff_ms * 2;
+                    if (backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
+                        backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+                    }
+                    ESP_LOGW(TAG, "Watchdog: reconnect failed — next backoff %lums",
+                             (unsigned long)backoff_ms);
                 }
             }
         } else if (s_ws_connected) {
-            backoff_ms = RECONNECT_BACKOFF_MS;  /* reset when connected */
+            backoff_ms = RECONNECT_BACKOFF_MIN_MS;  /* reset when connected */
         }
     }
 
