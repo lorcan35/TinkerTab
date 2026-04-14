@@ -535,16 +535,17 @@ static void handle_text_message(const char *data, int len)
             voice_set_state(VOICE_STATE_READY, NULL);
             ESP_LOGI(TAG, "Connected to Dragon voice server");
 
-            /* Restore voice mode from NVS — send config_update to Dragon
-             * so it matches the user's saved preference after reconnect. */
+            /* ALWAYS restore voice mode + model from NVS on reconnect.
+             * Dragon resets to local defaults on register — Tab5 must resend
+             * its saved config so Dragon matches the user's preference.
+             * Even mode=0 needs resend if user selected a non-default local model. */
             uint8_t saved_mode = tab5_settings_get_voice_mode();
-            if (saved_mode != 0) {
-                char saved_model[64] = {0};
-                tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
-                ESP_LOGI(TAG, "Restoring voice_mode=%d on reconnect", saved_mode);
-                voice_send_config_update((int)saved_mode,
-                                         saved_model[0] ? saved_model : NULL);
-            }
+            char saved_model[64] = {0};
+            tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
+            ESP_LOGI(TAG, "Restoring voice_mode=%d model='%s' on reconnect",
+                     saved_mode, saved_model[0] ? saved_model : "(default)");
+            voice_send_config_update((int)saved_mode,
+                                     saved_model[0] ? saved_model : NULL);
         }
     } else if (strcmp(type_str, "dictation_summary") == 0) {
         cJSON *title = cJSON_GetObjectItem(root, "title");

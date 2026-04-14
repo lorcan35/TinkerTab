@@ -219,6 +219,64 @@ static void cb_mode_cycle(lv_event_t *e)
     ESP_LOGI(TAG, "Mode cycled to %d", mode);
 }
 
+/* Model lists per mode — cycle through on tap */
+static const char *s_local_models[]  = {"qwen3:1.7b", "qwen3:0.6b", "qwen3:4b"};
+static const char *s_cloud_models[]  = {
+    "anthropic/claude-3.5-haiku", "anthropic/claude-sonnet-4-20250514",
+    "openai/gpt-4o-mini", "openai/gpt-4o",
+};
+#define N_LOCAL_MODELS  (sizeof(s_local_models) / sizeof(s_local_models[0]))
+#define N_CLOUD_MODELS  (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
+
+static void update_model_label(void)
+{
+    if (!s_model_lbl) return;
+    char model_buf[64];
+    tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
+    uint8_t mode = tab5_settings_get_voice_mode();
+    if (model_buf[0]) {
+        /* Show short name: strip "anthropic/" or "openai/" prefix */
+        const char *short_name = model_buf;
+        const char *slash = strrchr(model_buf, '/');
+        if (slash) short_name = slash + 1;
+        lv_label_set_text_fmt(s_model_lbl, LV_SYMBOL_EDIT " %s", short_name);
+    } else {
+        lv_label_set_text(s_model_lbl,
+            mode == 2 ? LV_SYMBOL_EDIT " claude-3.5-haiku" :
+                        LV_SYMBOL_EDIT " qwen3:1.7b");
+    }
+}
+
+static void cb_model_cycle(lv_event_t *e)
+{
+    (void)e;
+    uint8_t mode = tab5_settings_get_voice_mode();
+    char cur_model[64];
+    tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+
+    const char **models;
+    int n;
+    if (mode == 2) {
+        models = s_cloud_models;
+        n = N_CLOUD_MODELS;
+    } else {
+        models = s_local_models;
+        n = N_LOCAL_MODELS;
+    }
+
+    /* Find current index, advance to next */
+    int idx = 0;
+    for (int i = 0; i < n; i++) {
+        if (strcmp(cur_model, models[i]) == 0) { idx = i; break; }
+    }
+    idx = (idx + 1) % n;
+
+    tab5_settings_set_llm_model(models[idx]);
+    voice_send_config_update(mode, models[idx]);
+    update_model_label();
+    ESP_LOGI(TAG, "Model cycled to: %s (mode=%d)", models[idx], mode);
+}
+
 static void cb_new_chat(lv_event_t *e)
 {
     (void)e;
@@ -457,14 +515,7 @@ static void poll_voice_cb(lv_timer_t *t)
 
     /* Update model label on home panel */
     if (s_model_lbl && !s_in_conversation) {
-        char model_buf[64];
-        tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
-        if (model_buf[0]) {
-            /* Truncate long model names for display */
-            char display[32];
-            snprintf(display, sizeof(display), "%.30s", model_buf);
-            lv_label_set_text_fmt(s_model_lbl, "Model: %s", display);
-        }
+        update_model_label();
     }
 
     /* Update current session card preview */
@@ -707,20 +758,17 @@ static void build_home_panel(void)
 
     /* ── Model Bar (44px) ────────────────────────────────────── */
     s_model_lbl = lv_label_create(s_home_panel);
-    {
-        char model_buf[64];
-        tab5_settings_get_llm_model(model_buf, sizeof(model_buf));
-        if (model_buf[0]) {
-            char display[48];
-            snprintf(display, sizeof(display), "Model: %.30s", model_buf);
-            lv_label_set_text(s_model_lbl, display);
-        } else {
-            lv_label_set_text(s_model_lbl, "Model: Default (Local)");
-        }
-    }
+    lv_label_set_text(s_model_lbl, "");  /* Set by update_model_label() below */
     lv_obj_set_pos(s_model_lbl, 20, y + 10);
     lv_obj_set_style_text_color(s_model_lbl, lv_color_hex(0xAAAAAA), 0);
     lv_obj_set_style_text_font(s_model_lbl, &lv_font_montserrat_16, 0);
+    /* Make model label tappable — cycles models within current mode */
+    lv_obj_add_flag(s_model_lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_model_lbl, 10);
+    lv_obj_add_event_cb(s_model_lbl, cb_model_cycle, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_bg_opa(s_model_lbl, LV_OPA_10, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(s_model_lbl, lv_color_hex(0xFFFFFF), LV_STATE_PRESSED);
+    update_model_label();
 
     /* Status dot + label on right */
     s_home_status_dot = lv_obj_create(s_home_panel);
