@@ -214,18 +214,19 @@ curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 - **Offline Fallback:** If Dragon is unreachable on mic tap, auto-starts local SD card recording via Notes module.
 
 ### Three-Tier Voice Mode
-Settings dropdown: **Local / Hybrid / Full Cloud**
+Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 
 | Mode | STT | LLM | TTS | Latency | Cost |
 |------|-----|-----|-----|---------|------|
 | Local (0) | Moonshine | NPU/Ollama (default: qwen3:1.7b, 7.1 tok/s) | Piper | 2-5s | Free |
 | Hybrid (1) | OpenRouter gpt-audio-mini | Local (unchanged) | OpenRouter gpt-audio-mini | 4-8s | ~$0.02/req |
 | Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
+| TinkerClaw (3) | Moonshine (or OpenRouter) | TinkerClaw Gateway | Piper (or OpenRouter) | varies | varies |
 
 - **LLM Model Picker:** Settings dropdown: Local NPU / Local Ollama / Claude Haiku / Claude Sonnet / GPT-4o mini (enabled only in Full Cloud mode)
 - **Auto-Fallback:** If cloud STT/TTS fails, Dragon falls back to local for that request + sends `config_update` with `error` field → Tab5 auto-reverts to Local mode
-- **NVS:** `voice_mode` (uint8: 0/1/2), `llm_model` (string: model ID)
-- **Protocol:** `{"type":"config_update","voice_mode":0|1|2,"llm_model":"anthropic/claude-sonnet-4-20250514"}`
+- **NVS:** `voice_mode` (uint8: 0/1/2/3), `llm_model` (string: model ID)
+- **Protocol:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"anthropic/claude-sonnet-4-20250514"}`
 
 ## OTA Firmware Updates
 - **Dual OTA partitions:** ota_0 (3MB) + ota_1 (3MB) with otadata boot selector
@@ -289,6 +290,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Chat UI overhaul:** Live status bar (Ready/Processing/Speaking), tappable mode badge to cycle Local/Hybrid/Cloud, New Chat button, thinking + tool indicator bubbles during LLM processing.
 - **Touch feedback system:** `ui_feedback.h/c` module with pressed states on 30+ interactive elements — buttons darken, cards lighten border, icons dim, nav items brighten. 100ms ease-out transitions.
 - **Nav debounce 300ms:** Prevents rapid-tap crashes from animation race conditions (dismiss + create overlapping).
+- **TinkerClaw voice mode 3:** Added VOICE_MODE_TINKERCLAW=3 — routes LLM through TinkerClaw Gateway while STT/TTS use Moonshine/Piper locally or OpenRouter as fallback.
 - **Voice overlay instant hide:** `ui_voice_hide()` is instant — no fade animation. The 150ms fade-out caused three bugs: (1) dangling `s_auto_hide` timer pointer (local static with `auto_delete=true` → use-after-free on next READY entry), (2) `fade_done_hide_cb` firing during navigation state changes, (3) `orb_speak_click_cb` stacking on SPEAKING re-entry. All three fixed April 2026.
 
 ## WebSocket Protocol (Tab5 = Client Side)
@@ -299,7 +301,7 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 2. **Voice Cancel:** `{"type":"cancel"}` — abort current processing
 3. **Keepalive:** `{"type":"ping"}` — JSON heartbeat every 15s during processing
 4. **Text Input:** `{"type":"text","content":"..."}` — skips STT, goes straight to LLM
-5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2,"llm_model":"..."}` — three-tier mode switch. Backward compat: `cloud_mode` bool still accepted.
+5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"..."}` — four-tier mode switch. Backward compat: `cloud_mode` bool still accepted.
 6. **Device Registration:** `{"type":"register","device_id":"...","session_id":"..."}` on WS connect
 7. **Clear History:** `{"type":"clear_history"}` — reset conversation context
 
@@ -333,7 +335,7 @@ main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c             — ES7210 quad-mic via esp_codec_dev
 main/dragon_link.c     — Dragon mDNS discovery + CDP connection state
 main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING), voice WS kept across transitions
-main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.6.0)
+main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.6.0), VOICE_MODE_TINKERCLAW=3
 main/settings.c        — NVS: WiFi, Dragon host, volume, brightness, voice_mode, llm_model, session_id
 main/settings.h        — Settings API including three-tier voice_mode + llm_model
 main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat bubbles, stop button)
