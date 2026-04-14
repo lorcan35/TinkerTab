@@ -194,7 +194,7 @@
 #define TAB5_VOICE_PORT           3502
 
 // ngrok fallback for when Dragon is unreachable on LAN
-#define TAB5_NGROK_HOST           "tinkertab.ngrok.dev"
+#define TAB5_NGROK_HOST           "tinkerclaw-voice.ngrok.dev"
 #define TAB5_NGROK_PORT           443
 #define TAB5_VOICE_CHUNK_MS       20     // Audio chunk size in ms
 #define TAB5_VOICE_SAMPLE_RATE    16000  // Rate sent to Dragon (downsampled from 48kHz)
