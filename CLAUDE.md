@@ -87,12 +87,12 @@ Commit hash + PR if applicable.
 ## Dragon Access (for deploying/testing)
 - **Host:** 192.168.1.91
 - **User:** radxa (NOT rock — user was migrated)
-- **Password:** radxa
-- **SSH:** `sshpass -p 'radxa' ssh radxa@192.168.1.91`
+- **Password:** `<DRAGON_SSH_PASSWORD>`
+- **SSH:** `ssh radxa@192.168.1.91  # password in ~/.ssh/config or use key auth`
 ```bash
-sshpass -p 'radxa' ssh radxa@192.168.1.91
-echo radxa | sudo -S systemctl status tinkerclaw-voice
-echo radxa | sudo -S journalctl -u tinkerclaw-voice --no-pager -n 50
+ssh radxa@192.168.1.91  # password in ~/.ssh/config or use key auth
+sudo systemctl status tinkerclaw-voice
+sudo journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
 ### Dragon Stability
@@ -140,50 +140,61 @@ while True:
 Full HTTP API on port 8080 for remote testing and control.
 **Note:** Tab5 IP is DHCP-assigned. Current lease: 192.168.1.90. Update if it changes.
 
+### Authentication (Bearer Token)
+All endpoints except `/info` and `/selftest` require a Bearer token in the `Authorization` header.
+- **Token generation:** On first boot, a 32-char random hex token is generated via `esp_random()` and saved to NVS key `"auth_tok"`.
+- **Token display:** Printed to serial log on every boot: `I (xxx) debug_srv: Debug server auth token: <token>`
+- **Token storage:** NVS namespace `"settings"`, key `"auth_tok"`, max 32 chars. Persists across reboots.
+- **Public endpoints (NO auth):** `GET /info` (device discovery, includes `"auth_required":true`), `GET /selftest` (health check)
+- **Usage:** Add `-H "Authorization: Bearer <token>"` to all curl commands (except /info and /selftest)
+
 ```bash
+# Get the token from serial output, then export it:
+export TOKEN="abcdef1234567890abcdef1234567890"
+
 # Display
-curl -s -o screen.bmp http://192.168.1.90:8080/screenshot     # BMP screenshot
-curl -s http://192.168.1.90:8080/info | python3 -m json.tool   # Device info JSON
+curl -s -H "Authorization: Bearer $TOKEN" -o screen.bmp http://192.168.1.90:8080/screenshot
+curl -s http://192.168.1.90:8080/info | python3 -m json.tool   # No auth needed
 
 # Touch
-curl -s -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
 
 # Settings (read all NVS settings as JSON)
-curl -s http://192.168.1.90:8080/settings | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/settings | python3 -m json.tool
 
 # Voice Mode (switch Local/Hybrid/Cloud remotely)
-curl -s -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
-curl -s -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
-curl -s -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
-curl -s -X POST "http://192.168.1.90:8080/mode?m=3"                                        # TinkerClaw
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=3"  # TinkerClaw
 
 # Navigation (force screen change — bypasses tileview)
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=settings"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=notes"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=chat"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=camera"
-curl -s -X POST "http://192.168.1.90:8080/navigate?screen=home"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=settings"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=notes"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=chat"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=camera"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=home"
 
 # Camera (capture live frame as BMP)
-curl -s -o frame.bmp http://192.168.1.90:8080/camera
+curl -s -H "Authorization: Bearer $TOKEN" -o frame.bmp http://192.168.1.90:8080/camera
 
 # OTA
-curl -s http://192.168.1.90:8080/ota/check | python3 -m json.tool
-curl -s -X POST http://192.168.1.90:8080/ota/apply
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/ota/check | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/ota/apply
 
 # Wake word (toggle AFE always-listening)
-curl -s -X POST http://192.168.1.90:8080/wake
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/wake
 
 # Chat (send text to Dragon via voice WS)
-curl -s -X POST http://192.168.1.90:8080/chat -d '{"text":"What time is it?"}'
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/chat -d '{"text":"What time is it?"}'
 
 # Voice state (connected, state_name, last_llm_text, last_stt_text)
-curl -s http://192.168.1.90:8080/voice | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/voice | python3 -m json.tool
 
 # Force voice WS reconnect
-curl -s -X POST http://192.168.1.90:8080/voice/reconnect
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/voice/reconnect
 
-# Self-test (8-point subsystem check: WiFi, Dragon, voice WS, display, audio, SD, camera, IMU)
+# Self-test (no auth needed)
 curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 ```
 
@@ -235,14 +246,17 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 ## OTA Firmware Updates
 - **Dual OTA partitions:** ota_0 (3MB) + ota_1 (3MB) with otadata boot selector
 - **Check:** `tab5_ota_check()` → GET `http://dragon:3502/api/ota/check?current=0.7.0`
-- **Apply:** `tab5_ota_apply(url)` → downloads via `esp_https_ota()`, writes inactive slot, reboots
+- **Apply:** `tab5_ota_apply(url, sha256)` → downloads via `esp_https_ota()`, verifies SHA256, writes inactive slot, reboots
+- **SHA256 verification (SEC07):** After download, firmware is read back from the OTA partition and hashed with `mbedtls_sha256`. The computed hash is compared against the `sha256` field from `version.json`. Mismatch aborts the OTA with `ESP_ERR_INVALID_CRC`. If `sha256` is empty/NULL, a warning is logged but OTA proceeds (backward compat). This prevents MitM firmware swaps over unencrypted LAN HTTP.
 - **Auto-rollback:** New firmware boots in PENDING_VERIFY. If crash before `tab5_ota_mark_valid()`, bootloader reverts.
 - **Settings UI:** "Check Update" button shows version + partition. "Apply Update" green button appears when update available.
 - **Debug:** `/ota/check` and `/ota/apply` endpoints on debug server
 - **Deploy new firmware:**
   ```bash
   scp build/tinkertab.bin radxa@192.168.1.91:/home/radxa/ota/
-  echo '{"version":"0.7.1","sha256":""}' | ssh radxa@192.168.1.91 'cat > /home/radxa/ota/version.json'
+  # IMPORTANT: Always include sha256 hash for MitM protection
+  SHA=$(sha256sum build/tinkertab.bin | cut -d' ' -f1)
+  echo "{\"version\":\"0.7.1\",\"sha256\":\"$SHA\"}" | ssh radxa@192.168.1.91 'cat > /home/radxa/ota/version.json'
   # Tab5 checks hourly or user taps "Check Update" in Settings
   ```
 
@@ -290,6 +304,7 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `llm_mdl` | str | `anthropic/claude-3.5-haiku` | — | LLM model identifier for cloud mode |
 | `wake` | u8 | 0 | 0-1 | Wake word detection: 0=off, 1=on |
 | `conn_m` | u8 | 0 | 0-2 | Connection mode: 0=auto, 1=local only, 2=remote only |
+| `auth_tok` | str | auto-generated (32 hex chars) | — | Debug server bearer auth token, generated on first boot |
 
 ### ⚠️ LVGL Configuration — CRITICAL
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
@@ -371,7 +386,7 @@ main/ui_files.c        — SD card file browser (directories, WAV playback, imag
 main/ui_wifi.c         — WiFi setup (scan, select, password entry)
 main/ui_keyboard.c     — On-screen keyboard overlay (shared by all text inputs)
 main/ui_core.c         — LVGL display init, screen management, theme
-main/debug_server.c    — HTTP debug server (12 endpoints: info, screenshot, touch, settings, mode, navigate, camera, ota, wake, etc.)
+main/debug_server.c    — HTTP debug server (22 endpoints, bearer token auth on all except /info and /selftest)
 main/main.c            — Boot sequence: hardware init → WiFi → Dragon link → LVGL → voice auto-connect → watchdog
 main/imu.c             — BMI270 IMU via I2C
 partitions.csv         — OTA dual-slot partition table (ota_0 + ota_1, 3MB each)

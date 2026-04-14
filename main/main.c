@@ -51,6 +51,7 @@
 #include "ota.h"
 #include "mode_manager.h"
 #include "service_registry.h"
+#include "heap_watchdog.h"
 
 static const char *TAG = "tab5";
 
@@ -419,6 +420,9 @@ void app_main(void)
 
     // Print service status table
     tab5_services_print_status();
+
+    // Start PSRAM heap fragmentation watchdog (background, Core 1, prio 1)
+    heap_watchdog_start();
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
              s_wifi_ok ? "Y" : "N", s_touch_ok ? "Y" : "N",

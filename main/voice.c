@@ -18,6 +18,7 @@
 #include "voice.h"
 #include "afe.h"
 #include "ui_notes.h"
+#include "ui_chat.h"
 #include "audio.h"
 #include "config.h"
 #include "settings.h"
@@ -101,7 +102,7 @@ static const char *TAG = "tab5_voice";
 #define PLAY_TASK_CORE         1
 
 // Max transcript length
-#define MAX_TRANSCRIPT_LEN     512
+#define MAX_TRANSCRIPT_LEN     2048
 
 // Dictation mode constants
 #define DICTATION_SILENCE_THRESHOLD  800   /* RMS below this = silence (Tab5 mic has higher noise floor) */
@@ -170,6 +171,7 @@ static TaskHandle_t  s_afe_detect_task = NULL;   // fetch task handle
 
 static bool s_initialized = false;
 static volatile bool s_connect_in_progress = false;
+static volatile bool s_disconnecting = false;  /* US-C21: guard against connect-during-disconnect race */
 
 // Reconnect watchdog
 static TaskHandle_t  s_reconnect_task = NULL;
@@ -325,6 +327,9 @@ static esp_err_t ws_send_text(const char *msg)
     return ESP_OK;
 }
 
+// Drop counter for audio frames lost due to network stall (US-C04)
+static int s_audio_drop_count = 0;
+
 static esp_err_t ws_send_binary(const void *data, size_t len)
 {
     if (!s_ws || !s_ws_connected) {
@@ -341,7 +346,19 @@ static esp_err_t ws_send_binary(const void *data, size_t len)
     }
     memcpy(buf, data, len);
 
-    xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+    // US-C04: Bounded timeout (100ms) instead of portMAX_DELAY.
+    // If WiFi stalls for 3+ seconds, the WS receive task holds s_ws_mutex
+    // and the mic task would block forever, causing I2S DMA overflow.
+    // With a bounded timeout, we drop the audio frame and keep reading
+    // from I2S so DMA buffers don't overflow.
+    if (xSemaphoreTake(s_ws_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+        free(buf);
+        s_audio_drop_count++;
+        if (s_audio_drop_count % 10 == 1) {
+            ESP_LOGW(TAG, "Ring buffer full — %d audio frames dropped", s_audio_drop_count);
+        }
+        return ESP_ERR_TIMEOUT;
+    }
     int ret;
     if (s_ws && s_ws_connected) {
         ret = esp_transport_ws_send_raw(s_ws,
@@ -358,6 +375,11 @@ static esp_err_t ws_send_binary(const void *data, size_t len)
         ESP_LOGW(TAG, "WS binary send failed — marking disconnected");
         s_ws_connected = false;
         return ESP_FAIL;
+    }
+    // Reset drop counter on successful send
+    if (s_audio_drop_count > 0) {
+        ESP_LOGI(TAG, "WS send recovered after %d dropped frames", s_audio_drop_count);
+        s_audio_drop_count = 0;
     }
     return ESP_OK;
 }
@@ -470,6 +492,8 @@ static void handle_text_message(const char *data, int len)
                 s_llm_text[0] = '\0';
                 if (s_state_mutex) xSemaphoreGive(s_state_mutex);
                 ESP_LOGI(TAG, "STT: \"%s\"", s_stt_text);
+                /* Push user's voice transcription into Chat history */
+                ui_chat_push_message("user", text->valuestring);
                 voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
             }
         }
@@ -572,6 +596,10 @@ static void handle_text_message(const char *data, int len)
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
         ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
+        /* Push complete LLM response into Chat history */
+        if (s_llm_text[0]) {
+            ui_chat_push_message("assistant", s_llm_text);
+        }
     } else if (strcmp(type_str, "pong") == 0) {
         /* Dragon keepalive response — no action needed */
     } else if (strcmp(type_str, "config_update") == 0) {
@@ -581,6 +609,9 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGW(TAG, "Config update error from Dragon: %s", error->valuestring);
             /* Auto-disable: revert to local mode */
             tab5_settings_set_voice_mode(0);
+            /* US-PR02: Refresh home badge from LVGL thread on error fallback */
+            extern void ui_home_refresh_mode_badge(void);
+            lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
             voice_set_state(VOICE_STATE_READY, error->valuestring);
         }
         /* Normal ACK: persist voice_mode (may be at top level or inside config) */
@@ -608,6 +639,9 @@ static void handle_text_message(const char *data, int len)
                 bool is_cloud = cJSON_IsTrue(cloud);
                 if (!cJSON_IsNumber(vmode)) {
                     tab5_settings_set_voice_mode(is_cloud ? 1 : 0);
+                    /* US-PR02: Refresh home badge from LVGL thread (backward compat path) */
+                    extern void ui_home_refresh_mode_badge(void);
+                    lv_async_call((void(*)(void*))ui_home_refresh_mode_badge, NULL);
                 }
             }
         }
@@ -1328,6 +1362,13 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         ESP_LOGW(TAG, "Already connected");
         return ESP_OK;
     }
+    /* US-C21: Refuse new connections while disconnect is tearing down resources.
+     * Without this guard, the window between s_ws_connected=false and transport
+     * destroy allows a new connect to overwrite s_ws, leaking the old transport. */
+    if (s_disconnecting) {
+        ESP_LOGW(TAG, "Disconnect in progress — refusing connect");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     // Save connection info
     strncpy(s_dragon_host, dragon_host, sizeof(s_dragon_host) - 1);
@@ -1346,6 +1387,18 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
              conn_mode, conn_mode == 0 ? "auto" : conn_mode == 1 ? "local" : "remote");
 
     int err = -1;
+
+    /* US-C25: If a previous WS receive task left s_ws non-NULL (still mid-cleanup),
+     * close and destroy it now to prevent socket descriptor leak on reconnect. */
+    if (s_ws) {
+        ESP_LOGW(TAG, "Stale s_ws handle found — cleaning up before reconnect");
+        xSemaphoreTake(s_ws_mutex, portMAX_DELAY);
+        esp_transport_handle_t stale = s_ws;
+        s_ws = NULL;
+        xSemaphoreGive(s_ws_mutex);
+        esp_transport_close(stale);
+        esp_transport_destroy(stale);
+    }
 
     /* ── Step 1: Try LOCAL LAN (modes 0 and 1) ── */
     if (conn_mode != 2) {
@@ -1367,6 +1420,9 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
                     esp_transport_destroy(s_ws);
                     s_ws = NULL;
                 }
+            } else {
+                /* US-C25: ws_init failed — tcp transport was not adopted, must free it */
+                esp_transport_destroy(tcp);
             }
         }
     }
@@ -1395,6 +1451,8 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
                     s_ws = NULL;
                 }
             } else {
+                /* US-C25: ws_init failed — ssl transport not adopted, close before destroy */
+                esp_transport_close(ssl);
                 esp_transport_destroy(ssl);
             }
         }
@@ -1503,6 +1561,11 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
     }
     if (s_connect_in_progress) {
         ESP_LOGW(TAG, "Connect already in progress");
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* US-C21: Block async connect while disconnect is tearing down */
+    if (s_disconnecting) {
+        ESP_LOGW(TAG, "Disconnect in progress — refusing async connect");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -1720,6 +1783,12 @@ esp_err_t voice_disconnect(void)
 {
     ESP_LOGI(TAG, "Disconnecting from Dragon voice server");
 
+    /* US-C21: Set disconnecting guard FIRST, before any state changes.
+     * This prevents voice_connect/voice_connect_async from starting a new
+     * session while we're tearing down the old one. Safe to call from any
+     * context — doesn't acquire any mutex, just sets a volatile bool. */
+    s_disconnecting = true;
+
     tab5_audio_speaker_enable(false);
 
     /* Clear stuck connect-in-progress flag (reconnect watchdog safety) */
@@ -1779,6 +1848,10 @@ esp_err_t voice_disconnect(void)
 
     playback_buf_reset();
     voice_set_state(VOICE_STATE_IDLE, NULL);
+
+    /* US-C21: Clear disconnecting guard LAST, after all resources are freed.
+     * Now voice_connect/voice_connect_async will accept new connections. */
+    s_disconnecting = false;
 
     ESP_LOGI(TAG, "Disconnected (all task handles cleared)");
     return ESP_OK;
@@ -1900,8 +1973,9 @@ static void reconnect_watchdog_task(void *arg)
         if (!s_reconnect_enabled) break;
 
         /* Only reconnect if: initialized, not connected, not already connecting,
-         * and not intentionally stopped (s_stop_flag) */
-        if (s_initialized && !s_ws_connected && !s_connect_in_progress && !s_stop_flag) {
+         * not intentionally stopped (s_stop_flag), and not mid-disconnect (US-C21) */
+        if (s_initialized && !s_ws_connected && !s_connect_in_progress
+            && !s_stop_flag && !s_disconnecting) {
             ESP_LOGI(TAG, "Watchdog: voice WS disconnected — reconnecting (backoff %dms)", backoff_ms);
 
             vTaskDelay(pdMS_TO_TICKS(backoff_ms));

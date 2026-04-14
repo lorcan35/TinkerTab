@@ -335,3 +335,15 @@ esp_err_t tab5_settings_set_session_id(const char *session_id)
 {
     return set_str(KEY_SESSION_ID, session_id ? session_id : "");
 }
+
+/* ── Auth token (debug server bearer auth) ───────────────────────────── */
+
+esp_err_t tab5_settings_get_auth_token(char *buf, size_t len)
+{
+    return get_str("auth_tok", buf, len, "");
+}
+
+esp_err_t tab5_settings_set_auth_token(const char *token)
+{
+    return set_str("auth_tok", token);
+}

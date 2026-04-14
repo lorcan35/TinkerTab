@@ -97,7 +97,7 @@
 ## Infrastructure
 
 ### Dragon Q6A (192.168.1.89)
-- SSH: `sshpass -p 'radxa' ssh radxa@192.168.1.89` (user migrated from rock to radxa)
+- SSH: `ssh radxa@192.168.1.89  # password in ~/.ssh/config or use key auth` (user migrated from rock to radxa)
 - Services: tinkerclaw-stream (3501), tinkerclaw-voice (3502), tinkerclaw-mdns
 - Ollama models: llama3.2:3b, phi4-mini, gemma3:4b
 - Storage: ~429GB free

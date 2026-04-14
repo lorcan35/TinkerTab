@@ -98,6 +98,7 @@ static lv_obj_t *s_dragon_ta      = NULL;
 static lv_obj_t *s_ota_btn_label  = NULL;
 static lv_obj_t *s_ota_apply_btn  = NULL;
 static char      s_ota_url[256]   = {0};
+static char      s_ota_sha256[65] = {0};
 
 /* Sliders */
 static lv_obj_t *s_slider_bright  = NULL;
@@ -113,6 +114,10 @@ static lv_obj_t *s_sw_autorot     = NULL;
 /* Guard flag for background tasks during destroy */
 static volatile bool s_destroying = false;
 static lv_timer_t *s_refresh_timer = NULL;
+
+/* NVS write debounce timers — prevent flash wear from slider drag (US-HW17) */
+static lv_timer_t *s_bright_save_timer = NULL;
+static lv_timer_t *s_vol_save_timer    = NULL;
 
 /* Voice tab system */
 static lv_obj_t *s_tab_local      = NULL;
@@ -212,24 +217,53 @@ static void cb_back_btn(lv_event_t *e)
     ui_settings_destroy();
 }
 
+/* ── NVS debounce timer callbacks (US-HW17) ───────────────────────────
+ * Slider drag fires VALUE_CHANGED 10-30x/sec.  Hardware updates are
+ * instant, but NVS writes need flash sector erases.  We defer the NVS
+ * commit until 500ms after the last drag event (one-shot timer).       */
+
+static void brightness_save_cb(lv_timer_t *t)
+{
+    int val = (int)(intptr_t)lv_timer_get_user_data(t);
+    tab5_settings_set_brightness((uint8_t)val);
+    ESP_LOGI(TAG, "Brightness %d%% saved to NVS (debounced)", val);
+    s_bright_save_timer = NULL;
+}
+
+static void volume_save_cb(lv_timer_t *t)
+{
+    int val = (int)(intptr_t)lv_timer_get_user_data(t);
+    tab5_settings_set_volume((uint8_t)val);
+    ESP_LOGI(TAG, "Volume %d%% saved to NVS (debounced)", val);
+    s_vol_save_timer = NULL;
+}
+
 static void cb_brightness(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
-    tab5_display_set_brightness(val);
-    tab5_settings_set_brightness((uint8_t)val);
+    tab5_display_set_brightness(val);                       /* instant HW */
     if (s_lbl_bright_val) lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", val);
-    ESP_LOGI(TAG, "Brightness set to %d%% (saved)", val);
+
+    /* Restart 500ms debounce for NVS write */
+    if (s_bright_save_timer) lv_timer_delete(s_bright_save_timer);
+    s_bright_save_timer = lv_timer_create(brightness_save_cb, 500,
+                                          (void *)(intptr_t)val);
+    lv_timer_set_repeat_count(s_bright_save_timer, 1);
 }
 
 static void cb_volume(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
-    tab5_audio_set_volume((uint8_t)val);
-    tab5_settings_set_volume((uint8_t)val);
+    tab5_audio_set_volume((uint8_t)val);                    /* instant HW */
     if (s_lbl_vol_val) lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", val);
-    ESP_LOGI(TAG, "Volume set to %d%% (saved)", val);
+
+    /* Restart 500ms debounce for NVS write */
+    if (s_vol_save_timer) lv_timer_delete(s_vol_save_timer);
+    s_vol_save_timer = lv_timer_create(volume_save_cb, 500,
+                                       (void *)(intptr_t)val);
+    lv_timer_set_repeat_count(s_vol_save_timer, 1);
 }
 
 static void cb_autorotate(lv_event_t *e)
@@ -435,7 +469,7 @@ static void ntp_sync_task(void *arg)
 static void ota_apply_task(void *arg)
 {
     ESP_LOGI(TAG, "OTA apply: downloading from %s", s_ota_url);
-    esp_err_t err = tab5_ota_apply(s_ota_url);
+    esp_err_t err = tab5_ota_apply(s_ota_url, s_ota_sha256[0] ? s_ota_sha256 : NULL);
     ESP_LOGE(TAG, "OTA apply failed: %s", esp_err_to_name(err));
     if (s_destroying) { vTaskDelete(NULL); return; }
     tab5_ui_lock();
@@ -445,13 +479,71 @@ static void ota_apply_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void cb_ota_apply(lv_event_t *e)
+/* OTA confirmation dialog callbacks (US-PR19) */
+static void cb_ota_cancel(lv_event_t *e)
 {
-    (void)e;
+    lv_obj_t *mbox = lv_event_get_user_data(e);
+    if (mbox) lv_msgbox_close(mbox);
+}
+
+static void cb_ota_confirm(lv_event_t *e)
+{
+    lv_obj_t *mbox = lv_event_get_user_data(e);
+    if (mbox) lv_msgbox_close(mbox);
+
+    /* Proceed with actual OTA apply */
     if (!s_ota_url[0]) return;
     if (s_ota_btn_label) lv_label_set_text(s_ota_btn_label, "Updating...");
     if (s_ota_apply_btn) lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     xTaskCreate(ota_apply_task, "ota_apply", 8192, NULL, 5, NULL);
+}
+
+static void cb_ota_apply(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ota_url[0]) return;
+
+    /* Show confirmation dialog instead of applying immediately (US-PR19) */
+    lv_obj_t *mbox = lv_msgbox_create(NULL);
+    lv_msgbox_add_title(mbox, "Update Firmware?");
+    lv_msgbox_add_text(mbox, "Device will restart after update.\nDo not unplug during update.");
+    lv_obj_t *btn_cancel = lv_msgbox_add_footer_button(mbox, "Cancel");
+    lv_obj_t *btn_update = lv_msgbox_add_footer_button(mbox, "Update");
+    lv_obj_add_event_cb(btn_cancel, cb_ota_cancel, LV_EVENT_CLICKED, mbox);
+    lv_obj_add_event_cb(btn_update, cb_ota_confirm, LV_EVENT_CLICKED, mbox);
+
+    /* Style the dialog for Material Dark theme */
+    lv_obj_set_style_bg_color(mbox, lv_color_hex(CARD_COLOR), 0);
+    lv_obj_set_style_radius(mbox, 16, 0);
+    lv_obj_set_style_border_width(mbox, 1, 0);
+    lv_obj_set_style_border_color(mbox, lv_color_hex(0x333333), 0);
+    lv_obj_set_width(mbox, 400);
+
+    /* Style title */
+    lv_obj_t *title = lv_msgbox_get_title(mbox);
+    if (title) {
+        lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    }
+
+    /* Style content area */
+    lv_obj_t *content = lv_msgbox_get_content(mbox);
+    if (content) {
+        lv_obj_set_style_text_color(content, lv_color_hex(TEXT_DIM), 0);
+        lv_obj_set_style_text_font(content, &lv_font_montserrat_16, 0);
+    }
+
+    /* Style header */
+    lv_obj_t *header = lv_msgbox_get_header(mbox);
+    if (header) {
+        lv_obj_set_style_bg_color(header, lv_color_hex(CARD_COLOR), 0);
+    }
+
+    /* Style footer */
+    lv_obj_t *footer = lv_msgbox_get_footer(mbox);
+    if (footer) {
+        lv_obj_set_style_bg_color(footer, lv_color_hex(CARD_COLOR), 0);
+    }
 }
 
 static void ota_check_task(void *arg)
@@ -472,6 +564,8 @@ static void ota_check_task(void *arg)
         snprintf(buf, sizeof(buf), LV_SYMBOL_OK " v%s available!", info.version);
         lv_label_set_text(s_ota_btn_label, buf);
         snprintf(s_ota_url, sizeof(s_ota_url), "%s", info.url);
+        strncpy(s_ota_sha256, info.sha256, sizeof(s_ota_sha256) - 1);
+        s_ota_sha256[sizeof(s_ota_sha256) - 1] = '\0';
         if (s_ota_apply_btn) lv_obj_clear_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_label_set_text(s_ota_btn_label, LV_SYMBOL_OK " Up to date");
@@ -1279,6 +1373,18 @@ void ui_settings_destroy(void)
 
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
 
+    /* Flush pending NVS debounce timers — save current value before destroy */
+    if (s_bright_save_timer) {
+        brightness_save_cb(s_bright_save_timer);   /* commit now */
+        lv_timer_delete(s_bright_save_timer);
+        s_bright_save_timer = NULL;
+    }
+    if (s_vol_save_timer) {
+        volume_save_cb(s_vol_save_timer);           /* commit now */
+        lv_timer_delete(s_vol_save_timer);
+        s_vol_save_timer = NULL;
+    }
+
     lv_obj_delete(s_screen);
 
     s_screen        = NULL;
@@ -1324,6 +1430,19 @@ void ui_settings_hide(void)
      * PAUSE refresh timer to prevent it updating hidden objects during
      * other overlay creation (Settings timer + Notes creation = WDT). */
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
+
+    /* Flush pending NVS debounce timers before hiding */
+    if (s_bright_save_timer) {
+        brightness_save_cb(s_bright_save_timer);
+        lv_timer_delete(s_bright_save_timer);
+        s_bright_save_timer = NULL;
+    }
+    if (s_vol_save_timer) {
+        volume_save_cb(s_vol_save_timer);
+        lv_timer_delete(s_vol_save_timer);
+        s_vol_save_timer = NULL;
+    }
+
     if (s_screen) {
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);

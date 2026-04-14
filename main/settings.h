@@ -90,3 +90,9 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode);
 /** 0 = PTT only (default), 1 = always-listening with wake word */
 uint8_t   tab5_settings_get_wake_word(void);
 esp_err_t tab5_settings_set_wake_word(uint8_t enabled);
+
+/* ── Auth token (debug server bearer auth) ───────────────────────────── */
+
+/** Read auth token from NVS. Returns ESP_OK if found and non-empty. */
+esp_err_t tab5_settings_get_auth_token(char *buf, size_t len);
+esp_err_t tab5_settings_set_auth_token(const char *token);

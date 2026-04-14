@@ -106,6 +106,8 @@ static lv_obj_t  *lbl_clock     = NULL;
 static lv_obj_t  *lbl_date      = NULL;
 /* lbl_greeting removed — was declared but never created or assigned */
 static lv_obj_t  *orb_ring      = NULL;
+static lv_obj_t  *orb_inner     = NULL;    /* inner filled orb circle */
+static lv_obj_t  *lbl_ask       = NULL;    /* "Tap to ask" / "Connecting..." below orb */
 static lv_obj_t  *lbl_last_note = NULL;    /* last note preview card */
 static lv_obj_t  *last_note_card = NULL;
 
@@ -156,32 +158,32 @@ static lv_obj_t *build_page_home(void)
     lv_obj_clear_flag(orb_ring, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Inner orb — CLICKABLE (tappable to start voice) */
-    lv_obj_t *orb = lv_obj_create(pg);
-    lv_obj_set_size(orb, 160, 160);
-    lv_obj_align(orb, LV_ALIGN_CENTER, 0, -40);
-    lv_obj_set_style_bg_color(orb, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_bg_opa(orb, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(orb, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(orb, 3, 0);
-    lv_obj_set_style_border_color(orb, lv_color_hex(COL_AMBER_SOFT), 0);
-    lv_obj_clear_flag(orb, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(orb, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(orb, 20);
-    lv_obj_add_event_cb(orb, orb_tap_cb, LV_EVENT_CLICKED, NULL);
+    orb_inner = lv_obj_create(pg);
+    lv_obj_set_size(orb_inner, 160, 160);
+    lv_obj_align(orb_inner, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_set_style_bg_color(orb_inner, lv_color_hex(COL_AMBER), 0);
+    lv_obj_set_style_bg_opa(orb_inner, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(orb_inner, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(orb_inner, 3, 0);
+    lv_obj_set_style_border_color(orb_inner, lv_color_hex(COL_AMBER_SOFT), 0);
+    lv_obj_clear_flag(orb_inner, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(orb_inner, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(orb_inner, 20);
+    lv_obj_add_event_cb(orb_inner, orb_tap_cb, LV_EVENT_CLICKED, NULL);
 
     /* L1: Orb icon — audio waveform (closest to mic in LVGL built-in set) */
-    lv_obj_t *orb_icon = lv_label_create(orb);
+    lv_obj_t *orb_icon = lv_label_create(orb_inner);
     lv_label_set_text(orb_icon, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(orb_icon, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_text_font(orb_icon, &lv_font_montserrat_48, 0);
     lv_obj_center(orb_icon);
 
-    /* Orb label — "Tap to ask" with long-press hint */
-    lv_obj_t *orb_lbl = lv_label_create(pg);
-    lv_label_set_text(orb_lbl, "Tap to ask");
-    lv_obj_set_style_text_color(orb_lbl, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(orb_lbl, &lv_font_montserrat_28, 0);
-    lv_obj_align(orb_lbl, LV_ALIGN_CENTER, 0, 40);
+    /* Orb label — "Tap to ask" / "Connecting..." with long-press hint */
+    lbl_ask = lv_label_create(pg);
+    lv_label_set_text(lbl_ask, "Tap to ask");
+    lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(lbl_ask, &lv_font_montserrat_28, 0);
+    lv_obj_align(lbl_ask, LV_ALIGN_CENTER, 0, 40);
 
     /* H1: Long-press hint — brighter, more descriptive */
     lv_obj_t *hold_hint = lv_label_create(pg);
@@ -870,6 +872,30 @@ void ui_home_update_status(void)
         }
     }
 
+    /* US-PR25: Dim orb when voice is not ready (boot connect / disconnected).
+     * Prevents user from tapping a normal-looking orb and getting "Connecting..." toast.
+     * Uses lv_obj opa (not bg_opa/border_opa) so it composites over the breathing animation. */
+    {
+        voice_state_t vst = voice_get_state();
+        bool voice_ready = (vst == VOICE_STATE_READY || vst == VOICE_STATE_LISTENING
+                            || vst == VOICE_STATE_PROCESSING || vst == VOICE_STATE_SPEAKING);
+        lv_opa_t dim = voice_ready ? LV_OPA_COVER : LV_OPA_40;
+        if (orb_inner) lv_obj_set_style_opa(orb_inner, dim, 0);
+        if (orb_ring)  lv_obj_set_style_opa(orb_ring, dim, 0);
+
+        /* US-PR25: Update orb label to show connection progress.
+         * "Connecting..." while IDLE/CONNECTING, "Tap to ask" once READY+. */
+        if (lbl_ask) {
+            if (vst == VOICE_STATE_IDLE || vst == VOICE_STATE_CONNECTING) {
+                lv_label_set_text(lbl_ask, "Connecting...");
+                lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x666666), 0);
+            } else {
+                lv_label_set_text(lbl_ask, "Tap to ask");
+                lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x888888), 0);
+            }
+        }
+    }
+
     /* Mode badge — keep in sync with NVS */
     /* Use local s_badge_mode — NVS gets overwritten by Dragon ACK */
     update_mode_badge(s_badge_mode);
@@ -918,7 +944,8 @@ void ui_home_destroy(void)
         scr = NULL;
         tileview = NULL;
         orb_ring = NULL;
-        lbl_clock = lbl_date = NULL;
+        orb_inner = NULL;
+        lbl_clock = lbl_date = lbl_ask = NULL;
         lbl_sbar_time = lbl_sbar_wifi = lbl_sbar_batt = NULL;
         lbl_sbar_dragon = NULL;
         s_disconnect_banner = NULL;

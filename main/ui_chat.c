@@ -64,6 +64,10 @@ static lv_obj_t  *s_assist_label  = NULL;
 /* Tool indicator */
 static lv_obj_t  *s_tool_label   = NULL;
 
+/* Archived messages notification (US-PR22) */
+static lv_obj_t  *s_archived_lbl = NULL;
+static bool       s_archived_shown = false;
+
 /* Typing indicator */
 static lv_obj_t  *s_typing_lbl   = NULL;
 
@@ -79,8 +83,10 @@ static int          s_msg_count  = 0;
 static int          s_next_y     = 0;      /* Running Y offset in scroll area */
 static voice_state_t s_last_state = VOICE_STATE_IDLE;
 static bool         s_conv_created = false; /* Has conversation UI been built? */
+static int32_t      s_touch_start_x = -1;  /* X at touch-down for edge-swipe gating */
 
 #define MAX_MESSAGES     50
+#define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
 #define BUBBLE_MAX_W    480
 #define BUBBLE_PAD       16
 #define BUBBLE_GAP        8
@@ -161,6 +167,45 @@ static const char *detect_tool_name(const char *text)
         return n;
     }
     return "a tool";
+}
+
+/**
+ * Map raw tool names to user-friendly labels (US-PR24).
+ * The raw_name pointer may not be null-terminated at the tool name boundary
+ * (it points into a larger string after name="), so we use strncmp.
+ */
+static const char *friendly_tool_name(const char *raw_name)
+{
+    if (!raw_name) return "Using a tool";
+
+    static const struct { const char *raw; size_t len; const char *friendly; } map[] = {
+        { "web_search",    10, "Searching the web" },
+        { "remember",       8, "Saving to memory" },
+        { "memory_store",  12, "Saving to memory" },
+        { "recall",         6, "Checking memory" },
+        { "memory_search", 13, "Checking memory" },
+        { "datetime",       8, "Checking the time" },
+        { "calculator",    10, "Calculating" },
+        { "math",           4, "Calculating" },
+        { "browser",        7, "Browsing a page" },
+        { "browse",         6, "Browsing a page" },
+        { "weather",        7, "Checking the weather" },
+        { "timer",          5, "Setting a timer" },
+        { "alarm",          5, "Setting an alarm" },
+        { "notes",          5, "Checking notes" },
+        { "file_read",      9, "Reading a file" },
+        { "file_write",    10, "Writing a file" },
+    };
+
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (strncmp(raw_name, map[i].raw, map[i].len) == 0 &&
+            (raw_name[map[i].len] == '"' || raw_name[map[i].len] == '\0' ||
+             raw_name[map[i].len] == ' ')) {
+            return map[i].friendly;
+        }
+    }
+
+    return "Using a tool";
 }
 
 /* ── Mode / status helpers ─────────────────────────────────────── */
@@ -314,6 +359,8 @@ static void cb_new_chat(lv_event_t *e)
     s_tool_label = NULL;
     s_typing_lbl = NULL;
     s_empty_hint = NULL;
+    s_archived_lbl = NULL;
+    s_archived_shown = false;
     /* Re-add welcome */
     ui_chat_add_message("Fresh conversation started!", false);
     ESP_LOGI(TAG, "New chat — history cleared");
@@ -370,7 +417,8 @@ static void show_tool_indicator(const char *tool_name)
     lv_obj_clear_flag(s_tool_label, LV_OBJ_FLAG_SCROLLABLE);
 
     char buf[128];
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI "  Using %s...", tool_name ? tool_name : "tool");
+    const char *label = friendly_tool_name(tool_name);
+    snprintf(buf, sizeof(buf), LV_SYMBOL_WIFI "  %s...", label);
     lv_obj_t *lbl = lv_label_create(s_tool_label);
     lv_label_set_text(lbl, buf);
     lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_CYAN), 0);
@@ -398,12 +446,24 @@ static void hide_typing_indicator(void)
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
+/** Record touch-down X so the gesture callback can gate on left-edge start. */
+static void cb_touch_down(lv_event_t *e)
+{
+    (void)e;
+    lv_point_t p;
+    lv_indev_get_point(lv_indev_active(), &p);
+    s_touch_start_x = p.x;
+}
+
 static void cb_close(lv_event_t *e)
 {
-    /* Support swipe-right as back gesture */
+    /* Support swipe-right as back gesture — but only from left edge */
     if (e && lv_event_get_code(e) == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;
+
+        /* Only accept swipes that started within the left-edge strip */
+        if (s_touch_start_x < 0 || s_touch_start_x > SWIPE_EDGE_PX) return;
     }
 
     /* If in conversation, go back to Chat Home instead of closing */
@@ -496,6 +556,34 @@ static void cb_new_chat_card(lv_event_t *e)
     (void)e;
     cb_new_chat(NULL);
     enter_conversation();
+}
+
+/* Suggestion card callback — sends the card's label text as a chat message */
+static void cb_suggestion(lv_event_t *e)
+{
+    lv_obj_t *card = lv_event_get_target(e);
+    /* The label is child 0 of the suggestion card (set in build_home_panel) */
+    lv_obj_t *label = lv_obj_get_child(card, 0);
+    if (!label) return;
+    const char *raw = lv_label_get_text(label);
+    if (!raw || !raw[0]) return;
+
+    /* Strip surrounding quotes from display text (e.g. "\"What's the weather...\"") */
+    char text[256];
+    size_t len = strlen(raw);
+    if (len >= 2 && raw[0] == '"' && raw[len - 1] == '"') {
+        size_t copy_len = len - 2;
+        if (copy_len >= sizeof(text)) copy_len = sizeof(text) - 1;
+        memcpy(text, raw + 1, copy_len);
+        text[copy_len] = '\0';
+    } else {
+        strncpy(text, raw, sizeof(text) - 1);
+        text[sizeof(text) - 1] = '\0';
+    }
+
+    enter_conversation();
+    ui_chat_add_message(text, true);
+    voice_send_text(text);
 }
 
 /* Quick action callbacks */
@@ -1027,6 +1115,9 @@ static void build_home_panel(void)
         lv_obj_set_style_border_color(sug, lv_color_hex(0x222230), 0);
         lv_obj_set_style_pad_left(sug, 16, 0);
         lv_obj_clear_flag(sug, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(sug, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(sug, cb_suggestion, LV_EVENT_CLICKED, NULL);
+        ui_fb_card(sug);
 
         lv_obj_t *sug_lbl = lv_label_create(sug);
         lv_label_set_text(sug_lbl, suggestions[i]);
@@ -1360,7 +1451,8 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_foreground(s_overlay);
 
-    /* Swipe-right to close / go back */
+    /* Track touch-down position + swipe-right to close / go back (left-edge only) */
+    lv_obj_add_event_cb(s_overlay, cb_touch_down, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_overlay, cb_close, LV_EVENT_GESTURE, NULL);
 
     feed_wdt_yield();
@@ -1389,16 +1481,31 @@ void ui_chat_add_message(const char *text, bool is_user)
 {
     if (!s_msg_scroll || !text || !text[0]) return;
 
-    /* Enforce max message count — delete oldest */
+    /* Enforce max message count -- delete oldest */
     if (s_msg_count >= MAX_MESSAGES) {
-        lv_obj_t *oldest = lv_obj_get_child(s_msg_scroll, 0);
+        /* Show "older messages archived" notification once (US-PR22) */
+        if (!s_archived_shown && s_msg_scroll) {
+            s_archived_lbl = lv_label_create(s_msg_scroll);
+            lv_label_set_text(s_archived_lbl, "Older messages archived");
+            lv_obj_set_style_text_color(s_archived_lbl, lv_color_hex(0x555555), 0);
+            lv_obj_set_style_text_font(s_archived_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_align(s_archived_lbl, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_width(s_archived_lbl, 720 - 32);
+            lv_obj_set_pos(s_archived_lbl, 16, 0);
+            s_archived_shown = true;
+        }
+
+        /* Delete oldest message bubble (skip archived label at index 0) */
+        uint32_t start_idx = s_archived_shown ? 1 : 0;
+        lv_obj_t *oldest = lv_obj_get_child(s_msg_scroll, start_idx);
         if (oldest) {
             lv_obj_del(oldest);
             s_msg_count--;
             /* Recalculate s_next_y from remaining children */
-            s_next_y = 12;
+            int base_y = s_archived_shown ? 24 : 12;
+            s_next_y = base_y;
             uint32_t cnt = lv_obj_get_child_count(s_msg_scroll);
-            for (uint32_t i = 0; i < cnt; i++) {
+            for (uint32_t i = (s_archived_shown ? 1 : 0); i < cnt; i++) {
                 lv_obj_t *ch = lv_obj_get_child(s_msg_scroll, i);
                 lv_obj_set_pos(ch, lv_obj_get_x(ch), s_next_y);
                 lv_obj_update_layout(ch);
@@ -1508,6 +1615,8 @@ void ui_chat_destroy(void)
     s_tool_label    = NULL;
     s_typing_lbl    = NULL;
     s_empty_hint    = NULL;
+    s_archived_lbl  = NULL;
+    s_archived_shown = false;
     s_status_lbl    = NULL;
     s_status_dot    = NULL;
     s_active        = false;
@@ -1518,6 +1627,88 @@ void ui_chat_destroy(void)
     s_last_state    = VOICE_STATE_IDLE;
 
     ESP_LOGI(TAG, "Chat destroyed");
+}
+
+/* ── Thread-safe push from voice task ─────────────────────────── */
+
+typedef struct {
+    char *role;   /* "user" or "assistant" — heap-allocated copy */
+    char *text;   /* message text — heap-allocated copy */
+} chat_push_msg_t;
+
+static void async_push_cb(void *arg)
+{
+    chat_push_msg_t *msg = (chat_push_msg_t *)arg;
+    if (!msg) return;
+
+    bool is_user = (msg->role && strcmp(msg->role, "user") == 0);
+
+    /* Ensure conversation UI exists so ui_chat_add_message has s_msg_scroll.
+     * If the overlay hasn't been created yet, build it now (lazy init). */
+    if (!s_overlay) {
+        /* Overlay not created — can't show messages yet. Queue is lost.
+         * This is acceptable: the user hasn't opened Chat yet, so they
+         * won't see a missing message. The voice overlay shows results
+         * immediately, so the user still gets feedback. */
+        ESP_LOGW(TAG, "push_message: overlay not created yet, dropping: %.40s...",
+                 msg->text ? msg->text : "(null)");
+        free(msg->role);
+        free(msg->text);
+        free(msg);
+        return;
+    }
+
+    /* Dedup assistant messages: if the conversation view was active during
+     * this LLM response, poll_voice_cb already created and streamed the
+     * assistant bubble. Adding another would duplicate it.
+     * User messages from voice STT are always safe — no existing mechanism
+     * adds them to chat when speaking via the voice overlay. */
+    if (!is_user && s_in_conversation && s_conv_created) {
+        /* Conversation was visible — poll already handled this response */
+        ESP_LOGD(TAG, "push_message: skipping assistant (conv visible, poll handled)");
+        free(msg->role);
+        free(msg->text);
+        free(msg);
+        return;
+    }
+
+    /* Build conversation panel if needed (lazy — same as enter_conversation) */
+    if (!s_conv_created) {
+        build_conversation_ui();
+    }
+
+    if (msg->text && msg->text[0]) {
+        ui_chat_add_message(msg->text, is_user);
+    }
+
+    free(msg->role);
+    free(msg->text);
+    free(msg);
+}
+
+void ui_chat_push_message(const char *role, const char *text)
+{
+    if (!text || !text[0]) return;
+
+    /* Allocate copies on the heap — caller's buffers (s_stt_text, s_llm_text)
+     * are static and get overwritten on the next voice interaction. */
+    chat_push_msg_t *msg = malloc(sizeof(chat_push_msg_t));
+    if (!msg) {
+        ESP_LOGE(TAG, "push_message: OOM for msg struct");
+        return;
+    }
+    msg->role = strdup(role ? role : "assistant");
+    msg->text = strdup(text);
+    if (!msg->role || !msg->text) {
+        ESP_LOGE(TAG, "push_message: OOM for strdup");
+        free(msg->role);
+        free(msg->text);
+        free(msg);
+        return;
+    }
+
+    /* Schedule on LVGL thread (Core 0) — lv_async_call is thread-safe */
+    lv_async_call(async_push_cb, msg);
 }
 
 bool ui_chat_is_active(void) { return s_active; }

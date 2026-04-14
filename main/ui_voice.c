@@ -280,7 +280,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         s_stuck_timer = NULL;
     }
     if (state == VOICE_STATE_PROCESSING || state == VOICE_STATE_SPEAKING) {
-        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 25000, NULL);
+        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 10000, NULL);
         lv_timer_set_repeat_count(s_stuck_timer, 1);
     }
 
@@ -398,11 +398,24 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         bool has_conversation = s_has_llm_text;
         if (has_conversation) {
             lv_label_set_text(s_lbl_status, "");
-            /* Auto-dismiss: hide after 4 seconds.
+            /* Auto-dismiss: timeout scales with LLM response length.
+             * Short responses (< ~130 chars) = 4s minimum.
+             * ~30ms per character reading speed, capped at 15s max.
              * Uses file-scope s_auto_hide — cleaned up in stop_all_anims().
              * NEVER use auto_delete — leaves dangling pointer → UAF crash. */
+            uint32_t hide_ms = 4000;
+            const char *llm_txt = voice_get_llm_text();
+            if (llm_txt && llm_txt[0]) {
+                uint32_t len_ms = (uint32_t)(strlen(llm_txt)) * 30;
+                if (len_ms < 4000) len_ms = 4000;
+                if (len_ms > 15000) len_ms = 15000;
+                hide_ms = len_ms;
+            }
+            ESP_LOGI(TAG, "Auto-hide in %lu ms (text len=%u)",
+                     (unsigned long)hide_ms,
+                     (unsigned)(llm_txt ? strlen(llm_txt) : 0));
             if (s_auto_hide) { lv_timer_delete(s_auto_hide); s_auto_hide = NULL; }
-            s_auto_hide = lv_timer_create(auto_hide_timer_cb, 4000, NULL);
+            s_auto_hide = lv_timer_create(auto_hide_timer_cb, hide_ms, NULL);
             lv_timer_set_repeat_count(s_auto_hide, 1);
         } else {
             lv_label_set_text(s_lbl_status, "Tap to Record");
@@ -1311,6 +1324,13 @@ static void stop_all_anims(void)
     if (s_auto_hide) {
         lv_timer_delete(s_auto_hide);
         s_auto_hide = NULL;
+    }
+
+    /* US-C10: Cancel error/auto-hide timer — fires auto_hide_timer_cb which
+     * touches LVGL objects. Must be cleaned up on every exit path. */
+    if (s_hide_timer) {
+        lv_timer_delete(s_hide_timer);
+        s_hide_timer = NULL;
     }
 
     /* Remove orb click handler if set (Fix #4 cleanup) */

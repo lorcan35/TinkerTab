@@ -19,7 +19,7 @@ else()
              "sdcard.c" "camera.c" "wifi.c"
              "audio.c" "mic.c" "imu.c" "rtc.c" "battery.c" "bluetooth.c"
              "dragon_link.c" "mjpeg_stream.c" "udp_stream.c" "touch_ws.c" "voice.c" "mode_manager.c"
-             "mdns_discovery.c" "debug_server.c" "afe.c"
+             "mdns_discovery.c" "debug_server.c" "afe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"
              "ui_core.c" ${UI_SRCS}

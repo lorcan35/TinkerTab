@@ -11,6 +11,7 @@
 
 #include "debug_server.h"
 #include "config.h"
+#include "esp_random.h"
 #include "display.h"
 #include "sdcard.h"
 #include "afe.h"
@@ -51,6 +52,51 @@
 static const char *TAG = "debug_srv";
 
 #define DEBUG_PORT 8080
+
+/* ======================================================================== */
+/*  Bearer token authentication                                              */
+/* ======================================================================== */
+static char s_auth_token[33] = {0}; /* 32 hex chars + null */
+
+static void init_auth_token(void)
+{
+    /* Try reading from NVS */
+    if (tab5_settings_get_auth_token(s_auth_token, sizeof(s_auth_token)) == ESP_OK && s_auth_token[0]) {
+        ESP_LOGI(TAG, "Auth token loaded from NVS");
+    } else {
+        /* Generate new random token */
+        uint32_t r[4];
+        for (int i = 0; i < 4; i++) r[i] = esp_random();
+        snprintf(s_auth_token, sizeof(s_auth_token), "%08lx%08lx%08lx%08lx",
+                 (unsigned long)r[0], (unsigned long)r[1], (unsigned long)r[2], (unsigned long)r[3]);
+        tab5_settings_set_auth_token(s_auth_token);
+        ESP_LOGI(TAG, "Generated new auth token");
+    }
+    ESP_LOGI(TAG, "Debug server auth token: %s", s_auth_token);
+}
+
+/**
+ * Check Authorization: Bearer <token> header.
+ * Returns true if authorized, false if 401 was sent.
+ */
+static bool check_auth(httpd_req_t *req)
+{
+    char auth_header[80] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Authorization", auth_header, sizeof(auth_header)) != ESP_OK) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"Authorization required\"}");
+        return false;
+    }
+    /* Expect "Bearer <token>" */
+    if (strncmp(auth_header, "Bearer ", 7) != 0 || strcmp(auth_header + 7, s_auth_token) != 0) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"Invalid token\"}");
+        return false;
+    }
+    return true;
+}
 
 /* ======================================================================== */
 /*  Touch injection state — read by the LVGL indev read callback             */
@@ -127,6 +173,8 @@ static void build_bmp_header(uint8_t *hdr, int w, int h)
 
 static esp_err_t screenshot_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     esp_lcd_panel_handle_t panel = tab5_display_get_panel();
     if (!panel) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Display not initialized");
@@ -270,6 +318,8 @@ static esp_err_t info_handler(httpd_req_t *req)
     esp_reset_reason_t reason = esp_reset_reason();
     cJSON_AddStringToObject(root, "reset_reason", reason < sizeof(reset_reasons)/sizeof(reset_reasons[0]) ? reset_reasons[reason] : "UNKNOWN");
 
+    cJSON_AddBoolToObject(root, "auth_required", true);
+
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
 
@@ -280,6 +330,7 @@ static esp_err_t info_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -291,6 +342,8 @@ static esp_err_t info_handler(httpd_req_t *req)
 
 static esp_err_t touch_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     char buf[256];
     int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (received <= 0) {
@@ -359,6 +412,8 @@ static esp_err_t touch_handler(httpd_req_t *req)
 
 static esp_err_t reboot_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"rebooting\":true}");
     ESP_LOGW(TAG, "Reboot requested via debug server");
@@ -373,6 +428,8 @@ static esp_err_t reboot_handler(httpd_req_t *req)
 
 static esp_err_t log_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "alloc");
@@ -399,6 +456,7 @@ static esp_err_t log_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -519,6 +577,8 @@ static const char INDEX_HTML[] =
 
 static esp_err_t index_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
 }
@@ -527,14 +587,17 @@ static esp_err_t index_handler(httpd_req_t *req)
 /*  POST /open?screen=wifi  — open a screen directly for testing             */
 /* ======================================================================== */
 
-/* Deferred screen open — runs on the LVGL timer task */
+/* Deferred screen open — runs on the LVGL thread via lv_async_call */
 static volatile int s_pending_screen = -1;
 
-static void deferred_open_cb(lv_timer_t *t)
+/* US-C19: Runs on LVGL thread via lv_async_call (not lv_timer_create).
+ * httpd handlers run on Core 1 — calling lv_timer_create required LVGL lock
+ * from HTTP context, risking deadlock. lv_async_call is thread-safe. */
+static void async_open_screen(void *arg)
 {
+    (void)arg;
     int scr_id = s_pending_screen;
     s_pending_screen = -1;
-    lv_timer_delete(t);
 
     /* Dismiss any overlays (chat, voice, keyboard) before switching */
     extern void ui_chat_hide(void);
@@ -559,6 +622,8 @@ static void deferred_open_cb(lv_timer_t *t)
 
 static esp_err_t open_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     char query[64] = {0};
     httpd_req_get_url_query_str(req, query, sizeof(query));
     char screen[32] = {0};
@@ -578,14 +643,10 @@ static esp_err_t open_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Defer to LVGL timer task — animations require LVGL thread context */
+    /* US-C19: Schedule on LVGL thread via lv_async_call — thread-safe, no lock needed.
+     * Previously used tab5_ui_try_lock + lv_timer_create which risked deadlock. */
     s_pending_screen = scr_id;
-    if (!tab5_ui_try_lock(2000)) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "LVGL lock timeout");
-        return ESP_FAIL;
-    }
-    lv_timer_create(deferred_open_cb, 10, NULL);
-    tab5_ui_unlock();
+    lv_async_call(async_open_screen, NULL);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -598,6 +659,8 @@ static esp_err_t open_handler(httpd_req_t *req)
 
 static esp_err_t crashlog_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     cJSON *root = cJSON_CreateObject();
     if (!root) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "alloc");
@@ -649,6 +712,7 @@ static esp_err_t crashlog_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -683,6 +747,8 @@ static void _list_dir_to_json(cJSON *arr, const char *path)
 
 static esp_err_t sdcard_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "mounted", tab5_sdcard_mounted());
 
@@ -711,6 +777,7 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -720,6 +787,8 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
 
 static esp_err_t wake_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     if (voice_is_always_listening()) {
         voice_stop_always_listening();
     } else {
@@ -737,6 +806,7 @@ static esp_err_t wake_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -746,6 +816,8 @@ static esp_err_t wake_handler(httpd_req_t *req)
 
 static esp_err_t ota_check_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     tab5_ota_info_t info;
     esp_err_t err = tab5_ota_check(&info);
 
@@ -766,24 +838,34 @@ static esp_err_t ota_check_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
 }
 
+typedef struct {
+    char *url;
+    char sha256[65];
+} ota_apply_args_t;
+
 static void ota_apply_task(void *arg)
 {
-    char *url = (char *)arg;
-    ESP_LOGI("ota", "Applying OTA from: %s", url);
-    esp_err_t err = tab5_ota_apply(url);  /* reboots on success */
-    /* If we get here, it failed */
+    ota_apply_args_t *args = (ota_apply_args_t *)arg;
+    ESP_LOGI("ota", "Applying OTA from: %s (sha256=%s)", args->url,
+             args->sha256[0] ? args->sha256 : "none");
+    esp_err_t err = tab5_ota_apply(args->url, args->sha256[0] ? args->sha256 : NULL);
+    /* If we get here, it failed (success reboots) */
     ESP_LOGE("ota", "OTA apply failed: %s", esp_err_to_name(err));
-    free(url);
+    free(args->url);
+    free(args);
     vTaskDelete(NULL);
 }
 
 static esp_err_t ota_apply_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     /* Check for update first */
     tab5_ota_info_t info;
     esp_err_t err = tab5_ota_check(&info);
@@ -793,17 +875,24 @@ static esp_err_t ota_apply_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Spawn OTA task — can't do it in HTTP handler (blocks server) */
-    char *url = strdup(info.url);
-    if (url) {
-        xTaskCreate(ota_apply_task, "ota_apply", 8192, url, 5, NULL);
+    /* Spawn OTA task with SHA256 from version.json (SEC07) */
+    ota_apply_args_t *args = malloc(sizeof(ota_apply_args_t));
+    if (args) {
+        args->url = strdup(info.url);
+        strncpy(args->sha256, info.sha256, sizeof(args->sha256) - 1);
+        args->sha256[sizeof(args->sha256) - 1] = '\0';
+        if (args->url) {
+            xTaskCreate(ota_apply_task, "ota_apply", 8192, args, 5, NULL);
+        } else {
+            free(args);
+        }
     }
 
     httpd_resp_set_type(req, "application/json");
     char resp[512];
     snprintf(resp, sizeof(resp),
-             "{\"status\":\"updating\",\"version\":\"%s\",\"url\":\"%s\"}",
-             info.version, info.url);
+             "{\"status\":\"updating\",\"version\":\"%s\",\"url\":\"%s\",\"sha256_verify\":%s}",
+             info.version, info.url, info.sha256[0] ? "true" : "false");
     httpd_resp_sendstr(req, resp);
     return ESP_OK;
 }
@@ -813,6 +902,8 @@ static esp_err_t ota_apply_handler(httpd_req_t *req)
 /* GET /settings — dump all NVS settings as JSON */
 static esp_err_t settings_get_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     cJSON *root = cJSON_CreateObject();
 
     char buf[64];
@@ -835,6 +926,7 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -851,6 +943,8 @@ static void async_refresh_mode_badge(void *arg)
 /* POST /mode?m=0|1|2|3&model=... — switch voice mode (3=TinkerClaw) */
 static esp_err_t mode_set_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     /* Parse query string */
     char query[128] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
@@ -898,6 +992,7 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -951,6 +1046,8 @@ static void async_navigate(void *arg)
 
 static esp_err_t navigate_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     char query[64] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
@@ -969,6 +1066,7 @@ static esp_err_t navigate_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -979,6 +1077,8 @@ static esp_err_t navigate_handler(httpd_req_t *req)
  * Useful for testing touch-based navigation flow. */
 static esp_err_t navtouch_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     char query[64] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
         httpd_resp_set_type(req, "application/json");
@@ -1015,6 +1115,7 @@ static esp_err_t navtouch_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -1024,6 +1125,8 @@ static esp_err_t navtouch_handler(httpd_req_t *req)
 
 static esp_err_t camera_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     if (!tab5_camera_initialized()) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"error\":\"camera not initialized\"}");
@@ -1059,6 +1162,7 @@ static esp_err_t camera_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "image/bmp");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     httpd_resp_send_chunk(req, (const char *)hdr, 66);
     httpd_resp_send_chunk(req, (const char *)frame.data, data_size);
     httpd_resp_send_chunk(req, NULL, 0);
@@ -1070,6 +1174,8 @@ static esp_err_t camera_handler(httpd_req_t *req)
 
 static esp_err_t chat_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     /* POST /chat?text=hello — send text to Dragon via voice WS */
     char query[256] = {0};
     char text[200] = {0};
@@ -1118,6 +1224,7 @@ static esp_err_t chat_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -1127,6 +1234,8 @@ static esp_err_t chat_handler(httpd_req_t *req)
 
 static esp_err_t voice_state_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     /* GET /voice — full voice pipeline state */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "connected", voice_is_connected());
@@ -1152,6 +1261,7 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -1161,6 +1271,8 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
 
 static esp_err_t voice_reconnect_handler(httpd_req_t *req)
 {
+    if (!check_auth(req)) return ESP_OK;
+
     /* POST /voice/reconnect — force voice WS reconnect */
     ESP_LOGI(TAG, "Debug: forcing voice reconnect");
     voice_disconnect();
@@ -1172,6 +1284,7 @@ static esp_err_t voice_reconnect_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     httpd_resp_sendstr(req, "{\"status\":\"reconnecting\"}");
     return ESP_OK;
 }
@@ -1215,14 +1328,16 @@ static esp_err_t selftest_handler(httpd_req_t *req)
         if (ok) pass++; else fail++;
     }
 
-    /* PSRAM available (>1MB) */
+    /* PSRAM available (>1MB) + fragmentation check */
     {
         cJSON *t = cJSON_CreateObject();
         size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        size_t largest_block = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
         bool ok = free_psram > (1 * 1024 * 1024);
         cJSON_AddStringToObject(t, "name", "psram");
         cJSON_AddBoolToObject(t, "pass", ok);
         cJSON_AddNumberToObject(t, "free_mb", (double)(free_psram / 1024 / 1024));
+        cJSON_AddNumberToObject(t, "largest_free_block_kb", (double)(largest_block / 1024));
         cJSON_AddItemToArray(tests, t);
         if (ok) pass++; else fail++;
     }
@@ -1280,6 +1395,7 @@ static esp_err_t selftest_handler(httpd_req_t *req)
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
@@ -1295,6 +1411,9 @@ esp_err_t tab5_debug_server_init(void)
         ESP_LOGW(TAG, "WiFi not connected — debug server not started");
         return ESP_ERR_INVALID_STATE;
     }
+
+    /* Initialize bearer token auth (generate on first boot, load from NVS thereafter) */
+    init_auth_token();
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;

@@ -22,8 +22,12 @@ typedef struct {
 esp_err_t tab5_ota_check(tab5_ota_info_t *info);
 
 /** Download and apply firmware update from URL.
+ *  If expected_sha256 is non-NULL and non-empty, the downloaded image is
+ *  verified against it (SHA256 hex digest). Mismatch aborts the OTA.
+ *  If expected_sha256 is NULL or empty, a warning is logged but OTA proceeds
+ *  (backward compatibility).
  *  Reboots on success. Returns error if download/verify fails. */
-esp_err_t tab5_ota_apply(const char *url);
+esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256);
 
 /** Mark current firmware as valid (call after successful boot).
  *  Prevents auto-rollback on next reboot. */
