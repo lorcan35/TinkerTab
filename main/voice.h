@@ -36,77 +36,84 @@ typedef enum {
 // Callback for state changes (for UI updates)
 typedef void (*voice_state_cb_t)(voice_state_t new_state, const char *detail);
 
-// Initialize voice module (call after WiFi and Dragon link are up)
+/** Initialize voice module: creates mutexes, allocates PSRAM playback ring buffer. */
 esp_err_t voice_init(voice_state_cb_t state_cb);
 
-// Start voice session — connect WebSocket to Dragon voice server (blocking)
+/** Connect to Dragon voice server (blocking). Tries local LAN first, then ngrok fallback. */
 esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port);
 
-// Non-blocking connect — spawns a FreeRTOS task, calls state_cb on result.
-// If auto_listen is true, automatically starts listening on success.
+/** Connect to Dragon asynchronously in a FreeRTOS task; auto-starts listening if auto_listen is true. */
 esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
                                bool auto_listen);
 
-// Push-to-talk: start listening (mic -> Dragon)
+/** Start push-to-talk ask mode: sends start signal to Dragon and spawns mic capture task. */
 esp_err_t voice_start_listening(void);
 
-// Push-to-talk: stop listening (triggers STT -> LLM -> TTS on Dragon)
+/** Stop push-to-talk: halts mic capture, sends stop signal, transitions to PROCESSING. */
 esp_err_t voice_stop_listening(void);
 
-// Cancel current voice session (stop playback, etc.)
+/** Cancel current voice session: stops mic, flushes playback buffer, sends cancel to Dragon. */
 esp_err_t voice_cancel(void);
 
-// Disconnect from Dragon voice server
+/** Disconnect from Dragon voice server: tears down WS transport and all background tasks. */
 esp_err_t voice_disconnect(void);
 
-// Get current state
+/** Return the current voice state (thread-safe, protected by mutex). */
 voice_state_t voice_get_state(void);
 
-// Get last transcript (combined STT + LLM, for backward compat)
+/** Return the last combined transcript (STT + LLM text). Caller must copy if persisting. */
 const char *voice_get_last_transcript(void);
 
-// Get separated STT text (what the user said)
+/** Return the last STT text (what the user said). */
 const char *voice_get_stt_text(void);
 
-// Get separated LLM text (what Tinker is saying, streams in)
+/** Return the last LLM response text (what Tinker is saying, streams in incrementally). */
 const char *voice_get_llm_text(void);
 
-// Dictation mode: unlimited recording, STT-only, no LLM/TTS
+/** Start dictation mode: unlimited recording, STT-only, no LLM/TTS, auto-stops after 5s silence. */
 esp_err_t voice_start_dictation(void);
 
-// Get current voice mode
+/** Return the current voice mode (ASK or DICTATE). */
 voice_mode_t voice_get_mode(void);
 
-// Get accumulated dictation transcript (concatenated stt_partial results)
+/** Return the accumulated dictation transcript from stt_partial results (PSRAM-backed, up to 64KB). */
 const char *voice_get_dictation_text(void);
 
-// Clear conversation history on Dragon (start fresh context)
+/** Send clear_history command to Dragon to reset conversation context. */
 esp_err_t voice_clear_history(void);
 
-// Send text message to Dragon (skips STT, goes straight to LLM)
+/** Send a text message to Dragon, bypassing STT (goes straight to LLM). */
 esp_err_t voice_send_text(const char *text);
 
-// Send three-tier voice config to Dragon (voice_mode 0/1/2 + LLM model string)
+/** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 
-// Get current mic RMS level (for live waveform during dictation)
+/** Return the current mic RMS level (for live waveform visualization during dictation). */
 float voice_get_current_rms(void);
 
-// Get dictation post-processing results (arrives after dictation_summary event)
+/** Return the auto-generated title from Dragon's dictation post-processing. */
 const char *voice_get_dictation_title(void);
+
+/** Return the auto-generated summary from Dragon's dictation post-processing. */
 const char *voice_get_dictation_summary(void);
 
-// Wake word: called when AFE detects wake word. Starts listening or barge-in.
+/** Handle wake word detection: starts listening from IDLE/READY, or barge-in from SPEAKING. */
 void voice_on_wake(void);
 
-// Reconnect watchdog: auto-reconnects voice WS after disconnect
+/** Start the reconnect watchdog task: checks connection every 5s and auto-reconnects with backoff. */
 esp_err_t voice_start_reconnect_watchdog(void);
+
+/** Stop the reconnect watchdog task (it exits on its next check cycle). */
 void voice_stop_reconnect_watchdog(void);
 
-// True if voice WebSocket is actually connected and receive task is running
+/** Return true if the voice WebSocket is connected and the receive task is running. */
 bool voice_is_connected(void);
 
-// Always-listening mode: init/start/stop the AFE pipeline
+/** Start always-listening mode: initializes AFE pipeline (AEC + WakeNet) and spawns mic/detect tasks. */
 esp_err_t voice_start_always_listening(void);
+
+/** Stop always-listening mode: tears down AFE pipeline and stops continuous mic capture. */
 esp_err_t voice_stop_always_listening(void);
+
+/** Return true if always-listening mode (AFE + wake word) is currently active. */
 bool voice_is_always_listening(void);

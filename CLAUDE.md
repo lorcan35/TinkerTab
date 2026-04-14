@@ -272,6 +272,25 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 - `lv_screen_load_anim()` with auto_delete=false when returning to existing home screen
 - sdkconfig changes always require `idf.py fullclean build` — incremental builds cache stale config
 
+## NVS Settings Keys
+
+All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
+
+| Key | Type | Default | Range | Description |
+|-----|------|---------|-------|-------------|
+| `wifi_ssid` | str | `TAB5_WIFI_SSID` (config.h) | — | WiFi network SSID |
+| `wifi_pass` | str | `TAB5_WIFI_PASS` (config.h) | — | WiFi network password |
+| `dragon_host` | str | `TAB5_DRAGON_HOST` (config.h) | — | Dragon server hostname/IP |
+| `dragon_port` | u16 | `TAB5_DRAGON_PORT` (config.h) | 1-65535 | Dragon server port |
+| `brightness` | u8 | 80 | 0-100 | Display brightness percentage |
+| `volume` | u8 | 70 | 0-100 | Speaker volume percentage |
+| `device_id` | str | MAC-derived (12 hex chars) | — | Unique device identifier, auto-generated on first boot |
+| `session_id` | str | `""` (empty) | — | Dragon conversation session ID for resume |
+| `vmode` | u8 | 0 | 0-3 | Voice mode: 0=local, 1=hybrid, 2=cloud, 3=TinkerClaw |
+| `llm_mdl` | str | `anthropic/claude-3.5-haiku` | — | LLM model identifier for cloud mode |
+| `wake` | u8 | 0 | 0-1 | Wake word detection: 0=off, 1=on |
+| `conn_m` | u8 | 0 | 0-2 | Connection mode: 0=auto, 1=local only, 2=remote only |
+
 ### ⚠️ LVGL Configuration — CRITICAL
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
 
