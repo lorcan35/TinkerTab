@@ -77,6 +77,14 @@ esp_err_t tab5_settings_set_voice_mode(uint8_t mode);
 esp_err_t tab5_settings_get_llm_model(char *buf, size_t len);
 esp_err_t tab5_settings_set_llm_model(const char *model);
 
+/* ── Connection mode ────────────────────────────────────────────────── */
+
+/** 0 = auto (ngrok first, LAN fallback — default)
+ *  1 = local only (LAN direct, no ngrok)
+ *  2 = remote only (ngrok only, no LAN fallback) */
+uint8_t   tab5_settings_get_connection_mode(void);
+esp_err_t tab5_settings_set_connection_mode(uint8_t mode);
+
 /* ── Wake word ──────────────────────────────────────────────────────── */
 
 /** 0 = PTT only (default), 1 = always-listening with wake word */

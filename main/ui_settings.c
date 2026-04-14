@@ -358,6 +358,17 @@ static void cb_wifi_setup(lv_event_t *e)
     ui_wifi_create();
 }
 
+/* ── Connection mode ────────────────────────────────────────────────── */
+
+static void cb_conn_mode(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t sel = lv_dropdown_get_selected(dd);
+    tab5_settings_set_connection_mode((uint8_t)sel);
+    ESP_LOGI(TAG, "Connection mode: %d (%s)",
+             (int)sel, sel == 0 ? "auto" : sel == 1 ? "local" : "remote");
+}
+
 /* ── Dragon host ────────────────────────────────────────────────────── */
 
 static void cb_dragon_host_done(lv_event_t *e)
@@ -730,6 +741,34 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
     lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
+    y += ROW_H + 8;
+
+    /* Connection mode: Auto / Local / Remote */
+    {
+        lv_obj_t *conn_lbl = lv_label_create(s_scroll);
+        lv_label_set_text(conn_lbl, "Connection");
+        lv_obj_set_pos(conn_lbl, SIDE_PAD, y + 8);
+        lv_obj_set_style_text_color(conn_lbl, lv_color_hex(TEXT_DIM), 0);
+        lv_obj_set_style_text_font(conn_lbl, &lv_font_montserrat_16, 0);
+
+        static lv_obj_t *s_conn_dd = NULL;
+        s_conn_dd = lv_dropdown_create(s_scroll);
+        lv_dropdown_set_options(s_conn_dd, "Auto (ngrok+LAN)\nLocal only\nRemote only");
+        lv_dropdown_set_selected(s_conn_dd, tab5_settings_get_connection_mode());
+        lv_obj_set_pos(s_conn_dd, 340, y);
+        lv_obj_set_size(s_conn_dd, 340, 36);
+        lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), 0);
+        lv_obj_set_style_bg_opa(s_conn_dd, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_font(s_conn_dd, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_border_width(s_conn_dd, 1, 0);
+        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_radius(s_conn_dd, 6, 0);
+        /* Dropdown list styling */
+        lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
+        lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
+        lv_obj_add_event_cb(s_conn_dd, cb_conn_mode, LV_EVENT_VALUE_CHANGED, NULL);
+    }
     y += ROW_H + 16;
 
     /* ════════════════════════════════════════════════════════════════

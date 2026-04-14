@@ -264,6 +264,19 @@ esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
     return set_u8("wake", enabled ? 1 : 0);
 }
 
+/* ── Connection mode ────────────────────────────────────────────────── */
+
+uint8_t tab5_settings_get_connection_mode(void)
+{
+    return get_u8("conn_mode", 0);  /* 0=auto, 1=local, 2=remote */
+}
+
+esp_err_t tab5_settings_set_connection_mode(uint8_t mode)
+{
+    if (mode > 2) mode = 0;
+    return set_u8("conn_mode", mode);
+}
+
 /* ── Device identity ─────────────────────────────────────────────────── */
 
 esp_err_t tab5_settings_get_device_id(char *buf, size_t len)

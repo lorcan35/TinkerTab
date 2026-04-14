@@ -1340,41 +1340,48 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
     }
 
-    /* PRIMARY: try ngrok tunnel first (works across any network) */
-    ESP_LOGI(TAG, "Connecting to wss://%s:%d%s (ngrok primary)",
-             TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH);
+    /* Connection mode: 0=auto (ngrok→local), 1=local only, 2=remote only */
+    uint8_t conn_mode = tab5_settings_get_connection_mode();
+    ESP_LOGI(TAG, "Connection mode: %d (%s)",
+             conn_mode, conn_mode == 0 ? "auto" : conn_mode == 1 ? "local" : "remote");
 
-    esp_transport_handle_t ssl = esp_transport_ssl_init();
     int err = -1;
-    if (ssl) {
-        /* Use ESP x509 certificate bundle for TLS verification (ngrok, etc.) */
-        esp_transport_ssl_crt_bundle_attach(ssl, esp_crt_bundle_attach);
-        s_ws = esp_transport_ws_init(ssl);
-        if (s_ws) {
-            esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
-            err = esp_transport_connect(s_ws, TAB5_NGROK_HOST, TAB5_NGROK_PORT,
-                                        VOICE_CONNECT_TIMEOUT_MS);
-            if (err >= 0) {
-                strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
-                s_dragon_port = TAB5_NGROK_PORT;
-                ESP_LOGI(TAG, "Connected via ngrok!");
+
+    /* Try ngrok (remote) if mode is auto(0) or remote(2) */
+    if (conn_mode != 1) {
+        ESP_LOGI(TAG, "Connecting to wss://%s:%d%s (ngrok%s)",
+                 TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH,
+                 conn_mode == 2 ? " only" : " primary");
+
+        esp_transport_handle_t ssl = esp_transport_ssl_init();
+        if (ssl) {
+            esp_transport_ssl_crt_bundle_attach(ssl, esp_crt_bundle_attach);
+            s_ws = esp_transport_ws_init(ssl);
+            if (s_ws) {
+                esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
+                err = esp_transport_connect(s_ws, TAB5_NGROK_HOST, TAB5_NGROK_PORT,
+                                            VOICE_CONNECT_TIMEOUT_MS);
+                if (err >= 0) {
+                    strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
+                    s_dragon_port = TAB5_NGROK_PORT;
+                    ESP_LOGI(TAG, "Connected via ngrok!");
+                } else {
+                    ESP_LOGW(TAG, "ngrok connect failed%s",
+                             conn_mode == 2 ? " (remote-only mode)" : " — trying local...");
+                    esp_transport_close(s_ws);
+                    esp_transport_destroy(s_ws);
+                    s_ws = NULL;
+                }
             } else {
-                ESP_LOGW(TAG, "ngrok connect failed — trying local fallback...");
-                esp_transport_close(s_ws);
-                esp_transport_destroy(s_ws);
-                s_ws = NULL;
-                /* ssl transport is owned by the WS wrapper — destroyed with it */
+                esp_transport_destroy(ssl);
             }
         } else {
-            /* WS init over SSL failed — clean up SSL */
-            esp_transport_destroy(ssl);
+            ESP_LOGW(TAG, "SSL transport init failed");
         }
-    } else {
-        ESP_LOGW(TAG, "SSL transport init failed");
     }
 
-    /* FALLBACK: try local Dragon on LAN */
-    if (err < 0) {
+    /* Try local LAN if mode is auto(0) or local(1), and ngrok didn't connect */
+    if (err < 0 && conn_mode != 2) {
         esp_transport_handle_t tcp_fb = esp_transport_tcp_init();
         if (tcp_fb) {
             s_ws = esp_transport_ws_init(tcp_fb);
