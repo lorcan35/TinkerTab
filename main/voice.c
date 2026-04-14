@@ -579,6 +579,14 @@ static void handle_text_message(const char *data, int len)
                      saved_mode, saved_model[0] ? saved_model : "(default)");
             voice_send_config_update((int)saved_mode,
                                      saved_model[0] ? saved_model : NULL);
+
+            /* US-PR17: Retry any notes that failed to sync while offline.
+             * Called here (after session_start) rather than immediately on
+             * WS connect, because Dragon's REST API is guaranteed ready
+             * only after it sends session_start.  sync_note_to_dragon()
+             * spawns fire-and-forget HTTP POST tasks — no LVGL access,
+             * safe to call from the voice task on Core 1. */
+            ui_notes_sync_pending();
         }
     } else if (strcmp(type_str, "dictation_summary") == 0) {
         cJSON *title = cJSON_GetObjectItem(root, "title");
@@ -2062,9 +2070,9 @@ static void reconnect_watchdog_task(void *arg)
                 if (s_ws_connected) {
                     ESP_LOGI(TAG, "Watchdog: reconnected successfully!");
                     backoff_ms = RECONNECT_BACKOFF_MIN_MS;  /* reset backoff on success */
-                    /* S6: Sync pending notes that were created while offline */
-                    extern void ui_notes_sync_pending(void);
-                    ui_notes_sync_pending();
+                    /* US-PR17: Notes sync moved to session_start handler —
+                     * Dragon REST API isn't ready until session_start arrives.
+                     * See the session_start block in ws_receive_task(). */
                 } else {
                     /* US-A01: Double backoff, cap at max */
                     backoff_ms = backoff_ms * 2;
