@@ -5,6 +5,7 @@ set(UI_SRCS
     "chat_msg_store.c"
     "chat_header.c"
     "chat_input_bar.c"
+    "chat_suggestions.c"
 )
 
 if(IDF_TARGET STREQUAL "linux")
