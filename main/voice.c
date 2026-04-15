@@ -795,6 +795,39 @@ static void handle_text_message(const char *data, int len)
         ESP_LOGI(TAG, "Tool result: %s (%.0fms)", tool_name, ms);
         /* Clear tool status — LLM will continue generating shortly */
         voice_set_state(VOICE_STATE_PROCESSING, "Thinking...");
+    } else if (strcmp(type_str, "media") == 0) {
+        const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+        const char *mtype = cJSON_GetStringValue(cJSON_GetObjectItem(root, "media_type"));
+        cJSON *w_item = cJSON_GetObjectItem(root, "width");
+        cJSON *h_item = cJSON_GetObjectItem(root, "height");
+        int w = cJSON_IsNumber(w_item) ? (int)w_item->valuedouble : 0;
+        int h = cJSON_IsNumber(h_item) ? (int)h_item->valuedouble : 0;
+        const char *alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
+        if (url) {
+            ESP_LOGI(TAG, "Media: %s %dx%d", mtype ? mtype : "image", w, h);
+            ui_chat_push_media(url, mtype, w, h, alt);
+        }
+
+    } else if (strcmp(type_str, "card") == 0) {
+        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+        const char *sub = cJSON_GetStringValue(cJSON_GetObjectItem(root, "subtitle"));
+        const char *img = cJSON_GetStringValue(cJSON_GetObjectItem(root, "image_url"));
+        const char *desc = cJSON_GetStringValue(cJSON_GetObjectItem(root, "description"));
+        if (title) {
+            ESP_LOGI(TAG, "Card: %s", title);
+            ui_chat_push_card(title, sub, img, desc);
+        }
+
+    } else if (strcmp(type_str, "audio_clip") == 0) {
+        const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+        cJSON *dur_item = cJSON_GetObjectItem(root, "duration_s");
+        float dur = cJSON_IsNumber(dur_item) ? (float)dur_item->valuedouble : 0.0f;
+        const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(root, "label"));
+        if (url) {
+            ESP_LOGI(TAG, "Audio clip: %s (%.1fs)", label ? label : "", dur);
+            ui_chat_push_audio_clip(url, dur, label);
+        }
+
     } else {
         ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }

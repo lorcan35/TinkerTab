@@ -25,6 +25,7 @@
 #include "lvgl.h"
 #include <string.h>
 #include <stdlib.h>
+#include "media_cache.h"
 
 /* Declared in ui_home.c */
 extern lv_obj_t *ui_home_get_screen(void);
@@ -124,6 +125,28 @@ static bool         s_history_fetched = false; /* Guard: only fetch history once
 #define CLR_TOOL_DIM     0x00E5FF   /* dim cyan for tool indicator */
 #define CLR_CARD_BG      0x141420   /* session card bg */
 #define CLR_CARD_BORDER  0x2A2A3E   /* session card border */
+
+/* ── Rich media async push types ─────────────────────────────────── */
+
+typedef struct {
+    char url[256];
+    char alt[128];
+    int  width;
+    int  height;
+} media_push_t;
+
+typedef struct {
+    char title[128];
+    char subtitle[256];
+    char image_url[256];
+    char description[256];
+} card_push_t;
+
+typedef struct {
+    char  url[256];
+    float duration_s;
+    char  label[128];
+} audio_push_t;
 
 /* ── Helpers ───────────────────────────────────────────────────── */
 
@@ -1880,6 +1903,7 @@ lv_obj_t *ui_chat_create(void)
     }
 
     ESP_LOGI(TAG, "Creating chat overlay");
+    media_cache_init();
     feed_wdt_yield();
 
     /* ── Fullscreen overlay on home screen ──────────────────── */
@@ -2164,6 +2188,317 @@ void ui_chat_push_message(const char *role, const char *text)
 
     /* Schedule on LVGL thread (Core 0) — lv_async_call is thread-safe */
     lv_async_call(async_push_cb, msg);
+}
+
+/* ── Rich media bubble renderers ──────────────────────────────────── */
+
+/**
+ * Evict oldest LVGL children if scroll area has too many objects.
+ * Dynamic limit: 75 children max (text + media bubbles combined).
+ */
+static void evict_if_needed(void)
+{
+    if (!s_msg_scroll) return;
+    uint32_t cnt = lv_obj_get_child_count(s_msg_scroll);
+    while (cnt > 75) {
+        uint32_t start_idx = s_archived_shown ? 1 : 0;
+        lv_obj_t *oldest = lv_obj_get_child(s_msg_scroll, start_idx);
+        if (!oldest) break;
+        lv_obj_del(oldest);
+        s_msg_count--;
+        cnt--;
+    }
+    /* Recalculate Y positions after eviction */
+    if (lv_obj_get_child_count(s_msg_scroll) > 0) {
+        int base_y = s_archived_shown ? 24 : 12;
+        s_next_y = base_y;
+        uint32_t total = lv_obj_get_child_count(s_msg_scroll);
+        for (uint32_t i = (s_archived_shown ? 1 : 0); i < total; i++) {
+            lv_obj_t *ch = lv_obj_get_child(s_msg_scroll, i);
+            lv_obj_set_pos(ch, lv_obj_get_x(ch), s_next_y);
+            lv_obj_update_layout(ch);
+            s_next_y += lv_obj_get_height(ch) + BUBBLE_GAP;
+        }
+    }
+}
+
+/**
+ * Image bubble renderer — shows placeholder text, JPEG loaded on demand.
+ */
+static void render_image_bubble(const char *url, const char *alt, int w, int h)
+{
+    if (!s_msg_scroll) return;
+
+    evict_if_needed();
+
+    /* Calculate display dimensions (fit within BUBBLE_MAX_W, maintain aspect ratio) */
+    int disp_w = BUBBLE_MAX_W - 2 * BUBBLE_PAD;
+    int disp_h = 200;  /* default */
+    if (w > 0 && h > 0) {
+        float scale = (float)disp_w / (float)w;
+        disp_h = (int)(h * scale);
+        if (disp_h > 400) disp_h = 400;
+        if (disp_h < 60) disp_h = 60;
+    }
+
+    /* Container bubble */
+    lv_obj_t *bubble = lv_obj_create(s_msg_scroll);
+    lv_obj_remove_style_all(bubble);
+    lv_obj_set_pos(bubble, 20, s_next_y);
+    lv_obj_set_size(bubble, BUBBLE_MAX_W, disp_h + 2 * BUBBLE_PAD);
+    lv_obj_set_style_bg_color(bubble, lv_color_hex(CLR_TINKER_BUB), 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bubble, 12, 0);
+    lv_obj_set_style_pad_all(bubble, BUBBLE_PAD, 0);
+    lv_obj_set_style_border_width(bubble, 1, 0);
+    lv_obj_set_style_border_color(bubble, lv_color_hex(0x333333), 0);
+    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Alt text or "Loading image..." placeholder */
+    lv_obj_t *lbl = lv_label_create(bubble);
+    const char *display_text = (alt && alt[0]) ? alt : "Loading image...";
+    lv_label_set_text(lbl, display_text);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lbl, LABEL_MAX_W);
+    lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
+
+    lv_obj_update_layout(bubble);
+    int bh = lv_obj_get_height(bubble);
+    s_next_y += bh + BUBBLE_GAP;
+    s_msg_count++;
+
+    /* Auto-scroll */
+    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_ON);
+}
+
+/**
+ * Card bubble renderer — container with left orange border.
+ */
+static void render_card_bubble(const char *title, const char *subtitle,
+                               const char *image_url, const char *description)
+{
+    if (!s_msg_scroll || !title) return;
+
+    evict_if_needed();
+
+    /* Container */
+    lv_obj_t *bubble = lv_obj_create(s_msg_scroll);
+    lv_obj_remove_style_all(bubble);
+    lv_obj_set_pos(bubble, 20, s_next_y);
+    lv_obj_set_size(bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(bubble, lv_color_hex(CLR_TINKER_BUB), 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bubble, 12, 0);
+    lv_obj_set_style_pad_all(bubble, BUBBLE_PAD, 0);
+    lv_obj_set_style_pad_left(bubble, BUBBLE_PAD + 6, 0); /* extra for border accent */
+    /* Left orange border accent */
+    lv_obj_set_style_border_width(bubble, 1, 0);
+    lv_obj_set_style_border_color(bubble, lv_color_hex(0xff6b35), 0);
+    lv_obj_set_style_border_side(bubble, LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+
+    int inner_y = 0;
+
+    /* Title */
+    lv_obj_t *title_lbl = lv_label_create(bubble);
+    lv_label_set_text(title_lbl, title);
+    lv_label_set_long_mode(title_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(title_lbl, LABEL_MAX_W - 6);
+    lv_obj_set_style_text_font(title_lbl, FONT_BODY, 0);
+    lv_obj_set_style_text_color(title_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_pos(title_lbl, 0, inner_y);
+    lv_obj_update_layout(title_lbl);
+    inner_y += lv_obj_get_height(title_lbl) + 4;
+
+    /* Subtitle */
+    if (subtitle && subtitle[0]) {
+        lv_obj_t *sub_lbl = lv_label_create(bubble);
+        lv_label_set_text(sub_lbl, subtitle);
+        lv_label_set_long_mode(sub_lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(sub_lbl, LABEL_MAX_W - 6);
+        lv_obj_set_style_text_font(sub_lbl, FONT_SMALL, 0);
+        lv_obj_set_style_text_color(sub_lbl, lv_color_hex(0x888888), 0);
+        lv_obj_set_pos(sub_lbl, 0, inner_y);
+        lv_obj_update_layout(sub_lbl);
+        inner_y += lv_obj_get_height(sub_lbl) + 4;
+    }
+
+    /* Description */
+    if (description && description[0]) {
+        lv_obj_t *desc_lbl = lv_label_create(bubble);
+        lv_label_set_text(desc_lbl, description);
+        lv_label_set_long_mode(desc_lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(desc_lbl, LABEL_MAX_W - 6);
+        lv_obj_set_style_text_font(desc_lbl, FONT_SMALL, 0);
+        lv_obj_set_style_text_color(desc_lbl, lv_color_hex(0xaaaaaa), 0);
+        lv_obj_set_pos(desc_lbl, 0, inner_y);
+    }
+
+    lv_obj_update_layout(bubble);
+    int bh = lv_obj_get_height(bubble);
+    s_next_y += bh + BUBBLE_GAP;
+    s_msg_count++;
+
+    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_ON);
+}
+
+/**
+ * Audio clip bubble renderer — compact, green-tinted.
+ */
+static void render_audio_clip_bubble(const char *url, float duration_s, const char *label)
+{
+    if (!s_msg_scroll) return;
+
+    evict_if_needed();
+
+    /* Container */
+    lv_obj_t *bubble = lv_obj_create(s_msg_scroll);
+    lv_obj_remove_style_all(bubble);
+    lv_obj_set_pos(bubble, 20, s_next_y);
+    lv_obj_set_size(bubble, BUBBLE_MAX_W, 56);
+    lv_obj_set_style_bg_color(bubble, lv_color_hex(0x1a2a1a), 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bubble, 12, 0);
+    lv_obj_set_style_pad_all(bubble, 10, 0);
+    lv_obj_set_style_border_width(bubble, 1, 0);
+    lv_obj_set_style_border_color(bubble, lv_color_hex(0x2a4a2a), 0);
+    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Play icon */
+    lv_obj_t *icon = lv_label_create(bubble);
+    lv_label_set_text(icon, LV_SYMBOL_PLAY);
+    lv_obj_set_style_text_font(icon, FONT_BODY, 0);
+    lv_obj_set_style_text_color(icon, lv_color_hex(0x22c55e), 0);
+    lv_obj_set_pos(icon, 4, 8);
+
+    /* Label + duration */
+    char info[192];
+    const char *disp_label = (label && label[0]) ? label : "Audio clip";
+    if (duration_s > 0.0f) {
+        int mins = (int)(duration_s / 60.0f);
+        int secs = (int)duration_s % 60;
+        snprintf(info, sizeof(info), "%s  %d:%02d", disp_label, mins, secs);
+    } else {
+        snprintf(info, sizeof(info), "%s", disp_label);
+    }
+
+    lv_obj_t *lbl = lv_label_create(bubble);
+    lv_label_set_text(lbl, info);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lbl, LABEL_MAX_W - 40);
+    lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xcccccc), 0);
+    lv_obj_set_pos(lbl, 36, 12);
+
+    s_next_y += 56 + BUBBLE_GAP;
+    s_msg_count++;
+
+    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_ON);
+}
+
+/* ── Async callbacks for rich media push ─────────────────────────── */
+
+static void push_media_cb(void *arg)
+{
+    media_push_t *m = (media_push_t *)arg;
+    if (!m) return;
+
+    if (!s_overlay) {
+        ESP_LOGW(TAG, "push_media: overlay not created, dropping");
+        free(m);
+        return;
+    }
+    if (!s_conv_created) {
+        build_conversation_ui();
+    }
+
+    render_image_bubble(m->url, m->alt, m->width, m->height);
+    free(m);
+}
+
+static void push_card_cb(void *arg)
+{
+    card_push_t *c = (card_push_t *)arg;
+    if (!c) return;
+
+    if (!s_overlay) {
+        ESP_LOGW(TAG, "push_card: overlay not created, dropping");
+        free(c);
+        return;
+    }
+    if (!s_conv_created) {
+        build_conversation_ui();
+    }
+
+    render_card_bubble(c->title, c->subtitle,
+                       c->image_url[0] ? c->image_url : NULL,
+                       c->description[0] ? c->description : NULL);
+    free(c);
+}
+
+static void push_audio_clip_cb(void *arg)
+{
+    audio_push_t *a = (audio_push_t *)arg;
+    if (!a) return;
+
+    if (!s_overlay) {
+        ESP_LOGW(TAG, "push_audio_clip: overlay not created, dropping");
+        free(a);
+        return;
+    }
+    if (!s_conv_created) {
+        build_conversation_ui();
+    }
+
+    render_audio_clip_bubble(a->url, a->duration_s, a->label);
+    free(a);
+}
+
+/* ── Thread-safe push functions for rich media ───────────────────── */
+
+void ui_chat_push_media(const char *url, const char *media_type,
+                        int width, int height, const char *alt)
+{
+    media_push_t *m = malloc(sizeof(media_push_t));
+    if (!m) return;
+    strncpy(m->url, url ? url : "", sizeof(m->url) - 1);
+    m->url[sizeof(m->url) - 1] = '\0';
+    strncpy(m->alt, alt ? alt : "", sizeof(m->alt) - 1);
+    m->alt[sizeof(m->alt) - 1] = '\0';
+    m->width = width;
+    m->height = height;
+    lv_async_call(push_media_cb, m);
+}
+
+void ui_chat_push_card(const char *title, const char *subtitle,
+                       const char *image_url, const char *description)
+{
+    card_push_t *c = malloc(sizeof(card_push_t));
+    if (!c) return;
+    strncpy(c->title, title ? title : "", sizeof(c->title) - 1);
+    c->title[sizeof(c->title) - 1] = '\0';
+    strncpy(c->subtitle, subtitle ? subtitle : "", sizeof(c->subtitle) - 1);
+    c->subtitle[sizeof(c->subtitle) - 1] = '\0';
+    strncpy(c->image_url, image_url ? image_url : "", sizeof(c->image_url) - 1);
+    c->image_url[sizeof(c->image_url) - 1] = '\0';
+    strncpy(c->description, description ? description : "", sizeof(c->description) - 1);
+    c->description[sizeof(c->description) - 1] = '\0';
+    lv_async_call(push_card_cb, c);
+}
+
+void ui_chat_push_audio_clip(const char *url, float duration_s, const char *label)
+{
+    audio_push_t *a = malloc(sizeof(audio_push_t));
+    if (!a) return;
+    strncpy(a->url, url ? url : "", sizeof(a->url) - 1);
+    a->url[sizeof(a->url) - 1] = '\0';
+    a->duration_s = duration_s;
+    strncpy(a->label, label ? label : "", sizeof(a->label) - 1);
+    a->label[sizeof(a->label) - 1] = '\0';
+    lv_async_call(push_audio_clip_cb, a);
 }
 
 bool ui_chat_is_active(void) { return s_active; }

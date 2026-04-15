@@ -18,3 +18,9 @@ void ui_chat_push_message(const char *role, const char *text);
 
 /** Hide chat overlay (called from nav). */
 void ui_chat_hide(void);
+
+void ui_chat_push_media(const char *url, const char *media_type,
+                        int width, int height, const char *alt);
+void ui_chat_push_card(const char *title, const char *subtitle,
+                       const char *image_url, const char *description);
+void ui_chat_push_audio_clip(const char *url, float duration_s, const char *label);

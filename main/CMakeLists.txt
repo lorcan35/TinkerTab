@@ -23,7 +23,7 @@ else()
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"
              "ui_core.c" ${UI_SRCS}
-             "settings.c" "ota.c"
+             "settings.c" "ota.c" "media_cache.c"
         INCLUDE_DIRS "."
         REQUIRES esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer
                  json esp_driver_jpeg fatfs sdmmc esp_driver_i2s esp_driver_cam lvgl
