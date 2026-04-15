@@ -900,3 +900,35 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Heap fragmentation from repeated create/destroy cycles. The 90KB of free memory was split across dozens of non-contiguous small blocks (largest was 18KB). No single block was large enough for the 32KB allocation.
 - **Fix:** (1) Switched overlays to hide/show pattern to stop fragmenting. (2) Added fragmentation watchdog that monitors `heap_caps_get_largest_free_block()` and reboots if it stays below 30KB for 3 minutes. (3) Added `/selftest` endpoint that reports both free size and largest block for remote monitoring.
 - **Prevention:** Always check `heap_caps_get_largest_free_block()`, not just `heap_caps_get_free_size()`. The largest block is the true measure of allocation capacity. Log both values in health checks.
+
+---
+
+## Rich Media Chat (2026-04-15)
+
+### TJPGD Requires LV_USE_FS_MEMFS for In-Memory JPEG Decode
+- **Date:** 2026-04-15
+- **Symptom:** Image bubbles appeared in chat but were empty — no image content rendered. TJPGD returned no errors but produced zero pixels. The JPEG data was downloaded correctly (verified by dumping bytes).
+- **Root Cause:** LVGL's TJPGD decoder uses the filesystem abstraction to read image data. When the JPEG is in a RAM buffer (not a file on disk), TJPGD needs `LV_USE_FS_MEMFS` enabled to treat a memory pointer as a "file." Without it, TJPGD cannot open the image data source and silently produces an empty decode.
+- **Fix:** Added `CONFIG_LV_USE_FS_MEMFS=y` to `sdkconfig.defaults`. TJPGD now reads JPEG data directly from the PSRAM cache buffer.
+- **Prevention:** Any LVGL image decoder that reads from RAM buffers (not SD card or flash) requires `LV_USE_FS_MEMFS=y`. This is not obvious from the TJPGD documentation — it's a dependency through LVGL's file abstraction layer. Always verify decode output is non-empty after enabling a new decoder.
+
+### JPEG SOF Marker Parsing Needed for lv_image_dsc_t Dimensions
+- **Date:** 2026-04-15
+- **Symptom:** Downloaded JPEG images were invisible in chat — the bubble was allocated but nothing appeared on screen. No crash, no error, just a zero-height invisible image.
+- **Root Cause:** `lv_image_dsc_t` requires `header.w` and `header.h` to be set before the image is displayed. Setting width=0 and height=0 (or leaving them uninitialized) causes LVGL to render a zero-area image — technically valid but invisible. The JPEG file contains dimensions in the SOF (Start of Frame) marker but LVGL does not auto-extract them before display.
+- **Fix:** Added a JPEG SOF parser that scans the downloaded JPEG data for the SOF0 marker (0xFF 0xC0) and extracts the image height and width from the marker payload. These values are set on `lv_image_dsc_t.header.w` and `.header.h` before calling `lv_image_set_src()`.
+- **Prevention:** When displaying JPEG images via `lv_image_dsc_t`, always parse the SOF marker to extract dimensions. Never assume width/height can be left at zero or "auto-detected" — LVGL image descriptors require explicit dimensions. The SOF0 marker is at a variable offset (after APP0/APP1 markers), so the parser must scan forward through the JPEG header.
+
+### lv_image_dsc_t Must Be Persistent (Not Stack-Local)
+- **Date:** 2026-04-15
+- **Symptom:** Image appeared briefly then corrupted or caused a crash on the next LVGL refresh cycle. Sometimes showed garbage pixels, sometimes triggered a Store access fault in the draw pipeline.
+- **Root Cause:** The `lv_image_dsc_t` struct was declared as a local variable inside the async callback function. After the callback returned, the struct went out of scope. LVGL's image widget holds a pointer to the descriptor and reads from it on every redraw — accessing freed stack memory.
+- **Fix:** Allocate `lv_image_dsc_t` from PSRAM (as part of the media cache slot) so it persists for the lifetime of the image widget. The descriptor lives alongside the JPEG data in the pre-allocated cache slot.
+- **Prevention:** `lv_image_dsc_t` (and any struct passed to `lv_image_set_src()`) must outlive the `lv_image` widget that references it. Never use stack-local or function-scoped descriptors. Allocate from heap or embed in a long-lived struct. Same rule applies to `lv_font_dsc_t` and similar LVGL descriptor types.
+
+### Pre-Allocated PSRAM Slots Prevent Image Alloc/Free Fragmentation
+- **Date:** 2026-04-15
+- **Symptom:** After displaying 20+ images across multiple chat sessions, PSRAM allocations for new images started failing even though total free PSRAM was adequate.
+- **Root Cause:** Each image download allocated a ~500KB PSRAM buffer, and freeing it after the image was no longer visible left fragmented holes. Over time, PSRAM fragmentation mirrored the internal SRAM fragmentation problem (see "Internal SRAM Fragmentation" entry) — total free was fine but largest contiguous block was too small.
+- **Fix:** Pre-allocate 5 fixed PSRAM slots (581KB each, ~2.9MB total) at boot in `media_cache_init()`. Images are written into these slots using LRU eviction. No runtime malloc/free for image data — the 5 slots are reused forever.
+- **Prevention:** For large, repeatedly allocated/freed buffers on ESP32-P4 (images, audio, video frames), always pre-allocate a fixed pool at boot. Use LRU or ring-buffer eviction within the pool. Runtime `heap_caps_malloc`/`heap_caps_free` of large PSRAM blocks will fragment the heap within hours of continuous use.

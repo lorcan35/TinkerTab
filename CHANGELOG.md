@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.9.0 (April 15, 2026) — Rich Media Chat
+
+### Added
+- **Rich Media Chat:** Chat screen renders inline rich media — syntax-highlighted code blocks, cards, and audio clips as JPEG images. Dragon renders content server-side (Pygments for code, Pillow for tables), Tab5 downloads and displays via LVGL's TJPGD decoder.
+- `media_cache.c` / `media_cache.h` — HTTP image downloader + 5-slot PSRAM LRU cache (~2.9MB). Pre-allocates at boot, zero alloc/free fragmentation.
+- `ui_chat.c` — Image bubble renderer (background download + lv_image), card bubble renderer (orange accent border), audio clip bubble renderer, text_update handler.
+- `ui_chat.h` — New API: `ui_chat_push_media()`, `ui_chat_push_card()`, `ui_chat_push_audio_clip()`, `ui_chat_update_last_message()`.
+- `voice.c` — Handles 4 new WS message types: `media`, `card`, `audio_clip`, `text_update`.
+- `sdkconfig.defaults` — `CONFIG_LV_USE_TJPGD=y` and `CONFIG_LV_USE_FS_MEMFS=y` for JPEG decoding from RAM.
+
+### Protocol
+- Dragon → Tab5: `media` (inline rendered image with `/api/media/{id}` URL)
+- Dragon → Tab5: `card` (rich preview card with title, subtitle, image, description)
+- Dragon → Tab5: `audio_clip` (inline audio with duration and label)
+- Dragon → Tab5: `text_update` (replace last AI bubble text, strips rendered code blocks)
+
+### Key Constraints
+- 5 pre-allocated PSRAM slots (581KB each, ~2.9MB total)
+- Max 3 media items per LLM response
+- Downloads yield every 2ms to not stall voice WS
+- Tab5 never fetches from the internet — Dragon proxies everything
+- `LV_USE_FS_MEMFS` required for TJPGD to decode from RAM buffers
+
 ## v0.8.0 (April 15, 2026) — Stability + Polish Sprint
 
 ### Security

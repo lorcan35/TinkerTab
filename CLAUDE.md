@@ -314,6 +314,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Memory pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96` + `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=1024` = 1120KB total capacity. 96KB is the MAX base pool — 128KB causes linker error (exceeds internal SRAM BSS). The 1024KB expand pool auto-allocates from system heap (PSRAM) on demand.
 - **Circle cache:** `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32`. Default 4 causes crashes when 5+ rounded objects render simultaneously.
 - **Asserts disabled:** `CONFIG_LV_USE_ASSERT_MALLOC=n` and `CONFIG_LV_USE_ASSERT_NULL=n` — prevents `while(1)` hang on alloc failure (which triggers 60s WDT reboot). With asserts off, NULL propagates and crashes faster with a useful backtrace instead of a silent WDT hang.
+- **JPEG decode:** `CONFIG_LV_USE_TJPGD=y` + `CONFIG_LV_USE_FS_MEMFS=y` — enables TJPGD decoder for in-memory JPEG rendering (used by rich media chat).
 - **Render mode:** `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM. Do NOT use DIRECT mode (causes tearing on DPI).
 
 ### Key Fixes (April 2026)
@@ -339,6 +340,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Done key auto-submits:** Done/Enter key on the keyboard dispatches `LV_EVENT_READY` instead of inserting a newline, triggering form submission.
 - **Internal SRAM fragmentation monitoring:** Periodic heap check monitors largest free internal SRAM block (not just total free). If largest block stays below threshold for 3 minutes sustained, triggers a controlled reboot to defragment.
 - **FPS counter:** LVGL flush rate counter for monitoring UI rendering performance.
+- **Rich Media Chat:** Chat screen renders inline rich media — syntax-highlighted code blocks, cards, and audio clips as JPEG images. Dragon renders content server-side (Pygments for code, Pillow for tables), Tab5 downloads and displays via LVGL's TJPGD decoder. 5-slot PSRAM LRU cache (~2.9MB) with zero alloc/free fragmentation. Max 3 media items per LLM response. Downloads yield every 2ms to not stall voice WS.
 
 ### Heap Fragmentation Fix (Hide/Show Pattern)
 Internal SRAM on the ESP32-P4 (~512KB) fragments over time as overlays are created and destroyed. Total free memory may look healthy, but the largest contiguous block shrinks until allocations fail.
@@ -392,13 +394,19 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 10. **config_update** — ACK with applied backend config + cloud_mode state
 11. **error** — error details
 
+### Dragon → Tab5 (Rich Media — April 2026)
+12. **media** — inline rendered image: `{"type":"media","media_type":"image","url":"/api/media/abc.jpg","width":660,"height":400,"alt":"Code: python"}`. Tab5 creates placeholder bubble, spawns FreeRTOS task on Core 1, downloads JPEG via `media_cache_fetch()`, JPEG SOF parser extracts dimensions, `lv_async_call` swaps placeholder with `lv_image`.
+13. **card** — rich preview card: `{"type":"card","title":"...","subtitle":"...","image_url":"...","description":"..."}`. Orange accent border.
+14. **audio_clip** — inline audio: `{"type":"audio_clip","url":"...","duration_s":2.3,"label":"..."}`.
+15. **text_update** — replace last AI bubble text: `{"type":"text_update","text":"cleaned text"}`. Dragon strips rendered code blocks from the text after sending them as media images.
+
 ### Not Yet Implemented (planned)
 - **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
 - **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable. (Issue #44)
 
 ## Key Files
 ```
-main/voice.c           — Voice WS client, mic capture, TTS playback, dictation, reconnect watchdog, three-tier mode, tool event handling (tool_call/tool_result)
+main/voice.c           — Voice WS client, mic capture, TTS playback, dictation, reconnect watchdog, three-tier mode, tool event handling (tool_call/tool_result), rich media WS handlers (media/card/audio_clip/text_update)
 main/voice.h           — Voice API: connect, listen, dictate, cancel, mode switch, reconnect watchdog
 main/ota.c             — OTA: check Dragon for updates, download via esp_https_ota, auto-rollback
 main/ota.h             — OTA API: tab5_ota_check(), tab5_ota_apply(), tab5_ota_mark_valid()
@@ -414,7 +422,10 @@ main/settings.c        — NVS: WiFi, Dragon host, volume, brightness, voice_mod
 main/settings.h        — Settings API including three-tier voice_mode + llm_model
 main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat bubbles, stop button)
 main/ui_home.c         — Home screen (clock, orb, Ask Tinker, Camera, Files, notes card, nav bar)
-main/ui_chat.c         — Chat overlay (text conversation, mic button, message persistence across close/open)
+main/ui_chat.c         — Chat overlay (text conversation, mic button, message persistence across close/open, rich media: image/card/audio_clip bubble renderers, text_update handler)
+main/ui_chat.h         — Chat API: push_media(), push_card(), push_audio_clip(), update_last_message()
+main/media_cache.c     — HTTP image downloader + 5-slot PSRAM LRU cache (~2.9MB). Downloads JPEG from Dragon's /api/media/{id}, decodes via TJPGD, displays inline in chat
+main/media_cache.h     — Media cache API: media_cache_init(), media_cache_fetch()
 main/ui_notes.c        — Notes screen (search, compact cards, edit overlay, voice/text, SD storage, Dragon sync)
 main/ui_settings.c     — Settings fullscreen overlay with manual Y positioning (no flex layout, no separate screen). Sections: Display, Network+WiFi+Dragon host, Voice mode+model, Storage, Battery, OTA, About. Uses voice_send_config_update(mode, model) for full three-tier config_update (integer voice_mode + llm_model string, not boolean bridge).
 main/ui_camera.c       — Camera viewfinder (1280x720 canvas, capture to SD, resolution picker, gallery)
