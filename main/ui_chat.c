@@ -2223,7 +2223,82 @@ static void evict_if_needed(void)
 }
 
 /**
- * Image bubble renderer — shows placeholder text, JPEG loaded on demand.
+ * Background image loader — runs on Core 1, downloads JPEG via media_cache,
+ * then uses lv_async_call to swap placeholder with lv_image on LVGL thread.
+ */
+typedef struct {
+    char       url[256];       /* relative URL to fetch */
+    lv_obj_t  *bubble;         /* container bubble to put image into */
+    lv_obj_t  *placeholder;    /* label to delete after image loads */
+    uint32_t   gen;            /* generation counter to detect stale callbacks */
+} img_load_ctx_t;
+
+static volatile uint32_t s_img_load_gen = 0;  /* incremented on New Chat / clear */
+
+/* Persistent image descriptors — must outlive the lv_image widget.
+ * One per cache slot since each slot's pixel data is persistent. */
+static lv_image_dsc_t s_img_dsc[MEDIA_CACHE_SLOTS];
+static int s_img_dsc_idx = 0;
+
+/* Callback on LVGL thread: replace placeholder with lv_image */
+static void img_loaded_cb(void *arg)
+{
+    img_load_ctx_t *ctx = (img_load_ctx_t *)arg;
+    if (!ctx) return;
+
+    /* Check bubble is still valid (not evicted / screen destroyed) */
+    if (ctx->gen != s_img_load_gen || !s_msg_scroll || !lv_obj_is_valid(ctx->bubble)) {
+        ESP_LOGD(TAG, "Image load stale (gen mismatch), discarding");
+        free(ctx);
+        return;
+    }
+
+    /* Fetch the cached image descriptor into a persistent slot */
+    int di = s_img_dsc_idx % MEDIA_CACHE_SLOTS;
+    s_img_dsc_idx++;
+    esp_err_t err = media_cache_fetch(ctx->url, &s_img_dsc[di]);
+    if (err != ESP_OK || s_img_dsc[di].data_size == 0) {
+        /* Download failed — update placeholder text */
+        if (lv_obj_is_valid(ctx->placeholder)) {
+            lv_label_set_text(ctx->placeholder, "Image unavailable");
+        }
+        free(ctx);
+        return;
+    }
+
+    /* Delete placeholder label */
+    if (lv_obj_is_valid(ctx->placeholder)) {
+        lv_obj_del(ctx->placeholder);
+    }
+
+    /* Create lv_image widget inside the bubble */
+    lv_obj_t *img = lv_image_create(ctx->bubble);
+    lv_image_set_src(img, &s_img_dsc[di]);
+    lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+
+    ESP_LOGI(TAG, "Image rendered: %s (%lu bytes)", ctx->url, (unsigned long)s_img_dsc[di].data_size);
+    free(ctx);
+}
+
+/* FreeRTOS task: download image in background */
+static void img_download_task(void *arg)
+{
+    img_load_ctx_t *ctx = (img_load_ctx_t *)arg;
+    if (!ctx) { vTaskDelete(NULL); return; }
+
+    /* Download + cache the JPEG (blocking) */
+    lv_image_dsc_t dsc;
+    esp_err_t err = media_cache_fetch(ctx->url, &dsc);
+    (void)err;  /* Result checked in the LVGL callback */
+
+    /* Schedule UI update on LVGL thread */
+    lv_async_call(img_loaded_cb, ctx);  /* ctx ownership transfers to callback */
+
+    vTaskDelete(NULL);
+}
+
+/**
+ * Image bubble renderer — shows placeholder, spawns background download task.
  */
 static void render_image_bubble(const char *url, const char *alt, int w, int h)
 {
@@ -2254,10 +2329,9 @@ static void render_image_bubble(const char *url, const char *alt, int w, int h)
     lv_obj_set_style_border_color(bubble, lv_color_hex(0x333333), 0);
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Alt text or "Loading image..." placeholder */
+    /* Placeholder label — replaced by image after download */
     lv_obj_t *lbl = lv_label_create(bubble);
-    const char *display_text = (alt && alt[0]) ? alt : "Loading image...";
-    lv_label_set_text(lbl, display_text);
+    lv_label_set_text(lbl, "Loading image...");
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(lbl, LABEL_MAX_W);
     lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
@@ -2272,6 +2346,17 @@ static void render_image_bubble(const char *url, const char *alt, int w, int h)
 
     /* Auto-scroll */
     lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_ON);
+
+    /* Spawn background download task */
+    img_load_ctx_t *ctx = malloc(sizeof(img_load_ctx_t));
+    if (ctx) {
+        strncpy(ctx->url, url ? url : "", sizeof(ctx->url) - 1);
+        ctx->url[sizeof(ctx->url) - 1] = '\0';
+        ctx->bubble = bubble;
+        ctx->placeholder = lbl;
+        ctx->gen = s_img_load_gen;
+        xTaskCreatePinnedToCore(img_download_task, "img_dl", 4096, ctx, 2, NULL, 1);
+    }
 }
 
 /**

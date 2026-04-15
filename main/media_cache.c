@@ -39,6 +39,8 @@ typedef struct {
     uint8_t  *data;         /* PSRAM slot for JPEG bytes */
     uint32_t  data_len;     /* actual JPEG byte count */
     uint32_t  tick;         /* last-access tick for LRU */
+    uint16_t  width;        /* parsed JPEG width */
+    uint16_t  height;       /* parsed JPEG height */
 } cache_slot_t;
 
 static cache_slot_t s_slots[MEDIA_CACHE_SLOTS];
@@ -121,8 +123,8 @@ esp_err_t media_cache_fetch(const char *relative_url, lv_image_dsc_t *out_dsc)
     int idx = find_slot(hash);
     if (idx >= 0) {
         s_slots[idx].tick = xTaskGetTickCount();
-        out_dsc->header.w = 0;  /* TJPGD will parse from JPEG header */
-        out_dsc->header.h = 0;
+        out_dsc->header.w = s_slots[idx].width;
+        out_dsc->header.h = s_slots[idx].height;
         out_dsc->header.cf = LV_COLOR_FORMAT_RAW;
         out_dsc->data_size = s_slots[idx].data_len;
         out_dsc->data = s_slots[idx].data;
@@ -204,9 +206,29 @@ esp_err_t media_cache_fetch(const char *relative_url, lv_image_dsc_t *out_dsc)
     s_slots[idx].data_len = total;
     s_slots[idx].tick = xTaskGetTickCount();
 
+    /* Parse JPEG SOF marker to extract width/height.
+     * SOF0 (0xFFC0) or SOF2 (0xFFC2) marker contains: length(2) + precision(1) + height(2) + width(2) */
+    uint16_t jpg_w = 0, jpg_h = 0;
+    for (uint32_t i = 0; i + 8 < total; i++) {
+        if (s_slots[idx].data[i] == 0xFF &&
+            (s_slots[idx].data[i + 1] == 0xC0 || s_slots[idx].data[i + 1] == 0xC2)) {
+            jpg_h = (s_slots[idx].data[i + 5] << 8) | s_slots[idx].data[i + 6];
+            jpg_w = (s_slots[idx].data[i + 7] << 8) | s_slots[idx].data[i + 8];
+            ESP_LOGI(TAG, "JPEG dimensions: %ux%u", jpg_w, jpg_h);
+            break;
+        }
+    }
+    if (jpg_w == 0 || jpg_h == 0) {
+        ESP_LOGW(TAG, "Could not parse JPEG dimensions, using defaults");
+        jpg_w = MEDIA_CACHE_MAX_W;
+        jpg_h = MEDIA_CACHE_MAX_H;
+    }
+    s_slots[idx].width = jpg_w;
+    s_slots[idx].height = jpg_h;
+
     /* Fill output descriptor — TJPGD decodes at draw time */
-    out_dsc->header.w = 0;
-    out_dsc->header.h = 0;
+    out_dsc->header.w = jpg_w;
+    out_dsc->header.h = jpg_h;
     out_dsc->header.cf = LV_COLOR_FORMAT_RAW;
     out_dsc->data_size = total;
     out_dsc->data = s_slots[idx].data;

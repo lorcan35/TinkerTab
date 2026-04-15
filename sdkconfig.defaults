@@ -150,3 +150,6 @@ CONFIG_CAMERA_SC202CS_MIPI_IF_FORMAT_INDEX_DAFAULT=0
 
 # LVGL TJPGD — JPEG decoder for media cache image rendering
 CONFIG_LV_USE_TJPGD=y
+# Memory-mapped FS — required for TJPGD to decode JPEG from RAM buffers
+CONFIG_LV_USE_FS_MEMFS=y
+CONFIG_LV_FS_MEMFS_LETTER=77
