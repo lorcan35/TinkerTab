@@ -73,6 +73,16 @@
 - Internal heap selftest threshold 50KB→30KB
 - INA226 I2C address corrected (0x41, not 0x40)
 
+### Firmware
+- Global typography system (FONT_TITLE through FONT_NAV in config.h)
+- Nav bar rendered on lv_layer_top (always accessible regardless of active screen/overlay)
+- Voice overlay shows on orb tap (tap orb → overlay opens + starts listening)
+- Done key dispatches LV_EVENT_READY (auto-submits instead of inserting newline)
+- FPS counter (LVGL flush rate monitoring)
+- Internal SRAM fragmentation watchdog (monitors largest free block, reboots after 3min sustained low)
+- Settings two-pass creation with touch input blocked during build
+- Overlays use hide/show pattern instead of create/destroy (prevents heap fragmentation)
+
 ## v1.0.0 — 2026-04-01
 
 ### Fixed

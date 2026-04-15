@@ -861,3 +861,42 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Users needed control over whether Tab5 connects locally or through ngrok, with an automatic fallback option.
 - **Fix:** Added Connection Mode setting with three options: Auto (local first, ngrok fallback), Local only, Remote only. Stored in NVS key `conn_m`. Exposed in Settings dropdown under the Network section.
 - **Prevention:** When adding new NVS settings, always add a corresponding UI control in the Settings screen and document the NVS key name and valid values.
+
+---
+
+## Stability Sprint Fixes (2026-04-15)
+
+### Overlay Height 1280 Must NOT Be Reduced (lv_color_mix32 Crash)
+- **Date:** 2026-04-15
+- **Symptom:** Reducing overlay height below 1280px (e.g., to 1160px to "avoid" the nav bar area) caused a crash in `lv_color_mix32` during LVGL rendering.
+- **Root Cause:** The LVGL partial render mode calculates draw areas based on the object's full bounding box. When an overlay is shorter than the display, the draw buffer math can produce out-of-bounds writes in `lv_color_mix32` during alpha blending at the boundary. The 720x1280 display expects full-height overlays.
+- **Fix:** Keep all overlays at full 1280px height. The nav bar on `lv_layer_top` renders above them. Never try to make overlays shorter to "leave room" for the nav bar.
+- **Prevention:** Overlays on the 720x1280 display must always be exactly 1280px tall. Use `lv_layer_top` for elements that need to float above overlays (like the nav bar).
+
+### Settings Must Use Hide/Show Not Create/Destroy (Fragmentation)
+- **Date:** 2026-04-15
+- **Symptom:** After opening/closing Settings 10-15 times, device rebooted. Internal SRAM largest free block dropped below 20KB while total free was still 80KB+.
+- **Root Cause:** Each Settings create/destroy cycle allocated and freed ~55 LVGL objects from internal SRAM. The freed memory became fragmented — many small free chunks but no contiguous block large enough for the next Settings creation.
+- **Fix:** Settings overlay is created once and hidden/shown via `LV_OBJ_FLAG_HIDDEN`. Values are refreshed on show. Destroy only when the overlay is permanently replaced.
+- **Prevention:** Any LVGL overlay with many objects (>20) must use hide/show, not create/destroy. Monitor `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)` during development. If it drops significantly after open/close cycles, you have a fragmentation problem.
+
+### Nav Bar Must Be on lv_layer_top Not Inside Tileview
+- **Date:** 2026-04-15
+- **Symptom:** Nav bar was hidden when fullscreen overlays (Settings, Chat, Voice) were shown. Users could not navigate away from an overlay without a back button or swipe gesture.
+- **Root Cause:** The nav bar was a child of the home screen tileview. Fullscreen overlays covered the entire tileview including the nav bar.
+- **Fix:** Moved nav bar to `lv_layer_top()` which renders above all screens and overlays. Nav bar is always visible and tappable regardless of what screen or overlay is active.
+- **Prevention:** Any UI element that must remain accessible across all screens belongs on `lv_layer_top()`, not inside a specific screen's object tree. The nav bar, status bar, and system notifications are candidates for `lv_layer_top`.
+
+### Done Key Should Dispatch LV_EVENT_READY Not Insert Newline
+- **Date:** 2026-04-15
+- **Symptom:** Pressing Done/Enter on the keyboard inserted a literal newline character into single-line text fields (WiFi password, Dragon host, etc.) instead of submitting the form.
+- **Root Cause:** The keyboard's Done key was configured to send `LV_KEY_ENTER` which LVGL's textarea interprets as "insert newline" for multi-line fields. Single-line fields needed a different behavior.
+- **Fix:** Done key now dispatches `LV_EVENT_READY` on the focused textarea. Event handlers on each text field catch `LV_EVENT_READY` to close the keyboard and process the input (save to NVS, connect WiFi, etc.).
+- **Prevention:** For single-line input fields (settings, passwords, hostnames), always register an `LV_EVENT_READY` handler. Use `LV_KEY_ENTER` only for multi-line text areas where newlines are expected.
+
+### Internal SRAM Fragmentation: Free != Usable (Largest Block Matters)
+- **Date:** 2026-04-15
+- **Symptom:** `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` reported 90KB free, but a 32KB allocation failed with NULL. Device appeared to have plenty of memory but could not allocate.
+- **Root Cause:** Heap fragmentation from repeated create/destroy cycles. The 90KB of free memory was split across dozens of non-contiguous small blocks (largest was 18KB). No single block was large enough for the 32KB allocation.
+- **Fix:** (1) Switched overlays to hide/show pattern to stop fragmenting. (2) Added fragmentation watchdog that monitors `heap_caps_get_largest_free_block()` and reboots if it stays below 30KB for 3 minutes. (3) Added `/selftest` endpoint that reports both free size and largest block for remote monitoring.
+- **Prevention:** Always check `heap_caps_get_largest_free_block()`, not just `heap_caps_get_free_size()`. The largest block is the true measure of allocation capacity. Log both values in health checks.

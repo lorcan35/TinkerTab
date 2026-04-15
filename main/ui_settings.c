@@ -58,7 +58,9 @@ static inline void feed_wdt(void) {
 #define ROW_H        44
 #define HDR_H        28
 #define TOPBAR_H     48
-#define OVERLAY_H    1280  /* Full screen — nav bar on lv_layer_top() */
+#define OVERLAY_H    1280
+#define NAV_BAR_H    80
+#define USABLE_H     (OVERLAY_H - NAV_BAR_H)  /* Full screen — nav bar on lv_layer_top() */
 #define CONTENT_W    680
 
 /* Section accent colors */
@@ -467,7 +469,7 @@ static void settings_keyboard_layout_cb(bool visible, int kb_height)
 
     if (visible) {
         /* Shrink scroll container so it ends above keyboard */
-        lv_obj_set_height(s_scroll, OVERLAY_H - TOPBAR_H - kb_height);
+        lv_obj_set_height(s_scroll, USABLE_H - TOPBAR_H - kb_height);
 
         /* Scroll to make dragon_ta visible if it exists */
         if (s_dragon_ta) {
@@ -1271,7 +1273,7 @@ lv_obj_t *ui_settings_create(void)
     /* ── Scrollable content area ─────────────────────────────────────── */
     s_scroll = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_scroll);
-    lv_obj_set_size(s_scroll, 720, OVERLAY_H - TOPBAR_H);
+    lv_obj_set_size(s_scroll, 720, USABLE_H - TOPBAR_H);
     lv_obj_set_pos(s_scroll, 0, TOPBAR_H);
     lv_obj_set_style_bg_opa(s_scroll, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(s_scroll, 0, 0);

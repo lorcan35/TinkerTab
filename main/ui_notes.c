@@ -55,7 +55,9 @@ static const char *TAG = "ui_notes";
 /* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW             720
 #define SH             1280     /* Notes is a separate screen, not tileview page */
-#define OVERLAY_H      SH  /* Full screen — nav bar on lv_layer_top() */
+#define OVERLAY_H      SH
+#define NAV_BAR_H      80
+#define USABLE_H       (SH - NAV_BAR_H)  /* Full screen — nav bar on lv_layer_top() */
 #define TOPBAR_H       48      /* match Settings style */
 #define INPUT_H        140     /* was 64 */
 #define NAV_H          140     /* was 64 */
@@ -559,7 +561,7 @@ static void show_recording_indicator(void)
     /* Push the notes list down to make room */
     if (s_list) {
         lv_obj_set_pos(s_list, 0, REC_BAR_Y + REC_BAR_H + 4);
-        lv_obj_set_height(s_list, OVERLAY_H - (REC_BAR_Y + REC_BAR_H + 4));
+        lv_obj_set_height(s_list, USABLE_H - (REC_BAR_Y + REC_BAR_H + 4));
     }
 
     /* Start 1-second update timer */
@@ -588,7 +590,7 @@ static void hide_recording_indicator(void)
     if (s_list) {
         #define LIST_Y_NORMAL (TOPBAR_H + BTN_ROW_H + 48 /* SEARCH_H */ + 10)
         lv_obj_set_pos(s_list, 0, LIST_Y_NORMAL);
-        lv_obj_set_height(s_list, OVERLAY_H - LIST_Y_NORMAL);
+        lv_obj_set_height(s_list, USABLE_H - LIST_Y_NORMAL);
     }
 
     ESP_LOGI(TAG, "Recording indicator hidden");
@@ -1149,7 +1151,7 @@ static void voice_session_done(void)
 static void notes_keyboard_layout_cb(bool visible, int kb_height)
 {
     if (visible) {
-        int above_kb = OVERLAY_H - kb_height;
+        int above_kb = USABLE_H - kb_height;
 
         /* Move text input area + save button above keyboard */
         if (s_input_area) {
@@ -1168,16 +1170,16 @@ static void notes_keyboard_layout_cb(bool visible, int kb_height)
     } else {
         /* Restore original positions */
         if (s_input_area) {
-            lv_obj_set_pos(s_input_area, 8, OVERLAY_H - INPUT_H - 8);
+            lv_obj_set_pos(s_input_area, 8, USABLE_H - INPUT_H - 8);
         }
         if (s_input_btn) {
-            lv_obj_set_pos(s_input_btn, SW - 168, OVERLAY_H - INPUT_H - 8);
+            lv_obj_set_pos(s_input_btn, SW - 168, USABLE_H - INPUT_H - 8);
         }
 
         /* Restore edit textarea height */
         if (s_edit_ta && s_edit_overlay) {
             int ta_y = lv_obj_get_y(s_edit_ta);
-            int ta_h = OVERLAY_H - ta_y - 24;
+            int ta_h = USABLE_H - ta_y - 24;
             lv_obj_set_height(s_edit_ta, ta_h);
         }
     }
@@ -1190,7 +1192,7 @@ static void show_input_area(void)
     s_input_visible = true;
 
     /* Position above the keyboard from the start since keyboard will open */
-    int input_y = OVERLAY_H - UI_KB_HEIGHT - INPUT_H - 8;
+    int input_y = USABLE_H - UI_KB_HEIGHT - INPUT_H - 8;
 
     /* Textarea — big and readable */
     s_input_area = lv_textarea_create(s_screen);
@@ -1580,7 +1582,7 @@ static void cb_note_tap(lv_event_t *e)
 
     /* ── Large textarea — full width, most of the screen ── */
     int ta_y = TOPBAR_H + 56;
-    int ta_h = OVERLAY_H - ta_y - 24;
+    int ta_h = USABLE_H - ta_y - 24;
     s_edit_ta = lv_textarea_create(s_edit_overlay);
     lv_obj_set_size(s_edit_ta, SW - 32, ta_h);
     lv_obj_set_pos(s_edit_ta, 16, ta_y);

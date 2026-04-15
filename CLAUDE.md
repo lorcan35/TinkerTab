@@ -204,6 +204,7 @@ curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 - **No vTaskDelete(NULL):** Use `vTaskSuspend(NULL)` — P4 TLSP cleanup crash (issue #20).
 - **Stack sizes:** SDIO tasks need 8K+. Mic task 4K (TDM buffer in PSRAM). WS task 8K.
 - **PSRAM cache coherency:** DPI DMA reads PSRAM directly. Call `esp_cache_msync()` after CPU writes to framebuffer.
+- **Internal SRAM fragmentation:** `heap_caps_get_free_size()` lies — total free != usable. Check `heap_caps_get_largest_free_block()` for the largest contiguous block. Fragmentation from overlay create/destroy cycles makes total free look healthy while allocations fail. Use hide/show pattern for overlays to prevent fragmentation. Fragmentation watchdog reboots after 3min sustained low largest-block.
 
 ## Audio Pipeline Rules
 - **I2S mixed mode:** TX = STD Philips (ES8388 DAC), RX = TDM 4-slot (ES7210 ADC), both on I2S_NUM_1. Matches M5Stack BSP exactly. ESP32-P4 supports mixed STD/TDM on same port.
@@ -319,17 +320,52 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **LVGL pool OOM crash fixed:** Notes edit overlay exhausted 64KB LVGL pool → `lv_malloc` NULL → `LV_ASSERT_MALLOC while(1)` → 60s WDT → reboot. Fix: 96KB pool + 1024KB expand in `sdkconfig.defaults`.
 - **Circle cache crash fixed:** 4 cache entries overflowed with 7+ rounded cards → `circ_calc_aa4` NULL dereference. Fix: `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32` in `sdkconfig.defaults`.
 - **Settings WDT crash fixed:** `f_getfree()` on a 128GB SD card blocks the LVGL thread for ~30s, triggering the watchdog. Fix: cache the `f_getfree` result from boot, feed `esp_task_wdt_reset()` between settings UI sections during creation.
-- **Response timeout (local vs cloud):** Local mode needs 5 min timeout for tool-calling chains (small models are slow). Cloud mode keeps 35s timeout. Timeout is mode-aware.
+- **Response timeout (mode-aware):** Local mode = 5 min timeout for tool-calling chains (small models are slow). Cloud mode = 1 min timeout. Timeout is mode-aware, set per voice mode.
 - **Tool parser tolerant of small model quirks:** qwen3:1.7b adds stray `>` after `</args>`, sometimes omits closing tags. Parser uses tolerant regex with fallback patterns to handle these gracefully.
 - **Speaker buzzing fixed:** IO expander P1 (SPK_EN) now initialized LOW at boot to prevent speaker buzzing on startup.
 - **Settings rewrite:** Replaced with fullscreen overlay using manual Y positioning. No flex layout, no separate screen. Eliminates WDT crash + draw buffer exhaustion.
+- **Settings two-pass creation:** Settings overlay uses a two-pass pattern — first pass creates the container, second pass populates sections with `esp_task_wdt_reset()` fed between each. Touch input blocked during creation to prevent partial-UI taps.
 - **WiFi:** Switched to DHCP, WPA2-PSK router, lowered auth threshold.
 - **Voice WS:** Added TLS cert bundle for ngrok, fixed TCP/SSL transport leaks.
 - **Chat UI overhaul:** Live status bar (Ready/Processing/Speaking), tappable mode badge to cycle Local/Hybrid/Cloud, New Chat button, thinking + tool indicator bubbles during LLM processing.
 - **Touch feedback system:** `ui_feedback.h/c` module with pressed states on 30+ interactive elements — buttons darken, cards lighten border, icons dim, nav items brighten. 100ms ease-out transitions.
 - **Nav debounce 300ms:** Prevents rapid-tap crashes from animation race conditions (dismiss + create overlapping).
+- **Nav bar on lv_layer_top:** Nav bar is rendered on `lv_layer_top()` so it remains accessible and visible regardless of which screen/overlay is active. Not inside the tileview.
 - **TinkerClaw voice mode 3:** Added VOICE_MODE_TINKERCLAW=3 — routes LLM through TinkerClaw Gateway while STT/TTS use Moonshine/Piper locally or OpenRouter as fallback.
 - **Voice overlay instant hide:** `ui_voice_hide()` is instant — no fade animation. The 150ms fade-out caused three bugs: (1) dangling `s_auto_hide` timer pointer (local static with `auto_delete=true` → use-after-free on next READY entry), (2) `fade_done_hide_cb` firing during navigation state changes, (3) `orb_speak_click_cb` stacking on SPEAKING re-entry. All three fixed April 2026.
+- **Voice overlay shows on orb tap:** Tapping the orb on the home screen opens the voice overlay and starts listening immediately.
+- **Bearer token auth on debug server:** All endpoints except `/info` and `/selftest` require a Bearer token. Token auto-generated on first boot via `esp_random()` and stored in NVS key `auth_tok`.
+- **Keyboard text visible while typing:** Text input field stays visible above the keyboard during typing (was previously hidden behind the keyboard).
+- **Done key auto-submits:** Done/Enter key on the keyboard dispatches `LV_EVENT_READY` instead of inserting a newline, triggering form submission.
+- **Internal SRAM fragmentation monitoring:** Periodic heap check monitors largest free internal SRAM block (not just total free). If largest block stays below threshold for 3 minutes sustained, triggers a controlled reboot to defragment.
+- **FPS counter:** LVGL flush rate counter for monitoring UI rendering performance.
+
+### Heap Fragmentation Fix (Hide/Show Pattern)
+Internal SRAM on the ESP32-P4 (~512KB) fragments over time as overlays are created and destroyed. Total free memory may look healthy, but the largest contiguous block shrinks until allocations fail.
+
+**Root cause:** Creating and destroying LVGL overlays (Settings, Chat, Voice) allocates and frees many small objects from internal SRAM. Over hours of use, this fragments the heap — `heap_caps_get_free_size()` reports adequate free memory, but `heap_caps_get_largest_free_block()` shows no single block large enough for new allocations.
+
+**Fix — hide/show instead of create/destroy:**
+- Settings, Chat, and Voice overlays are created ONCE and then hidden/shown via `lv_obj_add_flag(LV_OBJ_FLAG_HIDDEN)` / `lv_obj_remove_flag(LV_OBJ_FLAG_HIDDEN)`.
+- `dismiss_all_overlays()` calls `ui_chat_hide()`, `ui_settings_hide()`, etc. — NOT destroy.
+- Overlays with active timers or animations must be hidden, not destroyed, to prevent timer linked-list corruption.
+- Destroy only when permanently replacing (e.g., New Chat button).
+
+**Fragmentation watchdog:** `_memory_monitor` task checks internal SRAM largest free block every 30 seconds. If the largest block stays below 30KB for 3 minutes, triggers a controlled reboot. This is the safety net — the hide/show pattern is the primary fix.
+
+### Global Typography System
+All font usage across the UI is standardized through `config.h` defines:
+
+| Define | Font | Size | Usage |
+|--------|------|------|-------|
+| `FONT_TITLE` | Montserrat Bold | 28px | Screen titles, section headers |
+| `FONT_HEADING` | Montserrat Bold | 22px | Card titles, overlay headers |
+| `FONT_BODY` | Montserrat | 18px | Body text, descriptions |
+| `FONT_SMALL` | Montserrat | 14px | Timestamps, labels, metadata |
+| `FONT_TINY` | Montserrat | 12px | Status bar, badges |
+| `FONT_NAV` | Montserrat | 12px | Navigation bar labels |
+
+All UI files use these defines instead of raw `lv_font_montserrat_XX` references. To change the global typography, update only `config.h`.
 
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
