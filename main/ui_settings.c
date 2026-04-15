@@ -498,10 +498,10 @@ static void ntp_sync_task(void *arg)
     (void)arg;
     esp_err_t ret = tab5_rtc_sync_from_ntp();
 
-    if (s_destroying) { vTaskDelete(NULL); return; }
+    if (s_destroying) { vTaskSuspend(NULL); return; }
 
     tab5_ui_lock();
-    if (s_destroying || !s_ntp_btn_label) { tab5_ui_unlock(); vTaskDelete(NULL); return; }
+    if (s_destroying || !s_ntp_btn_label) { tab5_ui_unlock(); vTaskSuspend(NULL); return; }
     if (s_ntp_btn_label) {
         if (ret == ESP_OK) {
             lv_label_set_text(s_ntp_btn_label, "Synced!");
@@ -513,7 +513,7 @@ static void ntp_sync_task(void *arg)
     }
     s_ntp_spinner = NULL;
     tab5_ui_unlock();
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 /* ── OTA ────────────────────────────────────────────────────────────── */
@@ -558,12 +558,12 @@ static void ota_apply_task(void *arg)
     esp_err_t err = tab5_ota_apply(s_ota_url, s_ota_sha256[0] ? s_ota_sha256 : NULL);
     tab5_ota_set_progress_cb(NULL);
     ESP_LOGE(TAG, "OTA apply failed: %s", esp_err_to_name(err));
-    if (s_destroying) { vTaskDelete(NULL); return; }
+    if (s_destroying) { vTaskSuspend(NULL); return; }
     tab5_ui_lock();
     if (s_ota_btn_label) lv_label_set_text(s_ota_btn_label, "Update failed!");
     if (s_ota_apply_btn) lv_obj_clear_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     tab5_ui_unlock();
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 /* OTA confirmation dialog callbacks (US-PR19) */
@@ -638,10 +638,10 @@ static void ota_check_task(void *arg)
     tab5_ota_info_t info;
     esp_err_t err = tab5_ota_check(&info);
 
-    if (s_destroying) { vTaskDelete(NULL); return; }
+    if (s_destroying) { vTaskSuspend(NULL); return; }
 
     tab5_ui_lock();
-    if (s_destroying || !s_ota_btn_label) { tab5_ui_unlock(); vTaskDelete(NULL); return; }
+    if (s_destroying || !s_ota_btn_label) { tab5_ui_unlock(); vTaskSuspend(NULL); return; }
 
     if (err != ESP_OK) {
         lv_label_set_text(s_ota_btn_label, "Check failed");
@@ -659,7 +659,7 @@ static void ota_check_task(void *arg)
         if (s_ota_apply_btn) lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
     }
     tab5_ui_unlock();
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 static void cb_ota_check(lv_event_t *e)

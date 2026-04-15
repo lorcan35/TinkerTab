@@ -1350,6 +1350,15 @@ static void sd_record_task(void *arg)
     vTaskSuspend(NULL);
 }
 
+/* Safe toast deletion — timer user_data is the toast lv_obj_t* */
+static void toast_delete_cb(lv_timer_t *t)
+{
+    lv_obj_t *obj = lv_timer_get_user_data(t);
+    if (obj && lv_obj_is_valid(obj)) {
+        lv_obj_delete(obj);
+    }
+}
+
 static void cb_new_voice(lv_event_t *e)
 {
     (void)e;
@@ -1387,7 +1396,7 @@ static void cb_new_voice(lv_event_t *e)
         lv_label_set_text(lbl, "SD card not ready");
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
         lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
-        lv_timer_t *tmr = lv_timer_create((lv_timer_cb_t)lv_obj_delete, 2000, toast);
+        lv_timer_t *tmr = lv_timer_create(toast_delete_cb, 2000, toast);
         lv_timer_set_repeat_count(tmr, 1);
         return;
     }

@@ -277,7 +277,7 @@ static void wifi_connect_task(void *arg)
 {
     char *password = (char *)arg;
 
-    if (s_destroying) { free(password); vTaskDelete(NULL); return; }
+    if (s_destroying) { free(password); vTaskSuspend(NULL); return; }
 
     ESP_LOGI(TAG, "Connecting to '%s'...", s_selected_ssid);
 
@@ -314,7 +314,7 @@ static void wifi_connect_task(void *arg)
             tab5_ui_unlock();
         }
         free(password);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -330,7 +330,7 @@ static void wifi_connect_task(void *arg)
             tab5_ui_unlock();
         }
         free(password);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -379,7 +379,7 @@ static void wifi_connect_task(void *arg)
     }
 
     free(password);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 /* ── RSSI to signal bars ───────────────────────────────────────────── */

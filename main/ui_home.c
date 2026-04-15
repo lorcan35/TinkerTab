@@ -685,7 +685,7 @@ static void brain_pulse_cb(void *obj, int32_t val)
 static void toast_timer_cb(lv_timer_t *t)
 {
     lv_obj_t *toast = (lv_obj_t *)lv_timer_get_user_data(t);
-    if (toast) lv_obj_delete(toast);
+    if (toast && lv_obj_is_valid(toast)) lv_obj_delete(toast);
 }
 
 static void show_toast(const char *text)

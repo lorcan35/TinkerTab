@@ -1036,7 +1036,7 @@ static void history_fetch_task(void *arg)
     tab5_settings_get_dragon_host(dhost, sizeof(dhost));
     if (!dhost[0]) {
         ESP_LOGW(TAG, "history_fetch: no Dragon host configured");
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1044,7 +1044,7 @@ static void history_fetch_task(void *arg)
     tab5_settings_get_session_id(session_id, sizeof(session_id));
     if (!session_id[0]) {
         ESP_LOGW(TAG, "history_fetch: no session_id in NVS");
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1063,7 +1063,7 @@ static void history_fetch_task(void *arg)
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
         ESP_LOGE(TAG, "history_fetch: http_client_init failed");
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1071,7 +1071,7 @@ static void history_fetch_task(void *arg)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "history_fetch: open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1081,7 +1081,7 @@ static void history_fetch_task(void *arg)
     if (status != 200 || content_len <= 0 || content_len > HISTORY_BODY_MAX) {
         ESP_LOGW(TAG, "history_fetch: bad response status=%d len=%d", status, content_len);
         esp_http_client_cleanup(client);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1089,7 +1089,7 @@ static void history_fetch_task(void *arg)
     if (!body) {
         ESP_LOGE(TAG, "history_fetch: OOM for %d bytes", content_len);
         esp_http_client_cleanup(client);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1109,7 +1109,7 @@ static void history_fetch_task(void *arg)
     free(body);
     if (!root) {
         ESP_LOGW(TAG, "history_fetch: JSON parse failed");
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1117,7 +1117,7 @@ static void history_fetch_task(void *arg)
     if (!cJSON_IsArray(items)) {
         ESP_LOGW(TAG, "history_fetch: no 'items' array in response");
         cJSON_Delete(root);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
@@ -1125,15 +1125,15 @@ static void history_fetch_task(void *arg)
     if (count <= 0) {
         ESP_LOGI(TAG, "history_fetch: no messages in session");
         cJSON_Delete(root);
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL);
         return;
     }
 
     /* Build batch for async delivery */
     history_batch_t *batch = malloc(sizeof(history_batch_t));
-    if (!batch) { cJSON_Delete(root); vTaskDelete(NULL); return; }
+    if (!batch) { cJSON_Delete(root); vTaskSuspend(NULL); return; }
     batch->msgs = calloc(count, sizeof(history_msg_t));
-    if (!batch->msgs) { free(batch); cJSON_Delete(root); vTaskDelete(NULL); return; }
+    if (!batch->msgs) { free(batch); cJSON_Delete(root); vTaskSuspend(NULL); return; }
     batch->count = 0;
 
     for (int i = 0; i < count; i++) {
@@ -1162,7 +1162,7 @@ static void history_fetch_task(void *arg)
         free(batch);
     }
 
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 /** Kick off async history fetch if conversation is empty */
@@ -1726,8 +1726,8 @@ static void build_conversation_ui(void)
 
     /* New chat button */
     lv_obj_t *new_btn = lv_button_create(s_conv_panel);
-    lv_obj_set_size(new_btn, 36, 36);
-    lv_obj_set_pos(new_btn, 400, 12);
+    lv_obj_set_size(new_btn, 48, 48);
+    lv_obj_set_pos(new_btn, 394, 6);
     lv_obj_set_style_bg_color(new_btn, lv_color_hex(CLR_BORDER), 0);
     lv_obj_set_style_bg_opa(new_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(new_btn, 8, 0);
@@ -2423,7 +2423,7 @@ static void img_loaded_cb(void *arg)
 static void img_download_task(void *arg)
 {
     img_load_ctx_t *ctx = (img_load_ctx_t *)arg;
-    if (!ctx) { vTaskDelete(NULL); return; }
+    if (!ctx) { vTaskSuspend(NULL); return; }
 
     /* Download + cache the JPEG (blocking) */
     lv_image_dsc_t dsc;
@@ -2433,7 +2433,7 @@ static void img_download_task(void *arg)
     /* Schedule UI update on LVGL thread */
     lv_async_call(img_loaded_cb, ctx);  /* ctx ownership transfers to callback */
 
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 /**

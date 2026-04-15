@@ -277,7 +277,7 @@ done:
 
     playback_task = NULL;
     ESP_LOGI(TAG, "Playback task ended");
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);
 }
 
 /* ================================================================
