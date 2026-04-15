@@ -24,3 +24,12 @@ void ui_chat_push_media(const char *url, const char *media_type,
 void ui_chat_push_card(const char *title, const char *subtitle,
                        const char *image_url, const char *description);
 void ui_chat_push_audio_clip(const char *url, float duration_s, const char *label);
+
+/**
+ * Thread-safe: replace the last AI bubble's text with a cleaned version.
+ * Used to remove raw code blocks / image URLs after they've been rendered
+ * as media bubbles, so the user doesn't see the markdown source text.
+ *
+ * @param text  Cleaned text to display (will be strdup'd)
+ */
+void ui_chat_update_last_message(const char *text);

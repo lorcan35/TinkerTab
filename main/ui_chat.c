@@ -2190,6 +2190,107 @@ void ui_chat_push_message(const char *role, const char *text)
     lv_async_call(async_push_cb, msg);
 }
 
+/* ── Update last AI message (text_update from Dragon) ─────────────── */
+
+typedef struct {
+    char *text;   /* cleaned text — heap-allocated */
+} chat_update_msg_t;
+
+static void async_update_last_cb(void *arg)
+{
+    chat_update_msg_t *msg = (chat_update_msg_t *)arg;
+    if (!msg) return;
+
+    if (!s_msg_scroll || !msg->text || !msg->text[0]) {
+        free(msg->text);
+        free(msg);
+        return;
+    }
+
+    /* Find the last AI bubble (left-aligned, CLR_TINKER_BUB background).
+     * Iterate children from the end until we find a non-user bubble. */
+    uint32_t cnt = lv_obj_get_child_count(s_msg_scroll);
+    lv_obj_t *last_ai_bubble = NULL;
+    for (int32_t i = (int32_t)cnt - 1; i >= 0; i--) {
+        lv_obj_t *child = lv_obj_get_child(s_msg_scroll, i);
+        if (!child) continue;
+        /* AI bubbles are left-aligned (x == 20) and have CLR_TINKER_BUB bg */
+        int32_t x = lv_obj_get_x(child);
+        if (x == 20) {
+            /* Check it has a label child (text bubble, not just a media or indicator) */
+            if (lv_obj_get_child_count(child) > 0) {
+                lv_obj_t *first_child = lv_obj_get_child(child, 0);
+                /* Label objects have an lv_obj_class == lv_label_class check */
+                if (first_child && lv_obj_check_type(first_child, &lv_label_class)) {
+                    last_ai_bubble = child;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!last_ai_bubble) {
+        ESP_LOGD(TAG, "text_update: no AI bubble found to update");
+        free(msg->text);
+        free(msg);
+        return;
+    }
+
+    /* Get the label (first child) and update its text */
+    lv_obj_t *lbl = lv_obj_get_child(last_ai_bubble, 0);
+    if (!lbl || !lv_obj_check_type(lbl, &lv_label_class)) {
+        free(msg->text);
+        free(msg);
+        return;
+    }
+
+    lv_label_set_text(lbl, msg->text);
+    lv_obj_update_layout(last_ai_bubble);
+
+    /* Recalculate s_next_y from this bubble's new height */
+    int by = lv_obj_get_y(last_ai_bubble);
+    int bh = lv_obj_get_height(last_ai_bubble);
+    /* Recompute positions for all children after this bubble */
+    uint32_t total = lv_obj_get_child_count(s_msg_scroll);
+    int running_y = by + bh + BUBBLE_GAP;
+    bool found = false;
+    for (uint32_t i = 0; i < total; i++) {
+        lv_obj_t *ch = lv_obj_get_child(s_msg_scroll, i);
+        if (ch == last_ai_bubble) { found = true; continue; }
+        if (found) {
+            lv_obj_set_pos(ch, lv_obj_get_x(ch), running_y);
+            lv_obj_update_layout(ch);
+            running_y += lv_obj_get_height(ch) + BUBBLE_GAP;
+        }
+    }
+    if (found) {
+        s_next_y = running_y;
+    }
+
+    ESP_LOGI(TAG, "text_update: AI bubble updated (%d chars)", (int)strlen(msg->text));
+
+    free(msg->text);
+    free(msg);
+}
+
+void ui_chat_update_last_message(const char *text)
+{
+    if (!text || !text[0]) return;
+
+    chat_update_msg_t *msg = malloc(sizeof(chat_update_msg_t));
+    if (!msg) {
+        ESP_LOGE(TAG, "update_last_message: OOM");
+        return;
+    }
+    msg->text = strdup(text);
+    if (!msg->text) {
+        free(msg);
+        return;
+    }
+
+    lv_async_call(async_update_last_cb, msg);
+}
+
 /* ── Rich media bubble renderers ──────────────────────────────────── */
 
 /**
@@ -2240,7 +2341,7 @@ static volatile uint32_t s_img_load_gen = 0;  /* incremented on New Chat / clear
 static lv_image_dsc_t s_img_dsc[MEDIA_CACHE_SLOTS];
 static int s_img_dsc_idx = 0;
 
-/* Callback on LVGL thread: replace placeholder with lv_image */
+/* Callback on LVGL thread: replace placeholder with lv_image, resize bubble */
 static void img_loaded_cb(void *arg)
 {
     img_load_ctx_t *ctx = (img_load_ctx_t *)arg;
@@ -2276,7 +2377,45 @@ static void img_loaded_cb(void *arg)
     lv_image_set_src(img, &s_img_dsc[di]);
     lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
 
-    ESP_LOGI(TAG, "Image rendered: %s (%lu bytes)", ctx->url, (unsigned long)s_img_dsc[di].data_size);
+    /* Resize bubble to fit actual image dimensions.
+     * lv_image_dsc_t stores header.w / header.h as the decoded pixel size.
+     * Scale to fit within BUBBLE_MAX_W - 2*BUBBLE_PAD. */
+    uint32_t img_w = s_img_dsc[di].header.w;
+    uint32_t img_h = s_img_dsc[di].header.h;
+    if (img_w > 0 && img_h > 0) {
+        int avail_w = BUBBLE_MAX_W - 2 * BUBBLE_PAD;
+        int scaled_h = (int)img_h;
+        if ((int)img_w > avail_w) {
+            scaled_h = (int)((float)img_h * (float)avail_w / (float)img_w);
+        }
+        if (scaled_h < 40) scaled_h = 40;
+        if (scaled_h > 600) scaled_h = 600;
+
+        int old_bh = lv_obj_get_height(ctx->bubble);
+        int new_bh = scaled_h + 2 * BUBBLE_PAD;
+        lv_obj_set_height(ctx->bubble, new_bh);
+
+        /* Recalculate s_next_y: adjust all bubbles after this one */
+        int delta = new_bh - old_bh;
+        if (delta != 0) {
+            int bubble_y = lv_obj_get_y(ctx->bubble);
+            uint32_t total = lv_obj_get_child_count(s_msg_scroll);
+            bool found = false;
+            for (uint32_t i = 0; i < total; i++) {
+                lv_obj_t *ch = lv_obj_get_child(s_msg_scroll, i);
+                if (ch == ctx->bubble) { found = true; continue; }
+                if (found) {
+                    lv_obj_set_pos(ch, lv_obj_get_x(ch), lv_obj_get_y(ch) + delta);
+                }
+            }
+            s_next_y += delta;
+            (void)bubble_y;
+        }
+    }
+
+    ESP_LOGI(TAG, "Image rendered: %s (%lu bytes, %lux%lu)", ctx->url,
+             (unsigned long)s_img_dsc[di].data_size,
+             (unsigned long)img_w, (unsigned long)img_h);
     free(ctx);
 }
 

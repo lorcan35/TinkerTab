@@ -703,6 +703,12 @@ static void handle_text_message(const char *data, int len)
         if (s_llm_text[0]) {
             ui_chat_push_message("assistant", s_llm_text);
         }
+    } else if (strcmp(type_str, "text_update") == 0) {
+        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
+        if (text) {
+            ESP_LOGI(TAG, "Text update: replacing last AI message");
+            ui_chat_update_last_message(text);
+        }
     } else if (strcmp(type_str, "pong") == 0) {
         /* Dragon keepalive response — reset degraded state (US-A05) */
         s_last_pong_us = esp_timer_get_time();
