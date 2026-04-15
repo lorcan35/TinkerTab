@@ -16,7 +16,7 @@
 #include "battery.h"
 #include "wifi.h"
 #include "bluetooth.h"
-#include "rtc.h"
+#include "tab5_rtc.h"
 #include "sdcard.h"
 #include "imu.h"
 #include "config.h"

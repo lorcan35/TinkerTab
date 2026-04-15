@@ -18,7 +18,7 @@
 #include "audio.h"
 #include "config.h"
 #include "mode_manager.h"
-#include "rtc.h"
+#include "tab5_rtc.h"
 #include "settings.h"
 #include "nvs_flash.h"
 #include "nvs.h"

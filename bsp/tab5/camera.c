@@ -9,7 +9,7 @@
  */
 
 #include "camera.h"
-#include "config.h"
+#include "bsp_config.h"
 #include "io_expander.h"
 
 #include <string.h>

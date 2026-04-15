@@ -36,7 +36,7 @@
 #include "camera.h"
 #include "audio.h"
 #include "imu.h"
-#include "rtc.h"
+#include "tab5_rtc.h"
 #include "battery.h"
 #include "bluetooth.h"
 #include "ui_core.h"

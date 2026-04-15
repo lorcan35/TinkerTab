@@ -5,8 +5,8 @@
  * NTP sync uses the ESP-IDF SNTP helper and writes the result back to the chip.
  */
 
-#include "rtc.h"
-#include "config.h"
+#include "tab5_rtc.h"
+#include "bsp_config.h"
 #include "esp_log.h"
 #include "esp_sntp.h"
 #include "freertos/FreeRTOS.h"

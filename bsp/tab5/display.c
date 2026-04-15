@@ -14,7 +14,7 @@
  */
 
 #include "display.h"
-#include "config.h"
+#include "bsp_config.h"
 
 #include <string.h>
 #include "esp_log.h"

@@ -28,7 +28,7 @@
 #include "ui_camera.h"
 #include "ui_files.h"
 #include "battery.h"
-#include "rtc.h"
+#include "tab5_rtc.h"
 #include "dragon_link.h"
 #include "ui_core.h"
 #include "wifi.h"

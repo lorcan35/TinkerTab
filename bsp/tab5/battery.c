@@ -15,7 +15,7 @@
  */
 
 #include "battery.h"
-#include "config.h"
+#include "bsp_config.h"
 #include "esp_log.h"
 #include <math.h>
 

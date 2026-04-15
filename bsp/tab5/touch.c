@@ -6,7 +6,7 @@
  */
 
 #include "touch.h"
-#include "config.h"
+#include "bsp_config.h"
 
 #include "esp_log.h"
 #include "esp_check.h"

@@ -15,7 +15,7 @@
 #include "config.h"
 #include "ui_keyboard.h"
 #include "settings.h"
-#include "rtc.h"
+#include "tab5_rtc.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "esp_http_client.h"

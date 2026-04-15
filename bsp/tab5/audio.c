@@ -14,7 +14,7 @@
  */
 
 #include "audio.h"
-#include "config.h"
+#include "bsp_config.h"
 #include "io_expander.h"
 
 #include "esp_log.h"
