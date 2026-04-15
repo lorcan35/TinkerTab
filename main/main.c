@@ -721,6 +721,10 @@ void app_main(void)
                         /* Delete all FAILED and empty recording notes */
                         int cleared = ui_notes_clear_failed();
                         printf("Cleared %d failed/empty notes\n", cleared);
+                    } else if (strcmp(cmd_buf, "token") == 0) {
+                        char tok[33] = {0};
+                        tab5_settings_get_auth_token(tok, sizeof(tok));
+                        printf("Auth token: %s\n", tok);
                     } else if (strcmp(cmd_buf, "reboot") == 0) {
                         printf("Rebooting...\n");
                         vTaskDelay(pdMS_TO_TICKS(100));
