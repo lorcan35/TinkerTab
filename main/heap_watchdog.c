@@ -29,10 +29,20 @@ static const char *TAG = "heap_wd";
 #define HEAP_WD_FRAG_TOTAL_MIN      (1 * 1024 * 1024)  /* 1MB — total free must be above this for fragmentation diagnosis */
 #define HEAP_WD_FRAG_REBOOT_COUNT   3       /* 3 consecutive failures before reboot */
 
+/* Internal SRAM fragmentation thresholds:
+ * If largest contiguous block < 4KB while total free > 16KB, the heap is
+ * severely fragmented.  3 consecutive checks (3 minutes) triggers reboot.
+ * This catches the case where LVGL alloc/free churn leaves many small holes
+ * but plenty of total free space — alloc failures follow shortly. */
+#define HEAP_WD_INT_FRAG_BLOCK_MIN     4096     /* 4KB — below this, allocs will fail */
+#define HEAP_WD_INT_FRAG_TOTAL_MIN     (16 * 1024)  /* 16KB — must have enough free for it to be fragmentation, not exhaustion */
+#define HEAP_WD_INT_FRAG_REBOOT_COUNT  3        /* 3 consecutive checks (3 minutes) */
+
 static void heap_watchdog_task(void *arg)
 {
     (void)arg;
     int frag_count = 0;
+    int internal_frag_count = 0;
 
     ESP_LOGI(TAG, "Heap watchdog started (check every %ds, reboot after %d consecutive fragmentation events)",
              HEAP_WD_CHECK_INTERVAL_MS / 1000, HEAP_WD_FRAG_REBOOT_COUNT);
@@ -59,10 +69,27 @@ static void heap_watchdog_task(void *arg)
                  (unsigned)(dma_free / 1024),
                  (unsigned)(dma_largest / 1024));
 
-        /* Internal SRAM fragmentation alert: free is OK but largest block is small */
-        if (internal_largest < 4096 && internal_free > 16384) {
-            ESP_LOGE(TAG, "Internal SRAM fragmented: %uKB free but largest block only %u bytes!",
-                     (unsigned)(internal_free / 1024), (unsigned)internal_largest);
+        /* Internal SRAM fragmentation: free is OK but largest block is small.
+         * Track consecutive occurrences and reboot if sustained for 3 minutes. */
+        if (internal_largest < HEAP_WD_INT_FRAG_BLOCK_MIN && internal_free > HEAP_WD_INT_FRAG_TOTAL_MIN) {
+            internal_frag_count++;
+            ESP_LOGE(TAG, "Internal SRAM fragmented: %uKB free but largest block only %u bytes! "
+                     "(count=%d/%d)",
+                     (unsigned)(internal_free / 1024), (unsigned)internal_largest,
+                     internal_frag_count, HEAP_WD_INT_FRAG_REBOOT_COUNT);
+
+            if (internal_frag_count >= HEAP_WD_INT_FRAG_REBOOT_COUNT) {
+                ESP_LOGE(TAG, "Heap watchdog: severe internal SRAM fragmentation for %d minutes, rebooting",
+                         HEAP_WD_INT_FRAG_REBOOT_COUNT);
+                vTaskDelay(pdMS_TO_TICKS(100));  /* Let log flush */
+                esp_restart();
+            }
+        } else {
+            if (internal_frag_count > 0) {
+                ESP_LOGI(TAG, "Internal SRAM fragmentation recovered (was %d/%d)",
+                         internal_frag_count, HEAP_WD_INT_FRAG_REBOOT_COUNT);
+            }
+            internal_frag_count = 0;
         }
 
         if (dma_free < 16384) {

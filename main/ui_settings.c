@@ -211,6 +211,7 @@ static void settings_refresh_cb(lv_timer_t *t) {
 
 /* ── Forward declarations ───────────────────────────────────────────── */
 static void ntp_sync_task(void *arg);
+void ui_settings_hide(void);  /* needed by cb_back_btn before definition */
 
 /* ══════════════════════════════════════════════════════════════════════
  *  Event Callbacks
@@ -222,8 +223,12 @@ static void cb_back_btn(lv_event_t *e)
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;
     }
-    /* Destroy fully — hiding leaves stale pixels in DPI framebuffer */
-    ui_settings_destroy();
+    /* Hide instead of destroy — destroy+recreate of 55 objects causes
+     * internal SRAM heap fragmentation from LVGL alloc/free churn.
+     * The overlay stays allocated (hidden) and is re-shown on next open.
+     * ~11KB from LVGL expand pool (PSRAM), zero internal SRAM impact. */
+    ui_settings_hide();
+    ui_home_go_home();
 }
 
 /* ── NVS debounce timer callbacks (US-HW17) ───────────────────────────
