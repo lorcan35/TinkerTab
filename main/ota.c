@@ -189,7 +189,17 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
         mbedtls_sha256_starts(&sha_ctx, 0);  /* 0 = SHA-256 (not SHA-224) */
     }
 
-    /* Download loop with progress logging + streaming SHA256 */
+    /* Download loop with progress logging + streaming SHA256.
+     *
+     * HW21: Each esp_https_ota_perform() call may trigger a 64KB flash block
+     * erase (~150ms). During the erase the SPI flash bus is blocked, stalling
+     * any LVGL rendering that touches flash .rodata (font bitmaps, strings).
+     * With CONFIG_SPIRAM_XIP_FROM_PSRAM=y, code executes from PSRAM, but
+     * const data (lv_font_montserrat_*) still lives in flash .rodata.
+     *
+     * Mitigation: yield 10ms every iteration so LVGL gets render time between
+     * successive flash erases. This adds ~5s total to a 3MB OTA (trivial vs
+     * the download time) but prevents multi-second display freezes. */
     int last_pct = -1;
     while (1) {
         err = esp_https_ota_perform(ota_handle);
@@ -205,6 +215,9 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
                 last_pct = pct;
             }
         }
+
+        /* HW21: Yield to let LVGL render between flash erase cycles */
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     if (err != ESP_OK) {

@@ -118,6 +118,11 @@ static volatile bool s_destroying = false;
 static volatile bool s_creating = false;
 static lv_timer_t *s_refresh_timer = NULL;
 
+/* Two-pass creation: Phase 2 deferred via lv_timer_create */
+static volatile bool s_phase2_pending = false;
+static lv_timer_t   *s_phase2_timer  = NULL;
+static int            s_phase2_y     = 0;       /* Y position carried from Phase 1 */
+
 /* NVS write debounce timers — prevent flash wear from slider drag (US-HW17) */
 static lv_timer_t *s_bright_save_timer = NULL;
 static lv_timer_t *s_vol_save_timer    = NULL;
@@ -728,239 +733,22 @@ static lv_obj_t *mk_pill_btn(lv_obj_t *parent, const char *text, lv_color_t bg,
  *  Public API
  * ══════════════════════════════════════════════════════════════════════ */
 
-lv_obj_t *ui_settings_create(void)
+/* ── Phase 2 timer callback: create remaining sections ──────────────── */
+static void phase2_timer_cb(lv_timer_t *t)
 {
-    if (s_creating) {
-        ESP_LOGW(TAG, "Settings creation already in progress — skipping");
-        return s_screen;
+    (void)t;
+    s_phase2_timer = NULL;
+
+    /* Guard: screen destroyed/hidden before Phase 2 fires */
+    if (!s_phase2_pending || s_destroying || !s_scroll) {
+        ESP_LOGW(TAG, "Phase 2 skipped (screen gone)");
+        s_phase2_pending = false;
+        s_creating = false;
+        return;
     }
 
-    if (s_screen) {
-        /* Overlay already exists — just unhide and resume refresh */
-        ESP_LOGI(TAG, "Settings screen resumed");
-        s_destroying = false;
-        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_move_foreground(s_screen);
-        /* Recreate refresh timer (deleted on hide to prevent race conditions) */
-        if (!s_refresh_timer) s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
-        else lv_timer_resume(s_refresh_timer);
-        ui_settings_update();
-        ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
-        return s_screen;
-    }
-    ESP_LOGI(TAG, "Creating settings screen...");
-    s_creating = true;
-
-    /* U02: Disable touch input during creation.
-     * Building 55 objects takes ~500ms. Touch events on half-built widgets
-     * cause crashes (dangling parent pointers, missing styles). */
-    lv_indev_t *indev = lv_indev_get_next(NULL);
-    if (indev) lv_indev_enable(indev, false);
-
-    /* Temporarily remove the UI task from WDT */
-    TaskHandle_t ui_task = xTaskGetHandle("ui_task");
-    if (ui_task) esp_task_wdt_delete(ui_task);
-
-    /* ── Fullscreen overlay on home screen ───────────────────────────── */
-    lv_obj_t *home = ui_home_get_screen();
-    s_screen = lv_obj_create(home);
-    lv_obj_remove_style_all(s_screen);
-    lv_obj_set_size(s_screen, 720, 1280);
-    lv_obj_set_pos(s_screen, 0, 0);
-    lv_obj_set_style_bg_color(s_screen, lv_color_hex(BG_COLOR), 0);
-    lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_move_foreground(s_screen);
-
-    /* Swipe-right to go back */
-    lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
-
-    /* ── Top Bar (48px, sticky) ──────────────────────────────────────── */
-    lv_obj_t *bar = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 720, TOPBAR_H);
-    lv_obj_set_pos(bar, 0, 0);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(BG_COLOR), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(CARD_COLOR), 0);
-    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Back arrow button (36x36, rounded 8px, bg #1A1A2E) */
-    lv_obj_t *back_btn = lv_button_create(bar);
-    lv_obj_remove_style_all(back_btn);
-    lv_obj_set_size(back_btn, 36, 36);
-    lv_obj_set_pos(back_btn, SIDE_PAD, (TOPBAR_H - 36) / 2);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(CARD_COLOR), 0);
-    lv_obj_set_style_bg_opa(back_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(back_btn, 8, 0);
-    lv_obj_add_event_cb(back_btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *arrow = lv_label_create(back_btn);
-    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(arrow, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_18, 0);
-    lv_obj_center(arrow);
-
-    /* "Settings" title centered */
-    lv_obj_t *title = lv_label_create(bar);
-    lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
-
-    /* ── Scrollable content area ─────────────────────────────────────── */
-    s_scroll = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_scroll);
-    lv_obj_set_size(s_scroll, 720, 1280 - TOPBAR_H);
-    lv_obj_set_pos(s_scroll, 0, TOPBAR_H);
-    lv_obj_set_style_bg_opa(s_scroll, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_all(s_scroll, 0, 0);
-    lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(s_scroll, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(s_scroll, LV_SCROLLBAR_MODE_AUTO);
-
-    /* Hide during creation to prevent rendering on every child add */
-    lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_HIDDEN);
-
-    int y = 12;
-
-    /* ════════════════════════════════════════════════════════════════
-     *  SECTION: DISPLAY (amber #F5A623)
-     * ════════════════════════════════════════════════════════════════ */
-    feed_wdt();
-    ESP_LOGI(TAG, "Section: Display");
-    lv_color_t acc_display = lv_color_hex(ACC_DISPLAY);
-
-    y = mk_section(s_scroll, "DISPLAY", acc_display, y);
-
-    /* Brightness */
-    mk_row_label(s_scroll, "Brightness", y);
-    s_slider_bright = mk_slider(s_scroll, acc_display, RIGHT_X, y,
-                                0, 100, tab5_settings_get_brightness(), cb_brightness);
-    s_lbl_bright_val = lv_label_create(s_scroll);
-    lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
-    lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
-    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_text_font(s_lbl_bright_val, &lv_font_montserrat_14, 0);
-    y += ROW_H + 4;
-
-    /* Volume */
-    mk_row_label(s_scroll, "Volume", y);
-    s_slider_volume = mk_slider(s_scroll, acc_display, RIGHT_X, y,
-                                0, 100, tab5_settings_get_volume(), cb_volume);
-    lv_obj_add_event_cb(s_slider_volume, cb_volume_released, LV_EVENT_RELEASED, NULL);
-    s_lbl_vol_val = lv_label_create(s_scroll);
-    lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
-    lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
-    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_text_font(s_lbl_vol_val, &lv_font_montserrat_14, 0);
-    y += ROW_H + 4;
-
-    /* Auto-rotate */
-    mk_row_label(s_scroll, "Auto-rotate", y);
-    s_lbl_orient = mk_row_value(s_scroll, "Off", lv_color_hex(TEXT_DIM), y);
-    s_sw_autorot = mk_switch(s_scroll, acc_display, 660, y, false, cb_autorotate, NULL);
-    y += ROW_H + 16;
-
-    /* ════════════════════════════════════════════════════════════════
-     *  SECTION: NETWORK (cyan #00E5FF)
-     * ════════════════════════════════════════════════════════════════ */
-    feed_wdt();
-    ESP_LOGI(TAG, "Section: Network");
-    lv_color_t acc_network = lv_color_hex(ACC_NETWORK);
-
-    y = mk_section(s_scroll, "NETWORK", acc_network, y);
-
-    /* WiFi status */
-    mk_row_label(s_scroll, "WiFi", y);
-    s_lbl_wifi = mk_row_value(s_scroll, "Checking...", lv_color_hex(TEXT_DIM), y);
-    y += ROW_H + 4;
-
-    /* WiFi Setup */
-    {
-        lv_obj_t *btn = mk_pill_btn(s_scroll, LV_SYMBOL_WIFI " Configure",
-                                    acc_network, lv_color_hex(0x000000),
-                                    RIGHT_X, y + 3, 180, 38, 8, cb_wifi_setup);
-        (void)btn;
-    }
-    /* NTP Sync */
-    {
-        lv_obj_t *ntp_btn = mk_pill_btn(s_scroll, "Sync NTP",
-                                        acc_network, lv_color_hex(0x000000),
-                                        SIDE_PAD, y + 3, 140, 38, 8, cb_ntp_sync);
-        s_ntp_btn_label = lv_obj_get_child(ntp_btn, 0);
-    }
-    y += ROW_H + 4;
-
-    feed_wdt(); /* mid-section yield — Network section */
-
-    /* Dragon host input (placeholder text serves as label) */
-    s_dragon_ta = lv_textarea_create(s_scroll);
-    lv_obj_set_pos(s_dragon_ta, SIDE_PAD, y + 4);
-    lv_obj_set_size(s_dragon_ta, CONTENT_W, 36);
-    lv_textarea_set_one_line(s_dragon_ta, true);
-    lv_textarea_set_max_length(s_dragon_ta, 63);
-    lv_obj_set_style_bg_color(s_dragon_ta, lv_color_hex(CARD_COLOR), 0);
-    lv_obj_set_style_bg_opa(s_dragon_ta, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(s_dragon_ta, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
-    lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_radius(s_dragon_ta, 6, 0);
-    lv_obj_set_style_pad_left(s_dragon_ta, 8, 0);
-    lv_textarea_set_placeholder_text(s_dragon_ta, "Dragon Host (e.g. 192.168.1.89)");
-    {
-        char dhost[64];
-        tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-        if (dhost[0]) {
-            lv_textarea_set_text(s_dragon_ta, dhost);
-        }
-    }
-    lv_obj_add_flag(s_dragon_ta, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
-    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
-    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
-    y += ROW_H + 4;
-
-    /* US-PR09: Reconnect status label (hidden until host change) */
-    s_dragon_status_lbl = lv_label_create(s_scroll);
-    lv_label_set_text(s_dragon_status_lbl, "");
-    lv_obj_set_pos(s_dragon_status_lbl, SIDE_PAD, y);
-    lv_obj_set_style_text_color(s_dragon_status_lbl, lv_color_hex(ACC_NETWORK), 0);
-    lv_obj_set_style_text_font(s_dragon_status_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_add_flag(s_dragon_status_lbl, LV_OBJ_FLAG_HIDDEN);
-    y += 4;
-
-    /* Connection mode: Auto / Local / Remote */
-    {
-        lv_obj_t *conn_lbl = lv_label_create(s_scroll);
-        lv_label_set_text(conn_lbl, "Connection");
-        lv_obj_set_pos(conn_lbl, SIDE_PAD, y + 8);
-        lv_obj_set_style_text_color(conn_lbl, lv_color_hex(TEXT_DIM), 0);
-        lv_obj_set_style_text_font(conn_lbl, &lv_font_montserrat_16, 0);
-
-        static lv_obj_t *s_conn_dd = NULL;
-        s_conn_dd = lv_dropdown_create(s_scroll);
-        lv_dropdown_set_options(s_conn_dd, "Automatic\nHome Network\nInternet Only");
-        lv_dropdown_set_selected(s_conn_dd, tab5_settings_get_connection_mode());
-        lv_obj_set_pos(s_conn_dd, 340, y);
-        lv_obj_set_size(s_conn_dd, 340, 36);
-        lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), 0);
-        lv_obj_set_style_bg_opa(s_conn_dd, LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(s_conn_dd, &lv_font_montserrat_16, 0);
-        lv_obj_set_style_border_width(s_conn_dd, 1, 0);
-        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x333333), 0);
-        lv_obj_set_style_radius(s_conn_dd, 6, 0);
-        /* Dropdown list styling */
-        lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
-        lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
-        lv_obj_add_event_cb(s_conn_dd, cb_conn_mode, LV_EVENT_VALUE_CHANGED, NULL);
-    }
-    y += ROW_H + 16;
+    ESP_LOGI(TAG, "Phase 2: creating Voice + Storage + Battery + About...");
+    int y = s_phase2_y;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: VOICE MODE (purple #A855F7)
@@ -971,7 +759,7 @@ lv_obj_t *ui_settings_create(void)
 
     y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
 
-    /* Three pill-shaped tab buttons */
+    /* Four pill-shaped tab buttons */
     s_active_tab = tab5_settings_get_voice_mode();
     if (s_active_tab > 3) s_active_tab = 0;
 
@@ -1283,7 +1071,7 @@ lv_obj_t *ui_settings_create(void)
 
     y = mk_section(s_scroll, "BATTERY", acc_battery, y);
 
-    /* Primary battery status: "XX% • Charging" or "USB Powered" */
+    /* Primary battery status: "XX% . Charging" or "USB Powered" */
     s_lbl_bat_status = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_status, "Checking...");
     lv_obj_set_style_text_color(s_lbl_bat_status, lv_color_hex(TEXT_DIM), 0);
@@ -1308,7 +1096,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_pos(s_lbl_bat_pct, SIDE_PAD + 415, y + (ROW_H - 18) / 2);
     y += ROW_H + 2;
 
-    /* Debug voltage label — small and dim for developers */
+    /* Debug voltage label -- small and dim for developers */
     s_lbl_bat_volt = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_volt, "");
     lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x444444), 0);
@@ -1325,7 +1113,7 @@ lv_obj_t *ui_settings_create(void)
 
     y = mk_section(s_scroll, "ABOUT", acc_about, y);
 
-    /* Device info — Line 1: product name + version (prominent) */
+    /* Device info -- Line 1: product name + version (prominent) */
     {
         char ver_str[64];
         snprintf(ver_str, sizeof(ver_str), "TinkerTab v%s", TAB5_FIRMWARE_VER);
@@ -1336,7 +1124,7 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_pos(ver_lbl, SIDE_PAD, y + 2);
     }
     y += 28;
-    /* Device info — Line 2: hardware details (smaller, gray) */
+    /* Device info -- Line 2: hardware details (smaller, gray) */
     {
         char hw_str[96];
         snprintf(hw_str, sizeof(hw_str),
@@ -1349,7 +1137,7 @@ lv_obj_t *ui_settings_create(void)
     }
     y += 24;
 
-    /* OTA Update — full-width Check button */
+    /* OTA Update -- full-width Check button */
     {
         lv_obj_t *ota_btn = mk_pill_btn(s_scroll, LV_SYMBOL_DOWNLOAD " Check Update",
                                         acc_about, lv_color_hex(TEXT_PRIMARY),
@@ -1365,7 +1153,7 @@ lv_obj_t *ui_settings_create(void)
     }
     y += ROW_H + 8;
 
-    /* Free Heap + PSRAM (debug info — small and dim) */
+    /* Free Heap + PSRAM (debug info -- small and dim) */
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
     lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x444444), 0);
@@ -1373,33 +1161,275 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 12) / 2);
     y += ROW_H;
 
-    /* ── Bottom padding + finalize ───────────────────────────────────── */
+    /* ── Bottom padding ──────────────────────────────────────────────── */
     y += 40;
 
-    s_destroying = false;
-    ESP_LOGI(TAG, "Widgets done, unhiding scroll...");
-    feed_wdt();
+    s_phase2_pending = false;
+    ESP_LOGI(TAG, "Phase 2 complete (%lu objects total)", (unsigned long)lv_obj_get_child_count(s_scroll));
 
-    /* Unhide — triggers a single layout pass */
-    lv_obj_clear_flag(s_scroll, LV_OBJ_FLAG_HIDDEN);
-    ESP_LOGI(TAG, "Loading screen...");
-    feed_wdt();
+    /* Trigger immediate data refresh for the newly created labels */
+    ui_settings_update();
 
-    ESP_LOGI(TAG, "Settings overlay ready");
-
-    s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
-    lv_timer_t *init_timer = lv_timer_create(settings_refresh_cb, 500, NULL);
-    lv_timer_set_auto_delete(init_timer, true);
-
-    ESP_LOGI(TAG, "Settings screen created");
+    /* Mark creation complete — touch is already enabled from Phase 1 */
     s_creating = false;
+}
+
+lv_obj_t *ui_settings_create(void)
+{
+    if (s_creating) {
+        ESP_LOGW(TAG, "Settings creation already in progress — skipping");
+        return s_screen;
+    }
+
+    if (s_screen) {
+        /* Overlay already exists — just unhide and resume refresh */
+        ESP_LOGI(TAG, "Settings screen resumed");
+        s_destroying = false;
+        lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_move_foreground(s_screen);
+        /* Recreate refresh timer (deleted on hide to prevent race conditions) */
+        if (!s_refresh_timer) s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
+        else lv_timer_resume(s_refresh_timer);
+        ui_settings_update();
+        ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
+
+        /* If Phase 2 was cancelled (hidden before it fired), re-schedule it */
+        if (!s_lbl_heap && s_scroll && !s_phase2_pending) {
+            ESP_LOGI(TAG, "Phase 2 missing — re-scheduling");
+            s_creating = true;
+            s_phase2_pending = true;
+            s_phase2_timer = lv_timer_create(phase2_timer_cb, 50, NULL);
+            lv_timer_set_repeat_count(s_phase2_timer, 1);
+        }
+        return s_screen;
+    }
+    ESP_LOGI(TAG, "Creating settings screen (two-pass)...");
+    s_creating = true;
+    s_destroying = false;
+
+    /* ═══════════════════════════════════════════════════════════════════
+     *  PHASE 1: Container + Display + Network (~15 objects, <100ms)
+     *  User sees the screen immediately after this returns.
+     * ═══════════════════════════════════════════════════════════════════ */
+
+    /* ── Fullscreen overlay on home screen ───────────────────────────── */
+    lv_obj_t *home = ui_home_get_screen();
+    s_screen = lv_obj_create(home);
+    lv_obj_remove_style_all(s_screen);
+    lv_obj_set_size(s_screen, 720, 1280);
+    lv_obj_set_pos(s_screen, 0, 0);
+    lv_obj_set_style_bg_color(s_screen, lv_color_hex(BG_COLOR), 0);
+    lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_foreground(s_screen);
+
+    /* Swipe-right to go back */
+    lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
+
+    /* ── Top Bar (48px, sticky) ──────────────────────────────────────── */
+    lv_obj_t *bar = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, 720, TOPBAR_H);
+    lv_obj_set_pos(bar, 0, 0);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(BG_COLOR), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(CARD_COLOR), 0);
+    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Back arrow button (36x36, rounded 8px, bg #1A1A2E) */
+    lv_obj_t *back_btn = lv_button_create(bar);
+    lv_obj_remove_style_all(back_btn);
+    lv_obj_set_size(back_btn, 36, 36);
+    lv_obj_set_pos(back_btn, SIDE_PAD, (TOPBAR_H - 36) / 2);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(CARD_COLOR), 0);
+    lv_obj_set_style_bg_opa(back_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(back_btn, 8, 0);
+    lv_obj_add_event_cb(back_btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *arrow = lv_label_create(back_btn);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(arrow, lv_color_hex(TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_18, 0);
+    lv_obj_center(arrow);
+
+    /* "Settings" title centered */
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+
+    /* ── Scrollable content area ─────────────────────────────────────── */
+    s_scroll = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_scroll);
+    lv_obj_set_size(s_scroll, 720, 1280 - TOPBAR_H);
+    lv_obj_set_pos(s_scroll, 0, TOPBAR_H);
+    lv_obj_set_style_bg_opa(s_scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(s_scroll, 0, 0);
+    lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(s_scroll, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_scroll, LV_SCROLLBAR_MODE_AUTO);
+
+    int y = 12;
+
+    /* ════════════════════════════════════════════════════════════════
+     *  SECTION: DISPLAY (amber #F5A623)
+     * ════════════════════════════════════════════════════════════════ */
+    feed_wdt();
+    ESP_LOGI(TAG, "Phase 1 — Section: Display");
+    lv_color_t acc_display = lv_color_hex(ACC_DISPLAY);
+
+    y = mk_section(s_scroll, "DISPLAY", acc_display, y);
+
+    /* Brightness */
+    mk_row_label(s_scroll, "Brightness", y);
+    s_slider_bright = mk_slider(s_scroll, acc_display, RIGHT_X, y,
+                                0, 100, tab5_settings_get_brightness(), cb_brightness);
+    s_lbl_bright_val = lv_label_create(s_scroll);
+    lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+    lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
+    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_font(s_lbl_bright_val, &lv_font_montserrat_14, 0);
+    y += ROW_H + 4;
+
+    /* Volume */
+    mk_row_label(s_scroll, "Volume", y);
+    s_slider_volume = mk_slider(s_scroll, acc_display, RIGHT_X, y,
+                                0, 100, tab5_settings_get_volume(), cb_volume);
+    lv_obj_add_event_cb(s_slider_volume, cb_volume_released, LV_EVENT_RELEASED, NULL);
+    s_lbl_vol_val = lv_label_create(s_scroll);
+    lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+    lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
+    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_font(s_lbl_vol_val, &lv_font_montserrat_14, 0);
+    y += ROW_H + 4;
+
+    /* Auto-rotate */
+    mk_row_label(s_scroll, "Auto-rotate", y);
+    s_lbl_orient = mk_row_value(s_scroll, "Off", lv_color_hex(TEXT_DIM), y);
+    s_sw_autorot = mk_switch(s_scroll, acc_display, 660, y, false, cb_autorotate, NULL);
+    y += ROW_H + 16;
+
+    /* ════════════════════════════════════════════════════════════════
+     *  SECTION: NETWORK (cyan #00E5FF)
+     * ════════════════════════════════════════════════════════════════ */
+    feed_wdt();
+    ESP_LOGI(TAG, "Phase 1 — Section: Network");
+    lv_color_t acc_network = lv_color_hex(ACC_NETWORK);
+
+    y = mk_section(s_scroll, "NETWORK", acc_network, y);
+
+    /* WiFi status */
+    mk_row_label(s_scroll, "WiFi", y);
+    s_lbl_wifi = mk_row_value(s_scroll, "Checking...", lv_color_hex(TEXT_DIM), y);
+    y += ROW_H + 4;
+
+    /* WiFi Setup */
+    {
+        lv_obj_t *btn = mk_pill_btn(s_scroll, LV_SYMBOL_WIFI " Configure",
+                                    acc_network, lv_color_hex(0x000000),
+                                    RIGHT_X, y + 3, 180, 38, 8, cb_wifi_setup);
+        (void)btn;
+    }
+    /* NTP Sync */
+    {
+        lv_obj_t *ntp_btn = mk_pill_btn(s_scroll, "Sync NTP",
+                                        acc_network, lv_color_hex(0x000000),
+                                        SIDE_PAD, y + 3, 140, 38, 8, cb_ntp_sync);
+        s_ntp_btn_label = lv_obj_get_child(ntp_btn, 0);
+    }
+    y += ROW_H + 4;
+
+    feed_wdt(); /* mid-section yield — Network section */
+
+    /* Dragon host input (placeholder text serves as label) */
+    s_dragon_ta = lv_textarea_create(s_scroll);
+    lv_obj_set_pos(s_dragon_ta, SIDE_PAD, y + 4);
+    lv_obj_set_size(s_dragon_ta, CONTENT_W, 36);
+    lv_textarea_set_one_line(s_dragon_ta, true);
+    lv_textarea_set_max_length(s_dragon_ta, 63);
+    lv_obj_set_style_bg_color(s_dragon_ta, lv_color_hex(CARD_COLOR), 0);
+    lv_obj_set_style_bg_opa(s_dragon_ta, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(s_dragon_ta, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
+    lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(s_dragon_ta, 6, 0);
+    lv_obj_set_style_pad_left(s_dragon_ta, 8, 0);
+    lv_textarea_set_placeholder_text(s_dragon_ta, "Dragon Host (e.g. 192.168.1.89)");
+    {
+        char dhost[64];
+        tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+        if (dhost[0]) {
+            lv_textarea_set_text(s_dragon_ta, dhost);
+        }
+    }
+    lv_obj_add_flag(s_dragon_ta, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_DEFOCUSED, NULL);
+    lv_obj_add_event_cb(s_dragon_ta, cb_dragon_host_done, LV_EVENT_READY, NULL);
+    y += ROW_H + 4;
+
+    /* US-PR09: Reconnect status label (hidden until host change) */
+    s_dragon_status_lbl = lv_label_create(s_scroll);
+    lv_label_set_text(s_dragon_status_lbl, "");
+    lv_obj_set_pos(s_dragon_status_lbl, SIDE_PAD, y);
+    lv_obj_set_style_text_color(s_dragon_status_lbl, lv_color_hex(ACC_NETWORK), 0);
+    lv_obj_set_style_text_font(s_dragon_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_add_flag(s_dragon_status_lbl, LV_OBJ_FLAG_HIDDEN);
+    y += 4;
+
+    /* Connection mode: Auto / Local / Remote */
+    {
+        lv_obj_t *conn_lbl = lv_label_create(s_scroll);
+        lv_label_set_text(conn_lbl, "Connection");
+        lv_obj_set_pos(conn_lbl, SIDE_PAD, y + 8);
+        lv_obj_set_style_text_color(conn_lbl, lv_color_hex(TEXT_DIM), 0);
+        lv_obj_set_style_text_font(conn_lbl, &lv_font_montserrat_16, 0);
+
+        static lv_obj_t *s_conn_dd = NULL;
+        s_conn_dd = lv_dropdown_create(s_scroll);
+        lv_dropdown_set_options(s_conn_dd, "Automatic\nHome Network\nInternet Only");
+        lv_dropdown_set_selected(s_conn_dd, tab5_settings_get_connection_mode());
+        lv_obj_set_pos(s_conn_dd, 340, y);
+        lv_obj_set_size(s_conn_dd, 340, 36);
+        lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), 0);
+        lv_obj_set_style_bg_opa(s_conn_dd, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_font(s_conn_dd, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_border_width(s_conn_dd, 1, 0);
+        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_radius(s_conn_dd, 6, 0);
+        /* Dropdown list styling */
+        lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
+        lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
+        lv_obj_add_event_cb(s_conn_dd, cb_conn_mode, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+    y += ROW_H + 16;
+
+    /* ═══════════════════════════════════════════════════════════════════
+     *  END PHASE 1 — Screen is visible now with Display + Network.
+     *  Schedule Phase 2 to create Voice + Storage + Battery + About
+     *  after a 50ms delay so LVGL renders Phase 1 first.
+     * ═══════════════════════════════════════════════════════════════════ */
+    ESP_LOGI(TAG, "Phase 1 complete — scheduling Phase 2 in 50ms");
+
+    s_phase2_y = y;
+    s_phase2_pending = true;
+    s_phase2_timer = lv_timer_create(phase2_timer_cb, 50, NULL);
+    lv_timer_set_repeat_count(s_phase2_timer, 1);
+
+    /* Start refresh timer + initial data update for Phase 1 labels */
+    s_refresh_timer = lv_timer_create(settings_refresh_cb, 2000, NULL);
+    lv_timer_t *init_timer = lv_timer_create(settings_refresh_cb, 200, NULL);
+    lv_timer_set_repeat_count(init_timer, 1);
+
     ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
 
-    /* U02: Re-enable touch input now that all widgets are fully built */
-    if (indev) lv_indev_enable(indev, true);
-
-    /* Re-subscribe UI task to WDT */
-    if (ui_task) esp_task_wdt_add(ui_task);
+    ESP_LOGI(TAG, "Phase 1 visible — user sees Display + Network immediately");
     return s_screen;
 }
 
@@ -1535,7 +1565,9 @@ void ui_settings_destroy(void)
     ui_keyboard_set_layout_cb(NULL);
     s_destroying = true;
     s_creating = false;
+    s_phase2_pending = false;  /* Cancel Phase 2 if it hasn't fired yet */
 
+    if (s_phase2_timer) { lv_timer_delete(s_phase2_timer); s_phase2_timer = NULL; }
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
 
     /* Flush pending NVS debounce timers — save current value before destroy */
@@ -1594,7 +1626,10 @@ lv_obj_t *ui_settings_get_screen(void) { return s_screen; }
 void ui_settings_hide(void)
 {
     s_creating = false;
+    s_phase2_pending = false;  /* Cancel Phase 2 if it hasn't fired yet */
     ui_keyboard_set_layout_cb(NULL);
+
+    if (s_phase2_timer) { lv_timer_delete(s_phase2_timer); s_phase2_timer = NULL; }
 
     /* Hide instead of destroy — rapid open/close cycles exhaust LVGL pool.
      * PAUSE refresh timer to prevent it updating hidden objects during

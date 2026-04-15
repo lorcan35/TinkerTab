@@ -745,9 +745,24 @@ static void _async_settings(void *arg)
     ui_settings_create();
 }
 
+/* U09: Delayed settings open — one-shot timer gives LVGL a render cycle
+ * to flush nav button pressed-state feedback before the heavy Settings
+ * creation (~55 objects) monopolizes the render loop for ~500ms.
+ * lv_async_call runs in the same lv_timer_handler() pass as style flush,
+ * so the pressed state never reaches the display. A 30ms timer guarantees
+ * at least one full render cycle (DPI refresh at ~16ms) completes first.
+ * NOTE: lv_refr_now() cannot be used — causes internal heap exhaustion
+ * on ESP32-P4 DPI display (see LEARNINGS.md). */
+static void _delayed_settings_cb(lv_timer_t *t)
+{
+    (void)t;
+    _async_settings(NULL);
+}
+
 void ui_home_nav_settings(void)
 {
-    lv_async_call(_async_settings, NULL);
+    lv_timer_t *t = lv_timer_create(_delayed_settings_cb, 30, NULL);
+    lv_timer_set_repeat_count(t, 1);
 }
 
 static void _async_chat(void *arg)
@@ -775,18 +790,26 @@ static void dismiss_all_overlays(void)
     ui_chat_hide();
 }
 
+/* U09: Delayed overlay open callbacks — same pattern as Settings.
+ * 30ms delay lets LVGL flush nav button pressed-state to display. */
+static void _delayed_notes_cb(lv_timer_t *t) { (void)t; async_notes_create(NULL); }
+static void _delayed_chat_cb(lv_timer_t *t)  { (void)t; _async_chat(NULL); }
+
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg < 0 || pg >= NUM_PAGES) return;
     dismiss_all_overlays();
     if (pg == 1) {
-        lv_async_call(async_notes_create, NULL);
+        /* U09: Delay overlay open so nav pressed-state renders first */
+        lv_timer_t *t = lv_timer_create(_delayed_notes_cb, 30, NULL);
+        lv_timer_set_repeat_count(t, 1);
         return;
     }
     if (pg == 2) {
-        /* Chat is a fullscreen overlay, same pattern as settings */
-        lv_async_call(_async_chat, NULL);
+        /* U09: Delay overlay open so nav pressed-state renders first */
+        lv_timer_t *t = lv_timer_create(_delayed_chat_cb, 30, NULL);
+        lv_timer_set_repeat_count(t, 1);
         return;
     }
     if (pg == 3) {

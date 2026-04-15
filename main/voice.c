@@ -243,6 +243,17 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
 
 // ---------------------------------------------------------------------------
 // Playback ring buffer
+//
+// C05 cache coherency note: s_play_buf is in PSRAM and accessed by two tasks
+// (WS receive on Core 1 writes, playback drain on Core 1 reads) — both pinned
+// to Core 1, so no cross-core cache coherency issue. Even if they were on
+// different cores, both are CPU accesses (not DMA), and the mutex provides a
+// memory barrier. No esp_cache_msync needed here.
+//
+// SDIO WiFi DMA cache coherency is handled internally by ESP-Hosted (the SDIO
+// driver uses SDMMC_HOST_FLAG_ALLOC_ALIGNED_BUF for DMA-safe buffers; the SPI
+// path has explicit esp_cache_msync calls). By the time data reaches the lwIP
+// stack and our WS receive callback, it's ordinary CPU-accessible memory.
 // ---------------------------------------------------------------------------
 static void playback_buf_reset(void)
 {

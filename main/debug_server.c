@@ -198,17 +198,25 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    /* Try to lock LVGL with timeout — don't block the HTTP server forever */
+    /* HW03: Lock LVGL to prevent tearing during framebuffer copy.
+     * If the lock times out, return HTTP 503 instead of copying without
+     * the lock — an unlocked copy races with LVGL rendering and produces
+     * torn frames that are worse than no screenshot at all. */
     if (!tab5_ui_try_lock(2000)) {
-        ESP_LOGW(TAG, "Screenshot: LVGL lock timeout (2s) — copying without lock");
-        /* Still copy the framebuffer but without lock (may have tearing) */
-        esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-        memcpy(fb_copy, fb, fb_size);
-    } else {
-        esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-        memcpy(fb_copy, fb, fb_size);
-        tab5_ui_unlock();
+        ESP_LOGW(TAG, "Screenshot: LVGL lock timeout (2s) — returning 503");
+        heap_caps_free(fb_copy);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"display busy — LVGL lock timeout\"}");
+        return ESP_OK;
     }
+
+    /* Invalidate CPU cache so we read the latest PSRAM contents.
+     * LVGL flush callback does C2M (write-back) on Core 0; this core's
+     * cache may hold stale lines from a previous screenshot read. */
+    esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    memcpy(fb_copy, fb, fb_size);
+    tab5_ui_unlock();
 
     /* Build BMP header */
     uint8_t hdr[BMP_HEADER_SIZE];
