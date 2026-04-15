@@ -648,22 +648,24 @@ static void build_overlay(void)
     lv_obj_align(s_lbl_transcript, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
 
-    /* Thinking dots label — inside chat area now */
+    /* Thinking dots label — centered with explicit width */
     s_lbl_dots = lv_label_create(s_overlay);
     if (!s_lbl_dots) { ESP_LOGE(TAG, "OOM creating voice dots label"); return; }
     lv_label_set_text(s_lbl_dots, "");
     lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE_DIM), 0);
+    lv_obj_set_width(s_lbl_dots, SW - 80);
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 90);
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
 
-    /* Recording duration label — shown during LISTENING below status */
+    /* Recording duration label — shown during LISTENING below status, centered */
     s_lbl_rec_time = lv_label_create(s_overlay);
     if (!s_lbl_rec_time) { ESP_LOGE(TAG, "OOM creating voice rec time label"); return; }
     lv_label_set_text(s_lbl_rec_time, "0:00");
     lv_obj_set_style_text_font(s_lbl_rec_time, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_TEXT_FAINT), 0);
+    lv_obj_set_width(s_lbl_rec_time, SW - 80);
     lv_obj_set_style_text_align(s_lbl_rec_time, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
@@ -774,6 +776,7 @@ static void build_close_button(lv_obj_t *parent)
     lv_obj_set_style_pad_all(s_close_btn, 0, 0);
     lv_obj_add_flag(s_close_btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(s_close_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_ext_click_area(s_close_btn, 12);  /* extend tap target by 12px each side */
 
     lv_obj_t *x_lbl = lv_label_create(s_close_btn);
     if (!x_lbl) { ESP_LOGE(TAG, "OOM creating close label"); return; }
@@ -891,6 +894,7 @@ static void build_chat_area(lv_obj_t *parent)
     s_user_bubble = create_bubble(s_chat_cont, VO_USER_BG, VO_USER_BORDER,
                                    LV_ALIGN_RIGHT_MID, &s_user_label);
     lv_obj_set_style_text_color(s_user_label, lv_color_hex(VO_CYAN), 0);
+    lv_obj_set_style_text_align(s_user_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_translate_x(s_user_bubble, SW - CHAT_BUBBLE_MAX_W - 2 * CHAT_PAD_X, 0);
     lv_obj_add_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
 
@@ -898,6 +902,7 @@ static void build_chat_area(lv_obj_t *parent)
     s_ai_bubble = create_bubble(s_chat_cont, VO_AI_BG, VO_AI_BORDER,
                                  LV_ALIGN_LEFT_MID, &s_ai_label);
     lv_obj_set_style_text_color(s_ai_label, lv_color_hex(VO_GREEN), 0);
+    lv_obj_set_style_text_align(s_ai_label, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_add_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
 
     /* Start hidden */

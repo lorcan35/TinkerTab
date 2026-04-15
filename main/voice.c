@@ -1293,12 +1293,18 @@ static void ws_receive_task(void *arg)
                 }
 
                 /* Response timeout: if Dragon hasn't sent anything, give up.
-                 * Local mode (voice_mode=0): no timeout — Ollama + tool-calling can take 2+ minutes.
-                 * Cloud mode (voice_mode 1/2): 35s timeout — cloud LLM is fast, timeout means real failure. */
+                 * Mode-aware timeouts:
+                 *   Local    (0): 300s (5 min) — Ollama + tool-calling chains are slow on ARM64 CPU
+                 *   Hybrid   (1): 60s  — cloud STT/TTS but local LLM, still needs headroom
+                 *   Cloud    (2): 60s  — cloud LLM is fast, timeout means real failure
+                 *   TinkerClaw(3): 180s (3 min) — agentic chains with tool execution */
                 uint8_t cur_voice_mode = tab5_settings_get_voice_mode();
-                int64_t timeout_us = (cur_voice_mode == 0)
-                    ? (int64_t)300000 * 1000   /* 5 minutes for local (tool-calling + slow LLM) */
-                    : (int64_t)VOICE_RESPONSE_TIMEOUT_MS * 1000;  /* 35s for cloud */
+                int64_t timeout_us;
+                switch (cur_voice_mode) {
+                    case 0:  timeout_us = (int64_t)300000 * 1000; break;  /* 5 min local */
+                    case 3:  timeout_us = (int64_t)180000 * 1000; break;  /* 3 min TinkerClaw */
+                    default: timeout_us = (int64_t)60000  * 1000; break;  /* 60s cloud/hybrid */
+                }
                 if (elapsed_us > timeout_us) {
                     ESP_LOGW(TAG, "Dragon response timeout (%llds, mode=%d) — cancelling",
                              (long long)(timeout_us / 1000000), cur_voice_mode);
@@ -2141,11 +2147,17 @@ esp_err_t voice_send_text(const char *text)
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
     if (!s_ws_connected) return ESP_ERR_INVALID_STATE;
 
-    /* U13: Reject text send while voice pipeline is active (LISTENING/PROCESSING/SPEAKING).
-     * Both pipelines share the same Dragon WS and conversation context — concurrent
-     * sends corrupt the session state. Only allow text from READY or IDLE+connected. */
-    if (s_state == VOICE_STATE_LISTENING || s_state == VOICE_STATE_PROCESSING ||
-        s_state == VOICE_STATE_SPEAKING) {
+    /* U13: Reject text send while voice pipeline is actively processing or speaking.
+     * PROCESSING/SPEAKING share the Dragon WS and conversation context — concurrent
+     * sends corrupt the session state.
+     * LISTENING is NOT rejected: if the user switches to text input while the mic
+     * is recording (e.g. tapped orb then opened Chat), they clearly want text.
+     * Cancel the voice session first so Dragon isn't waiting for audio. */
+    if (s_state == VOICE_STATE_LISTENING) {
+        ESP_LOGI(TAG, "voice_send_text: cancelling active LISTENING to allow text send");
+        voice_cancel();
+    }
+    if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
         ESP_LOGW(TAG, "voice_send_text: rejected — voice pipeline active (state=%d)", s_state);
         return ESP_ERR_INVALID_STATE;
     }

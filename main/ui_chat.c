@@ -28,6 +28,7 @@
 
 /* Declared in ui_home.c */
 extern lv_obj_t *ui_home_get_screen(void);
+extern void ui_home_show_toast(const char *text);
 
 static const char *TAG = "ui_chat";
 
@@ -99,10 +100,10 @@ static bool         s_history_fetched = false; /* Guard: only fetch history once
 
 #define MAX_MESSAGES     30
 #define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
-#define BUBBLE_MAX_W    500
-#define BUBBLE_PAD       16
-#define BUBBLE_GAP        8
-#define LABEL_MAX_W     (BUBBLE_MAX_W - 2 * BUBBLE_PAD)  /* 468 */
+#define BUBBLE_MAX_W    460
+#define BUBBLE_PAD       14
+#define BUBBLE_GAP       10
+#define LABEL_MAX_W     (BUBBLE_MAX_W - 2 * BUBBLE_PAD)  /* 432 */
 
 #define TOPBAR_H         60
 #define INPUT_BAR_H      80
@@ -494,11 +495,15 @@ static void show_typing_indicator(void)
 {
     if (s_typing_lbl || !s_msg_scroll) return;
 
+    /* Place indicator BELOW the last message with proper gap.
+     * Use s_next_y which already includes BUBBLE_GAP after the last bubble. */
+    int ind_y = s_next_y;
+
     /* Create a small bubble-style indicator — left-aligned with generous padding */
     s_typing_lbl = lv_obj_create(s_msg_scroll);
     lv_obj_remove_style_all(s_typing_lbl);
     lv_obj_set_size(s_typing_lbl, 240, 40);
-    lv_obj_set_pos(s_typing_lbl, 20, s_next_y);
+    lv_obj_set_pos(s_typing_lbl, 20, ind_y);
     lv_obj_set_style_bg_color(s_typing_lbl, lv_color_hex(CLR_TINKER_BUB), 0);
     lv_obj_set_style_bg_opa(s_typing_lbl, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_typing_lbl, 18, 0);
@@ -511,7 +516,8 @@ static void show_typing_indicator(void)
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
-    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+    /* Scroll so the indicator is fully visible (bottom of indicator) */
+    lv_obj_scroll_to_y(s_msg_scroll, ind_y + 40 + BUBBLE_GAP, LV_ANIM_OFF);
 }
 
 static void show_tool_indicator(const char *tool_name)
@@ -519,10 +525,12 @@ static void show_tool_indicator(const char *tool_name)
     hide_typing_indicator();
     if (s_tool_label || !s_msg_scroll) return;
 
+    int ind_y = s_next_y;
+
     s_tool_label = lv_obj_create(s_msg_scroll);
     lv_obj_remove_style_all(s_tool_label);
     lv_obj_set_size(s_tool_label, 300, 36);
-    lv_obj_set_pos(s_tool_label, 16, s_next_y);
+    lv_obj_set_pos(s_tool_label, 16, ind_y);
     lv_obj_set_style_bg_color(s_tool_label, lv_color_hex(0x0A2030), 0);
     lv_obj_set_style_bg_opa(s_tool_label, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_tool_label, 18, 0);
@@ -540,7 +548,8 @@ static void show_tool_indicator(const char *tool_name)
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
-    lv_obj_scroll_to_y(s_msg_scroll, s_next_y, LV_ANIM_OFF);
+    /* Scroll so the tool indicator is fully visible */
+    lv_obj_scroll_to_y(s_msg_scroll, ind_y + 36 + BUBBLE_GAP, LV_ANIM_OFF);
 }
 
 static void hide_tool_indicator(void)
@@ -663,7 +672,7 @@ static void cb_mic(lv_event_t *e)
         voice_start_listening();
     } else if (st == VOICE_STATE_IDLE) {
         ESP_LOGW(TAG, "Chat mic: not connected to Dragon");
-        ui_chat_add_message("(Not connected -- tap orb on Home to connect)", false);
+        ui_home_show_toast("Not connected -- tap orb on Home to connect");
     } else if (st == VOICE_STATE_LISTENING) {
         voice_stop_listening();
     } else {
@@ -699,9 +708,10 @@ static void cb_send(lv_event_t *e)
         voice_state_t send_st = voice_get_state();
         if (send_st == VOICE_STATE_LISTENING || send_st == VOICE_STATE_PROCESSING ||
             send_st == VOICE_STATE_SPEAKING) {
-            ui_chat_add_message("(Voice is active -- wait for it to finish)", false);
+            /* Show as a toast, not a chat bubble — avoids cluttering conversation */
+            ui_home_show_toast("Voice is active -- wait for it to finish");
         } else {
-            ui_chat_add_message("(Not connected to Dragon)", false);
+            ui_home_show_toast("Not connected to Dragon");
         }
     }
 
@@ -1805,26 +1815,21 @@ static void build_conversation_ui(void)
     lv_obj_set_style_text_font(send_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(send_lbl);
 
-    /* Welcome message — smaller and dimmer so real messages stand out */
+    /* Welcome message — minimal centered hint, not a full bubble */
     {
         lv_obj_t *wb = lv_obj_create(s_msg_scroll);
         lv_obj_remove_style_all(wb);
-        lv_obj_set_pos(wb, 20, s_next_y);
-        lv_obj_set_size(wb, BUBBLE_MAX_W, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(wb, lv_color_hex(CLR_TINKER_BUB), 0);
-        lv_obj_set_style_bg_opa(wb, LV_OPA_60, 0);
-        lv_obj_set_style_radius(wb, 16, 0);
-        lv_obj_set_style_pad_all(wb, 12, 0);
-        lv_obj_set_style_border_width(wb, 1, 0);
-        lv_obj_set_style_border_color(wb, lv_color_hex(0x333333), 0);
+        lv_obj_set_pos(wb, 0, s_next_y);
+        lv_obj_set_size(wb, 720, LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_ver(wb, 8, 0);
         lv_obj_clear_flag(wb, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *wl = lv_label_create(wb);
-        lv_label_set_text(wl, "Hi! I'm Tinker. Type or tap the mic to chat.");
-        lv_label_set_long_mode(wl, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(wl, LABEL_MAX_W);
+        lv_label_set_text(wl, "Type or tap " LV_SYMBOL_AUDIO " to chat with Tinker");
+        lv_obj_set_width(wl, 680);
+        lv_obj_set_style_text_align(wl, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_font(wl, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(wl, lv_color_hex(0x666666), 0);
+        lv_obj_set_style_text_color(wl, lv_color_hex(0x555555), 0);
 
         lv_obj_update_layout(wb);
         s_next_y += lv_obj_get_height(wb) + BUBBLE_GAP;
@@ -1986,15 +1991,18 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(is_user ? 0x000000 : 0xFFFFFF), 0);
 
-    /* Timestamp label — right-aligned inside bubble, below message text */
+    /* Timestamp label — right-aligned inside bubble, below message text.
+     * Explicitly position below the message label to prevent overlap. */
     char time_buf[8];
     if (get_time_str(time_buf, sizeof(time_buf))) {
         lv_obj_t *ts = lv_label_create(bubble);
         lv_label_set_text(ts, time_buf);
-        lv_obj_set_style_text_font(ts, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(ts, lv_color_hex(0x888888), 0);
+        lv_obj_set_style_text_font(ts, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(ts, lv_color_hex(is_user ? 0x555555 : 0x888888), 0);
         lv_obj_set_width(ts, LABEL_MAX_W);
         lv_obj_set_style_text_align(ts, LV_TEXT_ALIGN_RIGHT, 0);
+        /* Place timestamp below message text with 4px gap */
+        lv_obj_align_to(ts, lbl, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 4);
     }
 
     /* Force layout so we can measure height */
