@@ -56,7 +56,7 @@ static const char *TAG = "ui_notes";
 #define SW             720
 #define SH             1280     /* Notes is a separate screen, not tileview page */
 #define OVERLAY_H      SH
-#define NAV_BAR_H      80
+#define NAV_BAR_H      120
 #define USABLE_H       (SH - NAV_BAR_H)  /* Full screen — nav bar on lv_layer_top() */
 #define TOPBAR_H       48      /* match Settings style */
 #define INPUT_H        140     /* was 64 */

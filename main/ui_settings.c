@@ -59,7 +59,7 @@ static inline void feed_wdt(void) {
 #define HDR_H        28
 #define TOPBAR_H     48
 #define OVERLAY_H    1280
-#define NAV_BAR_H    80
+#define NAV_BAR_H    120
 #define USABLE_H     (OVERLAY_H - NAV_BAR_H)  /* Full screen — nav bar on lv_layer_top() */
 #define CONTENT_W    680
 

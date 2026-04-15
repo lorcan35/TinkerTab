@@ -107,9 +107,9 @@ static bool         s_history_fetched = false; /* Guard: only fetch history once
 
 #define TOPBAR_H         60
 #define INPUT_BAR_H      80
-#define NAV_BAR_H        80                                /* Nav bar on lv_layer_top covers bottom 80px */
-#define OVERLAY_H       1280                               /* Full screen — nav bar on lv_layer_top() */
-#define USABLE_H        (OVERLAY_H - NAV_BAR_H)           /* 1200 — area above nav bar */
+#define NAV_BAR_H        120                                /* Nav bar = 120px at bottom */
+#define OVERLAY_H       1280                               /* Full screen */
+#define USABLE_H        (OVERLAY_H - NAV_BAR_H)           /* 1160 — usable area above nav bar */
 #define MSG_AREA_H      (USABLE_H - TOPBAR_H - INPUT_BAR_H)  /* 1060 */
 
 #define CLR_BG           0x0A0A0F   /* Material Dark near-black */
