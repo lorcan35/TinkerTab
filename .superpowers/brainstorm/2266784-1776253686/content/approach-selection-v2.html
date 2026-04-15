@@ -1,0 +1,79 @@
+<h2>TinkerClaw Mode: 6 Approaches</h2>
+<p class="subtitle">All designed within ESP32-P4 constraints: 55 LVGL objects, 720x1280 portrait, voice-first, hide/show pattern</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Enhanced Chat (Inline Agent Layer)</h3>
+      <p>Same chat screen — but when TinkerClaw is active, tool executions appear as special bubbles ("Searching the web...", "Recalled 3 memories"), suggestions become agent-aware, and a subtle pulsing indicator shows agent state. Zero new screens.</p>
+      <div style="margin-top:10px; padding:10px; background:rgba(255,107,53,0.08); border-radius:6px; font-size:13px;">
+        Objects: +5 | Files: ui_chat.c only | Risk: Low
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Agent Drawer (Pull-up Panel)</h3>
+      <p>Chat stays as-is. A small handle at the bottom of the chat screen (above the input bar) can be tapped to slide up a half-screen panel showing: active tool status, last 3 memory facts, quick skill buttons. Dismisses with swipe-down. Think iOS Control Center — always one tap away, never in the way.</p>
+      <div style="margin-top:10px; padding:10px; background:rgba(6,182,212,0.08); border-radius:6px; font-size:13px;">
+        Objects: +10-12 (hidden when collapsed) | Files: new ui_agent_drawer.c | Risk: Low-Med
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Mode Morphing (Screens Transform)</h3>
+      <p>No new screen. When TinkerClaw is active: Home orb area shows last agent action + tool count. Chat header shows agent model + memory indicator. Settings gets an "Agent" section with capabilities list. The whole device subtly changes personality.</p>
+      <div style="margin-top:10px; padding:10px; background:rgba(168,85,247,0.08); border-radius:6px; font-size:13px;">
+        Objects: +8 (spread across screens) | Files: ui_home.c, ui_chat.c, ui_settings.c | Risk: Medium
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Voice Overlay Evolution</h3>
+      <p>The voice overlay (orb screen) becomes the agent cockpit. When you tap the orb in TinkerClaw mode, instead of just the listening animation, you see: live tool execution ("Searching..."), streaming response text, and a context ring around the orb showing memory/tool activity. Chat stays for history. The VOICE experience is where the agent lives.</p>
+      <div style="margin-top:10px; padding:10px; background:rgba(34,197,94,0.08); border-radius:6px; font-size:13px;">
+        Objects: +6-8 (reuses voice overlay) | Files: ui_voice.c | Risk: Low — voice overlay already exists
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="e" onclick="toggleSelect(this)">
+    <div class="letter">E</div>
+    <div class="content">
+      <h3>Notification Stream (Agent Feed)</h3>
+      <p>A lightweight scrolling feed that replaces the Chat home/welcome view when in TinkerClaw mode. Shows timestamped agent events: "Memory stored", "Web search: 3 results", "Tool: calculator", "Context: 23/50 messages". Tap any event to see details. Like a system log but beautiful. Conversation stays in chat bubbles above.</p>
+      <div style="margin-top:10px; padding:10px; background:rgba(251,191,36,0.08); border-radius:6px; font-size:13px;">
+        Objects: +8-10 (recycled list) | Files: ui_chat.c (mode-conditional) | Risk: Low-Med
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="f" onclick="toggleSelect(this)">
+    <div class="letter">F</div>
+    <div name="content">
+      <h3>Hybrid: A + D (Chat + Voice Agent)</h3>
+      <p>Best of both worlds. Chat screen gets inline tool bubbles and agent suggestions (approach A). Voice overlay gets the agent cockpit treatment with live tool status around the orb (approach D). Together they cover both interaction modes — text conversations show agent activity inline, voice interactions show it visually around the orb. No new screens, no drawers, just the two existing interfaces made agent-aware.</p>
+      <div style="margin-top:10px; padding:10px; background:rgba(255,107,53,0.15); border-radius:6px; font-size:13px;">
+        Objects: +10-12 total | Files: ui_chat.c + ui_voice.c | Risk: Low — both files already exist
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:20px; padding:14px; background:rgba(255,255,255,0.04); border-radius:8px; border-left:3px solid rgba(255,107,53,0.5);">
+  <h3 style="margin-top:0; font-size:15px;">My Recommendation: F (Hybrid)</h3>
+  <p style="font-size:13px; opacity:0.8; margin:6px 0 0 0;">TinkerTab is voice-first — the orb IS the product. Making the voice overlay agent-aware (D) serves the primary interaction. Adding inline tool bubbles in chat (A) covers the text path. No new files, no new navigation, no object budget risk. Both Chat and Voice already use the hide/show pattern. You get agent visibility everywhere the user actually interacts.</p>
+</div>
+
+<div style="margin-top:12px; padding:14px; background:rgba(255,255,255,0.04); border-radius:8px; border-left:3px solid rgba(6,182,212,0.3);">
+  <p style="font-size:13px; opacity:0.6; margin:0;">You can also combine approaches — click multiple if you like. These aren't mutually exclusive.</p>
+</div>

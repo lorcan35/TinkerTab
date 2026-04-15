@@ -1,0 +1,288 @@
+<h2>Rich Media Architecture: How To Do All Of It</h2>
+<p class="subtitle">One architecture that enables all 120 user stories. Dragon renders, Tab5 displays.</p>
+
+<div style="margin-bottom:20px; padding:16px; background:rgba(255,107,53,0.08); border-radius:8px; border-left:3px solid #ff6b35;">
+  <h3 style="margin-top:0; font-size:15px;">The Core Insight</h3>
+  <p style="font-size:13px; margin:4px 0;">Tab5 can do three things: show <strong>images</strong>, play <strong>audio</strong>, show <strong>text</strong>. Dragon can do anything. So: Dragon renders everything into images/audio, Tab5 displays them inline. One pattern, 120 stories.</p>
+</div>
+
+<!-- THE STACK -->
+<h3>The 5-Layer Stack</h3>
+
+<div style="display:grid; gap:2px; margin-bottom:24px;">
+  <div style="padding:14px 16px; background:rgba(255,107,53,0.12); border-radius:8px 8px 2px 2px; display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <strong style="font-size:14px;">Layer 5: AI Media Detection</strong>
+      <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Parse LLM responses for URLs, code blocks, tables, markdown → trigger server-side rendering</p>
+    </div>
+    <span style="font-size:11px; opacity:0.5; white-space:nowrap;">Dragon + TinkerClaw</span>
+  </div>
+  <div style="padding:14px 16px; background:rgba(255,107,53,0.10); display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <strong style="font-size:14px;">Layer 4: User Media Input</strong>
+      <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Camera capture → JPEG → upload to Dragon → forward to multimodal LLM (Claude/GPT-4o vision)</p>
+    </div>
+    <span style="font-size:11px; opacity:0.5; white-space:nowrap;">Tab5 + Dragon</span>
+  </div>
+  <div style="padding:14px 16px; background:rgba(255,107,53,0.08); display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <strong style="font-size:14px;">Layer 3: Dragon Media Pipeline</strong>
+      <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Playwright (web screenshots), Pillow (charts/diagrams), ffmpeg (video frames) → optimize → serve via HTTP</p>
+    </div>
+    <span style="font-size:11px; opacity:0.5; white-space:nowrap;">Dragon only</span>
+  </div>
+  <div style="padding:14px 16px; background:rgba(255,107,53,0.06); display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <strong style="font-size:14px;">Layer 2: Tab5 Media Renderer</strong>
+      <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Download images via HTTP → JPEG decode (PSRAM) → lv_image in chat scroll → LRU cache → audio playback</p>
+    </div>
+    <span style="font-size:11px; opacity:0.5; white-space:nowrap;">Tab5 only</span>
+  </div>
+  <div style="padding:14px 16px; background:rgba(255,107,53,0.04); border-radius:2px 2px 8px 8px; display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <strong style="font-size:14px;">Layer 1: Rich Message Protocol</strong>
+      <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">New WS message types: media, card, audio_clip, carousel. Dragon REST API for media serving.</p>
+    </div>
+    <span style="font-size:11px; opacity:0.5; white-space:nowrap;">Protocol (both)</span>
+  </div>
+</div>
+
+<!-- PROTOCOL -->
+<h3>Layer 1: The Protocol Change</h3>
+<div style="padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:16px;">
+  <p style="font-size:13px; margin:0 0 8px 0;"><strong>Current:</strong> Dragon sends only text</p>
+  <div style="padding:10px; background:rgba(0,0,0,0.3); border-radius:4px; font-family:monospace; font-size:11px; margin-bottom:12px; overflow-x:auto;">
+    {"type":"llm","text":"The weather in Dublin is 14°C..."}<br>
+    {"type":"llm_done","llm_ms":1523}
+  </div>
+
+  <p style="font-size:13px; margin:0 0 8px 0;"><strong>New:</strong> Dragon sends text + media interleaved</p>
+  <div style="padding:10px; background:rgba(0,0,0,0.3); border-radius:4px; font-family:monospace; font-size:11px; overflow-x:auto;">
+    {"type":"llm","text":"Here's the weather in Dublin:"}<br>
+    <span style="color:#ff6b35;">{"type":"media","media_type":"image","url":"/api/media/weather_abc.jpg","width":680,"height":400,"alt":"5-day forecast"}</span><br>
+    {"type":"llm","text":"14°C with light rain expected."}<br>
+    <span style="color:#06b6d4;">{"type":"media","media_type":"card","title":"Dublin Weather","subtitle":"14°C · Light Rain","image_url":"/api/media/weather_icon.png","action":"expand"}</span><br>
+    {"type":"llm_done","llm_ms":2100}
+  </div>
+
+  <p style="font-size:13px; margin:12px 0 8px 0;"><strong>New message types:</strong></p>
+  <div style="display:grid; gap:6px;">
+    <div style="padding:8px 12px; background:rgba(255,107,53,0.06); border-radius:4px; font-size:12px;">
+      <code style="color:#ff6b35;">media</code> — inline image/audio/video-frame: <code>url</code>, <code>media_type</code>, <code>width</code>, <code>height</code>, <code>alt</code>
+    </div>
+    <div style="padding:8px 12px; background:rgba(6,182,212,0.06); border-radius:4px; font-size:12px;">
+      <code style="color:#06b6d4;">card</code> — rich preview card: <code>title</code>, <code>subtitle</code>, <code>image_url</code>, <code>description</code>, <code>action</code>
+    </div>
+    <div style="padding:8px 12px; background:rgba(168,85,247,0.06); border-radius:4px; font-size:12px;">
+      <code style="color:#a855f7;">carousel</code> — swipeable image set: <code>items[]</code> (each with url, caption)
+    </div>
+    <div style="padding:8px 12px; background:rgba(34,197,94,0.06); border-radius:4px; font-size:12px;">
+      <code style="color:#22c55e;">audio_clip</code> — inline audio player: <code>url</code>, <code>duration_s</code>, <code>label</code>
+    </div>
+  </div>
+</div>
+
+<!-- TAB5 RENDERER -->
+<h3>Layer 2: Tab5 Media Renderer</h3>
+<div style="padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:16px;">
+  <p style="font-size:13px; margin:0 0 12px 0;">Tab5 receives a <code>media</code> message → downloads image from Dragon's HTTP API → decodes JPEG in PSRAM → creates <code>lv_image</code> in chat scroll area.</p>
+
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+      <strong style="font-size:12px; color:#ff6b35;">Image Display</strong>
+      <ul style="font-size:11px; margin:4px 0 0 0; padding-left:16px; opacity:0.8;">
+        <li>HTTP GET from Dragon API</li>
+        <li>JPEG decode → RGB565 in PSRAM</li>
+        <li>Max width: 660px (bubble width)</li>
+        <li>lv_image with rounded corners</li>
+        <li>Tap to fullscreen zoom</li>
+      </ul>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+      <strong style="font-size:12px; color:#06b6d4;">Memory Management</strong>
+      <ul style="font-size:11px; margin:4px 0 0 0; padding-left:16px; opacity:0.8;">
+        <li>LRU cache: 5 images in PSRAM</li>
+        <li>~660×400 RGB565 = ~528KB each</li>
+        <li>5 cached = ~2.6MB (of 32MB PSRAM)</li>
+        <li>Offscreen images → placeholder</li>
+        <li>Re-download on scroll back</li>
+      </ul>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+      <strong style="font-size:12px; color:#a855f7;">Card Renderer</strong>
+      <ul style="font-size:11px; margin:4px 0 0 0; padding-left:16px; opacity:0.8;">
+        <li>Title + subtitle + thumbnail</li>
+        <li>~4 LVGL objects per card</li>
+        <li>Rounded container, dark bg</li>
+        <li>Tap action: expand / open URL</li>
+        <li>Reuses existing chat bubble style</li>
+      </ul>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+      <strong style="font-size:12px; color:#22c55e;">Audio Player</strong>
+      <ul style="font-size:11px; margin:4px 0 0 0; padding-left:16px; opacity:0.8;">
+        <li>Mini player widget in chat</li>
+        <li>Play/pause button + duration</li>
+        <li>Download + I2S playback (existing)</li>
+        <li>One at a time (stop current first)</li>
+        <li>~3 LVGL objects</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- DRAGON PIPELINE -->
+<h3>Layer 3: Dragon Media Pipeline</h3>
+<div style="padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:16px;">
+  <p style="font-size:13px; margin:0 0 12px 0;">Dragon renders anything into 720px-wide images. The rendering engine is a Python module with pluggable renderers.</p>
+
+  <div style="display:grid; gap:6px;">
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; gap:12px; align-items:start;">
+      <strong style="font-size:24px; opacity:0.3; min-width:30px;">1</strong>
+      <div>
+        <strong style="font-size:13px;">Playwright Renderer</strong>
+        <p style="font-size:11px; opacity:0.7; margin:2px 0 0 0;">Web screenshots, HTML→image, link previews, page captures. Already installed on Dragon. Headless Chrome renders any HTML/CSS at 720px viewport → PNG screenshot → JPEG optimize.</p>
+      </div>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; gap:12px; align-items:start;">
+      <strong style="font-size:24px; opacity:0.3; min-width:30px;">2</strong>
+      <div>
+        <strong style="font-size:13px;">Pillow Renderer</strong>
+        <p style="font-size:11px; opacity:0.7; margin:2px 0 0 0;">Charts (matplotlib), QR codes (qrcode), image composites, annotated photos, text-on-image. Pure Python, fast, no browser needed.</p>
+      </div>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; gap:12px; align-items:start;">
+      <strong style="font-size:24px; opacity:0.3; min-width:30px;">3</strong>
+      <div>
+        <strong style="font-size:13px;">Markdown/Code Renderer</strong>
+        <p style="font-size:11px; opacity:0.7; margin:2px 0 0 0;">Markdown → HTML → Playwright screenshot. Code blocks → syntax-highlighted HTML → screenshot. Tables → styled HTML → screenshot. All use the same Playwright pipeline.</p>
+      </div>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; gap:12px; align-items:start;">
+      <strong style="font-size:24px; opacity:0.3; min-width:30px;">4</strong>
+      <div>
+        <strong style="font-size:13px;">Media Proxy</strong>
+        <p style="font-size:11px; opacity:0.7; margin:2px 0 0 0;">External image URLs → download → resize to 720px max → optimize JPEG quality 80 → serve locally. Tab5 never fetches from the internet directly — Dragon proxies everything.</p>
+      </div>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px; display:flex; gap:12px; align-items:start;">
+      <strong style="font-size:24px; opacity:0.3; min-width:30px;">5</strong>
+      <div>
+        <strong style="font-size:13px;">Media Store</strong>
+        <p style="font-size:11px; opacity:0.7; margin:2px 0 0 0;">All rendered media saved to <code>/home/radxa/media/</code> with unique IDs. Served via <code>GET /api/media/{id}.jpg</code>. Auto-cleanup after 24h. Session-scoped for privacy.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- USER INPUT -->
+<h3>Layer 4: User Media Input (Camera/Audio → AI)</h3>
+<div style="padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:16px;">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+      <strong style="font-size:12px; color:#06b6d4;">Camera → Chat</strong>
+      <p style="font-size:11px; opacity:0.7; margin:4px 0 0 0;">Tab5 camera captures JPEG (already works in ui_camera.c) → user taps "Send to Chat" → HTTP POST to Dragon <code>/api/media/upload</code> → Dragon stores + forwards as base64 to multimodal LLM (Claude 3.5/GPT-4o accept images) → response streams back normally.</p>
+    </div>
+    <div style="padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+      <strong style="font-size:12px; color:#ff6b35;">Audio → Chat</strong>
+      <p style="font-size:11px; opacity:0.7; margin:4px 0 0 0;">Already works for voice (PTT). For audio clips: user records short audio → upload to Dragon → Dragon transcribes OR sends to audio-capable model (Whisper/GPT-audio) → response includes analysis.</p>
+    </div>
+  </div>
+  <div style="margin-top:10px; padding:10px; background:rgba(255,255,255,0.03); border-radius:6px;">
+    <strong style="font-size:12px; color:#a855f7;">New WS message: user_media</strong>
+    <div style="padding:8px; background:rgba(0,0,0,0.3); border-radius:4px; font-family:monospace; font-size:11px; margin-top:6px;">
+      {"type":"user_media","media_type":"image","media_id":"upload_abc123","text":"What plant is this?"}
+    </div>
+    <p style="font-size:11px; opacity:0.7; margin:4px 0 0 0;">Tab5 uploads image first via HTTP, gets media_id, then sends WS message with media_id + optional text context.</p>
+  </div>
+</div>
+
+<!-- AI DETECTION -->
+<h3>Layer 5: AI Media Detection</h3>
+<div style="padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:16px;">
+  <p style="font-size:13px; margin:0 0 12px 0;">Dragon intercepts LLM responses and auto-renders rich content. The LLM doesn't need to know about rendering — Dragon detects patterns and acts.</p>
+
+  <div style="display:grid; gap:6px;">
+    <div style="padding:8px 12px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:12px;">
+      <strong>URL detection</strong> — LLM response contains <code>https://...</code> → Dragon fetches Open Graph metadata → sends as <code>card</code> message
+    </div>
+    <div style="padding:8px 12px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:12px;">
+      <strong>Image URL detection</strong> — Response contains <code>.jpg/.png/.gif</code> URL → Dragon downloads, resizes → sends as <code>media</code> message
+    </div>
+    <div style="padding:8px 12px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:12px;">
+      <strong>Code block detection</strong> — Response contains <code>```python...```</code> → Dragon renders with syntax highlighting → sends as <code>media</code> image
+    </div>
+    <div style="padding:8px 12px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:12px;">
+      <strong>Table detection</strong> — Response contains <code>| header | header |</code> pattern → Dragon renders as styled table image
+    </div>
+    <div style="padding:8px 12px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:12px;">
+      <strong>Markdown detection</strong> — Response contains headers, lists, bold → Dragon renders formatted version as image
+    </div>
+    <div style="padding:8px 12px; background:rgba(255,255,255,0.03); border-radius:4px; font-size:12px;">
+      <strong>TinkerClaw tool results</strong> — Web search returns URLs/images → Dragon renders search results as cards
+    </div>
+  </div>
+</div>
+
+<!-- DATA FLOW -->
+<h3>End-to-End Flow Example</h3>
+<div style="padding:16px; background:rgba(255,255,255,0.03); border-radius:8px; margin-bottom:16px;">
+  <p style="font-size:13px; margin:0 0 8px 0;"><strong>User:</strong> "What does a Japanese maple look like in autumn?"</p>
+  <div style="display:grid; gap:4px; font-size:12px;">
+    <div style="padding:6px 10px; background:rgba(6,182,212,0.06); border-radius:4px;">1. Tab5 → Dragon: <code>{"type":"text","content":"What does a Japanese maple look like in autumn?"}</code></div>
+    <div style="padding:6px 10px; background:rgba(168,85,247,0.06); border-radius:4px;">2. Dragon → LLM: sends to Claude/TinkerClaw</div>
+    <div style="padding:6px 10px; background:rgba(168,85,247,0.06); border-radius:4px;">3. LLM responds: "Japanese maples (Acer palmatum) are stunning in autumn... ![maple](https://upload.wikimedia.org/...maple.jpg)"</div>
+    <div style="padding:6px 10px; background:rgba(255,107,53,0.06); border-radius:4px;">4. Dragon detects image URL → downloads → resizes to 660px → saves as <code>/api/media/maple_001.jpg</code></div>
+    <div style="padding:6px 10px; background:rgba(255,107,53,0.06); border-radius:4px;">5. Dragon → Tab5: <code>{"type":"llm","text":"Japanese maples are stunning in autumn..."}</code></div>
+    <div style="padding:6px 10px; background:rgba(255,107,53,0.06); border-radius:4px;">6. Dragon → Tab5: <code>{"type":"media","media_type":"image","url":"/api/media/maple_001.jpg","width":660,"height":440}</code></div>
+    <div style="padding:6px 10px; background:rgba(34,197,94,0.06); border-radius:4px;">7. Tab5 renders text bubble, then downloads image, then shows inline below text. User sees beautiful maple photo in chat.</div>
+  </div>
+</div>
+
+<!-- WHAT CHANGES WHERE -->
+<h3>Changes Per Repo</h3>
+<div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:16px;">
+  <div style="padding:12px; background:rgba(6,182,212,0.06); border-radius:8px;">
+    <strong style="font-size:13px; color:#06b6d4;">TinkerTab (firmware)</strong>
+    <ul style="font-size:11px; margin:8px 0 0 0; padding-left:16px; opacity:0.8;">
+      <li>voice.c: parse media/card/carousel/audio_clip messages</li>
+      <li>ui_chat.c: render inline images, cards, audio players</li>
+      <li>New: media_cache.c (HTTP image download + PSRAM LRU cache)</li>
+      <li>ui_camera.c: "Send to Chat" button</li>
+      <li>~500-700 new lines</li>
+    </ul>
+  </div>
+  <div style="padding:12px; background:rgba(255,107,53,0.06); border-radius:8px;">
+    <strong style="font-size:13px; color:#ff6b35;">TinkerBox (Dragon)</strong>
+    <ul style="font-size:11px; margin:8px 0 0 0; padding-left:16px; opacity:0.8;">
+      <li>New: media_pipeline.py (rendering engine)</li>
+      <li>New: media_store.py (storage + serving)</li>
+      <li>server.py: intercept LLM responses, detect media</li>
+      <li>api/media.py: upload + serve endpoints</li>
+      <li>conversation.py: media-aware context</li>
+      <li>~800-1000 new lines</li>
+    </ul>
+  </div>
+  <div style="padding:12px; background:rgba(168,85,247,0.06); border-radius:8px;">
+    <strong style="font-size:13px; color:#a855f7;">TinkerClaw (gateway)</strong>
+    <ul style="font-size:11px; margin:8px 0 0 0; padding-left:16px; opacity:0.8;">
+      <li>Zero changes needed</li>
+      <li>TinkerClaw returns text</li>
+      <li>Dragon handles all rendering</li>
+      <li>Future: TinkerClaw skills could return media_url directly</li>
+    </ul>
+  </div>
+</div>
+
+<div style="padding:16px; background:rgba(255,255,255,0.04); border-radius:8px; border-left:3px solid #ff6b35;">
+  <h3 style="margin-top:0; font-size:15px;">Why This Works</h3>
+  <ul style="font-size:13px; margin:8px 0 0 0; padding-left:20px; opacity:0.85;">
+    <li><strong>One pattern for everything:</strong> Charts, web pages, code, diagrams, tables, PDFs — all become images. Tab5 only needs one renderer (lv_image).</li>
+    <li><strong>Tab5 stays thin:</strong> No HTML engine, no markdown parser, no video decoder on the ESP32. Just image display + audio playback.</li>
+    <li><strong>Dragon has unlimited power:</strong> Playwright, Pillow, matplotlib, ffmpeg — full Linux arsenal for rendering.</li>
+    <li><strong>Tab5 never touches the internet:</strong> Dragon proxies all external media. Privacy preserved. No DNS/TLS on ESP32.</li>
+    <li><strong>Backward compatible:</strong> Old firmware ignores unknown message types. New firmware handles both text-only and rich responses.</li>
+    <li><strong>Mode-agnostic:</strong> Works for Local, Hybrid, Cloud, AND TinkerClaw. Dragon renders for all modes.</li>
+    <li><strong>Zero TinkerClaw changes:</strong> Dragon intercepts and renders. TinkerClaw just returns text.</li>
+  </ul>
+</div>

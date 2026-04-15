@@ -1,0 +1,140 @@
+<h2>TinkerClaw Mode UI: Informed by Full Codebase Analysis</h2>
+<p class="subtitle">After reading every file across TinkerTab, TinkerBox, and TinkerClaw. Here's what's actually possible given the architecture.</p>
+
+<div style="margin-bottom:24px; padding:16px; background:rgba(255,60,60,0.08); border-radius:8px; border-left:3px solid #ff3c3c;">
+  <h3 style="margin-top:0; font-size:15px; color:#ff6b6b;">Key Discovery: Tool Events Are Invisible</h3>
+  <p style="font-size:13px; margin:4px 0 0 0;">TinkerClaw's <code>/v1/chat/completions</code> SSE stream only sends text deltas. When the agent calls web_search or memory_recall, the stream goes <strong>silent for 10-30s</strong>. Dragon's <code>tinkerclaw_llm.py</code> (192 lines) has no idea what tool is running. Tab5 sees nothing.</p>
+  <p style="font-size:13px; margin:8px 0 0 0;">However, TinkerClaw <em>does</em> emit rich tool events internally (<code>stream: "tool"</code> with phase/name/args/result). They just aren't in the SSE response Dragon consumes.</p>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Smart Chat (Silence Detection + Inline Indicators)</h3>
+      <p>No new screen. Chat gets agent-aware enhancements using what we CAN detect today:</p>
+      <ul style="font-size:13px; margin:8px 0; padding-left:20px;">
+        <li><strong>Silence detection:</strong> If no LLM token arrives for 3s during PROCESSING, show animated "Agent working..." bubble (Dragon can detect this in tinkerclaw_llm.py and send a new WS event)</li>
+        <li><strong>TinkerClaw suggestion cards:</strong> "What do you know about me?", "Search the web for...", "What can you do?", "Remember that I..."</li>
+        <li><strong>Fix model label:</strong> Show "TinkerClaw Agent" instead of "Claude Haiku"</li>
+        <li><strong>Agent welcome card:</strong> On chat home, show capabilities: "I can search the web, remember things, use tools"</li>
+        <li><strong>Rose theme accents:</strong> Bubbles, status dots, mode badge all use TinkerClaw rose color</li>
+      </ul>
+      <div style="margin-top:10px; padding:10px; background:rgba(255,107,53,0.08); border-radius:6px; font-size:12px;">
+        <strong>Changes:</strong> ui_chat.c (suggestion cards, model label, welcome card, silence indicator) + tinkerclaw_llm.py (silence detection event) + voice.c (forward new event to UI)<br>
+        <strong>Objects:</strong> +5-6 | <strong>Risk:</strong> Low | <strong>No new screens or files</strong>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Full Tool Visibility (Parallel Event Channel)</h3>
+      <p>Add a WebSocket connection from Dragon to TinkerClaw's event system to get real tool names, args, and results. Then forward them to Tab5 as <code>tool_call</code>/<code>tool_result</code> messages (which voice.c already handles!).</p>
+      <ul style="font-size:13px; margin:8px 0; padding-left:20px;">
+        <li><strong>Dragon subscribes</strong> to TinkerClaw agent events via WebSocket (new connection alongside HTTP)</li>
+        <li><strong>Receives:</strong> <code>stream:"tool", phase:"start", name:"web_search", args:{query:"..."}</code></li>
+        <li><strong>Forwards:</strong> <code>{"type":"tool_call","tool":"web_search","args":{...}}</code> to Tab5 (existing protocol!)</li>
+        <li><strong>Tab5 already handles</strong> tool_call/tool_result in voice.c → shows "Searching the web..." in ui_voice.c</li>
+        <li>Plus everything from Option A (suggestions, model label, welcome card)</li>
+      </ul>
+      <div style="margin-top:10px; padding:10px; background:rgba(6,182,212,0.08); border-radius:6px; font-size:12px;">
+        <strong>Changes:</strong> tinkerclaw_llm.py (WS event subscription, ~80 lines) + server.py (forward tool events) + ui_chat.c (cosmetic) + ui_voice.c (already handles tool_call!)<br>
+        <strong>Objects:</strong> +5-6 | <strong>Risk:</strong> Medium — new WS dependency, but Tab5 side already done<br>
+        <strong>Huge win:</strong> Tab5 voice.c already shows "Searching...", "Calculating..." for tool_call events
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Inline SSE Tool Injection (Modify TinkerClaw)</h3>
+      <p>Modify TinkerClaw's OpenAI HTTP endpoint to inject tool events INLINE in the SSE stream. Dragon parses them as special SSE events alongside text deltas. Simplest server-side change.</p>
+      <ul style="font-size:13px; margin:8px 0; padding-left:20px;">
+        <li><strong>Modify</strong> <code>openai-http.ts</code> to write tool events into SSE stream: <code>data: {"tool":"web_search","phase":"start"}</code></li>
+        <li><strong>Dragon parses</strong> in tinkerclaw_llm.py alongside text deltas (already loops over SSE lines)</li>
+        <li><strong>Forwards</strong> as tool_call/tool_result to Tab5 (same as Option B)</li>
+        <li>No new WebSocket connections — everything stays in the existing HTTP SSE stream</li>
+        <li>Plus everything from Option A</li>
+      </ul>
+      <div style="margin-top:10px; padding:10px; background:rgba(168,85,247,0.08); border-radius:6px; font-size:12px;">
+        <strong>Changes:</strong> openai-http.ts (inject tool SSE events, ~30 lines) + tinkerclaw_llm.py (parse tool events, ~40 lines) + server.py (forward) + ui_chat.c (cosmetic)<br>
+        <strong>Objects:</strong> +5-6 | <strong>Risk:</strong> Low-Med — modifying OpenClaw source, but minimal change<br>
+        <strong>Cleanest:</strong> Single connection, no new WebSocket, all in existing data flow
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="d" onclick="toggleSelect(this)">
+    <div class="letter">D</div>
+    <div class="content">
+      <h3>Voice Orb Agent Cockpit</h3>
+      <p>The voice overlay (ui_voice.c) transforms when in TinkerClaw mode. The orb becomes an agent status display. Tool activity shown as animated rings/text around the orb. Chat stays for text history.</p>
+      <ul style="font-size:13px; margin:8px 0; padding-left:20px;">
+        <li><strong>Orb color ring:</strong> Rose pulsing = thinking, amber flash = tool executing, green = speaking</li>
+        <li><strong>Status label evolution:</strong> "Listening..." → "Thinking..." → "Searching the web..." → "Found 3 results" → "Speaking..."</li>
+        <li><strong>Context ring:</strong> Thin ring around orb showing memory/tool activity count (like Apple Watch activity rings)</li>
+        <li><strong>Tool name display:</strong> Below orb, shows current tool: "web_search" with animated dots</li>
+        <li>Requires tool visibility from Option B or C to show real tool names</li>
+      </ul>
+      <div style="margin-top:10px; padding:10px; background:rgba(34,197,94,0.08); border-radius:6px; font-size:12px;">
+        <strong>Changes:</strong> ui_voice.c (orb state machine extensions, ~100 lines) + needs B or C for tool data<br>
+        <strong>Objects:</strong> +4-6 (reuses existing orb objects) | <strong>Risk:</strong> Low — ui_voice.c already has the state machine<br>
+        <strong>Voice-first:</strong> Most interactions are via orb, so this is where visibility matters most
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="e" onclick="toggleSelect(this)">
+    <div class="letter">E</div>
+    <div class="content">
+      <h3>Combined: C + A + D (The Full Package)</h3>
+      <p>The recommended approach. Three layers that build on each other:</p>
+      <ol style="font-size:13px; margin:8px 0; padding-left:20px;">
+        <li><strong>Layer 1 — SSE tool injection (C):</strong> Modify TinkerClaw's openai-http.ts to emit tool events in SSE. Dragon parses and forwards to Tab5. ~70 lines across 2 files.</li>
+        <li><strong>Layer 2 — Smart Chat (A):</strong> Agent suggestions, model label fix, welcome card, tool activity bubbles inline. All in existing ui_chat.c.</li>
+        <li><strong>Layer 3 — Voice Orb Cockpit (D):</strong> Orb shows tool names, animated status, rose theming. Uses tool events from Layer 1. All in existing ui_voice.c.</li>
+      </ol>
+      <div style="margin-top:10px; padding:10px; background:rgba(255,107,53,0.15); border-radius:6px; font-size:12px;">
+        <strong>Changes:</strong> openai-http.ts + tinkerclaw_llm.py + server.py + ui_chat.c + ui_voice.c (all existing files)<br>
+        <strong>Objects:</strong> +10-12 total | <strong>Risk:</strong> Medium — touches 3 repos but each change is small<br>
+        <strong>Zero new files. Zero new screens. Zero new LVGL overlays.</strong>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="f" onclick="toggleSelect(this)">
+    <div class="letter">F</div>
+    <div class="content">
+      <h3>Agent Dashboard Screen (New Dedicated Screen)</h3>
+      <p>A brand new screen (ui_agent.c) accessible from nav bar when in TinkerClaw mode. Shows: conversation feed, tool history, memory facts, skill list, agent config. Full mission control.</p>
+      <ul style="font-size:13px; margin:8px 0; padding-left:20px;">
+        <li><strong>Conversation panel:</strong> Recent messages with tool indicators</li>
+        <li><strong>Tool activity feed:</strong> Timestamped log of tool executions</li>
+        <li><strong>Memory viewer:</strong> "What the agent knows about you"</li>
+        <li><strong>Skill browser:</strong> Scrollable list of 51 skills</li>
+        <li><strong>Config panel:</strong> Model, token budget, context usage</li>
+      </ul>
+      <div style="margin-top:10px; padding:10px; background:rgba(255,60,60,0.08); border-radius:6px; font-size:12px;">
+        <strong>Changes:</strong> New ui_agent.c (~1500 lines) + ui_home.c (nav bar mod) + needs B or C for data<br>
+        <strong>Objects:</strong> +30-40 (DANGER: pushes 55-object practical limit per screen) | <strong>Risk:</strong> HIGH<br>
+        <strong>Problem:</strong> 720px too narrow for panels. 55 objects per screen budget is tight. New overlay = fragmentation risk.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:20px; padding:16px; background:rgba(255,255,255,0.04); border-radius:8px; border-left:3px solid rgba(255,107,53,0.5);">
+  <h3 style="margin-top:0; font-size:15px;">My Recommendation: E (Combined C+A+D)</h3>
+  <p style="font-size:13px; opacity:0.85; margin:6px 0 0 0;">
+    <strong>Why:</strong> It gives you real tool visibility (not heuristic silence detection), surfaces it in both chat AND voice (the two places users actually interact), modifies zero LVGL screen architecture, adds zero new files to Tab5, stays within object budget, and each layer can be implemented and tested independently.
+  </p>
+  <p style="font-size:13px; opacity:0.85; margin:8px 0 0 0;">
+    <strong>Implementation order:</strong> C first (enable the data flow), then A (chat cosmetics), then D (voice orb). Each layer is independently useful — you don't need all three to ship.
+  </p>
+  <p style="font-size:13px; opacity:0.85; margin:8px 0 0 0;">
+    <strong>What NOT to do:</strong> Option F (new screen) fights the hardware. 720px is too narrow for panels, 55 objects per screen is too tight for a dashboard, and a new overlay risks fragmentation. The existing chat + voice screens are the right containers.
+  </p>
+</div>

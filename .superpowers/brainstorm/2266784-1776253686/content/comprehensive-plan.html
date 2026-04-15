@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rich Media Chat — Comprehensive Design</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0a0a14; color: #e0e0e8; font-family: -apple-system, system-ui, sans-serif; padding: 24px; line-height: 1.5; }
+  h1 { font-size: 22px; margin-bottom: 4px; color: #fff; }
+  h2 { font-size: 17px; margin: 28px 0 12px 0; color: #ff6b35; border-bottom: 1px solid rgba(255,107,53,0.2); padding-bottom: 6px; }
+  h3 { font-size: 14px; margin: 16px 0 8px 0; color: #06b6d4; }
+  p { font-size: 13px; margin: 6px 0; opacity: 0.85; }
+  .subtitle { font-size: 13px; opacity: 0.6; margin-bottom: 20px; }
+  code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  pre { background: rgba(0,0,0,0.4); padding: 12px; border-radius: 6px; font-size: 11px; overflow-x: auto; margin: 8px 0; font-family: 'JetBrains Mono', monospace; }
+  .warn { background: rgba(255,60,60,0.08); border-left: 3px solid #ff3c3c; padding: 12px; border-radius: 6px; margin: 10px 0; }
+  .ok { background: rgba(34,197,94,0.08); border-left: 3px solid #22c55e; padding: 12px; border-radius: 6px; margin: 10px 0; }
+  .info { background: rgba(6,182,212,0.08); border-left: 3px solid #06b6d4; padding: 12px; border-radius: 6px; margin: 10px 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { padding: 12px; background: rgba(255,255,255,0.03); border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  th { text-align: left; padding: 6px 8px; background: rgba(255,255,255,0.05); color: #ff6b35; }
+  td { padding: 6px 8px; border-top: 1px solid rgba(255,255,255,0.05); }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+  .tag-break { background: rgba(255,60,60,0.15); color: #ff6b6b; }
+  .tag-safe { background: rgba(34,197,94,0.15); color: #4ade80; }
+  .tag-new { background: rgba(6,182,212,0.15); color: #22d3ee; }
+  .nav { position: sticky; top: 0; background: #0a0a14; padding: 8px 0; z-index: 10; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 16px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .nav a { color: #ff6b35; text-decoration: none; font-size: 11px; padding: 4px 8px; border: 1px solid rgba(255,107,53,0.3); border-radius: 4px; }
+  .nav a:hover { background: rgba(255,107,53,0.1); }
+</style>
+</head>
+<body>
+
+<h1>Rich Media Chat — Comprehensive Design</h1>
+<p class="subtitle">Full architecture, breaking changes, hardware limits, mitigations, implementation order</p>
+
+<nav class="nav">
+  <a href="#current">Current State</a>
+  <a href="#protocol">Protocol</a>
+  <a href="#tab5">Tab5 Changes</a>
+  <a href="#dragon">Dragon Changes</a>
+  <a href="#breaking">Breaking Changes</a>
+  <a href="#hardware">Hardware Limits</a>
+  <a href="#risks">Risks</a>
+  <a href="#order">Build Order</a>
+</nav>
+
+<!-- CURRENT STATE -->
+<h2 id="current">1. Current State (What We're Working With)</h2>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Tab5 Chat (ui_chat.c, 2169 lines)</h3>
+    <table>
+      <tr><td>Bubbles</td><td>3 LVGL objects each (container + label + timestamp)</td></tr>
+      <tr><td>Max messages</td><td>30 (deletes oldest, recalculates Y)</td></tr>
+      <tr><td>Max width</td><td>460px bubble, 432px text</td></tr>
+      <tr><td>Layout</td><td>Manual Y positioning, no flex, no recycling</td></tr>
+      <tr><td>Thread safety</td><td>lv_async_call via ui_chat_push_message()</td></tr>
+      <tr><td>Image support</td><td><span class="tag tag-break">NONE</span> No decoders enabled</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Dragon Server (server.py, 1502 lines)</h3>
+    <table>
+      <tr><td>LLM streaming</td><td><code>{"type":"llm","text":"token"}</code> per token</td></tr>
+      <tr><td>Media handling</td><td><span class="tag tag-break">NONE</span> Text only</td></tr>
+      <tr><td>Pillow</td><td>In requirements.txt but unused</td></tr>
+      <tr><td>Playwright</td><td><span class="tag tag-break">NOT INSTALLED</span></td></tr>
+      <tr><td>Static files</td><td>None served (dashboard proxied to 3500)</td></tr>
+      <tr><td>REST API</td><td>50+ endpoints, modular route pattern</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Tab5 Image Capabilities</h3>
+    <table>
+      <tr><td>LVGL JPEG</td><td><span class="tag tag-break">DISABLED</span> CONFIG_LV_USE_TJPGD=n</td></tr>
+      <tr><td>LVGL PNG</td><td><span class="tag tag-break">DISABLED</span> CONFIG_LV_USE_LODEPNG=n</td></tr>
+      <tr><td>HW JPEG decoder</td><td>ESP32-P4 has one, <span class="tag tag-break">NOT INTEGRATED</span></td></tr>
+      <tr><td>Camera output</td><td>RGB565 (saves as BMP, not JPEG)</td></tr>
+      <tr><td>HTTP client</td><td><span class="tag tag-safe">WORKING</span> esp_http_client (OTA)</td></tr>
+      <tr><td>PSRAM free</td><td>~1-3MB after boot (of 32MB? needs verification)</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>WS Protocol (Dragon → Tab5)</h3>
+    <table>
+      <tr><td>stt</td><td>Transcription result</td></tr>
+      <tr><td>llm</td><td>Streaming text token</td></tr>
+      <tr><td>llm_done</td><td>LLM complete</td></tr>
+      <tr><td>tool_call</td><td>Tool started</td></tr>
+      <tr><td>tool_result</td><td>Tool finished</td></tr>
+      <tr><td>tts_start/end</td><td>Audio boundaries</td></tr>
+      <tr><td>Binary</td><td>PCM audio chunks</td></tr>
+      <tr><td><em>media</em></td><td><span class="tag tag-new">NEW — DOES NOT EXIST</span></td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- PROTOCOL -->
+<h2 id="protocol">2. Protocol Changes</h2>
+
+<h3>New Message Types (Dragon → Tab5)</h3>
+
+<pre>
+// Inline image (rendered by Dragon, served via HTTP)
+{
+  "type": "media",
+  "media_type": "image",           // image | audio_clip
+  "url": "/api/media/abc123.jpg",  // relative to Dragon host
+  "width": 660,                    // pre-calculated for Tab5 display
+  "height": 400,
+  "alt": "Weather forecast",       // accessibility / fallback text
+  "thumbnail": true                // optional: low-res placeholder first
+}
+
+// Rich card (title + image + description)
+{
+  "type": "card",
+  "title": "Dublin Weather",
+  "subtitle": "14°C · Light Rain",
+  "image_url": "/api/media/icon123.jpg",  // optional thumbnail
+  "description": "Rain expected until 4pm", // optional body
+  "source": "met.ie"                       // optional attribution
+}
+
+// Audio clip (non-TTS, inline playable)
+{
+  "type": "audio_clip",
+  "url": "/api/media/pronunciation.wav",
+  "duration_s": 2.3,
+  "label": "French pronunciation"
+}
+</pre>
+
+<h3>New Message Types (Tab5 → Dragon)</h3>
+
+<pre>
+// User sends photo (camera capture → upload → reference)
+{
+  "type": "user_media",
+  "media_id": "upload_abc123",     // from HTTP upload response
+  "media_type": "image",
+  "text": "What plant is this?"    // optional accompanying text
+}
+</pre>
+
+<h3>New REST Endpoints (Dragon)</h3>
+
+<table>
+  <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+  <tr><td>GET</td><td><code>/api/media/{id}.jpg</code></td><td>Serve rendered/cached media</td></tr>
+  <tr><td>POST</td><td><code>/api/media/upload</code></td><td>Tab5 uploads photo/audio, gets media_id</td></tr>
+  <tr><td>GET</td><td><code>/api/media/{id}/thumb</code></td><td>Low-res thumbnail (optional)</td></tr>
+</table>
+
+<div class="info">
+  <strong>Backward compatibility:</strong> Old firmware ignores unknown message types (voice.c's strcmp dispatch falls through). New firmware handles both text-only and rich responses. Dragon detects firmware version from <code>register</code> message and only sends media to capable devices.
+</div>
+
+<!-- TAB5 CHANGES -->
+<h2 id="tab5">3. Tab5 Firmware Changes</h2>
+
+<h3>3.1 Enable JPEG Decoder</h3>
+<div class="card">
+  <p><strong>Option A (recommended): LVGL software TJPGD</strong></p>
+  <p>Add to <code>sdkconfig.defaults</code>: <code>CONFIG_LV_USE_TJPGD=y</code></p>
+  <p>Tiny JPEG Decoder — ~8KB code, decodes JPEG → RGB565 in PSRAM. Slow (~200ms for 660x400) but zero dependencies. Good enough for inline chat images.</p>
+
+  <p style="margin-top:8px;"><strong>Option B (future): Hardware JPEG decoder</strong></p>
+  <p>ESP32-P4 has a dedicated JPEG decoder IP. Requires <code>esp_jpeg</code> component (add to <code>idf_component.yml</code>). ~10x faster. But needs custom LVGL decoder registration. Save for v2.</p>
+
+  <div class="ok">
+    <strong>Decision:</strong> Start with TJPGD (software). It's one line in sdkconfig. Hardware decoder is a performance optimization for later.
+  </div>
+</div>
+
+<h3>3.2 New File: media_cache.c (~300 lines)</h3>
+<div class="card">
+  <p>HTTP image downloader + PSRAM LRU cache. Single file, clean interface.</p>
+
+<pre>
+// Public API
+esp_err_t media_cache_init(void);
+esp_err_t media_cache_fetch(const char *url, lv_image_dsc_t *out_dsc);  // blocking, run on Core 1
+void      media_cache_evict_oldest(void);
+void      media_cache_clear(void);
+size_t    media_cache_get_usage(void);  // bytes in PSRAM
+</pre>
+
+  <p><strong>Cache strategy:</strong></p>
+  <table>
+    <tr><td>Max cached images</td><td>5 (configurable)</td></tr>
+    <tr><td>Max image size</td><td>660×440 RGB565 = ~581KB each</td></tr>
+    <tr><td>Total cache budget</td><td>~3MB PSRAM (5 × 581KB + overhead)</td></tr>
+    <tr><td>Eviction</td><td>LRU — oldest accessed image freed first</td></tr>
+    <tr><td>Offscreen images</td><td>Show gray placeholder, re-fetch on scroll</td></tr>
+    <tr><td>Download</td><td>esp_http_client GET, stream to PSRAM buffer</td></tr>
+    <tr><td>Decode</td><td>TJPGD JPEG → RGB565 in-place in PSRAM</td></tr>
+    <tr><td>Thread safety</td><td>Download on httpd task (Core 1), lv_async_call to display</td></tr>
+  </table>
+</div>
+
+<h3>3.3 voice.c Changes (~40 lines)</h3>
+<div class="card">
+  <p>Add three new cases to <code>handle_text_message()</code> (line 535):</p>
+
+<pre>
+// In handle_text_message(), after existing strcmp chain:
+
+} else if (strcmp(type, "media") == 0) {
+    const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+    const char *media_type = cJSON_GetStringValue(cJSON_GetObjectItem(root, "media_type"));
+    int width  = cJSON_GetNumberValue(cJSON_GetObjectItem(root, "width"));
+    int height = cJSON_GetNumberValue(cJSON_GetObjectItem(root, "height"));
+    const char *alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
+    ui_chat_push_media(url, media_type, width, height, alt);
+
+} else if (strcmp(type, "card") == 0) {
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+    const char *subtitle = cJSON_GetStringValue(cJSON_GetObjectItem(root, "subtitle"));
+    const char *img_url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "image_url"));
+    ui_chat_push_card(title, subtitle, img_url);
+
+} else if (strcmp(type, "audio_clip") == 0) {
+    const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+    float dur = cJSON_GetNumberValue(cJSON_GetObjectItem(root, "duration_s"));
+    const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(root, "label"));
+    ui_chat_push_audio_clip(url, dur, label);
+}
+</pre>
+</div>
+
+<h3>3.4 ui_chat.c Changes (~200 lines)</h3>
+<div class="card">
+  <p>Three new rendering functions alongside existing <code>ui_chat_add_message()</code>:</p>
+
+  <p><strong>ui_chat_push_media()</strong> — lv_async_call wrapper → <code>add_image_bubble()</code></p>
+  <ul style="font-size:12px; padding-left:20px; margin:6px 0;">
+    <li>Creates container at s_next_y (same pattern as text bubbles)</li>
+    <li>Shows "Loading..." placeholder (1 label object)</li>
+    <li>Kicks off media_cache_fetch() on a background task</li>
+    <li>On completion: lv_async_call → replace placeholder with lv_image (2 objects: container + image)</li>
+    <li>Tap handler: fullscreen image zoom (reuse existing overlay pattern)</li>
+  </ul>
+
+  <p><strong>ui_chat_push_card()</strong> — lv_async_call wrapper → <code>add_card_bubble()</code></p>
+  <ul style="font-size:12px; padding-left:20px; margin:6px 0;">
+    <li>4 objects: container + title label + subtitle label + optional thumbnail</li>
+    <li>Dark background card with rounded corners (matches existing chat style)</li>
+    <li>Max width: 460px (same as text bubbles)</li>
+  </ul>
+
+  <p><strong>ui_chat_push_audio_clip()</strong> — lv_async_call wrapper → <code>add_audio_bubble()</code></p>
+  <ul style="font-size:12px; padding-left:20px; margin:6px 0;">
+    <li>3 objects: container + play button + duration label</li>
+    <li>Tap play → download audio → play via existing I2S pipeline</li>
+    <li>One clip at a time (stop current before starting new)</li>
+  </ul>
+
+  <div class="warn">
+    <strong>Object budget impact:</strong> With 30 messages, current max is ~90 objects. Each image adds 2, each card adds 4, each audio adds 3. Worst case (all 30 messages are images): 60 objects for images alone. <strong>Mitigation:</strong> Reduce max messages from 30 to 20 when media is present, or implement lazy loading (only render visible messages).
+  </div>
+</div>
+
+<h3>3.5 Camera-to-Chat (ui_camera.c, ~50 lines)</h3>
+<div class="card">
+  <p>Add "Send to Chat" button on camera screen. Flow:</p>
+  <ol style="font-size:12px; padding-left:20px; margin:6px 0;">
+    <li>User captures photo (existing RGB565 frame)</li>
+    <li>Encode as JPEG via TJPGD encoder (or send as BMP to Dragon, let Dragon convert)</li>
+    <li>HTTP POST to Dragon <code>/api/media/upload</code> → gets <code>media_id</code></li>
+    <li>Send WS message: <code>{"type":"user_media","media_id":"...","text":"..."}</code></li>
+    <li>Navigate to Chat, show user's photo as a bubble</li>
+    <li>Dragon forwards image to multimodal LLM (Claude 3.5 Sonnet, GPT-4o)</li>
+  </ol>
+
+  <div class="warn">
+    <strong>JPEG encoding:</strong> TJPGD is decode-only. For encoding, we can either: (a) send raw BMP to Dragon and let Dragon convert, (b) add esp_jpeg encoder component. Option (a) is simpler — BMP is larger (~1.8MB for 720p) but Dragon is on the same LAN, transfer is fast.
+  </div>
+</div>
+
+<!-- DRAGON CHANGES -->
+<h2 id="dragon">4. Dragon Server Changes</h2>
+
+<h3>4.1 New: media_pipeline.py (~250 lines)</h3>
+<div class="card">
+  <p>LLM response interceptor that detects and renders rich content.</p>
+
+<pre>
+class MediaPipeline:
+    async def process_response(self, text: str, session_id: str) -> list[dict]:
+        """Parse LLM response text, detect renderable content, return media events.
+
+        Returns list of events to interleave with text:
+        [
+            {"type": "text", "content": "Here's the weather:"},
+            {"type": "media", "media_type": "image", "url": "/api/media/abc.jpg", ...},
+            {"type": "text", "content": "Expect rain in the afternoon."},
+        ]
+        """
+
+    async def detect_and_render(self, text: str) -> list[MediaItem]:
+        # 1. URL detection (image URLs → download + resize)
+        # 2. Code block detection (```lang...``` → syntax highlight → screenshot)
+        # 3. Table detection (| col | col | → styled HTML → screenshot)
+        # 4. Markdown detection (headers, lists, bold → rendered image)
+        # 5. Link preview (URLs → Open Graph fetch → card)
+</pre>
+
+  <p><strong>Rendering backends (pluggable):</strong></p>
+  <table>
+    <tr><th>Renderer</th><th>Input</th><th>Output</th><th>Dependency</th></tr>
+    <tr><td>Image proxy</td><td>External URL</td><td>Resized JPEG</td><td>Pillow (already in requirements)</td></tr>
+    <tr><td>Code highlight</td><td>Code block text</td><td>Syntax-highlighted image</td><td>Pillow + pygments</td></tr>
+    <tr><td>Table render</td><td>Markdown table</td><td>Styled table image</td><td>Pillow</td></tr>
+    <tr><td>Chart render</td><td>Data + chart type</td><td>Chart image</td><td>matplotlib</td></tr>
+    <tr><td>Web screenshot</td><td>URL</td><td>Page screenshot</td><td>Playwright (install later)</td></tr>
+    <tr><td>QR code</td><td>Text/URL</td><td>QR image</td><td>qrcode + Pillow</td></tr>
+    <tr><td>Markdown render</td><td>MD text</td><td>Formatted image</td><td>Pillow + custom renderer</td></tr>
+  </table>
+
+  <div class="info">
+    <strong>Phase 1 (ship first):</strong> Image proxy + code highlight + table render (all Pillow-based, no Playwright needed).<br>
+    <strong>Phase 2:</strong> Add Playwright for web screenshots, link previews, HTML rendering.
+  </div>
+</div>
+
+<h3>4.2 New: media_store.py (~100 lines)</h3>
+<div class="card">
+<pre>
+class MediaStore:
+    MEDIA_DIR = "/home/radxa/media"  # or config-driven
+    MAX_AGE_HOURS = 24
+
+    async def store(self, data: bytes, ext: str = "jpg") -> str:
+        """Save media, return ID."""
+
+    async def get_path(self, media_id: str) -> str:
+        """Get filesystem path for media ID."""
+
+    async def cleanup(self):
+        """Delete media older than MAX_AGE_HOURS."""
+</pre>
+  <p>Auto-cleanup runs hourly. Session-scoped IDs prevent cross-device leakage.</p>
+</div>
+
+<h3>4.3 New: api/media_routes.py (~80 lines)</h3>
+<div class="card">
+<pre>
+class MediaRoutes:
+    def register(self, app):
+        app.router.add_get("/api/media/{media_id}", self.serve_media)
+        app.router.add_post("/api/media/upload", self.upload_media)
+
+    async def serve_media(self, request):
+        """Serve rendered media as JPEG/PNG. Cacheable."""
+
+    async def upload_media(self, request):
+        """Tab5 uploads photo/audio. Returns media_id."""
+</pre>
+</div>
+
+<h3>4.4 server.py Changes (~60 lines)</h3>
+<div class="card">
+  <p>Intercept LLM response stream, detect media opportunities, interleave media events.</p>
+
+  <p><strong>Key change:</strong> Instead of sending each token immediately, buffer complete sentences, check for media patterns, then send text + media events.</p>
+
+<pre>
+# Current (server.py line ~1391):
+await ws.send_json({"type": "llm", "text": token})
+
+# New: Buffer tokens, detect media at sentence boundaries
+sentence_buf += token
+if sentence_complete(sentence_buf):
+    media_items = await media_pipeline.detect_and_render(sentence_buf)
+    for item in media_items:
+        if item["type"] == "text":
+            await ws.send_json({"type": "llm", "text": item["content"]})
+        else:
+            await ws.send_json(item)  # media, card, audio_clip
+    sentence_buf = ""
+</pre>
+
+  <div class="warn">
+    <strong>Latency concern:</strong> Buffering by sentence adds latency before first token appears. <strong>Mitigation:</strong> Stream tokens immediately as before. Run media detection AFTER llm_done on the full response. Send media events after the text is complete. User sees text first, then images load in — like a web page. No perceived latency increase.
+  </div>
+</div>
+
+<h3>4.5 Multimodal Input (conversation.py, ~40 lines)</h3>
+<div class="card">
+  <p>When Tab5 sends <code>user_media</code>, Dragon loads the image and passes it to a multimodal LLM.</p>
+
+<pre>
+# In _handle_text or new _handle_user_media:
+if cmd_type == "user_media":
+    media_id = cmd["media_id"]
+    image_path = await media_store.get_path(media_id)
+    image_b64 = base64.b64encode(open(image_path, "rb").read()).decode()
+
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+            {"type": "text", "text": cmd.get("text", "What's in this image?")}
+        ]
+    }]
+    # Route to multimodal-capable LLM (Claude 3.5 Sonnet, GPT-4o)
+</pre>
+
+  <div class="warn">
+    <strong>Model compatibility:</strong> Local models (qwen3:1.7b via Ollama) do NOT support multimodal input. Only Cloud mode (OpenRouter with Claude/GPT-4o) and TinkerClaw mode support images. <strong>Mitigation:</strong> Dragon checks current LLM backend. If local → respond "Image analysis requires Cloud or TinkerClaw mode. Switch modes to analyze images."
+  </div>
+</div>
+
+<!-- BREAKING CHANGES -->
+<h2 id="breaking">5. Breaking Changes & Migration</h2>
+
+<table>
+  <tr><th>Change</th><th>Impact</th><th>Mitigation</th></tr>
+  <tr>
+    <td><span class="tag tag-safe">SAFE</span> New WS message types</td>
+    <td>Old firmware ignores unknown types</td>
+    <td>voice.c strcmp falls through silently. Zero impact on old firmware.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-safe">SAFE</span> New REST endpoints</td>
+    <td>Old firmware never calls them</td>
+    <td>Additive — no existing endpoints changed.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-safe">SAFE</span> sdkconfig TJPGD enable</td>
+    <td>Adds ~8KB to firmware, increases flash usage</td>
+    <td>Well within 3MB OTA partition. No runtime cost if no images decoded.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-break">WATCH</span> LVGL object count increase</td>
+    <td>Images add 2 objects each, could push fragmentation</td>
+    <td>Reduce max messages to 20 when media present. LRU evicts image pixel data. Hide/show pattern still applies.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-break">WATCH</span> PSRAM budget for images</td>
+    <td>5 cached images = ~3MB PSRAM</td>
+    <td>Monitor with heap_watchdog. Budget is 32MB total with ~25MB+ free. Safe margin.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-break">WATCH</span> HTTP downloads on WiFi</td>
+    <td>Image downloads share LWIP stack with voice WS</td>
+    <td>Download on Core 1 (same as httpd), use small chunk size (4KB), yield between chunks. Voice WS has priority.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-safe">SAFE</span> Dragon media pipeline</td>
+    <td>New Python module, no existing code changed</td>
+    <td>Pillow already a dependency. New files only. Fails gracefully → text-only fallback.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-break">WATCH</span> Sentence buffering in server.py</td>
+    <td>Could delay first token to Tab5</td>
+    <td>Don't buffer. Stream text tokens immediately. Detect media AFTER llm_done. Images appear after text — natural loading behavior.</td>
+  </tr>
+  <tr>
+    <td><span class="tag tag-safe">SAFE</span> Camera-to-chat upload</td>
+    <td>New UI button, new WS message type</td>
+    <td>Additive. Camera screen unchanged except new button. Upload fails gracefully → toast error.</td>
+  </tr>
+</table>
+
+<!-- HARDWARE LIMITS -->
+<h2 id="hardware">6. Hardware Limitations & Mitigations</h2>
+
+<table>
+  <tr><th>Constraint</th><th>Value</th><th>Impact</th><th>Mitigation</th></tr>
+  <tr>
+    <td>Display width</td>
+    <td>720px</td>
+    <td>Images max 660px wide (after bubble padding)</td>
+    <td>Dragon resizes all images to max 660px before serving. Tab5 never decodes oversized images.</td>
+  </tr>
+  <tr>
+    <td>Internal SRAM</td>
+    <td>~512KB, ~42KB free</td>
+    <td>LVGL objects use internal SRAM</td>
+    <td>Images stored in PSRAM, only lv_image descriptor (~20 bytes) in SRAM. Hide/show pattern for overlays.</td>
+  </tr>
+  <tr>
+    <td>PSRAM</td>
+    <td>32MB @ 200MHz</td>
+    <td>Image pixel data lives here</td>
+    <td>5-image LRU cache = ~3MB. 32MB total means huge headroom. Monitor via heap_watchdog.</td>
+  </tr>
+  <tr>
+    <td>JPEG decode speed</td>
+    <td>~200ms per 660×400 (software TJPGD)</td>
+    <td>Noticeable delay showing image</td>
+    <td>Show "Loading..." placeholder immediately, decode in background, swap on completion. User sees text first anyway.</td>
+  </tr>
+  <tr>
+    <td>WiFi bandwidth</td>
+    <td>~5-20 Mbps (ESP32-C6 SDIO)</td>
+    <td>660×400 JPEG ≈ 30-60KB = ~25ms download</td>
+    <td>Dragon compresses to quality 80. Network is not the bottleneck — decode is.</td>
+  </tr>
+  <tr>
+    <td>LVGL object limit</td>
+    <td>~55 practical per screen</td>
+    <td>Rich messages use more objects</td>
+    <td>Dynamic limit: 20 messages if media-heavy, 30 if text-only. Or virtual scrolling (Phase 2).</td>
+  </tr>
+  <tr>
+    <td>No video playback</td>
+    <td>No H.264/VP9 decoder in LVGL</td>
+    <td>Can't play video inline</td>
+    <td>Dragon extracts key frames → sends as image carousel. "Video" is 3-5 representative frames.</td>
+  </tr>
+  <tr>
+    <td>No HTML renderer</td>
+    <td>LVGL is not a browser</td>
+    <td>Can't render web content</td>
+    <td>Dragon renders HTML → screenshot → sends as image. Tab5 just displays the image.</td>
+  </tr>
+  <tr>
+    <td>Camera JPEG encoding</td>
+    <td>Not integrated (RGB565 output)</td>
+    <td>Photo upload would be 1.8MB BMP</td>
+    <td>Phase 1: Send BMP, Dragon converts. Phase 2: Add esp_jpeg encoder component.</td>
+  </tr>
+  <tr>
+    <td>Dragon ARM64 CPU</td>
+    <td>Radxa Q6A, 4 cores</td>
+    <td>Pillow rendering is CPU-bound</td>
+    <td>Simple renders (resize, text overlay) are <50ms. Complex (Playwright) are 1-3s. Async, non-blocking.</td>
+  </tr>
+</table>
+
+<!-- RISKS -->
+<h2 id="risks">7. Risk Assessment</h2>
+
+<div class="warn">
+  <strong>RISK 1: Heap fragmentation from image alloc/free</strong><br>
+  <p style="font-size:12px;">Image pixel buffers (581KB each) are allocated/freed from PSRAM as cache evicts. Repeated alloc/free of large blocks fragments PSRAM.</p>
+  <p style="font-size:12px;"><strong>Mitigation:</strong> Pre-allocate 5 fixed-size PSRAM slots at boot. Cache fills slots, never frees them — just overwrites with new image data. Zero fragmentation. Cost: ~3MB permanent PSRAM reservation.</p>
+</div>
+
+<div class="warn">
+  <strong>RISK 2: HTTP download stalls voice WS</strong><br>
+  <p style="font-size:12px;">If image download saturates WiFi, voice WebSocket packets could be delayed or dropped.</p>
+  <p style="font-size:12px;"><strong>Mitigation:</strong> Download in 4KB chunks with 10ms yield between chunks. Download task at priority 2 (below voice at 4-6). If voice is active (LISTENING/PROCESSING/SPEAKING), pause downloads entirely.</p>
+</div>
+
+<div class="warn">
+  <strong>RISK 3: LLM response with 10 image URLs</strong><br>
+  <p style="font-size:12px;">AI returns a response with many embedded URLs. Dragon tries to render all of them. Tab5 gets flooded with media events.</p>
+  <p style="font-size:12px;"><strong>Mitigation:</strong> Cap at 3 media items per response. Dragon renders first 3 URLs, remainder sent as text links only. Tab5 shows max 3 images per message.</p>
+</div>
+
+<div class="warn">
+  <strong>RISK 4: Dragon media store fills disk</strong><br>
+  <p style="font-size:12px;">Rendered images accumulate in /home/radxa/media/.</p>
+  <p style="font-size:12px;"><strong>Mitigation:</strong> Auto-cleanup: delete files older than 24 hours. Max directory size: 500MB. Cleanup runs hourly as asyncio task.</p>
+</div>
+
+<div class="ok">
+  <strong>LOW RISK: Protocol backward compatibility</strong><br>
+  <p style="font-size:12px;">All new message types are additive. Old firmware ignores them. New firmware degrades gracefully to text-only if Dragon doesn't send media. Version negotiation via <code>register</code> message's firmware_ver field.</p>
+</div>
+
+<!-- BUILD ORDER -->
+<h2 id="order">8. Implementation Order (4 Phases)</h2>
+
+<div style="display:grid; gap:12px;">
+
+  <div class="card" style="border-left:3px solid #ff6b35;">
+    <h3 style="color:#ff6b35; margin-top:0;">Phase 1: Foundation (Dragon renders, Tab5 displays)</h3>
+    <p><strong>Deliverable:</strong> Images from LLM responses appear inline in chat</p>
+    <ol style="font-size:12px; padding-left:20px; margin:8px 0;">
+      <li>Enable TJPGD in sdkconfig.defaults (1 line)</li>
+      <li>Create media_cache.c on Tab5 (HTTP download + JPEG decode + PSRAM cache)</li>
+      <li>Add media/card/audio_clip message types to voice.c dispatcher</li>
+      <li>Add image bubble renderer to ui_chat.c</li>
+      <li>Create media_store.py + media_routes.py on Dragon (serve + upload)</li>
+      <li>Create media_pipeline.py on Dragon (image URL detection + proxy + resize)</li>
+      <li>Wire media detection after llm_done in server.py</li>
+      <li>Test: ask "Show me a picture of a cat" → image appears inline</li>
+    </ol>
+    <p style="font-size:11px; opacity:0.6;">~800 new lines across both repos. ~3-4 days.</p>
+  </div>
+
+  <div class="card" style="border-left:3px solid #06b6d4;">
+    <h3 style="color:#06b6d4; margin-top:0;">Phase 2: Code & Table Rendering</h3>
+    <p><strong>Deliverable:</strong> Code blocks and tables render as styled images</p>
+    <ol style="font-size:12px; padding-left:20px; margin:8px 0;">
+      <li>Add Pygments to Dragon requirements (syntax highlighting)</li>
+      <li>Code block renderer in media_pipeline.py (detect ```...``` → Pillow render with syntax colors)</li>
+      <li>Table renderer (detect markdown tables → Pillow render as styled grid)</li>
+      <li>Markdown basic formatting (bold, headers, lists → styled image)</li>
+      <li>Test: ask for code or comparisons → rich renders inline</li>
+    </ol>
+    <p style="font-size:11px; opacity:0.6;">~300 new lines on Dragon. ~2 days.</p>
+  </div>
+
+  <div class="card" style="border-left:3px solid #a855f7;">
+    <h3 style="color:#a855f7; margin-top:0;">Phase 3: Camera-to-Chat (User sends media)</h3>
+    <p><strong>Deliverable:</strong> User photographs something, AI analyzes it</p>
+    <ol style="font-size:12px; padding-left:20px; margin:8px 0;">
+      <li>Add "Send to Chat" button on camera screen</li>
+      <li>HTTP upload flow (BMP → Dragon → convert to JPEG)</li>
+      <li>user_media WS message type in voice.c</li>
+      <li>Dragon: load image, encode base64, forward to multimodal LLM</li>
+      <li>Mode check: only Cloud + TinkerClaw support vision. Show error in Local mode.</li>
+      <li>Test: photograph something → ask "What is this?" → AI describes it</li>
+    </ol>
+    <p style="font-size:11px; opacity:0.6;">~200 new lines Tab5, ~100 Dragon. ~2 days.</p>
+  </div>
+
+  <div class="card" style="border-left:3px solid #22c55e;">
+    <h3 style="color:#22c55e; margin-top:0;">Phase 4: Rich Cards & Web Previews</h3>
+    <p><strong>Deliverable:</strong> Link previews, audio clips, search result cards</p>
+    <ol style="font-size:12px; padding-left:20px; margin:8px 0;">
+      <li>Card renderer in ui_chat.c (title + subtitle + thumbnail)</li>
+      <li>Audio clip player in ui_chat.c (download + I2S playback)</li>
+      <li>Open Graph link preview in media_pipeline.py (fetch metadata → card)</li>
+      <li>Install Playwright on Dragon for web screenshots (optional, heavyweight)</li>
+      <li>Search result cards from TinkerClaw web_search (extract + render)</li>
+      <li>Test: paste URL → link preview card. Ask for music → audio preview plays.</li>
+    </ol>
+    <p style="font-size:11px; opacity:0.6;">~400 new lines across repos. ~3 days.</p>
+  </div>
+
+</div>
+
+<div class="info" style="margin-top:20px;">
+  <strong>Total estimate:</strong> ~1800 new lines across both repos. 4 phases, each independently shippable. Phase 1 alone transforms the chat from SMS to iMessage-level.
+</div>
+
+</body>
+</html>

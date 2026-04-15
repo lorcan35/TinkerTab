@@ -1,0 +1,661 @@
+<h2>Rich Media Chat: 120 User Stories</h2>
+<p class="subtitle">30 stories per category — real scenarios for an AI voice/chat device</p>
+
+<div style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+  <button onclick="showCategory('a')" id="btn-a" style="padding:8px 16px; border:1px solid #ff6b35; background:rgba(255,107,53,0.15); color:#ff6b35; border-radius:6px; cursor:pointer; font-size:14px; font-weight:600;">A: AI Sends Media (30)</button>
+  <button onclick="showCategory('b')" id="btn-b" style="padding:8px 16px; border:1px solid #06b6d4; background:rgba(6,182,212,0.08); color:#06b6d4; border-radius:6px; cursor:pointer; font-size:14px;">B: User Sends Media (30)</button>
+  <button onclick="showCategory('c')" id="btn-c" style="padding:8px 16px; border:1px solid #a855f7; background:rgba(168,85,247,0.08); color:#a855f7; border-radius:6px; cursor:pointer; font-size:14px;">C: Dragon Generates Media (30)</button>
+  <button onclick="showCategory('d')" id="btn-d" style="padding:8px 16px; border:1px solid #22c55e; background:rgba(34,197,94,0.08); color:#22c55e; border-radius:6px; cursor:pointer; font-size:14px;">D: Cross-Cutting (30)</button>
+</div>
+
+<!-- CATEGORY A: AI Sends Media -->
+<div id="cat-a" class="section">
+<h3 style="color:#ff6b35;">A: AI Generates / Finds Media</h3>
+<p class="subtitle">The AI's response contains images, audio, video, or web content that gets rendered inline</p>
+
+<div style="display:grid; gap:8px;">
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A1. Recipe with photo</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How do I make carbonara?" — AI responds with steps AND a photo of the finished dish from web search. Image renders inline in the chat bubble.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A2. Weather with map</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What's the weather in Dublin?" — AI responds with forecast text + a weather radar image or icon showing conditions.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A3. Product comparison</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Compare AirPods Pro vs Sony XM5" — AI responds with text comparison + product images side by side.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A4. Place lookup</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Find Italian restaurants near me" — AI responds with names/ratings + a map thumbnail or photos of the restaurants.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A5. News article with image</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What happened in tech today?" — AI summarizes headlines with thumbnail images from articles. Tap to open full article preview.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A6. How-to with diagram</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How do I tie a bowline knot?" — AI responds with step-by-step text + an instructional diagram/image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A7. Music recommendation with preview</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Recommend something like Radiohead" — AI suggests albums with cover art thumbnails + 30s audio preview clips.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A8. Code with syntax highlighting</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Write a Python function to sort a list" — AI responds with code rendered in a styled code block with monospace font and keyword colors.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A9. Movie recommendation with trailer</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What should I watch tonight?" — AI suggests a movie with poster image + link to trailer that plays inline.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A10. Math with rendered equation</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Explain the quadratic formula" — AI responds with explanation + beautifully rendered LaTeX equation as an image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A11. Travel destination</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Tell me about Kyoto" — AI responds with history/tips + beautiful photos of temples, streets, food.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A12. Pronunciation guide</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How do you pronounce 'croissant' in French?" — AI responds with text + a short audio clip of the pronunciation.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A13. Sports score with highlight</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How did Arsenal do today?" — AI responds with score + a key moment image or short highlight clip.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A14. Plant identification</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What plant has heart-shaped leaves and purple flowers?" — AI identifies it + shows reference images to confirm.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A15. Step-by-step with video</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How do I change a bike tire?" — AI gives steps + an embedded short tutorial video.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A16. Link preview card</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What's this article about?" (user pastes URL) — AI fetches and shows an Open Graph preview card: title, description, thumbnail.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A17. Fashion outfit</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What should I wear to a summer wedding?" — AI suggests outfits with example images from web search.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A18. Historical event</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Tell me about the moon landing" — AI responds with narrative + iconic photos inline.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A19. Workout demo</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me how to do a proper deadlift" — AI explains form + shows an animated GIF or short demo video.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A20. AI-generated image</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Draw me a cat wearing a space helmet" — TinkerClaw uses image generation tool, returns generated image inline.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A21. Apartment listing</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Find 2-bed apartments in Dublin under 2000" — AI shows results with photos, price, and location as rich cards.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A22. Animal identification</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What kind of bird is black with an orange beak?" — AI identifies it as a blackbird + shows reference photos.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A23. Stock/crypto chart</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How's AAPL doing?" — AI responds with price + a mini chart image showing recent performance.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A24. Language learning</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Teach me 5 Japanese greetings" — AI shows text + audio clips of each greeting spoken by a native speaker.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A25. Formatted list/table</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Compare iPhone 16 specs vs Pixel 9" — AI responds with a clean rendered table, not raw text with pipes and dashes.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A26. Podcast recommendation</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Find a good podcast about AI" — AI suggests podcasts with cover art + a 60s audio teaser clip.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A27. Car troubleshooting</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"My car's dashboard light looks like a wrench" — AI identifies the warning + shows labeled diagram of where to check.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A28. Meme/humor</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Send me something funny" — AI finds a relevant meme image and sends it inline. The device has personality.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A29. Home automation visual</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me my security camera" — TinkerClaw pulls a live snapshot from a connected camera and shows it in chat.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #ff6b35;">
+  <strong style="font-size:13px;">A30. Gift ideas</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Gift ideas for a 10-year-old who likes science" — AI suggests products with images, prices, and links as browsable cards.</p>
+</div>
+
+</div>
+</div>
+
+<!-- CATEGORY B: User Sends Media -->
+<div id="cat-b" class="section" style="display:none;">
+<h3 style="color:#06b6d4;">B: User Sends Media to AI</h3>
+<p class="subtitle">User captures or selects media on the Tab5, sends it into the conversation as context for the AI</p>
+
+<div style="display:grid; gap:8px;">
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B1. Photo → identify</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User takes a photo of a plant with Tab5 camera → sends to chat → AI identifies species, care instructions.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B2. Photo → translate</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a menu in Japanese → sends to chat → AI reads the text, translates to English.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B3. Photo → calorie count</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs their lunch → "How many calories is this?" → AI analyzes the plate and estimates macros.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B4. Photo → math homework</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Kid photographs a math problem → sends to chat → AI solves it step by step.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B5. Photo → product lookup</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a product barcode or label → "Where can I buy this cheaper?" → AI identifies product and finds prices.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B6. Photo → style advice</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs their outfit → "Does this look good for a date?" → AI gives honest style feedback.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B7. Photo → home repair</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a leaking pipe → "How do I fix this?" → AI identifies the issue and walks through repair steps.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B8. Audio → transcribe meeting</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records a meeting via dictation → sends recording → "Summarize the key decisions" → AI transcribes and summarizes.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B9. Audio → identify song</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User holds Tab5 up to a speaker playing music → records 10s → "What song is this?" → AI identifies it (Shazam-style).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B10. Audio → accent coaching</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records themselves saying a phrase in Spanish → AI evaluates pronunciation and gives specific feedback.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B11. Photo → document scan</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a receipt → sends to chat → AI extracts items, amounts, totals. "Add this to my expenses."</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B12. Photo → interior design</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs their living room → "How should I rearrange this?" → AI suggests layout changes with reasoning.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B13. Photo → skin condition</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a rash → "What could this be?" → AI gives possible conditions + recommends seeing a doctor (with disclaimer).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B14. Photo → pet breed</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a dog at the park → "What breed is this?" → AI identifies breed + gives temperament info.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B15. Photo → art identification</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a painting at a gallery → "Who painted this?" → AI identifies artist, period, style, meaning.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B16. Screenshot → explain error</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User screenshots an error message from another device → sends to Tab5 → "What does this mean?" → AI explains and suggests fix.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B17. Photo → cooking guidance</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs ingredients in their fridge → "What can I make with this?" → AI suggests recipes using visible ingredients.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B18. Audio → baby cry analysis</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Parent records baby crying → "What does this cry mean?" → AI analyzes pattern (hungry vs tired vs pain).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B19. Photo → furniture assembly</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs IKEA manual step → "I'm stuck here" → AI explains what to do from the diagram.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B20. Photo → parking sign</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a confusing parking sign → "Can I park here at 3pm on Saturday?" → AI parses the rules and gives a clear yes/no.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B21. Audio → mechanical diagnosis</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records a weird noise from their car → "What's making this sound?" → AI identifies possible causes (bearing, belt, etc.).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B22. Photo → whiteboard capture</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a brainstorming whiteboard → "Organize these ideas into categories" → AI reads and structures the content.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B23. Photo → garden planning</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs their yard → "What vegetables could I grow here?" → AI assesses sunlight/space and recommends crops.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B24. Photo → accessibility check</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a building entrance → "Is this wheelchair accessible?" → AI assesses from the image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B25. Photo → wine label</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a wine bottle → "Is this any good?" → AI identifies the wine, gives rating, food pairing suggestions.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B26. Video → technique review</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records themselves doing a golf swing → "What am I doing wrong?" → AI analyzes form and gives correction tips.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B27. Photo → color matching</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a wall color → "What paint shade is this?" → AI identifies closest color name/code, suggests complementary colors.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B28. Photo → handwriting → text</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs handwritten notes → "Type this up for me" → AI OCRs the handwriting into clean text.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B29. Audio → bird identification</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records a bird call outdoors → "What bird is this?" → AI identifies the species from the audio pattern.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #06b6d4;">
+  <strong style="font-size:13px;">B30. Photo → measurement</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a room with a reference object → "How wide is this doorway?" → AI estimates dimensions from the image.</p>
+</div>
+
+</div>
+</div>
+
+<!-- CATEGORY C: Dragon Generates Media -->
+<div id="cat-c" class="section" style="display:none;">
+<h3 style="color:#a855f7;">C: Dragon Server Generates / Renders Media</h3>
+<p class="subtitle">Dragon creates visual content server-side (charts, renders, previews) and sends as images/media to Tab5</p>
+
+<div style="display:grid; gap:8px;">
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C1. Dashboard chart</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me my screen time this week" — Dragon renders a bar chart from local data and sends as an image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C2. Calendar view</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What does my week look like?" — Dragon renders a visual calendar with events and sends as an image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C3. Expense pie chart</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How did I spend money this month?" — Dragon aggregates expense data, renders a pie chart, sends it.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C4. Smart home status panel</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me my home" — Dragon renders a floor plan with device statuses (lights on/off, temps, locks) as an image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C5. Network diagram</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What devices are on my network?" — Dragon scans local network, renders a topology diagram with device names/IPs.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C6. Timer visualization</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Set a 25-minute pomodoro timer" — Dragon sends a visual countdown timer that updates in real-time on Tab5.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C7. Code execution output</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Run this Python script and show me the output" — Dragon executes code, captures terminal output, sends as formatted image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C8. Webpage screenshot</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me what hacker news looks like right now" — Dragon takes a browser screenshot via Playwright and sends the image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C9. Habit tracker</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show my workout streak" — Dragon renders a GitHub-style contribution heatmap of workout days.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C10. Mind map</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Help me brainstorm ideas for my startup" — Dragon creates a mind map visualization from the conversation and sends it.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C11. QR code</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Generate a QR code for my WiFi" — Dragon renders a QR code image that guests can scan to connect.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C12. System health dashboard</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How's the Dragon doing?" — Dragon renders CPU/RAM/temp/uptime as a visual dashboard card.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C13. Conversation summary</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Summarize today's conversations" — Dragon renders a visual timeline of today's chats with key topics highlighted.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C14. PDF preview</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me page 3 of that contract" — Dragon renders a PDF page as an image and sends to Tab5.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C15. Markdown render</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show my meeting notes formatted" — Dragon renders markdown (headers, lists, bold, code) as a styled image since LVGL can't do rich text natively.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C16. Comparison matrix</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Compare these 3 laptops I'm considering" — Dragon renders a clean comparison table as an image (headers, rows, checkmarks).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C17. Flashcards</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Quiz me on Spanish vocabulary" — Dragon renders flashcard images (front: English word, back: Spanish translation) one at a time.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C18. Music visualization</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Play some jazz" — Dragon plays audio AND sends album art + a waveform/spectrum visualization that animates.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C19. Mermaid diagram</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Draw the architecture of my home network" — Dragon renders a Mermaid.js diagram server-side and sends as image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C20. Sleep report</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How did I sleep?" (with sleep tracker integration) — Dragon renders a sleep stage chart: deep/light/REM/awake.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C21. Map with route</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"How do I get to the airport?" — Dragon renders a map tile with the route overlaid and sends as image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C22. Inventory list</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me what's in my pantry" (with memory) — Dragon renders a visual checklist of stored food items with expiry dates.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C23. Workout plan</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Make me a 4-week workout plan" — Dragon renders a weekly grid with exercises, sets, reps as a structured visual.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C24. Email preview</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me my unread emails" — Dragon renders email subjects/senders as a styled card list, not raw text.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C25. Weather widget</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Weather for the next 5 days" — Dragon renders a 5-day forecast widget with icons, temps, rain probability.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C26. HTML mini-app</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Make me a quick poll: pizza vs tacos" — Dragon generates a tiny interactive HTML snippet that renders on Tab5 as a tappable widget.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C27. Photo collage</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me photos from last weekend" — Dragon composites multiple photos from memory/storage into a collage image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C28. Diff view</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"What changed in the last code commit?" — Dragon renders a git diff with red/green highlighting as an image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C29. Kanban board</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show my project tasks" — Dragon renders a kanban-style board (Todo/Doing/Done columns) from stored tasks.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #a855f7;">
+  <strong style="font-size:13px;">C30. Live data widget</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Monitor my 3D print" — Dragon periodically sends camera snapshots + progress percentage from OctoPrint as updating images.</p>
+</div>
+
+</div>
+</div>
+
+<!-- CATEGORY D: Cross-Cutting -->
+<div id="cat-d" class="section" style="display:none;">
+<h3 style="color:#22c55e;">D: Cross-Cutting / Multi-Modal Flows</h3>
+<p class="subtitle">Stories that combine multiple media types or span input→processing→output in interesting ways</p>
+
+<div style="display:grid; gap:8px;">
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D1. Photo → AI image edit → result</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User sends a photo → "Remove the background" → TinkerClaw processes → returns edited image inline.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D2. Voice → search → images + audio</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User asks "What does a theremin sound like?" → AI searches → responds with description, photo of instrument, AND audio sample.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D3. Photo → chart → voice explanation</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User photographs a spreadsheet → Dragon OCRs → creates chart → explains trends via voice + shows chart image.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D4. Conversation → save as document</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Save this conversation as a PDF" → Dragon renders the full chat (text + images + code) as a styled PDF → sends preview image + saves file.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D5. Voice memo → transcription → action items</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User dictates meeting notes → Dragon transcribes → extracts action items → renders as a checklist card with assignees.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D6. Photo + voice → combined context</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User takes photo of their closet AND says "What should I wear today? It's cold outside" → AI considers both the wardrobe image AND weather.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D7. Text → audio story</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Tell my kid a bedtime story about a dragon" → AI writes story + generates it as a multi-voice audio narrative (not just TTS monotone).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D8. Shopping list → visual → share</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Make a grocery list from this recipe" → Dragon generates list → renders as shareable card with checkboxes → sends as image you can screenshot or share.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D9. Audio transcription → translation → audio</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records someone speaking French → Dragon transcribes → translates to English → reads back in English via TTS. Full audio-to-audio translation.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D10. Image carousel</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me 5 hairstyle ideas for short hair" → AI finds 5 images → Tab5 renders as swipeable carousel (not 5 separate messages).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D11. Before/after comparison</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User sends a photo of messy room → AI suggests organization → Dragon renders a side-by-side "before/after" mockup.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D12. Video summary → key frames</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User sends a long video → "What happens in this?" → Dragon extracts key frames + generates summary with timestamps.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D13. Daily briefing card</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Good morning" → Dragon renders a personalized morning card: weather, calendar, news headlines, reminders — visual + spoken summary.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D14. Shared conversation</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Share this answer with Sarah on WhatsApp" → Dragon formats the response (text + any images) and sends via TinkerClaw's WhatsApp channel.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D15. Iterative image refinement</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Generate a logo for my bakery" → AI creates image → "Make it more minimal" → new version → "Change the color to blue" → final version. Multi-turn image editing.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D16. Interactive quiz</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Quiz me on world capitals" → Dragon sends question cards with images of landmarks → user taps answer → Dragon shows result + next question.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D17. Photo journal entry</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User takes a photo + says "I had an amazing hike today" → AI stores photo + text as a journal entry in memory → can recall later: "Show me my hike photos."</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D18. Screenshare → help</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Tab5 camera pointed at laptop screen → "Help me with this Excel formula" → AI reads the screen, understands context, gives specific help.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D19. Continuous monitoring</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Watch my sourdough and tell me when it's doubled" → Tab5 camera monitors → AI periodically checks → notifies with photo comparison when ready.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D20. Rich link sharing</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User says a URL → AI fetches → renders Open Graph preview card (title, description, image, favicon) → tappable to "open" (Dragon renders full page screenshot).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D21. Annotation layer</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User sends photo of a circuit board → AI responds with the SAME photo but annotated — circles, arrows, labels pointing to components.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D22. Voice → visual todo</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Add milk, eggs, and bread to my shopping list" → Dragon updates list → renders updated visual checklist → sends card.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D23. Multi-device media</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">Photo taken on Tab5 → AI analyzes → sends enhanced version to phone via WhatsApp → user says "Send the original to my email" → done.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D24. Presentation builder</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Help me make a 5-slide pitch deck about my startup" → Dragon generates slides (HTML/images) → Tab5 shows them as swipeable cards → exportable as PDF.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D25. Audio memo with visual notes</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records a voice memo about a project idea → Dragon transcribes → generates a structured note card (title, bullets, tags) → saves with audio attached.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D26. Real-time translation overlay</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User points Tab5 camera at a sign in another language → live camera feed with translated text overlaid on the image (AR-lite).</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D27. Conversation to social post</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Turn my last answer into a Twitter post with an image" → Dragon crafts text + generates/selects a matching image → sends as preview card → user approves → posts via TinkerClaw.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D28. Music practice</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">User records themselves playing guitar → AI analyzes pitch/rhythm → shows visual feedback (notes on staff, timing graph) + "Try this part again, you're rushing bar 3."</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D29. Memory timeline</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Show me everything I've told you about my garden project" → Dragon queries memory → renders a timeline with text snippets + any attached photos from past conversations.</p>
+</div>
+
+<div style="padding:12px; background:rgba(255,255,255,0.03); border-radius:6px; border-left:3px solid #22c55e;">
+  <strong style="font-size:13px;">D30. Ambient display mode</strong>
+  <p style="font-size:12px; opacity:0.7; margin:4px 0 0 0;">"Be my desk companion" → Tab5 enters ambient mode: rotates between weather widget, calendar, photo memories, news cards, motivational quotes — all rendered rich media, auto-updating.</p>
+</div>
+
+</div>
+</div>
+
+<script>
+function showCategory(cat) {
+  ['a','b','c','d'].forEach(c => {
+    document.getElementById('cat-' + c).style.display = c === cat ? 'block' : 'none';
+    document.getElementById('btn-' + c).style.background = c === cat ?
+      (c==='a' ? 'rgba(255,107,53,0.15)' : c==='b' ? 'rgba(6,182,212,0.15)' : c==='c' ? 'rgba(168,85,247,0.15)' : 'rgba(34,197,94,0.15)') :
+      'rgba(255,255,255,0.03)';
+    document.getElementById('btn-' + c).style.fontWeight = c === cat ? '600' : '400';
+  });
+}
+</script>

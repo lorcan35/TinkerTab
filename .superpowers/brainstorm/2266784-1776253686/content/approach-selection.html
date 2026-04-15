@@ -1,0 +1,57 @@
+<h2>TinkerClaw Mode: What Should It Feel Like?</h2>
+<p class="subtitle">TinkerClaw is a full agent (51 skills, memory, web search, tools) but the Tab5 currently treats it as just another chatbot. How should the UI reflect its capabilities?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Enhanced Chat</h3>
+      <p>Same chat screen, but smarter. Agent activity indicators during tool execution ("Searching the web..."), memory-aware suggestions, tool result cards inline. The conversation IS the interface — you ask via voice/text, it reports back in the chat stream.</p>
+      <div style="margin-top:12px; padding:12px; background:rgba(255,107,53,0.1); border-radius:8px; font-size:14px;">
+        <strong>Think:</strong> iMessage, but the other person is an AI agent that can do things<br>
+        <strong>Effort:</strong> Medium — enhances existing ui_chat.c<br>
+        <strong>LVGL objects:</strong> +5-8 objects (fits within 55 limit)<br>
+        <strong>Risk:</strong> Low — no new screens, no new navigation
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Agent Dashboard</h3>
+      <p>A brand new dedicated screen with zones: conversation panel on the left, tool activity feed, memory viewer, skill quick-launch grid. The agent's internal state is always visible — you can see what it knows, what tools it has, what it's doing.</p>
+      <div style="margin-top:12px; padding:12px; background:rgba(6,182,212,0.1); border-radius:8px; font-size:14px;">
+        <strong>Think:</strong> Mission control for your AI agent<br>
+        <strong>Effort:</strong> High — new ui_agent.c (~1500 lines), new screen in tileview<br>
+        <strong>LVGL objects:</strong> +25-35 objects (pushes the 55 limit hard)<br>
+        <strong>Risk:</strong> High — 720px wide screen is too narrow for panels, heap pressure
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Mode Morphing</h3>
+      <p>No new screen — existing screens transform when TinkerClaw is active. Home shows agent status + recent activity instead of just a clock. Chat gets tool indicators + agent suggestions. Settings shows agent config + capabilities. The whole device feels different in agent mode.</p>
+      <div style="margin-top:12px; padding:12px; background:rgba(168,85,247,0.1); border-radius:8px; font-size:14px;">
+        <strong>Think:</strong> The device shapeshifts based on what mode you're in<br>
+        <strong>Effort:</strong> Medium-High — changes across 3 UI files<br>
+        <strong>LVGL objects:</strong> +8-12 objects (reuses existing, swaps content)<br>
+        <strong>Risk:</strong> Medium — conditional code in multiple files, testing across all modes
+      </div>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:24px; padding:16px; background:rgba(255,255,255,0.05); border-radius:8px; border-left:3px solid #ff6b35;">
+  <h3 style="margin-top:0;">Context: Device Constraints</h3>
+  <ul style="font-size:14px; opacity:0.8; margin:8px 0;">
+    <li><strong>720x1280 display</strong> — portrait only, no room for side panels</li>
+    <li><strong>~55 LVGL object limit</strong> — internal SRAM fragments with more</li>
+    <li><strong>Voice-first</strong> — most interactions are spoken, not tapped</li>
+    <li><strong>32MB PSRAM</strong> — plenty for data, but LVGL objects use internal SRAM</li>
+    <li><strong>Current screens:</strong> Home, Chat, Notes, Settings, Camera, Files (all working)</li>
+  </ul>
+</div>

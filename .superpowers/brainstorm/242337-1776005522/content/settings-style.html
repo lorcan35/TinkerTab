@@ -1,0 +1,105 @@
+<h2>Settings Screen Redesign — Visual Style</h2>
+<p class="subtitle">Pick the direction that feels right for TinkerClaw. 720×1280 portrait, dark theme, LVGL v9.</p>
+
+<div class="cards">
+  <div class="card" data-choice="ios" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#000;padding:16px;border-radius:12px 12px 0 0;">
+      <div style="font-family:system-ui;color:#fff;">
+        <!-- iOS-style mockup -->
+        <div style="display:flex;align-items:center;padding:8px 0 16px;">
+          <span style="color:#007AFF;font-size:18px;">← Back</span>
+          <span style="flex:1;text-align:center;font-size:22px;font-weight:600;">Settings</span>
+          <span style="width:60px;"></span>
+        </div>
+        <!-- Card group -->
+        <div style="background:#1C1C1E;border-radius:12px;overflow:hidden;margin-bottom:12px;">
+          <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333;">
+            <span style="font-size:16px;">Brightness</span>
+            <div style="width:160px;height:6px;background:#333;border-radius:3px;"><div style="width:70%;height:100%;background:#F5A623;border-radius:3px;"></div></div>
+          </div>
+          <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333;">
+            <span style="font-size:16px;">Volume</span>
+            <div style="width:160px;height:6px;background:#333;border-radius:3px;"><div style="width:60%;height:100%;background:#F5A623;border-radius:3px;"></div></div>
+          </div>
+          <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:16px;">Auto-rotate</span>
+            <div style="width:44px;height:24px;background:#333;border-radius:12px;position:relative;"><div style="width:20px;height:20px;background:#fff;border-radius:10px;position:absolute;top:2px;left:2px;"></div></div>
+          </div>
+        </div>
+        <!-- Section header -->
+        <div style="color:#8E8E93;font-size:13px;text-transform:uppercase;padding:8px 16px 4px;letter-spacing:0.5px;">Network</div>
+        <div style="background:#1C1C1E;border-radius:12px;overflow:hidden;margin-bottom:12px;">
+          <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #333;">
+            <span>WiFi</span>
+            <span style="color:#34C759;">Connected</span>
+          </div>
+          <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;">
+            <span>Dragon Host</span>
+            <span style="color:#8E8E93;">192.168.1.91</span>
+          </div>
+        </div>
+        <!-- Voice tabs -->
+        <div style="color:#8E8E93;font-size:13px;text-transform:uppercase;padding:8px 16px 4px;letter-spacing:0.5px;">Voice Mode</div>
+        <div style="background:#1C1C1E;border-radius:12px;overflow:hidden;padding:12px;">
+          <div style="display:flex;gap:4px;background:#000;border-radius:8px;padding:2px;margin-bottom:12px;">
+            <div style="flex:1;text-align:center;padding:8px;background:#22C55E;border-radius:6px;font-weight:600;font-size:14px;">Local</div>
+            <div style="flex:1;text-align:center;padding:8px;color:#666;font-size:14px;">Hybrid</div>
+            <div style="flex:1;text-align:center;padding:8px;color:#666;font-size:14px;">Cloud</div>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:8px 4px;">
+            <span style="color:#22C55E;font-size:14px;">LLM Model</span>
+            <span style="color:#fff;font-size:14px;">qwen3:1.7b ▾</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A — iOS Grouped Style</h3>
+      <p>Rounded card groups with subtle dark backgrounds (#1C1C1E). Section headers as small uppercase labels outside cards. Thin 1px dividers between rows. Clean, familiar, high information density.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="material" onclick="toggleSelect(this)">
+    <div class="card-image" style="background:#0A0A0F;padding:16px;border-radius:12px 12px 0 0;">
+      <div style="font-family:system-ui;color:#fff;">
+        <!-- Material-style mockup -->
+        <div style="display:flex;align-items:center;padding:8px 0 20px;">
+          <span style="font-size:24px;margin-right:16px;">←</span>
+          <span style="font-size:24px;font-weight:500;">Settings</span>
+        </div>
+        <!-- Section with accent line -->
+        <div style="margin-bottom:20px;">
+          <div style="color:#F5A623;font-size:14px;font-weight:600;padding-bottom:8px;border-bottom:2px solid #F5A623;display:inline-block;margin-bottom:12px;">DISPLAY</div>
+          <div style="padding:12px 0;display:flex;justify-content:space-between;align-items:center;">
+            <div><span style="font-size:16px;">Brightness</span><br><span style="color:#666;font-size:12px;">Screen backlight level</span></div>
+            <div style="width:140px;height:4px;background:#222;border-radius:2px;"><div style="width:70%;height:100%;background:#F5A623;border-radius:2px;"></div></div>
+          </div>
+          <div style="height:1px;background:#1A1A2E;margin:4px 0;"></div>
+          <div style="padding:12px 0;display:flex;justify-content:space-between;align-items:center;">
+            <div><span style="font-size:16px;">Volume</span><br><span style="color:#666;font-size:12px;">Speaker output</span></div>
+            <div style="width:140px;height:4px;background:#222;border-radius:2px;"><div style="width:60%;height:100%;background:#F5A623;border-radius:2px;"></div></div>
+          </div>
+        </div>
+        <!-- Voice section with pill tabs -->
+        <div style="margin-bottom:20px;">
+          <div style="color:#00E5FF;font-size:14px;font-weight:600;padding-bottom:8px;border-bottom:2px solid #00E5FF;display:inline-block;margin-bottom:12px;">VOICE</div>
+          <div style="display:flex;gap:8px;margin-bottom:16px;">
+            <div style="padding:10px 24px;background:#22C55E;border-radius:20px;font-size:14px;font-weight:600;">Local</div>
+            <div style="padding:10px 24px;background:#1A1A2E;border-radius:20px;color:#666;font-size:14px;">Hybrid</div>
+            <div style="padding:10px 24px;background:#1A1A2E;border-radius:20px;color:#666;font-size:14px;">Cloud</div>
+          </div>
+          <div style="padding:8px 0;display:flex;justify-content:space-between;">
+            <span style="color:#22C55E;">Model</span>
+            <span>qwen3:1.7b</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B — Material Dark Style</h3>
+      <p>Open layout, no card containers. Colored accent lines under section headers. Subtitle text under each label. Pill-shaped mode tabs. More spacious, modern, but uses more vertical space.</p>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:16px;">Both use manual Y positioning (no flex layout). Both stay under 60 LVGL objects. Pick the one that feels more "you" for TinkerClaw.</p>
