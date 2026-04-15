@@ -97,3 +97,11 @@
 #define FONT_DATE        &lv_font_montserrat_24   /* Home screen date */
 #define FONT_KEY         &lv_font_montserrat_20   /* Keyboard keys */
 #define FONT_NAV         &lv_font_montserrat_18   /* Nav bar labels */
+
+// ---------------------------------------------------------------------------
+// DPI-Aware Sizing — scales pixel values for different display densities
+// Base: 160 DPI (standard). Tab5 at 218 DPI scales up ~36%.
+// Usage: DPI_SCALE(44) = 60px on Tab5 (7mm touch target)
+// ---------------------------------------------------------------------------
+#define DPI_SCALE(px)   ((px) * BSP_DISPLAY_DPI / 160)
+#define TOUCH_MIN       DPI_SCALE(44)   /* Minimum touch target (7mm at 160 DPI) */

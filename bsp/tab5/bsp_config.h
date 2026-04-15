@@ -128,3 +128,14 @@
 // Mic ADC — ES7210
 // ---------------------------------------------------------------------------
 #define TAB5_ES7210_I2C_ADDR     0x40
+
+// ---------------------------------------------------------------------------
+// Chat UI — pool and history sizing
+// ---------------------------------------------------------------------------
+#define BSP_CHAT_MAX_MESSAGES   100   /* Per-mode message history depth */
+#define BSP_CHAT_POOL_SIZE      12    /* Visible recycled message slots */
+
+// ---------------------------------------------------------------------------
+// Display DPI — for portable touch target sizing
+// ---------------------------------------------------------------------------
+#define BSP_DISPLAY_DPI         218   /* 720px / 3.3 inches */
