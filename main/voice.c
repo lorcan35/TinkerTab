@@ -188,6 +188,7 @@ static volatile bool s_disconnecting = false;  /* US-C21: guard against connect-
 // Reconnect watchdog
 static TaskHandle_t  s_reconnect_task = NULL;
 static volatile bool s_reconnect_enabled = false;
+static volatile uint32_t s_reconnect_backoff_ms = 2000;  /* Bug4: file-scope so force_reconnect can reset */
 #define RECONNECT_CHECK_MS     5000   /* check connection every 5s */
 #define RECONNECT_BACKOFF_MIN_MS  2000   /* initial backoff after failed reconnect (US-A01) */
 #define RECONNECT_BACKOFF_MAX_MS  60000  /* max backoff cap (US-A01) */
@@ -2222,7 +2223,7 @@ const char *voice_get_dictation_summary(void)
 static void reconnect_watchdog_task(void *arg)
 {
     ESP_LOGI(TAG, "Reconnect watchdog started");
-    uint32_t backoff_ms = RECONNECT_BACKOFF_MIN_MS;
+    s_reconnect_backoff_ms = RECONNECT_BACKOFF_MIN_MS;
 
     while (s_reconnect_enabled) {
         vTaskDelay(pdMS_TO_TICKS(RECONNECT_CHECK_MS));
@@ -2238,9 +2239,9 @@ static void reconnect_watchdog_task(void *arg)
              * Sequence: 2s, 4s, 8s, 16s, 32s, 60s (each + 0-1s random jitter).
              * Without jitter, multiple devices reconnect in lockstep. */
             uint32_t jitter = esp_random() % 1000;
-            uint32_t delay = backoff_ms + jitter;
+            uint32_t delay = s_reconnect_backoff_ms + jitter;
             ESP_LOGI(TAG, "Watchdog: voice WS disconnected — reconnecting in %lums (backoff %lu + jitter %lu)",
-                     (unsigned long)delay, (unsigned long)backoff_ms, (unsigned long)jitter);
+                     (unsigned long)delay, (unsigned long)s_reconnect_backoff_ms, (unsigned long)jitter);
 
             vTaskDelay(pdMS_TO_TICKS(delay));
             if (!s_reconnect_enabled || s_ws_connected) continue;
@@ -2260,22 +2261,22 @@ static void reconnect_watchdog_task(void *arg)
 
                 if (s_ws_connected) {
                     ESP_LOGI(TAG, "Watchdog: reconnected successfully!");
-                    backoff_ms = RECONNECT_BACKOFF_MIN_MS;  /* reset backoff on success */
+                    s_reconnect_backoff_ms = RECONNECT_BACKOFF_MIN_MS;
                     /* US-PR17: Notes sync moved to session_start handler —
                      * Dragon REST API isn't ready until session_start arrives.
                      * See the session_start block in ws_receive_task(). */
                 } else {
                     /* US-A01: Double backoff, cap at max */
-                    backoff_ms = backoff_ms * 2;
-                    if (backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
-                        backoff_ms = RECONNECT_BACKOFF_MAX_MS;
+                    s_reconnect_backoff_ms = s_reconnect_backoff_ms * 2;
+                    if (s_reconnect_backoff_ms > RECONNECT_BACKOFF_MAX_MS) {
+                        s_reconnect_backoff_ms = RECONNECT_BACKOFF_MAX_MS;
                     }
                     ESP_LOGW(TAG, "Watchdog: reconnect failed — next backoff %lums",
-                             (unsigned long)backoff_ms);
+                             (unsigned long)s_reconnect_backoff_ms);
                 }
             }
         } else if (s_ws_connected) {
-            backoff_ms = RECONNECT_BACKOFF_MIN_MS;  /* reset when connected */
+            s_reconnect_backoff_ms = RECONNECT_BACKOFF_MIN_MS;
         }
     }
 
@@ -2304,6 +2305,25 @@ void voice_stop_reconnect_watchdog(void)
 {
     s_reconnect_enabled = false;
     /* Task will exit on next check */
+}
+
+void voice_force_reconnect(void)
+{
+    /* Bug4: Reset backoff so the watchdog's next attempt is immediate (2s base).
+     * If the watchdog is currently sleeping in a long backoff delay, we also
+     * kick off an async connect directly so the user doesn't wait. */
+    s_reconnect_backoff_ms = RECONNECT_BACKOFF_MIN_MS;
+    ESP_LOGI(TAG, "Force reconnect: backoff reset to %lums", (unsigned long)s_reconnect_backoff_ms);
+
+    if (!s_initialized || s_ws_connected || s_connect_in_progress || s_disconnecting) {
+        return;  /* Already connected/connecting or not ready */
+    }
+
+    char dhost[64];
+    tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+    if (dhost[0]) {
+        voice_connect_async(dhost, TAB5_VOICE_PORT, false);
+    }
 }
 
 bool voice_is_connected(void)

@@ -106,7 +106,8 @@ static bool         s_history_fetched = false; /* Guard: only fetch history once
 
 #define TOPBAR_H         60
 #define INPUT_BAR_H      80
-#define MSG_AREA_H      (1280 - TOPBAR_H - INPUT_BAR_H)  /* 1140 */
+#define OVERLAY_H       (1280 - 120)                      /* Bug1: nav bar stays exposed */
+#define MSG_AREA_H      (OVERLAY_H - TOPBAR_H - INPUT_BAR_H)  /* 1020 */
 
 #define CLR_BG           0x0A0A0F   /* Material Dark near-black */
 #define CLR_TOPBAR       0x0A0A0F   /* matches overlay bg */
@@ -605,10 +606,10 @@ static void chat_keyboard_layout_cb(bool visible, int kb_height)
 
     if (visible) {
         /* Move input bar above the keyboard.
-         * Normal position: 1280 - INPUT_BAR_H = 1200
-         * Keyboard top:    1280 - kb_height    =  860
-         * New position:    860 - INPUT_BAR_H   =  780 */
-        int new_y = 1280 - kb_height - INPUT_BAR_H;
+         * Normal position: OVERLAY_H - INPUT_BAR_H = 1080
+         * Keyboard top:    OVERLAY_H - kb_height
+         * New position:    keyboard_top - INPUT_BAR_H */
+        int new_y = OVERLAY_H - kb_height - INPUT_BAR_H;
         lv_obj_set_pos(bar, 0, new_y);
 
         /* Also shrink the message scroll area in conversation mode */
@@ -620,7 +621,7 @@ static void chat_keyboard_layout_cb(bool visible, int kb_height)
         }
     } else {
         /* Restore to original position */
-        lv_obj_set_pos(bar, 0, 1280 - INPUT_BAR_H);
+        lv_obj_set_pos(bar, 0, OVERLAY_H - INPUT_BAR_H);
 
         if (s_in_conversation && s_msg_scroll) {
             lv_obj_set_height(s_msg_scroll, MSG_AREA_H);
@@ -1181,7 +1182,7 @@ static void build_home_panel(void)
 
     s_home_panel = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(s_home_panel);
-    lv_obj_set_size(s_home_panel, 720, 1280);
+    lv_obj_set_size(s_home_panel, 720, OVERLAY_H);
     lv_obj_set_pos(s_home_panel, 0, 0);
     lv_obj_set_style_bg_color(s_home_panel, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(s_home_panel, LV_OPA_COVER, 0);
@@ -1356,8 +1357,8 @@ static void build_home_panel(void)
     feed_wdt_yield();
 
     /* ── Session Cards (scrollable area) ─────────────────────── */
-    /* Available height: 1280 - topbar(60) - model(44) - quickactions(64) - memory(48) - input(80) = 984 */
-    int cards_h = 1280 - TOPBAR_H - 44 - 64 - 48 - INPUT_BAR_H;  /* 984 */
+    /* Available height: OVERLAY_H - topbar(60) - model(44) - quickactions(64) - memory(48) - input(80) */
+    int cards_h = OVERLAY_H - TOPBAR_H - 44 - 64 - 48 - INPUT_BAR_H;
 
     lv_obj_t *card_scroll = lv_obj_create(s_home_panel);
     lv_obj_remove_style_all(card_scroll);
@@ -1525,7 +1526,7 @@ static void build_home_panel(void)
     feed_wdt_yield();
 
     /* ── Memory Preview Bar (48px) ───────────────────────────── */
-    int mem_y = 1280 - INPUT_BAR_H - 48;
+    int mem_y = OVERLAY_H - INPUT_BAR_H - 48;
     lv_obj_t *mem_bar = lv_obj_create(s_home_panel);
     lv_obj_remove_style_all(mem_bar);
     lv_obj_set_size(mem_bar, 720, 48);
@@ -1545,7 +1546,7 @@ static void build_home_panel(void)
     lv_obj_align(s_memory_lbl, LV_ALIGN_LEFT_MID, 16, 0);
 
     /* ── Input Bar (80px) — shared with conversation ──────────── */
-    int input_y = 1280 - INPUT_BAR_H;
+    int input_y = OVERLAY_H - INPUT_BAR_H;
 
     lv_obj_t *bar = lv_obj_create(s_home_panel);
     lv_obj_remove_style_all(bar);
@@ -1629,7 +1630,7 @@ static void build_conversation_ui(void)
 
     s_conv_panel = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(s_conv_panel);
-    lv_obj_set_size(s_conv_panel, 720, 1280);
+    lv_obj_set_size(s_conv_panel, 720, OVERLAY_H);
     lv_obj_set_pos(s_conv_panel, 0, 0);
     lv_obj_set_style_bg_color(s_conv_panel, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(s_conv_panel, LV_OPA_COVER, 0);
@@ -1733,7 +1734,7 @@ static void build_conversation_ui(void)
     lv_obj_t *bar = lv_obj_create(s_conv_panel);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, 720, INPUT_BAR_H);
-    lv_obj_set_pos(bar, 0, 1280 - INPUT_BAR_H);
+    lv_obj_set_pos(bar, 0, OVERLAY_H - INPUT_BAR_H);
     lv_obj_set_style_bg_color(bar, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     s_conv_input_bar = bar;
@@ -1867,7 +1868,7 @@ lv_obj_t *ui_chat_create(void)
     if (!parent) parent = lv_screen_active();
 
     s_overlay = lv_obj_create(parent);
-    lv_obj_set_size(s_overlay, 720, 1280);
+    lv_obj_set_size(s_overlay, 720, OVERLAY_H);  /* Bug1: leave 120px nav bar exposed */
     lv_obj_set_pos(s_overlay, 0, 0);
     lv_obj_set_style_bg_color(s_overlay, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(s_overlay, LV_OPA_COVER, 0);

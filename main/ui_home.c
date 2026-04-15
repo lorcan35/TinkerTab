@@ -547,13 +547,6 @@ lv_obj_t *ui_home_create(void)
  *  Callbacks
  * ================================================================ */
 
-/* FreeRTOS task to connect to Dragon voice (mode switch) */
-static void voice_connect_task(void *arg)
-{
-    tab5_mode_switch(MODE_VOICE);
-    vTaskSuspend(NULL);
-}
-
 static void orb_tap_cb(lv_event_t *e)
 {
     (void)e;
@@ -561,15 +554,18 @@ static void orb_tap_cb(lv_event_t *e)
 
     if (st == VOICE_STATE_READY) {
         esp_err_t err = voice_start_listening();
-        if (err != ESP_OK) {
+        if (err == ESP_OK) {
+            /* Bug2: Show voice overlay — orb_tap bypasses mic button's
+             * s_pending_ask flag, so the state callback won't auto-show. */
+            ui_voice_show();
+        } else {
             show_toast("Voice not ready — try again");
             ESP_LOGW(TAG, "voice_start_listening failed: %s", esp_err_to_name(err));
         }
     } else if (st == VOICE_STATE_IDLE) {
-        /* Not connected — connect to Dragon first */
+        /* Not connected — force immediate reconnect (Bug4: resets backoff) */
         show_toast("Connecting to Tinker...");
-        xTaskCreatePinnedToCore(
-            voice_connect_task, "voice_conn", 8192, NULL, 5, NULL, 1);
+        voice_force_reconnect();
     } else if (st == VOICE_STATE_CONNECTING) {
         show_toast("Connecting...");
     } else {
