@@ -195,9 +195,12 @@ void ui_keyboard_hide(void)
 
     s_visible = false;
 
-    /* Notify the active screen to restore layout */
+    /* Notify the active screen to restore layout, then clear the callback.
+     * Clearing here prevents a stale callback from firing if the owning
+     * screen is hidden/destroyed before a subsequent keyboard operation. */
     if (s_layout_cb) {
         s_layout_cb(false, KB_HEIGHT);
+        s_layout_cb = NULL;
     }
 
     /* Animate slide-down */

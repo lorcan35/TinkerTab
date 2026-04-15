@@ -62,6 +62,7 @@ void tab5_ui_sim_init(void)
 /* On desktop these are no-ops — LVGL is not multi-threaded */
 void tab5_ui_lock(void)   { }
 void tab5_ui_unlock(void) { }
+uint32_t ui_core_get_fps(void) { return 0; }
 
 bool tab5_ui_try_lock(uint32_t timeout_ms)
 {

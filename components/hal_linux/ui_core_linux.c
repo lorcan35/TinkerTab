@@ -153,3 +153,5 @@ void tab5_ui_unlock(void)
 {
     if (s_mutex) xSemaphoreGiveRecursive(s_mutex);
 }
+
+uint32_t ui_core_get_fps(void) { return 0; }

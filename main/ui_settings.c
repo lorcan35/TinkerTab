@@ -58,7 +58,7 @@ static inline void feed_wdt(void) {
 #define ROW_H        44
 #define HDR_H        28
 #define TOPBAR_H     48
-#define OVERLAY_H    (1280 - 120)  /* Bug1: leave 120px nav bar exposed */
+#define OVERLAY_H    1280  /* Full screen — nav bar on lv_layer_top() */
 #define CONTENT_W    680
 
 /* Section accent colors */
@@ -1218,7 +1218,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_t *home = ui_home_get_screen();
     s_screen = lv_obj_create(home);
     lv_obj_remove_style_all(s_screen);
-    lv_obj_set_size(s_screen, 720, OVERLAY_H);  /* Bug1: leave 120px nav bar exposed */
+    lv_obj_set_size(s_screen, 720, OVERLAY_H);
     lv_obj_set_pos(s_screen, 0, 0);
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(BG_COLOR), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);

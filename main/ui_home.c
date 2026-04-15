@@ -36,6 +36,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
@@ -111,7 +112,8 @@ static lv_obj_t  *lbl_ask       = NULL;    /* "Tap to ask" / "Connecting..." bel
 static lv_obj_t  *lbl_last_note = NULL;    /* last note preview card */
 static lv_obj_t  *last_note_card = NULL;
 
-/* Nav bar */
+/* Nav bar (on lv_layer_top — floats above all overlays) */
+static lv_obj_t  *nav_bar = NULL;
 static lv_obj_t  *nav_icons[NUM_PAGES] = {NULL};
 static int        cur_page = 0;
 
@@ -121,6 +123,14 @@ static lv_obj_t  *page_dots[NUM_PAGES] = {NULL};
 static lv_anim_t  orb_anim;
 static bool       orb_anim_on = false;
 static lv_timer_t *tmr_update = NULL;
+
+/* Nav bar debounce + pending timer — prevents fire-and-forget 30ms timers
+ * from overlapping when user taps two nav items quickly (e.g. Settings then
+ * Notes within 30ms).  Without this, both delayed creation timers fire,
+ * creating two overlays simultaneously → LVGL Store access fault crash. */
+static lv_timer_t *s_pending_nav_timer = NULL;
+static int64_t     s_last_nav_click_us = 0;
+#define NAV_DEBOUNCE_US  300000  /* 300ms */
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 static void update_nav_ui(int page);
@@ -471,16 +481,19 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_pad_left(s_disconnect_banner, 12, 0);
     lv_obj_add_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
 
-    /* ── BOTTOM NAV ─────────────────────────────────────────── */
+    /* ── BOTTOM NAV — on lv_layer_top() so it floats ABOVE all overlays ── */
+    /* This prevents the lv_color_mix32 crash caused by overlays at 1160px
+     * leaving a rendering gap.  Overlays are now full-screen (1280px) and
+     * the nav bar renders on top via the LVGL layer system. */
     {
-        lv_obj_t *nav = lv_obj_create(scr);
-        lv_obj_set_size(nav, SW, NAV_H);
-        lv_obj_set_pos(nav, 0, SH - NAV_H);
-        lv_obj_set_style_bg_color(nav, lv_color_hex(0x111111), 0);
-        lv_obj_set_style_bg_opa(nav, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(nav, 0, 0);
-        lv_obj_set_style_border_width(nav, 0, 0);
-        lv_obj_clear_flag(nav, LV_OBJ_FLAG_SCROLLABLE);
+        nav_bar = lv_obj_create(lv_layer_top());
+        lv_obj_set_size(nav_bar, SW, NAV_H);
+        lv_obj_set_pos(nav_bar, 0, SH - NAV_H);
+        lv_obj_set_style_bg_color(nav_bar, lv_color_hex(0x111111), 0);
+        lv_obj_set_style_bg_opa(nav_bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(nav_bar, 0, 0);
+        lv_obj_set_style_border_width(nav_bar, 0, 0);
+        lv_obj_clear_flag(nav_bar, LV_OBJ_FLAG_SCROLLABLE);
 
         /* Nav labels — Home | Notes | Chat | Settings */
         const char *labels[NUM_PAGES] = {
@@ -488,7 +501,7 @@ lv_obj_t *ui_home_create(void)
         };
         int slot = SW / NUM_PAGES;
         for (int i = 0; i < NUM_PAGES; i++) {
-            nav_icons[i] = lv_label_create(nav);
+            nav_icons[i] = lv_label_create(nav_bar);
             lv_label_set_text(nav_icons[i], labels[i]);
             lv_obj_set_style_text_font(nav_icons[i], FONT_NAV, 0);
             lv_obj_set_style_text_color(nav_icons[i],
@@ -501,6 +514,11 @@ lv_obj_t *ui_home_create(void)
             lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
                                (void *)(intptr_t)i);
         }
+
+        /* Ensure nav bar is above the voice overlay on lv_layer_top().
+         * Voice overlay is also on lv_layer_top() but is full-screen.
+         * move_foreground puts nav_bar LAST in the child list → drawn last → on top. */
+        lv_obj_move_foreground(nav_bar);
     }
 
     /* ── PAGE DOTS — BIG ───────────────────────────────────── */
@@ -695,7 +713,6 @@ static void show_toast(const char *text)
 
 /* Wrappers for lv_async_call — avoid cast between incompatible function types */
 static void async_notes_create(void *arg) { (void)arg; ui_notes_create(); }
-static void async_settings_create(void *arg) { (void)arg; ui_settings_create(); }
 
 static void update_nav_ui(int page)
 {
@@ -753,13 +770,19 @@ static void _async_settings(void *arg)
 static void _delayed_settings_cb(lv_timer_t *t)
 {
     (void)t;
+    s_pending_nav_timer = NULL;
     _async_settings(NULL);
 }
 
 void ui_home_nav_settings(void)
 {
-    lv_timer_t *t = lv_timer_create(_delayed_settings_cb, 30, NULL);
-    lv_timer_set_repeat_count(t, 1);
+    /* Cancel any pending nav timer (e.g. from a previous rapid tap) */
+    if (s_pending_nav_timer) {
+        lv_timer_delete(s_pending_nav_timer);
+        s_pending_nav_timer = NULL;
+    }
+    s_pending_nav_timer = lv_timer_create(_delayed_settings_cb, 30, NULL);
+    lv_timer_set_repeat_count(s_pending_nav_timer, 1);
 }
 
 static void _async_chat(void *arg)
@@ -777,6 +800,12 @@ static void _async_chat(void *arg)
  * NOT lv_obj_del_async(). All deletion is immediate — no deferred-delete race. */
 static void dismiss_all_overlays(void)
 {
+    /* Cancel any pending delayed-creation timer from a previous nav tap.
+     * Without this, dismiss+create sequences race with the 30ms timer. */
+    if (s_pending_nav_timer) {
+        lv_timer_delete(s_pending_nav_timer);
+        s_pending_nav_timer = NULL;
+    }
     ui_keyboard_hide();
     extern void ui_settings_hide(void);
     extern void ui_notes_hide(void);
@@ -789,28 +818,51 @@ static void dismiss_all_overlays(void)
 
 /* U09: Delayed overlay open callbacks — same pattern as Settings.
  * 30ms delay lets LVGL flush nav button pressed-state to display. */
-static void _delayed_notes_cb(lv_timer_t *t) { (void)t; async_notes_create(NULL); }
-static void _delayed_chat_cb(lv_timer_t *t)  { (void)t; _async_chat(NULL); }
+static void _delayed_notes_cb(lv_timer_t *t) { (void)t; s_pending_nav_timer = NULL; async_notes_create(NULL); }
+static void _delayed_chat_cb(lv_timer_t *t)  { (void)t; s_pending_nav_timer = NULL; _async_chat(NULL); }
 
 static void nav_click_cb(lv_event_t *e)
 {
     int pg = (int)(intptr_t)lv_event_get_user_data(e);
     if (pg < 0 || pg >= NUM_PAGES) return;
+
+    /* ── Debounce: reject rapid nav taps (300ms) ──────────────────
+     * Without this, tapping Settings then Notes quickly queues TWO
+     * fire-and-forget 30ms timers.  Both fire, creating two overlays
+     * simultaneously → LVGL Store access fault on Core 0. */
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_nav_click_us < NAV_DEBOUNCE_US) {
+        ESP_LOGW("nav", "Nav click debounced (%.0f ms since last)",
+                 (double)(now - s_last_nav_click_us) / 1000.0);
+        return;
+    }
+    s_last_nav_click_us = now;
+
+    /* Cancel any pending delayed-creation timer from a previous nav tap.
+     * This is the critical fix: if user tapped Settings (creating a 30ms
+     * timer) and then taps Notes before the timer fires, the Settings
+     * timer must be cancelled — otherwise both screens get created. */
+    if (s_pending_nav_timer) {
+        lv_timer_delete(s_pending_nav_timer);
+        s_pending_nav_timer = NULL;
+    }
+
     dismiss_all_overlays();
     if (pg == 1) {
         /* U09: Delay overlay open so nav pressed-state renders first */
-        lv_timer_t *t = lv_timer_create(_delayed_notes_cb, 30, NULL);
-        lv_timer_set_repeat_count(t, 1);
+        s_pending_nav_timer = lv_timer_create(_delayed_notes_cb, 30, NULL);
+        lv_timer_set_repeat_count(s_pending_nav_timer, 1);
         return;
     }
     if (pg == 2) {
         /* U09: Delay overlay open so nav pressed-state renders first */
-        lv_timer_t *t = lv_timer_create(_delayed_chat_cb, 30, NULL);
-        lv_timer_set_repeat_count(t, 1);
+        s_pending_nav_timer = lv_timer_create(_delayed_chat_cb, 30, NULL);
+        lv_timer_set_repeat_count(s_pending_nav_timer, 1);
         return;
     }
     if (pg == 3) {
-        ui_home_nav_settings();
+        s_pending_nav_timer = lv_timer_create(_delayed_settings_cb, 30, NULL);
+        lv_timer_set_repeat_count(s_pending_nav_timer, 1);
         return;
     }
     if (tiles[pg] && tileview) {
@@ -968,6 +1020,12 @@ void ui_home_destroy(void)
         lv_timer_delete(tmr_update);
         tmr_update = NULL;
     }
+    /* Nav bar lives on lv_layer_top() — must be deleted separately */
+    if (nav_bar) {
+        lv_obj_delete(nav_bar);
+        nav_bar = NULL;
+        memset(nav_icons, 0, sizeof(nav_icons));
+    }
     if (scr) {
         lv_obj_delete(scr);
         scr = NULL;
@@ -981,7 +1039,6 @@ void ui_home_destroy(void)
         lbl_privacy = NULL;
         lbl_last_note = NULL;
         last_note_card = NULL;
-        memset(nav_icons, 0, sizeof(nav_icons));
         memset(page_dots, 0, sizeof(page_dots));
         memset(tiles, 0, sizeof(tiles));
         cur_page = 0;

@@ -107,7 +107,7 @@ static bool         s_history_fetched = false; /* Guard: only fetch history once
 
 #define TOPBAR_H         60
 #define INPUT_BAR_H      80
-#define OVERLAY_H       (1280 - 120)                      /* Bug1: nav bar stays exposed */
+#define OVERLAY_H       1280                               /* Full screen — nav bar on lv_layer_top() */
 #define MSG_AREA_H      (OVERLAY_H - TOPBAR_H - INPUT_BAR_H)  /* 1020 */
 
 #define CLR_BG           0x0A0A0F   /* Material Dark near-black */
@@ -1885,7 +1885,7 @@ lv_obj_t *ui_chat_create(void)
     if (!parent) parent = lv_screen_active();
 
     s_overlay = lv_obj_create(parent);
-    lv_obj_set_size(s_overlay, 720, OVERLAY_H);  /* Bug1: leave 120px nav bar exposed */
+    lv_obj_set_size(s_overlay, 720, OVERLAY_H);
     lv_obj_set_pos(s_overlay, 0, 0);
     lv_obj_set_style_bg_color(s_overlay, lv_color_hex(CLR_BG), 0);
     lv_obj_set_style_bg_opa(s_overlay, LV_OPA_COVER, 0);

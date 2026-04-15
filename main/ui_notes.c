@@ -55,7 +55,7 @@ static const char *TAG = "ui_notes";
 /* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW             720
 #define SH             1280     /* Notes is a separate screen, not tileview page */
-#define OVERLAY_H      (SH - 120)  /* Bug1: overlay leaves 120px nav bar exposed */
+#define OVERLAY_H      SH  /* Full screen — nav bar on lv_layer_top() */
 #define TOPBAR_H       48      /* match Settings style */
 #define INPUT_H        140     /* was 64 */
 #define NAV_H          140     /* was 64 */
@@ -1963,7 +1963,7 @@ lv_obj_t *ui_notes_create(void)
     extern lv_obj_t *ui_home_get_screen(void);
     s_screen = lv_obj_create(ui_home_get_screen());
     lv_obj_remove_style_all(s_screen);
-    lv_obj_set_size(s_screen, SW, OVERLAY_H);  /* Bug1: leave 120px nav bar exposed */
+    lv_obj_set_size(s_screen, SW, OVERLAY_H);
     lv_obj_set_pos(s_screen, 0, 0);
     lv_obj_set_style_bg_color(s_screen, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
