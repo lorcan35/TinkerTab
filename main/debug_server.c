@@ -300,6 +300,7 @@ static esp_err_t info_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "display", display_str);
 
     cJSON_AddNumberToObject(root, "fps", (double)tab5_dragon_get_fps());
+    cJSON_AddNumberToObject(root, "lvgl_fps", (double)ui_core_get_fps());
 
     tab5_battery_info_t bat = {0};
     tab5_battery_read(&bat);
@@ -566,6 +567,7 @@ static const char INDEX_HTML[] =
 "    s+='Dragon:     '+(d.dragon_connected?'connected':'offline')+'\\n';"
 "    s+='Display:    '+d.display+'\\n';"
 "    s+='FPS:        '+d.fps.toFixed(1)+'\\n';"
+"    s+='LVGL FPS:   '+d.lvgl_fps+'\\n';"
 "    s+='Battery:    '+d.battery_pct+'%\\n';"
 "    s+='Tasks:      '+d.tasks;"
 "    infoEl.textContent=s;"

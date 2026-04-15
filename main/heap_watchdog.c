@@ -44,10 +44,29 @@ static void heap_watchdog_task(void *arg)
         size_t psram_free    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
         size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
-        ESP_LOGI(TAG, "PSRAM: largest_block=%uKB free=%uKB | Internal: free=%uKB",
+        /* C12: Verify internal DMA pool has healthy headroom */
+        size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+        ESP_LOGI(TAG, "PSRAM: largest_block=%uKB free=%uKB | Internal: free=%uKB | DMA: free=%uKB largest=%uKB",
                  (unsigned)(psram_largest / 1024),
                  (unsigned)(psram_free / 1024),
-                 (unsigned)(internal_free / 1024));
+                 (unsigned)(internal_free / 1024),
+                 (unsigned)(dma_free / 1024),
+                 (unsigned)(dma_largest / 1024));
+
+        if (dma_free < 16384) {
+            ESP_LOGE(TAG, "DMA pool critically low: %zu bytes free (largest block %zu)", dma_free, dma_largest);
+        }
+
+        /* C14: Monitor system event task stack high-water mark */
+        TaskHandle_t evt_task = xTaskGetHandle("sys_evt");
+        if (evt_task) {
+            UBaseType_t hwm = uxTaskGetStackHighWaterMark(evt_task);
+            if (hwm < 512) {
+                ESP_LOGW(TAG, "System event task stack low: %u bytes remaining", (unsigned)hwm);
+            }
+        }
 
         /* US-HW17: Log NVS write count for flash wear monitoring */
         ESP_LOGI(TAG, "NVS writes this session: %lu",
@@ -82,7 +101,7 @@ void heap_watchdog_start(void)
     xTaskCreatePinnedToCore(
         heap_watchdog_task,
         "heap_wd",
-        2048,           /* Stack: 2KB — just heap_caps calls + logging */
+        2560,           /* Stack: 2.5KB — heap_caps calls + task HWM query + logging */
         NULL,
         1,              /* Priority 1 — lowest, background monitoring */
         NULL,

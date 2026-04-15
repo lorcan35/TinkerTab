@@ -58,6 +58,7 @@ static esp_err_t i2s_bus_init(void)
     chan_cfg.auto_clear = true;
     chan_cfg.dma_desc_num = 4;
     chan_cfg.dma_frame_num = 160;
+    chan_cfg.intr_priority = 2;  // HW13: Explicit level 2 — above default level 1 SDIO
 
     ESP_RETURN_ON_ERROR(
         i2s_new_channel(&chan_cfg, &s_i2s_tx, &s_i2s_rx),

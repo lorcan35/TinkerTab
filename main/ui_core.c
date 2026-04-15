@@ -66,6 +66,11 @@ static TaskHandle_t           s_ui_task_handle = NULL;
 #define DRAW_BUF_LINES 100
 #define DRAW_BUF_SIZE  (TAB5_DISPLAY_WIDTH * DRAW_BUF_LINES * sizeof(uint16_t))
 
+/* ---- FPS counter ---- */
+static uint32_t s_frame_count = 0;
+static uint32_t s_fps = 0;
+static int64_t  s_fps_last_us = 0;
+
 /* ---- Forward declarations ---- */
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map);
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data);
@@ -104,6 +109,15 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     /* Flush CPU cache to main memory so DMA sees the updated pixels */
     size_t fb_size = TAB5_DISPLAY_WIDTH * TAB5_DISPLAY_HEIGHT * sizeof(uint16_t);
     esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+
+    /* U21: Count flush calls for FPS measurement */
+    s_frame_count++;
+    int64_t now_us = esp_timer_get_time();
+    if (now_us - s_fps_last_us >= 1000000) {  /* Every 1 second */
+        s_fps = s_frame_count;
+        s_frame_count = 0;
+        s_fps_last_us = now_us;
+    }
 
     lv_display_flush_ready(disp);
 }
@@ -185,7 +199,8 @@ static void ui_task(void *arg)
             /* Heartbeat log every 5 seconds to detect if task is alive */
             int64_t now = esp_timer_get_time();
             if (now - last_heartbeat > 5000000) {
-                ESP_LOGI(TAG, "UI task alive, next=%lu ms", (unsigned long)time_till_next);
+                ESP_LOGI(TAG, "UI task alive, next=%lu ms, lvgl_fps=%lu",
+                         (unsigned long)time_till_next, (unsigned long)s_fps);
                 last_heartbeat = now;
             }
 
@@ -337,4 +352,9 @@ void tab5_ui_unlock(void)
     if (s_lvgl_mutex) {
         xSemaphoreGiveRecursive(s_lvgl_mutex);
     }
+}
+
+uint32_t ui_core_get_fps(void)
+{
+    return s_fps;
 }

@@ -1101,7 +1101,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_bat_volt = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_volt, "");
     lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x444444), 0);
-    lv_obj_set_style_text_font(s_lbl_bat_volt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_lbl_bat_volt, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y);
     y += 20 + 16;
 
@@ -1158,8 +1158,8 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
     lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x444444), 0);
-    lv_obj_set_style_text_font(s_lbl_heap, &lv_font_montserrat_12, 0);
-    lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 12) / 2);
+    lv_obj_set_style_text_font(s_lbl_heap, &lv_font_montserrat_14, 0);
+    lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 14) / 2);
     y += ROW_H;
 
     /* ── Bottom padding ──────────────────────────────────────────────── */

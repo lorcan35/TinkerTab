@@ -36,3 +36,6 @@ bool tab5_ui_try_lock(uint32_t timeout_ms);
 
 /** Unlock the LVGL mutex. */
 void tab5_ui_unlock(void);
+
+/** Get LVGL rendering FPS (flush callbacks per second). Updated every 1s. */
+uint32_t ui_core_get_fps(void);
