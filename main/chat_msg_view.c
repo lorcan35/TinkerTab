@@ -311,11 +311,11 @@ void chat_view_init(lv_obj_t *parent)
 
     init_styles();
 
-    /* Create scrollable container */
+    /* Create scrollable container — width=100%, height from flex-grow or explicit */
     s_scroll = lv_obj_create(parent);
     lv_obj_remove_style_all(s_scroll);
-    lv_obj_set_size(s_scroll, DISPLAY_W, MSG_AREA_H);
-    lv_obj_set_pos(s_scroll, 0, TOPBAR_H);
+    lv_obj_set_width(s_scroll, lv_pct(100));
+    lv_obj_set_flex_grow(s_scroll, 1);   /* fill remaining space in parent flex column */
     lv_obj_set_style_bg_opa(s_scroll, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(s_scroll, 0, 0);
     lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_SCROLLABLE);
@@ -396,7 +396,7 @@ void chat_view_refresh(void)
     /* --- Pass 2: Determine visible range based on current scroll position --- */
     int scroll_y = lv_obj_get_scroll_y(s_scroll);
     int view_top = scroll_y - VIS_BUFFER;
-    int view_bot = scroll_y + MSG_AREA_H + VIS_BUFFER;
+    int view_bot = scroll_y + lv_obj_get_height(s_scroll) + VIS_BUFFER;
 
     /* --- Pass 3: Mark all slots as free --- */
     /* But first, keep slots that are still in the visible range */
@@ -456,9 +456,6 @@ void chat_view_refresh(void)
 void chat_view_scroll_to_bottom(void)
 {
     if (!s_scroll) return;
-    lv_obj_scroll_to_y(s_scroll, lv_obj_get_scroll_y(s_scroll) +
-                        lv_obj_get_content_height(s_scroll), LV_ANIM_ON);
-    /* Use LVGL's built-in method for scrolling to the end */
     lv_obj_scroll_to_y(s_scroll, LV_COORD_MAX, LV_ANIM_ON);
 }
 

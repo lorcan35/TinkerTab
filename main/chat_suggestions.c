@@ -8,7 +8,7 @@
 #include "config.h"
 #include "esp_log.h"
 
-static const char *TAG = "suggestions";
+static const char __attribute__((unused)) *TAG = "suggestions";
 
 static lv_obj_t *s_container = NULL;
 
