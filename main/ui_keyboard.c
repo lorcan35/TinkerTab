@@ -738,12 +738,14 @@ static void key_press_cb(lv_event_t *e)
         break;
 
     case KEY_ENTER:
-        if (s_target_ta) {
-            /* Send newline — screens can also hook into textarea events */
-            lv_textarea_add_char(s_target_ta, '\n');
-        }
-        /* Optionally hide keyboard on Done */
+        /* Done key: hide keyboard first, then send LV_EVENT_READY so the
+         * active screen can submit (e.g. Chat's cb_send).  Do NOT add a
+         * newline — on a mobile-style keyboard "Done" means "submit", not
+         * "insert line break". */
         ui_keyboard_hide();
+        if (s_target_ta) {
+            lv_obj_send_event(s_target_ta, LV_EVENT_READY, NULL);
+        }
         break;
 
     case KEY_SHIFT: {

@@ -257,6 +257,14 @@ static void update_status_bar(void)
         case VOICE_STATE_SPEAKING:   state_text = "Speaking..."; state_color = 0xBF5AF2; break;
     }
 
+    /* Override: when the keyboard is open (user is typing text), show "Typing..."
+     * instead of the voice state.  This prevents the confusing "Listening..." label
+     * when the user tapped the orb (starting voice) then switched to Chat to type. */
+    if (ui_keyboard_is_visible()) {
+        state_text = "Typing...";
+        state_color = 0x888888;
+    }
+
     /* Update conv panel status */
     if (s_status_lbl && s_status_dot) {
         lv_obj_set_style_bg_color(s_status_dot, lv_color_hex(dot_color), 0);
@@ -1594,6 +1602,8 @@ static void build_home_panel(void)
     lv_obj_set_style_text_color(s_home_textarea, lv_color_hex(0x666666), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_flag(s_home_textarea, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_home_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
+    /* Submit on keyboard Done key (LV_EVENT_READY) */
+    lv_obj_add_event_cb(s_home_textarea, cb_send, LV_EVENT_READY, NULL);
 
     /* Active textarea starts as home textarea */
     s_textarea = s_home_textarea;
@@ -1777,6 +1787,8 @@ static void build_conversation_ui(void)
     lv_obj_set_style_text_color(s_conv_textarea, lv_color_hex(0x666666), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_flag(s_conv_textarea, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_conv_textarea, cb_textarea_click, LV_EVENT_CLICKED, NULL);
+    /* Submit on keyboard Done key (LV_EVENT_READY) */
+    lv_obj_add_event_cb(s_conv_textarea, cb_send, LV_EVENT_READY, NULL);
 
     /* Send button */
     lv_obj_t *send_btn = lv_button_create(bar);

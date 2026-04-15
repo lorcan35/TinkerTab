@@ -563,8 +563,9 @@ static void orb_tap_cb(lv_event_t *e)
             ESP_LOGW(TAG, "voice_start_listening failed: %s", esp_err_to_name(err));
         }
     } else if (st == VOICE_STATE_IDLE) {
-        /* Not connected — force immediate reconnect (Bug4: resets backoff) */
-        show_toast("Connecting to Tinker...");
+        /* Not connected — force immediate reconnect (Bug4: resets backoff)
+         * Enhancement 5: Show "Reconnecting..." toast and auto-listen on success */
+        show_toast("Reconnecting...");
         voice_force_reconnect();
     } else if (st == VOICE_STATE_CONNECTING) {
         show_toast("Connecting...");

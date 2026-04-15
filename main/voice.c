@@ -195,7 +195,7 @@ static volatile uint32_t s_reconnect_backoff_ms = 2000;  /* Bug4: file-scope so 
 #define IDLE_PING_INTERVAL_MS  8000   /* ping every 8s when idle/ready (was 10s — ngrok needs <20s) */
 
 // Keepalive degraded state (US-A05) — tolerance for missed pongs before disconnect
-#define KEEPALIVE_MISS_MAX     3      /* disconnect after 3 consecutive missed pongs (~24s) */
+#define KEEPALIVE_MISS_MAX     4      /* disconnect after 4 consecutive missed pongs (~32s) — increased from 3 to tolerate transient ngrok/WiFi hiccups */
 static volatile int64_t s_last_pong_us = 0;          /* timestamp of last received pong */
 static volatile int     s_keepalive_miss_count = 0;   /* consecutive missed pong counter */
 
@@ -1260,6 +1260,7 @@ static void ws_receive_task(void *arg)
 
     s_ws_running = true;
     s_last_activity_us = esp_timer_get_time();
+    int64_t last_keepalive_us = 0;  /* per-connection keepalive tracking (was static — caused stale timestamp after reconnect) */
 
     while (s_ws_connected && !s_stop_flag) {
         /* Yield every iteration to prevent starving lower-priority tasks on core 1 */
@@ -1276,15 +1277,14 @@ static void ws_receive_task(void *arg)
             // (can happen when TCP socket is in degraded state, starving CPU1 idle task WDT)
             vTaskDelay(pdMS_TO_TICKS(10));
             int64_t now_us = esp_timer_get_time();
-            static int64_t s_last_keepalive_us = 0;
 
             if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
                 int64_t elapsed_us = now_us - s_last_activity_us;
 
                 // Send keep-alive heartbeat to prevent TCP idle timeout.
-                if ((now_us - s_last_keepalive_us) > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
+                if ((now_us - last_keepalive_us) > (int64_t)VOICE_KEEPALIVE_MS * 1000) {
                     esp_err_t ping_err = ws_send_text("{\"type\":\"ping\"}");
-                    s_last_keepalive_us = now_us;
+                    last_keepalive_us = now_us;
                     if (ping_err != ESP_OK) {
                         ESP_LOGW(TAG, "Keepalive ping failed — connection dead");
                         s_ws_connected = false;
@@ -1314,14 +1314,14 @@ static void ws_receive_task(void *arg)
                  * ping detects this and triggers reconnect via watchdog.
                  *
                  * US-A05: Degraded state — don't disconnect on first missed pong.
-                 * Track consecutive misses. After KEEPALIVE_MISS_MAX (3) misses,
+                 * Track consecutive misses. After KEEPALIVE_MISS_MAX (4) misses,
                  * THEN disconnect. During degraded state, send extra pings to
                  * give Dragon a chance to recover. */
-                if ((now_us - s_last_keepalive_us) > (int64_t)IDLE_PING_INTERVAL_MS * 1000) {
+                if ((now_us - last_keepalive_us) > (int64_t)IDLE_PING_INTERVAL_MS * 1000) {
                     /* Check if previous ping got a pong (US-A05).
-                     * If s_last_pong_us < s_last_keepalive_us, the last ping
+                     * If s_last_pong_us < last_keepalive_us, the last ping
                      * went unanswered — that's a missed pong. */
-                    if (s_last_keepalive_us > 0 && s_last_pong_us < s_last_keepalive_us) {
+                    if (last_keepalive_us > 0 && s_last_pong_us < last_keepalive_us) {
                         s_keepalive_miss_count++;
                         ESP_LOGW(TAG, "Keepalive: pong missed (%d/%d) — %s",
                                  s_keepalive_miss_count, KEEPALIVE_MISS_MAX,
@@ -1339,7 +1339,7 @@ static void ws_receive_task(void *arg)
                     }
 
                     esp_err_t ping_err = ws_send_text("{\"type\":\"ping\"}");
-                    s_last_keepalive_us = now_us;
+                    last_keepalive_us = now_us;
                     if (ping_err != ESP_OK) {
                         ESP_LOGW(TAG, "Idle ping send failed — connection dead");
                         s_keepalive_miss_count = 0;
@@ -2322,7 +2322,9 @@ void voice_force_reconnect(void)
     char dhost[64];
     tab5_settings_get_dragon_host(dhost, sizeof(dhost));
     if (dhost[0]) {
-        voice_connect_async(dhost, TAB5_VOICE_PORT, false);
+        /* Enhancement 5: auto_listen=true so reconnect from orb tap
+         * auto-starts listening once connection succeeds (within ~5s). */
+        voice_connect_async(dhost, TAB5_VOICE_PORT, true);
     }
 }
 

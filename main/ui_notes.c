@@ -688,13 +688,35 @@ bool ui_notes_get_last_preview(char *buf, size_t len)
 {
     notes_load();
     if (!buf || s_note_count == 0) return false;
-    int last_idx = (s_next_slot - 1 + MAX_NOTES) % MAX_NOTES;
-    if (!s_notes[last_idx].used) return false;
-    /* N4: Strip "[Untitled Note] " prefix for cleaner home preview */
-    const char *src = s_notes[last_idx].text;
-    if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
-    snprintf(buf, len, "%.80s", src);
-    return true;
+
+    /* Enhancement 8: Iterate backwards from newest to find the first note
+     * with valid text — skip broken recordings and empty placeholders. */
+    for (int k = 0; k < MAX_NOTES; k++) {
+        int idx = (s_next_slot - 1 - k + MAX_NOTES) % MAX_NOTES;
+        if (!s_notes[idx].used) continue;
+        /* Skip notes that are still recording or failed transcription */
+        if (s_notes[idx].state == NOTE_STATE_FAILED) continue;
+        if (s_notes[idx].state == NOTE_STATE_RECORDED) continue;
+        if (s_notes[idx].state == NOTE_STATE_TRANSCRIBING) continue;
+
+        const char *src = s_notes[idx].text;
+        /* Skip placeholder/broken note texts */
+        if (strncmp(src, "(Recording", 10) == 0) continue;
+        if (strncmp(src, "(Empty recording)", 17) == 0) continue;
+        if (strncmp(src, "(No audio file)", 15) == 0) continue;
+
+        /* N4: Strip "[Untitled Note] " prefix for cleaner home preview */
+        if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
+
+        /* Skip if remaining text is empty after stripping */
+        if (!src[0]) continue;
+
+        snprintf(buf, len, "%.80s", src);
+        return true;
+    }
+
+    /* All notes are invalid placeholders */
+    return false;
 }
 
 int ui_notes_count(void)
