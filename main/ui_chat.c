@@ -22,6 +22,7 @@
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "lvgl.h"
 #include <string.h>
 #include <stdlib.h>
@@ -98,6 +99,9 @@ static int32_t      s_touch_start_x = -1;  /* X at touch-down for edge-swipe gat
 static bool         s_clear_guard = false;  /* Guard flag: blocks input after New Chat (US-PR03) */
 static lv_timer_t  *s_clear_timer = NULL;   /* 500ms guard timer for clear_history ACK */
 static bool         s_history_fetched = false; /* Guard: only fetch history once per session */
+
+/* Semaphore to serialize image downloads — prevents WiFi/PSRAM contention */
+static SemaphoreHandle_t s_img_dl_sem = NULL;
 
 #define MAX_MESSAGES     30
 #define SWIPE_EDGE_PX    60  /* back-gesture only from left 60 px */
@@ -1911,6 +1915,10 @@ lv_obj_t *ui_chat_create(void)
     if (!parent) parent = lv_screen_active();
 
     s_overlay = lv_obj_create(parent);
+    if (!s_overlay) {
+        ESP_LOGE(TAG, "OOM: failed to create chat overlay");
+        return NULL;
+    }
     lv_obj_set_size(s_overlay, 720, OVERLAY_H);
     lv_obj_set_pos(s_overlay, 0, 0);
     lv_obj_set_style_bg_color(s_overlay, lv_color_hex(CLR_BG), 0);
@@ -2419,16 +2427,27 @@ static void img_loaded_cb(void *arg)
     free(ctx);
 }
 
-/* FreeRTOS task: download image in background */
+/* FreeRTOS task: download image in background (serialized via semaphore) */
 static void img_download_task(void *arg)
 {
     img_load_ctx_t *ctx = (img_load_ctx_t *)arg;
     if (!ctx) { vTaskSuspend(NULL); return; }
 
+    /* Create semaphore once (lazy init — safe because tasks run sequentially after take) */
+    if (!s_img_dl_sem) {
+        s_img_dl_sem = xSemaphoreCreateBinary();
+        xSemaphoreGive(s_img_dl_sem);
+    }
+
+    /* Serialize downloads — only 1 at a time to avoid WiFi/PSRAM contention */
+    xSemaphoreTake(s_img_dl_sem, portMAX_DELAY);
+
     /* Download + cache the JPEG (blocking) */
     lv_image_dsc_t dsc;
     esp_err_t err = media_cache_fetch(ctx->url, &dsc);
     (void)err;  /* Result checked in the LVGL callback */
+
+    xSemaphoreGive(s_img_dl_sem);
 
     /* Schedule UI update on LVGL thread */
     lv_async_call(img_loaded_cb, ctx);  /* ctx ownership transfers to callback */

@@ -94,7 +94,7 @@ static const char *TAG = "tab5_voice";
 #define MIC_TASK_CORE          1
 
 // WS receive task
-#define WS_TASK_STACK_SIZE     8192
+#define WS_TASK_STACK_SIZE     10240   /* 10KB — room for cJSON recursive parsing */
 #define WS_TASK_PRIORITY       4
 #define WS_TASK_CORE           1
 

@@ -777,6 +777,10 @@ lv_obj_t *ui_wifi_create(void)
 
     /* ── Screen ────────────────────────────────────────────────────── */
     s_screen = lv_obj_create(NULL);
+    if (!s_screen) {
+        ESP_LOGE(TAG, "OOM: failed to create WiFi screen");
+        return NULL;
+    }
     lv_obj_set_style_bg_color(s_screen, COL_BG, 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);

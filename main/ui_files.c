@@ -582,6 +582,10 @@ lv_obj_t *ui_files_create(void)
 
     /* ── Screen ──────────────────────────────────────────────── */
     scr_files = lv_obj_create(NULL);
+    if (!scr_files) {
+        ESP_LOGE(TAG, "OOM: failed to create files screen");
+        return NULL;
+    }
     lv_obj_set_size(scr_files, SCREEN_W, SCREEN_H);
     lv_obj_set_style_bg_color(scr_files, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(scr_files, LV_OPA_COVER, 0);

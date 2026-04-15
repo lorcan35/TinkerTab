@@ -174,6 +174,10 @@ lv_obj_t *ui_camera_create(void)
 
     /* ── Screen ──────────────────────────────────────────────── */
     scr_camera = lv_obj_create(NULL);
+    if (!scr_camera) {
+        ESP_LOGE(TAG, "OOM: failed to create camera screen");
+        return NULL;
+    }
     lv_obj_set_size(scr_camera, SCREEN_W, SCREEN_H);
     lv_obj_set_style_bg_color(scr_camera, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(scr_camera, LV_OPA_COVER, 0);

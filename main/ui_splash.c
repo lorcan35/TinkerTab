@@ -46,6 +46,10 @@ static int         check_count  = 0;
 lv_obj_t *ui_splash_create(void)
 {
     scr_splash = lv_obj_create(NULL);
+    if (!scr_splash) {
+        ESP_LOGE(TAG, "OOM: failed to create splash screen");
+        return NULL;
+    }
     lv_obj_set_size(scr_splash, SCREEN_W, SCREEN_H);
     lv_obj_set_style_bg_color(scr_splash, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(scr_splash, LV_OPA_COVER, 0);

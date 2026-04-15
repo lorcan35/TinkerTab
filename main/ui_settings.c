@@ -1224,6 +1224,11 @@ lv_obj_t *ui_settings_create(void)
     /* ── Fullscreen overlay on home screen ───────────────────────────── */
     lv_obj_t *home = ui_home_get_screen();
     s_screen = lv_obj_create(home);
+    if (!s_screen) {
+        ESP_LOGE(TAG, "OOM: failed to create settings screen");
+        s_creating = false;
+        return NULL;
+    }
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, 720, OVERLAY_H);
     lv_obj_set_pos(s_screen, 0, 0);

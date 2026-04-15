@@ -21,6 +21,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "lvgl.h"
 
 static const char *TAG = "heap_wd";
 
@@ -105,6 +106,26 @@ static void heap_watchdog_task(void *arg)
             }
         }
 
+        /* LVGL memory pool monitoring */
+        lv_mem_monitor_t lvgl_mon;
+        lv_mem_monitor(&lvgl_mon);
+        ESP_LOGI(TAG, "LVGL pool: used=%uKB free=%uKB frag=%u%%",
+                 (unsigned)((lvgl_mon.total_size - lvgl_mon.free_size) / 1024),
+                 (unsigned)(lvgl_mon.free_size / 1024),
+                 (unsigned)lvgl_mon.frag_pct);
+
+        /* Monitor critical task stacks */
+        static const char *task_names[] = {"voice_mic", "voice_ws", "voice_recon", "heap_wd", "voice_play"};
+        for (int i = 0; i < 5; i++) {
+            TaskHandle_t t = xTaskGetHandle(task_names[i]);
+            if (t) {
+                UBaseType_t hwm = uxTaskGetStackHighWaterMark(t);
+                if (hwm < 512) {
+                    ESP_LOGW(TAG, "Task '%s' stack low: %u bytes remaining", task_names[i], (unsigned)hwm);
+                }
+            }
+        }
+
         /* US-HW17: Log NVS write count for flash wear monitoring */
         ESP_LOGI(TAG, "NVS writes this session: %lu",
                  (unsigned long)tab5_settings_get_nvs_write_count());
@@ -138,7 +159,7 @@ void heap_watchdog_start(void)
     xTaskCreatePinnedToCore(
         heap_watchdog_task,
         "heap_wd",
-        2560,           /* Stack: 2.5KB — heap_caps calls + task HWM query + logging */
+        3072,           /* Stack: 3KB — heap_caps + LVGL mem_monitor + task HWM queries + logging */
         NULL,
         1,              /* Priority 1 — lowest, background monitoring */
         NULL,

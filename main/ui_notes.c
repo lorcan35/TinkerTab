@@ -1973,6 +1973,10 @@ lv_obj_t *ui_notes_create(void)
     /* Fullscreen overlay on home screen (NOT a separate lv_screen) */
     extern lv_obj_t *ui_home_get_screen(void);
     s_screen = lv_obj_create(ui_home_get_screen());
+    if (!s_screen) {
+        ESP_LOGE(TAG, "OOM: failed to create notes screen");
+        return NULL;
+    }
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, SW, OVERLAY_H);
     lv_obj_set_pos(s_screen, 0, 0);
