@@ -170,7 +170,7 @@
 // ---------------------------------------------------------------------------
 // Firmware identity
 // ---------------------------------------------------------------------------
-#define TAB5_FIRMWARE_VER     "0.7.0"
+#define TAB5_FIRMWARE_VER     "0.8.0"
 
 // Voice modes (matches voice_mode in config_update protocol)
 #define VOICE_MODE_LOCAL       0

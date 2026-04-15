@@ -245,7 +245,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 
 ## OTA Firmware Updates
 - **Dual OTA partitions:** ota_0 (3MB) + ota_1 (3MB) with otadata boot selector
-- **Check:** `tab5_ota_check()` → GET `http://dragon:3502/api/ota/check?current=0.7.0`
+- **Check:** `tab5_ota_check()` → GET `http://dragon:3502/api/ota/check?current=0.8.0`
 - **Apply:** `tab5_ota_apply(url, sha256)` → downloads via `esp_https_ota()`, verifies SHA256, writes inactive slot, reboots
 - **SHA256 verification (SEC07):** After download, firmware is read back from the OTA partition and hashed with `mbedtls_sha256`. The computed hash is compared against the `sha256` field from `version.json`. Mismatch aborts the OTA with `ESP_ERR_INVALID_CRC`. If `sha256` is empty/NULL, a warning is logged but OTA proceeds (backward compat). This prevents MitM firmware swaps over unencrypted LAN HTTP.
 - **Auto-rollback:** New firmware boots in PENDING_VERIFY. If crash before `tab5_ota_mark_valid()`, bootloader reverts.
@@ -373,7 +373,7 @@ main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c             — ES7210 quad-mic via esp_codec_dev
 main/dragon_link.c     — Dragon mDNS discovery + CDP connection state
 main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING), voice WS kept across transitions
-main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.7.0), VOICE_MODE_TINKERCLAW=3
+main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.8.0), VOICE_MODE_TINKERCLAW=3
 main/settings.c        — NVS: WiFi, Dragon host, volume, brightness, voice_mode, llm_model, session_id
 main/settings.h        — Settings API including three-tier voice_mode + llm_model
 main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat bubbles, stop button)
