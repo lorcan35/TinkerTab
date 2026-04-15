@@ -2103,6 +2103,10 @@ void ui_notes_hide(void)
 {
     ui_keyboard_set_layout_cb(NULL);
     hide_input_area();
+    /* Clear recording state — prevents transcription queue blockage if user
+     * navigates away mid-recording. Without this, s_voice_recording stays
+     * true forever since ui_notes_destroy() is never called. */
+    s_voice_recording = false;
     if (s_screen) {
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
