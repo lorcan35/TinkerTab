@@ -1392,14 +1392,18 @@ static esp_err_t selftest_handler(httpd_req_t *req)
         if (ok) pass++; else fail++;
     }
 
-    /* Internal heap (>50KB) */
+    /* Internal heap — free + fragmentation */
     {
         cJSON *t = cJSON_CreateObject();
         size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        bool ok = free_internal > (30 * 1024);  /* 30KB threshold — 43KB typical on clean boot */
+        size_t largest_internal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        int frag_pct = (free_internal > 0) ? (int)(100 - (largest_internal * 100 / free_internal)) : 0;
+        bool ok = free_internal > (30 * 1024) && largest_internal > (8 * 1024);
         cJSON_AddStringToObject(t, "name", "internal_heap");
         cJSON_AddBoolToObject(t, "pass", ok);
         cJSON_AddNumberToObject(t, "free_kb", (double)(free_internal / 1024));
+        cJSON_AddNumberToObject(t, "largest_block_kb", (double)(largest_internal / 1024));
+        cJSON_AddNumberToObject(t, "fragmentation_pct", (double)frag_pct);
         cJSON_AddItemToArray(tests, t);
         if (ok) pass++; else fail++;
     }

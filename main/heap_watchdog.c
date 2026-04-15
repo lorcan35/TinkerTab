@@ -42,18 +42,28 @@ static void heap_watchdog_task(void *arg)
 
         size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
         size_t psram_free    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        int frag_pct = (internal_free > 0) ? (int)(100 - (internal_largest * 100 / internal_free)) : 0;
 
         /* C12: Verify internal DMA pool has healthy headroom */
         size_t dma_free = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         size_t dma_largest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 
-        ESP_LOGI(TAG, "PSRAM: largest_block=%uKB free=%uKB | Internal: free=%uKB | DMA: free=%uKB largest=%uKB",
+        ESP_LOGI(TAG, "PSRAM: blk=%uKB free=%uKB | Internal: free=%uKB blk=%uKB frag=%d%% | DMA: free=%uKB blk=%uKB",
                  (unsigned)(psram_largest / 1024),
                  (unsigned)(psram_free / 1024),
                  (unsigned)(internal_free / 1024),
+                 (unsigned)(internal_largest / 1024),
+                 frag_pct,
                  (unsigned)(dma_free / 1024),
                  (unsigned)(dma_largest / 1024));
+
+        /* Internal SRAM fragmentation alert: free is OK but largest block is small */
+        if (internal_largest < 4096 && internal_free > 16384) {
+            ESP_LOGE(TAG, "Internal SRAM fragmented: %uKB free but largest block only %u bytes!",
+                     (unsigned)(internal_free / 1024), (unsigned)internal_largest);
+        }
 
         if (dma_free < 16384) {
             ESP_LOGE(TAG, "DMA pool critically low: %zu bytes free (largest block %zu)", dma_free, dma_largest);
