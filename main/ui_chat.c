@@ -513,7 +513,7 @@ static void show_typing_indicator(void)
     lv_obj_t *lbl = lv_label_create(s_typing_lbl);
     lv_label_set_text(lbl, LV_SYMBOL_REFRESH "  Tinker is thinking...");
     lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
     /* Scroll so the indicator is fully visible (bottom of indicator) */
@@ -545,7 +545,7 @@ static void show_tool_indicator(const char *tool_name)
     lv_obj_t *lbl = lv_label_create(s_tool_label);
     lv_label_set_text(lbl, buf);
     lv_obj_set_style_text_color(lbl, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
     lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
     /* Scroll so the tool indicator is fully visible */
@@ -1222,7 +1222,7 @@ static void build_home_panel(void)
     lv_obj_t *back_lbl = lv_label_create(back_btn);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(back_lbl, FONT_BODY, 0);
     lv_obj_center(back_lbl);
 
     /* "Conversations" title */
@@ -1230,12 +1230,12 @@ static void build_home_panel(void)
     lv_label_set_text(title, "Conversations");
     lv_obj_set_pos(title, 110, 16);
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, FONT_BODY, 0);
 
     /* Mode badge — tappable */
     s_home_mode_badge = lv_label_create(s_home_panel);
     lv_obj_set_pos(s_home_mode_badge, 460, 12);
-    lv_obj_set_style_text_font(s_home_mode_badge, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_home_mode_badge, FONT_SECONDARY, 0);
     lv_obj_set_style_bg_opa(s_home_mode_badge, LV_OPA_20, 0);
     lv_obj_set_style_radius(s_home_mode_badge, 12, 0);
     lv_obj_set_style_pad_hor(s_home_mode_badge, 12, 0);
@@ -1258,7 +1258,7 @@ static void build_home_panel(void)
     lv_obj_t *new_lbl = lv_label_create(new_btn);
     lv_label_set_text(new_lbl, LV_SYMBOL_PLUS " New");
     lv_obj_set_style_text_color(new_lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(new_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(new_lbl, FONT_CAPTION, 0);
     lv_obj_center(new_lbl);
 
     /* Topbar separator */
@@ -1278,7 +1278,7 @@ static void build_home_panel(void)
     lv_label_set_text(s_model_lbl, "");  /* Set by update_model_label() below */
     lv_obj_set_pos(s_model_lbl, 20, y + 10);
     lv_obj_set_style_text_color(s_model_lbl, lv_color_hex(0xAAAAAA), 0);
-    lv_obj_set_style_text_font(s_model_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_model_lbl, FONT_CAPTION, 0);
     /* Make model label tappable — cycles models within current mode */
     lv_obj_add_flag(s_model_lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(s_model_lbl, 10);
@@ -1301,7 +1301,7 @@ static void build_home_panel(void)
     lv_label_set_text(s_home_status_lbl, "Ready");
     lv_obj_set_pos(s_home_status_lbl, 574, y + 12);
     lv_obj_set_style_text_color(s_home_status_lbl, lv_color_hex(0x666666), 0);
-    lv_obj_set_style_text_font(s_home_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_home_status_lbl, FONT_CAPTION, 0);
 
     /* Model bar separator */
     lv_obj_t *sep2 = lv_obj_create(s_home_panel);
@@ -1333,7 +1333,7 @@ static void build_home_panel(void)
     lv_obj_t *qa_web_lbl = lv_label_create(qa_web);
     lv_label_set_text(qa_web_lbl, LV_SYMBOL_WIFI " Web");
     lv_obj_set_style_text_color(qa_web_lbl, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(qa_web_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(qa_web_lbl, FONT_SECONDARY, 0);
     lv_obj_center(qa_web_lbl);
 
     /* Timer */
@@ -1350,7 +1350,7 @@ static void build_home_panel(void)
     lv_obj_t *qa_timer_lbl = lv_label_create(qa_timer);
     lv_label_set_text(qa_timer_lbl, LV_SYMBOL_BELL " Timer");
     lv_obj_set_style_text_color(qa_timer_lbl, lv_color_hex(CLR_AMBER), 0);
-    lv_obj_set_style_text_font(qa_timer_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(qa_timer_lbl, FONT_SECONDARY, 0);
     lv_obj_center(qa_timer_lbl);
 
     /* Remember */
@@ -1367,7 +1367,7 @@ static void build_home_panel(void)
     lv_obj_t *qa_mem_lbl = lv_label_create(qa_mem);
     lv_label_set_text(qa_mem_lbl, LV_SYMBOL_EYE_OPEN " Memory");
     lv_obj_set_style_text_color(qa_mem_lbl, lv_color_hex(0xBF5AF2), 0);
-    lv_obj_set_style_text_font(qa_mem_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(qa_mem_lbl, FONT_SECONDARY, 0);
     lv_obj_center(qa_mem_lbl);
 
     y += 64;
@@ -1412,7 +1412,7 @@ static void build_home_panel(void)
     lv_label_set_text(card1_title, "Current Conversation");
     lv_obj_set_pos(card1_title, 0, 0);
     lv_obj_set_style_text_color(card1_title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(card1_title, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(card1_title, FONT_SECONDARY, 0);
 
     /* Card 1: time + arrow */
     char time_buf[8] = "";
@@ -1421,7 +1421,7 @@ static void build_home_panel(void)
     lv_label_set_text_fmt(card1_meta, "%s  " LV_SYMBOL_RIGHT, time_buf[0] ? time_buf : "Now");
     lv_obj_set_pos(card1_meta, 520, 0);
     lv_obj_set_style_text_color(card1_meta, lv_color_hex(0x666666), 0);
-    lv_obj_set_style_text_font(card1_meta, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(card1_meta, FONT_CAPTION, 0);
 
     /* Card 1: message preview */
     s_current_card_preview = lv_label_create(card1);
@@ -1445,7 +1445,7 @@ static void build_home_panel(void)
     lv_obj_set_width(s_current_card_preview, card_w - 40);
     lv_label_set_long_mode(s_current_card_preview, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(s_current_card_preview, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(s_current_card_preview, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_current_card_preview, FONT_CAPTION, 0);
 
     /* Card 1: message count indicator */
     lv_obj_t *card1_count = lv_label_create(card1);
@@ -1456,7 +1456,7 @@ static void build_home_panel(void)
     }
     lv_obj_set_pos(card1_count, 0, 66);
     lv_obj_set_style_text_color(card1_count, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_text_font(card1_count, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(card1_count, FONT_CAPTION, 0);
 
     card_y += 120 + 12;
 
@@ -1481,19 +1481,19 @@ static void build_home_panel(void)
     lv_label_set_text(card2_icon, LV_SYMBOL_PLUS);
     lv_obj_set_pos(card2_icon, 0, 8);
     lv_obj_set_style_text_color(card2_icon, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(card2_icon, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(card2_icon, FONT_HEADING, 0);
 
     lv_obj_t *card2_title = lv_label_create(card2);
     lv_label_set_text(card2_title, "Start New Chat");
     lv_obj_set_pos(card2_title, 40, 4);
     lv_obj_set_style_text_color(card2_title, lv_color_hex(CLR_CYAN), 0);
-    lv_obj_set_style_text_font(card2_title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(card2_title, FONT_BODY, 0);
 
     lv_obj_t *card2_desc = lv_label_create(card2);
     lv_label_set_text(card2_desc, "Fresh conversation with Tinker");
     lv_obj_set_pos(card2_desc, 40, 32);
     lv_obj_set_style_text_color(card2_desc, lv_color_hex(0x666666), 0);
-    lv_obj_set_style_text_font(card2_desc, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(card2_desc, FONT_CAPTION, 0);
 
     card_y += 90 + 12;
 
@@ -1503,7 +1503,7 @@ static void build_home_panel(void)
     lv_label_set_text(hint_title, "Try asking...");
     lv_obj_set_pos(hint_title, card_x, card_y + 8);
     lv_obj_set_style_text_color(hint_title, lv_color_hex(0x555555), 0);
-    lv_obj_set_style_text_font(hint_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(hint_title, FONT_CAPTION, 0);
 
     card_y += 36;
 
@@ -1535,7 +1535,7 @@ static void build_home_panel(void)
         lv_obj_t *sug_lbl = lv_label_create(sug);
         lv_label_set_text(sug_lbl, suggestions[i]);
         lv_obj_set_style_text_color(sug_lbl, lv_color_hex(sug_colors[i]), 0);
-        lv_obj_set_style_text_font(sug_lbl, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(sug_lbl, FONT_SECONDARY, 0);
         lv_obj_align(sug_lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
         card_y += 56 + 12;
@@ -1560,7 +1560,7 @@ static void build_home_panel(void)
     lv_label_set_text(s_memory_lbl, LV_SYMBOL_EYE_OPEN "  Tinker remembers your preferences");
     lv_obj_set_pos(s_memory_lbl, 20, 0);
     lv_obj_set_style_text_color(s_memory_lbl, lv_color_hex(0x777777), 0);
-    lv_obj_set_style_text_font(s_memory_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_memory_lbl, FONT_SMALL, 0);
     lv_obj_align(s_memory_lbl, LV_ALIGN_LEFT_MID, 16, 0);
 
     /* ── Input Bar (80px) — shared with conversation ──────────── */
@@ -1590,7 +1590,7 @@ static void build_home_panel(void)
     lv_obj_t *mic_icon = lv_label_create(mic_btn);
     lv_label_set_text(mic_icon, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(mic_icon, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(mic_icon, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(mic_icon, FONT_HEADING, 0);
     lv_obj_center(mic_icon);
 
     /* Text input */
@@ -1601,7 +1601,7 @@ static void build_home_panel(void)
     lv_textarea_set_one_line(s_home_textarea, true);
     lv_obj_set_style_bg_color(s_home_textarea, lv_color_hex(CLR_INPUT_BG), 0);
     lv_obj_set_style_text_color(s_home_textarea, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_home_textarea, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_home_textarea, FONT_SECONDARY, 0);
     lv_obj_set_style_border_color(s_home_textarea, lv_color_hex(CLR_INPUT_BORDER), 0);
     lv_obj_set_style_border_width(s_home_textarea, 1, 0);
     lv_obj_set_style_radius(s_home_textarea, 24, 0);
@@ -1630,7 +1630,7 @@ static void build_home_panel(void)
     lv_obj_t *send_lbl = lv_label_create(send_btn);
     lv_label_set_text(send_lbl, "Send");
     lv_obj_set_style_text_color(send_lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(send_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(send_lbl, FONT_SECONDARY, 0);
     lv_obj_center(send_lbl);
 
     update_mode_badge_obj(s_home_mode_badge);
@@ -1673,7 +1673,7 @@ static void build_conversation_ui(void)
     lv_obj_t *back_lbl = lv_label_create(back_btn);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(back_lbl, FONT_BODY, 0);
     lv_obj_center(back_lbl);
 
     /* "Chat" title */
@@ -1681,7 +1681,7 @@ static void build_conversation_ui(void)
     lv_label_set_text(title, "Chat");
     lv_obj_set_pos(title, 110, 8);
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(title, FONT_BODY, 0);
 
     /* Connection dot + status text */
     s_status_dot = lv_obj_create(s_conv_panel);
@@ -1697,7 +1697,7 @@ static void build_conversation_ui(void)
     lv_label_set_text(s_status_lbl, "Ready");
     lv_obj_set_pos(s_status_lbl, 126, 32);
     lv_obj_set_style_text_color(s_status_lbl, lv_color_hex(0x666666), 0);
-    lv_obj_set_style_text_font(s_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_status_lbl, FONT_CAPTION, 0);
 
     /* New chat button */
     lv_obj_t *new_btn = lv_button_create(s_conv_panel);
@@ -1712,13 +1712,13 @@ static void build_conversation_ui(void)
     lv_obj_t *new_lbl = lv_label_create(new_btn);
     lv_label_set_text(new_lbl, LV_SYMBOL_PLUS);
     lv_obj_set_style_text_color(new_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(new_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(new_lbl, FONT_SECONDARY, 0);
     lv_obj_center(new_lbl);
 
     /* Mode badge */
     s_mode_badge = lv_label_create(s_conv_panel);
     lv_obj_set_pos(s_mode_badge, 540, 12);
-    lv_obj_set_style_text_font(s_mode_badge, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_mode_badge, FONT_SECONDARY, 0);
     lv_obj_set_style_bg_opa(s_mode_badge, LV_OPA_20, 0);
     lv_obj_set_style_radius(s_mode_badge, 12, 0);
     lv_obj_set_style_pad_hor(s_mode_badge, 12, 0);
@@ -1775,7 +1775,7 @@ static void build_conversation_ui(void)
     lv_obj_t *mic_icon = lv_label_create(mic_btn);
     lv_label_set_text(mic_icon, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(mic_icon, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(mic_icon, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(mic_icon, FONT_HEADING, 0);
     lv_obj_center(mic_icon);
 
     /* Conversation textarea */
@@ -1786,7 +1786,7 @@ static void build_conversation_ui(void)
     lv_textarea_set_one_line(s_conv_textarea, true);
     lv_obj_set_style_bg_color(s_conv_textarea, lv_color_hex(CLR_INPUT_BG), 0);
     lv_obj_set_style_text_color(s_conv_textarea, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_conv_textarea, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_conv_textarea, FONT_SECONDARY, 0);
     lv_obj_set_style_border_color(s_conv_textarea, lv_color_hex(CLR_INPUT_BORDER), 0);
     lv_obj_set_style_border_width(s_conv_textarea, 1, 0);
     lv_obj_set_style_radius(s_conv_textarea, 24, 0);
@@ -1812,7 +1812,7 @@ static void build_conversation_ui(void)
     lv_obj_t *send_lbl = lv_label_create(send_btn);
     lv_label_set_text(send_lbl, "Send");
     lv_obj_set_style_text_color(send_lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(send_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(send_lbl, FONT_SECONDARY, 0);
     lv_obj_center(send_lbl);
 
     /* Welcome message — minimal centered hint, not a full bubble */
@@ -1828,7 +1828,7 @@ static void build_conversation_ui(void)
         lv_label_set_text(wl, "Type or tap " LV_SYMBOL_AUDIO " to chat with Tinker");
         lv_obj_set_width(wl, 680);
         lv_obj_set_style_text_align(wl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_font(wl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(wl, FONT_CAPTION, 0);
         lv_obj_set_style_text_color(wl, lv_color_hex(0x555555), 0);
 
         lv_obj_update_layout(wb);
@@ -1840,7 +1840,7 @@ static void build_conversation_ui(void)
     s_empty_hint = lv_label_create(s_msg_scroll);
     lv_label_set_text(s_empty_hint, "Ask me anything!\nI can search the web,\ndo math, check weather,\nand remember things.");
     lv_obj_set_style_text_color(s_empty_hint, lv_color_hex(0x444444), 0);
-    lv_obj_set_style_text_font(s_empty_hint, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_empty_hint, FONT_SECONDARY, 0);
     lv_obj_set_style_text_align(s_empty_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_empty_hint, 120, 300);
 
@@ -1933,7 +1933,7 @@ void ui_chat_add_message(const char *text, bool is_user)
             s_archived_lbl = lv_label_create(s_msg_scroll);
             lv_label_set_text(s_archived_lbl, "Older messages archived");
             lv_obj_set_style_text_color(s_archived_lbl, lv_color_hex(0x555555), 0);
-            lv_obj_set_style_text_font(s_archived_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(s_archived_lbl, FONT_SMALL, 0);
             lv_obj_set_style_text_align(s_archived_lbl, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_width(s_archived_lbl, 720 - 40);
             lv_obj_set_pos(s_archived_lbl, 20, 0);
@@ -1988,7 +1988,7 @@ void ui_chat_add_message(const char *text, bool is_user)
     lv_label_set_text(lbl, stripped);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(lbl, LABEL_MAX_W);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(is_user ? 0x000000 : 0xFFFFFF), 0);
 
     /* Timestamp label — right-aligned inside bubble, below message text.
@@ -1997,7 +1997,7 @@ void ui_chat_add_message(const char *text, bool is_user)
     if (get_time_str(time_buf, sizeof(time_buf))) {
         lv_obj_t *ts = lv_label_create(bubble);
         lv_label_set_text(ts, time_buf);
-        lv_obj_set_style_text_font(ts, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(ts, FONT_CAPTION, 0);
         lv_obj_set_style_text_color(ts, lv_color_hex(is_user ? 0x555555 : 0x888888), 0);
         lv_obj_set_width(ts, LABEL_MAX_W);
         lv_obj_set_style_text_align(ts, LV_TEXT_ALIGN_RIGHT, 0);

@@ -188,10 +188,10 @@ static volatile bool s_disconnecting = false;  /* US-C21: guard against connect-
 // Reconnect watchdog
 static TaskHandle_t  s_reconnect_task = NULL;
 static volatile bool s_reconnect_enabled = false;
-static volatile uint32_t s_reconnect_backoff_ms = 2000;  /* Bug4: file-scope so force_reconnect can reset */
-#define RECONNECT_CHECK_MS     5000   /* check connection every 5s */
-#define RECONNECT_BACKOFF_MIN_MS  2000   /* initial backoff after failed reconnect (US-A01) */
-#define RECONNECT_BACKOFF_MAX_MS  60000  /* max backoff cap (US-A01) */
+static volatile uint32_t s_reconnect_backoff_ms = 1000;
+#define RECONNECT_CHECK_MS     3000   /* check every 3s (was 5s — faster detection) */
+#define RECONNECT_BACKOFF_MIN_MS  1000   /* 1s fast retry — most reconnects succeed immediately */
+#define RECONNECT_BACKOFF_MAX_MS  10000  /* 10s max cap (was 60s — user shouldn't wait >10s) */
 #define IDLE_PING_INTERVAL_MS  8000   /* ping every 8s when idle/ready (was 10s — ngrok needs <20s) */
 
 // Keepalive degraded state (US-A05) — tolerance for missed pongs before disconnect

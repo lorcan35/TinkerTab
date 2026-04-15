@@ -199,3 +199,17 @@
 #define TAB5_VOICE_CHUNK_MS       20     // Audio chunk size in ms
 #define TAB5_VOICE_SAMPLE_RATE    16000  // Rate sent to Dragon (downsampled from 48kHz)
 #define TAB5_VOICE_PLAYBACK_BUF   131072 // Playback ring buffer bytes (~1.4s at 48kHz mono 16-bit, in PSRAM)
+
+// ---------------------------------------------------------------------------
+// Global Typography Scale (720x1280 display @ arm's length)
+// ---------------------------------------------------------------------------
+#define FONT_TITLE       &lv_font_montserrat_28   /* Screen titles, big numbers */
+#define FONT_HEADING     &lv_font_montserrat_24   /* Section headers, card titles */
+#define FONT_BODY        &lv_font_montserrat_20   /* Primary body text, messages, labels */
+#define FONT_SECONDARY   &lv_font_montserrat_18   /* Secondary text, descriptions */
+#define FONT_CAPTION     &lv_font_montserrat_16   /* Timestamps, badges, metadata */
+#define FONT_SMALL       &lv_font_montserrat_14   /* Hints, placeholders, debug */
+#define FONT_CLOCK       &lv_font_montserrat_48   /* Home screen clock */
+#define FONT_DATE        &lv_font_montserrat_24   /* Home screen date */
+#define FONT_KEY         &lv_font_montserrat_20   /* Keyboard keys */
+#define FONT_NAV         &lv_font_montserrat_18   /* Nav bar labels */

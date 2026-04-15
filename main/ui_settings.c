@@ -169,7 +169,7 @@ static int mk_section(lv_obj_t *parent, const char *text, lv_color_t accent, int
     lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, accent, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
     lv_obj_set_style_text_letter_space(lbl, 3, 0);
     lv_obj_set_pos(lbl, SIDE_PAD, y);
 
@@ -182,8 +182,8 @@ static void mk_row_label(lv_obj_t *parent, const char *label, int y)
     lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, label);
     lv_obj_set_style_text_color(lbl, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
-    lv_obj_set_pos(lbl, SIDE_PAD, y + (ROW_H - 18) / 2);
+    lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+    lv_obj_set_pos(lbl, SIDE_PAD, y + (ROW_H - 20) / 2);
 }
 
 /** Right-aligned value text. Returns the label object. */
@@ -192,8 +192,8 @@ static lv_obj_t *mk_row_value(lv_obj_t *parent, const char *text, lv_color_t col
     lv_obj_t *lbl = lv_label_create(parent);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, color, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
-    lv_obj_set_pos(lbl, RIGHT_X, y + (ROW_H - 18) / 2);
+    lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+    lv_obj_set_pos(lbl, RIGHT_X, y + (ROW_H - 20) / 2);
     return lbl;
 }
 
@@ -603,14 +603,14 @@ static void cb_ota_apply(lv_event_t *e)
     lv_obj_t *title = lv_msgbox_get_title(mbox);
     if (title) {
         lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(title, FONT_BODY, 0);
     }
 
     /* Style content area */
     lv_obj_t *content = lv_msgbox_get_content(mbox);
     if (content) {
         lv_obj_set_style_text_color(content, lv_color_hex(TEXT_DIM), 0);
-        lv_obj_set_style_text_font(content, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(content, FONT_CAPTION, 0);
     }
 
     /* Style header */
@@ -724,7 +724,7 @@ static lv_obj_t *mk_pill_btn(lv_obj_t *parent, const char *text, lv_color_t bg,
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, text_color, 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
     lv_obj_center(lbl);
 
     return btn;
@@ -787,7 +787,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_add_event_cb(s_tab_local, cb_tab_local, LV_EVENT_CLICKED, NULL);
         lv_obj_t *tl = lv_label_create(s_tab_local);
         lv_label_set_text(tl, "Local");
-        lv_obj_set_style_text_font(tl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(tl, FONT_SECONDARY, 0);
         lv_obj_center(tl);
 
         feed_wdt(); /* mid-section yield — Voice Mode is the heaviest section */
@@ -809,7 +809,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_add_event_cb(s_tab_hybrid, cb_tab_hybrid, LV_EVENT_CLICKED, NULL);
         lv_obj_t *th = lv_label_create(s_tab_hybrid);
         lv_label_set_text(th, "Hybrid");
-        lv_obj_set_style_text_font(th, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(th, FONT_SECONDARY, 0);
         lv_obj_center(th);
 
         feed_wdt(); /* mid-section yield */
@@ -831,7 +831,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_add_event_cb(s_tab_cloud, cb_tab_cloud, LV_EVENT_CLICKED, NULL);
         lv_obj_t *tc = lv_label_create(s_tab_cloud);
         lv_label_set_text(tc, "Cloud");
-        lv_obj_set_style_text_font(tc, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(tc, FONT_SECONDARY, 0);
         lv_obj_center(tc);
 
         feed_wdt(); /* mid-section yield — before TinkerClaw tab */
@@ -853,7 +853,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_add_event_cb(s_tab_tinkerclaw, cb_tab_tinkerclaw, LV_EVENT_CLICKED, NULL);
         lv_obj_t *tt = lv_label_create(s_tab_tinkerclaw);
         lv_label_set_text(tt, "TinkerClaw");
-        lv_obj_set_style_text_font(tt, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(tt, FONT_SECONDARY, 0);
         lv_obj_center(tt);
     }
     y += tab_h + 10;
@@ -878,7 +878,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k1 = lv_label_create(s_local_card);
         lv_label_set_text(k1, "LLM Model");
         lv_obj_set_style_text_color(k1, lv_color_hex(TAB_LOCAL), 0);
-        lv_obj_set_style_text_font(k1, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
         lv_obj_set_pos(k1, 16, 14);
         s_local_content[0] = k1;
 
@@ -888,7 +888,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_dropdown_set_options(dd, "qwen3:1.7b\nqwen3:4b\nqwen3:0.6b");
         lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(dd, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
         lv_obj_set_style_border_width(dd, 1, 0);
         lv_obj_set_style_border_color(dd, lv_color_hex(TAB_LOCAL), 0);
         lv_obj_set_style_radius(dd, 6, 0);
@@ -909,7 +909,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k2 = lv_label_create(s_local_card);
         lv_label_set_text(k2, "Temperature: 0.7");
         lv_obj_set_style_text_color(k2, lv_color_hex(TAB_LOCAL), 0);
-        lv_obj_set_style_text_font(k2, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
         lv_obj_set_pos(k2, 16, 60);
         s_local_content[2] = k2;
         s_local_content[3] = NULL;
@@ -934,7 +934,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k1 = lv_label_create(s_hybrid_card);
         lv_label_set_text(k1, "STT / TTS: Cloud (OpenRouter)");
         lv_obj_set_style_text_color(k1, lv_color_hex(TAB_HYBRID), 0);
-        lv_obj_set_style_text_font(k1, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
         lv_obj_set_pos(k1, 16, 20);
         s_hybrid_content[0] = k1;
         s_hybrid_content[1] = NULL;
@@ -942,7 +942,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k2 = lv_label_create(s_hybrid_card);
         lv_label_set_text(k2, "LLM: Local (Ollama)");
         lv_obj_set_style_text_color(k2, lv_color_hex(TAB_HYBRID), 0);
-        lv_obj_set_style_text_font(k2, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
         lv_obj_set_pos(k2, 16, 60);
         s_hybrid_content[2] = k2;
         s_hybrid_content[3] = NULL;
@@ -967,7 +967,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k1 = lv_label_create(s_cloud_card);
         lv_label_set_text(k1, "Cloud Model");
         lv_obj_set_style_text_color(k1, lv_color_hex(TAB_CLOUD), 0);
-        lv_obj_set_style_text_font(k1, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
         lv_obj_set_pos(k1, 16, 14);
         s_cloud_content[0] = k1;
 
@@ -977,7 +977,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_dropdown_set_options(dd, "Claude 3.5 Haiku\nClaude Sonnet\nGPT-4o mini\nGPT-4o");
         lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(dd, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
         lv_obj_set_style_border_width(dd, 1, 0);
         lv_obj_set_style_border_color(dd, lv_color_hex(TAB_CLOUD), 0);
         lv_obj_set_style_radius(dd, 6, 0);
@@ -997,7 +997,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k2 = lv_label_create(s_cloud_card);
         lv_label_set_text(k2, "API Key: Set");
         lv_obj_set_style_text_color(k2, lv_color_hex(TAB_CLOUD), 0);
-        lv_obj_set_style_text_font(k2, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
         lv_obj_set_pos(k2, 16, 60);
         s_cloud_content[2] = k2;
         s_cloud_content[3] = NULL;
@@ -1022,14 +1022,14 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *k1 = lv_label_create(s_tinkerclaw_card);
         lv_label_set_text(k1, "Agent mode \xe2\x80\x94 TinkerClaw gateway");
         lv_obj_set_style_text_color(k1, lv_color_hex(TAB_TINKERCLAW), 0);
-        lv_obj_set_style_text_font(k1, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
         lv_obj_set_pos(k1, 16, 20);
         s_tinkerclaw_content[0] = k1;
 
         lv_obj_t *k2 = lv_label_create(s_tinkerclaw_card);
         lv_label_set_text(k2, "handles skills, memory, and model selection");
         lv_obj_set_style_text_color(k2, lv_color_hex(TAB_TINKERCLAW), 0);
-        lv_obj_set_style_text_font(k2, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
         lv_obj_set_pos(k2, 16, 60);
         s_tinkerclaw_content[1] = k2;
         s_tinkerclaw_content[2] = NULL;
@@ -1059,7 +1059,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_sd_info = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_sd_info, "SD: Checking...");
     lv_obj_set_style_text_color(s_lbl_sd_info, lv_color_hex(TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_sd_info, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_sd_info, FONT_BODY, 0);
     lv_obj_set_pos(s_lbl_sd_info, SIDE_PAD, y + (ROW_H - 18) / 2);
     y += ROW_H + 16;
 
@@ -1076,7 +1076,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_bat_status = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_status, "Checking...");
     lv_obj_set_style_text_color(s_lbl_bat_status, lv_color_hex(TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_bat_status, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_bat_status, FONT_BODY, 0);
     lv_obj_set_pos(s_lbl_bat_status, SIDE_PAD, y + (ROW_H - 18) / 2);
     y += ROW_H + 4;
 
@@ -1093,7 +1093,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_bat_pct = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_pct, "0%");
     lv_obj_set_style_text_color(s_lbl_bat_pct, lv_color_hex(TEXT_DIM), 0);
-    lv_obj_set_style_text_font(s_lbl_bat_pct, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_bat_pct, FONT_BODY, 0);
     lv_obj_set_pos(s_lbl_bat_pct, SIDE_PAD + 415, y + (ROW_H - 18) / 2);
     y += ROW_H + 2;
 
@@ -1101,7 +1101,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_bat_volt = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_volt, "");
     lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x444444), 0);
-    lv_obj_set_style_text_font(s_lbl_bat_volt, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_bat_volt, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y);
     y += 20 + 16;
 
@@ -1121,7 +1121,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *ver_lbl = lv_label_create(s_scroll);
         lv_label_set_text(ver_lbl, ver_str);
         lv_obj_set_style_text_color(ver_lbl, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(ver_lbl, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(ver_lbl, FONT_HEADING, 0);
         lv_obj_set_pos(ver_lbl, SIDE_PAD, y + 2);
     }
     y += 28;
@@ -1133,7 +1133,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_t *hw_lbl = lv_label_create(s_scroll);
         lv_label_set_text(hw_lbl, hw_str);
         lv_obj_set_style_text_color(hw_lbl, lv_color_hex(TEXT_DIM), 0);
-        lv_obj_set_style_text_font(hw_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(hw_lbl, FONT_SMALL, 0);
         lv_obj_set_pos(hw_lbl, SIDE_PAD, y);
     }
     y += 24;
@@ -1158,7 +1158,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
     lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x444444), 0);
-    lv_obj_set_style_text_font(s_lbl_heap, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_heap, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 14) / 2);
     y += ROW_H;
 
@@ -1253,14 +1253,14 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_t *arrow = lv_label_create(back_btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_color(arrow, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(arrow, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(arrow, FONT_SECONDARY, 0);
     lv_obj_center(arrow);
 
     /* "Settings" title centered */
     lv_obj_t *title = lv_label_create(bar);
     lv_label_set_text(title, "Settings");
     lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(title, FONT_HEADING, 0);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
     /* ── Scrollable content area ─────────────────────────────────────── */
@@ -1293,7 +1293,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
     lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_text_font(s_lbl_bright_val, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_bright_val, FONT_SECONDARY, 0);
     y += ROW_H + 4;
 
     /* Volume */
@@ -1305,7 +1305,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
     lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
-    lv_obj_set_style_text_font(s_lbl_vol_val, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_lbl_vol_val, FONT_SECONDARY, 0);
     y += ROW_H + 4;
 
     /* Auto-rotate */
@@ -1355,7 +1355,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_bg_color(s_dragon_ta, lv_color_hex(CARD_COLOR), 0);
     lv_obj_set_style_bg_opa(s_dragon_ta, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(s_dragon_ta, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_dragon_ta, FONT_CAPTION, 0);
     lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
     lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(s_dragon_ta, 6, 0);
@@ -1379,7 +1379,7 @@ lv_obj_t *ui_settings_create(void)
     lv_label_set_text(s_dragon_status_lbl, "");
     lv_obj_set_pos(s_dragon_status_lbl, SIDE_PAD, y);
     lv_obj_set_style_text_color(s_dragon_status_lbl, lv_color_hex(ACC_NETWORK), 0);
-    lv_obj_set_style_text_font(s_dragon_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_dragon_status_lbl, FONT_SMALL, 0);
     lv_obj_add_flag(s_dragon_status_lbl, LV_OBJ_FLAG_HIDDEN);
     y += 4;
 
@@ -1389,7 +1389,7 @@ lv_obj_t *ui_settings_create(void)
         lv_label_set_text(conn_lbl, "Connection");
         lv_obj_set_pos(conn_lbl, SIDE_PAD, y + 8);
         lv_obj_set_style_text_color(conn_lbl, lv_color_hex(TEXT_DIM), 0);
-        lv_obj_set_style_text_font(conn_lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(conn_lbl, FONT_CAPTION, 0);
 
         static lv_obj_t *s_conn_dd = NULL;
         s_conn_dd = lv_dropdown_create(s_scroll);
@@ -1400,7 +1400,7 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_bg_opa(s_conn_dd, LV_OPA_COVER, 0);
         lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(s_conn_dd, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(s_conn_dd, FONT_SECONDARY, 0);
         lv_obj_set_style_border_width(s_conn_dd, 1, 0);
         lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x333333), 0);
         lv_obj_set_style_radius(s_conn_dd, 6, 0);

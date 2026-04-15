@@ -253,7 +253,7 @@ static void stuck_watchdog_cb(lv_timer_t *t)
         stop_all_anims();
         lv_label_set_text(s_lbl_status, "Timed out — try again");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF4444), 0);
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, 0);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
         s_hide_timer = lv_timer_create(auto_hide_timer_cb, 3000, NULL);
@@ -326,7 +326,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             lv_obj_set_style_text_color(s_lbl_status,
                 lv_color_hex(0xFF4444), 0);
             lv_obj_set_style_text_font(s_lbl_status,
-                &lv_font_montserrat_20, 0);
+                FONT_BODY, 0);
             lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_Y_OFFSET + 40);
             lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
             /* Auto-hide after 3s (longer for Dragon errors so user can read) */
@@ -348,7 +348,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         }
         stop_all_anims();
         lv_label_set_text(s_lbl_status, "Connecting...");
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
         lv_obj_set_style_text_color(s_lbl_status,
             lv_color_hex(VO_TEXT_DIM), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
@@ -421,7 +421,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         } else {
             lv_label_set_text(s_lbl_status, "Tap to Record");
         }
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
@@ -465,7 +465,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             /* Dictation: partial transcript update — show running text */
             lv_label_set_text(s_lbl_status, "Dictating...");
             lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
-            lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_font(s_lbl_status, FONT_BODY, 0);
             lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                          ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
             lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
@@ -630,7 +630,7 @@ static void build_overlay(void)
     s_lbl_status = lv_label_create(s_overlay);
     if (!s_lbl_status) { ESP_LOGE(TAG, "OOM creating voice status label"); return; }
     lv_label_set_text(s_lbl_status, "");
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_DIM), 0);
     lv_obj_set_style_text_letter_space(s_lbl_status, 3, 0);
     lv_obj_set_width(s_lbl_status, SW - 80);
@@ -641,7 +641,7 @@ static void build_overlay(void)
     s_lbl_transcript = lv_label_create(s_overlay);
     if (!s_lbl_transcript) { ESP_LOGE(TAG, "OOM creating voice transcript label"); return; }
     lv_label_set_text(s_lbl_transcript, "");
-    lv_obj_set_style_text_font(s_lbl_transcript, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_lbl_transcript, FONT_BODY, 0);
     lv_obj_set_style_text_color(s_lbl_transcript, lv_color_hex(VO_TEXT_MID), 0);
     lv_obj_set_width(s_lbl_transcript, SW - 100);
     lv_obj_set_style_text_align(s_lbl_transcript, LV_TEXT_ALIGN_CENTER, 0);
@@ -652,7 +652,7 @@ static void build_overlay(void)
     s_lbl_dots = lv_label_create(s_overlay);
     if (!s_lbl_dots) { ESP_LOGE(TAG, "OOM creating voice dots label"); return; }
     lv_label_set_text(s_lbl_dots, "");
-    lv_obj_set_style_text_font(s_lbl_dots, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(s_lbl_dots, FONT_BODY, 0);
     lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE_DIM), 0);
     lv_obj_set_width(s_lbl_dots, SW - 80);
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
@@ -663,7 +663,7 @@ static void build_overlay(void)
     s_lbl_rec_time = lv_label_create(s_overlay);
     if (!s_lbl_rec_time) { ESP_LOGE(TAG, "OOM creating voice rec time label"); return; }
     lv_label_set_text(s_lbl_rec_time, "0:00");
-    lv_obj_set_style_text_font(s_lbl_rec_time, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(s_lbl_rec_time, FONT_SECONDARY, 0);
     lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_TEXT_FAINT), 0);
     lv_obj_set_width(s_lbl_rec_time, SW - 80);
     lv_obj_set_style_text_align(s_lbl_rec_time, LV_TEXT_ALIGN_CENTER, 0);
@@ -782,7 +782,7 @@ static void build_close_button(lv_obj_t *parent)
     if (!x_lbl) { ESP_LOGE(TAG, "OOM creating close label"); return; }
     lv_label_set_text(x_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(x_lbl, lv_color_hex(VO_CLOSE_TEXT), 0);
-    lv_obj_set_style_text_font(x_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(x_lbl, FONT_HEADING, 0);
     lv_obj_center(x_lbl);
 
     /* Pressed feedback */
@@ -863,7 +863,7 @@ static lv_obj_t *create_bubble(lv_obj_t *parent, uint32_t bg_hex, uint32_t borde
     lv_obj_t *lbl = lv_label_create(bubble);
     if (!lbl) { ESP_LOGE(TAG, "OOM creating bubble label"); *lbl_out = NULL; return bubble; }
     lv_label_set_text(lbl, "");
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(VO_TEXT_BRIGHT), 0);
     lv_obj_set_width(lbl, CHAT_BUBBLE_MAX_W - 2 * CHAT_BUBBLE_PAD - 2);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
@@ -931,7 +931,7 @@ static void show_state_listening(void)
     } else {
         lv_label_set_text(s_lbl_status, "LISTENING");
     }
-    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
     lv_obj_set_style_text_letter_space(s_lbl_status, 4, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
@@ -953,7 +953,7 @@ static void show_state_listening(void)
     } else {
         lv_label_set_text(s_lbl_rec_time, "0:00");
     }
-    lv_obj_set_style_text_font(s_lbl_rec_time, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(s_lbl_rec_time, FONT_HEADING, 0);
     lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_CYAN), 0);
     lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
     lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
@@ -1031,7 +1031,7 @@ static void show_state_processing(const char *detail)
         lv_label_set_text(s_lbl_status,
             vmode == 3 ? "Agent thinking..." : "Thinking...");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_PURPLE_DIM), 0);
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(s_lbl_status, FONT_BODY, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
@@ -1589,7 +1589,7 @@ static void async_auto_stop_warning(void *arg)
         if (voice_get_mode() == VOICE_MODE_DICTATE) {
             lv_label_set_text(s_lbl_status, "Dictating...");
             lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
-            lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
         }
     } else {
         /* Show countdown: "Stopping in 2..." or "Stopping in 1..." */
@@ -1597,7 +1597,7 @@ static void async_auto_stop_warning(void *arg)
         snprintf(buf, sizeof(buf), "Stopping in %d...", secs);
         lv_label_set_text(s_lbl_status, buf);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(0xFF5252), 0);
-        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
     }
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                  ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);

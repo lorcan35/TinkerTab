@@ -134,7 +134,7 @@ static lv_obj_t *build_page_home(void)
     lbl_clock = lv_label_create(pg);
     lv_label_set_text(lbl_clock, "00:00");
     lv_obj_set_style_text_color(lbl_clock, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(lbl_clock, FONT_CLOCK, 0);
     lv_obj_set_style_text_letter_space(lbl_clock, 4, 0);
     lv_obj_align(lbl_clock, LV_ALIGN_TOP_MID, 0, 60);
 
@@ -142,7 +142,7 @@ static lv_obj_t *build_page_home(void)
     lbl_date = lv_label_create(pg);
     lv_label_set_text(lbl_date, "Wednesday, March 26");
     lv_obj_set_style_text_color(lbl_date, lv_color_hex(0xA0A0A8), 0);
-    lv_obj_set_style_text_font(lbl_date, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(lbl_date, FONT_DATE, 0);
     lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 140);
 
     /* ── Voice Orb (center) — TINKER ─────────────────── */
@@ -175,21 +175,21 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *orb_icon = lv_label_create(orb_inner);
     lv_label_set_text(orb_icon, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_color(orb_icon, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(orb_icon, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(orb_icon, FONT_CLOCK, 0);
     lv_obj_center(orb_icon);
 
     /* Orb label — "Tap to ask" / "Connecting..." with long-press hint */
     lbl_ask = lv_label_create(pg);
     lv_label_set_text(lbl_ask, "Tap to ask");
     lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(lbl_ask, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(lbl_ask, FONT_TITLE, 0);
     lv_obj_align(lbl_ask, LV_ALIGN_CENTER, 0, -92);
 
     /* H1: Long-press hint — brighter, more descriptive */
     lv_obj_t *hold_hint = lv_label_create(pg);
     lv_label_set_text(hold_hint, LV_SYMBOL_EDIT "  Long-press to dictate");
     lv_obj_set_style_text_color(hold_hint, lv_color_hex(0x777777), 0);
-    lv_obj_set_style_text_font(hold_hint, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(hold_hint, FONT_SECONDARY, 0);
     lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, -58);
 
     /* Breathing animation on ring */
@@ -229,7 +229,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *cam_lbl = lv_label_create(cam_btn);
     lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
     lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(cam_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(cam_lbl, FONT_BODY, 0);
     lv_obj_center(cam_lbl);
 
     lv_obj_t *files_btn = lv_button_create(pg);
@@ -243,7 +243,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *files_lbl = lv_label_create(files_btn);
     lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
     lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(files_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(files_lbl, FONT_BODY, 0);
     lv_obj_center(files_lbl);
 
     /* Ask Tinker — above Camera/Files */
@@ -259,7 +259,7 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *ask_lbl = lv_label_create(ask_btn);
     lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
     lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(ask_lbl, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(ask_lbl, FONT_HEADING, 0);
     lv_obj_center(ask_lbl);
 
     /* Last Note Card — above Ask Tinker, compact */
@@ -280,13 +280,13 @@ static lv_obj_t *build_page_home(void)
     lv_obj_t *note_icon = lv_label_create(last_note_card);
     lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
     lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(note_icon, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(note_icon, FONT_SECONDARY, 0);
     lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 6);
 
     lbl_last_note = lv_label_create(last_note_card);
     lv_label_set_text(lbl_last_note, "Tap to see notes");
     lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl_last_note, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(lbl_last_note, FONT_BODY, 0);
     lv_obj_set_width(lbl_last_note, SW - 96);
     lv_label_set_long_mode(lbl_last_note, LV_LABEL_LONG_DOT);
     lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -6);
@@ -302,7 +302,7 @@ static lv_obj_t *build_page_notes(void)
     lv_obj_t *hint = lv_label_create(pg);
     lv_label_set_text(hint, "Loading notes...");
     lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(hint, FONT_BODY, 0);
     lv_obj_center(hint);
     return pg;
 }
@@ -338,20 +338,20 @@ static lv_obj_t *build_page_chat(void)
     lv_obj_t *icon = lv_label_create(card);
     lv_label_set_text(icon, LV_SYMBOL_NEW_LINE);
     lv_obj_set_style_text_color(icon, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(icon, FONT_CLOCK, 0);
     lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 32);
 
     lv_obj_t *lbl = lv_label_create(card);
     lv_label_set_text(lbl, "Chat with Tinker");
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 10);
 
     lv_obj_t *hint = lv_label_create(card);
     lv_label_set_text(hint, "Type questions instead of speaking");
     lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(hint, FONT_BODY, 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
 
@@ -366,7 +366,7 @@ static lv_obj_t *build_page_settings(void)
     lv_obj_t *hint = lv_label_create(pg);
     lv_label_set_text(hint, "Loading settings...");
     lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(hint, FONT_BODY, 0);
     lv_obj_center(hint);
     return pg;
 }
@@ -418,7 +418,7 @@ lv_obj_t *ui_home_create(void)
         lbl_sbar_time = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_time, "00:00");
         lv_obj_set_style_text_color(lbl_sbar_time, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_time, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(lbl_sbar_time, FONT_SECONDARY, 0);
         lv_obj_align(lbl_sbar_time, LV_ALIGN_LEFT_MID, 16, 0);
 
         /* Privacy badge (center-left) */
@@ -427,7 +427,7 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(COL_MINT), 0);
         lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
         lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_text_font(lbl_privacy, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_font(lbl_privacy, FONT_SECONDARY, 0);
         lv_obj_set_style_radius(lbl_privacy, 8, 0);
         lv_obj_align(lbl_privacy, LV_ALIGN_LEFT_MID, 80, 0);
         lv_obj_add_flag(lbl_privacy, LV_OBJ_FLAG_CLICKABLE);
@@ -448,14 +448,14 @@ lv_obj_t *ui_home_create(void)
         lbl_sbar_wifi = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_wifi, LV_SYMBOL_WIFI);
         lv_obj_set_style_text_color(lbl_sbar_wifi, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_wifi, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(lbl_sbar_wifi, FONT_SECONDARY, 0);
         lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -90, 0);
 
         /* Battery (far right) */
         lbl_sbar_batt = lv_label_create(sbar);
         lv_label_set_text(lbl_sbar_batt, "100%");
         lv_obj_set_style_text_color(lbl_sbar_batt, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_batt, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_font(lbl_sbar_batt, FONT_SECONDARY, 0);
         lv_obj_align(lbl_sbar_batt, LV_ALIGN_RIGHT_MID, -16, 0);
     }
 
@@ -467,7 +467,7 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_bg_color(s_disconnect_banner, lv_color_hex(0xEF4444), 0);
     lv_obj_set_style_bg_opa(s_disconnect_banner, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(s_disconnect_banner, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_disconnect_banner, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_disconnect_banner, FONT_CAPTION, 0);
     lv_obj_set_style_pad_left(s_disconnect_banner, 12, 0);
     lv_obj_add_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
 
@@ -490,7 +490,7 @@ lv_obj_t *ui_home_create(void)
         for (int i = 0; i < NUM_PAGES; i++) {
             nav_icons[i] = lv_label_create(nav);
             lv_label_set_text(nav_icons[i], labels[i]);
-            lv_obj_set_style_text_font(nav_icons[i], &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_font(nav_icons[i], FONT_NAV, 0);
             lv_obj_set_style_text_color(nav_icons[i],
                 lv_color_hex(i == 0 ? COL_AMBER : COL_LABEL2), 0);
             lv_obj_set_style_text_align(nav_icons[i], LV_TEXT_ALIGN_CENTER, 0);
@@ -686,7 +686,7 @@ static void show_toast(const char *text)
     lv_obj_t *lbl = lv_label_create(toast);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
     lv_obj_center(lbl);
 
     lv_timer_t *tmr = lv_timer_create(toast_timer_cb, 3000, toast);
