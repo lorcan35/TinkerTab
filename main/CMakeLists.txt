@@ -3,6 +3,7 @@ set(UI_SRCS
     "ui_camera.c" "ui_files.c" "ui_audio.c" "ui_keyboard.c" "ui_voice.c" "ui_wifi.c"
     "ui_chat.c" "ui_notes.c" "ui_feedback.c"
     "chat_msg_store.c"
+    "chat_header.c"
 )
 
 if(IDF_TARGET STREQUAL "linux")
