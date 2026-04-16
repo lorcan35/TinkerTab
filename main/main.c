@@ -40,6 +40,7 @@
 #include "battery.h"
 #include "bluetooth.h"
 #include "ui_core.h"
+#include "ui_theme.h"
 #include "ui_splash.h"
 #include "ui_home.h"
 #include "ui_keyboard.h"
@@ -385,6 +386,7 @@ void app_main(void)
         // Transition to TinkerOS home screen
         tab5_ui_lock();
         ui_splash_destroy();
+        ui_theme_init();  // must run before any screen that uses TH_* styles
         ui_home_create();
         tab5_ui_unlock();
         ESP_LOGI(TAG, "TinkerOS home screen loaded");
