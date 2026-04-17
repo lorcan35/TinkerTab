@@ -427,9 +427,9 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             s_auto_hide = lv_timer_create(auto_hide_timer_cb, hide_ms, NULL);
             lv_timer_set_repeat_count(s_auto_hide, 1);
         } else {
-            lv_label_set_text(s_lbl_status, "Tap to Record");
+            lv_label_set_text(s_lbl_status, "Tap to speak.");
         }
-        lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
@@ -935,12 +935,12 @@ static void show_state_listening(void)
 
     /* H6: Show clear mode indicator — ASK (30s) or DICTATE (unlimited) */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
-        lv_label_set_text(s_lbl_status, "DICTATION");
+        lv_label_set_text(s_lbl_status, "Dictating.");
     } else {
-        lv_label_set_text(s_lbl_status, "LISTENING");
+        lv_label_set_text(s_lbl_status, "I'm here. Go.");
     }
-    lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_BRIGHT), 0);
     lv_obj_set_style_text_letter_space(s_lbl_status, 4, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
 
@@ -1037,9 +1037,9 @@ static void show_state_processing(const char *detail)
          * TinkerClaw mode: "Agent thinking..." to signal agent reasoning */
         uint8_t vmode = tab5_settings_get_voice_mode();
         lv_label_set_text(s_lbl_status,
-            vmode == 3 ? "Agent thinking..." : "Thinking...");
-        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_PURPLE_DIM), 0);
-        lv_obj_set_style_text_font(s_lbl_status, FONT_BODY, 0);
+            vmode == VOICE_MODE_TINKERCLAW ? "Agent thinking." : "Thinking.");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_MID), 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
