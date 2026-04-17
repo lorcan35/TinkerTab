@@ -387,6 +387,26 @@ static void cb_cloud_model(lv_event_t *e)
     }
 }
 
+static void cb_mic_mute(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    tab5_settings_set_mic_mute(on ? 1 : 0);
+    ESP_LOGI(TAG, "Mic mute: %d", on);
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
+}
+
+static void cb_quiet_on(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    tab5_settings_set_quiet_on(on ? 1 : 0);
+    ESP_LOGI(TAG, "Quiet hours: %d", on);
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
+}
+
 static void cb_wake_word(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -1051,6 +1071,24 @@ static void phase2_timer_cb(lv_timer_t *t)
     mk_row_label(s_scroll, "Wake Word", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
               cb_wake_word, NULL);
+    y += ROW_H + 16;
+
+    /* v5 privacy — Mic mute. Gates voice_start_listening at the voice.c
+       layer so no mic capture happens when on.  Visible as 'MUTED' on the
+       home sys label. */
+    mk_row_label(s_scroll, "Mic mute", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
+              cb_mic_mute, NULL);
+    y += ROW_H + 16;
+
+    /* v5 — Quiet hours.  Toggle gates into tab5_settings_quiet_active()
+       so downstream code (voice, notifications) can suppress sound.
+       Start/end hour settings are NVS-backed; custom pickers are a
+       follow-up polish — for now the defaults (22:00 -> 07:00) are fine
+       and the user can override via the debug-server settings endpoint. */
+    mk_row_label(s_scroll, "Quiet hours", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
+              cb_quiet_on, NULL);
     y += ROW_H + 16;
 
     /* ════════════════════════════════════════════════════════════════
