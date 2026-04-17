@@ -601,3 +601,39 @@ void ui_home_show_toast(const char *text)
 {
     show_toast_internal(text);
 }
+
+/* Pull just the voice-state line out of update_status and make it callable
+   from anywhere. lv_async_call marshals back onto the LVGL thread so
+   voice.c callbacks firing on the WS recv task don't touch LVGL from the
+   wrong core. */
+static void sys_label_refresh_async_cb(void *arg)
+{
+    (void)arg;
+    if (!s_sys_label) return;
+    char buf[64];
+    bool dragon = voice_is_connected();
+    int bat = (int)tab5_battery_percent();
+    voice_state_t vs = voice_get_state();
+    const char *state_hint = NULL;
+    if (dragon) {
+        switch (vs) {
+            case VOICE_STATE_LISTENING:  state_hint = "LISTENING"; break;
+            case VOICE_STATE_PROCESSING: state_hint = "THINKING";  break;
+            case VOICE_STATE_SPEAKING:   state_hint = "SPEAKING";  break;
+            default: break;
+        }
+    }
+    if (state_hint)       snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
+    else if (dragon)      snprintf(buf, sizeof(buf), "DRAGON %d%%", bat);
+    else                  snprintf(buf, sizeof(buf), "OFFLINE %d%%", bat);
+    const char *cur = lv_label_get_text(s_sys_label);
+    if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_sys_label, buf);
+}
+
+void ui_home_refresh_sys_label(void)
+{
+    /* Marshal to LVGL thread — voice state callbacks fire on the WS recv
+       task (Core 1), but LVGL objects must only be touched from the LVGL
+       task. lv_async_call is the standard ESP-IDF + LVGL pattern. */
+    lv_async_call(sys_label_refresh_async_cb, NULL);
+}

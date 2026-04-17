@@ -274,6 +274,12 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
     ESP_LOGI(TAG, "State change: %d -> %d (%s)", s_cur_state, state,
              detail ? detail : "");
 
+    /* Notify home so the sys-label picks up the transition within one LVGL
+       tick instead of waiting for the 5 s poll. Safe from any core via
+       lv_async_call. */
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
+
     s_cur_state = state;
     update_mic_button_state(state);
 

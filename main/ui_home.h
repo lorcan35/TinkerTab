@@ -31,3 +31,9 @@ void ui_home_refresh_mode_badge(void);
 /** Show a centered toast message on the home screen for ~2 seconds.
  *  Safe to call from LVGL thread only — use lv_async_call from other cores. */
 void ui_home_show_toast(const char *text);
+
+/** Refresh just the top-left sys label (DRAGON / OFFLINE + battery + voice
+ *  state) without waiting for the 5 s poll. Called from voice state callbacks
+ *  so LISTENING / THINKING / SPEAKING appear within one LVGL tick. Thread-safe
+ *  via lv_async_call — callers can invoke from any task/core. */
+void ui_home_refresh_sys_label(void);
