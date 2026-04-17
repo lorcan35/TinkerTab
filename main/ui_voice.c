@@ -32,30 +32,34 @@ static const char *TAG = "ui_voice";
 static void mode_switch_voice_task(void *arg);
 static void mode_switch_idle_task(void *arg);
 
-/* ── Palette — Voice overlay ──────────────────────────────────── */
-#define VO_BG              0x000000
-#define VO_BG_OPA          LV_OPA_COVER  /* fully opaque — no bleed-through */
+/* ── Palette — Voice overlay (v5 Zero Interface — amber-led) ─────
+   Names kept for minimal-diff; values map to the v5 ui_theme palette.
+   LISTENING / PROCESSING / SPEAKING all share the amber family — state is
+   conveyed by motion (ripple / rotate / breathe), not hue. */
+#define VO_BG              0x08080E   /* TH_BG — not pure black */
+#define VO_BG_OPA          LV_OPA_COVER
 
-/* Cyan — listening */
-#define VO_CYAN            0x00E5FF
-#define VO_CYAN_DIM        0x003844   /* rgba(0,229,255,0.1) on black */
-#define VO_CYAN_BORDER     0x0D3840   /* rgba(0,229,255,0.2) on black */
-#define VO_CYAN_GLOW       0x005F6B   /* orb inner glow layers */
+/* "Cyan" slot — now amber hot, used for LISTENING accents */
+#define VO_CYAN            0xF59E0B   /* TH_AMBER */
+#define VO_CYAN_DIM        0x3E2A0A   /* amber at ~15% on dark */
+#define VO_CYAN_BORDER     0x5E3F0C   /* amber at ~25% on dark */
+#define VO_CYAN_GLOW       0x7A4A06   /* TH_AMBER_DEEP — inner glow */
 
-/* Purple — processing / thinking */
-#define VO_PURPLE          0xB388FF
-#define VO_PURPLE_DIM      0x5A4580   /* brighter purple dim for visibility */
+/* "Purple" slot — processing; use the Claw rose so the orb picks up the
+   mode identity during thinking without introducing a new hue family. */
+#define VO_PURPLE          0xFFB637   /* amber hot — warmer processing */
+#define VO_PURPLE_DIM      0x5E3F0C
 
-/* Green — speaking */
-#define VO_GREEN           0x34D399
-#define VO_GREEN_DIM       0x1E5C44   /* brighter green dim for visibility */
+/* "Green" slot — speaking; amber-hot for the speaking breathe */
+#define VO_GREEN           0xFFD88A   /* amber light, for speaking highlight */
+#define VO_GREEN_DIM       0x7A4A06
 
-/* Text */
-#define VO_TEXT_BRIGHT     0xFFFFFF
-#define VO_TEXT_MID        0xB3B3B3   /* rgba(255,255,255,0.7) */
-#define VO_TEXT_DIM        0x808080   /* rgba(255,255,255,0.5) */
-#define VO_TEXT_FAINT      0x404040   /* rgba(255,255,255,0.25) */
-#define VO_CLOSE_TEXT      0x808080   /* rgba(255,255,255,0.5) — visible */
+/* Text — v5 theme */
+#define VO_TEXT_BRIGHT     0xEDEDEF   /* TH_TEXT_PRIMARY */
+#define VO_TEXT_MID        0xAAAAAA   /* TH_TEXT_BODY */
+#define VO_TEXT_DIM        0x666666   /* TH_TEXT_SECONDARY */
+#define VO_TEXT_FAINT      0x44444c   /* TH_TEXT_DIM */
+#define VO_CLOSE_TEXT      0x7a7a82
 
 /* ── Layout constants ─────────────────────────────────────────── */
 #define SW                 720
@@ -84,11 +88,12 @@ static void mode_switch_idle_task(void *arg);
 #define CHAT_BUBBLE_MAX_W  500        /* max bubble width */
 #define CHAT_GAP           12         /* vertical gap between bubbles */
 
-/* Bubble colors */
-#define VO_USER_BG         0x0A2A30   /* dark cyan tint for user bubble */
-#define VO_USER_BORDER     0x0D3840   /* cyan border */
-#define VO_AI_BG           0x0A2A1E   /* dark green tint for AI bubble */
-#define VO_AI_BORDER       0x1E5C44   /* green border */
+/* Bubble colors — v5: user bubble is the only "surface" (amber, user-led),
+   AI "bubble" is really just body text so the bg is elevated-card. */
+#define VO_USER_BG         0x5E3F0C   /* amber-dim tint for user bubble bg */
+#define VO_USER_BORDER     0x7A4A06   /* amber border */
+#define VO_AI_BG           0x13131F   /* TH_CARD_ELEVATED */
+#define VO_AI_BORDER       0x1A1A24   /* hairline border */
 
 #define WAVE_BARS          5
 #define WAVE_BAR_W         6
