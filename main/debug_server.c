@@ -1559,6 +1559,12 @@ esp_err_t tab5_debug_server_init(void)
     /* Initialize bearer token auth (generate on first boot, load from NVS thereafter) */
     init_auth_token();
 
+    /* Eagerly create the hardware JPEG encoder once during server init.
+     * Lazy per-request init races when multiple sockets arrive before
+     * s_jpeg_enc is populated — both tasks try to init, the second one
+     * crashes in jpeg_release_codec_handle(NULL). */
+    (void)_ensure_jpeg_encoder();
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;
