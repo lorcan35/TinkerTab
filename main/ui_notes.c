@@ -1917,7 +1917,7 @@ static void refresh_list(void)
     }
 }
 
-/* ── Top bar ───────────────────────────────────────────── */
+/* ── Top bar (v5: typography-forward, amber title, 'HOME' caption back) ─ */
 static lv_obj_t *make_topbar(lv_obj_t *parent)
 {
     lv_obj_t *tb = lv_obj_create(parent);
@@ -1926,32 +1926,33 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_bg_color(tb, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(tb, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tb, 1, 0);
-    lv_obj_set_style_border_color(tb, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_border_color(tb, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
     lv_obj_set_style_border_side(tb, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back arrow button (44x44, rounded 8px, bg #1A1A2E — matches Settings) */
+    /* HOME back affordance (left, ghost-text on transparent bg) */
     lv_obj_t *btn = lv_button_create(tb);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 44, 44);
-    lv_obj_set_pos(btn, 12, (TOPBAR_H - 44) / 2);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_set_size(btn, 140, TOPBAR_H);
+    lv_obj_set_pos(btn, 12, 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
     lv_obj_add_event_cb(btn, cb_back, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *arrow = lv_label_create(btn);
-    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(arrow, FONT_SECONDARY, 0);
-    lv_obj_center(arrow);
+    lv_obj_t *back_lbl = lv_label_create(btn);
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  HOME");
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
+    lv_obj_set_style_text_font(back_lbl, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(back_lbl, 3, 0);
+    lv_obj_center(back_lbl);
 
-    /* Title — centered in topbar */
+    /* Title — 'Notes' amber, right-aligned so it balances HOME caption */
     lv_obj_t *title = lv_label_create(tb);
     lv_label_set_text(title, "Notes");
-    lv_obj_set_style_text_color(title, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(title, FONT_HEADING, 0);
-    lv_obj_center(title);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px — biggest that fits 48 px bar */
+    lv_obj_set_style_text_letter_space(title, -1, 0);
+    lv_obj_align(title, LV_ALIGN_RIGHT_MID, -24, 0);
 
     return tb;
 }
