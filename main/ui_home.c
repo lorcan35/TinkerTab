@@ -165,6 +165,25 @@ lv_obj_t *ui_home_create(void)
     /* Gesture handler at the screen level for swipe-up / edge-swipes */
     lv_obj_add_event_cb(s_screen, screen_gesture_cb, LV_EVENT_GESTURE, NULL);
 
+    /* ── Edge ticks — v5 visible affordances for left/right swipes ── */
+    /* Left edge (flush with x=0) — swipe-right from here opens Notes. */
+    lv_obj_t *edge_l = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(edge_l);
+    lv_obj_set_size(edge_l, 2, 40);
+    lv_obj_set_pos(edge_l, 0, SH / 2 - 20);
+    lv_obj_set_style_bg_color(edge_l, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_bg_opa(edge_l, 80, 0);   /* ~31 % — hairline hint */
+    lv_obj_set_style_radius(edge_l, 2, 0);
+
+    /* Right edge (flush with x=SW-2) — swipe-left opens Settings. */
+    lv_obj_t *edge_r = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(edge_r);
+    lv_obj_set_size(edge_r, 2, 40);
+    lv_obj_set_pos(edge_r, SW - 2, SH / 2 - 20);
+    lv_obj_set_style_bg_color(edge_r, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_bg_opa(edge_r, 80, 0);
+    lv_obj_set_style_radius(edge_r, 2, 0);
+
     /* ── Top-left system label (green pulse + "DRAGON · 14:32") ── */
     s_sys_dot = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_sys_dot);
