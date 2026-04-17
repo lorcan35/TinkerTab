@@ -947,7 +947,8 @@ static void show_state_listening(void)
     set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_60);
     set_orb_size(ORB_SZ_LISTEN);
 
-    /* H6: Show clear mode indicator — ASK (30s) or DICTATE (unlimited) */
+    /* Spec shot-05: "I'm here. Go." with serif-style display copy.
+     * Dictation uses "Dictating." with the same weight. */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
         lv_label_set_text(s_lbl_status, "Dictating.");
     } else {
