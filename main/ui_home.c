@@ -623,7 +623,9 @@ static void sys_label_refresh_async_cb(void *arg)
             default: break;
         }
     }
-    if (state_hint)       snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
+    bool muted = tab5_settings_get_mic_mute();
+    if (muted)            snprintf(buf, sizeof(buf), "MUTED - %d%%", bat);
+    else if (state_hint)  snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
     else if (dragon)      snprintf(buf, sizeof(buf), "DRAGON %d%%", bat);
     else                  snprintf(buf, sizeof(buf), "OFFLINE %d%%", bat);
     const char *cur = lv_label_get_text(s_sys_label);

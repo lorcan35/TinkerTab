@@ -91,6 +91,13 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode);
 uint8_t   tab5_settings_get_wake_word(void);
 esp_err_t tab5_settings_set_wake_word(uint8_t enabled);
 
+/* ── Mic mute ───────────────────────────────────────────────────────── */
+
+/** 0 = mic hot (default), 1 = silenced.  When set, voice_start_listening()
+ *  returns ESP_ERR_INVALID_STATE and surfaces a toast on home. */
+uint8_t   tab5_settings_get_mic_mute(void);
+esp_err_t tab5_settings_set_mic_mute(uint8_t muted);
+
 /* ── Auth token (debug server bearer auth) ───────────────────────────── */
 
 /** Read auth token from NVS. Returns ESP_OK if found and non-empty. */

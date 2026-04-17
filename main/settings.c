@@ -293,6 +293,18 @@ esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
     return set_u8("wake", enabled ? 1 : 0);
 }
 
+/* ── Mic mute ───────────────────────────────────────────────────────── */
+
+uint8_t tab5_settings_get_mic_mute(void)
+{
+    return get_u8("mic_mute", 0);
+}
+
+esp_err_t tab5_settings_set_mic_mute(uint8_t muted)
+{
+    return set_u8("mic_mute", muted ? 1 : 0);
+}
+
 /* ── Connection mode ────────────────────────────────────────────────── */
 
 uint8_t tab5_settings_get_connection_mode(void)
