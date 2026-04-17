@@ -356,12 +356,26 @@ void ui_home_update_status(void)
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
     }
 
-    /* Top-left system status (ASCII, minimal invalidation) */
+    /* Top-left system status — v5: surfaces the voice state so you can see
+       what Tinker is doing from across the desk. Only invalidates the label
+       when the text actually changes (spares the orb from redrawing). */
     if (s_sys_label) {
-        char buf[48];
+        char buf[64];
         bool dragon = voice_is_connected();
         int bat = (int)tab5_battery_percent();
+        voice_state_t vs = voice_get_state();
+        const char *state_hint = NULL;
         if (dragon) {
+            switch (vs) {
+                case VOICE_STATE_LISTENING:  state_hint = "LISTENING"; break;
+                case VOICE_STATE_PROCESSING: state_hint = "THINKING";  break;
+                case VOICE_STATE_SPEAKING:   state_hint = "SPEAKING";  break;
+                default: break;
+            }
+        }
+        if (state_hint) {
+            snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
+        } else if (dragon) {
             snprintf(buf, sizeof(buf), "DRAGON %d%%", bat);
         } else {
             snprintf(buf, sizeof(buf), "OFFLINE %d%%", bat);
