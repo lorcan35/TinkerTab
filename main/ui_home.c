@@ -335,6 +335,26 @@ void ui_home_update_status(void)
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_hero_date, buf);
     }
 
+    /* Poem — refresh the headline from the most recent note, if any */
+    if (s_poem_label) {
+        char preview[180];
+        bool have = ui_notes_get_last_preview(preview, sizeof(preview));
+        char buf[260];
+        if (have && preview[0]) {
+            snprintf(buf, sizeof(buf),
+                     "Last note -- %s\nTap to see what your agents did.",
+                     preview);
+        } else if (!voice_is_connected()) {
+            snprintf(buf, sizeof(buf),
+                     "My brain is offline right now.\nI'll save notes locally until you're back.");
+        } else {
+            snprintf(buf, sizeof(buf),
+                     "Standing by.\nTap me on the orb to ask something.");
+        }
+        const char *cur = lv_label_get_text(s_poem_label);
+        if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
+    }
+
     /* Top-left system status (ASCII, minimal invalidation) */
     if (s_sys_label) {
         char buf[48];
