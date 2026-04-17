@@ -190,7 +190,9 @@ void ui_focus_show(void)
     lv_obj_set_style_text_font(narrative, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(narrative, lv_color_hex(TH_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_line_space(narrative, 4, 0);
-    lv_obj_set_width(narrative, SW - 2 * SIDE_PAD);
+    /* Reserve the top-right corner for the orb (140 px) so the narrative
+     * can't collide with it. Spec shot-01 right pane. */
+    lv_obj_set_width(narrative, SW - 2 * SIDE_PAD - 160);
 
     /* Task stream below the narrative */
     lv_obj_t *tasks = lv_obj_create(s_overlay);
