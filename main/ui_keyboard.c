@@ -119,6 +119,7 @@ static void build_keyboard_panel(void);
 static void build_preview_row(void);
 static void preview_mic_cb(lv_event_t *e);
 static void preview_send_cb(lv_event_t *e);
+static void preview_sync_from_target(void);
 static void build_trigger_button(void);
 static void build_letter_rows(lv_obj_t *parent);
 static void build_number_rows(lv_obj_t *parent);
@@ -158,11 +159,13 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     if (s_visible) {
         /* Already visible — just update target */
         s_target_ta = target_textarea;
+        preview_sync_from_target();
         return;
     }
 
     s_target_ta = target_textarea;
     s_visible = true;
+    preview_sync_from_target();
 
     /* Notify the active screen BEFORE animation so it can adjust layout
        immediately — the textarea must be visible above the keyboard area
@@ -373,6 +376,34 @@ static void preview_mic_cb(lv_event_t *e)
     extern void ui_voice_show(void);
     ui_keyboard_hide();
     ui_voice_show();
+}
+
+/* Mirror the target textarea's tail (last 32 chars) into the preview label.
+   Called after every keypress / backspace so the user sees what they typed. */
+static void preview_sync_from_target(void)
+{
+    if (!s_preview_label) return;
+    const char *txt = s_target_ta ? lv_textarea_get_text(s_target_ta) : NULL;
+    if (!txt || txt[0] == '\0') {
+        lv_label_set_text(s_preview_label, "type, or hand off");
+        lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT_DIM), 0);
+        return;
+    }
+    /* Clip to last PREVIEW_MAX chars to avoid overflow past the buttons. */
+    #define PREVIEW_MAX 32
+    size_t len = strlen(txt);
+    const char *start = txt;
+    char buf[PREVIEW_MAX + 8];
+    if (len > PREVIEW_MAX) {
+        start = txt + (len - PREVIEW_MAX);
+        buf[0] = '.'; buf[1] = '.'; buf[2] = '.'; buf[3] = ' ';
+        strncpy(buf + 4, start, sizeof(buf) - 5);
+        buf[sizeof(buf) - 1] = '\0';
+        lv_label_set_text(s_preview_label, buf);
+    } else {
+        lv_label_set_text(s_preview_label, txt);
+    }
+    lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT), 0);
 }
 
 static void preview_send_cb(lv_event_t *e)
@@ -864,11 +895,13 @@ static void key_press_cb(lv_event_t *e)
             s_shifted = false;
             apply_shift_state();
         }
+        preview_sync_from_target();
         break;
     }
 
     case KEY_BACKSPACE:
         if (s_target_ta) lv_textarea_delete_char(s_target_ta);
+        preview_sync_from_target();
         break;
 
     case KEY_ENTER:
