@@ -339,33 +339,65 @@ void ui_home_update_status(void)
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_hero_date, buf);
     }
 
-    /* Poem — refresh the headline from the most recent note, if any */
+    /* ── Edge-state detection (v5 spec section 10 "When something's off") ──
+     * Priority order: NO WI-FI > DRAGON DOWN > MUTED > QUIET HOURS > normal.
+     * Same composition, different voice: sys label + poem + status-dot
+     * colour all reflect the dominant state. */
+    bool wifi_ok  = tab5_wifi_connected();
+    bool dragon   = voice_is_connected();
+    bool mic_off  = tab5_settings_get_mic_mute() != 0;
+    bool quiet    = tab5_settings_quiet_active(tm_local.tm_hour);
+
+    enum { ST_NORMAL, ST_NO_WIFI, ST_DRAGON_DOWN, ST_MUTED, ST_QUIET } state;
+    if (!wifi_ok)       state = ST_NO_WIFI;
+    else if (!dragon)   state = ST_DRAGON_DOWN;
+    else if (mic_off)   state = ST_MUTED;
+    else if (quiet)     state = ST_QUIET;
+    else                state = ST_NORMAL;
+
     if (s_poem_label) {
         char preview[180];
         bool have = ui_notes_get_last_preview(preview, sizeof(preview));
         char buf[260];
-        if (have && preview[0]) {
-            snprintf(buf, sizeof(buf),
-                     "Last note -- %s\nTap to see what your agents did.",
-                     preview);
-        } else if (!voice_is_connected()) {
-            snprintf(buf, sizeof(buf),
-                     "My brain is offline right now.\nI'll save notes locally until you're back.");
-        } else {
-            snprintf(buf, sizeof(buf),
-                     "Standing by.\nTap me on the orb to ask something.");
+        switch (state) {
+            case ST_NO_WIFI:
+                snprintf(buf, sizeof(buf),
+                    "I can't reach the network.\n%s didn't answer three times.\nTap to scan.",
+                    "Wi-Fi");
+                break;
+            case ST_DRAGON_DOWN:
+                snprintf(buf, sizeof(buf),
+                    "My brain is offline.\nI'll record voice notes locally\nuntil Dragon comes back.");
+                break;
+            case ST_MUTED:
+                snprintf(buf, sizeof(buf),
+                    "Listening off.\nI won't hear a thing\nuntil you tap me.");
+                break;
+            case ST_QUIET:
+                snprintf(buf, sizeof(buf),
+                    "Good night, Emile.\n%02d:%02d -- I won't speak until 07:00.\nEmergencies can still reach me.",
+                    tm_local.tm_hour, tm_local.tm_min);
+                break;
+            default:
+                if (have && preview[0]) {
+                    snprintf(buf, sizeof(buf),
+                        "Last note -- %s\nTap to see what your agents did.",
+                        preview);
+                } else {
+                    snprintf(buf, sizeof(buf),
+                        "Standing by.\nTap me on the orb to ask something.");
+                }
+                break;
         }
         const char *cur = lv_label_get_text(s_poem_label);
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
     }
 
-    /* Top-left system status — v5 spec: "DRAGON · 14:32" at rest, or
-       "DRAGON · LISTENING" / "THINKING" / "SPEAKING" when active.
-       Time replaces battery in the idle state because the spec reserves
-       battery for the focus view. */
+    /* Top-left system status — v5 spec.  Format + colour matches the
+     * active edge state.  Normal: "DRAGON • 14:32".  Active voice:
+     * "DRAGON • LISTENING".  Edge states: per spec shot-13. */
     if (s_sys_label) {
         char buf[64];
-        bool dragon = voice_is_connected();
         voice_state_t vs = voice_get_state();
         const char *state_hint = NULL;
         if (dragon) {
@@ -376,21 +408,46 @@ void ui_home_update_status(void)
                 default: break;
             }
         }
-        if (state_hint) {
-            snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %s", state_hint);
-        } else if (dragon) {
-            snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %02d:%02d",
-                     tm_local.tm_hour, tm_local.tm_min);
-        } else {
-            snprintf(buf, sizeof(buf), "OFFLINE \xe2\x80\xa2 %02d:%02d",
-                     tm_local.tm_hour, tm_local.tm_min);
+        uint32_t label_col = 0x8A8A93;  /* default muted */
+        switch (state) {
+            case ST_NO_WIFI:
+                snprintf(buf, sizeof(buf), "OFFLINE \xe2\x80\xa2 NO WI-FI");
+                label_col = TH_STATUS_RED;
+                break;
+            case ST_DRAGON_DOWN:
+                snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 UNREACHABLE");
+                label_col = TH_STATUS_RED;
+                break;
+            case ST_MUTED:
+                snprintf(buf, sizeof(buf), "MIC \xe2\x80\xa2 OFF");
+                label_col = 0x7A7A82;
+                break;
+            case ST_QUIET:
+                snprintf(buf, sizeof(buf), "QUIET \xe2\x80\xa2 UNTIL 07:00");
+                label_col = 0x7A7A82;
+                break;
+            default:
+                if (state_hint) {
+                    snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %s", state_hint);
+                } else {
+                    snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %02d:%02d",
+                             tm_local.tm_hour, tm_local.tm_min);
+                }
+                break;
         }
         const char *cur = lv_label_get_text(s_sys_label);
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_sys_label, buf);
+        lv_obj_set_style_text_color(s_sys_label, lv_color_hex(label_col), 0);
     }
     if (s_sys_dot) {
-        bool dragon = voice_is_connected();
-        uint32_t col = dragon ? TH_STATUS_GREEN : TH_STATUS_RED;
+        uint32_t col;
+        switch (state) {
+            case ST_NO_WIFI:
+            case ST_DRAGON_DOWN: col = TH_STATUS_RED;   break;
+            case ST_MUTED:
+            case ST_QUIET:       col = 0x5C5C68;        break;
+            default:             col = TH_STATUS_GREEN; break;
+        }
         lv_obj_set_style_bg_color(s_sys_dot, lv_color_hex(col), 0);
     }
 

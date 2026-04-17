@@ -1253,6 +1253,11 @@ static void cb_back(lv_event_t *e)
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;  /* only swipe-right triggers back */
     }
+    /* Tear down anything floating above the notes list before we hide it.
+     * Without this, swiping out of the note editor left the keyboard (and
+     * its preview row showing the note text) stuck on top of Home. */
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; s_edit_ta = NULL; }
+    ui_keyboard_hide();
     hide_input_area();
     /* Hide overlay — don't destroy (preserve note list for quick re-open) */
     if (s_screen) {
@@ -2097,6 +2102,12 @@ void ui_notes_destroy(void)
 void ui_notes_hide(void)
 {
     ui_keyboard_set_layout_cb(NULL);
+    /* Tear down floating UI before hiding the list — same reason as cb_back.
+     * Without this, a navigation away from the notes editor via the debug
+     * server left the keyboard + preview row stuck on top of the new
+     * screen. */
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; s_edit_ta = NULL; }
+    ui_keyboard_hide();
     hide_input_area();
     /* Clear recording state — prevents transcription queue blockage if user
      * navigates away mid-recording. Without this, s_voice_recording stays
