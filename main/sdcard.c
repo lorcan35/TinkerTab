@@ -31,6 +31,9 @@
 #include "sd_pwr_ctrl.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 static const char *TAG = "tab5_sd";
 
 #define MOUNT_POINT "/sdcard"
@@ -38,6 +41,8 @@ static const char *TAG = "tab5_sd";
 /* State -------------------------------------------------------------------*/
 static bool            s_mounted = false;
 static sdmmc_card_t  *s_card    = NULL;
+
+static void _free_bytes_scan_task(void *arg);
 
 /* -------------------------------------------------------------------------*/
 
@@ -120,6 +125,12 @@ esp_err_t tab5_sdcard_init(void)
     ESP_LOGI(TAG, "  Capacity : %llu MB", capacity / (1024 * 1024));
     ESP_LOGI(TAG, "  Speed    : %s",
              (s_card->csd.tr_speed > 25000000) ? "High Speed" : "Default Speed");
+
+    /* Kick off an async free-bytes scan on a dedicated task — f_getfree()
+     * blocks 10-30s on large cards and would WDT any calling task. Self-deletes
+     * when done; result lives in the cache read by tab5_sdcard_free_bytes(). */
+    xTaskCreate(_free_bytes_scan_task, "sd_freescan", 4096, NULL,
+                tskIDLE_PRIORITY + 1, NULL);
 
     return ESP_OK;
 }
@@ -204,6 +215,14 @@ void tab5_sdcard_refresh_free_bytes(void)
      * Do NOT call from LVGL thread — f_getfree blocks for 10-30s on large cards. */
     s_free_bytes_valid = false;  /* Force recalculation on next call */
     (void)_sdcard_free_bytes_slow();  /* Triggers the slow scan and caches result */
+}
+
+static void _free_bytes_scan_task(void *arg)
+{
+    (void)arg;
+    tab5_sdcard_refresh_free_bytes();
+    /* P4 TLSP cleanup crash — suspend instead of delete (issue #20). */
+    vTaskSuspend(NULL);
 }
 
 const char *tab5_sdcard_mount_point(void)
