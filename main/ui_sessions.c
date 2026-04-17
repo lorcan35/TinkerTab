@@ -166,6 +166,7 @@ void ui_sessions_show(void)
     lv_obj_set_scrollbar_mode(s_overlay, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_scroll_dir(s_overlay, LV_DIR_VER);
     lv_obj_add_event_cb(s_overlay, overlay_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* Back hit — top-left (taps). Swipe-right also closes. */
     s_back_btn = lv_button_create(s_overlay);

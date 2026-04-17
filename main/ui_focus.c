@@ -140,6 +140,7 @@ void ui_focus_show(void)
     lv_obj_set_scrollbar_mode(s_overlay, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_scroll_dir(s_overlay, LV_DIR_VER);
     lv_obj_add_event_cb(s_overlay, overlay_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* Orb in corner — solid amber fill (2-stop gradient to match home) */
     lv_obj_t *orb = lv_obj_create(s_overlay);

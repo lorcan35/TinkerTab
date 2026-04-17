@@ -467,16 +467,16 @@ static void sys_click_cb(lv_event_t *e)
    open two screens (e.g. already-in-Chat + swipe-up stacks a second Chat). */
 static bool any_overlay_visible(void)
 {
+    extern bool ui_notes_is_visible(void);
+    extern bool ui_settings_is_visible(void);
+    extern bool ui_sessions_is_visible(void);
     if (ui_chat_is_active())       return true;
     if (ui_agents_is_visible())    return true;
     if (ui_memory_is_visible())    return true;
     if (ui_focus_is_visible())     return true;
-    /* ui_settings/ui_notes are fullscreen overlays on home when active —
-       LVGL re-parents them under the home screen, so the home gesture handler
-       still fires. Guard via visible-flag check of the overlay-root object
-       if it exists; simpler for now: rely on chat/agents/memory flags and
-       accept that settings/notes swipes are safe because LVGL routes the
-       gesture to the topmost clickable that accepts it. */
+    if (ui_notes_is_visible())     return true;
+    if (ui_settings_is_visible())  return true;
+    if (ui_sessions_is_visible())  return true;
     return false;
 }
 

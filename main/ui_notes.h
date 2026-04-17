@@ -18,6 +18,10 @@ lv_obj_t *ui_notes_create(void);
 /** Destroy the notes screen. */
 void ui_notes_destroy(void);
 
+/** True if the notes screen exists and is not hidden. Used by home's
+ *  any_overlay_visible() guard so gestures don't bubble. */
+bool ui_notes_is_visible(void);
+
 /** Add a new note. Returns note index or -1 on failure. */
 int ui_notes_add(const char *text, bool is_voice);
 

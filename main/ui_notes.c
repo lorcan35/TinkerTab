@@ -1987,6 +1987,7 @@ lv_obj_t *ui_notes_create(void)
 
     /* L5: Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     make_topbar(s_screen);
 
@@ -2108,3 +2109,8 @@ void ui_notes_hide(void)
 }
 
 lv_obj_t *ui_notes_get_screen(void) { return s_screen; }
+
+bool ui_notes_is_visible(void)
+{
+    return s_screen && !lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+}

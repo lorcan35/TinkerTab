@@ -31,8 +31,11 @@ static void back_click_cb(lv_event_t *e)
 
 static void overlay_gesture_cb(lv_event_t *e)
 {
+    (void)e;
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-    if (dir == LV_DIR_LEFT || dir == LV_DIR_BOTTOM) {
+    /* Unified with agents/focus/sessions/notes/settings: swipe RIGHT or
+     * BOTTOM closes. Memory used to be LEFT which broke muscle-memory. */
+    if (dir == LV_DIR_RIGHT || dir == LV_DIR_BOTTOM) {
         ui_memory_hide();
     }
 }
@@ -110,6 +113,7 @@ void ui_memory_show(void)
     lv_obj_set_scrollbar_mode(s_overlay, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_scroll_dir(s_overlay, LV_DIR_VER);
     lv_obj_add_event_cb(s_overlay, overlay_gesture_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* Back affordance top-left */
     s_back_btn = lv_button_create(s_overlay);

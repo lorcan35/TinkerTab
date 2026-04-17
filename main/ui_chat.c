@@ -623,6 +623,7 @@ lv_obj_t *ui_chat_create(void)
     /* Edge-swipe gesture */
     lv_obj_add_event_cb(s_overlay, cb_touch_down, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_overlay, cb_close, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* FLEX COLUMN layout: header / scroll (grow) / input bar */
     lv_obj_set_flex_flow(s_overlay, LV_FLEX_FLOW_COLUMN);

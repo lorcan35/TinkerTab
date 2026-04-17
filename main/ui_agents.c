@@ -152,6 +152,9 @@ void ui_agents_show(void)
     lv_obj_set_scrollbar_mode(s_overlay, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_scroll_dir(s_overlay, LV_DIR_VER);
     lv_obj_add_event_cb(s_overlay, overlay_gesture_cb, LV_EVENT_GESTURE, NULL);
+    /* Stop gesture bubble so home's screen_gesture_cb doesn't reopen an
+     * overlay we just closed via swipe. */
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* Back hit — top-left (taps) */
     s_back_btn = lv_button_create(s_overlay);

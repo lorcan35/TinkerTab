@@ -1076,6 +1076,7 @@ lv_obj_t *ui_settings_create(void)
 
     /* Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* ── Top bar (v5: ghost HOME back + amber right-aligned title) ──── */
     lv_obj_t *bar = lv_obj_create(s_screen);
@@ -1503,4 +1504,9 @@ void ui_settings_hide(void)
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
     }
     s_destroying = false;
+}
+
+bool ui_settings_is_visible(void)
+{
+    return s_screen && !lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
 }
