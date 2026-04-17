@@ -110,7 +110,9 @@ static void format_date(char *buf, size_t n, const struct tm *tm)
                                   "JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"};
     int wday = (tm->tm_wday >= 0 && tm->tm_wday < 7) ? tm->tm_wday : 0;
     int mon  = (tm->tm_mon  >= 0 && tm->tm_mon  < 12) ? tm->tm_mon : 0;
-    snprintf(buf, n, "%s · %s %d", wd[wday], mo[mon], tm->tm_mday);
+    /* U+2022 BULLET (•) — this glyph IS in the built-in Montserrat range
+     * (ASCII + 0xB0 + 0x2022), unlike U+00B7 MIDDLE DOT which isn't. */
+    snprintf(buf, n, "%s \xe2\x80\xa2 %s %d", wd[wday], mo[mon], tm->tm_mday);
 }
 
 /* ────────────────────────── orb painting ─────────────────────── */
@@ -196,7 +198,7 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_bg_opa(s_sys_dot, LV_OPA_COVER, 0);
 
     s_sys_label = lv_label_create(s_screen);
-    lv_label_set_text(s_sys_label, "DRAGON · —");
+    lv_label_set_text(s_sys_label, "DRAGON \xe2\x80\xa2 --");
     lv_obj_set_pos(s_sys_label, SIDE_PAD + 20, 50);
     lv_obj_set_style_text_font(s_sys_label, FONT_CAPTION, 0);
     lv_obj_set_style_text_color(s_sys_label, lv_color_hex(0x8A8A93), 0);
@@ -357,13 +359,13 @@ void ui_home_update_status(void)
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
     }
 
-    /* Top-left system status — v5: surfaces the voice state so you can see
-       what Tinker is doing from across the desk. Only invalidates the label
-       when the text actually changes (spares the orb from redrawing). */
+    /* Top-left system status — v5 spec: "DRAGON · 14:32" at rest, or
+       "DRAGON · LISTENING" / "THINKING" / "SPEAKING" when active.
+       Time replaces battery in the idle state because the spec reserves
+       battery for the focus view. */
     if (s_sys_label) {
         char buf[64];
         bool dragon = voice_is_connected();
-        int bat = (int)tab5_battery_percent();
         voice_state_t vs = voice_get_state();
         const char *state_hint = NULL;
         if (dragon) {
@@ -375,11 +377,13 @@ void ui_home_update_status(void)
             }
         }
         if (state_hint) {
-            snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
+            snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %s", state_hint);
         } else if (dragon) {
-            snprintf(buf, sizeof(buf), "DRAGON %d%%", bat);
+            snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %02d:%02d",
+                     tm_local.tm_hour, tm_local.tm_min);
         } else {
-            snprintf(buf, sizeof(buf), "OFFLINE %d%%", bat);
+            snprintf(buf, sizeof(buf), "OFFLINE \xe2\x80\xa2 %02d:%02d",
+                     tm_local.tm_hour, tm_local.tm_min);
         }
         const char *cur = lv_label_get_text(s_sys_label);
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_sys_label, buf);

@@ -1816,11 +1816,11 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     const char *badge_text;
     uint32_t badge_color;
     switch (n.state) {
-    case NOTE_STATE_RECORDED:     badge_text = "· REC";    badge_color = COL_AMBER; break;
-    case NOTE_STATE_TRANSCRIBING: badge_text = "· . . .";  badge_color = COL_AMBER; break;
-    case NOTE_STATE_TRANSCRIBED:  badge_text = "· VOICE";  badge_color = COL_AMBER; break;
-    case NOTE_STATE_FAILED:       badge_text = "· FAIL";   badge_color = COL_RED;   break;
-    default:                      badge_text = n.is_voice ? "· VOICE" : "· TEXT";
+    case NOTE_STATE_RECORDED:     badge_text = "\xe2\x80\xa2 REC";    badge_color = COL_AMBER; break;
+    case NOTE_STATE_TRANSCRIBING: badge_text = "\xe2\x80\xa2 . . .";  badge_color = COL_AMBER; break;
+    case NOTE_STATE_TRANSCRIBED:  badge_text = "\xe2\x80\xa2 VOICE";  badge_color = COL_AMBER; break;
+    case NOTE_STATE_FAILED:       badge_text = "\xe2\x80\xa2 FAIL";   badge_color = COL_RED;   break;
+    default:                      badge_text = n.is_voice ? "\xe2\x80\xa2 VOICE" : "\xe2\x80\xa2 TEXT";
                                   badge_color = COL_AMBER; break;
     }
     lv_label_set_text(badge, badge_text);
