@@ -1089,10 +1089,17 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* HOME back — transparent ghost caption, matches agents/memory/focus/notes */
+    /* v5 spec shot-09: Settings title LEFT, '← HOME' caption RIGHT. */
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px */
+    lv_obj_set_style_text_letter_space(title, -1, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 24, 0);
+
     lv_obj_t *back_btn = lv_button_create(bar);
     lv_obj_set_size(back_btn, 140, TOPBAR_H);
-    lv_obj_set_pos(back_btn, 12, 0);
+    lv_obj_align(back_btn, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(back_btn, 0, 0);
     lv_obj_set_style_border_width(back_btn, 0, 0);
@@ -1100,18 +1107,10 @@ lv_obj_t *ui_settings_create(void)
 
     lv_obj_t *arrow = lv_label_create(back_btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT "  HOME");
-    lv_obj_set_style_text_color(arrow, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
+    lv_obj_set_style_text_color(arrow, lv_color_hex(0x666666), 0);
     lv_obj_set_style_text_font(arrow, FONT_CAPTION, 0);
     lv_obj_set_style_text_letter_space(arrow, 3, 0);
     lv_obj_center(arrow);
-
-    /* "Settings" title amber, right-aligned */
-    lv_obj_t *title = lv_label_create(bar);
-    lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
-    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px */
-    lv_obj_set_style_text_letter_space(title, -1, 0);
-    lv_obj_align(title, LV_ALIGN_RIGHT_MID, -24, 0);
 
     /* ── Scrollable content area ─────────────────────────────────────── */
     s_scroll = lv_obj_create(s_screen);

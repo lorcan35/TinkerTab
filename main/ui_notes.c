@@ -465,6 +465,7 @@ static lv_obj_t *s_rec_indicator = NULL;  /* container for the recording bar */
 static lv_obj_t *s_rec_dot = NULL;        /* red pulsing dot */
 static lv_obj_t *s_rec_time_lbl = NULL;   /* "0:05" timer */
 static lv_obj_t *s_rec_text_lbl = NULL;   /* "Recording..." or "Paused" */
+static lv_obj_t *s_topbar_meta  = NULL;   /* v5 right-aligned count/size */
 static lv_timer_t *s_rec_timer = NULL;    /* 1s update timer */
 static int s_rec_seconds = 0;
 static bool s_rec_paused = false;         /* TODO: pause/resume not yet implemented */
@@ -1885,6 +1886,13 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 /* ── Refresh list ───────────────────────────────────────── */
 static void refresh_list(void)
 {
+    /* v5 topbar meta — update count regardless of list presence. */
+    if (s_topbar_meta) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s",
+                 s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
+        lv_label_set_text(s_topbar_meta, buf);
+    }
     if (!s_list) return;
     lv_obj_clean(s_list);
 
@@ -1931,29 +1939,23 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_border_side(tb, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* HOME back affordance (left, ghost-text on transparent bg) */
-    lv_obj_t *btn = lv_button_create(tb);
-    lv_obj_set_size(btn, 140, TOPBAR_H);
-    lv_obj_set_pos(btn, 12, 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_shadow_width(btn, 0, 0);
-    lv_obj_set_style_border_width(btn, 0, 0);
-    lv_obj_add_event_cb(btn, cb_back, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *back_lbl = lv_label_create(btn);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  HOME");
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
-    lv_obj_set_style_text_font(back_lbl, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(back_lbl, 3, 0);
-    lv_obj_center(back_lbl);
-
-    /* Title — 'Notes' amber, right-aligned so it balances HOME caption */
+    /* v5 spec: big amber 'Notes' title LEFT; small mono count meta RIGHT.
+     * Swipe-right replaces the old HOME caption for back navigation. */
     lv_obj_t *title = lv_label_create(tb);
     lv_label_set_text(title, "Notes");
     lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
-    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px — biggest that fits 48 px bar */
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px */
     lv_obj_set_style_text_letter_space(title, -1, 0);
-    lv_obj_align(title, LV_ALIGN_RIGHT_MID, -24, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 24, 0);
+
+    /* Count/size meta — refreshed elsewhere when the note list changes. */
+    lv_obj_t *meta = lv_label_create(tb);
+    lv_label_set_text(meta, "\xe2\x80\xa2");  /* placeholder until first refresh */
+    lv_obj_set_style_text_color(meta, lv_color_hex(0x6A6A72), 0);
+    lv_obj_set_style_text_font(meta, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(meta, 3, 0);
+    lv_obj_align(meta, LV_ALIGN_RIGHT_MID, -24, 0);
+    s_topbar_meta = meta;
 
     return tb;
 }

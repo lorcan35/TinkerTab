@@ -176,7 +176,7 @@ void ui_agents_show(void)
     lv_obj_set_pos(head, SIDE_PAD, 110);
 
     lv_obj_t *count = lv_label_create(s_overlay);
-    lv_label_set_text(count, "1 LIVE  -  1 DONE");
+    lv_label_set_text(count, "1 LIVE  •  1 DONE");
     lv_obj_set_style_text_font(count, FONT_CAPTION, 0);
     lv_obj_set_style_text_color(count, lv_color_hex(TH_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_letter_space(count, 3, 0);
@@ -184,9 +184,9 @@ void ui_agents_show(void)
 
     /* Two hand-curated entries so the surface is demonstrable. */
     const char *heartbeat_tasks[] = {
-        "Inbox scanned  .  3 found  .  234 ms",
-        "Drafting reply to Aisha  .  70%  .  1.2 KB",
-        "News digest  .  queued  .  ETA 60 s",
+        "Inbox scanned  •  3 found  •  234 ms",
+        "Drafting reply to Aisha  •  70%  •  1.2 KB",
+        "News digest  •  queued  •  ETA 60 s",
     };
     build_agent_entry(s_overlay, 250,
                       "HEARTBEAT",
@@ -197,8 +197,8 @@ void ui_agents_show(void)
                       heartbeat_tasks, 3);
 
     const char *browser_tasks[] = {
-        "Fetched Hacker News  .  240 ms",
-        "Summarised 4 articles  .  2.1 s",
+        "Fetched Hacker News  •  240 ms",
+        "Summarised 4 articles  •  2.1 s",
     };
     build_agent_entry(s_overlay, 560,
                       "BROWSER",

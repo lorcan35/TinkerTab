@@ -134,7 +134,7 @@ void ui_memory_show(void)
     lv_obj_set_pos(head, SIDE_PAD, 110);
 
     lv_obj_t *stats = lv_label_create(s_overlay);
-    lv_label_set_text(stats, "12,340  .  3.4 MB  .  QWEN3-EMBEDDING");
+    lv_label_set_text(stats, "12,340  •  3.4 MB  •  QWEN3-EMBEDDING");
     lv_obj_set_style_text_font(stats, FONT_CAPTION, 0);
     lv_obj_set_style_text_color(stats, lv_color_hex(TH_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_letter_space(stats, 3, 0);
@@ -167,19 +167,19 @@ void ui_memory_show(void)
 
     /* Demo hits — static so the surface is demonstrable. */
     build_hit(s_overlay, 340,
-              "CHAT  .  SONNET", TH_AMBER, "TODAY  .  10:15",
+              "CHAT  •  SONNET", TH_AMBER, "TODAY  •  10:15",
               "\"Compare AirPods Pro 2 vs Sony XM5 -- which for calls?\" "
               "-- XM5 won on call quality, AirPods tighter latency.");
     build_hit(s_overlay, 500,
-              "NOTE  .  VOICE", TH_AMBER, "APR 13  .  22:04",
+              "NOTE  •  VOICE", TH_AMBER, "APR 13  •  22:04",
               "Weekend spending: headphones case replacement, new monitor "
               "stand, groceries.");
     build_hit(s_overlay, 640,
-              "CHAT  .  LOCAL", TH_AMBER, "APR 9  .  08:30",
+              "CHAT  •  LOCAL", TH_AMBER, "APR 9  •  08:30",
               "\"my airpods are dropping audio mid-call\" -- yes, hold setup "
               "button 15 s in the case to reset.");
     build_hit(s_overlay, 800,
-              "CHAT  .  HYBRID", TH_AMBER, "MAR 28  .  13:12",
+              "CHAT  •  HYBRID", TH_AMBER, "MAR 28  •  13:12",
               "Asked about spatial audio with Ableton on macOS. Answer: no, "
               "only Music / TV apps.");
 

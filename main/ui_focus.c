@@ -177,7 +177,7 @@ void ui_focus_show(void)
     lv_obj_clear_flag(sec1, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *h = lv_label_create(sec1);
-    lv_label_set_text(h, "HEARTBEAT  .  2 MIN LIVE");
+    lv_label_set_text(h, "HEARTBEAT  •  2 MIN LIVE");
     lv_obj_set_style_text_font(h, FONT_CAPTION, 0);
     lv_obj_set_style_text_color(h, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(h, 3, 0);
@@ -201,9 +201,9 @@ void ui_focus_show(void)
     lv_obj_set_style_pad_row(tasks, 2, 0);
     lv_obj_clear_flag(tasks, LV_OBJ_FLAG_SCROLLABLE);
 
-    build_task_row(tasks, "Inbox scanned",            "3 FOUND  .  234MS",   TH_STATUS_GREEN);
-    build_task_row(tasks, "Drafting reply to Aisha",  "70%  .  1.2KB",       TH_AMBER);
-    build_task_row(tasks, "News digest",              "QUEUED  .  ETA 60S",  0x2D2D35);
+    build_task_row(tasks, "Inbox scanned",            "3 FOUND  •  234MS",   TH_STATUS_GREEN);
+    build_task_row(tasks, "Drafting reply to Aisha",  "70%  •  1.2KB",       TH_AMBER);
+    build_task_row(tasks, "News digest",              "QUEUED  •  ETA 60S",  0x2D2D35);
 
     /* Section 2 — EARLIER TODAY */
     lv_obj_t *sec2h = lv_label_create(s_overlay);
