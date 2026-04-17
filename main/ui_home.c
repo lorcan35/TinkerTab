@@ -20,6 +20,7 @@
 #include "ui_theme.h"
 #include "ui_agents.h"
 #include "ui_memory.h"
+#include "ui_focus.h"
 #include "ui_chat.h"
 #include "ui_notes.h"
 #include "ui_settings.h"
@@ -465,6 +466,7 @@ static bool any_overlay_visible(void)
     if (ui_chat_is_active())       return true;
     if (ui_agents_is_visible())    return true;
     if (ui_memory_is_visible())    return true;
+    if (ui_focus_is_visible())     return true;
     /* ui_settings/ui_notes are fullscreen overlays on home when active —
        LVGL re-parents them under the home screen, so the home gesture handler
        still fires. Guard via visible-flag check of the overlay-root object
@@ -482,9 +484,10 @@ static void screen_gesture_cb(lv_event_t *e)
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     switch (dir) {
         case LV_DIR_TOP:
-            /* Swipe up → Chat (focus state proxy) */
-            ESP_LOGI(TAG, "swipe up -> Chat");
-            ui_chat_create();
+            /* Swipe up -> FOCUS state (v5: orb collapses to corner,
+               heartbeat + task stream + earlier-today feed + ask prompt). */
+            ESP_LOGI(TAG, "swipe up -> Focus");
+            ui_focus_show();
             break;
         case LV_DIR_RIGHT:
             /* Swipe from left edge → Notes */
