@@ -147,9 +147,10 @@ static int build_session_row(lv_obj_t *parent, int y, const session_row_t *r)
 
 void ui_sessions_show(void)
 {
-    if (s_visible && s_overlay) {
+    if (s_overlay) {
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
+        s_visible = true;
         return;
     }
 
@@ -213,8 +214,7 @@ void ui_sessions_show(void)
 void ui_sessions_hide(void)
 {
     if (!s_visible) return;
-    if (s_overlay) { lv_obj_del(s_overlay); s_overlay = NULL; }
-    s_back_btn = NULL;
+    if (s_overlay) lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     s_visible = false;
     ESP_LOGI(TAG, "sessions overlay hidden");
 }
