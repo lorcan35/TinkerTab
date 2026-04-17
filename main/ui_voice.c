@@ -921,6 +921,14 @@ static void build_chat_area(lv_obj_t *parent)
 
     /* Start hidden */
     lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+
+    /* v5: voice overlay should stay pure (orb + state + waveform + cancel
+       hint) — conversation lives in Chat.  Move the chat area WAY off
+       screen so even if later code clears LV_OBJ_FLAG_HIDDEN the user
+       never sees the old-style bubbles inline during voice.  Keeps the
+       object tree intact (so all pointers stay valid, no NULL-guards
+       needed throughout the file) but invisible. */
+    lv_obj_set_pos(s_chat_cont, -5000, -5000);
 }
 
 /* ================================================================
