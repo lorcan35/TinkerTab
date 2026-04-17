@@ -85,7 +85,7 @@ CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
 # (xPortcheckValidStackMem assert at 96KB, keyboard-init store fault at 32KB).
 # Expand uses system heap (PSRAM) on demand.
 CONFIG_LV_MEM_SIZE_KILOBYTES=96
-CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=2048
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=4096
 # Disable LVGL assert on malloc failure — default while(1) hangs 60s then WDT kills device
 CONFIG_LV_USE_ASSERT_NULL=n
 CONFIG_LV_USE_ASSERT_MALLOC=n
