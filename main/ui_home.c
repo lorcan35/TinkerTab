@@ -19,6 +19,7 @@
 #include "ui_home.h"
 #include "ui_theme.h"
 #include "ui_agents.h"
+#include "ui_memory.h"
 #include "ui_chat.h"
 #include "ui_notes.h"
 #include "ui_settings.h"
@@ -83,6 +84,7 @@ static void orb_click_cb(lv_event_t *e);
 static void orb_long_press_cb(lv_event_t *e);
 static void screen_gesture_cb(lv_event_t *e);
 static void poem_click_cb(lv_event_t *e);
+static void sys_click_cb(lv_event_t *e);
 static void show_toast_internal(const char *text);
 static void orb_paint_for_mode(uint8_t mode);
 
@@ -178,6 +180,9 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(s_sys_label, FONT_CAPTION, 0);
     lv_obj_set_style_text_color(s_sys_label, lv_color_hex(0x8A8A93), 0);
     lv_obj_set_style_text_letter_space(s_sys_label, 3, 0);
+    /* Tap the sys label → Memory search overlay */
+    lv_obj_add_flag(s_sys_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_sys_label, sys_click_cb, LV_EVENT_CLICKED, NULL);
 
     /* ── Top-right mode diamond + label ── */
     s_mode_diamond = lv_obj_create(s_screen);
@@ -385,6 +390,13 @@ static void poem_click_cb(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "poem tapped -> Agents");
     ui_agents_show();
+}
+
+static void sys_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "sys label tapped -> Memory");
+    ui_memory_show();
 }
 
 static void screen_gesture_cb(lv_event_t *e)
