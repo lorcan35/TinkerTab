@@ -1774,11 +1774,13 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_max_height(card, 160, 0);  /* FIX N1: cap card height */
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x111119), 0); /* TH_CARD */
+    /* v5: flat row, hairline rule underneath — no rounded bubble. */
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x08080E), 0); /* TH_BG */
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 14, 0);
+    lv_obj_set_style_radius(card, 0, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
+    lv_obj_set_style_border_color(card, lv_color_hex(0x1C1C28), 0); /* TH_HAIRLINE */
+    lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */
@@ -1808,25 +1810,24 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_text_font(ts, FONT_CAPTION, 0);
     lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
 
-    /* Badge */
+    /* v5: kill the colored Material pill. Use a letter-spaced caption
+     * in amber (or red on failure) inline next to the timestamp. */
     lv_obj_t *badge = lv_label_create(header);
     const char *badge_text;
     uint32_t badge_color;
     switch (n.state) {
-    case NOTE_STATE_RECORDED:     badge_text = " rec "; badge_color = COL_AMBER; break;
-    case NOTE_STATE_TRANSCRIBING: badge_text = " ... "; badge_color = COL_CYAN; break;
-    case NOTE_STATE_TRANSCRIBED:  badge_text = " voice "; badge_color = COL_PURPLE; break;
-    case NOTE_STATE_FAILED:       badge_text = " fail "; badge_color = COL_RED; break;
-    default:                      badge_text = n.is_voice ? " voice " : " text ";
-                                  badge_color = n.is_voice ? COL_PURPLE : COL_AMBER; break;
+    case NOTE_STATE_RECORDED:     badge_text = "· REC";    badge_color = COL_AMBER; break;
+    case NOTE_STATE_TRANSCRIBING: badge_text = "· . . .";  badge_color = COL_AMBER; break;
+    case NOTE_STATE_TRANSCRIBED:  badge_text = "· VOICE";  badge_color = COL_AMBER; break;
+    case NOTE_STATE_FAILED:       badge_text = "· FAIL";   badge_color = COL_RED;   break;
+    default:                      badge_text = n.is_voice ? "· VOICE" : "· TEXT";
+                                  badge_color = COL_AMBER; break;
     }
     lv_label_set_text(badge, badge_text);
-    lv_obj_set_style_bg_color(badge, lv_color_hex(badge_color), 0);
-    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(badge, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_text_color(badge, lv_color_hex(badge_color), 0);
     lv_obj_set_style_text_font(badge, FONT_CAPTION, 0);
-    lv_obj_set_style_radius(badge, 4, 0);
-    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_set_style_text_letter_space(badge, 3, 0);
+    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
     /* Delete button — 44x44 touch target, dark bg, red X */
     lv_obj_t *del = lv_button_create(header);
