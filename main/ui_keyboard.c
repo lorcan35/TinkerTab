@@ -20,35 +20,35 @@
 
 static const char *TAG = "ui_kbd";
 
-/* ── Palette — TinkerOS dark glass ─────────────────────────────── */
-#define KB_BG           0x0A0A0A
-#define KB_KEY_BG       0x1A1A1A   /* rgba(255,255,255,0.06) on black */
-#define KB_KEY_PRESS    0x2A2A2A   /* rgba(255,255,255,0.12) on black */
-#define KB_KEY_SPECIAL  0x222228   /* special keys — slight blue tint */
-#define KB_KEY_ENTER    0x003844   /* cyan tint for enter */
-#define KB_SPACE_BG     0x0A1214   /* rgba(0,229,255,0.04) on black */
-#define KB_CYAN         0x00E5FF   /* primary accent */
-#define KB_TEXT         0xB3B3B3   /* rgba(255,255,255,0.7) */
-#define KB_TEXT_DIM     0x666666   /* dimmed text */
-#define KB_SEP          0x101010   /* rgba(255,255,255,0.06) separator */
-#define KB_HANDLE       0x262626   /* drag handle */
-#define KB_TRIGGER_BG   0x0A1A1E   /* trigger button bg */
-#define KB_TRIGGER_BRD  0x0D3840   /* trigger button border */
+/* ── Palette — v5 Zero Interface (amber-led) ──────────────────── */
+#define KB_BG           0x0A0A10   /* TH_BG-adjacent, slightly warmer than pure */
+#define KB_KEY_BG       0x15151D   /* key rest */
+#define KB_KEY_PRESS    0x281E0A   /* pressed = amber-tinted fill */
+#define KB_KEY_SPECIAL  0x181820   /* shift / layer / backspace */
+#define KB_KEY_ENTER    0xF59E0B   /* send = primary amber */
+#define KB_SPACE_BG     0x12121A   /* spacebar bg */
+#define KB_CYAN         0xF59E0B   /* keep name, swap to TH_AMBER */
+#define KB_TEXT         0xD8D8DC   /* key labels — readable, not pure white */
+#define KB_TEXT_DIM     0x9A9AA3   /* shift / layer labels */
+#define KB_SEP          0x1A1A24   /* TH_HAIRLINE */
+#define KB_HANDLE       0x2A2A32   /* drag handle */
+#define KB_TRIGGER_BG   0x281E0A   /* amber-tinted trigger */
+#define KB_TRIGGER_BRD  0x5E3F0C   /* amber border */
 
-/* ── Layout constants ──────────────────────────────────────────── */
+/* ── Layout constants — v5: 72 px keys meet TOUCH_MIN on 218 DPI ─ */
 #define SW              720
 #define SH              1280
-#define KB_HEIGHT       420
+#define KB_HEIGHT       500        /* was 420 — +80 for 72 px rows + gaps */
 #define KB_ANIM_SHOW_MS 300
 #define KB_ANIM_HIDE_MS 250
 
-#define KEY_H           52
-#define KEY_GAP         4
-#define KEY_RAD         8
-#define ROW_PAD_X       6      /* horizontal padding inside keyboard */
-#define ROW_GAP_Y       4
+#define KEY_H           72         /* was 52 — above TOUCH_MIN 60 on Tab5 @ 218 DPI */
+#define KEY_GAP         6          /* was 4 — more breathing room between keys */
+#define KEY_RAD         14         /* was 8 — match v5 card rhythm */
+#define ROW_PAD_X       8          /* was 6 — matches new KEY_GAP */
+#define ROW_GAP_Y       8          /* was 4 — more breathing room between rows */
 
-#define TRIGGER_SZ      56
+#define TRIGGER_SZ      60         /* was 56 — above TOUCH_MIN */
 #define TRIGGER_MARGIN  20
 
 /* ── Key definitions ───────────────────────────────────────────── */
