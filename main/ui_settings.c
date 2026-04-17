@@ -1240,7 +1240,7 @@ lv_obj_t *ui_settings_create(void)
     /* Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
 
-    /* ── Top Bar (48px, sticky) ──────────────────────────────────────── */
+    /* ── Top bar (v5: ghost HOME back + amber right-aligned title) ──── */
     lv_obj_t *bar = lv_obj_create(s_screen);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, 720, TOPBAR_H);
@@ -1248,32 +1248,33 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_bg_color(bar, lv_color_hex(BG_COLOR), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(CARD_COLOR), 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back arrow button (36x36, rounded 8px, bg #1A1A2E) */
+    /* HOME back — transparent ghost caption, matches agents/memory/focus/notes */
     lv_obj_t *back_btn = lv_button_create(bar);
-    lv_obj_remove_style_all(back_btn);
-    lv_obj_set_size(back_btn, 36, 36);
-    lv_obj_set_pos(back_btn, SIDE_PAD, (TOPBAR_H - 36) / 2);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(CARD_COLOR), 0);
-    lv_obj_set_style_bg_opa(back_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(back_btn, 8, 0);
+    lv_obj_set_size(back_btn, 140, TOPBAR_H);
+    lv_obj_set_pos(back_btn, 12, 0);
+    lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(back_btn, 0, 0);
+    lv_obj_set_style_border_width(back_btn, 0, 0);
     lv_obj_add_event_cb(back_btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *arrow = lv_label_create(back_btn);
-    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(arrow, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(arrow, FONT_SECONDARY, 0);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT "  HOME");
+    lv_obj_set_style_text_color(arrow, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
+    lv_obj_set_style_text_font(arrow, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(arrow, 3, 0);
     lv_obj_center(arrow);
 
-    /* "Settings" title centered */
+    /* "Settings" title amber, right-aligned */
     lv_obj_t *title = lv_label_create(bar);
     lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(title, FONT_HEADING, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px */
+    lv_obj_set_style_text_letter_space(title, -1, 0);
+    lv_obj_align(title, LV_ALIGN_RIGHT_MID, -24, 0);
 
     /* ── Scrollable content area ─────────────────────────────────────── */
     s_scroll = lv_obj_create(s_screen);
