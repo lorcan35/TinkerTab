@@ -48,6 +48,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "cJSON.h"
+#include "driver/jpeg_encode.h"
 
 static const char *TAG = "debug_srv";
 
@@ -171,6 +172,32 @@ static void build_bmp_header(uint8_t *hdr, int w, int h)
 /*  GET /screenshot  and  GET /screenshot.bmp                                */
 /* ======================================================================== */
 
+/* Lazily-initialised hardware JPEG encoder. One engine is reused across
+ * requests, serialised by s_jpeg_mux because jpeg_encoder_process is not
+ * safe to share across concurrent callers. */
+#include "freertos/semphr.h"
+static jpeg_encoder_handle_t s_jpeg_enc = NULL;
+static SemaphoreHandle_t     s_jpeg_mux = NULL;
+
+static esp_err_t _ensure_jpeg_encoder(void)
+{
+    if (s_jpeg_enc) return ESP_OK;
+    if (!s_jpeg_mux) {
+        s_jpeg_mux = xSemaphoreCreateMutex();
+        if (!s_jpeg_mux) return ESP_ERR_NO_MEM;
+    }
+    jpeg_encode_engine_cfg_t cfg = {
+        .intr_priority = 0,
+        .timeout_ms    = 5000,
+    };
+    esp_err_t ret = jpeg_new_encoder_engine(&cfg, &s_jpeg_enc);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "jpeg_new_encoder_engine failed: %s", esp_err_to_name(ret));
+        s_jpeg_enc = NULL;
+    }
+    return ret;
+}
+
 static esp_err_t screenshot_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
@@ -188,69 +215,81 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    size_t fb_size = FB_W * FB_H * FB_BPP;
-
-    /* Allocate a temporary copy buffer in PSRAM so we don't hold the LVGL
-     * lock during the (slow) HTTP chunked streaming. */
-    uint8_t *fb_copy = heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM);
-    if (!fb_copy) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "PSRAM alloc failed for screenshot");
+    if (_ensure_jpeg_encoder() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG encoder init failed");
         return ESP_FAIL;
     }
 
-    /* HW03: Lock LVGL to prevent tearing during framebuffer copy.
-     * If the lock times out, return HTTP 503 instead of copying without
-     * the lock — an unlocked copy races with LVGL rendering and produces
-     * torn frames that are worse than no screenshot at all. */
+    size_t fb_size = FB_W * FB_H * FB_BPP;
+
+    /* DMA-aligned input buffer for the JPEG engine. */
+    jpeg_encode_memory_alloc_cfg_t in_alloc = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };
+    size_t in_capacity = 0;
+    uint8_t *in_buf = jpeg_alloc_encoder_mem(fb_size, &in_alloc, &in_capacity);
+    if (!in_buf || in_capacity < fb_size) {
+        if (in_buf) free(in_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG input alloc failed");
+        return ESP_FAIL;
+    }
+
+    /* Output buffer — 256 KB is plenty for a 720x1280 UI screenshot at q80
+     * (measured ~60-120 KB for dark-UI content). */
+    const size_t out_cap = 256 * 1024;
+    jpeg_encode_memory_alloc_cfg_t out_alloc = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+    size_t out_capacity = 0;
+    uint8_t *out_buf = jpeg_alloc_encoder_mem(out_cap, &out_alloc, &out_capacity);
+    if (!out_buf) {
+        free(in_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG output alloc failed");
+        return ESP_FAIL;
+    }
+
+    /* HW03: Lock LVGL for the copy, unlock before encode (encode is long
+     * but operates on our copy, so LVGL is free to keep rendering). */
     if (!tab5_ui_try_lock(2000)) {
         ESP_LOGW(TAG, "Screenshot: LVGL lock timeout (2s) — returning 503");
-        heap_caps_free(fb_copy);
+        free(in_buf); free(out_buf);
         httpd_resp_set_status(req, "503 Service Unavailable");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"error\":\"display busy — LVGL lock timeout\"}");
         return ESP_OK;
     }
-
-    /* Invalidate CPU cache so we read the latest PSRAM contents.
-     * LVGL flush callback does C2M (write-back) on Core 0; this core's
-     * cache may hold stale lines from a previous screenshot read. */
     esp_cache_msync(fb, fb_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-    memcpy(fb_copy, fb, fb_size);
+    memcpy(in_buf, fb, fb_size);
     tab5_ui_unlock();
 
-    /* Build BMP header */
-    uint8_t hdr[BMP_HEADER_SIZE];
-    build_bmp_header(hdr, FB_W, FB_H);
+    /* Encode. Serialize concurrent /screenshot calls — the engine is not
+     * safe to share across simultaneous jpeg_encoder_process invocations. */
+    jpeg_encode_cfg_t enc_cfg = {
+        .height        = FB_H,
+        .width         = FB_W,
+        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
+        .image_quality = 80,
+    };
+    uint32_t out_size = 0;
+    xSemaphoreTake(s_jpeg_mux, portMAX_DELAY);
+    ret = jpeg_encoder_process(s_jpeg_enc, &enc_cfg, in_buf, fb_size,
+                               out_buf, out_capacity, &out_size);
+    xSemaphoreGive(s_jpeg_mux);
 
-    httpd_resp_set_type(req, "image/bmp");
+    free(in_buf);
+
+    if (ret != ESP_OK || out_size == 0) {
+        ESP_LOGE(TAG, "jpeg_encoder_process: %s out=%u", esp_err_to_name(ret), (unsigned)out_size);
+        free(out_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG encode failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
 
-    /* Send header */
-    ret = httpd_resp_send_chunk(req, (const char *)hdr, BMP_HEADER_SIZE);
-    if (ret != ESP_OK) {
-        free(fb_copy);
-        return ret;
-    }
-
-    /* Send pixel rows bottom-up (BMP convention) from the copy.  Row-by-row
-       keeps each httpd_resp_send_chunk small (~1440 bytes) and stable;
-       batching into 90 KB chunks was experimentally worse (stream dying
-       after 2–3 chunks, suspected LWIP MBUF limit vs voice-WS pongs). */
-    uint32_t row_bytes = FB_W * FB_BPP;
-    for (int y = FB_H - 1; y >= 0; y--) {
-        ret = httpd_resp_send_chunk(req,
-            (const char *)(fb_copy + y * row_bytes), row_bytes);
-        if (ret != ESP_OK) {
-            free(fb_copy);
-            return ret;
-        }
-    }
-
-    free(fb_copy);
-
-    /* End chunked response */
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    /* Typical payload 60-150 KB — fits comfortably in a single send with
+     * the 32 KB LWIP window. No chunking needed. */
+    ret = httpd_resp_send(req, (const char *)out_buf, out_size);
+    free(out_buf);
+    return ret;
 }
 
 /* ======================================================================== */
@@ -571,7 +610,7 @@ static const char INDEX_HTML[] =
 "<div class='row'>"
 "<div class='col'>"
 "  <div id='screen-wrap'>"
-"    <img id='screen' src='/screenshot.bmp' alt='screenshot' draggable='false'>"
+"    <img id='screen' src='/screenshot.jpg' alt='screenshot' draggable='false'>"
 "  </div>"
 "  <div id='coords'>&nbsp;</div>"
 "  <div id='status'>Ready</div>"
@@ -593,7 +632,7 @@ static const char INDEX_HTML[] =
 "let autoMode=false,autoTimer=null;"
 "\n"
 "function refresh(){"
-"  img.src='/screenshot.bmp?t='+Date.now();"
+"  img.src='/screenshot.jpg?t='+Date.now();"
 "  statusEl.textContent='Refreshed '+new Date().toLocaleTimeString();"
 "}"
 "\n"
@@ -1527,7 +1566,11 @@ esp_err_t tab5_debug_server_init(void)
     config.lru_purge_enable = true;
     config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
-    config.send_wait_timeout = 5;         /* 5s send timeout (default 5) */
+    /* A full 1.8 MB screenshot over 2.4 GHz WiFi with 400-500 ms RTT and
+     * the small default LWIP TCP send window needs ~30-60s of blocked
+     * send() calls. Default 5s kills the connection after one window-full.
+     * Bump to 90s so /screenshot can actually complete. */
+    config.send_wait_timeout = 90;
     config.close_fn = NULL;               /* Use default close */
     /* Run httpd on Core 1 so it doesn't starve when LVGL is busy on Core 0.
      * Settings screen creates 55 objects (~500ms) which blocks Core 0 entirely.
@@ -1551,6 +1594,9 @@ esp_err_t tab5_debug_server_init(void)
     };
     const httpd_uri_t uri_screenshot_bmp = {
         .uri = "/screenshot.bmp", .method = HTTP_GET, .handler = screenshot_handler
+    };
+    const httpd_uri_t uri_screenshot_jpg = {
+        .uri = "/screenshot.jpg", .method = HTTP_GET, .handler = screenshot_handler
     };
     const httpd_uri_t uri_info = {
         .uri = "/info", .method = HTTP_GET, .handler = info_handler
@@ -1614,6 +1660,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
     httpd_register_uri_handler(server, &uri_screenshot_bmp);
+    httpd_register_uri_handler(server, &uri_screenshot_jpg);
     httpd_register_uri_handler(server, &uri_info);
     httpd_register_uri_handler(server, &uri_touch);
     httpd_register_uri_handler(server, &uri_reboot);
