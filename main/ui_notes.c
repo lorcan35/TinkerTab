@@ -1198,7 +1198,7 @@ static void show_input_area(void)
     s_input_area = lv_textarea_create(s_screen);
     lv_obj_set_size(s_input_area, SW - 180 - 16, INPUT_H);
     lv_obj_set_pos(s_input_area, 8, input_y);
-    lv_textarea_set_placeholder_text(s_input_area, "Type a note...");
+    lv_textarea_set_placeholder_text(s_input_area, "write it down...");
     lv_textarea_set_one_line(s_input_area, true);
     lv_obj_set_style_bg_color(s_input_area, lv_color_hex(COL_CARD2), 0);
     lv_obj_set_style_text_color(s_input_area, lv_color_hex(COL_WHITE), 0);
@@ -2039,7 +2039,7 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
     lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + BTN_ROW_H + 4);
     lv_textarea_set_one_line(s_search_ta, true);
-    lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " Search notes...");
+    lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " search what you wrote...");
     lv_obj_set_style_bg_color(s_search_ta, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_WHITE), 0);
     lv_obj_set_style_text_font(s_search_ta, FONT_SECONDARY, 0);

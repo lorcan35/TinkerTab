@@ -52,7 +52,7 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, uint32_t accent_color)
     bar->textarea = lv_textarea_create(bar->container);
     lv_obj_set_flex_grow(bar->textarea, 1);
     lv_obj_set_height(bar->textarea, DPI_SCALE(40));
-    lv_textarea_set_placeholder_text(bar->textarea, "Type a message...");
+    lv_textarea_set_placeholder_text(bar->textarea, "say something...");
     lv_textarea_set_one_line(bar->textarea, true);
     lv_obj_set_style_bg_color(bar->textarea, lv_color_hex(0x111119), 0); /* TH_CARD */
     lv_obj_set_style_bg_opa(bar->textarea, LV_OPA_COVER, 0);

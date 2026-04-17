@@ -955,7 +955,7 @@ static void trigger_click_cb(lv_event_t *e)
         lv_obj_set_style_border_width(s_default_ta, 1, 0);
         lv_obj_set_style_radius(s_default_ta, 12, 0);
         lv_obj_set_style_pad_all(s_default_ta, 12, 0);
-        lv_textarea_set_placeholder_text(s_default_ta, "Type something...");
+        lv_textarea_set_placeholder_text(s_default_ta, "type something...");
         lv_textarea_set_one_line(s_default_ta, false);
         lv_textarea_set_max_length(s_default_ta, 256);
     }
