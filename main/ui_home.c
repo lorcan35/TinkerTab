@@ -18,6 +18,7 @@
 
 #include "ui_home.h"
 #include "ui_theme.h"
+#include "ui_agents.h"
 #include "ui_chat.h"
 #include "ui_notes.h"
 #include "ui_settings.h"
@@ -81,6 +82,7 @@ static void refresh_timer_cb(lv_timer_t *t);
 static void orb_click_cb(lv_event_t *e);
 static void orb_long_press_cb(lv_event_t *e);
 static void screen_gesture_cb(lv_event_t *e);
+static void poem_click_cb(lv_event_t *e);
 static void show_toast_internal(const char *text);
 static void orb_paint_for_mode(uint8_t mode);
 
@@ -242,13 +244,15 @@ lv_obj_t *ui_home_create(void)
     s_poem_label = lv_label_create(s_screen);
     lv_label_set_long_mode(s_poem_label, LV_LABEL_LONG_WRAP);
     /* ASCII only — Montserrat font subset on device has no em-dash. */
-    lv_label_set_text(s_poem_label, "Nothing yet -- ask me something.");
+    lv_label_set_text(s_poem_label, "Earlier -- heartbeat drafted a reply.\nTap to see what your agents did.");
     lv_obj_set_style_text_font(s_poem_label, FONT_SECONDARY, 0);
     lv_obj_set_style_text_color(s_poem_label, lv_color_hex(TH_TEXT_BODY), 0);
     lv_obj_set_style_text_align(s_poem_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_line_space(s_poem_label, 4, 0);
     lv_obj_set_width(s_poem_label, SW - SIDE_PAD * 2 - 60);
-    lv_obj_set_pos(s_poem_label, SIDE_PAD + 60, 1070);
+    lv_obj_set_pos(s_poem_label, SIDE_PAD + 60, 1030);
+    lv_obj_add_flag(s_poem_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_poem_label, poem_click_cb, LV_EVENT_CLICKED, NULL);
 
     /* ── Swipe-up hint ── */
     s_hint_label = lv_label_create(s_screen);
@@ -374,6 +378,13 @@ static void orb_long_press_cb(lv_event_t *e)
     char buf[48];
     snprintf(buf, sizeof(buf), "Mode: %s", s_mode_short[next]);
     show_toast_internal(buf);
+}
+
+static void poem_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "poem tapped -> Agents");
+    ui_agents_show();
 }
 
 static void screen_gesture_cb(lv_event_t *e)
