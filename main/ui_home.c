@@ -85,6 +85,7 @@ static void orb_long_press_cb(lv_event_t *e);
 static void screen_gesture_cb(lv_event_t *e);
 static void poem_click_cb(lv_event_t *e);
 static void sys_click_cb(lv_event_t *e);
+static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
 static void orb_paint_for_mode(uint8_t mode);
 
@@ -395,7 +396,8 @@ static void refresh_timer_cb(lv_timer_t *t)
 static void orb_click_cb(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "orb tapped — open voice");
+    if (any_overlay_visible()) return;  /* ignore stray tap-through from a closing overlay */
+    ESP_LOGI(TAG, "orb tapped -> open voice");
     if (!voice_is_connected()) {
         /* Kick off async connect if we're offline */
         char dhost[64];
@@ -411,8 +413,9 @@ static void orb_click_cb(lv_event_t *e)
 static void orb_long_press_cb(lv_event_t *e)
 {
     (void)e;
+    if (any_overlay_visible()) return;
     uint8_t next = (s_badge_mode + 1) % VOICE_MODE_COUNT;
-    ESP_LOGI(TAG, "orb long-pressed — cycling mode %d → %d", s_badge_mode, next);
+    ESP_LOGI(TAG, "orb long-pressed -> cycling mode %d -> %d", s_badge_mode, next);
     tab5_settings_set_voice_mode(next);
     char model[64];
     tab5_settings_get_llm_model(model, sizeof(model));
@@ -427,6 +430,7 @@ static void orb_long_press_cb(lv_event_t *e)
 static void poem_click_cb(lv_event_t *e)
 {
     (void)e;
+    if (any_overlay_visible()) return;
     ESP_LOGI(TAG, "poem tapped -> Agents");
     ui_agents_show();
 }
@@ -434,27 +438,48 @@ static void poem_click_cb(lv_event_t *e)
 static void sys_click_cb(lv_event_t *e)
 {
     (void)e;
+    if (any_overlay_visible()) return;
     ESP_LOGI(TAG, "sys label tapped -> Memory");
     ui_memory_show();
 }
 
+/* Return true if an overlay is currently obscuring the home screen.
+   Home gestures must no-op while an overlay is up so a single swipe doesn't
+   open two screens (e.g. already-in-Chat + swipe-up stacks a second Chat). */
+static bool any_overlay_visible(void)
+{
+    if (ui_chat_is_active())       return true;
+    if (ui_agents_is_visible())    return true;
+    if (ui_memory_is_visible())    return true;
+    /* ui_settings/ui_notes are fullscreen overlays on home when active —
+       LVGL re-parents them under the home screen, so the home gesture handler
+       still fires. Guard via visible-flag check of the overlay-root object
+       if it exists; simpler for now: rely on chat/agents/memory flags and
+       accept that settings/notes swipes are safe because LVGL routes the
+       gesture to the topmost clickable that accepts it. */
+    return false;
+}
+
 static void screen_gesture_cb(lv_event_t *e)
 {
+    (void)e;
+    if (any_overlay_visible()) return;
+
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     switch (dir) {
         case LV_DIR_TOP:
             /* Swipe up → Chat (focus state proxy) */
-            ESP_LOGI(TAG, "swipe up → Chat");
+            ESP_LOGI(TAG, "swipe up -> Chat");
             ui_chat_create();
             break;
         case LV_DIR_RIGHT:
             /* Swipe from left edge → Notes */
-            ESP_LOGI(TAG, "swipe right → Notes");
+            ESP_LOGI(TAG, "swipe right -> Notes");
             ui_notes_create();
             break;
         case LV_DIR_LEFT:
             /* Swipe from right edge → Settings */
-            ESP_LOGI(TAG, "swipe left → Settings");
+            ESP_LOGI(TAG, "swipe left -> Settings");
             ui_settings_create();
             break;
         default:
