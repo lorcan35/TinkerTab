@@ -476,6 +476,24 @@ static bool any_overlay_visible(void)
     return false;
 }
 
+/* Async callbacks — deferred so the originating gesture has fully dispatched
+   before we create the overlay.  Prevents a swipe-right on home from opening
+   Notes, then immediately bubbling to Notes's own swipe-right=back handler
+   and tearing it down mid-layout (the visible crash the user reported). */
+static void async_open_focus(void *arg)   { (void)arg; ui_focus_show(); }
+static void async_open_notes(void *arg)
+{
+    (void)arg;
+    extern lv_obj_t *ui_notes_create(void);
+    ui_notes_create();
+}
+static void async_open_settings(void *arg)
+{
+    (void)arg;
+    extern lv_obj_t *ui_settings_create(void);
+    ui_settings_create();
+}
+
 static void screen_gesture_cb(lv_event_t *e)
 {
     (void)e;
@@ -484,20 +502,16 @@ static void screen_gesture_cb(lv_event_t *e)
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     switch (dir) {
         case LV_DIR_TOP:
-            /* Swipe up -> FOCUS state (v5: orb collapses to corner,
-               heartbeat + task stream + earlier-today feed + ask prompt). */
-            ESP_LOGI(TAG, "swipe up -> Focus");
-            ui_focus_show();
+            ESP_LOGI(TAG, "swipe up -> Focus (async)");
+            lv_async_call(async_open_focus, NULL);
             break;
         case LV_DIR_RIGHT:
-            /* Swipe from left edge → Notes */
-            ESP_LOGI(TAG, "swipe right -> Notes");
-            ui_notes_create();
+            ESP_LOGI(TAG, "swipe right -> Notes (async)");
+            lv_async_call(async_open_notes, NULL);
             break;
         case LV_DIR_LEFT:
-            /* Swipe from right edge → Settings */
-            ESP_LOGI(TAG, "swipe left -> Settings");
-            ui_settings_create();
+            ESP_LOGI(TAG, "swipe left -> Settings (async)");
+            lv_async_call(async_open_settings, NULL);
             break;
         default:
             break;
