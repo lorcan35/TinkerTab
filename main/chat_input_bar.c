@@ -21,7 +21,7 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, uint32_t accent_color)
     if (!bar->container) { free(bar); return NULL; }
     lv_obj_remove_style_all(bar->container);
     lv_obj_set_size(bar->container, lv_pct(100), DPI_SCALE(56));
-    lv_obj_set_style_bg_color(bar->container, lv_color_hex(0x0F0F1A), 0);
+    lv_obj_set_style_bg_color(bar->container, lv_color_hex(0x08080E), 0); /* TH_BG */
     lv_obj_set_style_bg_opa(bar->container, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(bar->container, DPI_SCALE(8), 0);
     lv_obj_set_style_pad_ver(bar->container, DPI_SCALE(6), 0);
@@ -31,7 +31,7 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, uint32_t accent_color)
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(bar->container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_border_width(bar->container, 1, 0);
-    lv_obj_set_style_border_color(bar->container, lv_color_hex(0x222233), 0);
+    lv_obj_set_style_border_color(bar->container, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
     lv_obj_set_style_border_side(bar->container, LV_BORDER_SIDE_TOP, 0);
 
     /* Mic button */
@@ -54,13 +54,13 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, uint32_t accent_color)
     lv_obj_set_height(bar->textarea, DPI_SCALE(40));
     lv_textarea_set_placeholder_text(bar->textarea, "Type a message...");
     lv_textarea_set_one_line(bar->textarea, true);
-    lv_obj_set_style_bg_color(bar->textarea, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_bg_color(bar->textarea, lv_color_hex(0x111119), 0); /* TH_CARD */
     lv_obj_set_style_bg_opa(bar->textarea, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar->textarea, 1, 0);
-    lv_obj_set_style_border_color(bar->textarea, lv_color_hex(0x333344), 0);
+    lv_obj_set_style_border_color(bar->textarea, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
     lv_obj_set_style_radius(bar->textarea, DPI_SCALE(20), 0);
     lv_obj_set_style_text_font(bar->textarea, FONT_BODY, 0);
-    lv_obj_set_style_text_color(bar->textarea, lv_color_hex(0xE0E0E8), 0);
+    lv_obj_set_style_text_color(bar->textarea, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
     lv_obj_set_style_pad_hor(bar->textarea, DPI_SCALE(12), 0);
 
     /* Send button */

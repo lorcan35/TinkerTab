@@ -73,11 +73,11 @@ static SemaphoreHandle_t s_img_dl_sem = NULL;
 static volatile uint32_t s_img_load_gen = 0;
 
 #define SWIPE_EDGE_PX  60
-#define CLR_BG         0x0A0A0F
+#define CLR_BG         0x08080E   /* TH_BG — v5 background */
 
-/* ── Mode arrays ──────────────────────────────────────────────── */
+/* ── Mode arrays — v5 th_mode_colors palette ──────────────────── */
 static const char *s_mode_names[]  = {"Local", "Hybrid", "Cloud", "TinkerClaw"};
-static const uint32_t s_mode_colors[] = {0x22C55E, 0xF5A623, 0x06B6D4, 0xE11D48};
+static const uint32_t s_mode_colors[] = {0x22C55E, 0xF59E0B, 0x3B82F6, 0xF43F5E};
 
 static const char *s_local_models[]  = {"qwen3:1.7b", "qwen3:0.6b", "qwen3:4b"};
 static const char *s_cloud_models[]  = {

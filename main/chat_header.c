@@ -22,7 +22,7 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title,
     if (!hdr->container) { free(hdr); return NULL; }
     lv_obj_remove_style_all(hdr->container);
     lv_obj_set_size(hdr->container, lv_pct(100), DPI_SCALE(48));
-    lv_obj_set_style_bg_color(hdr->container, lv_color_hex(0x0F0F1A), 0);
+    lv_obj_set_style_bg_color(hdr->container, lv_color_hex(0x08080E), 0); /* TH_BG */
     lv_obj_set_style_bg_opa(hdr->container, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(hdr->container, DPI_SCALE(8), 0);
     lv_obj_set_style_pad_ver(hdr->container, DPI_SCALE(4), 0);
@@ -40,14 +40,14 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title,
     lv_obj_t *back_lbl = lv_label_create(hdr->back_btn);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
     lv_obj_set_style_text_font(back_lbl, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
     lv_obj_center(back_lbl);
 
     /* Title — flex-grow fills remaining space */
     hdr->title = lv_label_create(hdr->container);
     lv_label_set_text(hdr->title, title);
     lv_obj_set_style_text_font(hdr->title, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(hdr->title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_color(hdr->title, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
     lv_obj_set_flex_grow(hdr->title, 1);
 
     /* Status dot */
@@ -68,7 +68,7 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title,
     if (show_action) {
         hdr->action_btn = lv_button_create(hdr->container);
         lv_obj_set_size(hdr->action_btn, TOUCH_MIN, DPI_SCALE(32));
-        lv_obj_set_style_bg_color(hdr->action_btn, lv_color_hex(0x222233), 0);
+        lv_obj_set_style_bg_color(hdr->action_btn, lv_color_hex(0x13131F), 0); /* TH_CARD_ELEVATED */
         lv_obj_set_style_bg_opa(hdr->action_btn, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(hdr->action_btn, DPI_SCALE(8), 0);
         lv_obj_set_style_shadow_width(hdr->action_btn, 0, 0);
@@ -76,7 +76,7 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title,
         lv_obj_t *plus_lbl = lv_label_create(hdr->action_btn);
         lv_label_set_text(plus_lbl, "+");
         lv_obj_set_style_text_font(plus_lbl, FONT_HEADING, 0);
-        lv_obj_set_style_text_color(plus_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_color(plus_lbl, lv_color_hex(0xF59E0B), 0); /* TH_AMBER — primary action */
         lv_obj_center(plus_lbl);
     }
 

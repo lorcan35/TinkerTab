@@ -76,47 +76,49 @@ static void init_styles(void)
     lv_style_set_border_width(&s_style_user_bubble, 0);
     lv_style_set_text_color(&s_style_user_bubble, lv_color_hex(0x000000));
 
-    /* AI bubble — indigo bg, white text, subtle border */
+    /* AI bubble — v5: elevated card surface, body-weight text. Structure
+       stays (bubble-shaped) since the hairline-rule "letter" treatment
+       will come with a deeper rewrite. */
     lv_style_init(&s_style_ai_bubble);
-    lv_style_set_bg_color(&s_style_ai_bubble, lv_color_hex(0x2A2A3E));
+    lv_style_set_bg_color(&s_style_ai_bubble, lv_color_hex(0x13131F));   /* TH_CARD_ELEVATED */
     lv_style_set_bg_opa(&s_style_ai_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_ai_bubble, 16);
     lv_style_set_pad_all(&s_style_ai_bubble, BUBBLE_PAD);
     lv_style_set_pad_bottom(&s_style_ai_bubble, 8);
     lv_style_set_border_width(&s_style_ai_bubble, 1);
-    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0x333333));
-    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xFFFFFF));
+    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0x1A1A24)); /* TH_HAIRLINE */
+    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xAAAAAA));   /* TH_TEXT_BODY */
 
-    /* Card bubble — indigo bg with left orange border */
+    /* Card bubble — elevated surface, amber left rail (was orange 0xff6b35) */
     lv_style_init(&s_style_card_bubble);
-    lv_style_set_bg_color(&s_style_card_bubble, lv_color_hex(0x2A2A3E));
+    lv_style_set_bg_color(&s_style_card_bubble, lv_color_hex(0x13131F));   /* TH_CARD_ELEVATED */
     lv_style_set_bg_opa(&s_style_card_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_card_bubble, 12);
     lv_style_set_pad_all(&s_style_card_bubble, BUBBLE_PAD);
     lv_style_set_pad_left(&s_style_card_bubble, BUBBLE_PAD + 6);
     lv_style_set_border_width(&s_style_card_bubble, 1);
-    lv_style_set_border_color(&s_style_card_bubble, lv_color_hex(0xff6b35));
+    lv_style_set_border_color(&s_style_card_bubble, lv_color_hex(0xF59E0B)); /* TH_AMBER left rail */
     lv_style_set_border_side(&s_style_card_bubble, LV_BORDER_SIDE_LEFT);
-    lv_style_set_text_color(&s_style_card_bubble, lv_color_hex(0xFFFFFF));
+    lv_style_set_text_color(&s_style_card_bubble, lv_color_hex(0xE8E8EF));   /* TH_TEXT_PRIMARY */
 
-    /* Tool status bubble — dark bg, centered cyan text */
+    /* Tool status bubble — centered amber text (was cyan) */
     lv_style_init(&s_style_tool_bubble);
-    lv_style_set_bg_color(&s_style_tool_bubble, lv_color_hex(0x1A1A2E));
+    lv_style_set_bg_color(&s_style_tool_bubble, lv_color_hex(0x111119));    /* TH_CARD */
     lv_style_set_bg_opa(&s_style_tool_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_tool_bubble, 12);
     lv_style_set_pad_all(&s_style_tool_bubble, 10);
     lv_style_set_border_width(&s_style_tool_bubble, 0);
-    lv_style_set_text_color(&s_style_tool_bubble, lv_color_hex(0x00E5FF));
+    lv_style_set_text_color(&s_style_tool_bubble, lv_color_hex(0xF59E0B));  /* TH_AMBER */
     lv_style_set_text_align(&s_style_tool_bubble, LV_TEXT_ALIGN_CENTER);
 
-    /* System bubble — dark bg, centered dim text */
+    /* System bubble — dark bg, centered dim text (TH_TEXT_SECONDARY) */
     lv_style_init(&s_style_system_bubble);
-    lv_style_set_bg_color(&s_style_system_bubble, lv_color_hex(0x1A1A2E));
+    lv_style_set_bg_color(&s_style_system_bubble, lv_color_hex(0x111119)); /* TH_CARD */
     lv_style_set_bg_opa(&s_style_system_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_system_bubble, 12);
     lv_style_set_pad_all(&s_style_system_bubble, 10);
     lv_style_set_border_width(&s_style_system_bubble, 0);
-    lv_style_set_text_color(&s_style_system_bubble, lv_color_hex(0x555555));
+    lv_style_set_text_color(&s_style_system_bubble, lv_color_hex(0x666666)); /* TH_TEXT_SECONDARY */
     lv_style_set_text_align(&s_style_system_bubble, LV_TEXT_ALIGN_CENTER);
 
     /* Timestamp — small font, right-aligned */
@@ -199,7 +201,7 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
             /* Show subtitle in content label for cards */
             lv_label_set_text(slot->content, msg->subtitle[0] ? msg->subtitle : msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
             break;
         case MSG_AUDIO_CLIP:
@@ -224,13 +226,13 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
         case MSG_TOOL_STATUS:
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x00E5FF), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
             break;
         case MSG_SYSTEM:
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x555555), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
             break;
         default:
@@ -238,7 +240,7 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
             lv_obj_set_style_text_color(slot->content,
-                lv_color_hex(msg->is_user ? 0x000000 : 0xFFFFFF), 0);
+                lv_color_hex(msg->is_user ? 0x000000 : 0xAAAAAA), 0); /* TH_TEXT_BODY on AI */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
             break;
     }
@@ -259,7 +261,7 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
             lv_label_set_text(slot->timestamp, "");
         }
         lv_obj_set_style_text_color(slot->timestamp,
-            lv_color_hex(msg->is_user ? 0x555555 : 0x888888), 0);
+            lv_color_hex(msg->is_user ? 0x444444 : 0x666666), 0); /* TH_TEXT_DIM / _SECONDARY */
         lv_obj_clear_flag(slot->timestamp, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_width(slot->timestamp, LABEL_MAX_W);
         /* Place timestamp below content with 4px gap */
