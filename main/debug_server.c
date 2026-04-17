@@ -1166,6 +1166,18 @@ static void async_navigate(void *arg)
     } else if (strcmp(s_nav_target, "files") == 0) {
         extern lv_obj_t *ui_files_create(void);
         ui_files_create();
+    } else if (strcmp(s_nav_target, "sessions") == 0) {
+        extern void ui_sessions_show(void);
+        ui_sessions_show();
+    } else if (strcmp(s_nav_target, "agents") == 0) {
+        extern void ui_agents_show(void);
+        ui_agents_show();
+    } else if (strcmp(s_nav_target, "memory") == 0) {
+        extern void ui_memory_show(void);
+        ui_memory_show();
+    } else if (strcmp(s_nav_target, "focus") == 0) {
+        extern void ui_focus_show(void);
+        ui_focus_show();
     }
     s_navigating = false;
 }
