@@ -70,9 +70,12 @@ static void mode_switch_idle_task(void *arg);
 #define MIC_BTN_BOTTOM     140       /* above 120px nav bar + 20px margin */
 #define MIC_DOT_SZ         12        /* inner dot indicator */
 
-#define ORB_SZ_LISTEN      200
-#define ORB_SZ_SPEAK       220
-#define ORB_RING_W         2
+/* v5: orb carries the identity. Push from 200 -> 300 for LISTENING and
+   320 for SPEAKING so presence matches the home orb. Ring stroke slightly
+   heavier (2 -> 3) so the arc reads from across the desk. */
+#define ORB_SZ_LISTEN      300
+#define ORB_SZ_SPEAK       320
+#define ORB_RING_W         3
 #define ORB_GLOW_LAYERS    4         /* concentric circles for radial gradient */
 
 #define CLOSE_BTN_SZ       56
