@@ -624,7 +624,14 @@ static void sys_label_refresh_async_cb(void *arg)
         }
     }
     bool muted = tab5_settings_get_mic_mute();
-    if (muted)            snprintf(buf, sizeof(buf), "MUTED - %d%%", bat);
+    bool quiet = false;
+    {
+        time_t now = 0; time(&now);
+        struct tm tm_local; localtime_r(&now, &tm_local);
+        quiet = tab5_settings_quiet_active(tm_local.tm_hour);
+    }
+    if (quiet)            snprintf(buf, sizeof(buf), "QUIET - %d%%", bat);
+    else if (muted)       snprintf(buf, sizeof(buf), "MUTED - %d%%", bat);
     else if (state_hint)  snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
     else if (dragon)      snprintf(buf, sizeof(buf), "DRAGON %d%%", bat);
     else                  snprintf(buf, sizeof(buf), "OFFLINE %d%%", bat);
