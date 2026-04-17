@@ -189,40 +189,70 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
     lv_obj_set_size(slot->container, BUBBLE_MAX_W, LV_SIZE_CONTENT);
     lv_obj_clear_flag(slot->container, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Content label */
+    /* Content label — v5 treatments for the rich-media variants. Only text
+       + style touched here; object lifecycle stays unchanged (recycled pool
+       invariant). Image/card/audio stay resilient across scroll / scroll-back. */
     switch (msg->type) {
-        case MSG_IMAGE:
-            lv_label_set_text(slot->content, "Loading...");
+        case MSG_IMAGE: {
+            /* Placeholder while the JPEG downloads. v5: amber progress feel
+               instead of grey 'Loading...'. The real image swap-in happens
+               in ui_chat.c on media_cache_fetch() completion. */
+            const char *alt = msg->text[0] ? msg->text : "inline image";
+            char placeholder[160];
+            /* %.120s bounds the alt-text so LV_SYMBOL glyphs + spaces all fit */
+            snprintf(placeholder, sizeof(placeholder),
+                     LV_SYMBOL_IMAGE "  %.120s  " LV_SYMBOL_REFRESH, alt);
+            lv_label_set_text(slot->content, placeholder);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
             break;
-        case MSG_CARD:
-            /* Show subtitle in content label for cards */
-            lv_label_set_text(slot->content, msg->subtitle[0] ? msg->subtitle : msg->text);
+        }
+        case MSG_CARD: {
+            /* v5 cards show both title AND subtitle — title as primary,
+               subtitle dim on the line below. Falls back to text if either is
+               empty. Stays a single label to keep the slot-pool shape stable.
+               .*s precision bounds pacify -Wformat-truncation for the 512-char
+               source fields — 140 + 1 newline + 160 fits inside 320 with room. */
+            char card_text[320];
+            const char *title    = msg->text[0]     ? msg->text     : NULL;
+            const char *subtitle = msg->subtitle[0] ? msg->subtitle : NULL;
+            if (title && subtitle) {
+                snprintf(card_text, sizeof(card_text), "%.140s\n%.160s",
+                         title, subtitle);
+            } else if (title) {
+                snprintf(card_text, sizeof(card_text), "%.300s", title);
+            } else if (subtitle) {
+                snprintf(card_text, sizeof(card_text), "%.300s", subtitle);
+            } else {
+                card_text[0] = '\0';
+            }
+            lv_label_set_text(slot->content, card_text);
             lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
             lv_obj_set_style_text_color(slot->content, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
+            lv_obj_set_style_text_line_space(slot->content, 4, 0);
             break;
-        case MSG_AUDIO_CLIP:
-            /* Play icon + duration placeholder */
-            {
-                char audio_text[64];
-                char clip_label[48];
-                if (msg->text[0]) {
-                    strncpy(clip_label, msg->text, sizeof(clip_label) - 1);
-                    clip_label[sizeof(clip_label) - 1] = '\0';
-                } else {
-                    strcpy(clip_label, "Audio clip");
-                }
-                snprintf(audio_text, sizeof(audio_text),
-                         LV_SYMBOL_PLAY "  %s", clip_label);
-                lv_label_set_text(slot->content, audio_text);
+        }
+        case MSG_AUDIO_CLIP: {
+            /* Audio clip — amber play glyph + label + duration when known.
+               Green was off-palette; matches v5 now. */
+            char audio_text[96];
+            char clip_label[48];
+            if (msg->text[0]) {
+                strncpy(clip_label, msg->text, sizeof(clip_label) - 1);
+                clip_label[sizeof(clip_label) - 1] = '\0';
+            } else {
+                strcpy(clip_label, "audio clip");
             }
+            snprintf(audio_text, sizeof(audio_text),
+                     LV_SYMBOL_PLAY "  %s", clip_label);
+            lv_label_set_text(slot->content, audio_text);
             lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x22C55E), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
             break;
+        }
         case MSG_TOOL_STATUS:
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
