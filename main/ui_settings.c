@@ -47,9 +47,11 @@ static inline void feed_wdt(void) {
     vTaskDelay(pdMS_TO_TICKS(20));
 }
 
-/* ── Material Dark Constants ──────────────────────────────────────────── */
-#define BG_COLOR     0x0A0A0F
-#define CARD_COLOR   0x1A1A2E
+/* ── v5 Zero Interface constants (mirrors ui_theme.h TH_*) ──────────── */
+#define BG_COLOR     0x08080E  /* TH_BG */
+#define CARD_COLOR   0x111119  /* TH_CARD */
+#define HAIR_COLOR   0x1C1C28  /* TH_HAIRLINE */
+#define AMBER        0xF59E0B
 #define TEXT_PRIMARY 0xE8E8EF
 #define TEXT_SUBTLE  0x555555
 #define TEXT_DIM     0x888888
@@ -63,13 +65,14 @@ static inline void feed_wdt(void) {
 #define USABLE_H     (OVERLAY_H - NAV_BAR_H)  /* Full screen — nav bar on lv_layer_top() */
 #define CONTENT_W    680
 
-/* Section accent colors */
-#define ACC_DISPLAY  0xF59E0B
-#define ACC_NETWORK  0xF59E0B
-#define ACC_VOICE    0xA855F7
-#define ACC_STORAGE  0xF59E0B
-#define ACC_BATTERY  0xEF4444
-#define ACC_ABOUT    0x8B5CF6
+/* v5: single amber accent across all sections. Voice-tab colors stay
+ * (they encode mode choice, not section identity). */
+#define ACC_DISPLAY  AMBER
+#define ACC_NETWORK  AMBER
+#define ACC_VOICE    AMBER
+#define ACC_STORAGE  AMBER
+#define ACC_BATTERY  AMBER
+#define ACC_ABOUT    AMBER
 
 /* Voice tab colors */
 #define TAB_LOCAL    0x22C55E
@@ -893,12 +896,14 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_remove_style_all(s_local_card);
         lv_obj_set_pos(s_local_card, SIDE_PAD, card_y);
         lv_obj_set_size(s_local_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_local_card, lv_color_hex(0x0D1A0D), 0);
+        lv_obj_set_style_bg_color(s_local_card, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_bg_opa(s_local_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_local_card, 1, 0);
-        lv_obj_set_style_border_color(s_local_card, lv_color_hex(0x22C55E33), 0);
-        lv_obj_set_style_border_opa(s_local_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_local_card, 8, 0);
+        /* v5: flat card with amber left-bar instead of Material tinted border. */
+        lv_obj_set_style_border_width(s_local_card, 3, 0);
+        lv_obj_set_style_border_color(s_local_card, lv_color_hex(AMBER), 0);
+        lv_obj_set_style_border_side(s_local_card, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_opa(s_local_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_local_card, 0, 0);
         lv_obj_clear_flag(s_local_card, LV_OBJ_FLAG_SCROLLABLE);
 
         /* LLM Model row */
@@ -950,12 +955,13 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_remove_style_all(s_hybrid_card);
         lv_obj_set_pos(s_hybrid_card, SIDE_PAD, card_y);
         lv_obj_set_size(s_hybrid_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_hybrid_card, lv_color_hex(0x1A170D), 0);
+        lv_obj_set_style_bg_color(s_hybrid_card, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_bg_opa(s_hybrid_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_hybrid_card, 1, 0);
-        lv_obj_set_style_border_color(s_hybrid_card, lv_color_hex(0xF59E0B33), 0);
-        lv_obj_set_style_border_opa(s_hybrid_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_hybrid_card, 8, 0);
+        lv_obj_set_style_border_width(s_hybrid_card, 3, 0);
+        lv_obj_set_style_border_color(s_hybrid_card, lv_color_hex(AMBER), 0);
+        lv_obj_set_style_border_side(s_hybrid_card, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_opa(s_hybrid_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_hybrid_card, 0, 0);
         lv_obj_clear_flag(s_hybrid_card, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *k1 = lv_label_create(s_hybrid_card);
@@ -983,12 +989,13 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_remove_style_all(s_cloud_card);
         lv_obj_set_pos(s_cloud_card, SIDE_PAD, card_y);
         lv_obj_set_size(s_cloud_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_cloud_card, lv_color_hex(0x0D0D1A), 0);
+        lv_obj_set_style_bg_color(s_cloud_card, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_bg_opa(s_cloud_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_cloud_card, 1, 0);
-        lv_obj_set_style_border_color(s_cloud_card, lv_color_hex(0x3B82F633), 0);
-        lv_obj_set_style_border_opa(s_cloud_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_cloud_card, 8, 0);
+        lv_obj_set_style_border_width(s_cloud_card, 3, 0);
+        lv_obj_set_style_border_color(s_cloud_card, lv_color_hex(AMBER), 0);
+        lv_obj_set_style_border_side(s_cloud_card, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_opa(s_cloud_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_cloud_card, 0, 0);
         lv_obj_clear_flag(s_cloud_card, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *k1 = lv_label_create(s_cloud_card);
@@ -1038,12 +1045,13 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_remove_style_all(s_tinkerclaw_card);
         lv_obj_set_pos(s_tinkerclaw_card, SIDE_PAD, card_y);
         lv_obj_set_size(s_tinkerclaw_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_tinkerclaw_card, lv_color_hex(0x1A0D12), 0);
+        lv_obj_set_style_bg_color(s_tinkerclaw_card, lv_color_hex(CARD_COLOR), 0);
         lv_obj_set_style_bg_opa(s_tinkerclaw_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_tinkerclaw_card, 1, 0);
-        lv_obj_set_style_border_color(s_tinkerclaw_card, lv_color_hex(0xF43F5E33), 0);
-        lv_obj_set_style_border_opa(s_tinkerclaw_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_tinkerclaw_card, 8, 0);
+        lv_obj_set_style_border_width(s_tinkerclaw_card, 3, 0);
+        lv_obj_set_style_border_color(s_tinkerclaw_card, lv_color_hex(AMBER), 0);
+        lv_obj_set_style_border_side(s_tinkerclaw_card, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_opa(s_tinkerclaw_card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_tinkerclaw_card, 0, 0);
         lv_obj_clear_flag(s_tinkerclaw_card, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *k1 = lv_label_create(s_tinkerclaw_card);
