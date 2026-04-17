@@ -784,113 +784,6 @@ static void phase2_timer_cb(lv_timer_t *t)
     int y = s_phase2_y;
 
     /* ════════════════════════════════════════════════════════════════
-     *  SECTION: VOICE MODE (purple #A855F7)
-     * ════════════════════════════════════════════════════════════════ */
-    feed_wdt();
-    ESP_LOGI(TAG, "Section: Voice Mode");
-    lv_color_t acc_voice = lv_color_hex(ACC_VOICE);
-
-    y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
-
-    /* v5 spec: flat vertical radio rows (not tabs + switched cards).
-     * Each row = colored dot + name + description. Selected row has an
-     * amber left bar + faint amber wash. */
-    s_active_tab = tab5_settings_get_voice_mode();
-    if (s_active_tab > 3) s_active_tab = 0;
-
-    static const char *mode_names[4] = { "Local", "Hybrid", "Cloud", "TinkerClaw" };
-    static const char *mode_descs[4] = {
-        "Moonshine \xe2\x80\xa2 NPU",
-        "Cloud STT/TTS",
-        "Claude Sonnet",
-        "Agents \xe2\x80\xa2 Memory",
-    };
-    static const uint32_t mode_dot_col[4] = {
-        TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW,
-    };
-
-    const int row_h = 64;
-    const int row_w = CONTENT_W;
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *row = lv_obj_create(s_scroll);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_pos(row, SIDE_PAD, y + i * (row_h + 2));
-        lv_obj_set_size(row, row_w, row_h);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row, cb_tab_local, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-        /* Hairline bottom rule except last */
-        if (i < 3) {
-            lv_obj_set_style_border_color(row, lv_color_hex(HAIR_COLOR), 0);
-            /* overridden to AMBER LEFT when selected */
-        }
-
-        /* Dot (10 px, colored by mode) */
-        lv_obj_t *dot = lv_obj_create(row);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 10, 10);
-        lv_obj_set_pos(dot, 18, (row_h - 10) / 2);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(mode_dot_col[i]), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-
-        /* Name (Montserrat 20) */
-        lv_obj_t *nm = lv_label_create(row);
-        lv_label_set_text(nm, mode_names[i]);
-        lv_obj_set_style_text_font(nm, FONT_BODY, 0);
-        lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_pos(nm, 44, 12);
-
-        /* Description (Montserrat 14, dim) */
-        lv_obj_t *dc = lv_label_create(row);
-        lv_label_set_text(dc, mode_descs[i]);
-        lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
-        lv_obj_set_style_text_letter_space(dc, 2, 0);
-        lv_obj_set_pos(dc, 44, 38);
-
-        s_mode_row[i]     = row;
-        s_mode_row_dot[i] = dot;
-        if (i == s_active_tab) _mode_row_style(row, true);
-        feed_wdt();
-    }
-
-    y += 4 * (row_h + 2) + 8;
-
-    /* Legacy pointers left NULL — old tab/card paths are no-ops. */
-    s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
-
-    /* Placeholder block preserved for old ending `y = card_y + card_h + 10;` —
-     * still consumed below. Makes the diff safer. */
-    int card_y = y;
-    int card_h = 0;
-
-
-    /* Wake Word toggle */
-    mk_row_label(s_scroll, "Wake Word", y);
-    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
-              cb_wake_word, NULL);
-    y += ROW_H + 16;
-
-    /* v5 privacy — Mic mute. Gates voice_start_listening at the voice.c
-       layer so no mic capture happens when on.  Visible as 'MUTED' on the
-       home sys label. */
-    mk_row_label(s_scroll, "Mic mute", y);
-    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
-              cb_mic_mute, NULL);
-    y += ROW_H + 16;
-
-    /* v5 — Quiet hours.  Toggle gates into tab5_settings_quiet_active()
-       so downstream code (voice, notifications) can suppress sound.
-       Start/end hour settings are NVS-backed; custom pickers are a
-       follow-up polish — for now the defaults (22:00 -> 07:00) are fine
-       and the user can override via the debug-server settings endpoint. */
-    mk_row_label(s_scroll, "Quiet hours", y);
-    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
-              cb_quiet_on, NULL);
-    y += ROW_H + 16;
-
-    /* ════════════════════════════════════════════════════════════════
      *  SECTION: STORAGE (amber #F59E0B)
      * ════════════════════════════════════════════════════════════════ */
     feed_wdt();
@@ -1125,6 +1018,85 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_scrollbar_mode(s_scroll, LV_SCROLLBAR_MODE_AUTO);
 
     int y = 12;
+
+    /* ════════════════════════════════════════════════════════════════
+     *  SECTION: VOICE MODE  (v5 spec shot-09: first-class picker at top)
+     * ════════════════════════════════════════════════════════════════ */
+    feed_wdt();
+    ESP_LOGI(TAG, "Phase 1 — Section: Voice Mode");
+    lv_color_t acc_voice = lv_color_hex(ACC_VOICE);
+
+    y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
+
+    /* v5 flat vertical radio rows. Each row = colored dot + name + desc;
+     * selected row gets an amber left bar + faint amber wash. */
+    s_active_tab = tab5_settings_get_voice_mode();
+    if (s_active_tab > 3) s_active_tab = 0;
+    {
+        static const char *mode_names[4] = { "Local", "Hybrid", "Cloud", "TinkerClaw" };
+        static const char *mode_descs[4] = {
+            "Moonshine \xe2\x80\xa2 NPU",
+            "Cloud STT/TTS",
+            "Claude Sonnet",
+            "Agents \xe2\x80\xa2 Memory",
+        };
+        static const uint32_t mode_dot_col[4] = {
+            TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW,
+        };
+        const int row_h = 64;
+        const int row_w = CONTENT_W;
+        for (int i = 0; i < 4; i++) {
+            lv_obj_t *row = lv_obj_create(s_scroll);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_pos(row, SIDE_PAD, y + i * (row_h + 2));
+            lv_obj_set_size(row, row_w, row_h);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row, cb_tab_local, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            if (i < 3) {
+                lv_obj_set_style_border_color(row, lv_color_hex(HAIR_COLOR), 0);
+            }
+            lv_obj_t *dot = lv_obj_create(row);
+            lv_obj_remove_style_all(dot);
+            lv_obj_set_size(dot, 10, 10);
+            lv_obj_set_pos(dot, 18, (row_h - 10) / 2);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(mode_dot_col[i]), 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_t *nm = lv_label_create(row);
+            lv_label_set_text(nm, mode_names[i]);
+            lv_obj_set_style_text_font(nm, FONT_BODY, 0);
+            lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
+            lv_obj_set_pos(nm, 44, 12);
+            lv_obj_t *dc = lv_label_create(row);
+            lv_label_set_text(dc, mode_descs[i]);
+            lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
+            lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
+            lv_obj_set_style_text_letter_space(dc, 2, 0);
+            lv_obj_set_pos(dc, 44, 38);
+            s_mode_row[i]     = row;
+            s_mode_row_dot[i] = dot;
+            if (i == s_active_tab) _mode_row_style(row, true);
+            feed_wdt();
+        }
+        y += 4 * (row_h + 2) + 12;
+    }
+    s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
+
+    /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
+     * section visually — single amber caption, rows straight below). */
+    mk_row_label(s_scroll, "Wake Word", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
+              cb_wake_word, NULL);
+    y += ROW_H + 16;
+    mk_row_label(s_scroll, "Mic mute", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
+              cb_mic_mute, NULL);
+    y += ROW_H + 16;
+    mk_row_label(s_scroll, "Quiet hours", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
+              cb_quiet_on, NULL);
+    y += ROW_H + 20;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: DISPLAY (amber #F5A623)
