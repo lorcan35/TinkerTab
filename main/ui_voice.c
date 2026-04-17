@@ -202,6 +202,7 @@ static bool       s_has_llm_text  = false;  /* whether LLM response has started 
 
 /* Recording duration label + timer */
 static lv_obj_t   *s_lbl_rec_time = NULL;
+static lv_obj_t   *s_lbl_sub      = NULL;   /* v5 spec shot-05 caption: "LISTENING • HOLD TO TALK" / "DICTATION • TAP TO STOP" */
 static lv_timer_t *s_rec_timer    = NULL;
 static int         s_rec_seconds  = 0;
 
@@ -435,6 +436,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         } else {
             lv_label_set_text(s_lbl_status, "Tap to speak.");
         }
+        if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
@@ -672,6 +674,19 @@ static void build_overlay(void)
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 90);
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+
+    /* v5 sub-caption: 'LISTENING • HOLD TO TALK' / 'DICTATION • TAP TO STOP'.
+     * Appears below the main status, letter-spaced amber for v5 feel. */
+    s_lbl_sub = lv_label_create(s_overlay);
+    lv_label_set_text(s_lbl_sub, "");
+    lv_obj_set_style_text_font(s_lbl_sub, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(s_lbl_sub, lv_color_hex(0xF59E0B), 0);
+    lv_obj_set_style_text_letter_space(s_lbl_sub, 4, 0);
+    lv_obj_set_width(s_lbl_sub, SW - 80);
+    lv_obj_set_style_text_align(s_lbl_sub, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_lbl_sub, LV_ALIGN_CENTER, 0,
+                 ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 85);
+    lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
 
     /* Recording duration label — shown during LISTENING below status, centered */
     s_lbl_rec_time = lv_label_create(s_overlay);
@@ -951,8 +966,16 @@ static void show_state_listening(void)
      * Dictation uses "Dictating." with the same weight. */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
         lv_label_set_text(s_lbl_status, "Dictating.");
+        if (s_lbl_sub) {
+            lv_label_set_text(s_lbl_sub, "DICTATION  \xe2\x80\xa2  TAP TO STOP");
+            lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+        }
     } else {
         lv_label_set_text(s_lbl_status, "I'm here. Go.");
+        if (s_lbl_sub) {
+            lv_label_set_text(s_lbl_sub, "LISTENING  \xe2\x80\xa2  RELEASE TO SEND");
+            lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_36, 0);
     lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_BRIGHT), 0);
@@ -990,6 +1013,7 @@ static void show_state_listening(void)
 
 static void show_state_processing(const char *detail)
 {
+    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
     /* Note: this is called repeatedly as LLM tokens arrive.
      * detail = STT text (first call), then LLM text (subsequent calls).
      * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */
@@ -1086,6 +1110,7 @@ static void show_state_speaking(void)
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
+    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
 
     /* Orb: green, slightly larger */
     set_orb_color(VO_GREEN, VO_GREEN, LV_OPA_50);
