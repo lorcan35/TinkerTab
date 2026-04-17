@@ -27,12 +27,12 @@
 static const char *TAG = "ui_files";
 
 /* ── Palette ─────────────────────────────────────────────────── */
-#define COL_BG          0x000000
+#define COL_BG          0x08080E
 #define COL_TOPBAR      0x1A1A2E
 #define COL_ACCENT      0x3B82F6
-#define COL_WHITE       0xFFFFFF
+#define COL_WHITE       0xE8E8EF
 #define COL_GRAY        0x888888
-#define COL_DARK_GRAY   0x333333
+#define COL_DARK_GRAY   0x1A1A24
 #define COL_ROW_BG      0x111122
 #define COL_ROW_PRESS   0x1E293B
 #define COL_PANEL_BG    0x1E293B
@@ -474,7 +474,7 @@ static void show_image_preview(const char *filepath)
     img_preview = lv_obj_create(scr_files);
     lv_obj_set_size(img_preview, SCREEN_W, SCREEN_H);
     lv_obj_align(img_preview, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_bg_color(img_preview, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_color(img_preview, lv_color_hex(0x08080E), 0);
     lv_obj_set_style_bg_opa(img_preview, LV_OPA_90, 0);
     lv_obj_set_style_border_width(img_preview, 0, 0);
     lv_obj_clear_flag(img_preview, LV_OBJ_FLAG_SCROLLABLE);

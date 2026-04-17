@@ -94,7 +94,7 @@ void ui_fb_nav(lv_obj_t *obj)
     _ensure_tr();
     if (!_st_nav_ready) {
         lv_style_init(&_st_nav_press);
-        lv_style_set_text_color(&_st_nav_press, lv_color_hex(0xFFFFFF)); /* Bright white */
+        lv_style_set_text_color(&_st_nav_press, lv_color_hex(0xE8E8EF)); /* Bright white */
         lv_style_set_opa(&_st_nav_press, LV_OPA_COVER);
         lv_style_set_transition(&_st_nav_press, &_tr_bg);
         _st_nav_ready = true;

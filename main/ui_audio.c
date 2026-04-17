@@ -23,10 +23,10 @@
 static const char *TAG = "ui_audio";
 
 /* ── Palette ─────────────────────────────────────────────────── */
-#define COL_OVERLAY_BG  0x000000
+#define COL_OVERLAY_BG  0x08080E
 #define COL_PANEL_BG    0x1E293B
 #define COL_ACCENT      0x3B82F6
-#define COL_WHITE       0xFFFFFF
+#define COL_WHITE       0xE8E8EF
 #define COL_GRAY        0x888888
 #define COL_RED         0xEF4444
 
