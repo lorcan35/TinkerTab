@@ -41,16 +41,16 @@ static const char *TAG = "ui_notes";
 #define COL_BG         0x0A0A0F
 #define COL_CARD       0x1A1A2E
 #define COL_CARD2      0x2C2C2E
-#define COL_AMBER      0xF5A623
-#define COL_CYAN       0x00E5FF
+#define COL_AMBER      0xF59E0B
+#define COL_CYAN       0xF59E0B
 #define COL_MINT       0x22C55E
 #define COL_RED        0xEF4444
-#define COL_WHITE      0xFFFFFF
-#define COL_LABEL      0xFFFFFF
+#define COL_WHITE      0xE8E8EF
+#define COL_LABEL      0xE8E8EF
 #define COL_LABEL2     0x888888
 #define COL_LABEL3     0x555555
 #define COL_PURPLE     0xA855F7
-#define COL_BORDER     0x333333
+#define COL_BORDER     0x1A1A24
 
 /* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW             720
@@ -1394,7 +1394,7 @@ static void cb_new_voice(lv_event_t *e)
         lv_obj_set_style_border_width(toast, 0, 0);
         lv_obj_t *lbl = lv_label_create(toast);
         lv_label_set_text(lbl, "SD card not ready");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xE8E8EF), 0);
         lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
         lv_timer_t *tmr = lv_timer_create(toast_delete_cb, 2000, toast);
         lv_timer_set_repeat_count(tmr, 1);
@@ -1571,7 +1571,7 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, NULL);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
     lv_label_set_text(save_lbl, "Save");
-    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x08080E), 0);
     lv_obj_set_style_text_font(save_lbl, FONT_BODY, 0);
     lv_obj_center(save_lbl);
 
@@ -1778,7 +1778,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 12, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0);
     lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */

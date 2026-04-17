@@ -50,7 +50,7 @@ static inline void feed_wdt(void) {
 /* ── Material Dark Constants ──────────────────────────────────────────── */
 #define BG_COLOR     0x0A0A0F
 #define CARD_COLOR   0x1A1A2E
-#define TEXT_PRIMARY 0xFFFFFF
+#define TEXT_PRIMARY 0xE8E8EF
 #define TEXT_SUBTLE  0x555555
 #define TEXT_DIM     0x888888
 #define SIDE_PAD     20
@@ -64,8 +64,8 @@ static inline void feed_wdt(void) {
 #define CONTENT_W    680
 
 /* Section accent colors */
-#define ACC_DISPLAY  0xF5A623
-#define ACC_NETWORK  0x00E5FF
+#define ACC_DISPLAY  0xF59E0B
+#define ACC_NETWORK  0xF59E0B
 #define ACC_VOICE    0xA855F7
 #define ACC_STORAGE  0xF59E0B
 #define ACC_BATTERY  0xEF4444
@@ -73,9 +73,9 @@ static inline void feed_wdt(void) {
 
 /* Voice tab colors */
 #define TAB_LOCAL    0x22C55E
-#define TAB_HYBRID   0xEAB308
+#define TAB_HYBRID   0xF59E0B
 #define TAB_CLOUD    0x3B82F6
-#define TAB_TINKERCLAW 0xE11D48
+#define TAB_TINKERCLAW 0xF43F5E
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
@@ -345,7 +345,7 @@ static void voice_tab_switch(uint8_t new_tab)
     uint32_t tab_colors[] = { TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW };
     if (tabs[new_tab]) {
         lv_obj_set_style_bg_color(tabs[new_tab], lv_color_hex(tab_colors[new_tab]), 0);
-        lv_obj_set_style_text_color(tabs[new_tab], lv_color_hex(0x000000), 0);
+        lv_obj_set_style_text_color(tabs[new_tab], lv_color_hex(0x08080E), 0);
     }
     /* Show new card */
     if (cards[new_tab])
@@ -603,7 +603,7 @@ static void cb_ota_apply(lv_event_t *e)
     lv_obj_set_style_bg_color(mbox, lv_color_hex(CARD_COLOR), 0);
     lv_obj_set_style_radius(mbox, 16, 0);
     lv_obj_set_style_border_width(mbox, 1, 0);
-    lv_obj_set_style_border_color(mbox, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_color(mbox, lv_color_hex(0x1A1A24), 0);
     lv_obj_set_width(mbox, 400);
 
     /* Style title */
@@ -703,7 +703,7 @@ static lv_obj_t *mk_switch(lv_obj_t *parent, lv_color_t accent, int x, int y,
     lv_obj_t *sw = lv_switch_create(parent);
     lv_obj_set_pos(sw, x, y + (ROW_H - 24) / 2);
     lv_obj_set_size(sw, 44, 24);
-    lv_obj_set_style_bg_color(sw, lv_color_hex(0x333333), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(0x1A1A24), LV_PART_MAIN);
     lv_obj_set_style_bg_color(sw, accent, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_set_style_bg_color(sw, lv_color_hex(TEXT_PRIMARY), LV_PART_KNOB);
     lv_obj_set_style_radius(sw, 12, LV_PART_MAIN);
@@ -786,7 +786,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_set_style_bg_opa(s_tab_local, LV_OPA_COVER, 0);
         if (s_active_tab == 0) {
             lv_obj_set_style_bg_color(s_tab_local, lv_color_hex(TAB_LOCAL), 0);
-            lv_obj_set_style_text_color(s_tab_local, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_text_color(s_tab_local, lv_color_hex(0x08080E), 0);
         } else {
             lv_obj_set_style_bg_color(s_tab_local, lv_color_hex(CARD_COLOR), 0);
             lv_obj_set_style_text_color(s_tab_local, lv_color_hex(0x666666), 0);
@@ -808,7 +808,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_set_style_bg_opa(s_tab_hybrid, LV_OPA_COVER, 0);
         if (s_active_tab == 1) {
             lv_obj_set_style_bg_color(s_tab_hybrid, lv_color_hex(TAB_HYBRID), 0);
-            lv_obj_set_style_text_color(s_tab_hybrid, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_text_color(s_tab_hybrid, lv_color_hex(0x08080E), 0);
         } else {
             lv_obj_set_style_bg_color(s_tab_hybrid, lv_color_hex(CARD_COLOR), 0);
             lv_obj_set_style_text_color(s_tab_hybrid, lv_color_hex(0x666666), 0);
@@ -830,7 +830,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_set_style_bg_opa(s_tab_cloud, LV_OPA_COVER, 0);
         if (s_active_tab == 2) {
             lv_obj_set_style_bg_color(s_tab_cloud, lv_color_hex(TAB_CLOUD), 0);
-            lv_obj_set_style_text_color(s_tab_cloud, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_text_color(s_tab_cloud, lv_color_hex(0x08080E), 0);
         } else {
             lv_obj_set_style_bg_color(s_tab_cloud, lv_color_hex(CARD_COLOR), 0);
             lv_obj_set_style_text_color(s_tab_cloud, lv_color_hex(0x666666), 0);
@@ -852,7 +852,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_set_style_bg_opa(s_tab_tinkerclaw, LV_OPA_COVER, 0);
         if (s_active_tab == 3) {
             lv_obj_set_style_bg_color(s_tab_tinkerclaw, lv_color_hex(TAB_TINKERCLAW), 0);
-            lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x08080E), 0);
         } else {
             lv_obj_set_style_bg_color(s_tab_tinkerclaw, lv_color_hex(CARD_COLOR), 0);
             lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x666666), 0);
@@ -933,7 +933,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_set_style_bg_color(s_hybrid_card, lv_color_hex(0x1A170D), 0);
         lv_obj_set_style_bg_opa(s_hybrid_card, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(s_hybrid_card, 1, 0);
-        lv_obj_set_style_border_color(s_hybrid_card, lv_color_hex(0xEAB30833), 0);
+        lv_obj_set_style_border_color(s_hybrid_card, lv_color_hex(0xF59E0B33), 0);
         lv_obj_set_style_border_opa(s_hybrid_card, (lv_opa_t)0x33, 0);
         lv_obj_set_style_radius(s_hybrid_card, 8, 0);
         lv_obj_clear_flag(s_hybrid_card, LV_OBJ_FLAG_SCROLLABLE);
@@ -1021,7 +1021,7 @@ static void phase2_timer_cb(lv_timer_t *t)
         lv_obj_set_style_bg_color(s_tinkerclaw_card, lv_color_hex(0x1A0D12), 0);
         lv_obj_set_style_bg_opa(s_tinkerclaw_card, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(s_tinkerclaw_card, 1, 0);
-        lv_obj_set_style_border_color(s_tinkerclaw_card, lv_color_hex(0xE11D4833), 0);
+        lv_obj_set_style_border_color(s_tinkerclaw_card, lv_color_hex(0xF43F5E33), 0);
         lv_obj_set_style_border_opa(s_tinkerclaw_card, (lv_opa_t)0x33, 0);
         lv_obj_set_style_radius(s_tinkerclaw_card, 8, 0);
         lv_obj_clear_flag(s_tinkerclaw_card, LV_OBJ_FLAG_SCROLLABLE);
@@ -1107,7 +1107,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     /* Debug voltage label -- small and dim for developers */
     s_lbl_bat_volt = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_volt, "");
-    lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x666666), 0);
     lv_obj_set_style_text_font(s_lbl_bat_volt, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y);
     y += 20 + 16;
@@ -1164,7 +1164,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     /* Free Heap + PSRAM (debug info -- small and dim) */
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
-    lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x666666), 0);
     lv_obj_set_style_text_font(s_lbl_heap, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 14) / 2);
     y += ROW_H;
@@ -1304,7 +1304,7 @@ lv_obj_t *ui_settings_create(void)
     s_lbl_bright_val = lv_label_create(s_scroll);
     lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
-    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF59E0B), 0);
     lv_obj_set_style_text_font(s_lbl_bright_val, FONT_SECONDARY, 0);
     y += ROW_H + 4;
 
@@ -1316,7 +1316,7 @@ lv_obj_t *ui_settings_create(void)
     s_lbl_vol_val = lv_label_create(s_scroll);
     lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
-    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF59E0B), 0);
     lv_obj_set_style_text_font(s_lbl_vol_val, FONT_SECONDARY, 0);
     y += ROW_H + 4;
 
@@ -1343,14 +1343,14 @@ lv_obj_t *ui_settings_create(void)
     /* WiFi Setup */
     {
         lv_obj_t *btn = mk_pill_btn(s_scroll, LV_SYMBOL_WIFI " Configure",
-                                    acc_network, lv_color_hex(0x000000),
+                                    acc_network, lv_color_hex(0x08080E),
                                     RIGHT_X, y + 3, 180, 38, 8, cb_wifi_setup);
         (void)btn;
     }
     /* NTP Sync */
     {
         lv_obj_t *ntp_btn = mk_pill_btn(s_scroll, "Sync NTP",
-                                        acc_network, lv_color_hex(0x000000),
+                                        acc_network, lv_color_hex(0x08080E),
                                         SIDE_PAD, y + 3, 140, 38, 8, cb_ntp_sync);
         s_ntp_btn_label = lv_obj_get_child(ntp_btn, 0);
     }
@@ -1369,7 +1369,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(s_dragon_ta, FONT_CAPTION, 0);
     lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
-    lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x1A1A24), 0);
     lv_obj_set_style_radius(s_dragon_ta, 6, 0);
     lv_obj_set_style_pad_left(s_dragon_ta, 8, 0);
     lv_textarea_set_placeholder_text(s_dragon_ta, "Dragon Host (e.g. 192.168.1.89)");
@@ -1414,7 +1414,7 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), 0);
         lv_obj_set_style_text_font(s_conn_dd, FONT_SECONDARY, 0);
         lv_obj_set_style_border_width(s_conn_dd, 1, 0);
-        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x1A1A24), 0);
         lv_obj_set_style_radius(s_conn_dd, 6, 0);
         /* Dropdown list styling */
         lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
