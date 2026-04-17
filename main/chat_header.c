@@ -31,24 +31,27 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(hdr->container, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back button */
+    /* Back button — v5: 'HOME' ghost caption matching other overlays */
     hdr->back_btn = lv_button_create(hdr->container);
-    lv_obj_set_size(hdr->back_btn, TOUCH_MIN, TOUCH_MIN);
+    lv_obj_set_size(hdr->back_btn, DPI_SCALE(120), TOUCH_MIN);
     lv_obj_set_style_bg_opa(hdr->back_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(hdr->back_btn, 0, 0);
     lv_obj_set_style_border_width(hdr->back_btn, 0, 0);
     lv_obj_t *back_lbl = lv_label_create(hdr->back_btn);
-    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_font(back_lbl, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
+    lv_label_set_text(back_lbl, LV_SYMBOL_LEFT "  HOME");
+    lv_obj_set_style_text_font(back_lbl, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(back_lbl, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
+    lv_obj_set_style_text_letter_space(back_lbl, 3, 0);
     lv_obj_center(back_lbl);
 
-    /* Title — flex-grow fills remaining space */
+    /* Title — v5 amber, centered-ish via flex-grow */
     hdr->title = lv_label_create(hdr->container);
     lv_label_set_text(hdr->title, title);
-    lv_obj_set_style_text_font(hdr->title, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(hdr->title, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
+    lv_obj_set_style_text_font(hdr->title, FONT_TITLE, 0);              /* 28 px */
+    lv_obj_set_style_text_color(hdr->title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
+    lv_obj_set_style_text_letter_space(hdr->title, -1, 0);
     lv_obj_set_flex_grow(hdr->title, 1);
+    lv_obj_set_style_text_align(hdr->title, LV_TEXT_ALIGN_CENTER, 0);
 
     /* Status dot */
     hdr->status_dot = lv_obj_create(hdr->container);
