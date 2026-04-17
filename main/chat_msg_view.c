@@ -76,18 +76,20 @@ static void init_styles(void)
     lv_style_set_border_width(&s_style_user_bubble, 0);
     lv_style_set_text_color(&s_style_user_bubble, lv_color_hex(0x000000));
 
-    /* AI bubble — v5: elevated card surface, body-weight text. Structure
-       stays (bubble-shaped) since the hairline-rule "letter" treatment
-       will come with a deeper rewrite. */
+    /* AI bubble — v5 structural: NO bubble. Indented body text behind a
+       thin amber left rail, so conversation reads like a letter. Keeps
+       height-estimation footprint similar (pad-left 18 vs bubble-pad 16)
+       so the recycled pool's slot-height cache stays valid. */
     lv_style_init(&s_style_ai_bubble);
-    lv_style_set_bg_color(&s_style_ai_bubble, lv_color_hex(0x13131F));   /* TH_CARD_ELEVATED */
-    lv_style_set_bg_opa(&s_style_ai_bubble, LV_OPA_COVER);
-    lv_style_set_radius(&s_style_ai_bubble, 16);
-    lv_style_set_pad_all(&s_style_ai_bubble, BUBBLE_PAD);
-    lv_style_set_pad_bottom(&s_style_ai_bubble, 8);
-    lv_style_set_border_width(&s_style_ai_bubble, 1);
-    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0x1A1A24)); /* TH_HAIRLINE */
-    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xAAAAAA));   /* TH_TEXT_BODY */
+    lv_style_set_bg_opa(&s_style_ai_bubble, LV_OPA_TRANSP);              /* no fill */
+    lv_style_set_radius(&s_style_ai_bubble, 0);
+    lv_style_set_pad_all(&s_style_ai_bubble, 6);
+    lv_style_set_pad_left(&s_style_ai_bubble, 18);                        /* indent past the rail */
+    lv_style_set_border_width(&s_style_ai_bubble, 2);
+    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0xF59E0B)); /* TH_AMBER left rail */
+    lv_style_set_border_side(&s_style_ai_bubble, LV_BORDER_SIDE_LEFT);
+    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xC8C8D0));   /* lighter body — reads as prose not UI */
+    lv_style_set_text_line_space(&s_style_ai_bubble, 4);
 
     /* Card bubble — elevated surface, amber left rail (was orange 0xff6b35) */
     lv_style_init(&s_style_card_bubble);
