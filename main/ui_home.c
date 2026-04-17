@@ -473,6 +473,19 @@ static void orb_click_cb(lv_event_t *e)
 {
     (void)e;
     if (any_overlay_visible()) return;  /* ignore stray tap-through from a closing overlay */
+
+    /* Debounce: repeated orb taps inside 500ms collapse to a single open.
+     * Without this, 6 rapid taps stacked 6x (ui_voice_show + voice_start_
+     * listening + voice_connect_async) and exhausted the SDIO TX copy_buff,
+     * crashing tcpip_thread with a transport_drv_sta_tx assert. */
+    static uint32_t last_tap_ms = 0;
+    uint32_t now = lv_tick_get();
+    if (now - last_tap_ms < 500) {
+        ESP_LOGI(TAG, "orb tap debounced (dt=%lums)", (unsigned long)(now - last_tap_ms));
+        return;
+    }
+    last_tap_ms = now;
+
     ESP_LOGI(TAG, "orb tapped -> open voice");
     if (!voice_is_connected()) {
         /* Kick off async connect if we're offline */
