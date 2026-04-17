@@ -232,11 +232,14 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
         return ret;
     }
 
-    /* Send pixel rows bottom-up (BMP convention) from the copy. */
+    /* Send pixel rows bottom-up (BMP convention) from the copy.  Row-by-row
+       keeps each httpd_resp_send_chunk small (~1440 bytes) and stable;
+       batching into 90 KB chunks was experimentally worse (stream dying
+       after 2–3 chunks, suspected LWIP MBUF limit vs voice-WS pongs). */
     uint32_t row_bytes = FB_W * FB_BPP;
-
     for (int y = FB_H - 1; y >= 0; y--) {
-        ret = httpd_resp_send_chunk(req, (const char *)(fb_copy + y * row_bytes), row_bytes);
+        ret = httpd_resp_send_chunk(req,
+            (const char *)(fb_copy + y * row_bytes), row_bytes);
         if (ret != ESP_OK) {
             free(fb_copy);
             return ret;
@@ -367,9 +370,60 @@ static esp_err_t touch_handler(httpd_req_t *req)
         return ESP_FAIL;
     }
 
+    cJSON *jaction = cJSON_GetObjectItem(root, "action");
+    const char *action = (jaction && cJSON_IsString(jaction)) ? jaction->valuestring : "tap";
+
+    /* Swipe takes (x1,y1)->(x2,y2) over duration_ms.  Everything else uses
+       a single (x,y) point.  Long-press uses (x,y) + duration_ms. */
+    if (strcmp(action, "swipe") == 0) {
+        cJSON *jx1 = cJSON_GetObjectItem(root, "x1");
+        cJSON *jy1 = cJSON_GetObjectItem(root, "y1");
+        cJSON *jx2 = cJSON_GetObjectItem(root, "x2");
+        cJSON *jy2 = cJSON_GetObjectItem(root, "y2");
+        cJSON *jdur = cJSON_GetObjectItem(root, "duration_ms");
+        if (!cJSON_IsNumber(jx1) || !cJSON_IsNumber(jy1) ||
+            !cJSON_IsNumber(jx2) || !cJSON_IsNumber(jy2)) {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "swipe needs x1,y1,x2,y2");
+            return ESP_FAIL;
+        }
+        int x1 = jx1->valueint, y1 = jy1->valueint;
+        int x2 = jx2->valueint, y2 = jy2->valueint;
+        int dur = (jdur && cJSON_IsNumber(jdur)) ? jdur->valueint : 250;
+        if (dur < 50)   dur = 50;
+        if (dur > 3000) dur = 3000;
+
+        ESP_LOGI(TAG, "Touch inject: swipe (%d,%d)->(%d,%d) %dms",
+                 x1, y1, x2, y2, dur);
+
+        /* 20 ms step cadence — enough for LVGL to register the gesture
+           direction without flooding the indev read callback. */
+        const int step_ms = 20;
+        int steps = dur / step_ms;
+        if (steps < 5) steps = 5;
+
+        s_inject_x = x1;
+        s_inject_y = y1;
+        s_inject_pressed = true;
+        s_inject_active = true;
+        vTaskDelay(pdMS_TO_TICKS(40));   /* settle — let LVGL see the press */
+        for (int i = 1; i <= steps; i++) {
+            s_inject_x = x1 + (x2 - x1) * i / steps;
+            s_inject_y = y1 + (y2 - y1) * i / steps;
+            vTaskDelay(pdMS_TO_TICKS(step_ms));
+        }
+        s_inject_pressed = false;
+        vTaskDelay(pdMS_TO_TICKS(100));  /* release + LVGL gesture dispatch */
+        s_inject_active = false;
+
+        cJSON_Delete(root);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        return ESP_OK;
+    }
+
     cJSON *jx = cJSON_GetObjectItem(root, "x");
     cJSON *jy = cJSON_GetObjectItem(root, "y");
-    cJSON *jaction = cJSON_GetObjectItem(root, "action");
 
     if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy)) {
         cJSON_Delete(root);
@@ -379,7 +433,6 @@ static esp_err_t touch_handler(httpd_req_t *req)
 
     int x = jx->valueint;
     int y = jy->valueint;
-    const char *action = (jaction && cJSON_IsString(jaction)) ? jaction->valuestring : "tap";
 
     ESP_LOGI(TAG, "Touch inject: x=%d y=%d action=%s", x, y, action);
 
@@ -397,6 +450,22 @@ static esp_err_t touch_handler(httpd_req_t *req)
         s_inject_pressed = true;
         s_inject_active = true;
         /* Leave active — caller must POST release to end it */
+    } else if (strcmp(action, "long_press") == 0) {
+        /* Hold long enough for LVGL LV_EVENT_LONG_PRESSED (default 400 ms) +
+           a little slack so LONG_PRESSED_REPEAT doesn't mis-fire. Caller can
+           override via duration_ms. */
+        cJSON *jdur = cJSON_GetObjectItem(root, "duration_ms");
+        int dur = (jdur && cJSON_IsNumber(jdur)) ? jdur->valueint : 800;
+        if (dur < 500)  dur = 500;
+        if (dur > 5000) dur = 5000;
+        s_inject_x = x;
+        s_inject_y = y;
+        s_inject_pressed = true;
+        s_inject_active = true;
+        vTaskDelay(pdMS_TO_TICKS(dur));
+        s_inject_pressed = false;
+        vTaskDelay(pdMS_TO_TICKS(100));
+        s_inject_active = false;
     } else {
         /* tap: press, hold 200ms, release (needs 2+ LVGL ticks for CLICKED) */
         s_inject_x = x;
