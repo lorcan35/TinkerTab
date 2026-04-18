@@ -17,6 +17,7 @@
 
 #include "voice.h"
 #include "afe.h"
+#include "widget.h"
 #include "ui_voice.h"
 #include "ui_notes.h"
 #include "ui_chat.h"
@@ -834,6 +835,76 @@ static void handle_text_message(const char *data, int len)
             ui_chat_push_audio_clip(url, dur, label);
         }
 
+    } else if (strcmp(type_str, "widget_live") == 0 ||
+               strcmp(type_str, "widget_live_update") == 0) {
+        /* Widget Platform v1 — LIVE widget create / partial update.
+         * See TinkerBox docs/protocol.md §17.2–17.3. */
+        extern widget_t *widget_store_upsert(const widget_t *in);
+        extern widget_t *widget_store_update(const char *card_id,
+                                             const char *body,
+                                             widget_tone_t tone,
+                                             float progress,
+                                             const char *action_label,
+                                             const char *action_event);
+        extern widget_tone_t widget_tone_from_str(const char *s);
+        extern void ui_home_update_status(void);
+
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (!cid) {
+            ESP_LOGW(TAG, "widget_live missing card_id");
+        } else if (strcmp(type_str, "widget_live_update") == 0) {
+            const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+            cJSON *prog_j = cJSON_GetObjectItem(root, "progress");
+            float progress = cJSON_IsNumber(prog_j) ? (float)prog_j->valuedouble : -1.0f;
+            cJSON *act = cJSON_GetObjectItem(root, "action");
+            const char *al = act ? cJSON_GetStringValue(cJSON_GetObjectItem(act, "label")) : NULL;
+            const char *ae = act ? cJSON_GetStringValue(cJSON_GetObjectItem(act, "event")) : NULL;
+            widget_store_update(cid, body,
+                                tone_s ? widget_tone_from_str(tone_s) : WIDGET_TONE_CALM,
+                                progress, al, ae);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+        } else {
+            /* full upsert */
+            widget_t w = {0};
+            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
+            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
+            const char *icn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "icon"));
+            if (icn) strncpy(w.icon, icn, WIDGET_ICON_LEN - 1);
+            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+            w.tone = widget_tone_from_str(tone_s);
+            cJSON *prog_j = cJSON_GetObjectItem(root, "progress");
+            w.progress = cJSON_IsNumber(prog_j) ? (float)prog_j->valuedouble : 0.0f;
+            cJSON *pri = cJSON_GetObjectItem(root, "priority");
+            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
+            cJSON *act = cJSON_GetObjectItem(root, "action");
+            if (cJSON_IsObject(act)) {
+                const char *al = cJSON_GetStringValue(cJSON_GetObjectItem(act, "label"));
+                const char *ae = cJSON_GetStringValue(cJSON_GetObjectItem(act, "event"));
+                if (al) strncpy(w.action_label, al, WIDGET_ACTION_LBL_LEN - 1);
+                if (ae) strncpy(w.action_event, ae, WIDGET_ACTION_EVT_LEN - 1);
+            }
+            w.type = WIDGET_TYPE_LIVE;
+            widget_store_upsert(&w);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            ESP_LOGI(TAG, "widget_live upsert: %s/%s tone=%s", w.skill_id, cid,
+                     tone_s ? tone_s : "calm");
+        }
+    } else if (strcmp(type_str, "widget_live_dismiss") == 0 ||
+               strcmp(type_str, "widget_dismiss") == 0) {
+        extern void widget_store_dismiss(const char *card_id);
+        extern void ui_home_update_status(void);
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (cid) {
+            widget_store_dismiss(cid);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            ESP_LOGI(TAG, "widget_live_dismiss: %s", cid);
+        }
     } else {
         ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
@@ -2233,6 +2304,46 @@ esp_err_t voice_send_text(const char *text)
 
     if (ret == ESP_OK) {
         voice_set_state(VOICE_STATE_PROCESSING, text);
+    }
+    return ret;
+}
+
+esp_err_t voice_send_widget_action(const char *card_id, const char *event,
+                                   const char *payload_json)
+{
+    if (!card_id || !event || !s_ws_connected) return ESP_ERR_INVALID_STATE;
+
+    /* Rate limit: 4/sec max (see docs/WIDGETS.md §11). Protects SDIO TX
+     * copy_buff pool from rapid button-mashing. */
+    static uint32_t s_action_bucket = 4;
+    static uint32_t s_action_tick   = 0;
+    uint32_t now = lv_tick_get();
+    if (now - s_action_tick >= 1000) {
+        s_action_bucket = 4;
+        s_action_tick = now;
+    }
+    if (s_action_bucket == 0) {
+        ESP_LOGW(TAG, "widget_action rate-limited (card=%s event=%s)", card_id, event);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_action_bucket--;
+
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "widget_action");
+    cJSON_AddStringToObject(msg, "card_id", card_id);
+    cJSON_AddStringToObject(msg, "event", event);
+    if (payload_json && payload_json[0]) {
+        cJSON *p = cJSON_Parse(payload_json);
+        if (p) cJSON_AddItemToObject(msg, "payload", p);
+    }
+    char *json = cJSON_PrintUnformatted(msg);
+    cJSON_Delete(msg);
+    if (!json) return ESP_ERR_NO_MEM;
+
+    esp_err_t ret = ws_send_text(json);
+    free(json);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "widget_action: %s → %s", card_id, event);
     }
     return ret;
 }

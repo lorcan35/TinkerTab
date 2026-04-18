@@ -88,6 +88,13 @@ esp_err_t voice_send_text(const char *text);
 /** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 
+/** Widget Platform v1 — emit a widget_action event back to Dragon.
+ *  payload_json (optional) is parsed as JSON and attached as the "payload"
+ *  field. Rate-limited at 4 events/sec.
+ *  See docs/WIDGETS.md §11 and TinkerBox docs/protocol.md §17.11. */
+esp_err_t voice_send_widget_action(const char *card_id, const char *event,
+                                   const char *payload_json);
+
 /** Return the current mic RMS level (for live waveform visualization during dictation). */
 float voice_get_current_rms(void);
 
