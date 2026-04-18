@@ -293,6 +293,51 @@ esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
     return set_u8("wake", enabled ? 1 : 0);
 }
 
+/* ── Mic mute ───────────────────────────────────────────────────────── */
+
+uint8_t tab5_settings_get_mic_mute(void)
+{
+    return get_u8("mic_mute", 0);
+}
+
+esp_err_t tab5_settings_set_mic_mute(uint8_t muted)
+{
+    return set_u8("mic_mute", muted ? 1 : 0);
+}
+
+/* ── Quiet hours (do-not-disturb) ──────────────────────────────────── */
+
+uint8_t tab5_settings_get_quiet_on(void)    { return get_u8("quiet_on", 0); }
+esp_err_t tab5_settings_set_quiet_on(uint8_t on) { return set_u8("quiet_on", on ? 1 : 0); }
+
+uint8_t tab5_settings_get_quiet_start(void) { return get_u8("quiet_start", 22); }
+esp_err_t tab5_settings_set_quiet_start(uint8_t h)
+{
+    if (h > 23) h = 22;
+    return set_u8("quiet_start", h);
+}
+uint8_t tab5_settings_get_quiet_end(void)   { return get_u8("quiet_end", 7); }
+esp_err_t tab5_settings_set_quiet_end(uint8_t h)
+{
+    if (h > 23) h = 7;
+    return set_u8("quiet_end", h);
+}
+
+bool tab5_settings_quiet_active(int hour_local)
+{
+    if (!tab5_settings_get_quiet_on()) return false;
+    if (hour_local < 0 || hour_local > 23) return false;
+    int s = tab5_settings_get_quiet_start();
+    int e = tab5_settings_get_quiet_end();
+    if (s == e) return false;
+    if (s < e) {
+        /* Range doesn't wrap — e.g. 13..18 */
+        return (hour_local >= s && hour_local < e);
+    }
+    /* Wraps midnight — e.g. 22..7 means [22..23] or [0..6] */
+    return (hour_local >= s || hour_local < e);
+}
+
 /* ── Connection mode ────────────────────────────────────────────────── */
 
 uint8_t tab5_settings_get_connection_mode(void)

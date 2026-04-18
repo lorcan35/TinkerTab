@@ -47,10 +47,12 @@ static inline void feed_wdt(void) {
     vTaskDelay(pdMS_TO_TICKS(20));
 }
 
-/* ── Material Dark Constants ──────────────────────────────────────────── */
-#define BG_COLOR     0x0A0A0F
-#define CARD_COLOR   0x1A1A2E
-#define TEXT_PRIMARY 0xFFFFFF
+/* ── v5 Zero Interface constants (mirrors ui_theme.h TH_*) ──────────── */
+#define BG_COLOR     0x08080E  /* TH_BG */
+#define CARD_COLOR   0x111119  /* TH_CARD */
+#define HAIR_COLOR   0x1C1C28  /* TH_HAIRLINE */
+#define AMBER        0xF59E0B
+#define TEXT_PRIMARY 0xE8E8EF
 #define TEXT_SUBTLE  0x555555
 #define TEXT_DIM     0x888888
 #define SIDE_PAD     20
@@ -63,19 +65,20 @@ static inline void feed_wdt(void) {
 #define USABLE_H     (OVERLAY_H - NAV_BAR_H)  /* Full screen — nav bar on lv_layer_top() */
 #define CONTENT_W    680
 
-/* Section accent colors */
-#define ACC_DISPLAY  0xF5A623
-#define ACC_NETWORK  0x00E5FF
-#define ACC_VOICE    0xA855F7
-#define ACC_STORAGE  0xF59E0B
-#define ACC_BATTERY  0xEF4444
-#define ACC_ABOUT    0x8B5CF6
+/* v5: single amber accent across all sections. Voice-tab colors stay
+ * (they encode mode choice, not section identity). */
+#define ACC_DISPLAY  AMBER
+#define ACC_NETWORK  AMBER
+#define ACC_VOICE    AMBER
+#define ACC_STORAGE  AMBER
+#define ACC_BATTERY  AMBER
+#define ACC_ABOUT    AMBER
 
 /* Voice tab colors */
 #define TAB_LOCAL    0x22C55E
-#define TAB_HYBRID   0xEAB308
+#define TAB_HYBRID   0xF59E0B
 #define TAB_CLOUD    0x3B82F6
-#define TAB_TINKERCLAW 0xE11D48
+#define TAB_TINKERCLAW 0xF43F5E
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
@@ -131,6 +134,10 @@ static lv_timer_t *s_bright_save_timer = NULL;
 static lv_timer_t *s_vol_save_timer    = NULL;
 
 /* Voice tab system */
+/* v5: four flat radio rows (no tabs). Indexed by voice_mode. */
+static lv_obj_t *s_mode_row[4] = {NULL, NULL, NULL, NULL};
+static lv_obj_t *s_mode_row_dot[4] = {NULL, NULL, NULL, NULL};
+/* Back-compat pointers kept = NULL so legacy references compile. */
 static lv_obj_t *s_tab_local      = NULL;
 static lv_obj_t *s_tab_hybrid     = NULL;
 static lv_obj_t *s_tab_cloud      = NULL;
@@ -325,45 +332,43 @@ static void send_voice_config(void)
     }
 }
 
+static void _mode_row_style(lv_obj_t *row, bool selected)
+{
+    if (!row) return;
+    if (selected) {
+        /* Amber left bar + faint amber wash. Spec shot-09. */
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_width(row, 3, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(AMBER), 0);
+        lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(AMBER), 0);
+        lv_obj_set_style_bg_opa(row, 10, 0);  /* ~4 % amber wash */
+    } else {
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    }
+}
+
 static void voice_tab_switch(uint8_t new_tab)
 {
     if (new_tab == s_active_tab) return;
-
-    lv_obj_t *tabs[] = { s_tab_local, s_tab_hybrid, s_tab_cloud, s_tab_tinkerclaw };
-    lv_obj_t *cards[] = { s_local_card, s_hybrid_card, s_cloud_card, s_tinkerclaw_card };
-
-    /* Style old tab as inactive */
-    if (tabs[s_active_tab]) {
-        lv_obj_set_style_bg_color(tabs[s_active_tab], lv_color_hex(CARD_COLOR), 0);
-        lv_obj_set_style_text_color(tabs[s_active_tab], lv_color_hex(0x666666), 0);
-    }
-    /* Hide old card */
-    if (cards[s_active_tab])
-        lv_obj_add_flag(cards[s_active_tab], LV_OBJ_FLAG_HIDDEN);
-
-    /* Style new tab as active */
-    uint32_t tab_colors[] = { TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW };
-    if (tabs[new_tab]) {
-        lv_obj_set_style_bg_color(tabs[new_tab], lv_color_hex(tab_colors[new_tab]), 0);
-        lv_obj_set_style_text_color(tabs[new_tab], lv_color_hex(0x000000), 0);
-    }
-    /* Show new card */
-    if (cards[new_tab])
-        lv_obj_clear_flag(cards[new_tab], LV_OBJ_FLAG_HIDDEN);
-
+    if (new_tab > 3) return;
+    _mode_row_style(s_mode_row[s_active_tab], false);
+    _mode_row_style(s_mode_row[new_tab], true);
     s_active_tab = new_tab;
-
     tab5_settings_set_voice_mode(new_tab);
-    ESP_LOGI(TAG, "Voice tab: %d (%s)", new_tab,
+    ESP_LOGI(TAG, "Voice mode: %d (%s)", new_tab,
              new_tab == 0 ? "local" : new_tab == 1 ? "hybrid" :
              new_tab == 2 ? "cloud" : "tinkerclaw");
     send_voice_config();
 }
 
-static void cb_tab_local(lv_event_t *e)      { (void)e; voice_tab_switch(0); }
-static void cb_tab_hybrid(lv_event_t *e)     { (void)e; voice_tab_switch(1); }
-static void cb_tab_cloud(lv_event_t *e)      { (void)e; voice_tab_switch(2); }
-static void cb_tab_tinkerclaw(lv_event_t *e) { (void)e; voice_tab_switch(3); }
+/* Single click handler for all 4 radio rows. Mode index comes via user_data. */
+static void cb_tab_local(lv_event_t *e)
+{
+    intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+    if (idx >= 0 && idx < 4) voice_tab_switch((uint8_t)idx);
+}
 
 static void cb_local_model(lv_event_t *e)
 {
@@ -385,6 +390,26 @@ static void cb_cloud_model(lv_event_t *e)
         ESP_LOGI(TAG, "Cloud LLM model: %s", s_cloud_model_ids[sel]);
         send_voice_config();
     }
+}
+
+static void cb_mic_mute(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    tab5_settings_set_mic_mute(on ? 1 : 0);
+    ESP_LOGI(TAG, "Mic mute: %d", on);
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
+}
+
+static void cb_quiet_on(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    tab5_settings_set_quiet_on(on ? 1 : 0);
+    ESP_LOGI(TAG, "Quiet hours: %d", on);
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
 }
 
 static void cb_wake_word(lv_event_t *e)
@@ -603,7 +628,7 @@ static void cb_ota_apply(lv_event_t *e)
     lv_obj_set_style_bg_color(mbox, lv_color_hex(CARD_COLOR), 0);
     lv_obj_set_style_radius(mbox, 16, 0);
     lv_obj_set_style_border_width(mbox, 1, 0);
-    lv_obj_set_style_border_color(mbox, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_color(mbox, lv_color_hex(0x1A1A24), 0);
     lv_obj_set_width(mbox, 400);
 
     /* Style title */
@@ -703,7 +728,7 @@ static lv_obj_t *mk_switch(lv_obj_t *parent, lv_color_t accent, int x, int y,
     lv_obj_t *sw = lv_switch_create(parent);
     lv_obj_set_pos(sw, x, y + (ROW_H - 24) / 2);
     lv_obj_set_size(sw, 44, 24);
-    lv_obj_set_style_bg_color(sw, lv_color_hex(0x333333), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(sw, lv_color_hex(0x1A1A24), LV_PART_MAIN);
     lv_obj_set_style_bg_color(sw, accent, LV_PART_INDICATOR | LV_STATE_CHECKED);
     lv_obj_set_style_bg_color(sw, lv_color_hex(TEXT_PRIMARY), LV_PART_KNOB);
     lv_obj_set_style_radius(sw, 12, LV_PART_MAIN);
@@ -759,301 +784,6 @@ static void phase2_timer_cb(lv_timer_t *t)
     int y = s_phase2_y;
 
     /* ════════════════════════════════════════════════════════════════
-     *  SECTION: VOICE MODE (purple #A855F7)
-     * ════════════════════════════════════════════════════════════════ */
-    feed_wdt();
-    ESP_LOGI(TAG, "Section: Voice Mode");
-    lv_color_t acc_voice = lv_color_hex(ACC_VOICE);
-
-    y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
-
-    /* Four pill-shaped tab buttons */
-    s_active_tab = tab5_settings_get_voice_mode();
-    if (s_active_tab > 3) s_active_tab = 0;
-
-    int tab_w = 158;
-    int tab_h = 40;
-    int tab_gap = 10;
-    int tab_x0 = SIDE_PAD;
-
-    {
-        /* Local tab */
-        s_tab_local = lv_button_create(s_scroll);
-        lv_obj_remove_style_all(s_tab_local);
-        lv_obj_set_pos(s_tab_local, tab_x0, y);
-        lv_obj_set_size(s_tab_local, tab_w, tab_h);
-        lv_obj_set_style_radius(s_tab_local, 20, 0);
-        lv_obj_set_style_bg_opa(s_tab_local, LV_OPA_COVER, 0);
-        if (s_active_tab == 0) {
-            lv_obj_set_style_bg_color(s_tab_local, lv_color_hex(TAB_LOCAL), 0);
-            lv_obj_set_style_text_color(s_tab_local, lv_color_hex(0x000000), 0);
-        } else {
-            lv_obj_set_style_bg_color(s_tab_local, lv_color_hex(CARD_COLOR), 0);
-            lv_obj_set_style_text_color(s_tab_local, lv_color_hex(0x666666), 0);
-        }
-        lv_obj_add_event_cb(s_tab_local, cb_tab_local, LV_EVENT_CLICKED, NULL);
-        lv_obj_t *tl = lv_label_create(s_tab_local);
-        lv_label_set_text(tl, "Local");
-        lv_obj_set_style_text_font(tl, FONT_SECONDARY, 0);
-        lv_obj_center(tl);
-
-        feed_wdt(); /* mid-section yield — Voice Mode is the heaviest section */
-
-        /* Hybrid tab */
-        s_tab_hybrid = lv_button_create(s_scroll);
-        lv_obj_remove_style_all(s_tab_hybrid);
-        lv_obj_set_pos(s_tab_hybrid, tab_x0 + tab_w + tab_gap, y);
-        lv_obj_set_size(s_tab_hybrid, tab_w, tab_h);
-        lv_obj_set_style_radius(s_tab_hybrid, 20, 0);
-        lv_obj_set_style_bg_opa(s_tab_hybrid, LV_OPA_COVER, 0);
-        if (s_active_tab == 1) {
-            lv_obj_set_style_bg_color(s_tab_hybrid, lv_color_hex(TAB_HYBRID), 0);
-            lv_obj_set_style_text_color(s_tab_hybrid, lv_color_hex(0x000000), 0);
-        } else {
-            lv_obj_set_style_bg_color(s_tab_hybrid, lv_color_hex(CARD_COLOR), 0);
-            lv_obj_set_style_text_color(s_tab_hybrid, lv_color_hex(0x666666), 0);
-        }
-        lv_obj_add_event_cb(s_tab_hybrid, cb_tab_hybrid, LV_EVENT_CLICKED, NULL);
-        lv_obj_t *th = lv_label_create(s_tab_hybrid);
-        lv_label_set_text(th, "Hybrid");
-        lv_obj_set_style_text_font(th, FONT_SECONDARY, 0);
-        lv_obj_center(th);
-
-        feed_wdt(); /* mid-section yield */
-
-        /* Cloud tab */
-        s_tab_cloud = lv_button_create(s_scroll);
-        lv_obj_remove_style_all(s_tab_cloud);
-        lv_obj_set_pos(s_tab_cloud, tab_x0 + 2 * (tab_w + tab_gap), y);
-        lv_obj_set_size(s_tab_cloud, tab_w, tab_h);
-        lv_obj_set_style_radius(s_tab_cloud, 20, 0);
-        lv_obj_set_style_bg_opa(s_tab_cloud, LV_OPA_COVER, 0);
-        if (s_active_tab == 2) {
-            lv_obj_set_style_bg_color(s_tab_cloud, lv_color_hex(TAB_CLOUD), 0);
-            lv_obj_set_style_text_color(s_tab_cloud, lv_color_hex(0x000000), 0);
-        } else {
-            lv_obj_set_style_bg_color(s_tab_cloud, lv_color_hex(CARD_COLOR), 0);
-            lv_obj_set_style_text_color(s_tab_cloud, lv_color_hex(0x666666), 0);
-        }
-        lv_obj_add_event_cb(s_tab_cloud, cb_tab_cloud, LV_EVENT_CLICKED, NULL);
-        lv_obj_t *tc = lv_label_create(s_tab_cloud);
-        lv_label_set_text(tc, "Cloud");
-        lv_obj_set_style_text_font(tc, FONT_SECONDARY, 0);
-        lv_obj_center(tc);
-
-        feed_wdt(); /* mid-section yield — before TinkerClaw tab */
-
-        /* TinkerClaw tab */
-        s_tab_tinkerclaw = lv_button_create(s_scroll);
-        lv_obj_remove_style_all(s_tab_tinkerclaw);
-        lv_obj_set_pos(s_tab_tinkerclaw, tab_x0 + 3 * (tab_w + tab_gap), y);
-        lv_obj_set_size(s_tab_tinkerclaw, tab_w, tab_h);
-        lv_obj_set_style_radius(s_tab_tinkerclaw, 20, 0);
-        lv_obj_set_style_bg_opa(s_tab_tinkerclaw, LV_OPA_COVER, 0);
-        if (s_active_tab == 3) {
-            lv_obj_set_style_bg_color(s_tab_tinkerclaw, lv_color_hex(TAB_TINKERCLAW), 0);
-            lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x000000), 0);
-        } else {
-            lv_obj_set_style_bg_color(s_tab_tinkerclaw, lv_color_hex(CARD_COLOR), 0);
-            lv_obj_set_style_text_color(s_tab_tinkerclaw, lv_color_hex(0x666666), 0);
-        }
-        lv_obj_add_event_cb(s_tab_tinkerclaw, cb_tab_tinkerclaw, LV_EVENT_CLICKED, NULL);
-        lv_obj_t *tt = lv_label_create(s_tab_tinkerclaw);
-        lv_label_set_text(tt, "TinkerClaw");
-        lv_obj_set_style_text_font(tt, FONT_SECONDARY, 0);
-        lv_obj_center(tt);
-    }
-    y += tab_h + 10;
-
-    /* ── LOCAL card (green tint) ─────────────────────────────────────── */
-    int card_y = y;
-    int card_h = 110;
-    {
-        s_local_card = lv_obj_create(s_scroll);
-        lv_obj_remove_style_all(s_local_card);
-        lv_obj_set_pos(s_local_card, SIDE_PAD, card_y);
-        lv_obj_set_size(s_local_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_local_card, lv_color_hex(0x0D1A0D), 0);
-        lv_obj_set_style_bg_opa(s_local_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_local_card, 1, 0);
-        lv_obj_set_style_border_color(s_local_card, lv_color_hex(0x22C55E33), 0);
-        lv_obj_set_style_border_opa(s_local_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_local_card, 8, 0);
-        lv_obj_clear_flag(s_local_card, LV_OBJ_FLAG_SCROLLABLE);
-
-        /* LLM Model row */
-        lv_obj_t *k1 = lv_label_create(s_local_card);
-        lv_label_set_text(k1, "LLM Model");
-        lv_obj_set_style_text_color(k1, lv_color_hex(TAB_LOCAL), 0);
-        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k1, 16, 14);
-        s_local_content[0] = k1;
-
-        lv_obj_t *dd = lv_dropdown_create(s_local_card);
-        lv_obj_set_pos(dd, 340, 8);
-        lv_obj_set_size(dd, 200, 36);
-        lv_dropdown_set_options(dd, "qwen3:1.7b\nqwen3:4b\nqwen3:0.6b");
-        lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
-        lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
-        lv_obj_set_style_border_width(dd, 1, 0);
-        lv_obj_set_style_border_color(dd, lv_color_hex(TAB_LOCAL), 0);
-        lv_obj_set_style_radius(dd, 6, 0);
-        {
-            char saved[64] = {0};
-            tab5_settings_get_llm_model(saved, sizeof(saved));
-            for (int i = 0; i < 3; i++) {
-                if (strcmp(s_local_model_names[i], saved) == 0) {
-                    lv_dropdown_set_selected(dd, i);
-                    break;
-                }
-            }
-        }
-        lv_obj_add_event_cb(dd, cb_local_model, LV_EVENT_VALUE_CHANGED, NULL);
-        s_local_content[1] = dd;
-
-        /* Temperature row (combined key:value) */
-        lv_obj_t *k2 = lv_label_create(s_local_card);
-        lv_label_set_text(k2, "Temperature: 0.7");
-        lv_obj_set_style_text_color(k2, lv_color_hex(TAB_LOCAL), 0);
-        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k2, 16, 60);
-        s_local_content[2] = k2;
-        s_local_content[3] = NULL;
-
-        if (s_active_tab != 0) lv_obj_add_flag(s_local_card, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* ── HYBRID card (amber tint) ────────────────────────────────────── */
-    {
-        s_hybrid_card = lv_obj_create(s_scroll);
-        lv_obj_remove_style_all(s_hybrid_card);
-        lv_obj_set_pos(s_hybrid_card, SIDE_PAD, card_y);
-        lv_obj_set_size(s_hybrid_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_hybrid_card, lv_color_hex(0x1A170D), 0);
-        lv_obj_set_style_bg_opa(s_hybrid_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_hybrid_card, 1, 0);
-        lv_obj_set_style_border_color(s_hybrid_card, lv_color_hex(0xEAB30833), 0);
-        lv_obj_set_style_border_opa(s_hybrid_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_hybrid_card, 8, 0);
-        lv_obj_clear_flag(s_hybrid_card, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t *k1 = lv_label_create(s_hybrid_card);
-        lv_label_set_text(k1, "STT / TTS: Cloud (OpenRouter)");
-        lv_obj_set_style_text_color(k1, lv_color_hex(TAB_HYBRID), 0);
-        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k1, 16, 20);
-        s_hybrid_content[0] = k1;
-        s_hybrid_content[1] = NULL;
-
-        lv_obj_t *k2 = lv_label_create(s_hybrid_card);
-        lv_label_set_text(k2, "LLM: Local (Ollama)");
-        lv_obj_set_style_text_color(k2, lv_color_hex(TAB_HYBRID), 0);
-        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k2, 16, 60);
-        s_hybrid_content[2] = k2;
-        s_hybrid_content[3] = NULL;
-
-        if (s_active_tab != 1) lv_obj_add_flag(s_hybrid_card, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* ── CLOUD card (blue tint) ──────────────────────────────────────── */
-    {
-        s_cloud_card = lv_obj_create(s_scroll);
-        lv_obj_remove_style_all(s_cloud_card);
-        lv_obj_set_pos(s_cloud_card, SIDE_PAD, card_y);
-        lv_obj_set_size(s_cloud_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_cloud_card, lv_color_hex(0x0D0D1A), 0);
-        lv_obj_set_style_bg_opa(s_cloud_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_cloud_card, 1, 0);
-        lv_obj_set_style_border_color(s_cloud_card, lv_color_hex(0x3B82F633), 0);
-        lv_obj_set_style_border_opa(s_cloud_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_cloud_card, 8, 0);
-        lv_obj_clear_flag(s_cloud_card, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t *k1 = lv_label_create(s_cloud_card);
-        lv_label_set_text(k1, "Cloud Model");
-        lv_obj_set_style_text_color(k1, lv_color_hex(TAB_CLOUD), 0);
-        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k1, 16, 14);
-        s_cloud_content[0] = k1;
-
-        lv_obj_t *dd = lv_dropdown_create(s_cloud_card);
-        lv_obj_set_pos(dd, 340, 8);
-        lv_obj_set_size(dd, 200, 36);
-        lv_dropdown_set_options(dd, "Claude 3.5 Haiku\nClaude Sonnet\nGPT-4o mini\nGPT-4o");
-        lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
-        lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
-        lv_obj_set_style_border_width(dd, 1, 0);
-        lv_obj_set_style_border_color(dd, lv_color_hex(TAB_CLOUD), 0);
-        lv_obj_set_style_radius(dd, 6, 0);
-        {
-            char saved[64] = {0};
-            tab5_settings_get_llm_model(saved, sizeof(saved));
-            for (int i = 0; i < 4; i++) {
-                if (strcmp(s_cloud_model_ids[i], saved) == 0) {
-                    lv_dropdown_set_selected(dd, i);
-                    break;
-                }
-            }
-        }
-        lv_obj_add_event_cb(dd, cb_cloud_model, LV_EVENT_VALUE_CHANGED, NULL);
-        s_cloud_content[1] = dd;
-
-        lv_obj_t *k2 = lv_label_create(s_cloud_card);
-        lv_label_set_text(k2, "API Key: Set");
-        lv_obj_set_style_text_color(k2, lv_color_hex(TAB_CLOUD), 0);
-        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k2, 16, 60);
-        s_cloud_content[2] = k2;
-        s_cloud_content[3] = NULL;
-
-        if (s_active_tab != 2) lv_obj_add_flag(s_cloud_card, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* ── TINKERCLAW card (rose tint) ────────────────────────────────────── */
-    {
-        s_tinkerclaw_card = lv_obj_create(s_scroll);
-        lv_obj_remove_style_all(s_tinkerclaw_card);
-        lv_obj_set_pos(s_tinkerclaw_card, SIDE_PAD, card_y);
-        lv_obj_set_size(s_tinkerclaw_card, CONTENT_W, card_h);
-        lv_obj_set_style_bg_color(s_tinkerclaw_card, lv_color_hex(0x1A0D12), 0);
-        lv_obj_set_style_bg_opa(s_tinkerclaw_card, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_tinkerclaw_card, 1, 0);
-        lv_obj_set_style_border_color(s_tinkerclaw_card, lv_color_hex(0xE11D4833), 0);
-        lv_obj_set_style_border_opa(s_tinkerclaw_card, (lv_opa_t)0x33, 0);
-        lv_obj_set_style_radius(s_tinkerclaw_card, 8, 0);
-        lv_obj_clear_flag(s_tinkerclaw_card, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t *k1 = lv_label_create(s_tinkerclaw_card);
-        lv_label_set_text(k1, "Agent mode \xe2\x80\x94 TinkerClaw gateway");
-        lv_obj_set_style_text_color(k1, lv_color_hex(TAB_TINKERCLAW), 0);
-        lv_obj_set_style_text_font(k1, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k1, 16, 20);
-        s_tinkerclaw_content[0] = k1;
-
-        lv_obj_t *k2 = lv_label_create(s_tinkerclaw_card);
-        lv_label_set_text(k2, "handles skills, memory, and model selection");
-        lv_obj_set_style_text_color(k2, lv_color_hex(TAB_TINKERCLAW), 0);
-        lv_obj_set_style_text_font(k2, FONT_SECONDARY, 0);
-        lv_obj_set_pos(k2, 16, 60);
-        s_tinkerclaw_content[1] = k2;
-        s_tinkerclaw_content[2] = NULL;
-        s_tinkerclaw_content[3] = NULL;
-
-        if (s_active_tab != 3) lv_obj_add_flag(s_tinkerclaw_card, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    y = card_y + card_h + 10;
-
-    /* Wake Word toggle */
-    mk_row_label(s_scroll, "Wake Word", y);
-    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
-              cb_wake_word, NULL);
-    y += ROW_H + 16;
-
-    /* ════════════════════════════════════════════════════════════════
      *  SECTION: STORAGE (amber #F59E0B)
      * ════════════════════════════════════════════════════════════════ */
     feed_wdt();
@@ -1107,7 +837,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     /* Debug voltage label -- small and dim for developers */
     s_lbl_bat_volt = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_bat_volt, "");
-    lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_color(s_lbl_bat_volt, lv_color_hex(0x666666), 0);
     lv_obj_set_style_text_font(s_lbl_bat_volt, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y);
     y += 20 + 16;
@@ -1164,7 +894,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     /* Free Heap + PSRAM (debug info -- small and dim) */
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
-    lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_text_color(s_lbl_heap, lv_color_hex(0x666666), 0);
     lv_obj_set_style_text_font(s_lbl_heap, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 14) / 2);
     y += ROW_H;
@@ -1239,8 +969,9 @@ lv_obj_t *ui_settings_create(void)
 
     /* Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back_btn, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
-    /* ── Top Bar (48px, sticky) ──────────────────────────────────────── */
+    /* ── Top bar (v5: ghost HOME back + amber right-aligned title) ──── */
     lv_obj_t *bar = lv_obj_create(s_screen);
     lv_obj_remove_style_all(bar);
     lv_obj_set_size(bar, 720, TOPBAR_H);
@@ -1248,32 +979,32 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_bg_color(bar, lv_color_hex(BG_COLOR), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_color(bar, lv_color_hex(CARD_COLOR), 0);
+    lv_obj_set_style_border_color(bar, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
     lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back arrow button (36x36, rounded 8px, bg #1A1A2E) */
+    /* v5 spec shot-09: Settings title LEFT, '← HOME' caption RIGHT. */
+    lv_obj_t *title = lv_label_create(bar);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px */
+    lv_obj_set_style_text_letter_space(title, -1, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 24, 0);
+
     lv_obj_t *back_btn = lv_button_create(bar);
-    lv_obj_remove_style_all(back_btn);
-    lv_obj_set_size(back_btn, 36, 36);
-    lv_obj_set_pos(back_btn, SIDE_PAD, (TOPBAR_H - 36) / 2);
-    lv_obj_set_style_bg_color(back_btn, lv_color_hex(CARD_COLOR), 0);
-    lv_obj_set_style_bg_opa(back_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(back_btn, 8, 0);
+    lv_obj_set_size(back_btn, 140, TOPBAR_H);
+    lv_obj_align(back_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_shadow_width(back_btn, 0, 0);
+    lv_obj_set_style_border_width(back_btn, 0, 0);
     lv_obj_add_event_cb(back_btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *arrow = lv_label_create(back_btn);
-    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(arrow, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(arrow, FONT_SECONDARY, 0);
+    lv_label_set_text(arrow, LV_SYMBOL_LEFT "  HOME");
+    lv_obj_set_style_text_color(arrow, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_font(arrow, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(arrow, 3, 0);
     lv_obj_center(arrow);
-
-    /* "Settings" title centered */
-    lv_obj_t *title = lv_label_create(bar);
-    lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(title, FONT_HEADING, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, 0);
 
     /* ── Scrollable content area ─────────────────────────────────────── */
     s_scroll = lv_obj_create(s_screen);
@@ -1287,6 +1018,85 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_scrollbar_mode(s_scroll, LV_SCROLLBAR_MODE_AUTO);
 
     int y = 12;
+
+    /* ════════════════════════════════════════════════════════════════
+     *  SECTION: VOICE MODE  (v5 spec shot-09: first-class picker at top)
+     * ════════════════════════════════════════════════════════════════ */
+    feed_wdt();
+    ESP_LOGI(TAG, "Phase 1 — Section: Voice Mode");
+    lv_color_t acc_voice = lv_color_hex(ACC_VOICE);
+
+    y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
+
+    /* v5 flat vertical radio rows. Each row = colored dot + name + desc;
+     * selected row gets an amber left bar + faint amber wash. */
+    s_active_tab = tab5_settings_get_voice_mode();
+    if (s_active_tab > 3) s_active_tab = 0;
+    {
+        static const char *mode_names[4] = { "Local", "Hybrid", "Cloud", "TinkerClaw" };
+        static const char *mode_descs[4] = {
+            "Moonshine \xe2\x80\xa2 NPU",
+            "Cloud STT/TTS",
+            "Claude Sonnet",
+            "Agents \xe2\x80\xa2 Memory",
+        };
+        static const uint32_t mode_dot_col[4] = {
+            TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW,
+        };
+        const int row_h = 64;
+        const int row_w = CONTENT_W;
+        for (int i = 0; i < 4; i++) {
+            lv_obj_t *row = lv_obj_create(s_scroll);
+            lv_obj_remove_style_all(row);
+            lv_obj_set_pos(row, SIDE_PAD, y + i * (row_h + 2));
+            lv_obj_set_size(row, row_w, row_h);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row, cb_tab_local, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            if (i < 3) {
+                lv_obj_set_style_border_color(row, lv_color_hex(HAIR_COLOR), 0);
+            }
+            lv_obj_t *dot = lv_obj_create(row);
+            lv_obj_remove_style_all(dot);
+            lv_obj_set_size(dot, 10, 10);
+            lv_obj_set_pos(dot, 18, (row_h - 10) / 2);
+            lv_obj_set_style_bg_color(dot, lv_color_hex(mode_dot_col[i]), 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_t *nm = lv_label_create(row);
+            lv_label_set_text(nm, mode_names[i]);
+            lv_obj_set_style_text_font(nm, FONT_BODY, 0);
+            lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
+            lv_obj_set_pos(nm, 44, 12);
+            lv_obj_t *dc = lv_label_create(row);
+            lv_label_set_text(dc, mode_descs[i]);
+            lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
+            lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
+            lv_obj_set_style_text_letter_space(dc, 2, 0);
+            lv_obj_set_pos(dc, 44, 38);
+            s_mode_row[i]     = row;
+            s_mode_row_dot[i] = dot;
+            if (i == s_active_tab) _mode_row_style(row, true);
+            feed_wdt();
+        }
+        y += 4 * (row_h + 2) + 12;
+    }
+    s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
+
+    /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
+     * section visually — single amber caption, rows straight below). */
+    mk_row_label(s_scroll, "Wake Word", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
+              cb_wake_word, NULL);
+    y += ROW_H + 16;
+    mk_row_label(s_scroll, "Mic mute", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
+              cb_mic_mute, NULL);
+    y += ROW_H + 16;
+    mk_row_label(s_scroll, "Quiet hours", y);
+    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
+              cb_quiet_on, NULL);
+    y += ROW_H + 20;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: DISPLAY (amber #F5A623)
@@ -1304,7 +1114,7 @@ lv_obj_t *ui_settings_create(void)
     s_lbl_bright_val = lv_label_create(s_scroll);
     lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
-    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF59E0B), 0);
     lv_obj_set_style_text_font(s_lbl_bright_val, FONT_SECONDARY, 0);
     y += ROW_H + 4;
 
@@ -1316,7 +1126,7 @@ lv_obj_t *ui_settings_create(void)
     s_lbl_vol_val = lv_label_create(s_scroll);
     lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
     lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
-    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF5A623), 0);
+    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF59E0B), 0);
     lv_obj_set_style_text_font(s_lbl_vol_val, FONT_SECONDARY, 0);
     y += ROW_H + 4;
 
@@ -1343,14 +1153,14 @@ lv_obj_t *ui_settings_create(void)
     /* WiFi Setup */
     {
         lv_obj_t *btn = mk_pill_btn(s_scroll, LV_SYMBOL_WIFI " Configure",
-                                    acc_network, lv_color_hex(0x000000),
+                                    acc_network, lv_color_hex(0x08080E),
                                     RIGHT_X, y + 3, 180, 38, 8, cb_wifi_setup);
         (void)btn;
     }
     /* NTP Sync */
     {
         lv_obj_t *ntp_btn = mk_pill_btn(s_scroll, "Sync NTP",
-                                        acc_network, lv_color_hex(0x000000),
+                                        acc_network, lv_color_hex(0x08080E),
                                         SIDE_PAD, y + 3, 140, 38, 8, cb_ntp_sync);
         s_ntp_btn_label = lv_obj_get_child(ntp_btn, 0);
     }
@@ -1369,7 +1179,7 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_text_color(s_dragon_ta, lv_color_hex(TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(s_dragon_ta, FONT_CAPTION, 0);
     lv_obj_set_style_border_width(s_dragon_ta, 1, 0);
-    lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_color(s_dragon_ta, lv_color_hex(0x1A1A24), 0);
     lv_obj_set_style_radius(s_dragon_ta, 6, 0);
     lv_obj_set_style_pad_left(s_dragon_ta, 8, 0);
     lv_textarea_set_placeholder_text(s_dragon_ta, "Dragon Host (e.g. 192.168.1.89)");
@@ -1414,7 +1224,7 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_text_color(s_conn_dd, lv_color_hex(TEXT_PRIMARY), 0);
         lv_obj_set_style_text_font(s_conn_dd, FONT_SECONDARY, 0);
         lv_obj_set_style_border_width(s_conn_dd, 1, 0);
-        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_border_color(s_conn_dd, lv_color_hex(0x1A1A24), 0);
         lv_obj_set_style_radius(s_conn_dd, 6, 0);
         /* Dropdown list styling */
         lv_obj_set_style_bg_color(s_conn_dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
@@ -1666,4 +1476,9 @@ void ui_settings_hide(void)
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
     }
     s_destroying = false;
+}
+
+bool ui_settings_is_visible(void)
+{
+    return s_screen && !lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
 }

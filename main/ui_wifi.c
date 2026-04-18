@@ -42,10 +42,10 @@ static const char *TAG = "ui_wifi";
 #define COL_TEXT_DIM    lv_color_hex(0x94A3B8)
 #define COL_GREEN       lv_color_hex(0x22C55E)
 #define COL_RED         lv_color_hex(0xEF4444)
-#define COL_YELLOW      lv_color_hex(0xEAB308)
+#define COL_YELLOW      lv_color_hex(0xF59E0B)
 #define COL_CYAN        lv_color_hex(0x00B4D8)
-#define COL_WHITE       lv_color_hex(0xFFFFFF)
-#define COL_OVERLAY     lv_color_hex(0x000000)
+#define COL_WHITE       lv_color_hex(0xE8E8EF)
+#define COL_OVERLAY     lv_color_hex(0x08080E)
 
 /* ── Layout constants ──────────────────────────────────────────────── */
 #define TOPBAR_H        48

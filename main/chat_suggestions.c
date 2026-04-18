@@ -36,12 +36,12 @@ static const char *s_suggestions[4][4] = {
       "\"What can you do?\"" },
 };
 
-/* Mode accent colors */
+/* Mode accent colors — aligned with th_mode_colors in ui_theme */
 static const uint32_t s_mode_colors[4] = {
-    0x22C55E,  /* Local: green */
-    0xEAB308,  /* Hybrid: yellow */
-    0x3B82F6,  /* Cloud: blue */
-    0xE8457A,  /* TinkerClaw: rose */
+    0x22C55E,  /* Local: green  (TH_MODE_LOCAL) */
+    0xF59E0B,  /* Hybrid: amber (TH_MODE_HYBRID) */
+    0x3B82F6,  /* Cloud: blue   (TH_MODE_CLOUD) */
+    0xF43F5E,  /* TinkerClaw: rose (TH_MODE_CLAW) */
 };
 
 /* Mode hints */
@@ -76,7 +76,7 @@ void chat_suggestions_create(lv_obj_t *parent, uint8_t mode, lv_event_cb_t on_ta
     lv_obj_t *hint = lv_label_create(s_container);
     lv_label_set_text(hint, s_mode_hints[mode]);
     lv_obj_set_style_text_font(hint, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_bottom(hint, DPI_SCALE(12), 0);
 
@@ -86,11 +86,11 @@ void chat_suggestions_create(lv_obj_t *parent, uint8_t mode, lv_event_cb_t on_ta
         lv_obj_t *card = lv_obj_create(s_container);
         lv_obj_remove_style_all(card);
         lv_obj_set_size(card, lv_pct(100), DPI_SCALE(48));
-        lv_obj_set_style_bg_color(card, lv_color_hex(0x111122), 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x111119), 0); /* TH_CARD */
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(card, DPI_SCALE(10), 0);
         lv_obj_set_style_border_width(card, 1, 0);
-        lv_obj_set_style_border_color(card, lv_color_hex(0x222233), 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
         lv_obj_set_style_pad_hor(card, DPI_SCALE(14), 0);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);

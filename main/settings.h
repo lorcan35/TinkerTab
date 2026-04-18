@@ -11,6 +11,7 @@
 #include "esp_err.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /**
  * Open the "settings" NVS namespace.  Safe to call repeatedly — only
@@ -90,6 +91,32 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode);
 /** 0 = PTT only (default), 1 = always-listening with wake word */
 uint8_t   tab5_settings_get_wake_word(void);
 esp_err_t tab5_settings_set_wake_word(uint8_t enabled);
+
+/* ── Mic mute ───────────────────────────────────────────────────────── */
+
+/** 0 = mic hot (default), 1 = silenced.  When set, voice_start_listening()
+ *  returns ESP_ERR_INVALID_STATE and surfaces a toast on home. */
+uint8_t   tab5_settings_get_mic_mute(void);
+esp_err_t tab5_settings_set_mic_mute(uint8_t muted);
+
+/* ── Quiet hours (do-not-disturb) ──────────────────────────────────── */
+
+/** 0 = disabled (default), 1 = enabled.  When enabled + the current local
+ *  hour is inside [start, end), home dims the orb + sys label shows
+ *  'QUIET' and TTS playback is suppressed until quiet ends. */
+uint8_t   tab5_settings_get_quiet_on(void);
+esp_err_t tab5_settings_set_quiet_on(uint8_t on);
+
+/** Hour-of-day (0..23) for the start / end of quiet hours. Default
+ *  start=22 (10 PM), end=7 (7 AM); wraps past midnight correctly. */
+uint8_t   tab5_settings_get_quiet_start(void);
+esp_err_t tab5_settings_set_quiet_start(uint8_t hour);
+uint8_t   tab5_settings_get_quiet_end(void);
+esp_err_t tab5_settings_set_quiet_end(uint8_t hour);
+
+/** True if quiet hours are currently active for the given hour (0..23).
+ *  Convenience — does the wrap-past-midnight math for you. */
+bool      tab5_settings_quiet_active(int hour_local);
 
 /* ── Auth token (debug server bearer auth) ───────────────────────────── */
 

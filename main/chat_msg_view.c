@@ -76,47 +76,51 @@ static void init_styles(void)
     lv_style_set_border_width(&s_style_user_bubble, 0);
     lv_style_set_text_color(&s_style_user_bubble, lv_color_hex(0x000000));
 
-    /* AI bubble — indigo bg, white text, subtle border */
+    /* AI bubble — v5 structural: NO bubble. Indented body text behind a
+       thin amber left rail, so conversation reads like a letter. Keeps
+       height-estimation footprint similar (pad-left 18 vs bubble-pad 16)
+       so the recycled pool's slot-height cache stays valid. */
     lv_style_init(&s_style_ai_bubble);
-    lv_style_set_bg_color(&s_style_ai_bubble, lv_color_hex(0x2A2A3E));
-    lv_style_set_bg_opa(&s_style_ai_bubble, LV_OPA_COVER);
-    lv_style_set_radius(&s_style_ai_bubble, 16);
-    lv_style_set_pad_all(&s_style_ai_bubble, BUBBLE_PAD);
-    lv_style_set_pad_bottom(&s_style_ai_bubble, 8);
-    lv_style_set_border_width(&s_style_ai_bubble, 1);
-    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0x333333));
-    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xFFFFFF));
+    lv_style_set_bg_opa(&s_style_ai_bubble, LV_OPA_TRANSP);              /* no fill */
+    lv_style_set_radius(&s_style_ai_bubble, 0);
+    lv_style_set_pad_all(&s_style_ai_bubble, 6);
+    lv_style_set_pad_left(&s_style_ai_bubble, 18);                        /* indent past the rail */
+    lv_style_set_border_width(&s_style_ai_bubble, 2);
+    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0xF59E0B)); /* TH_AMBER left rail */
+    lv_style_set_border_side(&s_style_ai_bubble, LV_BORDER_SIDE_LEFT);
+    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xC8C8D0));   /* lighter body — reads as prose not UI */
+    lv_style_set_text_line_space(&s_style_ai_bubble, 4);
 
-    /* Card bubble — indigo bg with left orange border */
+    /* Card bubble — elevated surface, amber left rail (was orange 0xff6b35) */
     lv_style_init(&s_style_card_bubble);
-    lv_style_set_bg_color(&s_style_card_bubble, lv_color_hex(0x2A2A3E));
+    lv_style_set_bg_color(&s_style_card_bubble, lv_color_hex(0x13131F));   /* TH_CARD_ELEVATED */
     lv_style_set_bg_opa(&s_style_card_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_card_bubble, 12);
     lv_style_set_pad_all(&s_style_card_bubble, BUBBLE_PAD);
     lv_style_set_pad_left(&s_style_card_bubble, BUBBLE_PAD + 6);
     lv_style_set_border_width(&s_style_card_bubble, 1);
-    lv_style_set_border_color(&s_style_card_bubble, lv_color_hex(0xff6b35));
+    lv_style_set_border_color(&s_style_card_bubble, lv_color_hex(0xF59E0B)); /* TH_AMBER left rail */
     lv_style_set_border_side(&s_style_card_bubble, LV_BORDER_SIDE_LEFT);
-    lv_style_set_text_color(&s_style_card_bubble, lv_color_hex(0xFFFFFF));
+    lv_style_set_text_color(&s_style_card_bubble, lv_color_hex(0xE8E8EF));   /* TH_TEXT_PRIMARY */
 
-    /* Tool status bubble — dark bg, centered cyan text */
+    /* Tool status bubble — centered amber text (was cyan) */
     lv_style_init(&s_style_tool_bubble);
-    lv_style_set_bg_color(&s_style_tool_bubble, lv_color_hex(0x1A1A2E));
+    lv_style_set_bg_color(&s_style_tool_bubble, lv_color_hex(0x111119));    /* TH_CARD */
     lv_style_set_bg_opa(&s_style_tool_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_tool_bubble, 12);
     lv_style_set_pad_all(&s_style_tool_bubble, 10);
     lv_style_set_border_width(&s_style_tool_bubble, 0);
-    lv_style_set_text_color(&s_style_tool_bubble, lv_color_hex(0x00E5FF));
+    lv_style_set_text_color(&s_style_tool_bubble, lv_color_hex(0xF59E0B));  /* TH_AMBER */
     lv_style_set_text_align(&s_style_tool_bubble, LV_TEXT_ALIGN_CENTER);
 
-    /* System bubble — dark bg, centered dim text */
+    /* System bubble — dark bg, centered dim text (TH_TEXT_SECONDARY) */
     lv_style_init(&s_style_system_bubble);
-    lv_style_set_bg_color(&s_style_system_bubble, lv_color_hex(0x1A1A2E));
+    lv_style_set_bg_color(&s_style_system_bubble, lv_color_hex(0x111119)); /* TH_CARD */
     lv_style_set_bg_opa(&s_style_system_bubble, LV_OPA_COVER);
     lv_style_set_radius(&s_style_system_bubble, 12);
     lv_style_set_pad_all(&s_style_system_bubble, 10);
     lv_style_set_border_width(&s_style_system_bubble, 0);
-    lv_style_set_text_color(&s_style_system_bubble, lv_color_hex(0x555555));
+    lv_style_set_text_color(&s_style_system_bubble, lv_color_hex(0x666666)); /* TH_TEXT_SECONDARY */
     lv_style_set_text_align(&s_style_system_bubble, LV_TEXT_ALIGN_CENTER);
 
     /* Timestamp — small font, right-aligned */
@@ -187,50 +191,80 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
     lv_obj_set_size(slot->container, BUBBLE_MAX_W, LV_SIZE_CONTENT);
     lv_obj_clear_flag(slot->container, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Content label */
+    /* Content label — v5 treatments for the rich-media variants. Only text
+       + style touched here; object lifecycle stays unchanged (recycled pool
+       invariant). Image/card/audio stay resilient across scroll / scroll-back. */
     switch (msg->type) {
-        case MSG_IMAGE:
-            lv_label_set_text(slot->content, "Loading...");
+        case MSG_IMAGE: {
+            /* Placeholder while the JPEG downloads. v5: amber progress feel
+               instead of grey 'Loading...'. The real image swap-in happens
+               in ui_chat.c on media_cache_fetch() completion. */
+            const char *alt = msg->text[0] ? msg->text : "inline image";
+            char placeholder[160];
+            /* %.120s bounds the alt-text so LV_SYMBOL glyphs + spaces all fit */
+            snprintf(placeholder, sizeof(placeholder),
+                     LV_SYMBOL_IMAGE "  %.120s  " LV_SYMBOL_REFRESH, alt);
+            lv_label_set_text(slot->content, placeholder);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
             break;
-        case MSG_CARD:
-            /* Show subtitle in content label for cards */
-            lv_label_set_text(slot->content, msg->subtitle[0] ? msg->subtitle : msg->text);
-            lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
-            break;
-        case MSG_AUDIO_CLIP:
-            /* Play icon + duration placeholder */
-            {
-                char audio_text[64];
-                char clip_label[48];
-                if (msg->text[0]) {
-                    strncpy(clip_label, msg->text, sizeof(clip_label) - 1);
-                    clip_label[sizeof(clip_label) - 1] = '\0';
-                } else {
-                    strcpy(clip_label, "Audio clip");
-                }
-                snprintf(audio_text, sizeof(audio_text),
-                         LV_SYMBOL_PLAY "  %s", clip_label);
-                lv_label_set_text(slot->content, audio_text);
+        }
+        case MSG_CARD: {
+            /* v5 cards show both title AND subtitle — title as primary,
+               subtitle dim on the line below. Falls back to text if either is
+               empty. Stays a single label to keep the slot-pool shape stable.
+               .*s precision bounds pacify -Wformat-truncation for the 512-char
+               source fields — 140 + 1 newline + 160 fits inside 320 with room. */
+            char card_text[320];
+            const char *title    = msg->text[0]     ? msg->text     : NULL;
+            const char *subtitle = msg->subtitle[0] ? msg->subtitle : NULL;
+            if (title && subtitle) {
+                snprintf(card_text, sizeof(card_text), "%.140s\n%.160s",
+                         title, subtitle);
+            } else if (title) {
+                snprintf(card_text, sizeof(card_text), "%.300s", title);
+            } else if (subtitle) {
+                snprintf(card_text, sizeof(card_text), "%.300s", subtitle);
+            } else {
+                card_text[0] = '\0';
             }
+            lv_label_set_text(slot->content, card_text);
             lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x22C55E), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
+            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
+            lv_obj_set_style_text_line_space(slot->content, 4, 0);
+            break;
+        }
+        case MSG_AUDIO_CLIP: {
+            /* Audio clip — amber play glyph + label + duration when known.
+               Green was off-palette; matches v5 now. */
+            char audio_text[96];
+            char clip_label[48];
+            if (msg->text[0]) {
+                strncpy(clip_label, msg->text, sizeof(clip_label) - 1);
+                clip_label[sizeof(clip_label) - 1] = '\0';
+            } else {
+                strcpy(clip_label, "audio clip");
+            }
+            snprintf(audio_text, sizeof(audio_text),
+                     LV_SYMBOL_PLAY "  %s", clip_label);
+            lv_label_set_text(slot->content, audio_text);
+            lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
             break;
+        }
         case MSG_TOOL_STATUS:
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x00E5FF), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
             break;
         case MSG_SYSTEM:
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x555555), 0);
+            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
             break;
         default:
@@ -238,7 +272,7 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
             lv_label_set_text(slot->content, msg->text);
             lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
             lv_obj_set_style_text_color(slot->content,
-                lv_color_hex(msg->is_user ? 0x000000 : 0xFFFFFF), 0);
+                lv_color_hex(msg->is_user ? 0x000000 : 0xAAAAAA), 0); /* TH_TEXT_BODY on AI */
             lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
             break;
     }
@@ -259,7 +293,7 @@ static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
             lv_label_set_text(slot->timestamp, "");
         }
         lv_obj_set_style_text_color(slot->timestamp,
-            lv_color_hex(msg->is_user ? 0x555555 : 0x888888), 0);
+            lv_color_hex(msg->is_user ? 0x444444 : 0x666666), 0); /* TH_TEXT_DIM / _SECONDARY */
         lv_obj_clear_flag(slot->timestamp, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_width(slot->timestamp, LABEL_MAX_W);
         /* Place timestamp below content with 4px gap */

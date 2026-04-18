@@ -7,9 +7,13 @@
 #pragma once
 
 #include "lvgl.h"
+#include <stdbool.h>
 
 /** Create and show the settings screen. Returns the screen object. */
 lv_obj_t *ui_settings_create(void);
+
+/** True if the settings overlay exists and is not hidden. */
+bool ui_settings_is_visible(void);
 
 /** Refresh live values (battery, heap, PSRAM). Call periodically. */
 void ui_settings_update(void);

@@ -24,9 +24,9 @@
 static const char *TAG = "ui_camera";
 
 /* ── Palette ─────────────────────────────────────────────────── */
-#define COL_BG          0x000000
+#define COL_BG          0x08080E
 #define COL_BAR_BG      0x0F172A
-#define COL_WHITE       0xFFFFFF
+#define COL_WHITE       0xE8E8EF
 #define COL_GRAY        0x94A3B8
 #define COL_ACCENT      0x3B82F6
 #define COL_GREEN       0x22C55E
@@ -196,7 +196,7 @@ lv_obj_t *ui_camera_create(void)
         lv_obj_t *btn_back = lv_button_create(topbar);
         lv_obj_remove_style_all(btn_back);
         lv_obj_set_size(btn_back, 80, 48);
-        lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x333333), 0);
+        lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x1A1A24), 0);
         lv_obj_set_style_bg_opa(btn_back, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(btn_back, 12, 0);
         lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 8, 0);

@@ -1,0 +1,1410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TinkerTab — v5 · Zero Interface · System</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Calistoga&family=Inter:wght@200;300;400;500;600&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+/* ═════════════════════════════════════════════════════════════════
+   TinkerTab v5 — Zero Interface — full system design doc
+   Every frame here renders at actual 720×1280 pixels, scaled 50% in view.
+   Typography below is the HTML presentation font; on-device everything
+   maps to Montserrat Bold/Regular at matching sizes.
+   ═════════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#08080E; --bg-deep:#050509; --bg-elev:#0C0C14;
+  --hairline:rgba(255,255,255,.055);
+  --hairline-soft:rgba(255,255,255,.03);
+  --hairline-amber:rgba(245,158,11,.18);
+  --text:#EDEDEF; --body:#8A8A93; --meta:#4D4D56; --dim:#2D2D35;
+  --amber:#F59E0B; --amber-hot:#FFB637; --amber-deep:#7A4A06;
+  --amber-glow:rgba(245,158,11,.28); --amber-halo:rgba(245,158,11,.08);
+  --rose:#F43F5E; --emerald:#22C55E; --azure:#3B82F6; --red:#EF4444;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{background:#030305;color:var(--text);font-family:'Inter',sans-serif;min-height:100%;-webkit-font-smoothing:antialiased}
+body{padding:64px 32px 120px;display:flex;flex-direction:column;align-items:center;gap:80px}
+
+/* ─────────── section rhythm ─────────── */
+.hero{max-width:900px;text-align:center}
+.hero .kicker{display:inline-flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:6px;color:var(--amber);text-transform:uppercase}
+.hero .kicker::before,.hero .kicker::after{content:"";width:48px;height:1px;background:var(--amber)}
+.hero h1{font-family:'Calistoga',serif;font-size:84px;font-weight:400;line-height:1;letter-spacing:-2px;margin-top:20px}
+.hero h1 em{color:var(--amber);font-style:italic}
+.hero .deck{color:#7a7a82;font-size:17px;line-height:1.7;max-width:680px;margin:22px auto 0;font-weight:300}
+.hero .deck b{color:#c0c0c8;font-weight:500}
+
+.sec{width:100%;max-width:1500px;display:flex;flex-direction:column;gap:40px}
+.sec-head{display:flex;flex-direction:column;gap:8px;padding-bottom:20px;border-bottom:1px solid var(--hairline-soft)}
+.sec-num{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:5px;color:var(--amber);text-transform:uppercase}
+.sec-title{font-family:'Calistoga',serif;font-size:56px;font-weight:400;line-height:1;letter-spacing:-1.2px}
+.sec-title em{color:var(--amber);font-style:italic}
+.sec-deck{color:#7a7a82;font-size:15px;line-height:1.65;max-width:720px;font-weight:300;margin-top:8px}
+.sec-deck b{color:#c0c0c8;font-weight:500}
+
+/* ─────────── device frame ─────────── */
+.stage{position:relative;width:360px;height:640px;flex-shrink:0}
+.frame{
+  position:absolute;top:0;left:0;width:720px;height:1280px;
+  transform:scale(.5);transform-origin:top left;
+  background:radial-gradient(ellipse at 50% 55%, #0B0B14 0%, var(--bg-deep) 100%);
+  border:2px solid #12121A;border-radius:32px;overflow:hidden;
+  box-shadow:0 30px 80px rgba(0,0,0,.6), 0 0 0 1px #08080F inset;
+}
+.screen{position:relative;width:100%;height:100%;overflow:hidden;font-family:'Inter',sans-serif}
+
+/* small frame variant for density grids */
+.stage-sm{width:270px;height:480px}
+.stage-sm .frame{transform:scale(.375);width:720px;height:1280px}
+
+/* ─────────── frame labels ─────────── */
+.flabel{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3px;color:#55555d;text-transform:uppercase;display:flex;align-items:center;gap:10px}
+.flabel .d{width:6px;height:6px;border-radius:50%;background:var(--amber)}
+.flabel .d.rose{background:var(--rose)}
+.flabel .d.emerald{background:var(--emerald)}
+.flabel .d.azure{background:var(--azure)}
+.flabel .d.red{background:var(--red)}
+.flabel .em{color:#c0c0c8}
+
+.tile{display:flex;flex-direction:column;align-items:center;gap:14px}
+
+/* ─────────── ORB primitive ─────────── */
+.orb-stage{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:500px;height:500px}
+.orb-halo{position:absolute;inset:-140px;border-radius:50%;background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(244,63,94,.05) 40%,transparent 72%);pointer-events:none;animation:halo 8s ease-in-out infinite alternate}
+@keyframes halo{0%{opacity:.7;transform:scale(1)}100%{opacity:1;transform:scale(1.04)}}
+.orb-ring{position:absolute;border-radius:50%;border:1px solid rgba(245,158,11,.08);pointer-events:none}
+.orb-ring.r1{inset:-30px}
+.orb-ring.r2{inset:-70px;border-color:rgba(245,158,11,.04)}
+.orb-ring.r3{inset:-120px;border-color:rgba(245,158,11,.02)}
+.orb{
+  position:absolute;inset:0;border-radius:50%;
+  background:radial-gradient(circle at 38% 30%,#FFD88A 0%,#F59E0B 42%,#8E5506 100%);
+  box-shadow:
+    0 0 120px rgba(245,158,11,.35),
+    0 0 240px rgba(245,158,11,.18),
+    inset 0 -28px 60px rgba(0,0,0,.42),
+    inset 0 16px 40px rgba(255,255,255,.14);
+  animation:orb-float 7s ease-in-out infinite;
+}
+.orb::before{content:"";position:absolute;top:16%;left:24%;width:42%;height:38%;border-radius:50%;background:radial-gradient(circle at 35% 35%,rgba(255,255,255,.45),rgba(255,255,255,.15) 40%,transparent 72%);mix-blend-mode:screen;pointer-events:none;animation:sheen 6s ease-in-out infinite alternate}
+.orb::after{content:"";position:absolute;left:50%;top:50%;width:90px;height:90px;border-radius:50%;transform:translate(-50%,-50%);background:radial-gradient(circle,rgba(255,255,255,.55),transparent 68%);mix-blend-mode:screen;pointer-events:none;animation:pulse 2.2s ease-in-out infinite}
+@keyframes orb-float{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-6px) scale(1.008)}}
+@keyframes pulse{0%,100%{opacity:.3;transform:translate(-50%,-50%) scale(.92)}50%{opacity:.7;transform:translate(-50%,-50%) scale(1.08)}}
+@keyframes sheen{0%{opacity:.7;transform:translate(0,0)}100%{opacity:1;transform:translate(-6px,-4px)}}
+
+/* ORB MODE TINTS — change the inner gradient stops + halo */
+.orb.local{background:radial-gradient(circle at 38% 30%,#DDFFC8 0%,#5BE18A 30%,#166C3A 100%)}
+.orb.local ~ .orb-halo,.mode-tile.local .orb-halo{background:radial-gradient(circle,rgba(34,197,94,.22),rgba(245,158,11,.04) 40%,transparent 72%)}
+.orb.hybrid{background:radial-gradient(circle at 38% 30%,#FFE6A8 0%,#F59E0B 42%,#8E5506 100%)}
+.orb.cloud{background:radial-gradient(circle at 38% 30%,#BFD7FF 0%,#6FA3F2 30%,#1D3A78 100%)}
+.orb.claw{background:radial-gradient(circle at 38% 30%,#FFD4DE 0%,#F43F5E 30%,#7A1428 100%)}
+.orb.muted{background:radial-gradient(circle at 38% 30%,#9A9AA2 0%,#55555D 40%,#1A1A20 100%);animation:none}
+.orb.quiet{background:radial-gradient(circle at 38% 30%,#F7CA7A 0%,#8D5E0C 42%,#332105 100%);opacity:.55;animation:orb-float 14s ease-in-out infinite}
+.orb.error{background:radial-gradient(circle at 38% 30%,#FFB3B3 0%,#EF4444 35%,#601010 100%);animation:none}
+
+/* Listening ripple */
+.orb-ripple{position:absolute;inset:0;border-radius:50%;border:2px solid rgba(245,158,11,.35);pointer-events:none}
+.orb-ripple.r1{animation:ripple 2.5s ease-out infinite}
+.orb-ripple.r2{animation:ripple 2.5s ease-out infinite .8s}
+.orb-ripple.r3{animation:ripple 2.5s ease-out infinite 1.6s}
+@keyframes ripple{0%{transform:scale(1);opacity:.55}100%{transform:scale(1.45);opacity:0}}
+
+/* ─────────── ORB STATES GRID (section 1) ─────────── */
+.orb-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:48px;max-width:1200px;margin:0 auto}
+.orb-tile{display:flex;flex-direction:column;align-items:center;gap:18px}
+.orb-mini{position:relative;width:220px;height:220px;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 55%,#0B0B14,#050509);border-radius:20px;border:1px solid #12121A}
+.orb-mini .orb-stage{width:160px;height:160px}
+.orb-mini .orb-halo{inset:-50px}
+.orb-mini .orb-ring.r3{inset:-45px}.orb-mini .orb-ring.r2{inset:-28px}.orb-mini .orb-ring.r1{inset:-12px}
+.orb-mini .orb::after{width:40px;height:40px}
+.orb-tile .name{font-family:'Calistoga',serif;font-size:22px;color:#E0E0E4}
+.orb-tile .name em{color:var(--amber);font-style:italic}
+.orb-tile .desc{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2.5px;color:#55555d;text-transform:uppercase;text-align:center;line-height:1.7}
+.mode-tile .orb-mini .orb-halo{background:inherit}
+
+/* ═════════════════════════════════════════════════════════════════
+   HOME — ambient + focus (the published v5)
+   ═════════════════════════════════════════════════════════════════ */
+
+/* Corner markers, shared */
+.sys,.mode-mark{position:absolute;top:52px;display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:3px;color:#5a5a63;text-transform:uppercase}
+.sys{left:52px}.mode-mark{right:52px}
+.sys .pulse{width:8px;height:8px;border-radius:50%;background:var(--emerald);box-shadow:0 0 10px var(--emerald)}
+.mode-mark .diamond{width:10px;height:10px;background:var(--rose);transform:rotate(45deg);box-shadow:0 0 12px var(--rose)}
+.mode-mark.claw .diamond{background:var(--rose);box-shadow:0 0 12px var(--rose)}
+.mode-mark.local .diamond{background:var(--emerald);box-shadow:0 0 12px var(--emerald)}
+.mode-mark.hybrid .diamond{background:var(--amber);box-shadow:0 0 12px var(--amber)}
+.mode-mark.cloud .diamond{background:var(--azure);box-shadow:0 0 12px var(--azure)}
+
+/* Hero text — "Afternoon" etc */
+.hero-text{position:absolute;top:140px;left:0;right:0;text-align:center}
+.hero-text .part{font-family:'Calistoga',serif;font-size:88px;line-height:1;letter-spacing:-1.5px;color:#E8E8EA;font-weight:400}
+.hero-text .clock{font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:12px;color:#5a5a63;margin-top:16px;text-transform:uppercase}
+.hero-text .clock .now{color:#c0c0c8}
+.hero-text .date{font-family:'Inter',sans-serif;font-weight:300;font-size:18px;color:#45454c;margin-top:6px;letter-spacing:2px;text-transform:uppercase}
+
+/* Left-gutter agent stream */
+.stream{position:absolute;left:58px;top:340px;width:1px;height:560px;background:linear-gradient(180deg,transparent,rgba(245,158,11,.45) 14%,rgba(245,158,11,.45) 86%,transparent)}
+.stream .node{position:absolute;left:50%;transform:translate(-50%,-50%);width:9px;height:9px;border-radius:50%;background:var(--amber);box-shadow:0 0 12px var(--amber-glow)}
+.stream .node.done{background:var(--emerald);box-shadow:0 0 10px rgba(34,197,94,.4)}
+.stream .node.live{background:var(--rose);animation:node-live 1.8s ease-out infinite}
+@keyframes node-live{0%{box-shadow:0 0 0 0 rgba(244,63,94,.55)}100%{box-shadow:0 0 0 14px rgba(244,63,94,0)}}
+.stream .label{position:absolute;left:22px;transform:translateY(-50%);font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:2.5px;color:#6a6a73;white-space:nowrap}
+.stream .label .k{color:#c0c0c8;font-weight:500}
+.stream .label .pct{color:var(--amber)}
+
+.poem{position:absolute;left:112px;right:72px;bottom:180px;text-align:right;font-family:'Calistoga',serif;font-size:26px;line-height:1.35;color:#9a9aa2;font-weight:400;letter-spacing:-.3px}
+.poem em{color:var(--amber);font-style:italic}
+.poem .tiny{display:block;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3px;color:#3d3d44;margin-top:14px;font-style:normal}
+
+.hint{position:absolute;left:0;right:0;bottom:76px;display:flex;justify-content:center;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:#3a3a40;text-transform:uppercase}
+.hint .chev{width:14px;height:14px;border-right:1.5px solid #3a3a40;border-bottom:1.5px solid #3a3a40;transform:rotate(-135deg);animation:hint-bob 3s ease-in-out infinite}
+@keyframes hint-bob{0%,100%{transform:rotate(-135deg) translate(0,0);opacity:.35}50%{transform:rotate(-135deg) translate(3px,3px);opacity:.7}}
+.edge{position:absolute;top:50%;transform:translateY(-50%);width:2px;height:40px;background:rgba(245,158,11,.18);border-radius:0 2px 2px 0}
+.edge.l{left:0}.edge.r{right:0;border-radius:2px 0 0 2px}
+
+/* FOCUS state overrides */
+.frame.focus .orb-stage{left:auto;top:64px;right:56px;transform:none;width:120px;height:120px}
+.frame.focus .orb-halo{inset:-28px}
+.frame.focus .orb-ring.r1{inset:-10px}.frame.focus .orb-ring.r2{inset:-24px}.frame.focus .orb-ring.r3{display:none}
+.frame.focus .orb::after{width:32px;height:32px}
+.frame.focus .mode-mark{top:80px;left:56px;right:auto}
+.frame.focus .sys{top:52px;right:56px;left:auto}
+
+.focus-body{position:absolute;top:220px;left:56px;right:56px;bottom:140px;display:flex;flex-direction:column;gap:36px}
+.sec-h{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:4px;color:#55555d;text-transform:uppercase;display:flex;align-items:baseline;gap:12px}
+.sec-h::after{content:"";flex:1;height:1px;background:var(--hairline-soft)}
+.sec-h .live{color:var(--rose);font-weight:500;display:inline-flex;align-items:center;gap:8px}
+.sec-h .live::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--rose);animation:node-live 1.8s ease-out infinite}
+.agent-line{font-family:'Calistoga',serif;font-size:30px;line-height:1.3;color:#D2D2D8;font-weight:400;letter-spacing:-.3px}
+.agent-line em{color:var(--amber);font-style:italic}
+.agent-line .soft{color:#7a7a82}
+
+.task-stream{position:relative;padding-left:28px;display:flex;flex-direction:column;gap:18px}
+.task-stream::before{content:"";position:absolute;left:9px;top:8px;bottom:8px;width:1px;background:rgba(245,158,11,.25)}
+.task{position:relative}
+.task::before{content:"";position:absolute;left:-24px;top:8px;width:10px;height:10px;border-radius:50%;background:var(--dim);border:2px solid var(--bg-deep)}
+.task.done::before{background:var(--emerald);box-shadow:0 0 8px rgba(34,197,94,.4)}
+.task.wip::before{background:var(--amber);box-shadow:0 0 12px var(--amber-glow);animation:node-live 1.8s ease-out infinite}
+.task .t{font-family:'Inter',sans-serif;font-size:20px;color:#C8C8D0;font-weight:400;line-height:1.4}
+.task .m{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:1.5px;color:#55555d;margin-top:4px;text-transform:uppercase}
+.task .m .done-c{color:var(--emerald)}.task .m .wip-c{color:var(--amber)}
+
+.feed{display:flex;flex-direction:column;gap:12px}
+.feed-row{display:grid;grid-template-columns:72px 60px 1fr;gap:14px;align-items:baseline;padding:10px 0;border-bottom:1px solid var(--hairline-soft)}
+.feed-row:last-child{border-bottom:0}
+.feed-row .time{font-family:'JetBrains Mono',monospace;font-size:13px;color:#55555d;letter-spacing:1px}
+.feed-row .tag{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2.5px;text-transform:uppercase}
+.feed-row .tag.note{color:var(--amber)}.feed-row .tag.chat{color:#9eb8ff}
+.feed-row .title{font-family:'Inter',sans-serif;font-size:18px;color:#B8B8C0;font-weight:400;line-height:1.35}
+
+.ask{position:absolute;left:56px;right:56px;bottom:56px;display:flex;align-items:center;gap:14px;border-top:1px solid var(--hairline);padding-top:22px}
+.ask .cursor{width:2px;height:28px;background:var(--amber);animation:blink 1.1s steps(1) infinite}
+@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}
+.ask .prompt{flex:1;font-family:'Calistoga',serif;font-size:24px;color:#5a5a63;font-style:italic}
+.ask .mic-hint{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#45454c;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.ask .mic-hint .k{padding:3px 7px;border:1px solid #2a2a32;border-radius:4px;color:#b8b8c0;font-size:10px}
+
+/* ═════════════════════════════════════════════════════════════════
+   VOICE OVERLAY — PTT and Dictation variants
+   ═════════════════════════════════════════════════════════════════ */
+.v-label{position:absolute;top:176px;left:0;right:0;text-align:center;font-family:'Calistoga',serif;font-size:38px;color:#EDEDEF;letter-spacing:-1px}
+.v-label em{color:var(--amber);font-style:italic}
+.v-caption{position:absolute;top:240px;left:0;right:0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:4px;color:#7a7a82;text-transform:uppercase}
+.v-caption .k{color:#c0c0c8}
+
+.waveform{position:absolute;left:0;right:0;bottom:260px;display:flex;justify-content:center;align-items:center;gap:6px;height:90px}
+.waveform .bar{width:6px;background:var(--amber);border-radius:3px;box-shadow:0 0 14px var(--amber-glow)}
+.waveform .bar:nth-child(1){height:30%;animation:wav 1s ease-in-out .00s infinite alternate}
+.waveform .bar:nth-child(2){height:68%;animation:wav .9s ease-in-out .10s infinite alternate}
+.waveform .bar:nth-child(3){height:42%;animation:wav 1.1s ease-in-out .05s infinite alternate}
+.waveform .bar:nth-child(4){height:80%;animation:wav .85s ease-in-out .15s infinite alternate}
+.waveform .bar:nth-child(5){height:55%;animation:wav 1.2s ease-in-out .20s infinite alternate}
+.waveform .bar:nth-child(6){height:36%;animation:wav .95s ease-in-out .08s infinite alternate}
+.waveform .bar:nth-child(7){height:60%;animation:wav 1.05s ease-in-out .18s infinite alternate}
+@keyframes wav{0%{transform:scaleY(.35)}100%{transform:scaleY(1)}}
+
+.v-actions{position:absolute;left:0;right:0;bottom:80px;display:flex;flex-direction:column;align-items:center;gap:18px}
+.v-release{
+  padding:18px 54px;border:1px solid rgba(245,158,11,.35);border-radius:50px;background:rgba(245,158,11,.06);
+  font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:3.5px;color:var(--amber);text-transform:uppercase;
+}
+.v-cancel{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+
+/* Dictation transcript */
+.dict-wrap{position:absolute;left:52px;right:52px;bottom:280px;max-height:420px;overflow:hidden}
+.dict-text{font-family:'Calistoga',serif;font-size:26px;line-height:1.4;color:#B8B8C0;letter-spacing:-.3px}
+.dict-text em{color:var(--amber);font-style:italic}
+.dict-text .cursor{display:inline-block;width:2px;height:28px;background:var(--amber);vertical-align:-5px;margin-left:3px;animation:blink 1.1s steps(1) infinite}
+.dict-timer{position:absolute;top:340px;left:0;right:0;text-align:center;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:4px;color:#55555d;text-transform:uppercase}
+.dict-timer .ring{display:inline-block;position:relative;width:28px;height:28px;vertical-align:-8px;margin-right:8px}
+.dict-timer .ring svg{width:28px;height:28px;transform:rotate(-90deg)}
+.dict-timer .ring .t{fill:none;stroke:rgba(255,255,255,.06);stroke-width:2}
+.dict-timer .ring .f{fill:none;stroke:var(--amber);stroke-width:2;stroke-linecap:round;stroke-dasharray:82;stroke-dashoffset:30}
+
+/* ═════════════════════════════════════════════════════════════════
+   CHAT conversation
+   ═════════════════════════════════════════════════════════════════ */
+.chat-head{position:absolute;top:36px;left:52px;right:52px;display:flex;align-items:center;justify-content:space-between;padding-bottom:24px;border-bottom:1px solid var(--hairline-soft)}
+.chat-head .t{font-family:'Calistoga',serif;font-size:26px;color:#D8D8DC;letter-spacing:-.4px}
+.chat-head .m{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#55555d;text-transform:uppercase;display:flex;align-items:center;gap:8px}
+.chat-head .m::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--emerald);box-shadow:0 0 8px var(--emerald)}
+.chat-back{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3px;color:#6a6a73;text-transform:uppercase}
+
+.chat-body{position:absolute;top:150px;left:52px;right:52px;bottom:190px;display:flex;flex-direction:column;gap:28px;overflow:hidden}
+.msg{display:flex;flex-direction:column;gap:6px}
+.msg.u{align-items:flex-end}
+.msg .who{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+.msg.u .who{color:var(--amber)}
+.msg .t{
+  font-family:'Inter',sans-serif;font-size:22px;line-height:1.45;font-weight:400;color:#D0D0D6;max-width:84%;
+}
+.msg.a .t{border-left:2px solid rgba(245,158,11,.4);padding-left:18px;color:#C0C0C8}
+.msg.u .t{
+  background:linear-gradient(140deg,#FFC75A 0%,#F59E0B 65%,#B9650A);color:#0a0a0a;
+  padding:18px 24px;border-radius:28px 28px 6px 28px;font-weight:500;box-shadow:0 4px 18px rgba(245,158,11,.2);
+}
+
+.tool{display:flex;flex-direction:column;gap:6px;padding:14px 0 14px 18px;border-left:2px solid rgba(245,158,11,.25);position:relative}
+.tool::before{content:"";position:absolute;left:-4px;top:16px;width:7px;height:7px;border-radius:50%;background:var(--amber);box-shadow:0 0 8px var(--amber-glow)}
+.tool .h{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--amber);text-transform:uppercase;display:flex;justify-content:space-between}
+.tool .h .done{color:var(--emerald)}
+.tool .b{font-family:'JetBrains Mono',monospace;font-size:13px;color:#7a7a82;letter-spacing:.5px}
+.tool .r{font-family:'Inter',sans-serif;font-size:14px;color:#8a8a93;margin-top:2px}
+
+/* ═════════════════════════════════════════════════════════════════
+   SESSIONS list
+   ═════════════════════════════════════════════════════════════════ */
+.sess-head{position:absolute;top:36px;left:52px;right:52px;display:flex;align-items:baseline;justify-content:space-between}
+.sess-head .t{font-family:'Calistoga',serif;font-size:44px;color:#E0E0E4;letter-spacing:-1px}
+.sess-head .t em{color:var(--amber);font-style:italic}
+.sess-head .m{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+.sess-list{position:absolute;top:160px;left:0;right:0;bottom:56px;overflow:hidden}
+.sess-row{display:grid;grid-template-columns:80px 1fr 60px;gap:14px;align-items:baseline;padding:22px 52px;border-bottom:1px solid var(--hairline-soft);cursor:pointer}
+.sess-row:hover{background:rgba(245,158,11,.02)}
+.sess-row .time{font-family:'JetBrains Mono',monospace;font-size:13px;color:#55555d;letter-spacing:1px}
+.sess-row .body{display:flex;flex-direction:column;gap:4px}
+.sess-row .body .u{font-family:'Inter',sans-serif;font-size:18px;color:#D0D0D6;font-weight:500;line-height:1.35}
+.sess-row .body .a{font-family:'Inter',sans-serif;font-size:14px;color:#7a7a82;line-height:1.35}
+.sess-row .meta{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:2px;color:#55555d;text-transform:uppercase;text-align:right}
+
+/* ═════════════════════════════════════════════════════════════════
+   NOTES
+   ═════════════════════════════════════════════════════════════════ */
+.note-row{display:grid;grid-template-columns:64px 1fr 80px;gap:14px;align-items:baseline;padding:20px 52px;border-bottom:1px solid var(--hairline-soft);cursor:pointer}
+.note-row .tag{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:2.5px;text-transform:uppercase;align-self:center}
+.note-row .tag.voice{color:var(--amber)}
+.note-row .tag.typed{color:#9eb8ff}
+.note-row .body{display:flex;flex-direction:column;gap:4px}
+.note-row .body .t{font-family:'Inter',sans-serif;font-size:18px;color:#D0D0D6;font-weight:500;line-height:1.35}
+.note-row .body .p{font-family:'Inter',sans-serif;font-size:14px;color:#7a7a82;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.note-row .meta{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:2px;color:#55555d;text-transform:uppercase;text-align:right}
+
+.note-edit .title{position:absolute;top:130px;left:52px;right:52px;font-family:'Calistoga',serif;font-size:40px;color:#E0E0E4;letter-spacing:-.8px;line-height:1.1}
+.note-edit .body{position:absolute;top:230px;left:52px;right:52px;bottom:200px;font-family:'Inter',sans-serif;font-size:20px;color:#B8B8C0;line-height:1.55;font-weight:300}
+.note-edit .body em{color:var(--amber);font-style:italic}
+
+/* ═════════════════════════════════════════════════════════════════
+   AGENTS overlay
+   ═════════════════════════════════════════════════════════════════ */
+.ag-agent{padding:28px 52px;border-bottom:1px solid var(--hairline-soft)}
+.ag-agent .top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
+.ag-agent .top .n{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3.5px;color:var(--amber);text-transform:uppercase;display:flex;align-items:center;gap:10px}
+.ag-agent .top .n::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--rose);box-shadow:0 0 10px var(--rose);animation:node-live 1.8s ease-out infinite}
+.ag-agent.idle .top .n::before{background:var(--dim);box-shadow:none;animation:none}
+.ag-agent.done .top .n::before{background:var(--emerald);box-shadow:0 0 8px rgba(34,197,94,.4);animation:none}
+.ag-agent .top .ts{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2.5px;color:#55555d;text-transform:uppercase}
+.ag-agent .line{font-family:'Calistoga',serif;font-size:24px;line-height:1.35;color:#D0D0D6;letter-spacing:-.3px;margin-bottom:14px}
+.ag-agent .line em{color:var(--amber);font-style:italic}
+.ag-agent.idle .line,.ag-agent.done .line{color:#7a7a82}
+
+/* ═════════════════════════════════════════════════════════════════
+   MEMORY search
+   ═════════════════════════════════════════════════════════════════ */
+.mem-query{position:absolute;top:140px;left:52px;right:52px;display:flex;align-items:baseline;gap:14px;padding-bottom:20px;border-bottom:1px solid var(--hairline)}
+.mem-query .c{width:2px;height:30px;background:var(--amber);animation:blink 1.1s steps(1) infinite;flex-shrink:0}
+.mem-query .q{font-family:'Calistoga',serif;font-size:28px;color:#D0D0D6;letter-spacing:-.4px}
+.mem-query .q .typed{color:#E8E8EA}
+.mem-query .q .ghost{color:#3a3a40;font-style:italic}
+.mem-stats{position:absolute;top:80px;left:52px;right:52px;display:flex;justify-content:space-between;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+.mem-stats em{color:var(--amber);font-style:normal}
+.mem-results{position:absolute;top:240px;left:0;right:0;bottom:56px;overflow:hidden}
+.mem-hit{padding:18px 52px;border-bottom:1px solid var(--hairline-soft)}
+.mem-hit .top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px}
+.mem-hit .top .tag{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:2.5px;color:var(--amber);text-transform:uppercase}
+.mem-hit .top .when{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:2px;color:#55555d;text-transform:uppercase}
+.mem-hit .snip{font-family:'Inter',sans-serif;font-size:16px;color:#A8A8B0;line-height:1.5;font-weight:300}
+.mem-hit .snip mark{color:var(--amber);background:transparent;font-weight:500}
+
+/* ═════════════════════════════════════════════════════════════════
+   SETTINGS
+   ═════════════════════════════════════════════════════════════════ */
+.set-head{position:absolute;top:52px;left:52px;right:52px;display:flex;align-items:baseline;justify-content:space-between}
+.set-head .t{font-family:'Calistoga',serif;font-size:44px;color:#E0E0E4;letter-spacing:-1px}
+.set-head .t em{color:var(--amber);font-style:italic}
+.set-head .m{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+.set-body{position:absolute;top:160px;left:0;right:0;bottom:0;overflow:hidden}
+.set-cat{padding:22px 52px 8px;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:#55555d;text-transform:uppercase}
+.set-row{display:flex;align-items:center;justify-content:space-between;padding:18px 52px;border-bottom:1px solid var(--hairline-soft)}
+.set-row .l{font-family:'Inter',sans-serif;font-size:18px;color:#D0D0D6;font-weight:400}
+.set-row .v{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:2px;color:#7a7a82;text-transform:uppercase;display:flex;align-items:center;gap:10px}
+.set-row .v.on{color:var(--amber)}
+.set-row .v.g{color:var(--emerald)}
+.set-row .v.r{color:var(--red)}
+/* slider */
+.slider{width:120px;height:4px;background:rgba(255,255,255,.05);border-radius:2px;position:relative}
+.slider .f{height:100%;background:var(--amber);border-radius:2px}
+.slider .k{position:absolute;top:-6px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.4)}
+/* toggle */
+.tog{width:44px;height:24px;border-radius:14px;position:relative;background:rgba(255,255,255,.06)}
+.tog.on{background:rgba(245,158,11,.35)}
+.tog .k{position:absolute;top:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .2s}
+.tog .k{left:3px}
+.tog.on .k{left:23px}
+/* mode selector */
+.mode-pick{display:flex;flex-direction:column;gap:6px;padding:12px 52px 20px}
+.mode-opt{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--hairline);border-radius:14px;cursor:pointer}
+.mode-opt.sel{border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.04)}
+.mode-opt .dot{width:14px;height:14px;border-radius:50%}
+.mode-opt.sel .dot{box-shadow:0 0 10px currentColor}
+.mode-opt .name{font-family:'Inter',sans-serif;font-size:18px;color:#D0D0D6;font-weight:500}
+.mode-opt.sel .name{color:var(--amber)}
+.mode-opt .desc{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1.5px;color:#55555d;text-transform:uppercase;margin-left:auto}
+
+/* ═════════════════════════════════════════════════════════════════
+   KEYBOARD — reinvented
+   ═════════════════════════════════════════════════════════════════ */
+.kb-full{
+  display:flex;gap:48px;align-items:flex-start;flex-wrap:wrap;justify-content:center;
+}
+.kb-stage{
+  position:relative;width:720px;height:640px;flex-shrink:0;
+  background:radial-gradient(ellipse at 50% 55%,#0B0B14,#050509);
+  border:2px solid #12121A;border-radius:24px;overflow:hidden;
+}
+/* Host content above the keyboard (sample input) */
+.kb-host{position:absolute;top:36px;left:36px;right:36px;bottom:520px;display:flex;flex-direction:column;gap:14px}
+.kb-host .h{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+.kb-host .t{font-family:'Calistoga',serif;font-size:28px;color:#D0D0D6;line-height:1.3;letter-spacing:-.4px}
+.kb-host .t em{color:var(--amber);font-style:italic}
+
+/* Keyboard panel */
+.kb{position:absolute;left:0;right:0;bottom:0;height:500px;background:#0A0A12;border-top:1px solid var(--hairline);padding:10px 20px 14px}
+.kb .handle{width:48px;height:4px;border-radius:2px;background:#2A2A32;margin:0 auto 8px}
+/* Preview row — shows typed + voice handoff button */
+.kb-preview{display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:14px;background:rgba(245,158,11,.03);border:1px solid rgba(245,158,11,.12);margin-bottom:10px;height:60px}
+.kb-preview .pc{width:2px;height:24px;background:var(--amber);animation:blink 1.1s steps(1) infinite;flex-shrink:0}
+.kb-preview .pt{flex:1;font-family:'Inter',sans-serif;font-size:20px;color:#D0D0D6;font-weight:400;white-space:nowrap;overflow:hidden}
+.kb-preview .pt .g{color:#45454c;font-style:italic}
+.kb-preview .act{
+  width:48px;height:48px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;
+  background:rgba(245,158,11,.1);color:var(--amber);cursor:pointer;
+}
+.kb-preview .act.primary{background:linear-gradient(140deg,#FFC75A,#F59E0B 65%,#B9650A);color:#0a0a0a;box-shadow:0 4px 14px rgba(245,158,11,.25)}
+.kb-preview .act svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2}
+
+/* Key rows */
+.kb-row{display:flex;gap:5px;margin-bottom:6px;justify-content:center}
+.kb-row .key{
+  flex:1;max-width:68px;height:72px;
+  background:#15151D;border:1px solid #1E1E26;border-radius:10px;
+  display:grid;place-items:center;
+  font-family:'Inter',sans-serif;font-size:26px;color:#D8D8DC;font-weight:400;
+  cursor:pointer;
+  transition:background .12s ease, border-color .12s ease, transform .12s ease;
+}
+.kb-row .key:hover{background:#1C1C26;border-color:rgba(245,158,11,.25)}
+.kb-row .key.wide{max-width:130px;flex:1.8}
+.kb-row .key.xwide{max-width:240px;flex:3.5}
+.kb-row .key.shift{background:#181820;color:#9A9AA3;font-size:18px;letter-spacing:1px}
+.kb-row .key.shift.on{background:rgba(245,158,11,.14);color:var(--amber);border-color:rgba(245,158,11,.3)}
+.kb-row .key.action{background:linear-gradient(140deg,#FFC75A,#F59E0B 65%,#B9650A);color:#0a0a0a;font-weight:600;font-size:18px;letter-spacing:2px;box-shadow:0 4px 12px rgba(245,158,11,.22)}
+.kb-row .key.pressed{background:rgba(245,158,11,.18);border-color:rgba(245,158,11,.55);transform:translateY(1px)}
+.kb-row .key .sub{position:absolute;top:6px;right:7px;font-family:'JetBrains Mono',monospace;font-size:9px;color:#55555d;letter-spacing:.5px}
+.kb-row .key{position:relative}
+
+/* Anatomy annotations */
+.kb-annos{flex:1;min-width:340px;max-width:440px;display:flex;flex-direction:column;gap:20px;font-family:'Inter',sans-serif;font-size:14px;color:#8A8A93;font-weight:300;line-height:1.6}
+.kb-annos .row{display:flex;gap:14px;align-items:flex-start}
+.kb-annos .idx{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2.5px;color:var(--amber);text-transform:uppercase;flex-shrink:0;width:40px;padding-top:2px}
+.kb-annos .row b{color:#E0E0E4;font-weight:500}
+.kb-annos .row em{color:var(--amber);font-style:italic}
+.kb-annos .tech{margin-top:10px;padding:12px 16px;background:rgba(245,158,11,.04);border:1px solid rgba(245,158,11,.14);border-radius:10px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#9a9aa3;line-height:1.7}
+.kb-annos .tech b{color:var(--amber);font-weight:500}
+
+/* ═════════════════════════════════════════════════════════════════
+   ONBOARDING — 5 tiny screens in a row
+   ═════════════════════════════════════════════════════════════════ */
+.ob-grid{display:flex;gap:24px;justify-content:center;flex-wrap:wrap}
+.ob-progress{position:absolute;bottom:56px;left:52px;right:52px;display:flex;gap:6px}
+.ob-progress i{flex:1;height:2px;background:rgba(255,255,255,.04);border-radius:1px}
+.ob-progress i.on{background:var(--amber)}
+.ob-title{position:absolute;top:320px;left:52px;right:52px;text-align:center;font-family:'Calistoga',serif;font-size:44px;line-height:1.05;letter-spacing:-1px;color:#EDEDEF}
+.ob-title em{color:var(--amber);font-style:italic}
+.ob-sub{position:absolute;top:520px;left:52px;right:52px;text-align:center;font-family:'Inter',sans-serif;font-size:18px;color:#8a8a93;line-height:1.5;font-weight:300}
+.ob-step{position:absolute;top:90px;left:52px;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:4px;color:var(--amber);text-transform:uppercase}
+.ob-cta{position:absolute;bottom:130px;left:52px;right:52px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:3px;color:var(--amber);text-transform:uppercase;padding:16px;border:1px solid rgba(245,158,11,.35);border-radius:16px;background:rgba(245,158,11,.04)}
+
+/* ─────────── layout helpers ─────────── */
+.row{display:flex;gap:40px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+.notes{max-width:340px;font-size:14px;color:#888;line-height:1.7;font-weight:300}
+.notes h4{font-family:'Calistoga',serif;font-size:24px;color:var(--text);letter-spacing:-.5px;margin-bottom:10px}
+.notes ul{list-style:none;display:flex;flex-direction:column;gap:12px;margin-top:10px}
+.notes li{padding-left:20px;position:relative}
+.notes li::before{content:"";position:absolute;left:0;top:10px;width:12px;height:1px;background:var(--amber)}
+.notes li b{color:#E0E0E4;font-weight:500}
+.notes li em{color:var(--amber);font-style:italic}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     HERO
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="hero">
+  <div class="kicker">V5 · Zero Interface · the system</div>
+  <h1>Every screen, <em>every state</em>.</h1>
+  <p class="deck">One design language applied to the whole device. No more card-stack pretending to be a phone. <b>The orb is the protagonist</b>; typography and hairlines carry hierarchy; the keyboard earns its space. This doc is the spec.</p>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 01 — ORB STATES
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">01 · THE ORB</div>
+    <h2 class="sec-title"><em>One object,</em> many meanings.</h2>
+    <p class="sec-deck">The orb tells you the <b>mode</b> (by hue), the <b>state</b> (by motion + ripple), and <b>presence</b> (by size). There is no chip, no badge, no "status indicator." The orb IS the indicator.</p>
+  </div>
+
+  <!-- Modes -->
+  <div class="sec-deck" style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:4px;color:#55555d;text-transform:uppercase;margin-top:12px">MODE · TINT · LONG-PRESS ORB TO CYCLE</div>
+  <div class="orb-grid">
+    <div class="orb-tile mode-tile local">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo" style="background:radial-gradient(circle,rgba(34,197,94,.22),rgba(245,158,11,.04) 40%,transparent 72%)"></div><div class="orb local"></div></div></div>
+      <div class="name"><em>Local</em></div>
+      <div class="desc">MOONSHINE · NPU · PIPER<br>2-5S · FREE · OFFLINE</div>
+    </div>
+    <div class="orb-tile mode-tile hybrid">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb hybrid"></div></div></div>
+      <div class="name"><em>Hybrid</em></div>
+      <div class="desc">GPT-AUDIO · LOCAL LLM<br>4-8S · ~$0.02</div>
+    </div>
+    <div class="orb-tile mode-tile cloud">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo" style="background:radial-gradient(circle,rgba(59,130,246,.22),rgba(245,158,11,.04) 40%,transparent 72%)"></div><div class="orb cloud"></div></div></div>
+      <div class="name"><em>Cloud</em></div>
+      <div class="desc">CLAUDE / GPT-4O<br>3-6S · $0.03-0.08</div>
+    </div>
+    <div class="orb-tile mode-tile claw">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo" style="background:radial-gradient(circle,rgba(244,63,94,.22),rgba(245,158,11,.04) 40%,transparent 72%)"></div><div class="orb claw"></div></div></div>
+      <div class="name"><em>TinkerClaw</em></div>
+      <div class="desc">AGENTS · MEMORY · TOOLS<br>KILLER MODE</div>
+    </div>
+  </div>
+
+  <!-- States -->
+  <div class="sec-deck" style="font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:4px;color:#55555d;text-transform:uppercase;margin-top:28px">STATE · MOTION · WHAT IT MEANS</div>
+  <div class="orb-grid">
+    <div class="orb-tile">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb hybrid"></div></div></div>
+      <div class="name"><em>Idle</em></div>
+      <div class="desc">SLOW FLOAT · HALO BREATH<br>"HERE, WAITING"</div>
+    </div>
+    <div class="orb-tile">
+      <div class="orb-mini">
+        <div class="orb-stage">
+          <div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+          <div class="orb-halo" style="background:radial-gradient(circle,rgba(245,158,11,.4),transparent 70%)"></div>
+          <div class="orb hybrid"></div>
+          <div class="orb-ripple r1"></div><div class="orb-ripple r2"></div><div class="orb-ripple r3"></div>
+        </div>
+      </div>
+      <div class="name"><em>Listening</em></div>
+      <div class="desc">CONCENTRIC RIPPLES<br>"TAKING IT IN"</div>
+    </div>
+    <div class="orb-tile">
+      <div class="orb-mini"><div class="orb-stage" style="animation:spin 4s linear infinite"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb hybrid"></div></div></div>
+      <div class="name"><em>Processing</em></div>
+      <div class="desc">SLOW 360° ROTATION<br>"THINKING"</div>
+    </div>
+    <div class="orb-tile">
+      <div class="orb-mini">
+        <div class="orb-stage" style="animation:orb-float 1.6s ease-in-out infinite">
+          <div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+          <div class="orb-halo" style="animation:halo 1.4s ease-in-out infinite alternate"></div>
+          <div class="orb hybrid"></div>
+        </div>
+      </div>
+      <div class="name"><em>Speaking</em></div>
+      <div class="desc">FAST BREATH · TTS-SYNC<br>"TELLING YOU"</div>
+    </div>
+
+    <div class="orb-tile">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo" style="background:radial-gradient(circle,rgba(255,255,255,.04),transparent 60%)"></div><div class="orb muted"></div><div style="position:absolute;inset:22%;border:2px solid rgba(239,68,68,.65);border-radius:50%;transform:rotate(-45deg)"></div><div style="position:absolute;left:50%;top:50%;width:70%;height:3px;background:rgba(239,68,68,.75);transform:translate(-50%,-50%) rotate(-45deg);border-radius:2px"></div></div></div>
+      <div class="name"><em>Muted</em></div>
+      <div class="desc">GREY · NO MOTION · SLASH<br>"MIC OFF, I CAN'T HEAR"</div>
+    </div>
+    <div class="orb-tile">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo" style="opacity:.3"></div><div class="orb quiet"></div></div></div>
+      <div class="name"><em>Quiet hours</em></div>
+      <div class="desc">55% OPACITY · SLOW FLOAT<br>"WON'T SPEAK UNTIL 7 AM"</div>
+    </div>
+    <div class="orb-tile">
+      <div class="orb-mini"><div class="orb-stage"><div class="orb-ring r3" style="border-color:rgba(239,68,68,.1)"></div><div class="orb-ring r2" style="border-color:rgba(239,68,68,.06)"></div><div class="orb-ring r1" style="border-color:rgba(239,68,68,.14)"></div><div class="orb-halo" style="background:radial-gradient(circle,rgba(239,68,68,.3),transparent 72%)"></div><div class="orb error"></div></div></div>
+      <div class="name"><em>Error</em></div>
+      <div class="desc">ROSE · STILL · NO HALO<br>"SOMETHING'S WRONG"</div>
+    </div>
+    <div class="orb-tile">
+      <div class="orb-mini" style="opacity:.2"><div class="orb-stage"><div class="orb-halo" style="opacity:.2"></div><div class="orb hybrid" style="animation:none"></div></div></div>
+      <div class="name"><em>Sleep</em></div>
+      <div class="desc">20% OPACITY · STILL<br>TAP SCREEN TO WAKE</div>
+    </div>
+  </div>
+</div>
+
+<style>@keyframes spin{to{transform:translate(-50%,-50%) rotate(360deg)}}</style>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 02 — HOME (ambient + focus)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">02 · HOME</div>
+    <h2 class="sec-title">Ambient <em>and focus.</em></h2>
+    <p class="sec-deck">At rest, a <b>composition</b> — orb + a word for the time + one line about what just happened. Engaged, the orb pins to the corner and the agent speaks in first person. No nav bar. No cards. No pill.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>AMBIENT · <span class="em">glanced-at</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="edge l"></div><div class="edge r"></div>
+        <div class="sys"><span class="pulse"></span><span>DRAGON · 14:32</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="hero-text"><div class="part">Afternoon</div><div class="clock">14 <span class="now">:</span> 32</div><div class="date">WEDNESDAY · APRIL 16</div></div>
+        <div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb claw"></div></div>
+        <div class="stream">
+          <div class="node done" style="top:6%"></div><div class="label" style="top:6%"><span class="k">INBOX</span> · 3 FOUND</div>
+          <div class="node live" style="top:50%"></div><div class="label" style="top:50%"><span class="k">REPLY · AISHA</span> · <span class="pct">70%</span></div>
+          <div class="node" style="top:94%;background:rgba(245,158,11,.3)"></div><div class="label" style="top:94%;color:#45454c"><span style="color:#7a7a82">DIGEST</span> · QUEUED</div>
+        </div>
+        <div class="poem"><em>Earlier —</em> you asked about AirPods.<br>I saved the thread.<span class="tiny">TWO EVENTS · TAP TO FOCUS</span></div>
+        <div class="hint"><span>FOCUS</span><div class="chev"></div></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d rose"></span>FOCUS · <span class="em">tap-engaged</span></div>
+      <div class="stage"><div class="frame focus"><div class="screen">
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="sys"><span class="pulse"></span><span>14:32 · 87%</span></div>
+        <div class="orb-stage"><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb claw"></div></div>
+        <div class="focus-body">
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div class="sec-h">HEARTBEAT <span class="live">2 MIN LIVE</span></div>
+            <div class="agent-line">I scanned your inbox — <em>three replies</em> were waiting. <span class="soft">Drafting one to Aisha now; the digest is queued.</span></div>
+            <div class="task-stream">
+              <div class="task done"><div class="t">Inbox scanned</div><div class="m"><span class="done-c">3 FOUND</span> · 234MS</div></div>
+              <div class="task wip"><div class="t">Drafting reply to Aisha</div><div class="m"><span class="wip-c">70% · 1.2KB</span></div></div>
+              <div class="task"><div class="t">News digest</div><div class="m">QUEUED · ETA 60S</div></div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:14px">
+            <div class="sec-h">EARLIER TODAY</div>
+            <div class="feed">
+              <div class="feed-row"><span class="time">11:42</span><span class="tag note">NOTE</span><span class="title">TinkerClaw roadmap — Phase 2 outline</span></div>
+              <div class="feed-row"><span class="time">10:15</span><span class="tag chat">CHAT</span><span class="title">AirPods vs Sony XM5 — Sonnet</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="ask"><div class="cursor"></div><div class="prompt">say something…</div><div class="mic-hint"><span class="k">⌨</span><span>or type</span></div></div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 02c — FLAT: the performance-safest variant
+     ═══════════════════════════════════════════════════════════════ -->
+<style>
+  /* FLAT orb — no radial gradient, no halo, no pulses, no specular.
+     Only LVGL primitives: single lv_obj circle + 2-stop LINEAR gradient + float anim.
+     Everything renders native with no pre-baked images. */
+  .orb.flat{
+    background:linear-gradient(180deg,#FFB637 0%,#F59E0B 55%,#B9650A 100%);
+    box-shadow:none;
+    animation:orb-float 6s ease-in-out infinite;
+  }
+  .orb.flat::before,.orb.flat::after{display:none}
+  .orb.flat.local{background:linear-gradient(180deg,#7DE69F 0%,#22C55E 55%,#166C3A 100%)}
+  .orb.flat.cloud{background:linear-gradient(180deg,#9AC0F9 0%,#3B82F6 55%,#1D3A78 100%)}
+  .orb.flat.claw{background:linear-gradient(180deg,#FF7E95 0%,#F43F5E 55%,#7A1428 100%)}
+</style>
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">02c · FLAT DENSITY</div>
+    <h2 class="sec-title">Flat — <em>the cheapest.</em></h2>
+    <p class="sec-deck">Same composition, <b>zero fancy rendering</b>. Orb is a single <code>lv_obj</code> circle with a 2-stop linear gradient (native LVGL — no pre-baked image, no radial). No halo, no concentric rings, no inner pulse, no specular highlight. Only animation is a ±3 px Y float on a 6 s ease curve — <b>cheaper than the clock ticking</b>. Runs comfortably on ESP32-S3 / C3 / ESP32 plain, let alone the P4.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>FLAT · <span class="em">maximum headroom</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="edge l"></div><div class="edge r"></div>
+        <div class="sys"><span class="pulse"></span><span>DRAGON · 14:32</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="hero-text"><div class="part">Afternoon</div><div class="clock">14 <span class="now">:</span> 32</div><div class="date">WEDNESDAY · APRIL 16</div></div>
+        <div class="orb-stage"><div class="orb flat claw"></div></div>
+        <div class="poem"><em>Earlier —</em> you asked about AirPods.<br>I saved the thread.<span class="tiny">TWO EVENTS · TAP TO FOCUS</span></div>
+        <div class="hint"><span>FOCUS</span><div class="chev"></div></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>MINIMAL · <span class="em">for comparison</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="edge l"></div><div class="edge r"></div>
+        <div class="sys"><span class="pulse"></span><span>DRAGON · 14:32</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="hero-text"><div class="part">Afternoon</div><div class="clock">14 <span class="now">:</span> 32</div><div class="date">WEDNESDAY · APRIL 16</div></div>
+        <div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb claw"></div></div>
+        <div class="poem"><em>Earlier —</em> you asked about AirPods.<br>I saved the thread.<span class="tiny">TWO EVENTS · TAP TO FOCUS</span></div>
+        <div class="hint"><span>FOCUS</span><div class="chev"></div></div>
+      </div></div></div>
+    </div>
+
+  </div>
+
+  <!-- Hardware reality check -->
+  <div class="row" style="gap:40px;margin-top:20px">
+    <div class="notes" style="max-width:100%;width:100%">
+      <h4>What runs smoothly on ESP32-P4 @ 360 MHz · LVGL 36 FPS · PARTIAL render · 144 KB draw buffers</h4>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#9a9aa3;line-height:1.85;margin-top:12px;background:rgba(245,158,11,.04);border:1px solid rgba(245,158,11,.15);border-radius:12px;padding:20px 24px">
+        <div style="color:#22C55E;font-weight:500;margin-bottom:8px">▸ CHEAP — native LVGL, no special tricks</div>
+        · Solid-fill rectangles &amp; circles (any size)<br>
+        · <b>2-stop LINEAR gradient</b> (bg_color → bg_grad_color)<br>
+        · Borders, rounded corners, opacity<br>
+        · Text labels (Montserrat) at any size<br>
+        · Single-color <b>shadow_width ≤ 20</b> (small glow under the orb)<br>
+        · lv_anim on x/y/width/opa/rotate<br>
+        · Hairline rects (1 px separators)<br>
+        · Partial-redraw regions when only the orb bobs (~2000 px/frame)<br><br>
+
+        <div style="color:#F59E0B;font-weight:500;margin:8px 0">▸ FEASIBLE BUT NEEDS CARE</div>
+        · <b>Radial gradient on the orb</b> — LVGL doesn't support radial natively. Must <b>pre-bake a 512×512 PNG</b> (decoded once into PSRAM ≈ 512 KB) and render as lv_image. One-time cost, zero per-frame work.<br>
+        · <b>Halo</b> — same trick (pre-baked 720×720 amber PNG with transparent edges).<br>
+        · <b>Inner pulse / specular</b> — pre-baked OR skip entirely (they're the smallest visual win for the biggest cost).<br>
+        · <b>Big soft shadow</b> (shadow_width &gt; 30) — measurable frame-time hit during animation. Use <b>small shadow + pre-baked halo image</b> instead.<br><br>
+
+        <div style="color:#EF4444;font-weight:500;margin:8px 0">▸ AVOID</div>
+        · Live radial gradients (not supported — would need lv_canvas pixel writes per frame)<br>
+        · <b>3 concentric ripples animating simultaneously</b> on the Listening state — stagger to 1 at a time or skip on FLAT density<br>
+        · Blur / backdrop-filter / text-shadow (LVGL can't)<br>
+        · Animating <b>width/height</b> on large objects (triggers full redraw); animate <b>transform</b> instead<br>
+        · Simultaneous animations on more than 2 elements per view (our own rule — <code>excessive-motion</code>)
+      </div>
+
+      <h4 style="margin-top:28px">Honest verdict per density</h4>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-top:12px">
+        <div style="padding:18px 20px;border:1px solid rgba(34,197,94,.25);border-radius:14px;background:rgba(34,197,94,.03)">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--emerald);text-transform:uppercase;margin-bottom:6px">FLAT · always fast</div>
+          <div style="color:#c0c0c8;font-size:15px;line-height:1.5">All native LVGL primitives. <b>36+ FPS guaranteed</b> with 20 ms/frame headroom to spare. Runs on lesser chips too — S3, C3, plain ESP32.</div>
+        </div>
+        <div style="padding:18px 20px;border:1px solid rgba(245,158,11,.25);border-radius:14px;background:rgba(245,158,11,.03)">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--amber);text-transform:uppercase;margin-bottom:6px">MINIMAL · 3 pre-baked images</div>
+          <div style="color:#c0c0c8;font-size:15px;line-height:1.5">Orb face + halo + specular decoded from PNG at boot (~1.2 MB PSRAM). Float + halo-breath only. <b>Holds 36 FPS on P4</b>, confirmed by the current build's counter. Small device risk: none.</div>
+        </div>
+        <div style="padding:18px 20px;border:1px solid rgba(244,63,94,.25);border-radius:14px;background:rgba(244,63,94,.03)">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--rose);text-transform:uppercase;margin-bottom:6px">HARDCORE · same as Minimal</div>
+          <div style="color:#c0c0c8;font-size:15px;line-height:1.5">Extra telemetry strips are just text labels with periodic updates (10 Hz). <b>Negligible cost</b>. The mini RMS graph is 12 thin rects with width/opacity anim — cheap. <b>Stays at 36 FPS</b>.</div>
+        </div>
+      </div>
+
+      <h4 style="margin-top:28px">Voice states — where we spend the budget</h4>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#9a9aa3;line-height:1.85;margin-top:10px">
+        <b style="color:var(--amber)">Listening ripples</b> — 3 concentric circles growing + fading simultaneously. On FLAT density we show <b>1 ripple at a time</b> (staggered 800 ms). On Minimal/Hardcore, the full 3-ripple effect with a pre-baked halo pulse.<br>
+        <b style="color:var(--amber)">Processing rotation</b> — lv_anim on <code>transform_angle</code> of a pre-baked ring image. Cheap.<br>
+        <b style="color:var(--amber)">Speaking TTS-sync</b> — animate shadow_opa 160 ↔ 220 at the mic RMS rate. One property, one object. Cheap even on P4.<br>
+        <b style="color:var(--amber)">Quiet hours</b> — static. Just <code>lv_obj_set_style_opa(orb, 140, 0)</code>. Free.
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 02b — DENSITY: MINIMAL vs HARDCORE
+     ═══════════════════════════════════════════════════════════════ -->
+<style>
+  /* Hardcore variant — telemetry strip on top, always-visible stream, quiet-mode mini-graph */
+  .hc-tele{
+    position:absolute;top:0;left:0;right:0;height:52px;
+    display:grid;grid-template-columns:auto 1fr auto auto auto auto;gap:18px;align-items:center;
+    padding:0 32px;border-bottom:1px solid var(--hairline-soft);
+    font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:2px;color:#55555d;text-transform:uppercase;
+  }
+  .hc-tele .cell{display:flex;align-items:center;gap:8px}
+  .hc-tele .k{color:#3f3f48}
+  .hc-tele .v{color:#d0d0d8}
+  .hc-tele .chip{padding:3px 8px;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.22);color:var(--rose);border-radius:3px;letter-spacing:2.5px}
+  .hc-tele .chip .sq{display:inline-block;width:6px;height:6px;background:var(--rose);margin-right:6px;box-shadow:0 0 6px var(--rose);vertical-align:1px}
+  .hc-tele .ok{color:var(--emerald)}
+  .hc-tele .bat{color:var(--amber)}
+  .hc-graph{position:absolute;right:32px;top:72px;display:flex;gap:2px;align-items:flex-end;height:28px;opacity:.85}
+  .hc-graph .bar{width:3px;background:var(--amber);opacity:.5;border-radius:1px}
+  .hc-footer{
+    position:absolute;left:32px;right:32px;bottom:28px;
+    display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1.8px;color:#4a4a52;text-transform:uppercase;
+    border-top:1px solid var(--hairline-soft);padding-top:14px;
+  }
+  .hc-footer .cell{display:flex;flex-direction:column;gap:2px}
+  .hc-footer .cell .n{color:#8a8a93}
+  .hc-footer .cell .p{color:var(--amber);font-size:10px;letter-spacing:1px}
+</style>
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">02b · DENSITY</div>
+    <h2 class="sec-title">Minimal <em>or Hardcore.</em></h2>
+    <p class="sec-deck">The same home, two intensities. <b>Minimal</b> is what you've seen — a composition. <b>Hardcore</b> layers telemetry back on: top status strip, persistent mic/heap graph, a footer with agent metrics. For the r/selfhosted crowd who want to <em>see</em> their tools work. Toggle in Settings · DENSITY.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>MINIMAL · <span class="em">ambient, quiet</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="edge l"></div><div class="edge r"></div>
+        <div class="sys"><span class="pulse"></span><span>DRAGON · 14:32</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="hero-text"><div class="part">Afternoon</div><div class="clock">14 <span class="now">:</span> 32</div><div class="date">WEDNESDAY · APRIL 16</div></div>
+        <div class="orb-stage"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb claw"></div></div>
+        <div class="poem"><em>Earlier —</em> you asked about AirPods.<br>I saved the thread.<span class="tiny">TWO EVENTS · TAP TO FOCUS</span></div>
+        <div class="hint"><span>FOCUS</span><div class="chev"></div></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>HARDCORE · <span class="em">ambient, instrumented</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <!-- Telemetry strip on top -->
+        <div class="hc-tele">
+          <div class="cell chip"><span class="sq"></span>CLAW</div>
+          <div class="cell"><span class="k">DRAGON</span><span class="v ok">LINK · 12MS</span></div>
+          <div class="cell"><span class="k">WIFI</span><span class="v">-48DBM</span></div>
+          <div class="cell"><span class="k">HEAP</span><span class="v">11K / 23K</span></div>
+          <div class="cell"><span class="k">BAT</span><span class="v bat">87%</span></div>
+          <div class="cell"><span class="k">UP</span><span class="v">66M</span></div>
+        </div>
+        <!-- Mini RMS / activity graph -->
+        <div class="hc-graph">
+          <div class="bar" style="height:30%"></div><div class="bar" style="height:62%;opacity:.7"></div>
+          <div class="bar" style="height:45%"></div><div class="bar" style="height:80%;opacity:.9"></div>
+          <div class="bar" style="height:38%"></div><div class="bar" style="height:55%;opacity:.7"></div>
+          <div class="bar" style="height:70%;opacity:.8"></div><div class="bar" style="height:42%"></div>
+          <div class="bar" style="height:58%;opacity:.9"></div><div class="bar" style="height:33%"></div>
+          <div class="bar" style="height:68%"></div><div class="bar" style="height:48%;opacity:.8"></div>
+        </div>
+        <!-- Hero shifts down slightly to accommodate the strip -->
+        <div class="hero-text" style="top:134px"><div class="part" style="font-size:76px">Afternoon</div><div class="clock" style="margin-top:12px">14 <span class="now">:</span> 32</div><div class="date">WEDNESDAY · APRIL 16 · WEEK 16</div></div>
+        <div class="orb-stage" style="top:52%;width:440px;height:440px">
+          <div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+          <div class="orb-halo" style="inset:-120px"></div>
+          <div class="orb claw"></div>
+        </div>
+        <!-- Persistent stream (doesn't hide when idle) -->
+        <div class="stream" style="top:280px;height:640px">
+          <div class="node done" style="top:4%"></div><div class="label" style="top:4%"><span class="k">INBOX</span> · 3 FOUND · 234MS</div>
+          <div class="node live" style="top:34%"></div><div class="label" style="top:34%"><span class="k">REPLY · AISHA</span> · <span class="pct">70%</span> · 1.2KB</div>
+          <div class="node" style="top:64%;background:rgba(245,158,11,.3)"></div><div class="label" style="top:64%;color:#7a7a82"><span style="color:#c0c0c8">DIGEST</span> · QUEUE · ETA 60S</div>
+          <div class="node" style="top:94%;background:rgba(245,158,11,.18)"></div><div class="label" style="top:94%;color:#5a5a63"><span style="color:#8a8a93">MEMORY</span> · IDLE · 12,340 ITEMS</div>
+        </div>
+        <!-- Footer telemetry -->
+        <div class="hc-footer">
+          <div class="cell"><span class="n">LLM</span><span>OLLAMA / QWEN3:1.7B</span><span class="p">7.1 TOK/S</span></div>
+          <div class="cell"><span class="n">SESSION</span><span>s:a3f91c · 14 MSG</span><span class="p">CTX 4.2K / 32K</span></div>
+          <div class="cell"><span class="n">FPS</span><span>LVGL 36 · FLUSH 8MS</span><span class="p">DMA OK</span></div>
+        </div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 03 — VOICE OVERLAY (PTT + DICTATION)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">03 · VOICE</div>
+    <h2 class="sec-title">Press <em>or dictate.</em></h2>
+    <p class="sec-deck">The orb doesn't just show state — it <b>responds</b> to your voice. Push-to-talk grows a ripple. Dictation mode unrolls your words as you say them, in the same serif as the hero, with a 5-second silence ring that closes to stop.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>PTT · <span class="em">listening</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="sys"><span class="pulse"></span><span>MIC · 16KHZ · 48DB</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="v-label">I'm <em>here.</em> Go.</div>
+        <div class="v-caption">LISTENING · <span class="k">HOLD TO TALK</span></div>
+        <div class="orb-stage" style="top:50%">
+          <div class="orb-halo" style="background:radial-gradient(circle,rgba(245,158,11,.4),transparent 72%)"></div>
+          <div class="orb claw"></div>
+          <div class="orb-ripple r1"></div><div class="orb-ripple r2"></div><div class="orb-ripple r3"></div>
+        </div>
+        <div class="waveform"><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>
+        <div class="v-actions">
+          <div class="v-release">RELEASE TO SEND</div>
+          <div class="v-cancel">SWIPE DOWN · CANCEL</div>
+        </div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>DICTATION · <span class="em">unrolling</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="sys"><span class="pulse"></span><span>DICTATE · 01:34</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="dict-timer"><div class="ring"><svg viewBox="0 0 28 28"><circle class="t" cx="14" cy="14" r="13"/><circle class="f" cx="14" cy="14" r="13"/></svg></div>SILENCE · 2.4S / 5.0S</div>
+        <div class="orb-stage" style="top:52%;width:320px;height:320px">
+          <div class="orb-halo" style="inset:-80px;background:radial-gradient(circle,rgba(245,158,11,.35),transparent 72%)"></div>
+          <div class="orb claw"></div>
+          <div class="orb-ripple r1"></div><div class="orb-ripple r2"></div>
+        </div>
+        <div class="dict-wrap">
+          <div class="dict-text">"…and make sure the <em>morning digest</em> only includes things from self-hosted feeds, not the Hacker News front page. Also remind me to check on the OTA endpoint before Thursday<span class="cursor"></span>"</div>
+        </div>
+        <div class="v-actions">
+          <div class="v-release">TAP · STOP</div>
+          <div class="v-cancel">SWIPE DOWN · CANCEL</div>
+        </div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 04 — CHAT (conversation + sessions list)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">04 · CHAT</div>
+    <h2 class="sec-title">A <em>letter,</em> not a card stack.</h2>
+    <p class="sec-deck">AI messages have no bubble — they're indented body text behind a thin amber rule, so the conversation reads like a letter. User messages are the only "card" — amber pill, black text. Tool calls are hairline-bordered paragraphs, not widgets.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>CONVERSATION · <span class="em">ongoing</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="chat-head">
+          <span class="chat-back">← HOME</span>
+          <div class="t">AirPods vs XM5</div>
+          <div class="m">READY</div>
+        </div>
+        <div class="chat-body">
+          <div class="msg u"><div class="who">YOU · 10:15</div><div class="t">Compare AirPods Pro 2 vs Sony XM5 — which for calls?</div></div>
+          <div class="msg a"><div class="who">TINKER · CLAUDE SONNET</div><div class="t">Both are excellent, but for calls specifically the <b>XM5</b> wins: its dual-beamforming mic reads vocals about 3dB cleaner in wind. AirPods Pro 2 has tighter latency and ecosystem glue.</div></div>
+          <div class="tool">
+            <div class="h"><span>◆ WEB_SEARCH</span><span class="done">✓ 234MS</span></div>
+            <div class="b">"airpods pro 2 vs sony xm5 call quality"</div>
+            <div class="r">8 results · rtings.com, soundguys.com, the verge</div>
+          </div>
+          <div class="msg u"><div class="who">YOU · 10:16</div><div class="t">remember I'm looking at these for work calls</div></div>
+          <div class="msg a"><div class="who">TINKER</div><div class="t">Noted. I'll weight work-call comfort higher next time we talk headphones.</div></div>
+        </div>
+        <div class="ask"><div class="cursor"></div><div class="prompt">reply…</div><div class="mic-hint"><span class="k">⌨</span><span>or type</span></div></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>SESSIONS · <span class="em">browse past chats</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="sess-head"><div class="t"><em>Conversations</em></div><div class="m">12 · 4.2MB</div></div>
+        <div class="sess-list">
+          <div class="sess-row"><span class="time">10:15</span><div class="body"><div class="u">AirPods vs XM5</div><div class="a">Both excellent, but XM5 wins for calls…</div></div><div class="meta">8 MSG<br>SONNET</div></div>
+          <div class="sess-row"><span class="time">YEST<br>19:04</span><div class="body"><div class="u">Debug LVGL crash</div><div class="a">Circle cache overflow — try CACHE_SIZE=32…</div></div><div class="meta">14 MSG<br>CLAW</div></div>
+          <div class="sess-row"><span class="time">YEST<br>11:20</span><div class="body"><div class="u">Lunch ideas (no rice)</div><div class="a">How about a protein bowl with roasted chickpeas…</div></div><div class="meta">3 MSG<br>LOCAL</div></div>
+          <div class="sess-row"><span class="time">APR 14<br>16:02</span><div class="body"><div class="u">Meeting prep — OKR review</div><div class="a">Here's what I'd bring up: Q2 carry-overs, the hiring freeze…</div></div><div class="meta">22 MSG<br>CLAW</div></div>
+          <div class="sess-row"><span class="time">APR 14<br>08:11</span><div class="body"><div class="u">Morning digest</div><div class="a">3 items: Ollama 0.6, LocalAI hot-swap, and a WWDC rumor</div></div><div class="meta">4 MSG<br>HYBRID</div></div>
+          <div class="sess-row"><span class="time">APR 13<br>22:40</span><div class="body"><div class="u">ESP32-P4 BSS debug</div><div class="a">Idle task stack + static arrays = the 2KB crunch…</div></div><div class="meta">17 MSG<br>CLAW</div></div>
+        </div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 05 — NOTES (list + edit)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">05 · NOTES</div>
+    <h2 class="sec-title">Written <em>or spoken.</em></h2>
+    <p class="sec-deck">Same hairline-rhythm as chat. No card surfaces. Voice notes and typed notes sit together with a tiny mono tag. The editor is mostly <b>paper</b>: big serif title, quiet body text, a voice-dictation escape hatch.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>LIST · <span class="em">all notes</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="sess-head"><div class="t"><em>Notes</em></div><div class="m">24 · 1.8MB</div></div>
+        <div class="sess-list">
+          <div class="note-row"><span class="tag voice">VOICE</span><div class="body"><div class="t">TinkerClaw roadmap — Phase 2</div><div class="p">Wake word first, then SDL2 simulator so iteration is fast. OPUS can wait — the bottleneck is not bandwidth, it's the idle task stack…</div></div><span class="meta">847W<br>11:42</span></div>
+          <div class="note-row"><span class="tag typed">TYPED</span><div class="body"><div class="t">Grocery list</div><div class="p">Eggs, milk, bread, avocados, chicken thighs, rice, sriracha, chickpeas, scallions</div></div><span class="meta">42W<br>YEST</span></div>
+          <div class="note-row"><span class="tag voice">VOICE</span><div class="body"><div class="t">Book recommendations from Gabe</div><div class="p">"Designing Data-Intensive Applications" is the canonical one. Also Staff Engineer's Path, Working in Public…</div></div><span class="meta">234W<br>APR 14</span></div>
+          <div class="note-row"><span class="tag voice">VOICE</span><div class="body"><div class="t">Standup prep</div><div class="p">Yesterday: shipped the rich media chat update. Today: wake word debugging. Blockers: Espressif custom model ETA…</div></div><span class="meta">156W<br>APR 14</span></div>
+          <div class="note-row"><span class="tag typed">TYPED</span><div class="body"><div class="t">Dragon service dependencies</div><div class="p">systemd units that must stay alive: tinkerclaw-voice, -gateway, -dashboard, -ngrok. All others masked.</div></div><span class="meta">84W<br>APR 13</span></div>
+        </div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>EDITOR · <span class="em">compose</span></div>
+      <div class="stage"><div class="frame"><div class="screen note-edit">
+        <div class="sys"><span class="pulse"></span><span>NOTES · SAVED 2S AGO</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="title">TinkerClaw roadmap — <em>Phase 2</em></div>
+        <div class="body">Wake word <em>first</em>, then the SDL2 simulator so iteration is fast. OPUS can wait — the bottleneck isn't bandwidth, it's the idle task stack. Three things to try this week:
+        <br><br>— Tone test to figure out which TDM slot the AEC is referencing.<br>— Ask Espressif for a custom "Hey Tinker" WakeNet model.<br>— Get the desktop sim building so we don't have to flash for every UI tweak.</div>
+        <div class="ask"><div class="cursor"></div><div class="prompt">continue…</div><div class="mic-hint"><span class="k">🎤</span><span>dictate</span></div></div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 06 — AGENTS + MEMORY
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">06 · AGENTS &amp; MEMORY</div>
+    <h2 class="sec-title">What it <em>did,</em> what it <em>knows.</em></h2>
+    <p class="sec-deck">Agents tells you what the device did for you — <b>narratively</b>, one line per run. Memory is a search: type or speak a question, get back hit-lined excerpts from everything you've said. Both destinations open from the focus-state Heartbeat section.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d rose"></span>AGENTS · <span class="em">what I did</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="sess-head"><div class="t"><em>Agents</em></div><div class="m">2 LIVE · 1 IDLE</div></div>
+        <div class="sess-list" style="top:160px">
+          <div class="ag-agent">
+            <div class="top"><div class="n">HEARTBEAT</div><div class="ts">2M AGO · 240MS AVG</div></div>
+            <div class="line">I scanned your inbox — <em>three replies</em> were waiting. Drafting one to Aisha; digest queued.</div>
+            <div class="task-stream" style="padding-left:28px">
+              <div class="task done"><div class="t" style="font-size:17px">inbox_scan()</div><div class="m"><span class="done-c">3 FOUND</span> · 234MS</div></div>
+              <div class="task wip"><div class="t" style="font-size:17px">draft_reply(aisha)</div><div class="m"><span class="wip-c">70%</span> · 1.2KB</div></div>
+              <div class="task"><div class="t" style="font-size:17px">news_digest()</div><div class="m">QUEUED · ETA 60S</div></div>
+            </div>
+          </div>
+          <div class="ag-agent">
+            <div class="top"><div class="n">RESEARCH</div><div class="ts">NOW · 4S AGO</div></div>
+            <div class="line">Summarising a thread about self-hosted agents — <em>40%.</em></div>
+          </div>
+          <div class="ag-agent idle">
+            <div class="top"><div class="n" style="color:#7a7a82">MEMORY</div><div class="ts">IDLE</div></div>
+            <div class="line">Standing by. <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#55555d;letter-spacing:2px">12,340 items · 3.4 MB</span></div>
+          </div>
+          <div class="ag-agent done">
+            <div class="top"><div class="n" style="color:#7a7a82">BROWSER</div><div class="ts">DONE · YESTERDAY</div></div>
+            <div class="line">Checked Hacker News — saved four articles for you.</div>
+          </div>
+        </div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>MEMORY · <span class="em">search past</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="mem-stats"><span>MEMORY</span><span><em>12,340</em> · 3.4 MB · QWEN3-EMB</span></div>
+        <div class="mem-query"><div class="c"></div><div class="q"><span class="typed">airpods</span> <span class="ghost">…tell me what I asked</span></div></div>
+        <div class="mem-results">
+          <div class="mem-hit">
+            <div class="top"><span class="tag">CHAT · SONNET</span><span class="when">TODAY · 10:15</span></div>
+            <div class="snip">"Compare <mark>AirPods</mark> Pro 2 vs Sony XM5 — which for calls?" — XM5 won on call quality.</div>
+          </div>
+          <div class="mem-hit">
+            <div class="top"><span class="tag">NOTE · VOICE</span><span class="when">APR 13 · 22:04</span></div>
+            <div class="snip">Weekend spending · headphones (<mark>AirPods</mark> case replacement, ~$90), new monitor stand, groceries.</div>
+          </div>
+          <div class="mem-hit">
+            <div class="top"><span class="tag">CHAT · LOCAL</span><span class="when">APR 09 · 08:30</span></div>
+            <div class="snip">"my <mark>airpods</mark> are dropping audio mid-call, is there a firmware reset?" — yes, put in case, hold setup button 15s.</div>
+          </div>
+          <div class="mem-hit">
+            <div class="top"><span class="tag">CHAT · HYBRID</span><span class="when">MAR 28 · 13:12</span></div>
+            <div class="snip">Asked about <mark>AirPods</mark> spatial audio and whether it works with Ableton on macOS. Answer: no, only Music/TV.</div>
+          </div>
+        </div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 07 — SETTINGS
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">07 · SETTINGS</div>
+    <h2 class="sec-title">Choose <em>once,</em> forget.</h2>
+    <p class="sec-deck">Mode is a first-class picker at the top, not a chip. Privacy + quiet hours live above network, because they matter more to a voice device. Every row is <b>typography</b> — no icons, no bevels, no faux-3D toggles.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>SETTINGS · <span class="em">top half</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="set-head"><div class="t"><em>Settings</em></div><div class="m">← HOME</div></div>
+        <div class="set-body">
+          <div class="set-cat">VOICE MODE</div>
+          <div class="mode-pick">
+            <div class="mode-opt"><div class="dot" style="background:var(--emerald)"></div><div class="name">Local</div><div class="desc">Moonshine · NPU</div></div>
+            <div class="mode-opt"><div class="dot" style="background:var(--amber)"></div><div class="name">Hybrid</div><div class="desc">Cloud STT/TTS</div></div>
+            <div class="mode-opt"><div class="dot" style="background:var(--azure)"></div><div class="name">Cloud</div><div class="desc">Claude Sonnet</div></div>
+            <div class="mode-opt sel"><div class="dot" style="background:var(--rose);color:var(--rose)"></div><div class="name">TinkerClaw</div><div class="desc">Agents · Memory</div></div>
+          </div>
+          <div class="set-cat">DENSITY</div>
+          <div class="mode-pick" style="padding:6px 52px 14px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+              <div class="mode-opt"><div class="dot" style="background:var(--emerald)"></div><div class="name" style="font-size:16px">Flat</div></div>
+              <div class="mode-opt sel" style="border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.04)"><div class="dot" style="background:var(--amber)"></div><div class="name" style="color:var(--amber);font-size:16px">Minimal</div></div>
+              <div class="mode-opt"><div class="dot" style="background:var(--rose)"></div><div class="name" style="font-size:16px">Hardcore</div></div>
+            </div>
+          </div>
+          <div class="set-cat">PRIVACY</div>
+          <div class="set-row"><div class="l">Mic mute</div><div class="tog"><div class="k"></div></div></div>
+          <div class="set-row"><div class="l">Store conversations</div><div class="tog on"><div class="k"></div></div></div>
+          <div class="set-row"><div class="l">Send to cloud when in</div><div class="v">CLOUD + HYBRID</div></div>
+          <div class="set-cat">QUIET HOURS</div>
+          <div class="set-row"><div class="l">Do not disturb</div><div class="tog on"><div class="k"></div></div></div>
+          <div class="set-row"><div class="l">Start</div><div class="v">22:00</div></div>
+          <div class="set-row"><div class="l">End</div><div class="v">07:00</div></div>
+        </div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>SETTINGS · <span class="em">bottom half</span></div>
+      <div class="stage"><div class="frame"><div class="screen">
+        <div class="set-head"><div class="t"><em>Settings</em></div><div class="m">← HOME</div></div>
+        <div class="set-body">
+          <div class="set-cat">DISPLAY</div>
+          <div class="set-row"><div class="l">Brightness</div><div class="slider"><div class="f" style="width:80%"></div><div class="k" style="left:calc(80% - 8px)"></div></div></div>
+          <div class="set-row"><div class="l">Volume</div><div class="slider"><div class="f" style="width:70%"></div><div class="k" style="left:calc(70% - 8px)"></div></div></div>
+          <div class="set-row"><div class="l">Ambient dim after</div><div class="v">2 MIN</div></div>
+          <div class="set-row"><div class="l">Sleep after</div><div class="v">10 MIN</div></div>
+          <div class="set-cat">NETWORK</div>
+          <div class="set-row"><div class="l">Wi-Fi</div><div class="v on">SAWAYA-2.4G</div></div>
+          <div class="set-row"><div class="l">Dragon</div><div class="v g">LINKED · 192.168.70.242</div></div>
+          <div class="set-row"><div class="l">ngrok fallback</div><div class="tog on"><div class="k"></div></div></div>
+          <div class="set-cat">DEVICE</div>
+          <div class="set-row"><div class="l">Battery</div><div class="v">87% · CHARGING</div></div>
+          <div class="set-row"><div class="l">Storage</div><div class="v">94.2 / 128 GB</div></div>
+          <div class="set-row"><div class="l">Firmware</div><div class="v">v0.9.0 · OTA READY</div></div>
+          <div class="set-cat">DANGER</div>
+          <div class="set-row"><div class="l">Clear conversations</div><div class="v r">→</div></div>
+          <div class="set-row"><div class="l">Factory reset</div><div class="v r">→</div></div>
+        </div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 08 — KEYBOARD (reinvented)
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">08 · KEYBOARD</div>
+    <h2 class="sec-title">Type, or <em>hand off.</em></h2>
+    <p class="sec-deck">Keys grow from 52px to <b>72px</b> (finally above TOUCH_MIN). A preview row on top shows what you've typed with two shortcuts: a mid-sentence voice-handoff (🎤) that swaps to dictation without losing the buffer, and a send button (⏎). <b>All dimensions are <code>DPI_SCALE</code>-wrapped</b> so this module ports to any LVGL device.</p>
+  </div>
+
+  <div class="kb-full">
+    <!-- The keyboard at actual 720×500, host area on top -->
+    <div class="kb-stage">
+      <!-- Host -->
+      <div class="kb-host">
+        <div class="h">REPLY · TINKER · CHAT</div>
+        <div class="t">"<em>Yes,</em> XM5 for calls — and thanks for remembering"</div>
+      </div>
+
+      <!-- Keyboard -->
+      <div class="kb">
+        <div class="handle"></div>
+        <div class="kb-preview">
+          <div class="pc"></div>
+          <div class="pt">thanks for remembering <span class="g">…</span></div>
+          <div class="act" title="Voice handoff"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></div>
+          <div class="act primary" title="Send"><svg viewBox="0 0 24 24"><path d="M5 12l14-7-6 18-3-8z"/></svg></div>
+        </div>
+        <!-- Row 0: q..p -->
+        <div class="kb-row">
+          <div class="key">q</div><div class="key">w</div><div class="key">e</div><div class="key">r</div><div class="key">t</div><div class="key">y</div><div class="key">u</div><div class="key">i</div><div class="key pressed">o<span class="sub">ö</span></div><div class="key">p</div>
+        </div>
+        <!-- Row 1: a..l -->
+        <div class="kb-row">
+          <div class="key" style="flex:.5"></div>
+          <div class="key">a</div><div class="key">s</div><div class="key">d</div><div class="key">f</div><div class="key">g</div><div class="key">h</div><div class="key">j</div><div class="key">k</div><div class="key">l</div>
+          <div class="key" style="flex:.5"></div>
+        </div>
+        <!-- Row 2: shift z..m backspace -->
+        <div class="kb-row">
+          <div class="key shift">⇧</div>
+          <div class="key">z</div><div class="key">x</div><div class="key">c</div><div class="key">v</div><div class="key">b</div><div class="key">n</div><div class="key">m</div>
+          <div class="key shift">⌫</div>
+        </div>
+        <!-- Row 3: 123 , space . return -->
+        <div class="kb-row">
+          <div class="key shift" style="max-width:80px">123</div>
+          <div class="key" style="max-width:80px">,</div>
+          <div class="key xwide">space</div>
+          <div class="key" style="max-width:80px">.</div>
+          <div class="key action" style="max-width:100px">send</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Annotations -->
+    <div class="kb-annos">
+      <div class="row"><div class="idx">A01</div><div><b>Key height: 72 px</b> (= <code>DPI_SCALE(52)</code> at 218 DPI). Above the 60 px <code>TOUCH_MIN</code>. Current build uses 52 px — <em>below spec</em>.</div></div>
+      <div class="row"><div class="idx">A02</div><div><b>Preview row (60 px).</b> Shows typed text with an amber cursor. Two actions: <em>🎤 voice handoff</em> (keeps typed buffer, opens dictation; on stop the STT is appended) and <em>⏎ send</em> (primary amber).</div></div>
+      <div class="row"><div class="idx">A03</div><div><b>Pressed state.</b> 180 ms ease-out to amber-tinted fill + 1 px amber border + 1 px translateY. Readable from across the desk.</div></div>
+      <div class="row"><div class="idx">A04</div><div><b>Long-press alt chars.</b> Hold any letter for 250 ms → popup with accented variants (é, è, ê, ñ, ü). Covers EN, FR, DE, ES at minimum.</div></div>
+      <div class="row"><div class="idx">A05</div><div><b>Portable.</b> Every dimension uses <code>DPI_SCALE(px)</code>. Drops into any LVGL 8.3+ device — the M5Stack CoreS3 (320×240) gets a compact 4-row layout; a 1024×600 panel gets a fat split keyboard.</div></div>
+      <div class="row"><div class="idx">A06</div><div><b>Layers.</b> 123 switches to numbers + symbols lazily (rows built on demand; saves 40+ LVGL objects when you never type a digit).</div></div>
+
+      <div class="tech">
+        <b>▸ Code diff</b><br>
+        KB_HEIGHT 420 → 500 · KEY_H 52 → <b>DPI_SCALE(52)</b><br>
+        add: preview row obj (60px) · 🎤 + ⏎ buttons<br>
+        add: <code>ui_keyboard_on_voice_handoff(cb)</code><br>
+        <b>▸ Object budget</b><br>
+        Panel 1 + handle 1 + preview (1+1+2) + row ×4 (~13 ea) = <b>~57 obj</b>
+        <br>(was 52, +5 for preview)
+        <br>
+        <b>▸ Device audit</b><br>
+        Tab5 720×1280: full 10-key rows, 72px keys<br>
+        CoreS3 320×240: 4 rows × 48px auto-adapts
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 09 — ONBOARDING
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">09 · FIRST RUN</div>
+    <h2 class="sec-title">Five minutes <em>or less.</em></h2>
+    <p class="sec-deck">Five full-screen steps, each with one decision. No form walls. Step 5 is the <b>first privacy dialog</b>: explicit opt-in for mic + wake-word, with a clear disclosure of what's stored where. A voice product that skips this can't earn the audience we want.</p>
+  </div>
+  <div class="ob-grid">
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>1 / 5 · <span class="em">welcome</span></div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="ob-step">WELCOME · 01 · 05</div>
+        <div class="orb-stage" style="top:42%;width:320px;height:320px"><div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo" style="inset:-90px"></div><div class="orb hybrid"></div></div>
+        <div class="ob-title">Hi, I'm <em>Tinker.</em></div>
+        <div class="ob-sub">Your voice, your memory,<br>on your own hardware.</div>
+        <div class="ob-cta">TAP TO BEGIN</div>
+        <div class="ob-progress"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>2 / 5 · <span class="em">wi-fi</span></div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="ob-step">CONNECT · 02 · 05</div>
+        <div class="ob-title" style="top:180px">Find your <em>network.</em></div>
+        <div style="position:absolute;top:340px;left:52px;right:52px;display:flex;flex-direction:column;gap:14px">
+          <div class="set-row" style="padding:20px 24px;border-bottom:0;border:1px solid rgba(245,158,11,.35);border-radius:16px;background:rgba(245,158,11,.04)"><div class="l" style="color:var(--amber)">Sawaya-2.4G</div><div class="v on">●●●● · WPA2</div></div>
+          <div class="set-row" style="padding:20px 24px;border:1px solid var(--hairline);border-radius:16px"><div class="l">Sawaya-5G</div><div class="v">●●●○</div></div>
+          <div class="set-row" style="padding:20px 24px;border:1px solid var(--hairline);border-radius:16px"><div class="l">other networks</div><div class="v">12 VISIBLE</div></div>
+        </div>
+        <div class="ob-cta">CONTINUE</div>
+        <div class="ob-progress"><i class="on"></i><i class="on"></i><i></i><i></i><i></i></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>3 / 5 · <span class="em">dragon</span></div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="ob-step">DISCOVER · 03 · 05</div>
+        <div class="ob-title" style="top:180px">Found <em>your Dragon.</em></div>
+        <div class="ob-sub" style="top:300px">192.168.70.242 · v0.9.0<br>ngrok fallback ready</div>
+        <div class="orb-stage" style="top:58%;width:240px;height:240px"><div class="orb-ring r2"></div><div class="orb-ring r1"></div><div class="orb-halo"></div><div class="orb hybrid"></div></div>
+        <div class="ob-cta">LINK</div>
+        <div class="ob-progress"><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>4 / 5 · <span class="em">name · mode</span></div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="ob-step">YOU · 04 · 05</div>
+        <div class="ob-title" style="top:160px">What should I <em>call you?</em></div>
+        <div style="position:absolute;top:320px;left:52px;right:52px;border:1px solid rgba(245,158,11,.35);border-radius:16px;padding:24px;background:rgba(245,158,11,.03)">
+          <div style="font-family:'Calistoga',serif;font-size:36px;color:#E8E8EA;letter-spacing:-.5px">Emile<span style="display:inline-block;width:2px;height:30px;background:var(--amber);vertical-align:-5px;margin-left:3px;animation:blink 1.1s steps(1) infinite"></span></div>
+        </div>
+        <div style="position:absolute;top:480px;left:52px;right:52px;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#55555d;text-transform:uppercase">START IN MODE</div>
+        <div style="position:absolute;top:520px;left:52px;right:52px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div class="mode-opt"><div class="dot" style="background:var(--emerald)"></div><div class="name" style="font-size:16px">Local</div></div>
+          <div class="mode-opt sel"><div class="dot" style="background:var(--rose)"></div><div class="name" style="font-size:16px;color:var(--amber)">Claw</div></div>
+        </div>
+        <div class="ob-cta">CONTINUE</div>
+        <div class="ob-progress"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i></div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>5 / 5 · <span class="em">privacy</span></div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="ob-step">PRIVACY · 05 · 05</div>
+        <div class="ob-title" style="top:130px">I listen <em>only when you ask.</em></div>
+        <div style="position:absolute;top:290px;left:52px;right:52px;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;gap:14px;align-items:flex-start"><span style="font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;letter-spacing:2px;min-width:28px">01</span><div style="font-family:'Inter',sans-serif;font-size:16px;color:#B8B8C0;line-height:1.55;font-weight:300"><b style="color:#E0E0E4">Tap-to-talk only.</b> There's no wake word. The mic is off unless you press the orb or hold to dictate.</div></div>
+          <div style="display:flex;gap:14px;align-items:flex-start"><span style="font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;letter-spacing:2px;min-width:28px">02</span><div style="font-family:'Inter',sans-serif;font-size:16px;color:#B8B8C0;line-height:1.55;font-weight:300">Conversations live on <b style="color:#E0E0E4">your Dragon</b>. Nothing leaves your LAN unless you pick <em>Cloud</em> or <em>Hybrid</em> mode.</div></div>
+          <div style="display:flex;gap:14px;align-items:flex-start"><span style="font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;letter-spacing:2px;min-width:28px">03</span><div style="font-family:'Inter',sans-serif;font-size:16px;color:#B8B8C0;line-height:1.55;font-weight:300"><b style="color:#E0E0E4">Mic mute</b> is one tap from anywhere. When muted, the orb goes grey with a slash — no ambiguity.</div></div>
+        </div>
+        <div class="ob-cta">I UNDERSTAND · BEGIN</div>
+        <div class="ob-progress"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     SECTION 10 — EDGE STATES
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">10 · EDGE STATES</div>
+    <h2 class="sec-title">When something's <em>off.</em></h2>
+    <p class="sec-deck">Same composition, different <b>voice</b>. The orb becomes the error; the hero text explains in one sentence; one or two amber actions offer a path out. Never a toast. Never a red banner yelling at you.</p>
+  </div>
+  <div class="row">
+
+    <div class="tile">
+      <div class="flabel"><span class="d red"></span>NO WI-FI</div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="sys" style="color:#EF4444"><span class="pulse" style="background:var(--red);box-shadow:0 0 10px var(--red)"></span><span>OFFLINE · NO WI-FI</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="orb-stage" style="top:46%;width:340px;height:340px"><div class="orb-halo" style="inset:-80px;background:radial-gradient(circle,rgba(239,68,68,.22),transparent 72%)"></div><div class="orb error"></div></div>
+        <div class="hero-text" style="top:60%"><div class="part" style="font-size:52px;color:#D8D8DC">I can't reach<br><em style="color:var(--red);font-style:italic">the network.</em></div></div>
+        <div class="ob-sub" style="top:76%">Sawaya-2.4G didn't answer three times.<br>Want to pick another?</div>
+        <div class="ob-cta" style="border-color:rgba(239,68,68,.35);color:var(--red);background:rgba(239,68,68,.04)">SCAN NETWORKS</div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d red"></span>DRAGON DOWN</div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="sys" style="color:#EF4444"><span class="pulse" style="background:var(--red);box-shadow:0 0 10px var(--red)"></span><span>DRAGON · UNREACHABLE</span></div>
+        <div class="mode-mark claw"><span class="diamond"></span><span>CLAW</span></div>
+        <div class="orb-stage" style="top:46%;width:340px;height:340px"><div class="orb-halo" style="inset:-80px;background:radial-gradient(circle,rgba(239,68,68,.18),transparent 72%)"></div><div class="orb error"></div></div>
+        <div class="hero-text" style="top:60%"><div class="part" style="font-size:48px;color:#D8D8DC">My brain<br><em style="color:var(--red);font-style:italic">is offline.</em></div></div>
+        <div class="ob-sub" style="top:76%">I'll record voice notes locally until<br>Dragon comes back.</div>
+        <div class="ob-cta" style="border-color:rgba(239,68,68,.35);color:var(--red);background:rgba(239,68,68,.04)">RETRY · OR TRY NGROK</div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>MUTED</div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="sys"><span style="width:8px;height:8px;border-radius:50%;background:var(--dim)"></span><span style="color:#7a7a82">MIC · OFF</span></div>
+        <div class="mode-mark"><span class="diamond" style="background:#55555D;box-shadow:none"></span><span style="color:#55555d">MUTED</span></div>
+        <div class="orb-stage" style="top:46%;width:340px;height:340px">
+          <div class="orb-halo" style="opacity:.2"></div>
+          <div class="orb muted"></div>
+          <div style="position:absolute;inset:30%;border:3px solid rgba(239,68,68,.65);border-radius:50%"></div>
+          <div style="position:absolute;left:50%;top:50%;width:60%;height:4px;background:rgba(239,68,68,.75);transform:translate(-50%,-50%) rotate(-45deg);border-radius:2px"></div>
+        </div>
+        <div class="hero-text" style="top:62%"><div class="part" style="font-size:46px">Listening <em>off.</em></div></div>
+        <div class="ob-sub" style="top:74%">I won't hear a thing until you tap me.</div>
+        <div class="ob-cta">UNMUTE</div>
+      </div></div></div>
+    </div>
+
+    <div class="tile">
+      <div class="flabel"><span class="d"></span>QUIET HOURS</div>
+      <div class="stage-sm stage"><div class="frame"><div class="screen">
+        <div class="sys"><span class="pulse" style="background:#7a7a82;box-shadow:none"></span><span style="color:#7a7a82">QUIET · UNTIL 07:00</span></div>
+        <div class="mode-mark claw"><span class="diamond" style="opacity:.4"></span><span style="color:#55555d">CLAW</span></div>
+        <div class="orb-stage" style="top:46%;width:340px;height:340px"><div class="orb-halo" style="opacity:.25"></div><div class="orb quiet"></div></div>
+        <div class="hero-text" style="top:62%"><div class="part" style="font-size:46px;color:#7a7a82">Good<br><em>night,</em> Emile.</div></div>
+        <div class="ob-sub" style="top:82%">03:12 · I won't speak until 07:00.<br>Emergencies can still reach me.</div>
+      </div></div></div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════
+     APPENDIX — PRINCIPLES
+     ═══════════════════════════════════════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">APPENDIX · PRINCIPLES</div>
+    <h2 class="sec-title">Rules we <em>keep.</em></h2>
+  </div>
+  <div class="row" style="gap:60px">
+    <div class="notes">
+      <h4>Hierarchy without chrome</h4>
+      <ul>
+        <li><b>Type + hairlines</b> carry hierarchy. No card surfaces except the user's chat bubble (the one place "you said this" demands weight).</li>
+        <li><b>Amber = signal.</b> Used for one thing per screen at a time. If the orb is amber, nothing else can be.</li>
+        <li><b>Calistoga</b> for a human voice (on-device: Montserrat Bold 48 carries equivalent weight). <b>Inter</b> for body (on-device: Montserrat Regular 20). <b>JetBrains Mono</b> for machine output (on-device: Montserrat 14 uppercase + letter-spacing).</li>
+        <li><b>One hero, full stop.</b> Every screen has exactly one thing that moves or glows. Never two.</li>
+      </ul>
+    </div>
+    <div class="notes">
+      <h4>LVGL realism</h4>
+      <ul>
+        <li>Orb = 1 <code>lv_obj</code> with gradient bg + <code>shadow_width=60 spread=20 opa=95</code> · breathing via <code>lv_anim</code> on <code>shadow_opa</code>.</li>
+        <li>Ripples = 3 concentric <code>lv_obj</code> with transparent bg, amber border, alpha+scale anim staggered.</li>
+        <li>Stream gutter = 1 thin rect (1×560) + 3 dots + 3 labels = 7 obj. Visible only during active agent runs.</li>
+        <li>All spacing uses <code>DPI_SCALE(px)</code> from <code>config.h</code>. This whole system ports.</li>
+      </ul>
+    </div>
+    <div class="notes">
+      <h4>Trust + safety</h4>
+      <ul>
+        <li><b>Privacy before pretty.</b> Mic mute + wake-word opt-in + conversation-storage consent before any feature shows.</li>
+        <li><b>Quiet hours are a first-class setting</b>, not buried. A voice device that won't shut up is a liability.</li>
+        <li><b>Mode is visible on the orb</b> always. You never lose track of what's listening to you.</li>
+        <li><b>Error screens speak plainly.</b> "My brain is offline" beats "Error: connection to 192.168.x.x failed (errno 113)".</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

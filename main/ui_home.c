@@ -1,1083 +1,739 @@
 /*
- * ui_home.c — TinkerOS Home Screen (Redesigned)
+ * ui_home.c — TinkerOS Home Screen — v5 "Zero Interface" (FLAT density)
  *
- * Voice-first layout for a privacy-first AI companion device.
- * 720x1280 portrait, LVGL v9.
+ * Voice-first layout for a 720x1280 portrait device that sits on a desk.
+ * Single page, no tileview, no bottom nav. Hero orb, hero text, poem line.
  *
- * 4-page vertical tileview:
- *   Page 0 — Home: clock + tappable orb + last note + quick actions
- *   Page 1 — Notes: voice notes list
- *   Page 2 — Voice: full voice overlay (minimal hint — tap orb to activate)
- *   Page 3 — Settings: full settings screen
+ * FLAT density = native LVGL primitives only. 2-stop linear gradient on the
+ * orb (no halo/rings/pulse — those need pre-baked images and are gated behind
+ * the MINIMAL/HARDCORE density toggles in Settings, implemented later).
  *
- * Status bar: time + privacy badge + wifi + battery
- * Bottom nav: Home | Notes | Voice | Settings
+ * Interactions:
+ *   Tap orb            → voice listen overlay
+ *   Long-press orb     → cycle voice mode (Local → Hybrid → Cloud → TinkerClaw)
+ *   Swipe up from bot  → open Chat (focus state proxy for now)
+ *   Swipe from left    → open Notes
+ *   Swipe from right   → open Settings
  */
 
 #include "ui_home.h"
-#include "ui_notes.h"
+#include "ui_theme.h"
+#include "ui_agents.h"
+#include "ui_memory.h"
+#include "ui_focus.h"
 #include "ui_chat.h"
+#include "ui_notes.h"
 #include "ui_settings.h"
 #include "ui_voice.h"
 #include "ui_keyboard.h"
-#include "mode_manager.h"
+#include "ui_core.h"
 #include "voice.h"
 #include "settings.h"
 #include "config.h"
-#include "ui_wifi.h"
-#include "ui_camera.h"
-#include "ui_files.h"
-#include "battery.h"
 #include "tab5_rtc.h"
+#include "battery.h"
 #include "dragon_link.h"
-#include "ui_core.h"
 #include "wifi.h"
-#include "display.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_system.h"
 #include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 static const char *TAG = "ui_home";
 
-/* ── Palette — soft dark ─────────────────────────────────────── */
-#define COL_BG          0x000000
-#define COL_CARD        0x1A1A2E
-#define COL_CARD2       0x2C2C2E
-#define COL_AMBER       0xF5A623
-#define COL_AMBER_SOFT  0xFFD060
-#define COL_CYAN        0x00B4D8
-#define COL_MINT        0x30D158
-#define COL_BLUE        0x0A84FF
-#define COL_PURPLE      0xBF5AF2
-#define COL_ORANGE      0xFF9F0A
-#define COL_RED         0xFF453A
-#define COL_WHITE       0xFFFFFF
-#define COL_LABEL       0xEBEBF5
-#define COL_LABEL2      0x8E8E93
-#define COL_LABEL3      0x48484A
-#define COL_SEP         0x38383A
+/* ── Layout constants (real device pixels, DPI-scaled where it matters) ── */
+#define SW          720
+#define SH          1280
+#define SIDE_PAD    52
+#define ORB_SIZE    500
+#define ORB_CY      700   /* orb vertical center */
 
-/* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
-#define SW              720
-#define SH              1280
-#define SBAR_H          56
-#define NAV_H           120
-#define NUM_PAGES       4
+/* ── Root + text objects ─────────────────────────────────────── */
+static lv_obj_t *s_screen       = NULL;  /* full-screen lv_obj child of active_screen */
+static lv_obj_t *s_hero_part    = NULL;  /* "Afternoon" / "Good morning" etc */
+static lv_obj_t *s_hero_clock   = NULL;  /* "14 : 32" mono */
+static lv_obj_t *s_hero_date    = NULL;  /* "WEDNESDAY · APRIL 16" */
+static lv_obj_t *s_sys_label    = NULL;  /* top-left: "DRAGON · 14:32" */
+static lv_obj_t *s_sys_dot      = NULL;  /* top-left green pulse */
+static lv_obj_t *s_mode_diamond = NULL;  /* top-right tinted diamond */
+static lv_obj_t *s_mode_label   = NULL;  /* top-right "CLAW" / "LOCAL" etc */
+static lv_obj_t *s_orb          = NULL;  /* the orb */
+static lv_obj_t *s_poem_label   = NULL;  /* "Earlier — you asked…" */
+static lv_obj_t *s_hint_label   = NULL;  /* bottom "FOCUS ⌄" */
+static lv_obj_t *s_toast        = NULL;  /* toast overlay (lazy) */
+
+/* Periodic refresh timer */
+static lv_timer_t *s_refresh_timer = NULL;
+
+/* Mode diamond colors (indexed by VOICE_MODE_*) */
+static const uint32_t s_mode_tint[4] = {
+    TH_MODE_LOCAL,   /* Local */
+    TH_MODE_HYBRID,  /* Hybrid */
+    TH_MODE_CLOUD,   /* Cloud */
+    TH_MODE_CLAW,    /* TinkerClaw */
+};
+static const char *s_mode_short[4] = { "LOCAL", "HYBRID", "CLOUD", "CLAW" };
+
+static uint8_t s_badge_mode = 0;
 
 /* ── Forward decls ───────────────────────────────────────────── */
-static void update_timer_cb(lv_timer_t *t);
-static void tileview_scroll_cb(lv_event_t *e);
-static void nav_click_cb(lv_event_t *e);
-static void brain_pulse_cb(void *obj, int32_t val);
-static void show_toast(const char *text);
-static void orb_tap_cb(lv_event_t *e);
-/* voice_hint_tap_cb removed — was dead code, never wired to any UI element */
-static void privacy_tap_cb(lv_event_t *e);
-static void ask_tap_cb(lv_event_t *e);
-static void cb_last_note_tap(lv_event_t *e);
-static void cb_camera_launch(lv_event_t *e);
-static void cb_files_launch(lv_event_t *e);
-static void dismiss_all_overlays(void);
-static void async_notes_create(void *arg);
+static void refresh_timer_cb(lv_timer_t *t);
+static void orb_click_cb(lv_event_t *e);
+static void orb_long_press_cb(lv_event_t *e);
+static void screen_gesture_cb(lv_event_t *e);
+static void poem_click_cb(lv_event_t *e);
+static void sys_click_cb(lv_event_t *e);
+static bool any_overlay_visible(void);
+static void show_toast_internal(const char *text);
+static void orb_paint_for_mode(uint8_t mode);
 
-/* ── State ───────────────────────────────────────────────────── */
-static uint8_t    s_badge_mode = 0;   /* local cycling state for mode badge */
-static lv_obj_t  *scr        = NULL;
-static lv_obj_t  *tileview   = NULL;
-static lv_obj_t  *tiles[NUM_PAGES] = {NULL};
+/* ───────────────────────────── helpers ───────────────────────── */
 
-/* Status bar */
-static lv_obj_t  *lbl_sbar_time   = NULL;
-static lv_obj_t  *lbl_sbar_wifi  = NULL;
-static lv_obj_t  *lbl_sbar_batt  = NULL;
-static lv_obj_t  *lbl_privacy    = NULL;   /* "Local" badge */
-static lv_obj_t  *lbl_sbar_dragon = NULL;  /* Dragon connection dot */
-
-/* Disconnect banner */
-static lv_obj_t  *s_disconnect_banner = NULL;
-
-/* Home page (Page 0) */
-static lv_obj_t  *lbl_clock     = NULL;
-static lv_obj_t  *lbl_date      = NULL;
-/* lbl_greeting removed — was declared but never created or assigned */
-static lv_obj_t  *orb_ring      = NULL;
-static lv_obj_t  *orb_inner     = NULL;    /* inner filled orb circle */
-static lv_obj_t  *lbl_ask       = NULL;    /* "Tap to ask" / "Connecting..." below orb */
-static lv_obj_t  *lbl_last_note = NULL;    /* last note preview card */
-static lv_obj_t  *last_note_card = NULL;
-
-/* Nav bar (on lv_layer_top — floats above all overlays) */
-static lv_obj_t  *nav_bar = NULL;
-static lv_obj_t  *nav_icons[NUM_PAGES] = {NULL};
-static int        cur_page = 0;
-
-/* Page dots */
-static lv_obj_t  *page_dots[NUM_PAGES] = {NULL};
-
-static lv_anim_t  orb_anim;
-static bool       orb_anim_on = false;
-static lv_timer_t *tmr_update = NULL;
-
-/* Nav bar debounce + pending timer — prevents fire-and-forget 30ms timers
- * from overlapping when user taps two nav items quickly (e.g. Settings then
- * Notes within 30ms).  Without this, both delayed creation timers fire,
- * creating two overlays simultaneously → LVGL Store access fault crash. */
-static lv_timer_t *s_pending_nav_timer = NULL;
-static int64_t     s_last_nav_click_us = 0;
-#define NAV_DEBOUNCE_US  300000  /* 300ms */
-
-/* ── Helpers ─────────────────────────────────────────────────── */
-static void update_nav_ui(int page);
-
-/* ── Page 0: Home ──────────────────────────────────────────── */
-static lv_obj_t *build_page_home(void)
+/* Return the greeting word appropriate for the current hour. */
+static const char *greeting_for_hour(int hour)
 {
-    lv_obj_t *pg = tiles[0];
-
-    /* ── Clock (top center) ─────────────────────────── */
-    lbl_clock = lv_label_create(pg);
-    lv_label_set_text(lbl_clock, "00:00");
-    lv_obj_set_style_text_color(lbl_clock, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl_clock, FONT_CLOCK, 0);
-    lv_obj_set_style_text_letter_space(lbl_clock, 4, 0);
-    lv_obj_align(lbl_clock, LV_ALIGN_TOP_MID, 0, 60);
-
-    /* ── Date ────────────────────────────────────────── */
-    lbl_date = lv_label_create(pg);
-    lv_label_set_text(lbl_date, "Wednesday, March 26");
-    lv_obj_set_style_text_color(lbl_date, lv_color_hex(0xA0A0A8), 0);
-    lv_obj_set_style_text_font(lbl_date, FONT_DATE, 0);
-    lv_obj_align(lbl_date, LV_ALIGN_TOP_MID, 0, 140);
-
-    /* ── Voice Orb (center) — TINKER ─────────────────── */
-    /* Outer ring (breathing animation) */
-    orb_ring = lv_obj_create(pg);
-    lv_obj_set_size(orb_ring, 200, 200);
-    lv_obj_align(orb_ring, LV_ALIGN_CENTER, 0, -212);
-    lv_obj_set_style_bg_opa(orb_ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_radius(orb_ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(orb_ring, 3, 0);
-    lv_obj_set_style_border_color(orb_ring, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_border_opa(orb_ring, LV_OPA_40, 0);
-    lv_obj_clear_flag(orb_ring, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Inner orb — CLICKABLE (tappable to start voice) */
-    orb_inner = lv_obj_create(pg);
-    lv_obj_set_size(orb_inner, 160, 160);
-    lv_obj_align(orb_inner, LV_ALIGN_CENTER, 0, -212);
-    lv_obj_set_style_bg_color(orb_inner, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_bg_opa(orb_inner, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(orb_inner, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(orb_inner, 3, 0);
-    lv_obj_set_style_border_color(orb_inner, lv_color_hex(COL_AMBER_SOFT), 0);
-    lv_obj_clear_flag(orb_inner, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(orb_inner, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(orb_inner, 20);
-    lv_obj_add_event_cb(orb_inner, orb_tap_cb, LV_EVENT_CLICKED, NULL);
-
-    /* L1: Orb icon — audio waveform (closest to mic in LVGL built-in set) */
-    lv_obj_t *orb_icon = lv_label_create(orb_inner);
-    lv_label_set_text(orb_icon, LV_SYMBOL_AUDIO);
-    lv_obj_set_style_text_color(orb_icon, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(orb_icon, FONT_CLOCK, 0);
-    lv_obj_center(orb_icon);
-
-    /* Orb label — "Tap to ask" / "Connecting..." with long-press hint */
-    lbl_ask = lv_label_create(pg);
-    lv_label_set_text(lbl_ask, "Tap to ask");
-    lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(lbl_ask, FONT_TITLE, 0);
-    lv_obj_align(lbl_ask, LV_ALIGN_CENTER, 0, -92);
-
-    /* H1: Long-press hint — brighter, more descriptive */
-    lv_obj_t *hold_hint = lv_label_create(pg);
-    lv_label_set_text(hold_hint, LV_SYMBOL_EDIT "  Long-press to dictate");
-    lv_obj_set_style_text_color(hold_hint, lv_color_hex(0x777777), 0);
-    lv_obj_set_style_text_font(hold_hint, FONT_SECONDARY, 0);
-    lv_obj_align(hold_hint, LV_ALIGN_CENTER, 0, -58);
-
-    /* Breathing animation on ring */
-    lv_anim_init(&orb_anim);
-    lv_anim_set_var(&orb_anim, orb_ring);
-    lv_anim_set_values(&orb_anim, 10, 90);
-    lv_anim_set_duration(&orb_anim, 3000);
-    lv_anim_set_playback_duration(&orb_anim, 3000);
-    lv_anim_set_repeat_count(&orb_anim, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_exec_cb(&orb_anim, brain_pulse_cb);
-    lv_anim_start(&orb_anim);
-    orb_anim_on = true;
-
-    /* ── Bottom layout (from bottom up):
-     *   Nav bar:        120px  (separate from tileview)
-     *   Page dots:       36px  (separate from tileview)
-     *   Breathing room: ~310px
-     *   Camera+Files:    64px  (proper touch targets)
-     *   16px gap
-     *   Ask Tinker:      64px
-     *   16px gap
-     *   Note card:       90px
-     * ─────────────────────────────────────────── */
-
-    /* Camera + Files — FULL WIDTH buttons, 64px height */
-    #define BTN_GAP 16
-    int qbtn_w = (SW - 48 - BTN_GAP) / 2;
-
-    lv_obj_t *cam_btn = lv_button_create(pg);
-    lv_obj_set_size(cam_btn, qbtn_w, 64);
-    lv_obj_align(cam_btn, LV_ALIGN_BOTTOM_LEFT, 24, -310);
-    lv_obj_set_style_bg_color(cam_btn, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_radius(cam_btn, 12, 0);
-    lv_obj_set_style_border_width(cam_btn, 1, 0);
-    lv_obj_set_style_border_color(cam_btn, lv_color_hex(0x333333), 0);
-    lv_obj_add_event_cb(cam_btn, cb_camera_launch, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *cam_lbl = lv_label_create(cam_btn);
-    lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE "  Camera");
-    lv_obj_set_style_text_color(cam_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(cam_lbl, FONT_BODY, 0);
-    lv_obj_center(cam_lbl);
-
-    lv_obj_t *files_btn = lv_button_create(pg);
-    lv_obj_set_size(files_btn, qbtn_w, 64);
-    lv_obj_align(files_btn, LV_ALIGN_BOTTOM_RIGHT, -24, -310);
-    lv_obj_set_style_bg_color(files_btn, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_radius(files_btn, 12, 0);
-    lv_obj_set_style_border_width(files_btn, 1, 0);
-    lv_obj_set_style_border_color(files_btn, lv_color_hex(0x333333), 0);
-    lv_obj_add_event_cb(files_btn, cb_files_launch, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *files_lbl = lv_label_create(files_btn);
-    lv_label_set_text(files_lbl, LV_SYMBOL_DIRECTORY "  Files");
-    lv_obj_set_style_text_color(files_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(files_lbl, FONT_BODY, 0);
-    lv_obj_center(files_lbl);
-
-    /* Ask Tinker — above Camera/Files */
-    lv_obj_t *ask_btn = lv_button_create(pg);
-    lv_obj_set_size(ask_btn, SW - 48, 64);
-    lv_obj_align(ask_btn, LV_ALIGN_BOTTOM_MID, 0, -(310 + 64 + 16));
-    lv_obj_set_style_bg_color(ask_btn, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_bg_opa(ask_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(ask_btn, 12, 0);
-    lv_obj_set_style_border_width(ask_btn, 0, 0);
-    lv_obj_add_event_cb(ask_btn, ask_tap_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *ask_lbl = lv_label_create(ask_btn);
-    lv_label_set_text(ask_lbl, LV_SYMBOL_AUDIO "  Ask Tinker");
-    lv_obj_set_style_text_color(ask_lbl, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(ask_lbl, FONT_HEADING, 0);
-    lv_obj_center(ask_lbl);
-
-    /* Last Note Card — above Ask Tinker, compact */
-    last_note_card = lv_obj_create(pg);
-    lv_obj_set_size(last_note_card, SW - 48, 90);
-    lv_obj_align(last_note_card, LV_ALIGN_BOTTOM_MID, 0, -(310 + 64 + 16 + 64 + 16));
-    lv_obj_set_style_bg_color(last_note_card, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_bg_opa(last_note_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(last_note_card, 12, 0);
-    lv_obj_set_style_border_width(last_note_card, 1, 0);
-    lv_obj_set_style_border_color(last_note_card, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_pad_hor(last_note_card, 24, 0);
-    lv_obj_clear_flag(last_note_card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(last_note_card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(last_note_card, 10);
-    lv_obj_add_event_cb(last_note_card, cb_last_note_tap, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *note_icon = lv_label_create(last_note_card);
-    lv_label_set_text(note_icon, LV_SYMBOL_LIST "  Last note");
-    lv_obj_set_style_text_color(note_icon, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(note_icon, FONT_SECONDARY, 0);
-    lv_obj_align(note_icon, LV_ALIGN_TOP_LEFT, 0, 6);
-
-    lbl_last_note = lv_label_create(last_note_card);
-    lv_label_set_text(lbl_last_note, "Tap to see notes");
-    lv_obj_set_style_text_color(lbl_last_note, lv_color_hex(COL_LABEL), 0);
-    lv_obj_set_style_text_font(lbl_last_note, FONT_BODY, 0);
-    lv_obj_set_width(lbl_last_note, SW - 96);
-    lv_label_set_long_mode(lbl_last_note, LV_LABEL_LONG_DOT);
-    lv_obj_align(lbl_last_note, LV_ALIGN_BOTTOM_LEFT, 0, -6);
-
-    return pg;
+    if (hour < 5)  return "Late night";
+    if (hour < 12) return "Morning";
+    if (hour < 17) return "Afternoon";
+    if (hour < 21) return "Evening";
+    return "Tonight";
 }
 
-/* ── Page 1: Notes ────────────────────────────────────────── */
-static lv_obj_t *build_page_notes(void)
+/* Format "WEDNESDAY · APRIL 16" into buf. */
+static void format_date(char *buf, size_t n, const struct tm *tm)
 {
-    lv_obj_t *pg = tiles[1];
-    /* Notes page is a placeholder that navigates to the full notes screen */
-    lv_obj_t *hint = lv_label_create(pg);
-    lv_label_set_text(hint, "Loading notes...");
-    lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(hint, FONT_BODY, 0);
-    lv_obj_center(hint);
-    return pg;
+    static const char *wd[7] = {"SUN","MON","TUE","WED","THU","FRI","SAT"};
+    static const char *mo[12] = {"JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE",
+                                  "JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"};
+    int wday = (tm->tm_wday >= 0 && tm->tm_wday < 7) ? tm->tm_wday : 0;
+    int mon  = (tm->tm_mon  >= 0 && tm->tm_mon  < 12) ? tm->tm_mon : 0;
+    /* U+2022 BULLET (•) — this glyph IS in the built-in Montserrat range
+     * (ASCII + 0xB0 + 0x2022), unlike U+00B7 MIDDLE DOT which isn't. */
+    snprintf(buf, n, "%s \xe2\x80\xa2 %s %d", wd[wday], mo[mon], tm->tm_mday);
 }
 
-/* ── Page 2: Chat — opens text chat with Tinker ─────────────── */
-static void chat_page_tap_cb(lv_event_t *e)
+/* ────────────────────────── orb painting ─────────────────────── */
+
+static void orb_paint_for_mode(uint8_t mode)
 {
-    (void)e;
-    /* Launch Chat overlay (modal on lv_layer_top) */
-    extern lv_obj_t *ui_chat_create(void);
-    ui_chat_create();
+    if (!s_orb) return;
+    if (mode >= 4) mode = 0;
+
+    /* FLAT: vertical 2-stop linear gradient per mode. Light top → dark bottom. */
+    uint32_t top, bot;
+    switch (mode) {
+        case VOICE_MODE_LOCAL:      top = 0x7DE69F; bot = 0x166C3A; break;
+        case VOICE_MODE_HYBRID:     top = 0xFFC75A; bot = 0xB9650A; break;
+        case VOICE_MODE_CLOUD:      top = 0x9AC0F9; bot = 0x1D3A78; break;
+        case VOICE_MODE_TINKERCLAW: top = 0xFF7E95; bot = 0x7A1428; break;
+        default:                    top = 0xFFC75A; bot = 0xB9650A; break;
+    }
+    lv_obj_set_style_bg_color(s_orb, lv_color_hex(top), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+    /* Shadow disabled for initial v5 ship — LVGL 9 shadow rendering at
+       500 px on ESP32-P4 can blow the draw buffer. Re-enable with a small
+       width once the MINIMAL density is wired via pre-baked images. */
 }
 
-static lv_obj_t *build_page_chat(void)
+static void update_mode_ui(uint8_t mode)
 {
-    lv_obj_t *pg = tiles[2];
-
-    /* Tap anywhere to open Chat */
-    lv_obj_add_flag(pg, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(pg, chat_page_tap_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Chat visual — big tappable card in center */
-    lv_obj_t *card = lv_obj_create(pg);
-    lv_obj_set_size(card, SW - 80, 280);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, -40);
-    lv_obj_set_style_bg_color(card, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 32, 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x333344), 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t *icon = lv_label_create(card);
-    lv_label_set_text(icon, LV_SYMBOL_NEW_LINE);
-    lv_obj_set_style_text_color(icon, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_text_font(icon, FONT_CLOCK, 0);
-    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 32);
-
-    lv_obj_t *lbl = lv_label_create(card);
-    lv_label_set_text(lbl, "Chat with Tinker");
-    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
-    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 10);
-
-    lv_obj_t *hint = lv_label_create(card);
-    lv_label_set_text(hint, "Type questions instead of speaking");
-    lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(hint, FONT_BODY, 0);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -28);
-
-    return pg;
+    if (mode >= 4) mode = 0;
+    s_badge_mode = mode;
+    if (s_mode_diamond) {
+        lv_obj_set_style_bg_color(s_mode_diamond, lv_color_hex(s_mode_tint[mode]), 0);
+    }
+    if (s_mode_label) lv_label_set_text(s_mode_label, s_mode_short[mode]);
+    orb_paint_for_mode(mode);
 }
 
-/* ── Page 3: Settings ─────────────────────────────────────── */
-static lv_obj_t *build_page_settings(void)
-{
-    lv_obj_t *pg = tiles[3];
-    /* Settings page is a placeholder that navigates to the full settings screen */
-    lv_obj_t *hint = lv_label_create(pg);
-    lv_label_set_text(hint, "Loading settings...");
-    lv_obj_set_style_text_color(hint, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(hint, FONT_BODY, 0);
-    lv_obj_center(hint);
-    return pg;
-}
-
-/* ================================================================
- *  Public API
- * ================================================================ */
+/* ────────────────────────── screen build ────────────────────── */
 
 lv_obj_t *ui_home_create(void)
 {
-    scr = lv_obj_create(NULL);
-    lv_obj_set_size(scr, SW, SH);
-    lv_obj_set_style_bg_color(scr, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    /* Create a fresh top-level screen (lv_obj_create(NULL) = screen).
+       Overlays (settings/chat/notes) attach as children of this screen. */
+    s_screen = lv_obj_create(NULL);
+    lv_obj_remove_style_all(s_screen);
+    lv_obj_set_size(s_screen, SW, SH);
+    lv_obj_set_style_bg_color(s_screen, lv_color_hex(TH_BG), 0);
+    lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(s_screen, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_screen_load(s_screen);
 
-    /* ── TILEVIEW ────────────────────────────────────────────── */
-    tileview = lv_tileview_create(scr);
-    /* Leave room at bottom for nav bar (120px) + page dots (36px) */
-    lv_obj_set_size(tileview, SW, SH - NAV_H - 36);
-    lv_obj_set_pos(tileview, 0, 0);
-    lv_obj_set_style_bg_color(tileview, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_bg_opa(tileview, LV_OPA_COVER, 0);
-    lv_obj_set_scrollbar_mode(tileview, LV_SCROLLBAR_MODE_OFF);
+    /* Gesture handler at the screen level for swipe-up / edge-swipes */
+    lv_obj_add_event_cb(s_screen, screen_gesture_cb, LV_EVENT_GESTURE, NULL);
 
-    tiles[0] = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_BOTTOM);
-    tiles[1] = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP | LV_DIR_BOTTOM);
-    tiles[2] = lv_tileview_add_tile(tileview, 0, 2, LV_DIR_TOP | LV_DIR_BOTTOM);
-    tiles[3] = lv_tileview_add_tile(tileview, 0, 3, LV_DIR_TOP);
+    /* ── Edge ticks — v5 visible affordances for left/right swipes ── */
+    /* Left edge (flush with x=0) — swipe-right from here opens Notes. */
+    lv_obj_t *edge_l = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(edge_l);
+    lv_obj_set_size(edge_l, 2, 40);
+    lv_obj_set_pos(edge_l, 0, SH / 2 - 20);
+    lv_obj_set_style_bg_color(edge_l, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_bg_opa(edge_l, 80, 0);   /* ~31 % — hairline hint */
+    lv_obj_set_style_radius(edge_l, 2, 0);
 
-    /* ── Build each page ─────────────────────────────────── */
-    build_page_home();
-    build_page_notes();
-    build_page_chat();
-    build_page_settings();
+    /* Right edge (flush with x=SW-2) — swipe-left opens Settings. */
+    lv_obj_t *edge_r = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(edge_r);
+    lv_obj_set_size(edge_r, 2, 40);
+    lv_obj_set_pos(edge_r, SW - 2, SH / 2 - 20);
+    lv_obj_set_style_bg_color(edge_r, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_bg_opa(edge_r, 80, 0);
+    lv_obj_set_style_radius(edge_r, 2, 0);
 
-    /* ── STATUS BAR ─────────────────────────────────────────── */
-    {
-        lv_obj_t *sbar = lv_obj_create(scr);
-        lv_obj_set_size(sbar, SW, SBAR_H);
-        lv_obj_set_pos(sbar, 0, 0);
-        lv_obj_set_style_bg_color(sbar, lv_color_hex(COL_BG), 0);
-        lv_obj_set_style_bg_opa(sbar, LV_OPA_90, 0);
-        lv_obj_set_style_radius(sbar, 0, 0);
-        lv_obj_set_style_border_width(sbar, 0, 0);
-        lv_obj_clear_flag(sbar, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    /* ── Top-left system label (green pulse + "DRAGON · 14:32") ── */
+    s_sys_dot = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_sys_dot);
+    lv_obj_set_size(s_sys_dot, 10, 10);
+    lv_obj_set_pos(s_sys_dot, SIDE_PAD, 56);
+    lv_obj_set_style_radius(s_sys_dot, 5, 0);
+    lv_obj_set_style_bg_color(s_sys_dot, lv_color_hex(TH_STATUS_GREEN), 0);
+    lv_obj_set_style_bg_opa(s_sys_dot, LV_OPA_COVER, 0);
 
-        /* Time (left) */
-        lbl_sbar_time = lv_label_create(sbar);
-        lv_label_set_text(lbl_sbar_time, "00:00");
-        lv_obj_set_style_text_color(lbl_sbar_time, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_time, FONT_SECONDARY, 0);
-        lv_obj_align(lbl_sbar_time, LV_ALIGN_LEFT_MID, 16, 0);
+    s_sys_label = lv_label_create(s_screen);
+    lv_label_set_text(s_sys_label, "DRAGON \xe2\x80\xa2 --");
+    lv_obj_set_pos(s_sys_label, SIDE_PAD + 20, 50);
+    lv_obj_set_style_text_font(s_sys_label, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(s_sys_label, lv_color_hex(0x8A8A93), 0);
+    lv_obj_set_style_text_letter_space(s_sys_label, 3, 0);
+    /* Tap the sys label → Memory search overlay */
+    lv_obj_add_flag(s_sys_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_sys_label, sys_click_cb, LV_EVENT_CLICKED, NULL);
 
-        /* Privacy badge (center-left) */
-        lbl_privacy = lv_label_create(sbar);
-        lv_label_set_text(lbl_privacy, "  Local  ");
-        lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
-        lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_text_font(lbl_privacy, FONT_SECONDARY, 0);
-        lv_obj_set_style_radius(lbl_privacy, 8, 0);
-        lv_obj_align(lbl_privacy, LV_ALIGN_LEFT_MID, 80, 0);
-        lv_obj_add_flag(lbl_privacy, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_ext_click_area(lbl_privacy, 10);
-        lv_obj_add_event_cb(lbl_privacy, privacy_tap_cb, LV_EVENT_CLICKED, NULL);
+    /* ── Top-right mode diamond + label ── */
+    s_mode_diamond = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_mode_diamond);
+    lv_obj_set_size(s_mode_diamond, 14, 14);
+    /* 45° rotation requires LV_USE_TRANSFORM; we fake a diamond with a small
+       square + border — acceptable for v5. Rotated transform will come later. */
+    lv_obj_set_style_radius(s_mode_diamond, 2, 0);
+    lv_obj_set_style_bg_color(s_mode_diamond, lv_color_hex(TH_MODE_CLAW), 0);
+    lv_obj_set_style_bg_opa(s_mode_diamond, LV_OPA_COVER, 0);
 
-        /* Dragon status dot (green=connected, red=offline) */
-        lbl_sbar_dragon = lv_obj_create(sbar);
-        lv_obj_set_size(lbl_sbar_dragon, 12, 12);
-        lv_obj_set_style_radius(lbl_sbar_dragon, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(lbl_sbar_dragon, lv_color_hex(COL_RED), 0);
-        lv_obj_set_style_bg_opa(lbl_sbar_dragon, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(lbl_sbar_dragon, 0, 0);
-        lv_obj_align(lbl_sbar_dragon, LV_ALIGN_RIGHT_MID, -120, 0);
-        lv_obj_clear_flag(lbl_sbar_dragon, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    s_mode_label = lv_label_create(s_screen);
+    lv_label_set_text(s_mode_label, s_mode_short[0]);
+    lv_obj_set_style_text_font(s_mode_label, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(s_mode_label, lv_color_hex(0x8A8A93), 0);
+    lv_obj_set_style_text_letter_space(s_mode_label, 3, 0);
+    /* Right-align: reserve 120px region, right edge = SW - SIDE_PAD */
+    lv_obj_set_width(s_mode_label, 120);
+    lv_obj_set_style_text_align(s_mode_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_pos(s_mode_label, SW - SIDE_PAD - 120, 50);
+    lv_obj_set_pos(s_mode_diamond, SW - SIDE_PAD - 120 - 22, 54);
 
-        /* WiFi (right of center) */
-        lbl_sbar_wifi = lv_label_create(sbar);
-        lv_label_set_text(lbl_sbar_wifi, LV_SYMBOL_WIFI);
-        lv_obj_set_style_text_color(lbl_sbar_wifi, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_wifi, FONT_SECONDARY, 0);
-        lv_obj_align(lbl_sbar_wifi, LV_ALIGN_RIGHT_MID, -90, 0);
+    /* ── Hero: greeting word, clock numerics, date ── */
+    s_hero_part = lv_label_create(s_screen);
+    lv_label_set_text(s_hero_part, "Afternoon");
+    lv_obj_set_style_text_font(s_hero_part, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(s_hero_part, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_letter_space(s_hero_part, -1, 0);
+    lv_obj_set_width(s_hero_part, SW);
+    lv_obj_set_style_text_align(s_hero_part, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_hero_part, 0, 150);
 
-        /* Battery (far right) */
-        lbl_sbar_batt = lv_label_create(sbar);
-        lv_label_set_text(lbl_sbar_batt, "100%");
-        lv_obj_set_style_text_color(lbl_sbar_batt, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(lbl_sbar_batt, FONT_SECONDARY, 0);
-        lv_obj_align(lbl_sbar_batt, LV_ALIGN_RIGHT_MID, -16, 0);
-    }
+    s_hero_clock = lv_label_create(s_screen);
+    lv_label_set_text(s_hero_clock, "— : —");
+    lv_obj_set_style_text_font(s_hero_clock, FONT_SECONDARY, 0);
+    lv_obj_set_style_text_color(s_hero_clock, lv_color_hex(TH_TEXT_BODY), 0);
+    lv_obj_set_style_text_letter_space(s_hero_clock, 12, 0);
+    lv_obj_set_width(s_hero_clock, SW);
+    lv_obj_set_style_text_align(s_hero_clock, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_hero_clock, 0, 230);
 
-    /* ── DISCONNECT BANNER (hidden by default) ────────────── */
-    s_disconnect_banner = lv_label_create(scr);
-    lv_label_set_text(s_disconnect_banner, "  " LV_SYMBOL_WARNING " Dragon disconnected — reconnecting...");
-    lv_obj_set_pos(s_disconnect_banner, 0, 56);
-    lv_obj_set_size(s_disconnect_banner, 720, 32);
-    lv_obj_set_style_bg_color(s_disconnect_banner, lv_color_hex(0xEF4444), 0);
-    lv_obj_set_style_bg_opa(s_disconnect_banner, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_disconnect_banner, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(s_disconnect_banner, FONT_CAPTION, 0);
-    lv_obj_set_style_pad_left(s_disconnect_banner, 12, 0);
-    lv_obj_add_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
+    s_hero_date = lv_label_create(s_screen);
+    lv_label_set_text(s_hero_date, "—");
+    lv_obj_set_style_text_font(s_hero_date, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(s_hero_date, lv_color_hex(TH_TEXT_DIM), 0);
+    lv_obj_set_style_text_letter_space(s_hero_date, 4, 0);
+    lv_obj_set_width(s_hero_date, SW);
+    lv_obj_set_style_text_align(s_hero_date, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_hero_date, 0, 272);
 
-    /* ── BOTTOM NAV — on lv_layer_top() so it floats ABOVE all overlays ── */
-    /* This prevents the lv_color_mix32 crash caused by overlays at 1160px
-     * leaving a rendering gap.  Overlays are now full-screen (1280px) and
-     * the nav bar renders on top via the LVGL layer system. */
-    {
-        nav_bar = lv_obj_create(lv_layer_top());
-        lv_obj_set_size(nav_bar, SW, NAV_H);
-        lv_obj_set_pos(nav_bar, 0, SH - NAV_H);
-        lv_obj_set_style_bg_color(nav_bar, lv_color_hex(0x111111), 0);
-        lv_obj_set_style_bg_opa(nav_bar, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(nav_bar, 0, 0);
-        lv_obj_set_style_border_width(nav_bar, 0, 0);
-        lv_obj_clear_flag(nav_bar, LV_OBJ_FLAG_SCROLLABLE);
+    /* ── The orb (FLAT: solid circle + 2-stop vertical gradient) ── */
+    s_orb = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_orb);
+    lv_obj_set_size(s_orb, ORB_SIZE, ORB_SIZE);
+    lv_obj_set_pos(s_orb, (SW - ORB_SIZE) / 2, ORB_CY - ORB_SIZE / 2);
+    lv_obj_set_style_radius(s_orb, LV_RADIUS_CIRCLE, 0);
+    orb_paint_for_mode(s_badge_mode);
+    lv_obj_add_flag(s_orb, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_orb, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_orb, orb_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
-        /* Nav labels — Home | Notes | Chat | Settings */
-        const char *labels[NUM_PAGES] = {
-            "Home", "Notes", "Chat", "Settings"
-        };
-        int slot = SW / NUM_PAGES;
-        for (int i = 0; i < NUM_PAGES; i++) {
-            nav_icons[i] = lv_label_create(nav_bar);
-            lv_label_set_text(nav_icons[i], labels[i]);
-            lv_obj_set_style_text_font(nav_icons[i], FONT_NAV, 0);
-            lv_obj_set_style_text_color(nav_icons[i],
-                lv_color_hex(i == 0 ? COL_AMBER : COL_LABEL2), 0);
-            lv_obj_set_style_text_align(nav_icons[i], LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_set_width(nav_icons[i], slot);
-            lv_obj_align(nav_icons[i], LV_ALIGN_LEFT_MID, slot * i, 0);
-            lv_obj_add_flag(nav_icons[i], LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_ext_click_area(nav_icons[i], 8);
-            lv_obj_add_event_cb(nav_icons[i], nav_click_cb, LV_EVENT_CLICKED,
-                               (void *)(intptr_t)i);
-        }
+    /* ── Poem line (lower right) ── */
+    s_poem_label = lv_label_create(s_screen);
+    lv_label_set_long_mode(s_poem_label, LV_LABEL_LONG_WRAP);
+    /* ASCII only — Montserrat font subset on device has no em-dash. */
+    lv_label_set_text(s_poem_label, "Earlier -- heartbeat drafted a reply.\nTap to see what your agents did.");
+    lv_obj_set_style_text_font(s_poem_label, FONT_SECONDARY, 0);
+    lv_obj_set_style_text_color(s_poem_label, lv_color_hex(TH_TEXT_BODY), 0);
+    lv_obj_set_style_text_align(s_poem_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_line_space(s_poem_label, 4, 0);
+    lv_obj_set_width(s_poem_label, SW - SIDE_PAD * 2 - 60);
+    lv_obj_set_pos(s_poem_label, SIDE_PAD + 60, 1030);
+    lv_obj_add_flag(s_poem_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_poem_label, poem_click_cb, LV_EVENT_CLICKED, NULL);
 
-        /* Ensure nav bar is above the voice overlay on lv_layer_top().
-         * Voice overlay is also on lv_layer_top() but is full-screen.
-         * move_foreground puts nav_bar LAST in the child list → drawn last → on top. */
-        lv_obj_move_foreground(nav_bar);
-    }
+    /* ── Swipe-up hint ── */
+    s_hint_label = lv_label_create(s_screen);
+    /* ASCII only — no Unicode chevron in Montserrat subset */
+    lv_label_set_text(s_hint_label, "FOCUS");
+    lv_obj_set_style_text_font(s_hint_label, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(s_hint_label, lv_color_hex(0x3a3a40), 0);
+    lv_obj_set_style_text_letter_space(s_hint_label, 6, 0);
+    lv_obj_set_width(s_hint_label, SW);
+    lv_obj_set_style_text_align(s_hint_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(s_hint_label, 0, 1210);
 
-    /* ── PAGE DOTS — BIG ───────────────────────────────────── */
-    {
-        int dot_sz = 20;
-        int dot_gap = 12;
-        int total = NUM_PAGES * dot_sz + (NUM_PAGES - 1) * dot_gap;
-        int x0 = (SW - total) / 2;
-        int y = SH - NAV_H - 20;
-        for (int i = 0; i < NUM_PAGES; i++) {
-            page_dots[i] = lv_obj_create(scr);
-            lv_obj_set_size(page_dots[i], dot_sz, dot_sz);
-            lv_obj_set_pos(page_dots[i], x0 + i * (dot_sz + dot_gap), y);
-            lv_obj_set_style_radius(page_dots[i], LV_RADIUS_CIRCLE, 0);
-            lv_obj_set_style_border_width(page_dots[i], 0, 0);
-            lv_obj_set_style_bg_color(page_dots[i],
-                lv_color_hex(i == 0 ? COL_AMBER : COL_LABEL3), 0);
-            lv_obj_set_style_bg_opa(page_dots[i], LV_OPA_COVER, 0);
-            lv_obj_clear_flag(page_dots[i], LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-        }
-    }
-
-    lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_VALUE_CHANGED, NULL);
-
-    /* Seed local badge mode from NVS so it starts in sync */
-    s_badge_mode = tab5_settings_get_voice_mode();
-
+    /* Initial status fill */
     ui_home_update_status();
-    tmr_update = lv_timer_create(update_timer_cb, 1000, NULL);
 
-    /* Hide persistent floating buttons on home page (orb + Ask Tinker are
-     * the primary voice entry points here — mic/kbd triggers are redundant) */
-    lv_obj_t *mic = ui_voice_get_mic_btn();
-    if (mic) lv_obj_add_flag(mic, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
-    if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+    /* Refresh timer (5 s cadence — minute precision is enough for the clock,
+       and each refresh only invalidates labels whose text actually changed). */
+    if (s_refresh_timer == NULL) {
+        s_refresh_timer = lv_timer_create(refresh_timer_cb, 5000, NULL);
+    }
 
-    lv_screen_load(scr);
-    ESP_LOGI(TAG, "TinkerOS home screen created");
-    return scr;
+    ESP_LOGI(TAG, "v5 FLAT home created (orb %dpx, mode %d)", ORB_SIZE, s_badge_mode);
+    return s_screen;
 }
 
-/* ================================================================
- *  Callbacks
- * ================================================================ */
+/* ───────────────────────── periodic status ─────────────────── */
 
-static void orb_tap_cb(lv_event_t *e)
+void ui_home_update_status(void)
 {
-    (void)e;
-    voice_state_t st = voice_get_state();
+    /* Fetch wall clock time */
+    time_t now = 0;
+    time(&now);
+    struct tm tm_local;
+    localtime_r(&now, &tm_local);
 
-    if (st == VOICE_STATE_READY) {
-        esp_err_t err = voice_start_listening();
-        if (err == ESP_OK) {
-            /* Bug2: Show voice overlay — orb_tap bypasses mic button's
-             * s_pending_ask flag, so the state callback won't auto-show. */
-            ui_voice_show();
-        } else {
-            show_toast("Voice not ready — try again");
-            ESP_LOGW(TAG, "voice_start_listening failed: %s", esp_err_to_name(err));
+    /* Hero greeting word (re-evaluated each tick so it shifts with hour) */
+    if (s_hero_part) {
+        const char *g = greeting_for_hour(tm_local.tm_hour);
+        /* Only set text when it actually changes — LVGL skips the redraw then */
+        const char *cur = lv_label_get_text(s_hero_part);
+        if (!cur || strcmp(cur, g) != 0) lv_label_set_text(s_hero_part, g);
+    }
+
+    /* Clock + date — only invalidate when text actually changes. Keeps LVGL
+       from repainting the 500 px orb underneath them every second. */
+    if (s_hero_clock) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%02d : %02d", tm_local.tm_hour, tm_local.tm_min);
+        const char *cur = lv_label_get_text(s_hero_clock);
+        if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_hero_clock, buf);
+    }
+    if (s_hero_date) {
+        char buf[40];
+        format_date(buf, sizeof(buf), &tm_local);
+        const char *cur = lv_label_get_text(s_hero_date);
+        if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_hero_date, buf);
+    }
+
+    /* ── Edge-state detection (v5 spec section 10 "When something's off") ──
+     * Priority order: NO WI-FI > DRAGON DOWN > MUTED > QUIET HOURS > normal.
+     * Same composition, different voice: sys label + poem + status-dot
+     * colour all reflect the dominant state. */
+    bool wifi_ok  = tab5_wifi_connected();
+    bool dragon   = voice_is_connected();
+    bool mic_off  = tab5_settings_get_mic_mute() != 0;
+    bool quiet    = tab5_settings_quiet_active(tm_local.tm_hour);
+
+    enum { ST_NORMAL, ST_NO_WIFI, ST_DRAGON_DOWN, ST_MUTED, ST_QUIET } state;
+    if (!wifi_ok)       state = ST_NO_WIFI;
+    else if (!dragon)   state = ST_DRAGON_DOWN;
+    else if (mic_off)   state = ST_MUTED;
+    else if (quiet)     state = ST_QUIET;
+    else                state = ST_NORMAL;
+
+    if (s_poem_label) {
+        char preview[180];
+        bool have = ui_notes_get_last_preview(preview, sizeof(preview));
+        char buf[260];
+        switch (state) {
+            case ST_NO_WIFI:
+                snprintf(buf, sizeof(buf),
+                    "I can't reach the network.\n%s didn't answer three times.\nTap to scan.",
+                    "Wi-Fi");
+                break;
+            case ST_DRAGON_DOWN:
+                snprintf(buf, sizeof(buf),
+                    "My brain is offline.\nI'll record voice notes locally\nuntil Dragon comes back.");
+                break;
+            case ST_MUTED:
+                snprintf(buf, sizeof(buf),
+                    "Listening off.\nI won't hear a thing\nuntil you tap me.");
+                break;
+            case ST_QUIET:
+                snprintf(buf, sizeof(buf),
+                    "Good night, Emile.\n%02d:%02d -- I won't speak until 07:00.\nEmergencies can still reach me.",
+                    tm_local.tm_hour, tm_local.tm_min);
+                break;
+            default:
+                if (have && preview[0]) {
+                    snprintf(buf, sizeof(buf),
+                        "Last note -- %s\nTap to see what your agents did.",
+                        preview);
+                } else {
+                    snprintf(buf, sizeof(buf),
+                        "Standing by.\nTap me on the orb to ask something.");
+                }
+                break;
         }
-    } else if (st == VOICE_STATE_IDLE) {
-        /* Not connected — force immediate reconnect (Bug4: resets backoff)
-         * Enhancement 5: Show "Reconnecting..." toast and auto-listen on success */
-        show_toast("Reconnecting...");
-        voice_force_reconnect();
-    } else if (st == VOICE_STATE_CONNECTING) {
-        show_toast("Connecting...");
-    } else {
-        show_toast("Voice is busy");
-        ESP_LOGI(TAG, "Voice busy (state %d)", st);
-    }
-}
-
-static void ask_tap_cb(lv_event_t *e)
-{
-    (void)e;
-    orb_tap_cb(e);  /* Same action as orb tap */
-}
-
-/* S1: Camera quick-launch from Home */
-static void cb_camera_launch(lv_event_t *e)
-{
-    (void)e;
-    extern lv_obj_t *ui_camera_create(void);
-    ui_camera_create();
-}
-
-/* S2: Files quick-launch from Home */
-static void cb_files_launch(lv_event_t *e)
-{
-    (void)e;
-    extern lv_obj_t *ui_files_create(void);
-    ui_files_create();
-}
-
-static void cb_last_note_tap(lv_event_t *e)
-{
-    (void)e;
-    /* Open Notes overlay (same as nav bar Notes button) */
-    dismiss_all_overlays();
-    lv_async_call(async_notes_create, NULL);
-}
-
-static void update_mode_badge(uint8_t mode)
-{
-    if (!lbl_privacy) return;
-    /* Mode labels, colors, and orb ring accent */
-    static const char *labels[] = {"  Local  ", " Hybrid ", "  Cloud  ", "TinkerClaw"};
-    static const uint32_t colors[] = {0x22C55E, 0xF59E0B, 0x3B82F6, 0xE11D48};
-    if (mode >= VOICE_MODE_COUNT) mode = 0;
-
-    lv_label_set_text(lbl_privacy, labels[mode]);
-    lv_obj_set_style_bg_color(lbl_privacy, lv_color_hex(colors[mode]), 0);
-    lv_obj_set_style_text_color(lbl_privacy, lv_color_hex(colors[mode]), 0);
-    lv_obj_set_style_bg_opa(lbl_privacy, LV_OPA_30, 0);
-
-    /* Update home orb ring color to match mode (US-PR14) */
-    if (orb_ring) {
-        static const uint32_t ring_colors[] = {0x22C55E, 0xEAB308, 0x3B82F6, 0xE11D48};
-        uint32_t orb_color = ring_colors[mode];
-        lv_obj_set_style_border_color(orb_ring, lv_color_hex(orb_color), 0);
-    }
-}
-
-static void privacy_tap_cb(lv_event_t *e)
-{
-    (void)e;
-    /* Cycle: Local(0) → Hybrid(1) → Cloud(2) → TinkerClaw(3) → Local(0) */
-    uint8_t prev = s_badge_mode;
-    s_badge_mode = (s_badge_mode + 1) % VOICE_MODE_COUNT;
-
-    tab5_settings_set_voice_mode(s_badge_mode);
-
-    /* Send config_update to Dragon */
-    if (voice_is_connected()) {
-        char model[64] = {0};
-        tab5_settings_get_llm_model(model, sizeof(model));
-        voice_send_config_update((int)s_badge_mode,
-            (s_badge_mode >= 2) ? model : NULL);
+        const char *cur = lv_label_get_text(s_poem_label);
+        if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
     }
 
-    /* Update badge */
-    update_mode_badge(s_badge_mode);
-
-    /* Toast */
-    const char *names[] = {
-        "Local — all on-device",
-        "Hybrid — cloud STT+TTS",
-        "Cloud — all cloud",
-        "TinkerClaw — Agent mode",
-    };
-    show_toast(names[s_badge_mode]);
-
-    ESP_LOGI(TAG, "Mode cycled: %d → %d", prev, s_badge_mode);
-}
-
-static void brain_pulse_cb(void *obj, int32_t val)
-{
-    lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
-}
-
-/* ── Toast helper ─────────────────────────────────────────── */
-static void toast_timer_cb(lv_timer_t *t)
-{
-    lv_obj_t *toast = (lv_obj_t *)lv_timer_get_user_data(t);
-    if (toast && lv_obj_is_valid(toast)) lv_obj_delete(toast);
-}
-
-static void show_toast(const char *text)
-{
-    lv_obj_t *toast = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_align(toast, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(toast, lv_color_hex(0x1C1C1E), 0);
-    lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
-    lv_obj_set_style_radius(toast, 16, 0);
-    lv_obj_set_style_border_width(toast, 0, 0);
-    lv_obj_set_style_pad_hor(toast, 32, 0);
-    lv_obj_set_style_pad_ver(toast, 16, 0);
-    lv_obj_clear_flag(toast, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t *lbl = lv_label_create(toast);
-    lv_label_set_text(lbl, text);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
-    lv_obj_center(lbl);
-
-    lv_timer_t *tmr = lv_timer_create(toast_timer_cb, 3000, toast);
-    lv_timer_set_repeat_count(tmr, 1);
-}
-
-/* Wrappers for lv_async_call — avoid cast between incompatible function types */
-static void async_notes_create(void *arg) { (void)arg; ui_notes_create(); }
-
-static void update_nav_ui(int page)
-{
-    for (int i = 0; i < NUM_PAGES; i++) {
-        if (page_dots[i]) {
-            lv_obj_set_style_bg_color(page_dots[i],
-                lv_color_hex(i == page ? 0xF5A623 : 0x333333), 0);
+    /* Top-left system status — v5 spec.  Format + colour matches the
+     * active edge state.  Normal: "DRAGON • 14:32".  Active voice:
+     * "DRAGON • LISTENING".  Edge states: per spec shot-13. */
+    if (s_sys_label) {
+        char buf[64];
+        voice_state_t vs = voice_get_state();
+        const char *state_hint = NULL;
+        if (dragon) {
+            switch (vs) {
+                case VOICE_STATE_LISTENING:  state_hint = "LISTENING"; break;
+                case VOICE_STATE_PROCESSING: state_hint = "THINKING";  break;
+                case VOICE_STATE_SPEAKING:   state_hint = "SPEAKING";  break;
+                default: break;
+            }
         }
-        if (nav_icons[i]) {
-            lv_obj_set_style_text_color(nav_icons[i],
-                lv_color_hex(i == page ? COL_AMBER : COL_LABEL2), 0);
+        uint32_t label_col = 0x8A8A93;  /* default muted */
+        switch (state) {
+            case ST_NO_WIFI:
+                snprintf(buf, sizeof(buf), "OFFLINE \xe2\x80\xa2 NO WI-FI");
+                label_col = TH_STATUS_RED;
+                break;
+            case ST_DRAGON_DOWN:
+                snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 UNREACHABLE");
+                label_col = TH_STATUS_RED;
+                break;
+            case ST_MUTED:
+                snprintf(buf, sizeof(buf), "MIC \xe2\x80\xa2 OFF");
+                label_col = 0x7A7A82;
+                break;
+            case ST_QUIET:
+                snprintf(buf, sizeof(buf), "QUIET \xe2\x80\xa2 UNTIL 07:00");
+                label_col = 0x7A7A82;
+                break;
+            default:
+                if (state_hint) {
+                    snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %s", state_hint);
+                } else {
+                    snprintf(buf, sizeof(buf), "DRAGON \xe2\x80\xa2 %02d:%02d",
+                             tm_local.tm_hour, tm_local.tm_min);
+                }
+                break;
+        }
+        const char *cur = lv_label_get_text(s_sys_label);
+        if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_sys_label, buf);
+        lv_obj_set_style_text_color(s_sys_label, lv_color_hex(label_col), 0);
+    }
+    if (s_sys_dot) {
+        uint32_t col;
+        switch (state) {
+            case ST_NO_WIFI:
+            case ST_DRAGON_DOWN: col = TH_STATUS_RED;   break;
+            case ST_MUTED:
+            case ST_QUIET:       col = 0x5C5C68;        break;
+            default:             col = TH_STATUS_GREEN; break;
+        }
+        lv_obj_set_style_bg_color(s_sys_dot, lv_color_hex(col), 0);
+    }
+
+    /* Top-right mode chip — re-read from NVS (cheap) */
+    uint8_t current_mode = tab5_settings_get_voice_mode();
+    if (current_mode != s_badge_mode) {
+        update_mode_ui(current_mode);
+    }
+
+    /* Mode label + diamond are pre-positioned in ui_home_create() at
+       fixed right-aligned coords — nothing to reposition here. */
+}
+
+static void refresh_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    ui_home_update_status();
+}
+
+/* ───────────────────────── interactions ────────────────────── */
+
+static void orb_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;  /* ignore stray tap-through from a closing overlay */
+
+    /* Debounce: repeated orb taps inside 500ms collapse to a single open.
+     * Without this, 6 rapid taps stacked 6x (ui_voice_show + voice_start_
+     * listening + voice_connect_async) and exhausted the SDIO TX copy_buff,
+     * crashing tcpip_thread with a transport_drv_sta_tx assert. */
+    static uint32_t last_tap_ms = 0;
+    uint32_t now = lv_tick_get();
+    if (now - last_tap_ms < 500) {
+        ESP_LOGI(TAG, "orb tap debounced (dt=%lums)", (unsigned long)(now - last_tap_ms));
+        return;
+    }
+    last_tap_ms = now;
+
+    ESP_LOGI(TAG, "orb tapped -> open voice");
+    if (!voice_is_connected()) {
+        /* Kick off async connect if we're offline */
+        char dhost[64];
+        tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+        if (dhost[0]) {
+            voice_connect_async(dhost, TAB5_VOICE_PORT, false);
         }
     }
-
-    /* Gate JPEG rendering — only when in streaming mode (not Chat page) */
-    tab5_display_set_jpeg_enabled(false);
-
-    /* Show/hide persistent floating buttons:
-     * - Page 0 (Home): hidden (home has orb + Ask Tinker)
-     * - Page 3 (Settings): mic hidden (H5: overlaps scrollable content)
-     * - Pages 1,2: both visible */
-    lv_obj_t *mic = ui_voice_get_mic_btn();
-    lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
-    if (page == 0 || page == 3) {
-        if (mic) lv_obj_add_flag(mic, LV_OBJ_FLAG_HIDDEN);
-        if (page == 0 && kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
-        if (page == 3 && kbd) lv_obj_clear_flag(kbd, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        if (mic) lv_obj_clear_flag(mic, LV_OBJ_FLAG_HIDDEN);
-        if (kbd) lv_obj_clear_flag(kbd, LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* When switching to Notes page, load the notes screen */
-    if (page == 1 && tiles[1]) {
-        lv_async_call(async_notes_create, NULL);
-    }
-    /* Settings handled in nav_click_cb directly */
+    ui_voice_show();
+    voice_start_listening();
 }
 
-static void _async_settings(void *arg)
+static void orb_long_press_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;
+    uint8_t next = (s_badge_mode + 1) % VOICE_MODE_COUNT;
+    ESP_LOGI(TAG, "orb long-pressed -> cycling mode %d -> %d", s_badge_mode, next);
+    tab5_settings_set_voice_mode(next);
+    char model[64];
+    tab5_settings_get_llm_model(model, sizeof(model));
+    voice_send_config_update(next, model);
+    update_mode_ui(next);
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "Mode: %s", s_mode_short[next]);
+    show_toast_internal(buf);
+}
+
+static void poem_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;
+    ESP_LOGI(TAG, "poem tapped -> Agents");
+    ui_agents_show();
+}
+
+static void sys_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;
+    ESP_LOGI(TAG, "sys label tapped -> Memory");
+    ui_memory_show();
+}
+
+/* Return true if an overlay is currently obscuring the home screen.
+   Home gestures must no-op while an overlay is up so a single swipe doesn't
+   open two screens (e.g. already-in-Chat + swipe-up stacks a second Chat). */
+static bool any_overlay_visible(void)
+{
+    extern bool ui_notes_is_visible(void);
+    extern bool ui_settings_is_visible(void);
+    extern bool ui_sessions_is_visible(void);
+    if (ui_chat_is_active())       return true;
+    if (ui_agents_is_visible())    return true;
+    if (ui_memory_is_visible())    return true;
+    if (ui_focus_is_visible())     return true;
+    if (ui_notes_is_visible())     return true;
+    if (ui_settings_is_visible())  return true;
+    if (ui_sessions_is_visible())  return true;
+    return false;
+}
+
+/* Async callbacks — deferred so the originating gesture has fully dispatched
+   before we create the overlay.  Prevents a swipe-right on home from opening
+   Notes, then immediately bubbling to Notes's own swipe-right=back handler
+   and tearing it down mid-layout (the visible crash the user reported). */
+static void async_open_focus(void *arg)   { (void)arg; ui_focus_show(); }
+static void async_open_notes(void *arg)
+{
+    (void)arg;
+    extern lv_obj_t *ui_notes_create(void);
+    ui_notes_create();
+}
+static void async_open_settings(void *arg)
 {
     (void)arg;
     extern lv_obj_t *ui_settings_create(void);
     ui_settings_create();
 }
 
-/* U09: Delayed settings open — one-shot timer gives LVGL a render cycle
- * to flush nav button pressed-state feedback before the heavy Settings
- * creation (~55 objects) monopolizes the render loop for ~500ms.
- * lv_async_call runs in the same lv_timer_handler() pass as style flush,
- * so the pressed state never reaches the display. A 30ms timer guarantees
- * at least one full render cycle (DPI refresh at ~16ms) completes first.
- * NOTE: lv_refr_now() cannot be used — causes internal heap exhaustion
- * on ESP32-P4 DPI display (see LEARNINGS.md). */
-static void _delayed_settings_cb(lv_timer_t *t)
+static void screen_gesture_cb(lv_event_t *e)
 {
-    (void)t;
-    s_pending_nav_timer = NULL;
-    _async_settings(NULL);
-}
+    (void)e;
+    if (any_overlay_visible()) return;
 
-void ui_home_nav_settings(void)
-{
-    /* Cancel any pending nav timer (e.g. from a previous rapid tap) */
-    if (s_pending_nav_timer) {
-        lv_timer_delete(s_pending_nav_timer);
-        s_pending_nav_timer = NULL;
-    }
-    s_pending_nav_timer = lv_timer_create(_delayed_settings_cb, 30, NULL);
-    lv_timer_set_repeat_count(s_pending_nav_timer, 1);
-}
-
-static void _async_chat(void *arg)
-{
-    (void)arg;
-    extern lv_obj_t *ui_chat_create(void);
-    ui_chat_create();
-}
-
-/* Dismiss ALL overlays before opening any screen.
- *
- * C07 audit (April 2026): No use-after-free risk here.
- * ui_settings_hide() and ui_chat_hide() only set LV_OBJ_FLAG_HIDDEN (no deletion).
- * ui_settings_destroy() and ui_chat_destroy() use synchronous lv_obj_delete()/lv_obj_del(),
- * NOT lv_obj_del_async(). All deletion is immediate — no deferred-delete race. */
-static void dismiss_all_overlays(void)
-{
-    /* Cancel any pending delayed-creation timer from a previous nav tap.
-     * Without this, dismiss+create sequences race with the 30ms timer. */
-    if (s_pending_nav_timer) {
-        lv_timer_delete(s_pending_nav_timer);
-        s_pending_nav_timer = NULL;
-    }
-    ui_keyboard_hide();
-    extern void ui_settings_hide(void);
-    extern void ui_notes_hide(void);
-    extern void ui_chat_destroy(void);
-    ui_settings_hide();
-    ui_notes_hide();
-    extern void ui_chat_hide(void);
-    ui_chat_hide();
-}
-
-/* U09: Delayed overlay open callbacks — same pattern as Settings.
- * 30ms delay lets LVGL flush nav button pressed-state to display. */
-static void _delayed_notes_cb(lv_timer_t *t) { (void)t; s_pending_nav_timer = NULL; async_notes_create(NULL); }
-static void _delayed_chat_cb(lv_timer_t *t)  { (void)t; s_pending_nav_timer = NULL; _async_chat(NULL); }
-
-static void nav_click_cb(lv_event_t *e)
-{
-    int pg = (int)(intptr_t)lv_event_get_user_data(e);
-    if (pg < 0 || pg >= NUM_PAGES) return;
-
-    /* ── Debounce: reject rapid nav taps (300ms) ──────────────────
-     * Without this, tapping Settings then Notes quickly queues TWO
-     * fire-and-forget 30ms timers.  Both fire, creating two overlays
-     * simultaneously → LVGL Store access fault on Core 0. */
-    int64_t now = esp_timer_get_time();
-    if (now - s_last_nav_click_us < NAV_DEBOUNCE_US) {
-        ESP_LOGW("nav", "Nav click debounced (%.0f ms since last)",
-                 (double)(now - s_last_nav_click_us) / 1000.0);
-        return;
-    }
-    s_last_nav_click_us = now;
-
-    /* Cancel any pending delayed-creation timer from a previous nav tap.
-     * This is the critical fix: if user tapped Settings (creating a 30ms
-     * timer) and then taps Notes before the timer fires, the Settings
-     * timer must be cancelled — otherwise both screens get created. */
-    if (s_pending_nav_timer) {
-        lv_timer_delete(s_pending_nav_timer);
-        s_pending_nav_timer = NULL;
-    }
-
-    dismiss_all_overlays();
-    if (pg == 1) {
-        /* U09: Delay overlay open so nav pressed-state renders first */
-        s_pending_nav_timer = lv_timer_create(_delayed_notes_cb, 30, NULL);
-        lv_timer_set_repeat_count(s_pending_nav_timer, 1);
-        return;
-    }
-    if (pg == 2) {
-        /* U09: Delay overlay open so nav pressed-state renders first */
-        s_pending_nav_timer = lv_timer_create(_delayed_chat_cb, 30, NULL);
-        lv_timer_set_repeat_count(s_pending_nav_timer, 1);
-        return;
-    }
-    if (pg == 3) {
-        s_pending_nav_timer = lv_timer_create(_delayed_settings_cb, 30, NULL);
-        lv_timer_set_repeat_count(s_pending_nav_timer, 1);
-        return;
-    }
-    if (tiles[pg] && tileview) {
-        lv_tileview_set_tile(tileview, tiles[pg], LV_ANIM_ON);
+    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+    switch (dir) {
+        case LV_DIR_TOP:
+            ESP_LOGI(TAG, "swipe up -> Focus (async)");
+            lv_async_call(async_open_focus, NULL);
+            break;
+        case LV_DIR_RIGHT:
+            ESP_LOGI(TAG, "swipe right -> Notes (async)");
+            lv_async_call(async_open_notes, NULL);
+            break;
+        case LV_DIR_LEFT:
+            ESP_LOGI(TAG, "swipe left -> Settings (async)");
+            lv_async_call(async_open_settings, NULL);
+            break;
+        default:
+            break;
     }
 }
 
-static void tileview_scroll_cb(lv_event_t *e)
+/* ───────────────────────── toast ─────────────────────────────── */
+
+typedef struct { lv_timer_t *t; lv_obj_t *obj; } toast_ctx_t;
+
+static void toast_remove_cb(lv_timer_t *t)
 {
-    lv_obj_t *active = lv_tileview_get_tile_active(lv_event_get_target(e));
-    if (!active) return;
-    int pg = lv_obj_get_y(active) / SH;
-    if (pg < 0) pg = 0;
-    if (pg >= NUM_PAGES) pg = NUM_PAGES - 1;
-    if (pg != cur_page) {
-        cur_page = pg;
-        update_nav_ui(cur_page);
-        /* Hide keyboard when swiping between pages — prevents
-         * persistent keyboard from Notes blocking other screens */
-        ui_keyboard_hide();
+    toast_ctx_t *ctx = (toast_ctx_t *)lv_timer_get_user_data(t);
+    if (ctx) {
+        if (ctx->obj) lv_obj_del(ctx->obj);
+        if (s_toast == ctx->obj) s_toast = NULL;
+        free(ctx);
+    }
+    lv_timer_delete(t);
+}
+
+static void show_toast_internal(const char *text)
+{
+    if (!text) return;
+    /* Remove any existing toast first */
+    if (s_toast) { lv_obj_del(s_toast); s_toast = NULL; }
+
+    lv_obj_t *t = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(t);
+    lv_obj_set_size(t, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(t, lv_color_hex(TH_CARD_ELEVATED), 0);
+    lv_obj_set_style_bg_opa(t, 240, 0);
+    lv_obj_set_style_radius(t, 18, 0);
+    lv_obj_set_style_pad_hor(t, 22, 0);
+    lv_obj_set_style_pad_ver(t, 14, 0);
+    lv_obj_set_style_border_width(t, 1, 0);
+    lv_obj_set_style_border_color(t, lv_color_hex(TH_CARD_BORDER), 0);
+
+    lv_obj_t *lbl = lv_label_create(t);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_letter_space(lbl, 1, 0);
+
+    lv_obj_align(t, LV_ALIGN_CENTER, 0, 200);
+    s_toast = t;
+
+    toast_ctx_t *ctx = (toast_ctx_t *)calloc(1, sizeof(*ctx));
+    if (ctx) {
+        ctx->obj = t;
+        ctx->t = lv_timer_create(toast_remove_cb, 2200, ctx);
+        lv_timer_set_repeat_count(ctx->t, 1);
     }
 }
 
-static void update_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-    ui_home_update_status();
-}
+/* ───────────────────────── public API ────────────────────────── */
 
-/* ================================================================
- *  Status update
- * ================================================================ */
-void ui_home_update_status(void)
-{
-    if (!scr) return;
-
-    /* Time + Date */
-    tab5_rtc_time_t rtc = {0};
-    if (tab5_rtc_get_time(&rtc) == ESP_OK) {
-        char tb[8];
-        snprintf(tb, sizeof(tb), "%02d:%02d", rtc.hour, rtc.minute);
-        if (lbl_clock) lv_label_set_text(lbl_clock, tb);
-        if (lbl_sbar_time) lv_label_set_text(lbl_sbar_time, tb);
-
-        /* Dynamic date from RTC */
-        if (lbl_date) {
-            static const char *day_names[] = {
-                "Sunday","Monday","Tuesday","Wednesday",
-                "Thursday","Friday","Saturday"
-            };
-            static const char *month_names[] = {
-                "January","February","March","April","May","June",
-                "July","August","September","October","November","December"
-            };
-            if (rtc.weekday < 7 && rtc.month >= 1 && rtc.month <= 12) {
-                lv_label_set_text_fmt(lbl_date, "%s, %s %d",
-                    day_names[rtc.weekday], month_names[rtc.month - 1], rtc.day);
-            }
-        }
-    }
-
-    /* Battery */
-    uint8_t bpct = tab5_battery_percent();
-    char bb[8];
-    snprintf(bb, sizeof(bb), "%u%%", bpct);
-    if (lbl_sbar_batt) lv_label_set_text(lbl_sbar_batt, bb);
-
-    /* WiFi */
-    bool wifi_on = tab5_wifi_connected();
-    if (lbl_sbar_wifi) {
-        lv_obj_set_style_text_color(lbl_sbar_wifi,
-            lv_color_hex(wifi_on ? COL_WHITE : COL_LABEL3), 0);
-    }
-
-    /* S4: Connection dot reflects voice WS state (the real indicator) */
-    {
-        bool voice_ok = voice_is_connected();
-        if (lbl_sbar_dragon) {
-            lv_obj_set_style_bg_color(lbl_sbar_dragon,
-                lv_color_hex(voice_ok ? COL_MINT : COL_RED), 0);
-        }
-        if (s_disconnect_banner) {
-            if (!voice_ok) {
-                lv_obj_clear_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(s_disconnect_banner, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-    }
-
-    /* US-PR25: Dim orb when voice is not ready (boot connect / disconnected).
-     * Prevents user from tapping a normal-looking orb and getting "Connecting..." toast.
-     * Uses lv_obj opa (not bg_opa/border_opa) so it composites over the breathing animation. */
-    {
-        voice_state_t vst = voice_get_state();
-        bool voice_ready = (vst == VOICE_STATE_READY || vst == VOICE_STATE_LISTENING
-                            || vst == VOICE_STATE_PROCESSING || vst == VOICE_STATE_SPEAKING);
-        lv_opa_t dim = voice_ready ? LV_OPA_COVER : LV_OPA_40;
-        if (orb_inner) lv_obj_set_style_opa(orb_inner, dim, 0);
-        if (orb_ring)  lv_obj_set_style_opa(orb_ring, dim, 0);
-
-        /* US-PR25: Update orb label to show connection progress.
-         * "Connecting..." while IDLE/CONNECTING, "Tap to ask" once READY+. */
-        if (lbl_ask) {
-            if (vst == VOICE_STATE_IDLE || vst == VOICE_STATE_CONNECTING) {
-                lv_label_set_text(lbl_ask, "Connecting...");
-                lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x666666), 0);
-            } else {
-                lv_label_set_text(lbl_ask, "Tap to ask");
-                lv_obj_set_style_text_color(lbl_ask, lv_color_hex(0x888888), 0);
-            }
-        }
-    }
-
-    /* Mode badge — keep in sync with NVS */
-    /* Use local s_badge_mode — NVS gets overwritten by Dragon ACK */
-    update_mode_badge(s_badge_mode);
-
-    /* Low battery warnings */
-    {
-        static bool s_warned_10 = false;
-        static bool s_warned_5 = false;
-        if (bpct <= 10 && bpct > 5 && !s_warned_10) {
-            s_warned_10 = true;
-            show_toast("Battery low (10%)");
-        }
-        if (bpct <= 5 && bpct > 0 && !s_warned_5) {
-            s_warned_5 = true;
-            show_toast("Battery critical — plug in soon!");
-            ESP_LOGW(TAG, "Battery critical (%u%%)", bpct);
-        }
-    }
-
-    /* Last note card */
-    if (lbl_last_note) {
-        char note_preview[96];
-        if (ui_notes_get_last_preview(note_preview, sizeof(note_preview))) {
-            lv_label_set_text(lbl_last_note, note_preview);
-        } else {
-            lv_label_set_text(lbl_last_note, "No notes yet - tap Voice to record");
-        }
-    }
-}
-
-/* ================================================================
- *  Destroy
- * ================================================================ */
 void ui_home_destroy(void)
 {
-    if (orb_anim_on) {
-        lv_anim_delete(orb_ring, brain_pulse_cb);
-        orb_anim_on = false;
-    }
-    if (tmr_update) {
-        lv_timer_delete(tmr_update);
-        tmr_update = NULL;
-    }
-    /* Nav bar lives on lv_layer_top() — must be deleted separately */
-    if (nav_bar) {
-        lv_obj_delete(nav_bar);
-        nav_bar = NULL;
-        memset(nav_icons, 0, sizeof(nav_icons));
-    }
-    if (scr) {
-        lv_obj_delete(scr);
-        scr = NULL;
-        tileview = NULL;
-        orb_ring = NULL;
-        orb_inner = NULL;
-        lbl_clock = lbl_date = lbl_ask = NULL;
-        lbl_sbar_time = lbl_sbar_wifi = lbl_sbar_batt = NULL;
-        lbl_sbar_dragon = NULL;
-        s_disconnect_banner = NULL;
-        lbl_privacy = NULL;
-        lbl_last_note = NULL;
-        last_note_card = NULL;
-        memset(page_dots, 0, sizeof(page_dots));
-        memset(tiles, 0, sizeof(tiles));
-        cur_page = 0;
-        ESP_LOGI(TAG, "Home destroyed");
-    }
+    if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
+    if (s_screen) { lv_obj_del(s_screen); s_screen = NULL; }
+    s_hero_part = s_hero_clock = s_hero_date = NULL;
+    s_sys_label = s_sys_dot = NULL;
+    s_mode_diamond = s_mode_label = NULL;
+    s_orb = s_poem_label = s_hint_label = NULL;
+    s_toast = NULL;
 }
 
-lv_obj_t *ui_home_get_screen(void)
+lv_obj_t *ui_home_get_screen(void) { return s_screen; }
+
+void ui_home_go_home(void)
 {
-    return scr;
+    /* v5 home is single-page. "Go home" = hide any open overlays. */
+    if (ui_chat_is_active()) ui_chat_hide();
+    /* ui_settings / ui_notes have their own back button flows; nothing to do */
 }
 
 lv_obj_t *ui_home_get_tileview(void)
 {
-    return tileview;
+    /* v5 has no tileview. Returning NULL is fine — debug_server/navigate
+       handles this gracefully (see ui_home_go_home for the equivalent). */
+    return NULL;
 }
 
 lv_obj_t *ui_home_get_tile(int page)
 {
-    if (page < 0 || page >= NUM_PAGES) return NULL;
-    return tiles[page];
+    /* v5 single-page: page 0 == the home screen; everything else opens as
+       an overlay via ui_home_nav_* helpers. */
+    return (page == 0) ? s_screen : NULL;
 }
 
-void ui_home_go_home(void)
+void ui_home_nav_settings(void)
 {
-    if (tileview && tiles[0]) {
-        lv_tileview_set_tile(tileview, tiles[0], LV_ANIM_OFF);
-        cur_page = 0;
-        update_nav_ui(0);
-    }
+    ui_settings_create();
 }
 
 void ui_home_refresh_mode_badge(void)
 {
-    s_badge_mode = tab5_settings_get_voice_mode();
-    update_mode_badge(s_badge_mode);
+    uint8_t m = tab5_settings_get_voice_mode();
+    update_mode_ui(m);
 }
 
 void ui_home_show_toast(const char *text)
 {
-    show_toast(text);
+    show_toast_internal(text);
+}
+
+/* Pull just the voice-state line out of update_status and make it callable
+   from anywhere. lv_async_call marshals back onto the LVGL thread so
+   voice.c callbacks firing on the WS recv task don't touch LVGL from the
+   wrong core. */
+static void sys_label_refresh_async_cb(void *arg)
+{
+    (void)arg;
+    if (!s_sys_label) return;
+    char buf[64];
+    bool dragon = voice_is_connected();
+    int bat = (int)tab5_battery_percent();
+    voice_state_t vs = voice_get_state();
+    const char *state_hint = NULL;
+    if (dragon) {
+        switch (vs) {
+            case VOICE_STATE_LISTENING:  state_hint = "LISTENING"; break;
+            case VOICE_STATE_PROCESSING: state_hint = "THINKING";  break;
+            case VOICE_STATE_SPEAKING:   state_hint = "SPEAKING";  break;
+            default: break;
+        }
+    }
+    bool muted = tab5_settings_get_mic_mute();
+    bool quiet = false;
+    {
+        time_t now = 0; time(&now);
+        struct tm tm_local; localtime_r(&now, &tm_local);
+        quiet = tab5_settings_quiet_active(tm_local.tm_hour);
+    }
+    if (quiet)            snprintf(buf, sizeof(buf), "QUIET - %d%%", bat);
+    else if (muted)       snprintf(buf, sizeof(buf), "MUTED - %d%%", bat);
+    else if (state_hint)  snprintf(buf, sizeof(buf), "DRAGON %d%% - %s", bat, state_hint);
+    else if (dragon)      snprintf(buf, sizeof(buf), "DRAGON %d%%", bat);
+    else                  snprintf(buf, sizeof(buf), "OFFLINE %d%%", bat);
+    const char *cur = lv_label_get_text(s_sys_label);
+    if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_sys_label, buf);
+}
+
+void ui_home_refresh_sys_label(void)
+{
+    /* Marshal to LVGL thread — voice state callbacks fire on the WS recv
+       task (Core 1), but LVGL objects must only be touched from the LVGL
+       task. lv_async_call is the standard ESP-IDF + LVGL pattern. */
+    lv_async_call(sys_label_refresh_async_cb, NULL);
 }

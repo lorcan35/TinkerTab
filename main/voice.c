@@ -1837,6 +1837,14 @@ esp_err_t voice_start_listening(void)
     ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_connected=%d, state=%d",
              s_initialized, s_ws_connected, s_state);
 
+    /* Mic-mute gate — privacy. Don't open the mic even if we're connected. */
+    if (tab5_settings_get_mic_mute()) {
+        ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
+        extern void ui_home_show_toast(const char *text);
+        ui_home_show_toast("Mic is muted -- unmute in Settings");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (!s_initialized || !s_ws_connected) {
         ESP_LOGE(TAG, "Not connected (initialized=%d, ws_connected=%d)",
                  s_initialized, s_ws_connected);

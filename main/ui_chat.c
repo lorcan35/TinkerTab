@@ -16,6 +16,7 @@
 #include "voice.h"
 #include "config.h"
 #include "ui_keyboard.h"
+#include "ui_sessions.h"
 #include "settings.h"
 #include "tab5_rtc.h"
 #include "esp_log.h"
@@ -73,11 +74,11 @@ static SemaphoreHandle_t s_img_dl_sem = NULL;
 static volatile uint32_t s_img_load_gen = 0;
 
 #define SWIPE_EDGE_PX  60
-#define CLR_BG         0x0A0A0F
+#define CLR_BG         0x08080E   /* TH_BG — v5 background */
 
-/* ── Mode arrays ──────────────────────────────────────────────── */
+/* ── Mode arrays — v5 th_mode_colors palette ──────────────────── */
 static const char *s_mode_names[]  = {"Local", "Hybrid", "Cloud", "TinkerClaw"};
-static const uint32_t s_mode_colors[] = {0x22C55E, 0xF5A623, 0x06B6D4, 0xE11D48};
+static const uint32_t s_mode_colors[] = {0x22C55E, 0xF59E0B, 0x3B82F6, 0xF43F5E};
 
 static const char *s_local_models[]  = {"qwen3:1.7b", "qwen3:0.6b", "qwen3:4b"};
 static const char *s_cloud_models[]  = {
@@ -284,6 +285,13 @@ static void cb_new_chat(lv_event_t *e)
     lv_obj_t *scroll = chat_view_get_scroll();
     if (scroll) chat_suggestions_create(scroll, mode, cb_suggestion_tap);
     ESP_LOGI(TAG, "New chat — cleared mode %d, guard active", mode);
+}
+
+static void cb_open_sessions(lv_event_t *e)
+{
+    (void)e;
+    extern void ui_sessions_show(void);
+    ui_sessions_show();
 }
 
 static void cb_mode_cycle(lv_event_t *e)
@@ -615,6 +623,7 @@ lv_obj_t *ui_chat_create(void)
     /* Edge-swipe gesture */
     lv_obj_add_event_cb(s_overlay, cb_touch_down, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_overlay, cb_close, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     /* FLEX COLUMN layout: header / scroll (grow) / input bar */
     lv_obj_set_flex_flow(s_overlay, LV_FLEX_FLOW_COLUMN);
@@ -638,6 +647,13 @@ lv_obj_t *ui_chat_create(void)
             lv_obj_add_flag(s_header->mode_badge, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_set_ext_click_area(s_header->mode_badge, 10);
             lv_obj_add_event_cb(s_header->mode_badge, cb_mode_cycle, LV_EVENT_CLICKED, NULL);
+        }
+        /* Title tap opens the sessions browser (v5 spec shot-06 right pane). */
+        if (s_header->title) {
+            lv_obj_add_flag(s_header->title, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_ext_click_area(s_header->title, 16);
+            lv_obj_add_event_cb(s_header->title, cb_open_sessions,
+                                LV_EVENT_CLICKED, NULL);
         }
     }
 

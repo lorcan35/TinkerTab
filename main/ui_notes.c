@@ -41,16 +41,16 @@ static const char *TAG = "ui_notes";
 #define COL_BG         0x0A0A0F
 #define COL_CARD       0x1A1A2E
 #define COL_CARD2      0x2C2C2E
-#define COL_AMBER      0xF5A623
-#define COL_CYAN       0x00E5FF
+#define COL_AMBER      0xF59E0B
+#define COL_CYAN       0xF59E0B
 #define COL_MINT       0x22C55E
 #define COL_RED        0xEF4444
-#define COL_WHITE      0xFFFFFF
-#define COL_LABEL      0xFFFFFF
+#define COL_WHITE      0xE8E8EF
+#define COL_LABEL      0xE8E8EF
 #define COL_LABEL2     0x888888
 #define COL_LABEL3     0x555555
 #define COL_PURPLE     0xA855F7
-#define COL_BORDER     0x333333
+#define COL_BORDER     0x1A1A24
 
 /* ── Layout — BIG TOUCH TARGETS ─────────────────────────────────── */
 #define SW             720
@@ -465,6 +465,7 @@ static lv_obj_t *s_rec_indicator = NULL;  /* container for the recording bar */
 static lv_obj_t *s_rec_dot = NULL;        /* red pulsing dot */
 static lv_obj_t *s_rec_time_lbl = NULL;   /* "0:05" timer */
 static lv_obj_t *s_rec_text_lbl = NULL;   /* "Recording..." or "Paused" */
+static lv_obj_t *s_topbar_meta  = NULL;   /* v5 right-aligned count/size */
 static lv_timer_t *s_rec_timer = NULL;    /* 1s update timer */
 static int s_rec_seconds = 0;
 static bool s_rec_paused = false;         /* TODO: pause/resume not yet implemented */
@@ -1198,7 +1199,7 @@ static void show_input_area(void)
     s_input_area = lv_textarea_create(s_screen);
     lv_obj_set_size(s_input_area, SW - 180 - 16, INPUT_H);
     lv_obj_set_pos(s_input_area, 8, input_y);
-    lv_textarea_set_placeholder_text(s_input_area, "Type a note...");
+    lv_textarea_set_placeholder_text(s_input_area, "write it down...");
     lv_textarea_set_one_line(s_input_area, true);
     lv_obj_set_style_bg_color(s_input_area, lv_color_hex(COL_CARD2), 0);
     lv_obj_set_style_text_color(s_input_area, lv_color_hex(COL_WHITE), 0);
@@ -1252,6 +1253,11 @@ static void cb_back(lv_event_t *e)
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;  /* only swipe-right triggers back */
     }
+    /* Tear down anything floating above the notes list before we hide it.
+     * Without this, swiping out of the note editor left the keyboard (and
+     * its preview row showing the note text) stuck on top of Home. */
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; s_edit_ta = NULL; }
+    ui_keyboard_hide();
     hide_input_area();
     /* Hide overlay — don't destroy (preserve note list for quick re-open) */
     if (s_screen) {
@@ -1394,7 +1400,7 @@ static void cb_new_voice(lv_event_t *e)
         lv_obj_set_style_border_width(toast, 0, 0);
         lv_obj_t *lbl = lv_label_create(toast);
         lv_label_set_text(lbl, "SD card not ready");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xE8E8EF), 0);
         lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
         lv_timer_t *tmr = lv_timer_create(toast_delete_cb, 2000, toast);
         lv_timer_set_repeat_count(tmr, 1);
@@ -1527,85 +1533,81 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_clear_flag(s_edit_overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_foreground(s_edit_overlay);
 
-    /* ── Topbar: Cancel (left) | "Edit Note" (center) | Save (right) ── */
+    /* ── v5 spec shot-07 right: paper-like editor. No card, no buttons.
+     *   Topbar  : 'NOTES • SAVED n SEC AGO'  |  ·  ← CANCEL  /  SAVE →
+     *   Body    : full-width flat textarea, no border, just padded text.
+     * Cancel and Save stay as small amber/muted caption links on the
+     * right side of the topbar so they're out of the way of the page. */
     lv_obj_t *tb = lv_obj_create(s_edit_overlay);
     lv_obj_set_size(tb, SW, TOPBAR_H + 16);
     lv_obj_set_pos(tb, 0, 0);
     lv_obj_set_style_bg_color(tb, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(tb, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tb, 1, 0);
-    lv_obj_set_style_border_color(tb, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_border_color(tb, lv_color_hex(0x1C1C28), 0); /* TH_HAIRLINE */
     lv_obj_set_style_border_side(tb, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Cancel button — left */
+    /* Left caption: 'NOTES • <time> • <voice|text>' */
+    char sys_buf[80];
+    static const char *mn[] = {"JAN","FEB","MAR","APR","MAY","JUN",
+                                "JUL","AUG","SEP","OCT","NOV","DEC"};
+    int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
+    snprintf(sys_buf, sizeof(sys_buf),
+             "NOTES  \xe2\x80\xa2  %s %d  \xe2\x80\xa2  %02d:%02d  \xe2\x80\xa2  %s",
+             mn[mi], n->day, n->hour, n->minute,
+             n->is_voice ? "VOICE" : "TEXT");
+    lv_obj_t *sys = lv_label_create(tb);
+    lv_label_set_text(sys, sys_buf);
+    lv_obj_set_style_text_font(sys, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(sys, lv_color_hex(0x6A6A72), 0);
+    lv_obj_set_style_text_letter_space(sys, 3, 0);
+    lv_obj_align(sys, LV_ALIGN_LEFT_MID, 24, 0);
+
+    /* Right-side actions: CANCEL + SAVE as caption links (flat, no card). */
     lv_obj_t *cancel_btn = lv_button_create(tb);
     lv_obj_remove_style_all(cancel_btn);
-    lv_obj_set_size(cancel_btn, 120, TOPBAR_H);
-    lv_obj_align(cancel_btn, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(cancel_btn, 8, 0);
+    lv_obj_set_size(cancel_btn, 100, TOPBAR_H);
+    lv_obj_align(cancel_btn, LV_ALIGN_RIGHT_MID, -130, 0);
+    lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
-    lv_label_set_text(cancel_lbl, "Cancel");
-    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
+    lv_label_set_text(cancel_lbl, "CANCEL");
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(0x6A6A72), 0);
+    lv_obj_set_style_text_font(cancel_lbl, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(cancel_lbl, 3, 0);
     lv_obj_center(cancel_lbl);
 
-    /* Title — center */
-    lv_obj_t *title = lv_label_create(tb);
-    lv_label_set_text(title, "Edit Note");
-    lv_obj_set_style_text_color(title, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(title, FONT_HEADING, 0);
-    lv_obj_center(title);
-
-    /* Save button — right */
     lv_obj_t *save_btn = lv_button_create(tb);
     lv_obj_remove_style_all(save_btn);
     lv_obj_set_size(save_btn, 100, TOPBAR_H);
-    lv_obj_align(save_btn, LV_ALIGN_RIGHT_MID, -12, 0);
-    lv_obj_set_style_bg_color(save_btn, lv_color_hex(COL_MINT), 0);
-    lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(save_btn, 8, 0);
+    lv_obj_align(save_btn, LV_ALIGN_RIGHT_MID, -16, 0);
+    lv_obj_set_style_bg_opa(save_btn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, NULL);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
-    lv_label_set_text(save_lbl, "Save");
-    lv_obj_set_style_text_color(save_lbl, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_text_font(save_lbl, FONT_BODY, 0);
+    lv_label_set_text(save_lbl, "SAVE");
+    lv_obj_set_style_text_color(save_lbl, lv_color_hex(COL_AMBER), 0);
+    lv_obj_set_style_text_font(save_lbl, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(save_lbl, 3, 0);
     lv_obj_center(save_lbl);
 
-    /* ── Timestamp hint ── */
-    char ts_buf[64];
-    static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
-                                "Jul","Aug","Sep","Oct","Nov","Dec"};
-    int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
-    snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d — %s note",
-             mn[mi], n->day, n->hour, n->minute,
-             n->is_voice ? "Voice" : "Text");
-    lv_obj_t *ts = lv_label_create(s_edit_overlay);
-    lv_label_set_text(ts, ts_buf);
-    lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(ts, FONT_CAPTION, 0);
-    lv_obj_set_pos(ts, 24, TOPBAR_H + 24);
-
-    /* ── Large textarea — full width, most of the screen ── */
-    int ta_y = TOPBAR_H + 56;
+    /* ── Large textarea — flat, no card, paper-like. */
+    int ta_y = TOPBAR_H + 40;
     int ta_h = USABLE_H - ta_y - 24;
     s_edit_ta = lv_textarea_create(s_edit_overlay);
-    lv_obj_set_size(s_edit_ta, SW - 32, ta_h);
-    lv_obj_set_pos(s_edit_ta, 16, ta_y);
+    lv_obj_set_size(s_edit_ta, SW - 2 * 36, ta_h);
+    lv_obj_set_pos(s_edit_ta, 36, ta_y);
     lv_textarea_set_text(s_edit_ta, n->text);
-    lv_obj_set_style_bg_color(s_edit_ta, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_bg_opa(s_edit_ta, LV_OPA_TRANSP, 0);
     lv_obj_set_style_text_color(s_edit_ta, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(s_edit_ta, FONT_BODY, 0);
-    lv_obj_set_style_border_width(s_edit_ta, 1, 0);
-    lv_obj_set_style_border_color(s_edit_ta, lv_color_hex(COL_BORDER), 0);
-    lv_obj_set_style_radius(s_edit_ta, 8, 0);
-    lv_obj_set_style_pad_all(s_edit_ta, 16, 0);
+    lv_obj_set_style_text_font(s_edit_ta, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_line_space(s_edit_ta, 6, 0);
+    lv_obj_set_style_border_width(s_edit_ta, 0, 0);
+    lv_obj_set_style_radius(s_edit_ta, 0, 0);
+    lv_obj_set_style_pad_all(s_edit_ta, 0, 0);
     lv_obj_add_flag(s_edit_ta, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(s_edit_ta, cb_edit_ta_tap, LV_EVENT_CLICKED, NULL);
-    ui_keyboard_show(s_edit_ta);  /* Bug fix: show keyboard immediately when edit overlay opens */
+    ui_keyboard_show(s_edit_ta);
 }
 
 /* Delete confirmation callbacks */
@@ -1774,11 +1776,13 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_max_height(card, 160, 0);  /* FIX N1: cap card height */
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A2E), 0);
+    /* v5: flat row, hairline rule underneath — no rounded bubble. */
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x08080E), 0); /* TH_BG */
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_radius(card, 0, 0);
     lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x1C1C28), 0); /* TH_HAIRLINE */
+    lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_pad_all(card, 12, 0);
     lv_obj_set_style_pad_row(card, 6, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */
@@ -1808,25 +1812,24 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_text_font(ts, FONT_CAPTION, 0);
     lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
 
-    /* Badge */
+    /* v5: kill the colored Material pill. Use a letter-spaced caption
+     * in amber (or red on failure) inline next to the timestamp. */
     lv_obj_t *badge = lv_label_create(header);
     const char *badge_text;
     uint32_t badge_color;
     switch (n.state) {
-    case NOTE_STATE_RECORDED:     badge_text = " rec "; badge_color = COL_AMBER; break;
-    case NOTE_STATE_TRANSCRIBING: badge_text = " ... "; badge_color = COL_CYAN; break;
-    case NOTE_STATE_TRANSCRIBED:  badge_text = " voice "; badge_color = COL_PURPLE; break;
-    case NOTE_STATE_FAILED:       badge_text = " fail "; badge_color = COL_RED; break;
-    default:                      badge_text = n.is_voice ? " voice " : " text ";
-                                  badge_color = n.is_voice ? COL_PURPLE : COL_AMBER; break;
+    case NOTE_STATE_RECORDED:     badge_text = "\xe2\x80\xa2 REC";    badge_color = COL_AMBER; break;
+    case NOTE_STATE_TRANSCRIBING: badge_text = "\xe2\x80\xa2 . . .";  badge_color = COL_AMBER; break;
+    case NOTE_STATE_TRANSCRIBED:  badge_text = "\xe2\x80\xa2 VOICE";  badge_color = COL_AMBER; break;
+    case NOTE_STATE_FAILED:       badge_text = "\xe2\x80\xa2 FAIL";   badge_color = COL_RED;   break;
+    default:                      badge_text = n.is_voice ? "\xe2\x80\xa2 VOICE" : "\xe2\x80\xa2 TEXT";
+                                  badge_color = COL_AMBER; break;
     }
     lv_label_set_text(badge, badge_text);
-    lv_obj_set_style_bg_color(badge, lv_color_hex(badge_color), 0);
-    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(badge, lv_color_hex(COL_BG), 0);
+    lv_obj_set_style_text_color(badge, lv_color_hex(badge_color), 0);
     lv_obj_set_style_text_font(badge, FONT_CAPTION, 0);
-    lv_obj_set_style_radius(badge, 4, 0);
-    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_set_style_text_letter_space(badge, 3, 0);
+    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
     /* Delete button — 44x44 touch target, dark bg, red X */
     lv_obj_t *del = lv_button_create(header);
@@ -1884,6 +1887,13 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 /* ── Refresh list ───────────────────────────────────────── */
 static void refresh_list(void)
 {
+    /* v5 topbar meta — update count regardless of list presence. */
+    if (s_topbar_meta) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s",
+                 s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
+        lv_label_set_text(s_topbar_meta, buf);
+    }
     if (!s_list) return;
     lv_obj_clean(s_list);
 
@@ -1917,7 +1927,7 @@ static void refresh_list(void)
     }
 }
 
-/* ── Top bar ───────────────────────────────────────────── */
+/* ── Top bar (v5: typography-forward, amber title, 'HOME' caption back) ─ */
 static lv_obj_t *make_topbar(lv_obj_t *parent)
 {
     lv_obj_t *tb = lv_obj_create(parent);
@@ -1926,32 +1936,27 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_bg_color(tb, lv_color_hex(COL_BG), 0);
     lv_obj_set_style_bg_opa(tb, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(tb, 1, 0);
-    lv_obj_set_style_border_color(tb, lv_color_hex(COL_CARD), 0);
+    lv_obj_set_style_border_color(tb, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
     lv_obj_set_style_border_side(tb, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back arrow button (44x44, rounded 8px, bg #1A1A2E — matches Settings) */
-    lv_obj_t *btn = lv_button_create(tb);
-    lv_obj_remove_style_all(btn);
-    lv_obj_set_size(btn, 44, 44);
-    lv_obj_set_pos(btn, 12, (TOPBAR_H - 44) / 2);
-    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
-    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(btn, 8, 0);
-    lv_obj_add_event_cb(btn, cb_back, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *arrow = lv_label_create(btn);
-    lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(arrow, FONT_SECONDARY, 0);
-    lv_obj_center(arrow);
-
-    /* Title — centered in topbar */
+    /* v5 spec: big amber 'Notes' title LEFT; small mono count meta RIGHT.
+     * Swipe-right replaces the old HOME caption for back navigation. */
     lv_obj_t *title = lv_label_create(tb);
     lv_label_set_text(title, "Notes");
-    lv_obj_set_style_text_color(title, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(title, FONT_HEADING, 0);
-    lv_obj_center(title);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);              /* 28 px */
+    lv_obj_set_style_text_letter_space(title, -1, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 24, 0);
+
+    /* Count/size meta — refreshed elsewhere when the note list changes. */
+    lv_obj_t *meta = lv_label_create(tb);
+    lv_label_set_text(meta, "\xe2\x80\xa2");  /* placeholder until first refresh */
+    lv_obj_set_style_text_color(meta, lv_color_hex(0x6A6A72), 0);
+    lv_obj_set_style_text_font(meta, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(meta, 3, 0);
+    lv_obj_align(meta, LV_ALIGN_RIGHT_MID, -24, 0);
+    s_topbar_meta = meta;
 
     return tb;
 }
@@ -1987,6 +1992,7 @@ lv_obj_t *ui_notes_create(void)
 
     /* L5: Swipe-right to go back */
     lv_obj_add_event_cb(s_screen, cb_back, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
     make_topbar(s_screen);
 
@@ -1998,39 +2004,33 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_style_border_width(btn_row, 0, 0);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Voice button — compact 56px tall */
+    /* v5 flat actions — no fill, no border, no radius. Transparent rows
+     * with amber + muted caption text. Functional: cb_new_voice + cb_new_text
+     * unchanged. */
     lv_obj_t *vbtn = lv_button_create(btn_row);
+    lv_obj_remove_style_all(vbtn);
     lv_obj_set_size(vbtn, SW/2 - 24, ACTION_BTN_H);
     lv_obj_align(vbtn, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_set_style_bg_color(vbtn, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_bg_opa(vbtn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(vbtn, 12, 0);
-    lv_obj_set_style_border_width(vbtn, 0, 0);
+    lv_obj_set_style_bg_opa(vbtn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(vbtn, cb_new_voice, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t *vicon = lv_label_create(vbtn);
-    lv_label_set_text(vicon, LV_SYMBOL_AUDIO "  Voice");
-    lv_obj_set_style_text_color(vicon, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_text_font(vicon, FONT_HEADING, 0);
-    lv_obj_set_style_text_align(vicon, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(vicon, "+ NEW VOICE NOTE");
+    lv_obj_set_style_text_color(vicon, lv_color_hex(COL_AMBER), 0);
+    lv_obj_set_style_text_font(vicon, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(vicon, 3, 0);
     lv_obj_center(vicon);
 
-    /* Text button — compact 56px tall */
     lv_obj_t *tbtn = lv_button_create(btn_row);
+    lv_obj_remove_style_all(tbtn);
     lv_obj_set_size(tbtn, SW/2 - 24, ACTION_BTN_H);
     lv_obj_align(tbtn, LV_ALIGN_RIGHT_MID, -12, 0);
-    lv_obj_set_style_bg_color(tbtn, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_bg_opa(tbtn, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(tbtn, 12, 0);
-    lv_obj_set_style_border_width(tbtn, 1, 0);
-    lv_obj_set_style_border_color(tbtn, lv_color_hex(COL_BORDER), 0);
+    lv_obj_set_style_bg_opa(tbtn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(tbtn, cb_new_text, LV_EVENT_CLICKED, NULL);
-
     lv_obj_t *ticon = lv_label_create(tbtn);
-    lv_label_set_text(ticon, LV_SYMBOL_EDIT "  Type");
-    lv_obj_set_style_text_color(ticon, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(ticon, FONT_HEADING, 0);
-    lv_obj_set_style_text_align(ticon, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(ticon, "+ NEW TEXT NOTE");
+    lv_obj_set_style_text_color(ticon, lv_color_hex(0x6A6A72), 0);
+    lv_obj_set_style_text_font(ticon, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(ticon, 3, 0);
     lv_obj_center(ticon);
 
     /* M2: Search bar — 48px tall for comfortable touch */
@@ -2039,7 +2039,7 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
     lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + BTN_ROW_H + 4);
     lv_textarea_set_one_line(s_search_ta, true);
-    lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " Search notes...");
+    lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " search what you wrote...");
     lv_obj_set_style_bg_color(s_search_ta, lv_color_hex(COL_CARD), 0);
     lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_WHITE), 0);
     lv_obj_set_style_text_font(s_search_ta, FONT_SECONDARY, 0);
@@ -2102,6 +2102,12 @@ void ui_notes_destroy(void)
 void ui_notes_hide(void)
 {
     ui_keyboard_set_layout_cb(NULL);
+    /* Tear down floating UI before hiding the list — same reason as cb_back.
+     * Without this, a navigation away from the notes editor via the debug
+     * server left the keyboard + preview row stuck on top of the new
+     * screen. */
+    if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; s_edit_ta = NULL; }
+    ui_keyboard_hide();
     hide_input_area();
     /* Clear recording state — prevents transcription queue blockage if user
      * navigates away mid-recording. Without this, s_voice_recording stays
@@ -2114,3 +2120,8 @@ void ui_notes_hide(void)
 }
 
 lv_obj_t *ui_notes_get_screen(void) { return s_screen; }
+
+bool ui_notes_is_visible(void)
+{
+    return s_screen && !lv_obj_has_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
+}

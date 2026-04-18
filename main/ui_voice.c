@@ -32,30 +32,34 @@ static const char *TAG = "ui_voice";
 static void mode_switch_voice_task(void *arg);
 static void mode_switch_idle_task(void *arg);
 
-/* ── Palette — Voice overlay ──────────────────────────────────── */
-#define VO_BG              0x000000
-#define VO_BG_OPA          LV_OPA_COVER  /* fully opaque — no bleed-through */
+/* ── Palette — Voice overlay (v5 Zero Interface — amber-led) ─────
+   Names kept for minimal-diff; values map to the v5 ui_theme palette.
+   LISTENING / PROCESSING / SPEAKING all share the amber family — state is
+   conveyed by motion (ripple / rotate / breathe), not hue. */
+#define VO_BG              0x08080E   /* TH_BG — not pure black */
+#define VO_BG_OPA          LV_OPA_COVER
 
-/* Cyan — listening */
-#define VO_CYAN            0x00E5FF
-#define VO_CYAN_DIM        0x003844   /* rgba(0,229,255,0.1) on black */
-#define VO_CYAN_BORDER     0x0D3840   /* rgba(0,229,255,0.2) on black */
-#define VO_CYAN_GLOW       0x005F6B   /* orb inner glow layers */
+/* "Cyan" slot — now amber hot, used for LISTENING accents */
+#define VO_CYAN            0xF59E0B   /* TH_AMBER */
+#define VO_CYAN_DIM        0x3E2A0A   /* amber at ~15% on dark */
+#define VO_CYAN_BORDER     0x5E3F0C   /* amber at ~25% on dark */
+#define VO_CYAN_GLOW       0x7A4A06   /* TH_AMBER_DEEP — inner glow */
 
-/* Purple — processing / thinking */
-#define VO_PURPLE          0xB388FF
-#define VO_PURPLE_DIM      0x5A4580   /* brighter purple dim for visibility */
+/* "Purple" slot — processing; use the Claw rose so the orb picks up the
+   mode identity during thinking without introducing a new hue family. */
+#define VO_PURPLE          0xFFB637   /* amber hot — warmer processing */
+#define VO_PURPLE_DIM      0x5E3F0C
 
-/* Green — speaking */
-#define VO_GREEN           0x34D399
-#define VO_GREEN_DIM       0x1E5C44   /* brighter green dim for visibility */
+/* "Green" slot — speaking; amber-hot for the speaking breathe */
+#define VO_GREEN           0xFFD88A   /* amber light, for speaking highlight */
+#define VO_GREEN_DIM       0x7A4A06
 
-/* Text */
-#define VO_TEXT_BRIGHT     0xFFFFFF
-#define VO_TEXT_MID        0xB3B3B3   /* rgba(255,255,255,0.7) */
-#define VO_TEXT_DIM        0x808080   /* rgba(255,255,255,0.5) */
-#define VO_TEXT_FAINT      0x404040   /* rgba(255,255,255,0.25) */
-#define VO_CLOSE_TEXT      0x808080   /* rgba(255,255,255,0.5) — visible */
+/* Text — v5 theme */
+#define VO_TEXT_BRIGHT     0xEDEDEF   /* TH_TEXT_PRIMARY */
+#define VO_TEXT_MID        0xAAAAAA   /* TH_TEXT_BODY */
+#define VO_TEXT_DIM        0x666666   /* TH_TEXT_SECONDARY */
+#define VO_TEXT_FAINT      0x44444c   /* TH_TEXT_DIM */
+#define VO_CLOSE_TEXT      0x7a7a82
 
 /* ── Layout constants ─────────────────────────────────────────── */
 #define SW                 720
@@ -66,9 +70,12 @@ static void mode_switch_idle_task(void *arg);
 #define MIC_BTN_BOTTOM     140       /* above 120px nav bar + 20px margin */
 #define MIC_DOT_SZ         12        /* inner dot indicator */
 
-#define ORB_SZ_LISTEN      200
-#define ORB_SZ_SPEAK       220
-#define ORB_RING_W         2
+/* v5: orb carries the identity. Push from 200 -> 300 for LISTENING and
+   320 for SPEAKING so presence matches the home orb. Ring stroke slightly
+   heavier (2 -> 3) so the arc reads from across the desk. */
+#define ORB_SZ_LISTEN      300
+#define ORB_SZ_SPEAK       320
+#define ORB_RING_W         3
 #define ORB_GLOW_LAYERS    4         /* concentric circles for radial gradient */
 
 #define CLOSE_BTN_SZ       56
@@ -84,11 +91,12 @@ static void mode_switch_idle_task(void *arg);
 #define CHAT_BUBBLE_MAX_W  500        /* max bubble width */
 #define CHAT_GAP           12         /* vertical gap between bubbles */
 
-/* Bubble colors */
-#define VO_USER_BG         0x0A2A30   /* dark cyan tint for user bubble */
-#define VO_USER_BORDER     0x0D3840   /* cyan border */
-#define VO_AI_BG           0x0A2A1E   /* dark green tint for AI bubble */
-#define VO_AI_BORDER       0x1E5C44   /* green border */
+/* Bubble colors — v5: user bubble is the only "surface" (amber, user-led),
+   AI "bubble" is really just body text so the bg is elevated-card. */
+#define VO_USER_BG         0x5E3F0C   /* amber-dim tint for user bubble bg */
+#define VO_USER_BORDER     0x7A4A06   /* amber border */
+#define VO_AI_BG           0x13131F   /* TH_CARD_ELEVATED */
+#define VO_AI_BORDER       0x1A1A24   /* hairline border */
 
 #define WAVE_BARS          5
 #define WAVE_BAR_W         6
@@ -194,6 +202,7 @@ static bool       s_has_llm_text  = false;  /* whether LLM response has started 
 
 /* Recording duration label + timer */
 static lv_obj_t   *s_lbl_rec_time = NULL;
+static lv_obj_t   *s_lbl_sub      = NULL;   /* v5 spec shot-05 caption: "LISTENING • HOLD TO TALK" / "DICTATION • TAP TO STOP" */
 static lv_timer_t *s_rec_timer    = NULL;
 static int         s_rec_seconds  = 0;
 
@@ -265,6 +274,12 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 {
     ESP_LOGI(TAG, "State change: %d -> %d (%s)", s_cur_state, state,
              detail ? detail : "");
+
+    /* Notify home so the sys-label picks up the transition within one LVGL
+       tick instead of waiting for the 5 s poll. Safe from any core via
+       lv_async_call. */
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
 
     s_cur_state = state;
     update_mic_button_state(state);
@@ -419,9 +434,10 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             s_auto_hide = lv_timer_create(auto_hide_timer_cb, hide_ms, NULL);
             lv_timer_set_repeat_count(s_auto_hide, 1);
         } else {
-            lv_label_set_text(s_lbl_status, "Tap to Record");
+            lv_label_set_text(s_lbl_status, "Tap to speak.");
         }
-        lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
+        if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
@@ -658,6 +674,19 @@ static void build_overlay(void)
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 90);
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+
+    /* v5 sub-caption: 'LISTENING • HOLD TO TALK' / 'DICTATION • TAP TO STOP'.
+     * Appears below the main status, letter-spaced amber for v5 feel. */
+    s_lbl_sub = lv_label_create(s_overlay);
+    lv_label_set_text(s_lbl_sub, "");
+    lv_obj_set_style_text_font(s_lbl_sub, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(s_lbl_sub, lv_color_hex(0xF59E0B), 0);
+    lv_obj_set_style_text_letter_space(s_lbl_sub, 4, 0);
+    lv_obj_set_width(s_lbl_sub, SW - 80);
+    lv_obj_set_style_text_align(s_lbl_sub, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(s_lbl_sub, LV_ALIGN_CENTER, 0,
+                 ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 85);
+    lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
 
     /* Recording duration label — shown during LISTENING below status, centered */
     s_lbl_rec_time = lv_label_create(s_overlay);
@@ -907,6 +936,14 @@ static void build_chat_area(lv_obj_t *parent)
 
     /* Start hidden */
     lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+
+    /* v5: voice overlay should stay pure (orb + state + waveform + cancel
+       hint) — conversation lives in Chat.  Move the chat area WAY off
+       screen so even if later code clears LV_OBJ_FLAG_HIDDEN the user
+       never sees the old-style bubbles inline during voice.  Keeps the
+       object tree intact (so all pointers stay valid, no NULL-guards
+       needed throughout the file) but invisible. */
+    lv_obj_set_pos(s_chat_cont, -5000, -5000);
 }
 
 /* ================================================================
@@ -925,14 +962,23 @@ static void show_state_listening(void)
     set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_60);
     set_orb_size(ORB_SZ_LISTEN);
 
-    /* H6: Show clear mode indicator — ASK (30s) or DICTATE (unlimited) */
+    /* Spec shot-05: "I'm here. Go." with serif-style display copy.
+     * Dictation uses "Dictating." with the same weight. */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
-        lv_label_set_text(s_lbl_status, "DICTATION");
+        lv_label_set_text(s_lbl_status, "Dictating.");
+        if (s_lbl_sub) {
+            lv_label_set_text(s_lbl_sub, "DICTATION  \xe2\x80\xa2  TAP TO STOP");
+            lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+        }
     } else {
-        lv_label_set_text(s_lbl_status, "LISTENING");
+        lv_label_set_text(s_lbl_status, "I'm here. Go.");
+        if (s_lbl_sub) {
+            lv_label_set_text(s_lbl_sub, "LISTENING  \xe2\x80\xa2  RELEASE TO SEND");
+            lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+        }
     }
-    lv_obj_set_style_text_font(s_lbl_status, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
+    lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_36, 0);
+    lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_BRIGHT), 0);
     lv_obj_set_style_text_letter_space(s_lbl_status, 4, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
 
@@ -967,6 +1013,7 @@ static void show_state_listening(void)
 
 static void show_state_processing(const char *detail)
 {
+    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
     /* Note: this is called repeatedly as LLM tokens arrive.
      * detail = STT text (first call), then LLM text (subsequent calls).
      * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */
@@ -1029,9 +1076,9 @@ static void show_state_processing(const char *detail)
          * TinkerClaw mode: "Agent thinking..." to signal agent reasoning */
         uint8_t vmode = tab5_settings_get_voice_mode();
         lv_label_set_text(s_lbl_status,
-            vmode == 3 ? "Agent thinking..." : "Thinking...");
-        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_PURPLE_DIM), 0);
-        lv_obj_set_style_text_font(s_lbl_status, FONT_BODY, 0);
+            vmode == VOICE_MODE_TINKERCLAW ? "Agent thinking." : "Thinking.");
+        lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_MID), 0);
+        lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
@@ -1063,6 +1110,7 @@ static void show_state_speaking(void)
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
+    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
 
     /* Orb: green, slightly larger */
     set_orb_color(VO_GREEN, VO_GREEN, LV_OPA_50);

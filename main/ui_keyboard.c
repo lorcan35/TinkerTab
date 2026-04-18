@@ -20,36 +20,42 @@
 
 static const char *TAG = "ui_kbd";
 
-/* ── Palette — TinkerOS dark glass ─────────────────────────────── */
-#define KB_BG           0x0A0A0A
-#define KB_KEY_BG       0x1A1A1A   /* rgba(255,255,255,0.06) on black */
-#define KB_KEY_PRESS    0x2A2A2A   /* rgba(255,255,255,0.12) on black */
-#define KB_KEY_SPECIAL  0x222228   /* special keys — slight blue tint */
-#define KB_KEY_ENTER    0x003844   /* cyan tint for enter */
-#define KB_SPACE_BG     0x0A1214   /* rgba(0,229,255,0.04) on black */
-#define KB_CYAN         0x00E5FF   /* primary accent */
-#define KB_TEXT         0xB3B3B3   /* rgba(255,255,255,0.7) */
-#define KB_TEXT_DIM     0x666666   /* dimmed text */
-#define KB_SEP          0x101010   /* rgba(255,255,255,0.06) separator */
-#define KB_HANDLE       0x262626   /* drag handle */
-#define KB_TRIGGER_BG   0x0A1A1E   /* trigger button bg */
-#define KB_TRIGGER_BRD  0x0D3840   /* trigger button border */
+/* ── Palette — v5 Zero Interface (amber-led) ──────────────────── */
+#define KB_BG           0x0A0A10   /* TH_BG-adjacent, slightly warmer than pure */
+#define KB_KEY_BG       0x15151D   /* key rest */
+#define KB_KEY_PRESS    0x281E0A   /* pressed = amber-tinted fill */
+#define KB_KEY_SPECIAL  0x181820   /* shift / layer / backspace */
+#define KB_KEY_ENTER    0xF59E0B   /* send = primary amber */
+#define KB_SPACE_BG     0x12121A   /* spacebar bg */
+#define KB_CYAN         0xF59E0B   /* keep name, swap to TH_AMBER */
+#define KB_TEXT         0xD8D8DC   /* key labels — readable, not pure white */
+#define KB_TEXT_DIM     0x9A9AA3   /* shift / layer labels */
+#define KB_SEP          0x1A1A24   /* TH_HAIRLINE */
+#define KB_HANDLE       0x2A2A32   /* drag handle */
+#define KB_TRIGGER_BG   0x281E0A   /* amber-tinted trigger */
+#define KB_TRIGGER_BRD  0x5E3F0C   /* amber border */
 
-/* ── Layout constants ──────────────────────────────────────────── */
+/* ── Layout constants — v5: 72 px keys meet TOUCH_MIN on 218 DPI ─ */
 #define SW              720
 #define SH              1280
-#define KB_HEIGHT       420
+#define KB_HEIGHT       500        /* was 420 — +80 for 72 px rows + gaps */
 #define KB_ANIM_SHOW_MS 300
 #define KB_ANIM_HIDE_MS 250
 
-#define KEY_H           52
-#define KEY_GAP         4
-#define KEY_RAD         8
-#define ROW_PAD_X       6      /* horizontal padding inside keyboard */
-#define ROW_GAP_Y       4
+#define KEY_H           72         /* was 52 — above TOUCH_MIN 60 on Tab5 @ 218 DPI */
+#define KEY_GAP         6          /* was 4 — more breathing room between keys */
+#define KEY_RAD         14         /* was 8 — match v5 card rhythm */
+#define ROW_PAD_X       8          /* was 6 — matches new KEY_GAP */
+#define ROW_GAP_Y       8          /* was 4 — more breathing room between rows */
 
-#define TRIGGER_SZ      56
+#define TRIGGER_SZ      60         /* was 56 — above TOUCH_MIN */
 #define TRIGGER_MARGIN  20
+
+/* v5 preview row — cursor + typed text + mic handoff + send buttons. */
+#define PREVIEW_H       60
+#define PREVIEW_Y       12         /* under the drag handle */
+#define PREVIEW_PAD_X   18
+#define PREVIEW_BTN_SZ  44
 
 /* ── Key definitions ───────────────────────────────────────────── */
 
@@ -110,6 +116,10 @@ static lv_obj_t  *s_layer_lbl_nums    = NULL; /* "ABC" on num layer */
 
 /* ── Forward declarations ──────────────────────────────────────── */
 static void build_keyboard_panel(void);
+static void build_preview_row(void);
+static void preview_mic_cb(lv_event_t *e);
+static void preview_send_cb(lv_event_t *e);
+static void preview_sync_from_target(void);
 static void build_trigger_button(void);
 static void build_letter_rows(lv_obj_t *parent);
 static void build_number_rows(lv_obj_t *parent);
@@ -149,11 +159,13 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     if (s_visible) {
         /* Already visible — just update target */
         s_target_ta = target_textarea;
+        preview_sync_from_target();
         return;
     }
 
     s_target_ta = target_textarea;
     s_visible = true;
+    preview_sync_from_target();
 
     /* Notify the active screen BEFORE animation so it can adjust layout
        immediately — the textarea must be visible above the keyboard area
@@ -259,6 +271,152 @@ lv_obj_t *ui_keyboard_get_trigger_btn(void)
 /*  Build keyboard panel                                                      */
 /* ========================================================================= */
 
+/* ========================================================================= */
+/*  Preview row — typed text, voice handoff, send (v5)                        */
+/* ========================================================================= */
+
+static lv_obj_t *s_preview_row     = NULL;
+static lv_obj_t *s_preview_cursor  = NULL;
+static lv_obj_t *s_preview_label   = NULL;
+static lv_obj_t *s_preview_mic_btn = NULL;
+static lv_obj_t *s_preview_send_btn = NULL;
+
+/* Blink the amber cursor once per ~500 ms. LVGL timer on the top layer. */
+static lv_timer_t *s_cursor_timer = NULL;
+static bool s_cursor_on = true;
+
+static void cursor_blink_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_cursor_on = !s_cursor_on;
+    if (s_preview_cursor) {
+        lv_obj_set_style_bg_opa(s_preview_cursor,
+            s_cursor_on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+    }
+}
+
+static void build_preview_row(void)
+{
+    s_preview_row = lv_obj_create(s_kb_panel);
+    lv_obj_remove_style_all(s_preview_row);
+    lv_obj_set_size(s_preview_row, SW - 2 * PREVIEW_PAD_X, PREVIEW_H);
+    lv_obj_set_pos(s_preview_row, PREVIEW_PAD_X, PREVIEW_Y);
+    lv_obj_set_style_bg_color(s_preview_row, lv_color_hex(KB_KEY_PRESS), 0); /* amber-tinted */
+    lv_obj_set_style_bg_opa(s_preview_row, 60, 0); /* ~24 % — hairline fill */
+    lv_obj_set_style_radius(s_preview_row, 14, 0);
+    lv_obj_set_style_border_width(s_preview_row, 1, 0);
+    lv_obj_set_style_border_color(s_preview_row, lv_color_hex(KB_TRIGGER_BRD), 0);
+    lv_obj_clear_flag(s_preview_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Amber cursor bar — left side of preview row */
+    s_preview_cursor = lv_obj_create(s_preview_row);
+    lv_obj_remove_style_all(s_preview_cursor);
+    lv_obj_set_size(s_preview_cursor, 2, 28);
+    lv_obj_set_pos(s_preview_cursor, 14, (PREVIEW_H - 28) / 2);
+    lv_obj_set_style_bg_color(s_preview_cursor, lv_color_hex(KB_CYAN), 0); /* TH_AMBER */
+    lv_obj_set_style_bg_opa(s_preview_cursor, LV_OPA_COVER, 0);
+
+    /* Placeholder hint text — doesn't mirror the target for now; just shows
+       the affordance. Swap to live text-mirror via keypress hook later. */
+    s_preview_label = lv_label_create(s_preview_row);
+    lv_label_set_text(s_preview_label, "type, or hand off");
+    lv_obj_set_style_text_font(s_preview_label, FONT_BODY, 0);
+    lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT_DIM), 0);
+    lv_obj_set_pos(s_preview_label, 28, (PREVIEW_H - 22) / 2);
+
+    /* Voice handoff button — 🎤 glyph (LV_SYMBOL_AUDIO). Opens voice overlay. */
+    s_preview_mic_btn = lv_button_create(s_preview_row);
+    lv_obj_set_size(s_preview_mic_btn, PREVIEW_BTN_SZ, PREVIEW_BTN_SZ);
+    lv_obj_set_pos(s_preview_mic_btn,
+                   SW - 2 * PREVIEW_PAD_X - 2 * PREVIEW_BTN_SZ - 16,
+                   (PREVIEW_H - PREVIEW_BTN_SZ) / 2);
+    lv_obj_set_style_radius(s_preview_mic_btn, 12, 0);
+    lv_obj_set_style_bg_color(s_preview_mic_btn, lv_color_hex(KB_KEY_SPECIAL), 0);
+    lv_obj_set_style_bg_opa(s_preview_mic_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(s_preview_mic_btn, 0, 0);
+    lv_obj_set_style_border_width(s_preview_mic_btn, 1, 0);
+    lv_obj_set_style_border_color(s_preview_mic_btn, lv_color_hex(KB_TRIGGER_BRD), 0);
+    lv_obj_t *mic_lbl = lv_label_create(s_preview_mic_btn);
+    lv_label_set_text(mic_lbl, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_font(mic_lbl, FONT_SECONDARY, 0);
+    lv_obj_set_style_text_color(mic_lbl, lv_color_hex(KB_CYAN), 0);
+    lv_obj_center(mic_lbl);
+    lv_obj_add_event_cb(s_preview_mic_btn, preview_mic_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Send button — primary amber, fires LV_EVENT_READY on the target textarea. */
+    s_preview_send_btn = lv_button_create(s_preview_row);
+    lv_obj_set_size(s_preview_send_btn, PREVIEW_BTN_SZ, PREVIEW_BTN_SZ);
+    lv_obj_set_pos(s_preview_send_btn,
+                   SW - 2 * PREVIEW_PAD_X - PREVIEW_BTN_SZ - 8,
+                   (PREVIEW_H - PREVIEW_BTN_SZ) / 2);
+    lv_obj_set_style_radius(s_preview_send_btn, 12, 0);
+    lv_obj_set_style_bg_color(s_preview_send_btn, lv_color_hex(KB_KEY_ENTER), 0);
+    lv_obj_set_style_bg_opa(s_preview_send_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(s_preview_send_btn, 0, 0);
+    lv_obj_set_style_border_width(s_preview_send_btn, 0, 0);
+    lv_obj_t *send_lbl = lv_label_create(s_preview_send_btn);
+    lv_label_set_text(send_lbl, LV_SYMBOL_OK);
+    lv_obj_set_style_text_font(send_lbl, FONT_SECONDARY, 0);
+    lv_obj_set_style_text_color(send_lbl, lv_color_hex(0x08080E), 0);
+    lv_obj_center(send_lbl);
+    lv_obj_add_event_cb(s_preview_send_btn, preview_send_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Start cursor blink timer */
+    if (s_cursor_timer == NULL) {
+        s_cursor_timer = lv_timer_create(cursor_blink_cb, 500, NULL);
+    }
+}
+
+static void preview_mic_cb(lv_event_t *e)
+{
+    (void)e;
+    /* Hide keyboard, open voice overlay — typed buffer is preserved on the
+       target textarea; user can keep typing after dictation via show() again. */
+    extern void ui_keyboard_hide(void);
+    extern void ui_voice_show(void);
+    ui_keyboard_hide();
+    ui_voice_show();
+}
+
+/* Mirror the target textarea's tail (last 32 chars) into the preview label.
+   Called after every keypress / backspace so the user sees what they typed. */
+static void preview_sync_from_target(void)
+{
+    if (!s_preview_label) return;
+    const char *txt = s_target_ta ? lv_textarea_get_text(s_target_ta) : NULL;
+    if (!txt || txt[0] == '\0') {
+        lv_label_set_text(s_preview_label, "type, or hand off");
+        lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT_DIM), 0);
+        return;
+    }
+    /* Clip to last PREVIEW_MAX chars to avoid overflow past the buttons. */
+    #define PREVIEW_MAX 32
+    size_t len = strlen(txt);
+    const char *start = txt;
+    char buf[PREVIEW_MAX + 8];
+    if (len > PREVIEW_MAX) {
+        start = txt + (len - PREVIEW_MAX);
+        buf[0] = '.'; buf[1] = '.'; buf[2] = '.'; buf[3] = ' ';
+        strncpy(buf + 4, start, sizeof(buf) - 5);
+        buf[sizeof(buf) - 1] = '\0';
+        lv_label_set_text(s_preview_label, buf);
+    } else {
+        lv_label_set_text(s_preview_label, txt);
+    }
+    lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT), 0);
+}
+
+static void preview_send_cb(lv_event_t *e)
+{
+    (void)e;
+    /* Fire LV_EVENT_READY on the currently-targeted textarea. Consumers
+       (chat, notes, wifi password) already subscribe to READY to dispatch
+       send / save / connect. */
+    if (s_target_ta) {
+        lv_obj_send_event(s_target_ta, LV_EVENT_READY, NULL);
+    }
+}
+
 static void build_keyboard_panel(void)
 {
     s_kb_panel = lv_obj_create(lv_layer_top());
@@ -291,10 +449,14 @@ static void build_keyboard_panel(void)
     lv_obj_set_style_radius(handle, 2, 0);
     lv_obj_clear_flag(handle, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
+    /* ── Preview row — v5: typed text + voice handoff + send ───── */
+    build_preview_row();
+
     /* ── Key container ─────────────────────────────────────────── */
+    int keys_top = PREVIEW_Y + PREVIEW_H + 8;  /* below preview + 8 px gap */
     lv_obj_t *key_area = lv_obj_create(s_kb_panel);
-    lv_obj_set_size(key_area, SW, KB_HEIGHT - 16);
-    lv_obj_set_pos(key_area, 0, 16);
+    lv_obj_set_size(key_area, SW, KB_HEIGHT - keys_top);
+    lv_obj_set_pos(key_area, 0, keys_top);
     lv_obj_set_style_bg_opa(key_area, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(key_area, 0, 0);
     lv_obj_set_style_pad_all(key_area, 0, 0);
@@ -733,11 +895,13 @@ static void key_press_cb(lv_event_t *e)
             s_shifted = false;
             apply_shift_state();
         }
+        preview_sync_from_target();
         break;
     }
 
     case KEY_BACKSPACE:
         if (s_target_ta) lv_textarea_delete_char(s_target_ta);
+        preview_sync_from_target();
         break;
 
     case KEY_ENTER:
@@ -791,7 +955,7 @@ static void trigger_click_cb(lv_event_t *e)
         lv_obj_set_style_border_width(s_default_ta, 1, 0);
         lv_obj_set_style_radius(s_default_ta, 12, 0);
         lv_obj_set_style_pad_all(s_default_ta, 12, 0);
-        lv_textarea_set_placeholder_text(s_default_ta, "Type something...");
+        lv_textarea_set_placeholder_text(s_default_ta, "type something...");
         lv_textarea_set_one_line(s_default_ta, false);
         lv_textarea_set_max_length(s_default_ta, 256);
     }
