@@ -387,6 +387,8 @@ void app_main(void)
         tab5_ui_lock();
         ui_splash_destroy();
         ui_theme_init();  // must run before any screen that uses TH_* styles
+        extern void widget_store_init(void);
+        widget_store_init();  // widget platform — bounded PSRAM cache
         ui_home_create();
         tab5_ui_unlock();
         ESP_LOGI(TAG, "TinkerOS home screen loaded");
