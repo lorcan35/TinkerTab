@@ -236,7 +236,14 @@ static esp_err_t transport_drv_sta_tx(void *h, void *buffer, size_t len)
 
 	/*  Prepare transport buffer directly consumable */
 	copy_buff = mempool_alloc(((struct mempool*)chan_arr[ESP_STA_IF]->memp), MAX_TRANSPORT_BUFFER_SIZE, true);
-	assert(copy_buff);
+	/* TinkerTab: under sustained WiFi TX pressure (stress tests, rapid
+	 * nav + screenshot traffic), internal SRAM can exhaust and the
+	 * mempool alloc returns NULL. Upstream assert()s; we drop the
+	 * packet instead — LWIP will retransmit. */
+	if (!copy_buff) {
+		errno = ENOMEM;
+		return ESP_ERR_NO_MEM;
+	}
 	g_h.funcs->_h_memcpy(copy_buff+H_ESP_PAYLOAD_HEADER_OFFSET, buffer, len);
 
 	return esp_hosted_tx(ESP_STA_IF, 0, copy_buff, len, H_BUFF_ZEROCOPY, transport_sta_free_cb);
@@ -253,7 +260,11 @@ static esp_err_t transport_drv_ap_tx(void *h, void *buffer, size_t len)
 
 	/*  Prepare transport buffer directly consumable */
 	copy_buff = mempool_alloc(((struct mempool*)chan_arr[ESP_AP_IF]->memp), MAX_TRANSPORT_BUFFER_SIZE, true);
-	assert(copy_buff);
+	/* TinkerTab: same drop-rather-than-panic patch as sta_tx. */
+	if (!copy_buff) {
+		errno = ENOMEM;
+		return ESP_ERR_NO_MEM;
+	}
 	g_h.funcs->_h_memcpy(copy_buff+H_ESP_PAYLOAD_HEADER_OFFSET, buffer, len);
 
 	return esp_hosted_tx(ESP_AP_IF, 0, copy_buff, len, H_BUFF_ZEROCOPY, transport_ap_free_cb);
