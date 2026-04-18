@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TinkerTab v4 — Direction A: Instrument</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Sora:wght@200;300;400;500;600&family=Geist+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#08080E; --card:#111119; --card-elev:#13131F; --hairline:#1A1A24;
+    --text:#E8E8EF; --body:#AAAAAA; --meta:#666; --dim:#444;
+    --amber:#F59E0B; --amber-soft:#F5A62322; --amber-glow:rgba(245,158,11,.18);
+    --rose:#F43F5E; --rose-soft:rgba(244,63,94,.18);
+    --green:#22C55E; --red:#EF4444;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{background:#030306;color:#E8E8EF;font-family:'Sora',sans-serif;min-height:100%}
+  body{padding:48px 24px;display:flex;flex-direction:column;align-items:center;gap:40px}
+
+  /* Page caption */
+  .caption{max-width:720px;text-align:center;font-weight:300}
+  .caption .kicker{font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:6px;color:var(--amber);text-transform:uppercase}
+  .caption h1{font-family:'Instrument Serif',serif;font-size:56px;font-weight:400;letter-spacing:-.5px;margin-top:4px}
+  .caption h1 em{font-style:italic;color:var(--amber)}
+  .caption p{color:#666;font-size:14px;line-height:1.65;max-width:620px;margin:12px auto 0;font-weight:300}
+  .caption p b{color:#aaa;font-weight:500}
+
+  /* Device frame — real dimensions, scaled 50% for laptop viewing */
+  .stage{position:relative;width:360px;height:640px;flex-shrink:0}
+  .frame{
+    position:absolute;top:0;left:0;
+    width:720px;height:1280px;
+    transform:scale(.5);transform-origin:top left;
+    background:var(--bg);
+    border:2px solid #131318;border-radius:26px;
+    overflow:hidden;box-shadow:0 40px 80px rgba(0,0,0,.55), 0 0 0 1px #08080F inset;
+  }
+  .screen{width:100%;height:100%;position:relative;display:flex;flex-direction:column;font-family:'Sora',sans-serif}
+
+  /* — status bar — */
+  .status{
+    height:40px;padding:0 24px;
+    display:flex;align-items:center;justify-content:space-between;
+    flex-shrink:0;
+  }
+  .mode{
+    display:inline-flex;align-items:center;gap:8px;
+    padding:6px 12px 6px 10px;border-radius:999px;
+    background:var(--rose-soft);color:#ffdbe3;
+    font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:1.5px;font-weight:500;
+    border:1px solid rgba(244,63,94,.22);
+  }
+  .mode .dot{width:6px;height:6px;border-radius:50%;background:var(--rose);box-shadow:0 0 10px var(--rose)}
+  .sys{display:flex;align-items:center;gap:12px;font-family:'Geist Mono',monospace;font-size:11px;color:#6b6b74;letter-spacing:.5px}
+  .sys .link{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px rgba(34,197,94,.6)}
+
+  /* — hero block — orb centered, time below — */
+  .hero{
+    flex-shrink:0;
+    padding:28px 0 14px;
+    display:flex;flex-direction:column;align-items:center;
+  }
+  .orb-stage{position:relative;width:240px;height:240px;display:flex;align-items:center;justify-content:center}
+  .arc-track, .arc-fill{
+    position:absolute;inset:0;
+    border-radius:50%;
+  }
+  .arc-track{border:2px solid rgba(255,255,255,.045)}
+  /* Two-stop conic wouldn't translate to LVGL. Use lv_arc: track + indicator.
+     Simulate with an SVG stroke here — but LVGL equivalent is lv_arc_set_range/value. */
+  .arc-svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-96deg);pointer-events:none}
+  .arc-svg .track{fill:none;stroke:rgba(255,255,255,.05);stroke-width:3}
+  .arc-svg .fill{
+    fill:none;stroke:var(--amber);stroke-width:3;stroke-linecap:round;
+    stroke-dasharray:753; /* circumference for r=120 */
+    stroke-dashoffset:280;
+    filter:drop-shadow(0 0 4px var(--amber-glow));
+    animation:arc-breath 6s ease-in-out infinite alternate;
+  }
+  @keyframes arc-breath{
+    from{stroke-dashoffset:330}
+    to{stroke-dashoffset:210}
+  }
+  .orb{
+    width:160px;height:160px;border-radius:50%;position:relative;
+    /* 2-stop radial — LVGL supports lv_obj_set_style_bg_grad + radial approximation via gradient stops */
+    background:radial-gradient(circle at 38% 32%, #FFC75A 0%, #F59E0B 42%, #A86A08 100%);
+    box-shadow:
+      0 0 60px rgba(245,158,11,.35),
+      0 0 120px rgba(245,158,11,.12),
+      inset 0 -10px 24px rgba(0,0,0,.35),
+      inset 0 6px 14px rgba(255,255,255,.18);
+    animation:orb-float 5s ease-in-out infinite;
+  }
+  .orb::after{
+    content:"";position:absolute;left:50%;top:50%;
+    width:46px;height:46px;border-radius:50%;
+    transform:translate(-50%,-50%);
+    background:radial-gradient(circle,rgba(255,255,255,.55),transparent 70%);
+    mix-blend-mode:screen;
+    animation:orb-pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes orb-float{
+    0%,100%{transform:translateY(0)}
+    50%{transform:translateY(-4px)}
+  }
+  @keyframes orb-pulse{
+    0%,100%{opacity:.35;transform:translate(-50%,-50%) scale(.95)}
+    50%{opacity:.85;transform:translate(-50%,-50%) scale(1.1)}
+  }
+  .hero .tz{
+    font-family:'Geist Mono',monospace;font-size:11px;color:#4c4c55;letter-spacing:3px;margin-top:12px
+  }
+  .hero .time{
+    font-family:'Instrument Serif',serif;font-weight:400;
+    font-size:104px;line-height:.9;letter-spacing:-2px;margin-top:4px;
+    color:#F4F4F8;
+  }
+  .hero .time .sep{color:var(--amber);font-style:italic}
+  .hero .date{
+    font-family:'Sora',sans-serif;font-weight:300;font-size:18px;color:#7A7A83;
+    margin-top:8px;letter-spacing:.3px;
+  }
+  .hero .greet{
+    font-family:'Sora',sans-serif;font-weight:400;font-size:16px;color:#555;margin-top:2px;letter-spacing:.2px
+  }
+  .hero .greet b{color:var(--amber);font-weight:500}
+
+  /* — content — */
+  .stream{flex:1;padding:14px 24px 0;display:flex;flex-direction:column;gap:16px;overflow:hidden}
+
+  /* SIGNAL card: tap opens Agents overlay */
+  .signal{
+    position:relative;
+    background:var(--card-elev);border:1px solid var(--hairline);
+    border-radius:20px;padding:18px 20px 18px 22px;
+    display:flex;flex-direction:column;gap:12px;
+  }
+  .signal::before{
+    content:"";position:absolute;left:0;top:16px;bottom:16px;width:3px;
+    background:linear-gradient(180deg,var(--amber),rgba(245,158,11,0) 90%);
+    border-radius:0 2px 2px 0;
+  }
+  .signal-head{
+    display:flex;align-items:center;justify-content:space-between;
+    font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:3px;color:#7a7a83;
+  }
+  .signal-head .live{display:inline-flex;align-items:center;gap:8px}
+  .signal-head .pulse{
+    width:7px;height:7px;border-radius:50%;background:var(--rose);
+    box-shadow:0 0 0 0 rgba(244,63,94,.55);
+    animation:pulse 1.8s ease-out infinite;
+  }
+  @keyframes pulse{
+    0%{box-shadow:0 0 0 0 rgba(244,63,94,.55)}
+    100%{box-shadow:0 0 0 10px rgba(244,63,94,0)}
+  }
+  .signal-title{font-size:22px;font-weight:400;color:#E6E6EE;line-height:1.3}
+  .signal-tasks{display:flex;flex-direction:column;gap:8px;margin-top:4px}
+  .task{display:flex;align-items:center;gap:12px;font-size:17px;font-weight:300;color:#B0B0B8}
+  .task .ind{width:18px;height:18px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;font-size:10px}
+  .task.done .ind{background:rgba(34,197,94,.15);color:var(--green)}
+  .task.wip .ind{background:rgba(245,158,11,.15);color:var(--amber)}
+  .task.wait .ind{background:rgba(255,255,255,.05);color:#555}
+  .task .meta{margin-left:auto;font-family:'Geist Mono',monospace;font-size:12px;color:#5a5a63}
+  .task.wip .meta{color:var(--amber)}
+  .task.done .meta{color:var(--green)}
+  .bar{height:4px;width:60px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden}
+  .bar > i{display:block;height:100%;background:var(--amber)}
+
+  /* Recent log — single stripe, two mono lines, no cards */
+  .log{
+    padding:8px 2px;display:flex;flex-direction:column;gap:0;
+    border-top:1px solid var(--hairline);border-bottom:1px solid var(--hairline);
+  }
+  .log .row{
+    display:flex;align-items:center;gap:14px;padding:14px 4px;
+    font-family:'Geist Mono',monospace;font-size:12px;
+  }
+  .log .row + .row{border-top:1px solid rgba(255,255,255,.03)}
+  .log .tag{color:var(--amber);letter-spacing:2px;font-weight:500}
+  .log .time{color:#5a5a63}
+  .log .title{font-family:'Sora',sans-serif;font-size:16px;font-weight:400;color:#C8C8D0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .log .chev{color:#40404a;font-size:16px}
+
+  /* Quick dock — smaller, 3 actions: Camera, Files, Memory (replaces Timer) */
+  .dock{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .dbtn{
+    padding:14px 10px;border-radius:18px;
+    background:#0E0E18;border:1px solid #1A1A24;
+    display:flex;flex-direction:column;align-items:center;gap:6px;
+  }
+  .dbtn .ico{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:rgba(245,158,11,.08);color:var(--amber)}
+  .dbtn .ico svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .dbtn .lbl{font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:1.6px;color:#888}
+
+  /* Bottom chrome: input pill (amber mic) + slim nav on top layer */
+  .chrome{flex-shrink:0;padding:12px 24px 0}
+  .pill{
+    display:flex;align-items:center;gap:12px;
+    background:#0E0E18;border:1px solid #1A1A24;
+    border-radius:30px;padding:6px 6px 6px 22px;height:56px;
+  }
+  .pill .hint{flex:1;font-size:17px;color:#44444e;font-weight:300;letter-spacing:.2px}
+  .pill .mic{
+    width:44px;height:44px;border-radius:50%;
+    background:linear-gradient(140deg,#FFC75A 0%,#F59E0B 60%,#C8780A 100%);
+    box-shadow:0 6px 20px rgba(245,158,11,.3), inset 0 1px 0 rgba(255,255,255,.35);
+    display:grid;place-items:center;color:#0a0a0a;
+  }
+  .pill .mic svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2}
+
+  .nav{
+    display:flex;height:72px;padding:0 8px;
+    border-top:1px solid rgba(255,255,255,.03);
+    margin-top:10px;
+  }
+  .tab{
+    flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;
+    font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:2px;color:#3A3A3A;
+  }
+  .tab svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .tab.on{color:var(--amber)}
+  .tab.on::before{
+    content:"";position:absolute;margin-top:-4px;width:28px;height:3px;border-radius:2px;background:var(--amber);box-shadow:0 0 10px var(--amber-glow);
+    align-self:center;
+  }
+
+  /* Annotations side-panel */
+  .layout{display:flex;gap:40px;align-items:flex-start}
+  .notes{max-width:340px;font-size:13px;color:#888;font-weight:300;line-height:1.65}
+  .notes h3{font-family:'Instrument Serif',serif;font-size:28px;font-weight:400;color:#e8e8ef;margin-bottom:8px}
+  .notes h3 .num{font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--amber);display:block;margin-bottom:4px}
+  .notes ul{list-style:none;margin-top:14px;display:flex;flex-direction:column;gap:14px}
+  .notes li{padding-left:18px;position:relative}
+  .notes li::before{content:"";position:absolute;left:0;top:8px;width:8px;height:1px;background:var(--amber)}
+  .notes li b{color:#E8E8EF;font-weight:500}
+  .notes .lvgl{margin-top:24px;padding:14px 16px;background:rgba(245,158,11,.04);border:1px solid rgba(245,158,11,.15);border-radius:12px;font-family:'Geist Mono',monospace;font-size:11px;color:#9a9aa3;line-height:1.8}
+  .notes .lvgl .k{color:var(--amber)}
+</style>
+</head>
+<body>
+
+<div class="caption">
+  <div class="kicker">Direction A · Instrument</div>
+  <h1>The device as a <em>precision instrument</em>.</h1>
+  <p>A voice-first tablet earns its presence with <b>one hero</b>: the orb. Everything else recedes. Typography is spare; numerics are monospace; the single Signal card shows what the agent is doing without competing with the time. No filler buttons, no triple-redundant "what's recent" — one activity log, one hero, one voice.</p>
+</div>
+
+<div class="layout">
+  <div class="stage">
+    <div class="frame">
+      <div class="screen">
+
+        <!-- Status -->
+        <div class="status">
+          <div class="mode"><span class="dot"></span>CLAW · TINKERCLAW</div>
+          <div class="sys"><span>14:32</span><span class="link"></span><span>87%</span></div>
+        </div>
+
+        <!-- Hero -->
+        <div class="hero">
+          <div class="orb-stage">
+            <svg class="arc-svg" viewBox="0 0 240 240" aria-hidden="true">
+              <circle class="track" cx="120" cy="120" r="118"/>
+              <circle class="fill" cx="120" cy="120" r="118"/>
+            </svg>
+            <div class="orb"></div>
+          </div>
+          <div class="tz">WED · APR 16 · 14:32</div>
+          <div class="time">14<span class="sep">:</span>32</div>
+          <div class="date">Wednesday, April 16</div>
+          <div class="greet">Afternoon, <b>Emile</b> — two things moved while you were away.</div>
+        </div>
+
+        <!-- Stream -->
+        <div class="stream">
+          <!-- SIGNAL card (agent) -->
+          <div class="signal">
+            <div class="signal-head">
+              <span class="live"><span class="pulse"></span>SIGNAL · HEARTBEAT</span>
+              <span>2m · TAP →</span>
+            </div>
+            <div class="signal-title">Morning check-in, in progress.</div>
+            <div class="signal-tasks">
+              <div class="task done"><span class="ind">✓</span>Inbox scanned<span class="meta">3 found</span></div>
+              <div class="task wip"><span class="ind">◐</span>Reply to Aisha<span class="meta"><span class="bar"><i style="width:70%"></i></span> 70%</span></div>
+              <div class="task wait"><span class="ind">○</span>News digest<span class="meta">queued</span></div>
+            </div>
+          </div>
+
+          <!-- Recent log -->
+          <div class="log">
+            <div class="row">
+              <span class="tag">NOTE</span><span class="time">11:42</span>
+              <span class="title">TinkerClaw roadmap — Phase 2 outline</span>
+              <span class="chev">›</span>
+            </div>
+            <div class="row">
+              <span class="tag">CHAT</span><span class="time">10:15</span>
+              <span class="title">AirPods vs XM5 — Sonnet</span>
+              <span class="chev">›</span>
+            </div>
+          </div>
+
+          <!-- Dock -->
+          <div class="dock">
+            <div class="dbtn"><div class="ico"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="lbl">CAMERA</div></div>
+            <div class="dbtn"><div class="ico"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg></div><div class="lbl">FILES</div></div>
+            <div class="dbtn"><div class="ico"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg></div><div class="lbl">MEMORY</div></div>
+          </div>
+        </div>
+
+        <!-- Chrome -->
+        <div class="chrome">
+          <div class="pill">
+            <span class="hint">Ask, dictate, or press to speak…</span>
+            <div class="mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></div>
+          </div>
+          <div class="nav">
+            <div class="tab on">
+              <svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z"/></svg>
+              HOME
+            </div>
+            <div class="tab">
+              <svg viewBox="0 0 24 24"><path d="M5 4h12l4 4v12H5z"/><path d="M9 10h8M9 14h6"/></svg>
+              NOTES
+            </div>
+            <div class="tab">
+              <svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></svg>
+              CHAT
+            </div>
+            <div class="tab">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 11-14 0 7 7 0 0114 0zm-7-8v2m0 12v2m8-8h-2M6 12H4m12.24-5.66l1.42 1.42M6.34 17.66l1.42-1.42M17.66 17.66l-1.42-1.42M6.34 6.34l1.42 1.42"/></svg>
+              SETTINGS
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h3><span class="num">NOTES · 01</span>IA principles</h3>
+    <ul>
+      <li><b>One hero.</b> Orb at 160px — presence, not decoration. Arc ring is lv_arc (amber indicator, white track 4% opacity).</li>
+      <li><b>Kill the redundancy.</b> Greeting → subtitle. Info cards → a single mono log. Agent summary is the only card above the fold.</li>
+      <li><b>Assertive mode.</b> The status-bar chip shows rose-tinted <i>CLAW · TINKERCLAW</i> — tap cycles Local / Hybrid / Cloud / Claw. This is the one setting that rewires everything, so it gets air.</li>
+      <li><b>No filler.</b> Timer becomes <i>Memory</i> (search past conversations). Two hardware affordances + one cognitive affordance.</li>
+      <li><b>Bottom chrome merged.</b> Pill + nav share a single 128px zone but nav is visually quieter (uppercase mono, amber underline on active).</li>
+    </ul>
+
+    <div class="lvgl">
+      <span class="k">▸ LVGL budget</span><br>
+      Status 4 · Hero 5 · Signal 13 · Log 7 · Dock 9 · Pill 3 · Nav 9 = <span class="k">~50 obj</span><br>
+      <span class="k">▸ Styles</span> s_style_card_elevated, s_style_log_row, s_style_dock_btn, s_style_mode_chip, s_style_pill<br>
+      <span class="k">▸ Anim</span> orb: lv_anim Y ±4px 5s · arc: lv_anim value 0→100 6s · rose pulse: shadow_opa loop 1.8s
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

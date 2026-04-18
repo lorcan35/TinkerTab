@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>TinkerTab v4 — A · MONOLITH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Fraunces:opsz,wght@9..144,300;9..144,600;9..144,800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#08080E; --card:#111119; --elev:#13131F;
+    --amber:#F59E0B; --amber-dim:#7A4F05;
+    --text:#E8E8EE; --muted:#666; --hair:#1C1C28;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+  html,body{background:#000;color:var(--text);font-family:'Space Mono',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:40px}
+  .frame{width:720px;height:1280px;background:var(--bg);position:relative;overflow:hidden;border-radius:8px;box-shadow:0 30px 100px #000}
+
+  /* ——— status strip (replaces mode pill; full-width, behavior-weighted) ——— */
+  .strip{height:56px;display:flex;align-items:center;padding:0 28px;border-bottom:1px solid var(--hair);font-family:'Space Mono';font-size:13px;letter-spacing:3px;color:var(--muted)}
+  .strip .mode{color:var(--amber);font-weight:700}
+  .strip .dot{width:6px;height:6px;border-radius:50%;background:var(--amber);margin:0 14px;box-shadow:0 0 12px var(--amber)}
+  .strip .right{margin-left:auto;color:#444}
+
+  /* ——— hero: orb + its single line ——— */
+  .hero{padding:60px 0 40px;display:flex;flex-direction:column;align-items:center}
+  .orb{width:440px;height:440px;border-radius:50%;
+       background:radial-gradient(circle at 38% 34%, #FFB547 0%, #F59E0B 28%, #7A4F05 62%, #1A1004 100%);
+       box-shadow:0 0 120px rgba(245,158,11,.35), inset 0 0 80px rgba(0,0,0,.45);
+       position:relative}
+  .orb::after{content:"";position:absolute;inset:18px;border-radius:50%;border:1px solid rgba(245,158,11,.25)}
+  .orb .gloss{position:absolute;top:8%;left:18%;width:40%;height:22%;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.35),transparent 70%);filter:blur(2px)}
+  .invite{margin-top:44px;font-family:'Fraunces';font-weight:300;font-size:36px;letter-spacing:-.5px;color:var(--text);text-align:center;line-height:1.2}
+  .invite em{font-style:italic;color:var(--amber);font-weight:600}
+  .sub{margin-top:14px;font-size:12px;letter-spacing:4px;color:var(--muted);text-transform:uppercase}
+
+  /* ——— the one card: WHAT TINKER IS DOING / JUST DID ——— */
+  .card{margin:56px 32px 0;padding:28px 28px 26px;background:var(--card);border:1px solid var(--hair);border-left:3px solid var(--amber);border-radius:2px;position:relative}
+  .card .tag{font-family:'Space Mono';font-size:11px;letter-spacing:4px;color:var(--amber);text-transform:uppercase;margin-bottom:10px}
+  .card .line{font-family:'Fraunces';font-weight:600;font-size:28px;line-height:1.25;letter-spacing:-.4px}
+  .card .meta{margin-top:18px;display:flex;gap:18px;font-family:'Space Mono';font-size:11px;color:var(--muted);letter-spacing:2px}
+  .card .meta span{display:flex;align-items:center;gap:6px}
+  .card .meta b{color:var(--text);font-weight:400}
+
+  /* ——— corner affordances — NO nav bar, NO input pill ——— */
+  .corner{position:absolute;bottom:0;left:0;right:0;height:88px;display:flex;align-items:stretch}
+  .corner a{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-family:'Space Mono';font-size:11px;letter-spacing:3px;color:var(--muted);border-top:1px solid var(--hair)}
+  .corner a .g{font-family:'Fraunces';font-weight:800;font-size:22px;color:var(--text);line-height:1}
+  .corner a.active .g{color:var(--amber)}
+  .corner a + a{border-left:1px solid var(--hair)}
+
+  /* edge ticks hint swipes */
+  .tick{position:absolute;width:2px;height:44px;background:var(--amber);opacity:.4}
+  .tick.l{left:0;top:520px;border-radius:0 2px 2px 0}
+  .tick.r{right:0;top:520px;border-radius:2px 0 0 2px}
+
+  .label{position:absolute;top:-34px;left:0;color:#888;font-size:12px;letter-spacing:3px;text-transform:uppercase}
+</style>
+</head>
+<body>
+<div style="position:relative">
+  <div class="label">A · MONOLITH — one orb, one truth, zero chrome</div>
+  <div class="frame">
+
+    <div class="strip">
+      <span>TINKER</span>
+      <span class="dot"></span>
+      <span class="mode">LISTENING · LOCAL</span>
+      <span class="right">14:32 · 74%</span>
+    </div>
+
+    <div class="hero">
+      <div class="orb"><div class="gloss"></div></div>
+      <div class="invite">Tap to <em>speak</em>, or just start.</div>
+      <div class="sub">— say "hey tinker" to wake —</div>
+    </div>
+
+    <div class="card">
+      <div class="tag">— LAST THOUGHT · 4 MIN AGO</div>
+      <div class="line">You asked me to remind you about the<br/>Sawaya router reboot tonight. Still on it.</div>
+      <div class="meta">
+        <span>⏱ <b>21:00</b></span>
+        <span>↻ <b>1 follow-up</b></span>
+        <span>· tap to open thread</span>
+      </div>
+    </div>
+
+    <span class="tick l"></span><span class="tick r"></span>
+
+    <div class="corner">
+      <a class="active"><span class="g">◉</span><span>ORB</span></a>
+      <a><span class="g">≡</span><span>NOTES</span></a>
+      <a><span class="g">▦</span><span>FOCUS</span></a>
+      <a><span class="g">⚙</span><span>SETTINGS</span></a>
+    </div>
+  </div>
+</div>
+</body></html>
