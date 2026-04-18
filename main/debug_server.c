@@ -1142,9 +1142,17 @@ static void async_navigate(void *arg)
     extern void ui_chat_hide(void);
     extern void ui_settings_hide(void);
     extern void ui_notes_hide(void);
+    extern void ui_agents_hide(void);
+    extern void ui_memory_hide(void);
+    extern void ui_focus_hide(void);
+    extern void ui_sessions_hide(void);
     ui_chat_hide();
     ui_settings_hide();
     ui_notes_hide();
+    ui_agents_hide();
+    ui_memory_hide();
+    ui_focus_hide();
+    ui_sessions_hide();
     ui_keyboard_hide();
 
     if (strcmp(s_nav_target, "home") == 0) {
