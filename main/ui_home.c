@@ -151,6 +151,29 @@ static void update_mode_ui(uint8_t mode)
     orb_paint_for_mode(mode);
 }
 
+/* ── Widget-tone orb override ──────────────────────────────────
+ * Widget platform v1: when an active LIVE widget is present, its tone
+ * overrides the voice-mode tint. calm=emerald, active=amber, approaching=
+ * amber-hot, urgent=rose, done=emerald-settled. See docs/WIDGETS.md §3.1. */
+#include "widget.h"
+static void orb_paint_for_tone(widget_tone_t tone)
+{
+    if (!s_orb) return;
+    uint32_t top, bot;
+    switch (tone) {
+        case WIDGET_TONE_CALM:        top = 0x7DE69F; bot = 0x166C3A; break;
+        case WIDGET_TONE_ACTIVE:      top = 0xFFC75A; bot = 0xB9650A; break;
+        case WIDGET_TONE_APPROACHING: top = 0xFFB637; bot = 0xD97706; break;
+        case WIDGET_TONE_URGENT:      top = 0xFF7E95; bot = 0xF43F5E; break;
+        case WIDGET_TONE_DONE:        top = 0xBBFFCC; bot = 0x0E5E2A; break;
+        default:                      top = 0xFFC75A; bot = 0xB9650A; break;
+    }
+    lv_obj_set_style_bg_color(s_orb, lv_color_hex(top), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+}
+
 /* ────────────────────────── screen build ────────────────────── */
 
 lv_obj_t *ui_home_create(void)
@@ -355,10 +378,27 @@ void ui_home_update_status(void)
     else if (quiet)     state = ST_QUIET;
     else                state = ST_NORMAL;
 
+    /* Widget platform v1: if an active LIVE widget exists, it wins the
+     * poem slot + drives orb tint regardless of edge state. */
+    widget_t *live_w = widget_store_live_active();
+
     if (s_poem_label) {
         char preview[180];
         bool have = ui_notes_get_last_preview(preview, sizeof(preview));
         char buf[260];
+        if (live_w) {
+            /* title on line 1 (serif-weight feel via caps-ish); body below.
+             * Precision specifiers match widget slot max lengths so gcc
+             * doesn't fear format-truncation. */
+            snprintf(buf, sizeof(buf), "%.63s\n%.180s",
+                     live_w->title[0] ? live_w->title : "",
+                     live_w->body[0]  ? live_w->body  : "");
+            const char *cur = lv_label_get_text(s_poem_label);
+            if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
+            /* orb tint follows tone */
+            orb_paint_for_tone(live_w->tone);
+            goto skip_edge_poem;
+        }
         switch (state) {
             case ST_NO_WIFI:
                 snprintf(buf, sizeof(buf),
@@ -391,6 +431,10 @@ void ui_home_update_status(void)
         }
         const char *cur = lv_label_get_text(s_poem_label);
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_poem_label, buf);
+        /* Revert orb to voice-mode tint when no live widget claims it. */
+        orb_paint_for_mode(s_badge_mode);
+    skip_edge_poem:
+        (void)0;
     }
 
     /* Top-left system status — v5 spec.  Format + colour matches the

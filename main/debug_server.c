@@ -1190,6 +1190,92 @@ static void async_navigate(void *arg)
     s_navigating = false;
 }
 
+/* ── /widget — testing-only hook that injects a widget_live into the store
+ *   without requiring Dragon. Body is JSON matching widget_live schema (see
+ *   TinkerBox docs/protocol.md §17.2). Used by the Widget Platform test
+ *   harness before the Dragon Tab5Surface is wired. */
+#include "widget.h"
+static void async_widget_refresh(void *arg) {
+    (void)arg;
+    extern void ui_home_update_status(void);
+    ui_home_update_status();
+}
+
+static esp_err_t widget_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    /* Read body */
+    int len = req->content_len;
+    if (len <= 0 || len > 2048) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body 1..2048 bytes");
+        return ESP_FAIL;
+    }
+    char *buf = malloc(len + 1);
+    if (!buf) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return ESP_FAIL; }
+    int got = 0;
+    while (got < len) {
+        int r = httpd_req_recv(req, buf + got, len - got);
+        if (r <= 0) { free(buf); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "read"); return ESP_FAIL; }
+        got += r;
+    }
+    buf[len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_FAIL;
+    }
+
+    const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(root, "action"));
+    if (action && !strcmp(action, "dismiss")) {
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (cid) widget_store_dismiss(cid);
+        cJSON_Delete(root);
+        lv_async_call(async_widget_refresh, NULL);
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        return ESP_OK;
+    }
+
+    /* Build widget_t from JSON */
+    widget_t w = {0};
+    const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+    const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+    const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+    const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+    const char *icn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "icon"));
+    const char *tn  = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+    cJSON *prog     = cJSON_GetObjectItem(root, "progress");
+    cJSON *pri      = cJSON_GetObjectItem(root, "priority");
+    cJSON *act      = cJSON_GetObjectItem(root, "action");
+
+    if (!cid) cid = "debug_1";
+    if (!sid) sid = "debug";
+    strncpy(w.card_id,  cid, WIDGET_ID_LEN - 1);
+    strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+    if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+    if (bdy) strncpy(w.body,  bdy, WIDGET_BODY_LEN  - 1);
+    if (icn) strncpy(w.icon,  icn, WIDGET_ICON_LEN  - 1);
+    w.type     = WIDGET_TYPE_LIVE;
+    w.tone     = widget_tone_from_str(tn);
+    w.progress = cJSON_IsNumber(prog) ? (float)prog->valuedouble : 0.0f;
+    w.priority = cJSON_IsNumber(pri)  ? (uint8_t)pri->valueint   : 50;
+    if (cJSON_IsObject(act)) {
+        const char *al = cJSON_GetStringValue(cJSON_GetObjectItem(act, "label"));
+        const char *ae = cJSON_GetStringValue(cJSON_GetObjectItem(act, "event"));
+        if (al) strncpy(w.action_label, al, WIDGET_ACTION_LBL_LEN - 1);
+        if (ae) strncpy(w.action_event, ae, WIDGET_ACTION_EVT_LEN - 1);
+    }
+    widget_store_upsert(&w);
+    cJSON_Delete(root);
+    lv_async_call(async_widget_refresh, NULL);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
+}
+
 static esp_err_t navigate_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
@@ -1658,6 +1744,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_navigate = {
         .uri = "/navigate", .method = HTTP_POST, .handler = navigate_handler
     };
+    const httpd_uri_t uri_widget = {
+        .uri = "/widget", .method = HTTP_POST, .handler = widget_handler
+    };
     const httpd_uri_t uri_camera = {
         .uri = "/camera", .method = HTTP_GET, .handler = camera_handler
     };
@@ -1698,6 +1787,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_settings_get);
     httpd_register_uri_handler(server, &uri_mode_set);
     httpd_register_uri_handler(server, &uri_navigate);
+    httpd_register_uri_handler(server, &uri_widget);
     httpd_register_uri_handler(server, &uri_camera);
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);
