@@ -501,3 +501,45 @@ If something breaks after a build/flash:
 - Stash: `stash@{0}` holds uncommitted work before rollback
 - To restore pre-rollback work: `git switch main && git stash apply stash@{0}`
 - Safe rollback branch: `rollback/e7c7253-clean-20260331` at commit `e7c7253`
+
+## Widget Platform (April 2026) — Skills Surface on Tab5
+
+**Spec:** [`docs/WIDGETS.md`](./docs/WIDGETS.md)
+**Plan:** [`docs/PLAN-widget-platform.md`](./docs/PLAN-widget-platform.md)
+**Mockups:** [`.superpowers/brainstorm/widget-platform/`](./.superpowers/brainstorm/widget-platform/)
+
+A new extensibility layer. Skills on Dragon emit typed widget state; Tab5
+renders it opinionatedly. Instead of editing C and reflashing for every new
+feature, **new features become Python files on Dragon** that emit structured
+state into one of six widget slots. Tab5 renders in v5 style.
+
+### What this is
+- Six widget types: `live`, `card`, `list`, `chart`, `media`, `prompt`
+- New WS messages: `widget_live`, `widget_live_update`, `widget_live_dismiss`,
+  `widget_card`, `widget_list`, `widget_chart`, `widget_prompt`, `widget_dismiss`,
+  `widget_action` (Tab5→Dragon), `widget_capability` (Tab5→Dragon)
+- Single in-memory widget store in PSRAM, bounded at 32 entries
+- Home `s_poem_label` promoted to a **priority-resolved live slot** — a live
+  widget's title+body replaces the poem; its tone drives orb color + breathing
+- Reference skill: **Time Sense** (AI-first Pomodoro) in `dragon_voice/tools/`
+
+### Design rules (non-negotiable)
+1. One live widget at a time, full stop.
+2. Skills never write layout — widget vocabulary IS the layout contract.
+3. No interpreter on Tab5; no JS; no Lua. Skills run on the brain only.
+4. Tab5 renders opinionatedly from v5 theme tokens. Skills can't override colors.
+5. Every interactive element ≥44 pt tap target; all animations 150–300 ms.
+6. Unknown widget types are ignored (forward-compat); unknown icons hidden.
+7. Under SDIO TX pressure, action events are rate-limited at 4/sec.
+
+### Key files (phase 1)
+- `main/widget.h` / `main/widget_store.c` — data model + priority queue
+- `main/ui_home.c` — live-slot integration (extends `s_poem_label`)
+- `main/voice.c` — WS handlers for `widget_*` + `widget_action` TX
+- Dragon-side: `dragon_voice/surfaces/base.py` + `dragon_voice/tools/timesense_tool.py`
+
+### When to use a widget vs a native screen
+- **Widget:** skill-emitted state (timer, notification, ask-a-question)
+- **Native screen:** device-specific hardware feature (camera viewfinder,
+  keyboard, voice overlay) — these stay in C and don't become skills.
+
