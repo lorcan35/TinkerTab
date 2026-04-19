@@ -2534,7 +2534,46 @@ bool voice_is_connected(void)
 // Always-listening mode (AFE + wake word)
 // ---------------------------------------------------------------------------
 
+/* Wake-word always-listening is PARKED.
+ *
+ * The underlying AFE pipeline (afe.c + ESP-SR WakeNet models in the model
+ * partition) still links cleanly and the previous implementation lives
+ * below this block, kept behind WAKE_WORD_PARKED so it can be un-parked
+ * by a single #define flip. Wake-word detection doesn't fire reliably
+ * because the AEC reference channel is on the wrong TDM slot; Espressif
+ * support + physical slot verification needed before this is worth
+ * shipping to users. Until then, the public voice_*_always_listening()
+ * entry points are no-ops that log and return so any caller (Settings,
+ * /wake debug endpoint, rogue boot hook) can't spin up AFE tasks by
+ * accident.
+ *
+ * To un-park:
+ *   1. Remove #ifndef WAKE_WORD_PARKED below
+ *   2. Restore the Wake Word row + cb_wake_word in ui_settings.c
+ *   3. Unhide wake_listening / wake_word fields in debug_server.c /info
+ */
+#define WAKE_WORD_PARKED 1
+
 esp_err_t voice_start_always_listening(void)
+{
+    ESP_LOGW(TAG, "Wake-word mode is parked — start request ignored");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t voice_stop_always_listening(void)
+{
+    /* Always safe to call — never started. */
+    return ESP_OK;
+}
+
+bool voice_is_always_listening(void)
+{
+    return false;
+}
+
+#ifndef WAKE_WORD_PARKED
+/* Original implementation preserved verbatim for easy revival. */
+esp_err_t _voice_start_always_listening_impl(void)
 {
     if (s_afe_enabled) {
         ESP_LOGW(TAG, "AFE already running");
@@ -2550,10 +2589,8 @@ esp_err_t voice_start_always_listening(void)
     s_afe_enabled = true;
     s_afe_listening = true;
 
-    // Start mic capture task — runs continuously to feed AFE
-    // Use PSRAM stack to avoid exhausting limited internal SRAM (only 44KB free)
     s_mic_running = true;
-    s_mic_task = NULL;  // Force fresh creation
+    s_mic_task = NULL;
     BaseType_t mic_ret = xTaskCreatePinnedToCoreWithCaps(
         mic_capture_task, "afe_mic", MIC_TASK_STACK_SIZE,
         NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
@@ -2568,10 +2605,8 @@ esp_err_t voice_start_always_listening(void)
     }
     ESP_LOGI(TAG, "AFE mic task created on core %d", MIC_TASK_CORE);
 
-    // Wait for mic to start feeding before launching detect task
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Start AFE detect task — also PSRAM stack
     BaseType_t det_ret = xTaskCreatePinnedToCoreWithCaps(
         afe_detect_task, "afe_detect", 8192, NULL,
         MIC_TASK_PRIORITY, &s_afe_detect_task, MIC_TASK_CORE,
@@ -2585,22 +2620,14 @@ esp_err_t voice_start_always_listening(void)
     return ESP_OK;
 }
 
-esp_err_t voice_stop_always_listening(void)
+esp_err_t _voice_stop_always_listening_impl(void)
 {
     if (!s_afe_enabled) return ESP_OK;
-
     s_afe_listening = false;
     s_afe_enabled = false;
-
-    // Wait for detect task to exit
     vTaskDelay(pdMS_TO_TICKS(100));
-
     tab5_afe_deinit();
     ESP_LOGI(TAG, "Always-listening mode stopped");
     return ESP_OK;
 }
-
-bool voice_is_always_listening(void)
-{
-    return s_afe_enabled && s_afe_listening;
-}
+#endif  /* WAKE_WORD_PARKED */

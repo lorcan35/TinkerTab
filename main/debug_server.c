@@ -351,12 +351,11 @@ static esp_err_t info_handler(httpd_req_t *req)
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     cJSON_AddNumberToObject(root, "tasks", (double)task_count);
 
-    /* AFE / wake word */
-    cJSON_AddBoolToObject(root, "afe_active", tab5_afe_is_active());
-    cJSON_AddBoolToObject(root, "wake_listening", voice_is_always_listening());
-    if (tab5_afe_is_active()) {
-        cJSON_AddStringToObject(root, "wake_word", tab5_afe_wake_word_name());
-    }
+    /* AFE / wake word — parked. Kept in /info so external monitors can
+     * detect the parked state, but the fields always read false/empty. */
+    cJSON_AddBoolToObject(root, "afe_active", false);
+    cJSON_AddBoolToObject(root, "wake_listening", false);
+    cJSON_AddStringToObject(root, "wake_word", "parked");
 
     /* SD card */
     cJSON_AddBoolToObject(root, "sd_mounted", tab5_sdcard_mounted());
@@ -901,24 +900,20 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
     return ret;
 }
 
-/* ── Wake word toggle ────────────────────────────────────────────────── */
+/* ── Wake word toggle (PARKED) ───────────────────────────────────────── */
 
 static esp_err_t wake_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
-    if (voice_is_always_listening()) {
-        voice_stop_always_listening();
-    } else {
-        voice_start_always_listening();
-    }
-
+    /* Feature parked — accept the request but do nothing. Return a clear
+     * status so external tools stop retrying. Un-park: restore the toggle
+     * body above and flip WAKE_WORD_PARKED in voice.c. */
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "afe_active", tab5_afe_is_active());
-    cJSON_AddBoolToObject(root, "wake_listening", voice_is_always_listening());
-    if (tab5_afe_is_active()) {
-        cJSON_AddStringToObject(root, "wake_word", tab5_afe_wake_word_name());
-    }
+    cJSON_AddBoolToObject(root, "afe_active", false);
+    cJSON_AddBoolToObject(root, "wake_listening", false);
+    cJSON_AddStringToObject(root, "wake_word", "parked");
+    cJSON_AddStringToObject(root, "status", "wake-word feature is parked — see voice.c WAKE_WORD_PARKED");
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -1036,7 +1031,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     char model[64];
     tab5_settings_get_llm_model(model, sizeof(model));
     cJSON_AddStringToObject(root, "llm_model", model);
-    cJSON_AddNumberToObject(root, "wake_word", tab5_settings_get_wake_word());
+    /* wake_word setting is parked — always reports 0 regardless of NVS value */
+    cJSON_AddNumberToObject(root, "wake_word", 0);
     cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
     cJSON_AddNumberToObject(root, "voice_state", voice_get_state());
 

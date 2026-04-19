@@ -548,7 +548,7 @@ lv_obj_t *ui_home_create(void)
 
     const int rail_gap = 10;
     const int chip_w = (CARD_W - rail_gap * 3) / 4;
-    const char *rail_names[4] = { "home", "threads", "notes", "settings" };
+    const char *rail_names[4] = { "home", "chat", "notes", "settings" };
     lv_event_cb_t rail_cbs[4] = { rail_home_cb, rail_threads_cb, rail_notes_cb, rail_settings_cb };
 
     for (int i = 0; i < 4; i++) {
@@ -871,7 +871,13 @@ static void sys_click_cb(lv_event_t *e)
 
 /* Rail handlers */
 static void rail_home_cb(lv_event_t *e)     { (void)e; /* already home */ }
-static void rail_threads_cb(lv_event_t *e)  { (void)e; if (!any_overlay_visible()) ui_agents_show(); }
+static void async_open_chat(void *arg)
+{
+    (void)arg;
+    extern lv_obj_t *ui_chat_create(void);
+    ui_chat_create();
+}
+static void rail_threads_cb(lv_event_t *e)  { (void)e; if (!any_overlay_visible()) lv_async_call(async_open_chat, NULL); }
 static void async_open_notes_rail(void *arg)
 {
     (void)arg;

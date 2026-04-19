@@ -412,23 +412,11 @@ static void cb_quiet_on(lv_event_t *e)
     ui_home_refresh_sys_label();
 }
 
-static void cb_wake_word(lv_event_t *e)
-{
-    lv_obj_t *sw = lv_event_get_target(e);
-    lv_obj_t *hint = lv_event_get_user_data(e);
-    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    tab5_settings_set_wake_word(on ? 1 : 0);
-    ESP_LOGI(TAG, "Wake word %s", on ? "ON" : "OFF");
-    if (hint) {
-        lv_label_set_text(hint, on ? "On" : "Off");
-        lv_obj_set_style_text_color(hint, on ? lv_color_hex(TAB_LOCAL) : lv_color_hex(TEXT_DIM), 0);
-    }
-    if (on) {
-        voice_start_always_listening();
-    } else {
-        voice_stop_always_listening();
-    }
-}
+/* Wake-word callback removed — feature parked. AFE + WakeNet remain wired in
+ * firmware (afe.c, voice_{start,stop}_always_listening) but hidden from the
+ * UI because TDM slot mapping for the AEC reference channel is still broken.
+ * When un-parked, restore the Wake Word row + this callback. See CLAUDE.md
+ * "Phase 2" and Espressif issue #TBD. */
 
 /* ── WiFi picker ────────────────────────────────────────────────────── */
 
@@ -1084,11 +1072,10 @@ lv_obj_t *ui_settings_create(void)
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
 
     /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
-     * section visually — single amber caption, rows straight below). */
-    mk_row_label(s_scroll, "Wake Word", y);
-    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
-              cb_wake_word, NULL);
-    y += ROW_H + 16;
+     * section visually — single amber caption, rows straight below).
+     *
+     * Wake Word row intentionally OMITTED — feature parked until AEC TDM
+     * slot mapping is resolved. See cb_wake_word comment above. */
     mk_row_label(s_scroll, "Mic mute", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
               cb_mic_mute, NULL);
