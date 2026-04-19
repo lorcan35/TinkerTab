@@ -88,6 +88,12 @@ esp_err_t voice_send_text(const char *text);
 /** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 
+/** v4·D Gauntlet G7-F: like voice_send_config_update but with an optional
+ *  reason string (e.g. "cap_downgrade") so Dragon can speak a brief system
+ *  TTS confirming an auto mode-switch.  Pass reason=NULL for normal changes. */
+esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
+                                      const char *reason);
+
 /** Widget Platform v1 — emit a widget_action event back to Dragon.
  *  payload_json (optional) is parsed as JSON and attached as the "payload"
  *  field. Rate-limited at 4 events/sec.

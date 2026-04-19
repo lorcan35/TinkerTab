@@ -651,7 +651,10 @@ static void handle_text_message(const char *data, int len)
                      * cloud preference for when they raise the cap. */
                     char lm[64] = {0};
                     tab5_settings_get_llm_model(lm, sizeof(lm));
-                    voice_send_config_update(0, lm);
+                    /* G7-F: tag this downgrade so Dragon speaks a short TTS
+                     * alert -- the user hears the switch even with the screen
+                     * off. */
+                    voice_send_config_update_ex(0, lm, "cap_downgrade");
                     /* Also reset the three Sovereign tiers so the mode
                      * sheet visually reflects the downgrade. */
                     tab5_settings_set_int_tier(0);
@@ -2036,7 +2039,8 @@ esp_err_t voice_send_widget_action(const char *card_id, const char *event,
     return ret;
 }
 
-esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
+esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
+                                      const char *reason)
 {
     if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
 
@@ -2047,15 +2051,24 @@ esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
     if (voice_mode == 2 && llm_model && llm_model[0]) {
         cJSON_AddStringToObject(msg, "llm_model", llm_model);
     }
+    if (reason && reason[0]) {
+        cJSON_AddStringToObject(msg, "reason", reason);
+    }
     char *json = cJSON_PrintUnformatted(msg);
     cJSON_Delete(msg);
     if (!json) return ESP_ERR_NO_MEM;
 
-    ESP_LOGI(TAG, "Sending config_update: voice_mode=%d llm_model=%s",
-             voice_mode, (llm_model && llm_model[0]) ? llm_model : "(local)");
+    ESP_LOGI(TAG, "Sending config_update: voice_mode=%d llm_model=%s reason=%s",
+             voice_mode, (llm_model && llm_model[0]) ? llm_model : "(local)",
+             (reason && reason[0]) ? reason : "(none)");
     esp_err_t ret = voice_ws_send_text(json);
     cJSON_free(json);
     return ret;
+}
+
+esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
+{
+    return voice_send_config_update_ex(voice_mode, llm_model, NULL);
 }
 
 float voice_get_current_rms(void)
