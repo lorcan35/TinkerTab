@@ -81,11 +81,14 @@ static const char *TAG = "ui_home";
 #define CARD_H            88
 #define CARD_PAD          20
 
-/* Bottom strip */
+/* Bottom strip — v4·D Sovereign Halo single-strip (Phase 1c).
+ * Say pill alone, 104 px, with a 56 px 4-dot menu chip on its right edge.
+ * Nav rail hidden (Sovereign spec: navigation lives behind the menu chip).
+ * Total chrome: 40 pad + 104 strip = 144 px (was ~218 px with rail). */
 #define STRIP_BOT_PAD     40
-#define RAIL_H            56
-#define SAY_H             108
-#define SAY_GAP           14
+#define RAIL_H            0       /* rail hidden */
+#define SAY_H             104
+#define SAY_GAP           0
 
 /* ── State ────────────────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
@@ -538,9 +541,50 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_color(s_say_label_sub, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_set_style_text_letter_space(s_say_label_sub, 4, 0);
 
-    /* ── Rail (4 chips) ─────────────────────────────────────── */
-    const int rail_y = SH - STRIP_BOT_PAD - RAIL_H;
+    /* ── Menu chip (56×56, right edge of say pill) ─────────────
+     * v4·D Sovereign Halo: the 4-dot grid replaces the full nav rail.
+     * Tap opens chat (most-used second screen); long-press will open a
+     * full navigation sheet in a later phase. The chip's MouseDown
+     * propagation is stopped so taps on it don't also trigger the
+     * say-pill mic press. */
+    {
+        const int chip_w = 56;
+        const int chip_x = SAY_H /* 104 */ - chip_w + 12;  /* roughly centred-right vs 12 px outer pad */
+        (void)chip_x; /* unused, we use set_pos explicitly below */
+        lv_obj_t *menu = lv_obj_create(s_say_pill);
+        lv_obj_remove_style_all(menu);
+        lv_obj_set_size(menu, 56, 56);
+        /* say pill inner = CARD_W = 640. chip at x = 640 - 56 - 12 = 572 */
+        lv_obj_set_pos(menu, CARD_W - 56 - 12, (SAY_H - 56) / 2);
+        lv_obj_set_style_bg_color(menu, lv_color_hex(TH_CARD_ELEVATED), 0);
+        lv_obj_set_style_bg_opa(menu, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(menu, 18, 0);
+        lv_obj_set_style_border_width(menu, 1, 0);
+        lv_obj_set_style_border_color(menu, lv_color_hex(0x1E1E2A), 0);
+        lv_obj_clear_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(menu, LV_OBJ_FLAG_CLICKABLE);
+        /* Reuse the existing chat rail callback -- goes to the chat overlay. */
+        lv_obj_add_event_cb(menu, rail_threads_cb, LV_EVENT_CLICKED, NULL);
+        /* 2×2 dot grid -- draw 4 dim dots inside the chip */
+        for (int r = 0; r < 2; r++) {
+            for (int c = 0; c < 2; c++) {
+                lv_obj_t *dot = lv_obj_create(menu);
+                lv_obj_remove_style_all(dot);
+                lv_obj_set_size(dot, 6, 6);
+                lv_obj_set_pos(dot, 18 + c * 14, 18 + r * 14);
+                lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_bg_color(dot, lv_color_hex(TH_TEXT_SECONDARY), 0);
+                lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            }
+        }
+    }
+
+    /* ── Rail (4 chips) ─ HIDDEN in v4·D Sovereign Halo ───────
+     * Still created so rail_*_cb callbacks stay connected, but hidden
+     * immediately after. The menu chip above fronts navigation now. */
+    const int rail_y = SH; /* offscreen -- rail is hidden in v4·D Sovereign Halo */
     s_rail = lv_obj_create(s_screen);
+    lv_obj_add_flag(s_rail, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_style_all(s_rail);
     lv_obj_set_pos(s_rail, SIDE_PAD, rail_y);
     lv_obj_set_size(s_rail, CARD_W, RAIL_H);
