@@ -1,52 +1,95 @@
+/**
+ * chat_msg_store — Session-scoped message ring buffer.
+ *
+ * Bounded at BSP_CHAT_MAX_MESSAGES entries for the ACTIVE session.
+ * Switching sessions wipes the store. No LVGL dependency — pure C.
+ *
+ * Storage: PSRAM-allocated at init so internal SRAM isn't eaten by
+ * the ~90 KB buffer. Thread safety: access from the LVGL thread or
+ * via lv_async_call (see ui_chat.c push helpers).
+ */
 #pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "bsp_config.h"  /* BSP_CHAT_MAX_MESSAGES */
 
-/* Voice modes — matches config.h VOICE_MODE_* */
-#define CHAT_MODE_COUNT  4
+#define CHAT_SESSION_ID_LEN   40
+#define CHAT_LLM_MODEL_LEN    64
+#define CHAT_TITLE_LEN        80
+#define CHAT_TEXT_LEN         512
+#define CHAT_MEDIA_URL_LEN    256
+#define CHAT_SUBTITLE_LEN     128
 
 typedef enum {
-    MSG_TEXT,           /* Plain text (user or AI) */
-    MSG_IMAGE,          /* Rendered code/table/photo (JPEG URL from Dragon) */
-    MSG_CARD,           /* Link preview / search result */
-    MSG_AUDIO_CLIP,     /* Pronunciation / music preview */
-    MSG_TOOL_STATUS,    /* "Searching the web..." (ephemeral) */
-    MSG_SYSTEM,         /* "Clearing..." / errors (centered) */
+    MSG_TEXT = 0,        /* Plain text (user or AI) */
+    MSG_IMAGE,           /* Rendered code/table/photo (JPEG URL from Dragon) */
+    MSG_CARD,            /* Link preview / search result */
+    MSG_AUDIO_CLIP,      /* Pronunciation / music preview */
+    MSG_SYSTEM,          /* "Session switched", errors (centered, dim) */
 } msg_type_t;
 
+/* Active session descriptor — carries mode + model fingerprint. */
 typedef struct {
-    msg_type_t  type;
-    bool        is_user;          /* true = right-aligned user bubble */
-    char        text[512];        /* message content or alt text for media */
-    char        media_url[256];   /* relative URL for MSG_IMAGE/CARD/AUDIO */
-    char        subtitle[128];    /* for MSG_CARD only */
-    uint32_t    timestamp;        /* epoch seconds (from RTC) */
-    int16_t     height_px;        /* measured bubble height, 0 = unmeasured */
-    bool        active;           /* slot is in use */
+    char     session_id[CHAT_SESSION_ID_LEN];
+    uint8_t  voice_mode;                     /* 0..3 */
+    char     llm_model[CHAT_LLM_MODEL_LEN];
+    char     title[CHAT_TITLE_LEN];          /* Dragon-auto-titled */
+    uint32_t updated_at;
+    bool     valid;
+} chat_session_t;
+
+typedef struct {
+    msg_type_t type;
+    bool       is_user;
+    char       text[CHAT_TEXT_LEN];
+    char       media_url[CHAT_MEDIA_URL_LEN];
+    char       subtitle[CHAT_SUBTITLE_LEN];
+    uint32_t   timestamp;
+    int16_t    height_px;   /* cached after first render; -1 = not measured */
+    bool       active;      /* slot in use */
 } chat_msg_t;
 
-/** Initialize the store (zeroes all buffers). Call once at boot. */
+/* ── API ─────────────────────────────────────────────────────── */
+
+/** Initialize the store. Idempotent; safe to call on every chat open. */
 void chat_store_init(void);
 
-/** Add a message to the specified mode's ring buffer. Returns index or -1 on error. */
-int chat_store_add(uint8_t mode, const chat_msg_t *msg);
+/** Swap in a new active session (wipes the message buffer). */
+bool chat_store_set_session(const chat_session_t *s);
 
-/** Get message count for a mode. */
-int chat_store_count(uint8_t mode);
+/** Returns the active session descriptor, or NULL if no session is active. */
+const chat_session_t *chat_store_active_session(void);
 
-/** Get message by index (0 = oldest). Returns NULL if out of range. */
-const chat_msg_t *chat_store_get(uint8_t mode, int index);
+/** Mutate fields on the active session without wiping messages
+ *  (e.g. when a mid-session mode switch acks from Dragon). */
+void chat_store_update_session_mode(uint8_t voice_mode, const char *llm_model);
 
-/** Get mutable pointer (for caching height_px after render). */
-chat_msg_t *chat_store_get_mut(uint8_t mode, int index);
+/** Append a message; returns the logical index (0..count-1) or -1 on error.
+ *  If the ring is full the oldest entry is overwritten. */
+int chat_store_add(const chat_msg_t *msg);
 
-/** Clear all messages for a mode (New Chat). */
-void chat_store_clear(uint8_t mode);
+/** Current message count (0..BSP_CHAT_MAX_MESSAGES). */
+int chat_store_count(void);
 
-/** Clear all modes (factory reset). */
-void chat_store_clear_all(void);
+/** Get message by logical index (0 = oldest, count-1 = newest). */
+const chat_msg_t *chat_store_get(int index);
 
-/** Get the last message for a mode (for streaming append). NULL if empty. */
-chat_msg_t *chat_store_last(uint8_t mode);
+/** Mutable pointer for cache writes (height_px etc). */
+chat_msg_t *chat_store_get_mut(int index);
+
+/** Pointer to newest message, or NULL if empty. */
+chat_msg_t *chat_store_last(void);
+
+/** Cache measured bubble height so virtual scroll doesn't re-measure. */
+bool chat_store_set_height(int index, int16_t h);
+
+/** Replace text on the last message (streaming + text_update). */
+bool chat_store_update_last_text(const char *text);
+
+/** Remove the last message (used to drop ephemeral system placeholders). */
+bool chat_store_pop_last(void);
+
+/** Wipe all messages (New Chat). Session descriptor is preserved. */
+void chat_store_clear(void);
