@@ -589,8 +589,12 @@ lv_obj_t *ui_home_create(void)
         lv_obj_set_style_border_color(menu, lv_color_hex(0x1E1E2A), 0);
         lv_obj_clear_flag(menu, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(menu, LV_OBJ_FLAG_CLICKABLE);
-        /* Reuse the existing chat rail callback -- goes to the chat overlay. */
-        lv_obj_add_event_cb(menu, rail_threads_cb, LV_EVENT_CLICKED, NULL);
+        /* v4·D Sovereign Halo nav sheet -- the 4-dot chip is the menu
+         * hub (Chat / Notes / Settings / Camera / Files / Memory), not a
+         * chat shortcut.  See d-sovereign-halo.html: "menu hides inside
+         * 4-dot chip". */
+        extern void menu_chip_click_cb(lv_event_t *e);
+        lv_obj_add_event_cb(menu, menu_chip_click_cb, LV_EVENT_CLICKED, NULL);
         /* 2×2 dot grid -- draw 4 dim dots inside the chip */
         for (int r = 0; r < 2; r++) {
             for (int c = 0; c < 2; c++) {
@@ -1058,6 +1062,18 @@ static void orb_click_cb(lv_event_t *e)
     voice_start_listening();
 }
 
+/* v4·D Sovereign Halo: 4-dot chip opens the nav sheet (menu hub) so the
+ * user can reach Settings / Notes / Camera / Files / Memory without
+ * visible nav rail.  The chip used to jump straight to Chat; the nav
+ * sheet puts Chat alongside its siblings where it belongs. */
+void menu_chip_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;
+    extern void ui_nav_sheet_show(void);
+    ui_nav_sheet_show();
+}
+
 static void orb_long_press_cb(lv_event_t *e)
 {
     (void)e;
@@ -1238,6 +1254,14 @@ lv_obj_t *ui_home_get_screen(void) { return s_screen; }
 void ui_home_go_home(void)
 {
     if (ui_chat_is_active()) ui_chat_hide();
+    /* Secondary screens (camera, files) are independent lv_screen objects
+     * that replace the active screen.  Hiding an overlay like chat is not
+     * enough when the user is on one of those -- we also have to load the
+     * home screen back onto the display.  Without this, /navigate?screen=home
+     * from camera just hides invisible overlays while camera keeps drawing. */
+    if (s_screen && lv_screen_active() != s_screen) {
+        lv_screen_load(s_screen);
+    }
 }
 
 lv_obj_t *ui_home_get_tileview(void) { return NULL; }
@@ -1247,7 +1271,16 @@ lv_obj_t *ui_home_get_tile(int page)
     return (page == 0) ? s_screen : NULL;
 }
 
-void ui_home_nav_settings(void) { ui_settings_create(); }
+void ui_home_nav_settings(void)
+{
+    /* Same fix as ui_home_go_home: make sure the home screen is actually
+     * displayed before we overlay Settings on it.  Otherwise Settings
+     * parents to a hidden home screen while camera/files keeps rendering. */
+    if (s_screen && lv_screen_active() != s_screen) {
+        lv_screen_load(s_screen);
+    }
+    ui_settings_create();
+}
 
 void ui_home_refresh_mode_badge(void)
 {
