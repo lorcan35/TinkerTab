@@ -904,17 +904,11 @@ static void mode_chip_long_press_cb(lv_event_t *e)
 {
     (void)e;
     if (any_overlay_visible()) return;
-    /* Same behavior as long-pressing the orb — cycles modes.
-     * TODO: swap for a segmented picker sheet when lv_menu is wired. */
-    uint8_t next = (s_badge_mode + 1) % VOICE_MODE_COUNT;
-    tab5_settings_set_voice_mode(next);
-    char model[64];
-    tab5_settings_get_llm_model(model, sizeof(model));
-    voice_send_config_update(next, model);
-    update_mode_ui(next);
-    char buf[48];
-    snprintf(buf, sizeof(buf), "Mode: %s", s_mode_short[next]);
-    show_toast_internal(buf);
+    /* v4·D Sovereign Halo: open the triple-dial sheet instead of
+     * cycling. The sheet persists tier changes + fires config_update
+     * directly, so nothing else to do here. */
+    extern void ui_mode_sheet_show(void);
+    ui_mode_sheet_show();
 }
 
 static void now_card_click_cb(lv_event_t *e)
