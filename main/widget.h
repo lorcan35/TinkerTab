@@ -45,6 +45,19 @@ typedef enum {
 #define WIDGET_ACTION_LBL_LEN 16
 #define WIDGET_ACTION_EVT_LEN 48
 
+/* v4·D Phase 4c widget_list items.  Used when widget.type==LIST.
+ * Max 5 items (matches system-d-sovereign.html M widget_list mockup);
+ * skills shipping longer lists are expected to either truncate or
+ * offer a "+N more" affordance when they get the tap-action.         */
+#define WIDGET_LIST_MAX_ITEMS  5
+#define WIDGET_LIST_ITEM_TEXT_LEN   80
+#define WIDGET_LIST_ITEM_VALUE_LEN  16
+
+typedef struct {
+    char text [WIDGET_LIST_ITEM_TEXT_LEN];
+    char value[WIDGET_LIST_ITEM_VALUE_LEN]; /* optional right-side value */
+} widget_list_item_t;
+
 typedef struct {
     /* Identity */
     char          card_id[WIDGET_ID_LEN];
@@ -70,6 +83,11 @@ typedef struct {
 
     /* Flags */
     bool          active;             /* set false on dismiss; GC on age   */
+
+    /* v4·D Phase 4c: list-type payload (only used when type==LIST).
+     * items_count == 0 on non-list widgets. */
+    widget_list_item_t items[WIDGET_LIST_MAX_ITEMS];
+    uint8_t       items_count;
 } widget_t;
 
 /* ── Public API ────────────────────────────────────────────────── */

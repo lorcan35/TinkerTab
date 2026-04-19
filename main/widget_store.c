@@ -122,6 +122,12 @@ widget_t *widget_store_upsert(const widget_t *in)
     slot->expires_at_ms = in->expires_at_ms;
     slot->updated_at_ms = now_ms();
     slot->active        = true;
+
+    /* v4·D Phase 4c: copy widget_list item payload.  memcpy the whole
+     * items array (unused rows stay zero) + items_count so the render
+     * path can iterate safely.  Non-list widgets carry items_count=0. */
+    memcpy(slot->items, in->items, sizeof(slot->items));
+    slot->items_count = in->items_count;
     return slot;
 }
 
@@ -173,7 +179,13 @@ widget_t *widget_store_live_active(void)
     widget_t *winner = NULL;
     for (int i = 0; i < s_capacity; i++) {
         widget_t *w = &s_widgets[i];
-        if (!w->active || w->type != WIDGET_TYPE_LIVE) continue;
+        /* v4·D Phase 4c: list widgets also compete for the live slot
+         * via the same priority queue.  LIVE and LIST are both "now"
+         * surfaces; CARD is for chat inline, MEDIA/PROMPT handled
+         * elsewhere.  This lets web_search etc emit a LIST and take
+         * the slot without needing a separate render path. */
+        if (!w->active) continue;
+        if (w->type != WIDGET_TYPE_LIVE && w->type != WIDGET_TYPE_LIST) continue;
         if (!winner) { winner = w; continue; }
         if (w->priority > winner->priority) { winner = w; continue; }
         if (w->priority == winner->priority &&
@@ -189,7 +201,9 @@ int widget_store_live_count(void)
     if (!s_widgets) return 0;
     int n = 0;
     for (int i = 0; i < s_capacity; i++) {
-        if (s_widgets[i].active && s_widgets[i].type == WIDGET_TYPE_LIVE) n++;
+        if (s_widgets[i].active &&
+            (s_widgets[i].type == WIDGET_TYPE_LIVE ||
+             s_widgets[i].type == WIDGET_TYPE_LIST)) n++;
     }
     return n;
 }

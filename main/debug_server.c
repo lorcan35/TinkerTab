@@ -1405,7 +1405,11 @@ static esp_err_t widget_handler(httpd_req_t *req)
     if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
     if (bdy) strncpy(w.body,  bdy, WIDGET_BODY_LEN  - 1);
     if (icn) strncpy(w.icon,  icn, WIDGET_ICON_LEN  - 1);
-    w.type     = WIDGET_TYPE_LIVE;
+    /* v4·D Phase 4c: optional "type" + "items" fields let the debug
+     * endpoint inject widget_list payloads for visual testing. */
+    const char *tstr = cJSON_GetStringValue(cJSON_GetObjectItem(root, "type"));
+    w.type = tstr ? widget_type_from_str(tstr) : WIDGET_TYPE_LIVE;
+    if (w.type == WIDGET_TYPE_NONE) w.type = WIDGET_TYPE_LIVE;
     w.tone     = widget_tone_from_str(tn);
     w.progress = cJSON_IsNumber(prog) ? (float)prog->valuedouble : 0.0f;
     w.priority = cJSON_IsNumber(pri)  ? (uint8_t)pri->valueint   : 50;
@@ -1414,6 +1418,20 @@ static esp_err_t widget_handler(httpd_req_t *req)
         const char *ae = cJSON_GetStringValue(cJSON_GetObjectItem(act, "event"));
         if (al) strncpy(w.action_label, al, WIDGET_ACTION_LBL_LEN - 1);
         if (ae) strncpy(w.action_event, ae, WIDGET_ACTION_EVT_LEN - 1);
+    }
+    cJSON *items = cJSON_GetObjectItem(root, "items");
+    if (cJSON_IsArray(items)) {
+        int cnt = cJSON_GetArraySize(items);
+        if (cnt > WIDGET_LIST_MAX_ITEMS) cnt = WIDGET_LIST_MAX_ITEMS;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *it = cJSON_GetArrayItem(items, i);
+            if (!cJSON_IsObject(it)) continue;
+            const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
+            const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "value"));
+            if (t) strncpy(w.items[i].text,  t, WIDGET_LIST_ITEM_TEXT_LEN  - 1);
+            if (v) strncpy(w.items[i].value, v, WIDGET_LIST_ITEM_VALUE_LEN - 1);
+        }
+        w.items_count = (uint8_t)cnt;
     }
     widget_store_upsert(&w);
     cJSON_Delete(root);

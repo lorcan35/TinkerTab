@@ -791,6 +791,32 @@ void ui_home_update_status(void)
 
     /* Now-slot — widget live wins; otherwise empty-state. */
     widget_t *live_w = widget_store_live_active();
+    /* v4·D Phase 4c: LIST widgets need more vertical room to show their
+     * items.  Grow the card height from 88->168 and switch lede to
+     * LONG_WRAP.  Non-list widgets get the compact live-line. */
+    if (live_w && s_now_card && s_now_lede && s_now_kicker) {
+        bool is_list = (live_w->type == WIDGET_TYPE_LIST && live_w->items_count > 0);
+        int want_h = is_list ? 168 : 88;
+        if (lv_obj_get_height(s_now_card) != want_h) {
+            lv_obj_set_height(s_now_card, want_h);
+            /* Card bottom stays anchored at (CARD_Y + 88) -- taller
+             * list cards grow upward into the air below the mode chip. */
+            lv_obj_set_y(s_now_card, CARD_Y + (88 - want_h));
+            lv_label_set_long_mode(s_now_lede,
+                is_list ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+            /* Kicker moves to TOP in list mode so it doesn't collide
+             * with row 1 of the wrapping lede.  Compact live-line mode
+             * keeps the kicker vertically-centred next to the lede. */
+            lv_obj_set_y(s_now_kicker,
+                is_list ? 6 : (want_h - 14) / 2);
+            lv_obj_set_y(s_now_lede,
+                is_list ? 30 : (want_h - 24) / 2);
+            lv_obj_set_width(s_now_lede,
+                is_list ? (CARD_W - CARD_PAD * 2 - 20) : (CARD_W - CARD_PAD * 2 - 120));
+            lv_obj_set_x(s_now_lede,
+                is_list ? CARD_PAD : (CARD_PAD + 116));
+        }
+    }
     if (live_w) {
         /* v4·D Gauntlet G5 fix: reveal suppressed widgets.
          * When the priority queue is hiding N-1 other live widgets, the
@@ -824,11 +850,36 @@ void ui_home_update_status(void)
             if (!cur || strcmp(cur, kicker) != 0) lv_label_set_text(s_now_kicker, kicker);
         }
         if (s_now_lede) {
-            /* title on top, body below (matches widget spec §3.1) */
-            char buf[260];
-            snprintf(buf, sizeof(buf), "%.63s\n%.180s",
-                     live_w->title[0] ? live_w->title : "",
-                     live_w->body[0]  ? live_w->body  : "");
+            char buf[400];
+            if (live_w->type == WIDGET_TYPE_LIST && live_w->items_count > 0) {
+                /* v4·D Phase 4c: render up to 3 list items in the lede.
+                 * Each row reads "1  <text>  <value>" on its own line.
+                 * Top 3 only; skill is expected to emit ranked order so
+                 * the best hits render first.  Title lives on line 1. */
+                int p = 0;
+                if (live_w->title[0]) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "%.63s\n", live_w->title);
+                }
+                int show = live_w->items_count < 3 ? live_w->items_count : 3;
+                for (int i = 0; i < show && p < (int)sizeof(buf) - 1; i++) {
+                    const widget_list_item_t *it = &live_w->items[i];
+                    if (it->value[0]) {
+                        p += snprintf(buf + p, sizeof(buf) - p,
+                                      "%d  %.48s  %s\n",
+                                      i + 1, it->text, it->value);
+                    } else {
+                        p += snprintf(buf + p, sizeof(buf) - p,
+                                      "%d  %.60s\n",
+                                      i + 1, it->text);
+                    }
+                }
+            } else {
+                /* title on top, body below (matches widget spec §3.1) */
+                snprintf(buf, sizeof(buf), "%.63s\n%.180s",
+                         live_w->title[0] ? live_w->title : "",
+                         live_w->body[0]  ? live_w->body  : "");
+            }
             const char *cur = lv_label_get_text(s_now_lede);
             if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_now_lede, buf);
         }

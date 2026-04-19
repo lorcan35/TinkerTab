@@ -869,6 +869,51 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "widget_live upsert: %s/%s tone=%s", w.skill_id, cid,
                      tone_s ? tone_s : "calm");
         }
+    } else if (strcmp(type_str, "widget_list") == 0) {
+        /* v4·D Phase 4c: ranked list widget.  Same upsert shape as
+         * widget_live but with an "items" array carrying up to 5 rows
+         * of {text, value} displayed stacked on the home live slot.
+         * Skills like web_search, memory recall, daily agenda, etc.
+         * should emit this instead of cramming rows into a body blob. */
+        extern widget_t *widget_store_upsert(const widget_t *in);
+        extern widget_tone_t widget_tone_from_str(const char *s);
+        extern void ui_home_update_status(void);
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (!cid) {
+            ESP_LOGW(TAG, "widget_list missing card_id");
+        } else {
+            widget_t w = {0};
+            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
+            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
+            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+            w.tone = widget_tone_from_str(tone_s);
+            cJSON *pri = cJSON_GetObjectItem(root, "priority");
+            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
+            cJSON *items = cJSON_GetObjectItem(root, "items");
+            if (cJSON_IsArray(items)) {
+                int cnt = cJSON_GetArraySize(items);
+                if (cnt > WIDGET_LIST_MAX_ITEMS) cnt = WIDGET_LIST_MAX_ITEMS;
+                for (int i = 0; i < cnt; i++) {
+                    cJSON *it = cJSON_GetArrayItem(items, i);
+                    if (!cJSON_IsObject(it)) continue;
+                    const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
+                    const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "value"));
+                    if (t) strncpy(w.items[i].text,  t, WIDGET_LIST_ITEM_TEXT_LEN - 1);
+                    if (v) strncpy(w.items[i].value, v, WIDGET_LIST_ITEM_VALUE_LEN - 1);
+                }
+                w.items_count = (uint8_t)cnt;
+            }
+            w.type = WIDGET_TYPE_LIST;
+            widget_store_upsert(&w);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            ESP_LOGI(TAG, "widget_list upsert: %s/%s items=%u",
+                     w.skill_id, cid, w.items_count);
+        }
     } else if (strcmp(type_str, "widget_live_dismiss") == 0 ||
                strcmp(type_str, "widget_dismiss") == 0) {
         extern void widget_store_dismiss(const char *card_id);
