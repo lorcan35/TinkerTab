@@ -49,10 +49,31 @@
 #include "freertos/task.h"
 #include "cJSON.h"
 #include "driver/jpeg_encode.h"
+#include "lwip/sockets.h"      /* setsockopt for TCP_NODELAY */
+#include "lwip/tcp.h"
 
 static const char *TAG = "debug_srv";
 
 #define DEBUG_PORT 8080
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Socket open hook — called by esp_http_server for every accepted socket.
+ * We set TCP_NODELAY so small responses (/info, /voice, /touch ACKs) flush
+ * without Nagle's 200 ms algorithm piling on top of an already-flaky SDIO
+ * path. Heavy responses (/screenshot) were already above the Nagle bundling
+ * threshold so this only helps the fast endpoints that dominate request
+ * volume. Returning ESP_FAIL would abort accept — we always return ESP_OK
+ * even if setsockopt fails so a bad socket doesn't brick the server.
+ * ────────────────────────────────────────────────────────────────────────── */
+static esp_err_t debug_server_open_fn(httpd_handle_t hd, int sockfd)
+{
+    int one = 1;
+    if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) < 0) {
+        ESP_LOGW(TAG, "TCP_NODELAY setsockopt failed on fd %d (errno=%d)", sockfd, errno);
+    }
+    (void)hd;
+    return ESP_OK;
+}
 
 /* ======================================================================== */
 /*  Bearer token authentication                                              */
@@ -1685,6 +1706,7 @@ esp_err_t tab5_debug_server_init(void)
      * still frees the worker before a user has given up. */
     config.send_wait_timeout = 15;
     config.close_fn = NULL;               /* Use default close */
+    config.open_fn  = debug_server_open_fn;  /* set TCP_NODELAY per-socket */
     /* Run httpd on Core 1 so it doesn't starve when LVGL is busy on Core 0.
      * Settings screen creates 55 objects (~500ms) which blocks Core 0 entirely.
      * Without this, /info requests time out during heavy LVGL rendering. */
