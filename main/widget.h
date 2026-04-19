@@ -64,6 +64,21 @@ typedef struct {
  * normalizes against chart_max for bar heights. */
 #define WIDGET_CHART_MAX_POINTS 12
 
+/* v4·D Phase 4g widget_media + widget_prompt payloads.  Both sit
+ * alongside the existing live/list/chart fields in widget_t, zeroed
+ * for non-matching types. */
+#define WIDGET_MEDIA_URL_LEN   256
+#define WIDGET_MEDIA_ALT_LEN    96
+
+#define WIDGET_PROMPT_MAX_CHOICES 3
+#define WIDGET_PROMPT_CHOICE_LEN  48
+#define WIDGET_PROMPT_EVENT_LEN   48
+
+typedef struct {
+    char text [WIDGET_PROMPT_CHOICE_LEN];
+    char event[WIDGET_PROMPT_EVENT_LEN];
+} widget_prompt_choice_t;
+
 typedef struct {
     /* Identity */
     char          card_id[WIDGET_ID_LEN];
@@ -103,6 +118,17 @@ typedef struct {
     float         chart_values[WIDGET_CHART_MAX_POINTS];
     float         chart_max;
     uint8_t       chart_count;
+
+    /* v4·D Phase 4g: media-type payload (only used when type==MEDIA). */
+    char          media_url[WIDGET_MEDIA_URL_LEN];
+    char          media_alt[WIDGET_MEDIA_ALT_LEN];
+
+    /* v4·D Phase 4g: prompt-type payload (only used when type==PROMPT).
+     * choices_count == 0 on non-prompt widgets.  Tab5 renders each
+     * choice as a button; taps fire widget_action back to Dragon with
+     * the matching event string. */
+    widget_prompt_choice_t choices[WIDGET_PROMPT_MAX_CHOICES];
+    uint8_t                choices_count;
 } widget_t;
 
 /* ── Public API ────────────────────────────────────────────────── */

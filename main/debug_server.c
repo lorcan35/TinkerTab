@@ -1446,6 +1446,25 @@ static esp_err_t widget_handler(httpd_req_t *req)
     }
     cJSON *mx = cJSON_GetObjectItem(root, "max");
     w.chart_max = cJSON_IsNumber(mx) ? (float)mx->valuedouble : 0.0f;
+    /* v4·D Phase 4g: media + prompt fields for /widget debug injection. */
+    const char *media_url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+    const char *media_alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
+    if (media_url) strncpy(w.media_url, media_url, WIDGET_MEDIA_URL_LEN - 1);
+    if (media_alt) strncpy(w.media_alt, media_alt, WIDGET_MEDIA_ALT_LEN - 1);
+    cJSON *choices = cJSON_GetObjectItem(root, "choices");
+    if (cJSON_IsArray(choices)) {
+        int cnt = cJSON_GetArraySize(choices);
+        if (cnt > WIDGET_PROMPT_MAX_CHOICES) cnt = WIDGET_PROMPT_MAX_CHOICES;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *it = cJSON_GetArrayItem(choices, i);
+            if (!cJSON_IsObject(it)) continue;
+            const char *t  = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
+            const char *ev = cJSON_GetStringValue(cJSON_GetObjectItem(it, "event"));
+            if (t)  strncpy(w.choices[i].text,  t,  WIDGET_PROMPT_CHOICE_LEN - 1);
+            if (ev) strncpy(w.choices[i].event, ev, WIDGET_PROMPT_EVENT_LEN - 1);
+        }
+        w.choices_count = (uint8_t)cnt;
+    }
     widget_store_upsert(&w);
     cJSON_Delete(root);
     lv_async_call(async_widget_refresh, NULL);

@@ -94,6 +94,13 @@ static void build_hit(lv_obj_t *parent, int y,
 
 void ui_memory_show(void)
 {
+    /* Load home if we're on a separate lv_screen (camera/files) so the
+     * overlay we parent to home actually renders. */
+    lv_obj_t *home = ui_home_get_screen();
+    if (home && lv_screen_active() != home) {
+        lv_screen_load(home);
+    }
+
     if (s_overlay) {
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
@@ -101,7 +108,7 @@ void ui_memory_show(void)
         return;
     }
 
-    lv_obj_t *parent = ui_home_get_screen();
+    lv_obj_t *parent = home;
     if (!parent) parent = lv_screen_active();
     if (!parent) return;
 

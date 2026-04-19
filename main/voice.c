@@ -995,6 +995,79 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "widget_chart upsert: %s/%s pts=%u max=%.2f",
                      w.skill_id, cid, w.chart_count, w.chart_max);
         }
+    } else if (strcmp(type_str, "widget_media") == 0) {
+        /* v4·D Phase 4g: media widget (image + caption in the live slot). */
+        extern widget_t *widget_store_upsert(const widget_t *in);
+        extern widget_tone_t widget_tone_from_str(const char *s);
+        extern void ui_home_update_status(void);
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (!cid) {
+            ESP_LOGW(TAG, "widget_media missing card_id");
+        } else {
+            widget_t w = {0};
+            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
+            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
+            const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+            if (url) strncpy(w.media_url, url, WIDGET_MEDIA_URL_LEN - 1);
+            const char *alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
+            if (alt) strncpy(w.media_alt, alt, WIDGET_MEDIA_ALT_LEN - 1);
+            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+            w.tone = widget_tone_from_str(tone_s);
+            cJSON *pri = cJSON_GetObjectItem(root, "priority");
+            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
+            w.type = WIDGET_TYPE_MEDIA;
+            widget_store_upsert(&w);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            ESP_LOGI(TAG, "widget_media upsert: %s/%s alt=%s",
+                     w.skill_id, cid, w.media_alt);
+        }
+    } else if (strcmp(type_str, "widget_prompt") == 0) {
+        /* v4·D Phase 4g: multi-choice prompt widget.  Up to 3 choices;
+         * Tab5 renders each as a button.  Tap fires widget_action. */
+        extern widget_t *widget_store_upsert(const widget_t *in);
+        extern widget_tone_t widget_tone_from_str(const char *s);
+        extern void ui_home_update_status(void);
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (!cid) {
+            ESP_LOGW(TAG, "widget_prompt missing card_id");
+        } else {
+            widget_t w = {0};
+            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
+            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
+            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+            w.tone = widget_tone_from_str(tone_s);
+            cJSON *pri = cJSON_GetObjectItem(root, "priority");
+            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 60;
+            cJSON *choices = cJSON_GetObjectItem(root, "choices");
+            if (cJSON_IsArray(choices)) {
+                int cnt = cJSON_GetArraySize(choices);
+                if (cnt > WIDGET_PROMPT_MAX_CHOICES) cnt = WIDGET_PROMPT_MAX_CHOICES;
+                for (int i = 0; i < cnt; i++) {
+                    cJSON *it = cJSON_GetArrayItem(choices, i);
+                    if (!cJSON_IsObject(it)) continue;
+                    const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
+                    const char *ev = cJSON_GetStringValue(cJSON_GetObjectItem(it, "event"));
+                    if (t)  strncpy(w.choices[i].text,  t,  WIDGET_PROMPT_CHOICE_LEN - 1);
+                    if (ev) strncpy(w.choices[i].event, ev, WIDGET_PROMPT_EVENT_LEN  - 1);
+                }
+                w.choices_count = (uint8_t)cnt;
+            }
+            w.type = WIDGET_TYPE_PROMPT;
+            widget_store_upsert(&w);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            ESP_LOGI(TAG, "widget_prompt upsert: %s/%s choices=%u",
+                     w.skill_id, cid, w.choices_count);
+        }
     } else if (strcmp(type_str, "widget_live_dismiss") == 0 ||
                strcmp(type_str, "widget_dismiss") == 0) {
         extern void widget_store_dismiss(const char *card_id);

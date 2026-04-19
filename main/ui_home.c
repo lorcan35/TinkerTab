@@ -800,15 +800,18 @@ void ui_home_update_status(void)
      * items.  Grow the card height from 88->168 and switch lede to
      * LONG_WRAP.  Non-list widgets get the compact live-line. */
     if (live_w && s_now_card && s_now_lede && s_now_kicker) {
-        bool is_list  = (live_w->type == WIDGET_TYPE_LIST  && live_w->items_count  > 0);
-        bool is_chart = (live_w->type == WIDGET_TYPE_CHART && live_w->chart_count > 0);
+        bool is_list   = (live_w->type == WIDGET_TYPE_LIST   && live_w->items_count   > 0);
+        bool is_chart  = (live_w->type == WIDGET_TYPE_CHART  && live_w->chart_count  > 0);
+        bool is_media  = (live_w->type == WIDGET_TYPE_MEDIA);
+        bool is_prompt = (live_w->type == WIDGET_TYPE_PROMPT && live_w->choices_count > 0);
         /* Auto-grow to the tall card when the body alone would wrap past one
          * line (> 48 chars) or when the caller included a title alongside
          * the body -- compact live-line mode only has room for a single
          * line of body text to the right of the kicker. */
         bool body_long = (live_w->body[0] && strlen(live_w->body) > 48);
         bool has_title_and_body = (live_w->title[0] && live_w->body[0]);
-        bool is_tall  = is_list || is_chart || body_long || has_title_and_body;
+        bool is_tall  = is_list || is_chart || is_media || is_prompt
+                        || body_long || has_title_and_body;
         int want_h = is_tall ? 168 : 88;
         if (lv_obj_get_height(s_now_card) != want_h) {
             lv_obj_set_height(s_now_card, want_h);
@@ -886,6 +889,43 @@ void ui_home_update_status(void)
                                       "%d  %.60s\n",
                                       i + 1, it->text);
                     }
+                }
+            } else if (live_w->type == WIDGET_TYPE_MEDIA) {
+                /* v4·D Phase 4g: render media widget as title + body + a
+                 * captioned URL line.  Inline image decode via
+                 * media_cache_fetch is deferred -- first pass proves the
+                 * wire + store + render loop. */
+                int p = 0;
+                if (live_w->title[0]) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "%.63s\n", live_w->title);
+                }
+                if (live_w->body[0]) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "%.180s\n", live_w->body);
+                }
+                if (live_w->media_alt[0] || live_w->media_url[0]) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "IMAGE \xe2\x80\xa2 %.63s",
+                                  live_w->media_alt[0] ? live_w->media_alt
+                                                        : live_w->media_url);
+                }
+            } else if (live_w->type == WIDGET_TYPE_PROMPT
+                       && live_w->choices_count > 0) {
+                /* v4·D Phase 4g: prompt widget renders as title + each
+                 * choice as a numbered row.  Buttons are deferred --
+                 * this first pass proves the store + render path. */
+                int p = 0;
+                if (live_w->title[0]) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "%.63s\n", live_w->title);
+                }
+                int n = live_w->choices_count;
+                if (n > WIDGET_PROMPT_MAX_CHOICES) n = WIDGET_PROMPT_MAX_CHOICES;
+                for (int i = 0; i < n && p < (int)sizeof(buf) - 1; i++) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "%d  %.44s\n",
+                                  i + 1, live_w->choices[i].text);
                 }
             } else if (live_w->type == WIDGET_TYPE_CHART
                        && live_w->chart_count > 0) {

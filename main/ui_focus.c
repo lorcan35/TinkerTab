@@ -121,6 +121,15 @@ static void build_feed_row(lv_obj_t *parent, const char *time_str,
 
 void ui_focus_show(void)
 {
+    /* Match ui_home_go_home / ui_home_nav_settings: if the currently
+     * displayed lv_screen is camera / files (separate lv_screen
+     * objects), overlays parented to home won't render.  Make sure
+     * home is the active screen first. */
+    lv_obj_t *home = ui_home_get_screen();
+    if (home && lv_screen_active() != home) {
+        lv_screen_load(home);
+    }
+
     if (s_overlay) {
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
@@ -128,7 +137,7 @@ void ui_focus_show(void)
         return;
     }
 
-    lv_obj_t *parent = ui_home_get_screen();
+    lv_obj_t *parent = home;
     if (!parent) parent = lv_screen_active();
     if (!parent) return;
 

@@ -134,6 +134,12 @@ widget_t *widget_store_upsert(const widget_t *in)
     memcpy(slot->chart_values, in->chart_values, sizeof(slot->chart_values));
     slot->chart_max   = in->chart_max;
     slot->chart_count = in->chart_count;
+
+    /* v4·D Phase 4g: copy widget_media + widget_prompt payloads. */
+    memcpy(slot->media_url, in->media_url, sizeof(slot->media_url));
+    memcpy(slot->media_alt, in->media_alt, sizeof(slot->media_alt));
+    memcpy(slot->choices,       in->choices,       sizeof(slot->choices));
+    slot->choices_count = in->choices_count;
     return slot;
 }
 
@@ -193,7 +199,9 @@ widget_t *widget_store_live_active(void)
         if (!w->active) continue;
         if (w->type != WIDGET_TYPE_LIVE
             && w->type != WIDGET_TYPE_LIST
-            && w->type != WIDGET_TYPE_CHART) continue;
+            && w->type != WIDGET_TYPE_CHART
+            && w->type != WIDGET_TYPE_MEDIA
+            && w->type != WIDGET_TYPE_PROMPT) continue;
         if (!winner) { winner = w; continue; }
         if (w->priority > winner->priority) { winner = w; continue; }
         if (w->priority == winner->priority &&
@@ -212,7 +220,9 @@ int widget_store_live_count(void)
         if (s_widgets[i].active &&
             (s_widgets[i].type == WIDGET_TYPE_LIVE ||
              s_widgets[i].type == WIDGET_TYPE_LIST ||
-             s_widgets[i].type == WIDGET_TYPE_CHART)) n++;
+             s_widgets[i].type == WIDGET_TYPE_CHART ||
+             s_widgets[i].type == WIDGET_TYPE_MEDIA ||
+             s_widgets[i].type == WIDGET_TYPE_PROMPT)) n++;
     }
     return n;
 }
