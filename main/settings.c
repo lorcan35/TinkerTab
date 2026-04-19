@@ -16,6 +16,9 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -42,6 +45,17 @@ static const char *TAG = "settings";
 static nvs_handle_t s_nvs = 0;
 static bool         s_inited = false;
 
+/* v4·D audit P0 fix: serialize every NVS call.
+ * tab5_budget_accumulate runs on the WS rx task, tab5_settings_set_* is
+ * called from the LVGL thread, and the heap watchdog on Core 1 reads
+ * counters too.  The nvs_handle_t is not thread-safe -- concurrent
+ * nvs_set_u32 + nvs_commit on the same handle is UB and has been
+ * observed producing ESP_ERR_NVS_INVALID_HANDLE under stress.  A
+ * plain FreeRTOS mutex is enough; NVS ops are short. */
+static SemaphoreHandle_t s_nvs_mutex = NULL;
+#define NVS_LOCK()    do { if (s_nvs_mutex) xSemaphoreTake(s_nvs_mutex, portMAX_DELAY); } while (0)
+#define NVS_UNLOCK()  do { if (s_nvs_mutex) xSemaphoreGive(s_nvs_mutex); } while (0)
+
 /* Forward declarations for init-time seeding */
 static esp_err_t get_str(const char *key, char *buf, size_t len, const char *def);
 static esp_err_t set_str(const char *key, const char *val);
@@ -58,6 +72,14 @@ static uint32_t s_nvs_write_count = 0;
 esp_err_t tab5_settings_init(void)
 {
     if (s_inited) return ESP_OK;
+
+    if (!s_nvs_mutex) {
+        s_nvs_mutex = xSemaphoreCreateMutex();
+        if (!s_nvs_mutex) {
+            ESP_LOGE(TAG, "xSemaphoreCreateMutex failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &s_nvs);
     if (err != ESP_OK) {
@@ -102,7 +124,9 @@ static esp_err_t get_str(const char *key, char *buf, size_t len, const char *def
     }
 
     size_t required = len;
+    NVS_LOCK();
     esp_err_t err = nvs_get_str(s_nvs, key, buf, &required);
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         /* Key not found or buffer too small — use default */
         strncpy(buf, def, len);
@@ -120,11 +144,13 @@ static esp_err_t set_str(const char *key, const char *val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
+    NVS_LOCK();
     esp_err_t err = nvs_set_str(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s", key, esp_err_to_name(err));
     }
@@ -136,7 +162,9 @@ static uint8_t get_u8(const char *key, uint8_t def)
     if (!s_inited) return def;
 
     uint8_t val = def;
+    NVS_LOCK();
     esp_err_t err = nvs_get_u8(s_nvs, key, &val);
+    NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGD(TAG, "'%s' not in NVS, using default %d", key, def);
     } else if (err != ESP_OK) {
@@ -149,11 +177,13 @@ static esp_err_t set_u8(const char *key, uint8_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
+    NVS_LOCK();
     esp_err_t err = nvs_set_u8(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u8(%s) failed: %s", key, esp_err_to_name(err));
     }
@@ -165,7 +195,9 @@ static uint16_t get_u16(const char *key, uint16_t def)
     if (!s_inited) return def;
 
     uint16_t val = def;
+    NVS_LOCK();
     esp_err_t err = nvs_get_u16(s_nvs, key, &val);
+    NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGD(TAG, "'%s' not in NVS, using default %d", key, def);
     } else if (err != ESP_OK) {
@@ -178,11 +210,13 @@ static esp_err_t set_u16(const char *key, uint16_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
+    NVS_LOCK();
     esp_err_t err = nvs_set_u16(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u16(%s) failed: %s", key, esp_err_to_name(err));
     }
@@ -193,7 +227,9 @@ static uint32_t get_u32(const char *key, uint32_t def)
 {
     if (!s_inited) return def;
     uint32_t val = def;
+    NVS_LOCK();
     esp_err_t err = nvs_get_u32(s_nvs, key, &val);
+    NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGD(TAG, "'%s' not in NVS, using default %lu", key, (unsigned long)def);
     } else if (err != ESP_OK) {

@@ -44,6 +44,9 @@
 #include "dragon_link.h"
 #include "wifi.h"
 #include "widget.h"
+#include "media_cache.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -150,6 +153,25 @@ static const char *s_mode_tagline[4] = {
 
 static uint8_t s_badge_mode = 0;
 
+/* v4·D Phase 4g widget_prompt tap → widget_action plumbing.
+ * When a PROMPT widget claims the live slot, we cache its card_id +
+ * per-choice event strings, build N invisible hit zones over the card
+ * (one per choice row), and fire voice_send_widget_action() on tap. */
+#define PROMPT_TAP_MAX  WIDGET_PROMPT_MAX_CHOICES
+static lv_obj_t *s_prompt_tap[PROMPT_TAP_MAX] = {NULL};
+static char      s_prompt_card_id[WIDGET_ID_LEN] = {0};
+static char      s_prompt_events[PROMPT_TAP_MAX][WIDGET_PROMPT_EVENT_LEN] = {{0}};
+
+/* v4·D Phase 4g widget_media inline image decode.
+ * When a MEDIA widget claims the live slot with a new URL, we spawn a
+ * one-shot FreeRTOS task to fetch + decode via media_cache (chat
+ * already uses this path), then lv_async_call back on the LVGL thread
+ * to bind the decoded RGB565 descriptor to s_media_img. */
+static lv_obj_t        *s_media_img       = NULL;
+static char             s_media_cur_url[256] = {0};
+static lv_image_dsc_t   s_media_dsc       = {0};
+static volatile bool    s_media_fetch_inflight = false;
+
 /* ── Forward decls ───────────────────────────────────────────── */
 static void refresh_timer_cb(lv_timer_t *t);
 static void orb_click_cb(lv_event_t *e);
@@ -166,6 +188,16 @@ static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
 static void orb_paint_for_mode(uint8_t mode);
 static void orb_paint_for_tone(widget_tone_t tone);
+/* v4·D Phase 4g: widget_prompt hit-zone tap routing */
+static void prompt_choice_tap_cb(lv_event_t *e);
+static void refresh_prompt_hit_zones(const widget_t *w);
+static void clear_prompt_hit_zones(void);
+/* v4·D Phase 4g: widget_media inline image decode */
+static void ensure_media_image_widget(void);
+static void media_image_bind_cb(void *arg);
+static void media_image_clear_cb(void *arg);
+static void media_fetch_task(void *pv);
+static void refresh_media_image(const widget_t *w);
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -833,6 +865,20 @@ void ui_home_update_status(void)
                 is_tall ? CARD_PAD : (CARD_PAD + 116));
         }
     }
+    /* v4·D Phase 4g: refresh prompt hit zones whenever the live slot
+     * changes.  refresh_ = idempotent: clears + recreates per call. */
+    if (live_w && live_w->type == WIDGET_TYPE_PROMPT
+        && live_w->choices_count > 0) {
+        refresh_prompt_hit_zones(live_w);
+    } else {
+        clear_prompt_hit_zones();
+    }
+
+    /* v4·D Phase 4g: inline image for widget_media.  refresh_media_image
+     * kicks off a FreeRTOS fetch task if the URL changed, and hides the
+     * image when the live slot isn't a MEDIA widget. */
+    refresh_media_image(live_w);
+
     if (live_w) {
         /* v4·D Gauntlet G5 fix: reveal suppressed widgets.
          * When the priority queue is hiding N-1 other live widgets, the
@@ -1119,6 +1165,185 @@ void menu_chip_click_cb(lv_event_t *e)
     if (any_overlay_visible()) return;
     extern void ui_nav_sheet_show(void);
     ui_nav_sheet_show();
+}
+
+/* v4·D Phase 4g widget_prompt tap plumbing.
+ *
+ * refresh_prompt_hit_zones() builds (or re-parents) N invisible clickable
+ * rectangles over the live card, one per choice row.  Each hit zone
+ * carries its choice index in user_data.  The tap callback looks up the
+ * cached event string and fires voice_send_widget_action back to Dragon.
+ * That closes the prompt → user-taps-answer → skill-receives-answer
+ * loop for the v4·D Phase 4g widget_prompt type.
+ *
+ * Layout assumes the tall 168 px card.  Title sits at y=30-54, choices
+ * at y=54-90, 90-126, 126-162 (36 px each).  Hit zones span the full
+ * card width so tapping anywhere on the row registers. */
+static void prompt_choice_tap_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= PROMPT_TAP_MAX) return;
+    if (!s_prompt_card_id[0])            return;
+    const char *ev = s_prompt_events[idx];
+    if (!ev || !ev[0])                    return;
+    extern esp_err_t voice_send_widget_action(const char *, const char *, const char *);
+    ESP_LOGI(TAG, "prompt tap: card=%s idx=%d event=%s",
+             s_prompt_card_id, idx, ev);
+    voice_send_widget_action(s_prompt_card_id, ev, NULL);
+    show_toast_internal("Sent");
+}
+
+static void clear_prompt_hit_zones(void)
+{
+    for (int i = 0; i < PROMPT_TAP_MAX; i++) {
+        if (s_prompt_tap[i]) {
+            lv_obj_del(s_prompt_tap[i]);
+            s_prompt_tap[i] = NULL;
+        }
+    }
+    s_prompt_card_id[0] = '\0';
+    for (int i = 0; i < PROMPT_TAP_MAX; i++) s_prompt_events[i][0] = '\0';
+}
+
+static void refresh_prompt_hit_zones(const widget_t *w)
+{
+    /* Always reset.  Caller re-invokes on every update_status tick. */
+    clear_prompt_hit_zones();
+    if (!w || !s_now_card) return;
+    if (w->type != WIDGET_TYPE_PROMPT) return;
+    if (w->choices_count == 0) return;
+    int n = w->choices_count;
+    if (n > PROMPT_TAP_MAX) n = PROMPT_TAP_MAX;
+
+    snprintf(s_prompt_card_id, sizeof(s_prompt_card_id), "%s", w->card_id);
+    for (int i = 0; i < n; i++) {
+        snprintf(s_prompt_events[i], sizeof(s_prompt_events[i]),
+                 "%s", w->choices[i].event);
+    }
+
+    /* Card layout: title row at 30-54 px; each choice row 36 px below,
+     * starting at y=54.  Card width = CARD_W.  Make zones 2 px inside
+     * the border so they don't swallow the corner radius. */
+    const int zone_y0 = 54;
+    const int zone_h  = 36;
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *z = lv_obj_create(s_now_card);
+        lv_obj_remove_style_all(z);
+        lv_obj_set_pos(z, 2, zone_y0 + i * zone_h);
+        lv_obj_set_size(z, CARD_W - 4, zone_h);
+        lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(z, 0, 0);
+        lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(z, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(z, prompt_choice_tap_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+        s_prompt_tap[i] = z;
+    }
+    ESP_LOGI(TAG, "prompt hit zones: %d rows for card=%s", n, s_prompt_card_id);
+}
+
+/* v4·D Phase 4g widget_media inline image decode.
+ *
+ * ensure_media_image_widget() lazy-creates the LVGL image object over
+ * the live card.  refresh_media_image() is called from
+ * ui_home_update_status() whenever the live slot is a MEDIA widget;
+ * if the URL changed since the last fetch, it spawns a FreeRTOS task
+ * to download + decode via media_cache_fetch, then hops back to the
+ * LVGL thread via lv_async_call to bind the decoded buffer.
+ *
+ * The image sits below the title/body in the tall card, width 620 px
+ * centered.  Failures leave the caption fallback visible, so there is
+ * always something on screen. */
+static void ensure_media_image_widget(void)
+{
+    if (s_media_img || !s_now_card) return;
+    s_media_img = lv_image_create(s_now_card);
+    lv_obj_set_size(s_media_img, 620, 96);  /* actual size overwritten on bind */
+    lv_obj_set_pos(s_media_img, CARD_PAD, 30);
+    lv_obj_add_flag(s_media_img, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void media_image_bind_cb(void *arg)
+{
+    (void)arg;
+    if (!s_media_img) return;
+    if (s_media_dsc.data == NULL || s_media_dsc.header.w == 0) {
+        lv_obj_add_flag(s_media_img, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    /* Lede is at y=30 in tall mode.  Parent the image ON TOP of the
+     * lede region so the text gets covered when decode succeeds. */
+    int w = s_media_dsc.header.w;
+    int h = s_media_dsc.header.h;
+    if (w > 620) w = 620;
+    if (h > 100) h = 100;
+    lv_obj_set_size(s_media_img, w, h);
+    lv_obj_set_pos(s_media_img, (CARD_W - w) / 2, 30);
+    lv_image_set_src(s_media_img, &s_media_dsc);
+    lv_obj_clear_flag(s_media_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_media_img);
+}
+
+static void media_image_clear_cb(void *arg)
+{
+    (void)arg;
+    if (s_media_img) {
+        lv_obj_add_flag(s_media_img, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(s_media_img, NULL);
+    }
+    memset(&s_media_dsc, 0, sizeof(s_media_dsc));
+}
+
+static void media_fetch_task(void *pv)
+{
+    char *url = (char *)pv;
+    if (!url) { vTaskDelete(NULL); return; }
+    ESP_LOGI(TAG, "widget_media fetch: %s", url);
+    lv_image_dsc_t dsc = {0};
+    esp_err_t err = media_cache_fetch(url, &dsc);
+    if (err == ESP_OK && dsc.data && dsc.header.w > 0) {
+        s_media_dsc = dsc;
+        lv_async_call((lv_async_cb_t)media_image_bind_cb, NULL);
+    } else {
+        ESP_LOGW(TAG, "widget_media fetch failed (%d) for %s", err, url);
+        lv_async_call((lv_async_cb_t)media_image_clear_cb, NULL);
+    }
+    free(url);
+    s_media_fetch_inflight = false;
+    vTaskDelete(NULL);
+}
+
+static void refresh_media_image(const widget_t *w)
+{
+    if (!w || w->type != WIDGET_TYPE_MEDIA || !w->media_url[0]) {
+        /* Non-media -- hide the image widget and reset tracking. */
+        s_media_cur_url[0] = '\0';
+        lv_async_call((lv_async_cb_t)media_image_clear_cb, NULL);
+        return;
+    }
+    ensure_media_image_widget();
+    if (strncmp(s_media_cur_url, w->media_url, sizeof(s_media_cur_url)) == 0) {
+        /* Same URL already fetched/inflight -- no work. */
+        return;
+    }
+    if (s_media_fetch_inflight) {
+        /* Let the prior fetch finish; next update_status tick will
+         * notice a URL mismatch and kick off the new one. */
+        return;
+    }
+    strncpy(s_media_cur_url, w->media_url, sizeof(s_media_cur_url) - 1);
+    s_media_cur_url[sizeof(s_media_cur_url) - 1] = '\0';
+
+    char *copy = strdup(w->media_url);
+    if (!copy) return;
+    s_media_fetch_inflight = true;
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        media_fetch_task, "widget_media", 8192, copy, 3, NULL, 1);
+    if (ok != pdPASS) {
+        ESP_LOGW(TAG, "widget_media: failed to spawn fetch task");
+        free(copy);
+        s_media_fetch_inflight = false;
+    }
 }
 
 static void orb_long_press_cb(lv_event_t *e)

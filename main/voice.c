@@ -1172,6 +1172,20 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         playback_buf_reset();
         tab5_audio_speaker_enable(false);
         voice_set_state(VOICE_STATE_IDLE, "disconnected");
+        /* v4·D audit P0 fix: ngrok fallback was one-way.  Clear the flag
+         * + reset the fail counter so the NEXT successful connection
+         * gets a chance to land on LAN.  The actual URI swap is deferred
+         * to voice_try_lan_probe() which runs off the WS event task. */
+        if (s_using_ngrok && tab5_settings_get_connection_mode() == 0) {
+            s_handshake_fail_cnt = 0;
+            /* Leave s_using_ngrok alone here: we only reset it once the
+             * external LAN probe succeeds (heap_watchdog periodic hook).
+             * Clearing it here without swapping the client URI would be
+             * a lie, and swapping the URI inside the event task has
+             * shown to wedge the client.  Next sprint: add a proper
+             * probe task that pings LAN and schedules the swap via
+             * lv_async_call on success. */
+        }
         break;
 
     case WEBSOCKET_EVENT_CLOSED:
