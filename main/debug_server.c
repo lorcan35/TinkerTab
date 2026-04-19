@@ -1054,6 +1054,85 @@ static void async_refresh_mode_badge(void *arg)
     ui_home_refresh_mode_badge();
 }
 
+/* POST /settings — update NVS keys via JSON body.
+ * Supports: dragon_host (str), dragon_port (int), wifi_ssid (str).
+ * Body: {"dragon_host":"192.168.1.91","dragon_port":3502}
+ * Returns: {"updated":["dragon_host","dragon_port"]}
+ * Note: does NOT reconnect voice WS automatically — call /voice/reconnect after.
+ */
+static esp_err_t settings_set_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    int total = req->content_len;
+    if (total <= 0 || total > 512) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"body 1..512 bytes required\"}");
+        return ESP_OK;
+    }
+
+    char body[520] = {0};
+    int received = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, body + received, total - received);
+        if (r <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "{\"error\":\"recv failed\"}");
+            return ESP_OK;
+        }
+        received += r;
+    }
+    body[received] = '\0';
+
+    cJSON *req_json = cJSON_Parse(body);
+    if (!req_json) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"invalid JSON\"}");
+        return ESP_OK;
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON *updated = cJSON_CreateArray();
+
+    cJSON *host = cJSON_GetObjectItem(req_json, "dragon_host");
+    if (cJSON_IsString(host) && host->valuestring && strlen(host->valuestring) > 0) {
+        if (tab5_settings_set_dragon_host(host->valuestring) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_host"));
+        }
+    }
+
+    cJSON *port = cJSON_GetObjectItem(req_json, "dragon_port");
+    if (cJSON_IsNumber(port)) {
+        int p = (int)port->valuedouble;
+        if (p > 0 && p < 65536) {
+            if (tab5_settings_set_dragon_port((uint16_t)p) == ESP_OK) {
+                cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_port"));
+            }
+        }
+    }
+
+    cJSON *cmode = cJSON_GetObjectItem(req_json, "conn_mode");
+    if (cJSON_IsNumber(cmode)) {
+        int m = (int)cmode->valuedouble;
+        if (m >= 0 && m <= 2) {
+            if (tab5_settings_set_connection_mode((uint8_t)m) == ESP_OK) {
+                cJSON_AddItemToArray(updated, cJSON_CreateString("conn_mode"));
+            }
+        }
+    }
+
+    cJSON_AddItemToObject(resp, "updated", updated);
+    char *out = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    cJSON_Delete(req_json);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
+    esp_err_t ret = httpd_resp_sendstr(req, out);
+    free(out);
+    return ret;
+}
+
 /* POST /mode?m=0|1|2|3&model=... — switch voice mode (3=TinkerClaw) */
 static esp_err_t mode_set_handler(httpd_req_t *req)
 {
@@ -1734,6 +1813,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_settings_get = {
         .uri = "/settings", .method = HTTP_GET, .handler = settings_get_handler
     };
+    const httpd_uri_t uri_settings_set = {
+        .uri = "/settings", .method = HTTP_POST, .handler = settings_set_handler
+    };
     const httpd_uri_t uri_mode_set = {
         .uri = "/mode", .method = HTTP_POST, .handler = mode_set_handler
     };
@@ -1781,6 +1863,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_wake);
     httpd_register_uri_handler(server, &uri_settings_get);
+    httpd_register_uri_handler(server, &uri_settings_set);
     httpd_register_uri_handler(server, &uri_mode_set);
     httpd_register_uri_handler(server, &uri_navigate);
     httpd_register_uri_handler(server, &uri_widget);
