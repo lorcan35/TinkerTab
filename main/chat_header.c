@@ -91,7 +91,7 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title)
     lv_obj_add_event_cb(h->back, ev_back, LV_EVENT_CLICKED, h);
     lv_obj_t *back_lbl = lv_label_create(h->back);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT);
-    lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(back_lbl, FONT_HEADING, 0);
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(TH_TEXT_BODY), 0);
     lv_obj_center(back_lbl);
 
@@ -114,7 +114,7 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title)
     lv_obj_add_event_cb(h->chev, ev_chev, LV_EVENT_CLICKED, h);
     lv_obj_t *chev_lbl = lv_label_create(h->chev);
     lv_label_set_text(chev_lbl, LV_SYMBOL_DOWN);
-    lv_obj_set_style_text_font(chev_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(chev_lbl, FONT_SECONDARY, 0);
     lv_obj_set_style_text_color(chev_lbl, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_center(chev_lbl);
 
@@ -134,7 +134,7 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title)
     lv_obj_add_event_cb(h->plus, ev_plus, LV_EVENT_CLICKED, h);
     lv_obj_t *plus_lbl = lv_label_create(h->plus);
     lv_label_set_text(plus_lbl, "+");
-    lv_obj_set_style_text_font(plus_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(plus_lbl, FONT_HEADING, 0);
     lv_obj_set_style_text_color(plus_lbl, lv_color_hex(TH_AMBER), 0);
     lv_obj_center(plus_lbl);
 

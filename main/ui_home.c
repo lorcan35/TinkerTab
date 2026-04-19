@@ -587,6 +587,14 @@ lv_obj_t *ui_home_create(void)
         s_refresh_timer = lv_timer_create(refresh_timer_cb, 2000, NULL);
     }
 
+    /* Force full-screen invalidate — LVGL PARTIAL mode only paints dirty
+     * regions, and lv_screen_load doesn't always dirty the entire 720×1280
+     * on the first create. Without this, stale PSRAM framebuffer content
+     * from a previous screen (or a prior boot) persists in areas the home
+     * widgets didn't explicitly cover. Makes /screenshot + visual check
+     * actually reflect reality. */
+    lv_obj_invalidate(s_screen);
+
     ESP_LOGI(TAG, "v4 Ambient Canvas home created (orb %dpx, mode %d)",
              ORB_SIZE, s_badge_mode);
     return s_screen;
