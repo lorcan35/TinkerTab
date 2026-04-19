@@ -197,8 +197,17 @@ static void build_bmp_header(uint8_t *hdr, int w, int h)
  * requests, serialised by s_jpeg_mux because jpeg_encoder_process is not
  * safe to share across concurrent callers. */
 #include "freertos/semphr.h"
+#include <stdatomic.h>
 static jpeg_encoder_handle_t s_jpeg_enc = NULL;
 static SemaphoreHandle_t     s_jpeg_mux = NULL;
+
+/* /screenshot busy-guard. A screenshot takes 200 ms-ish of JPEG encode
+ * plus up to ~15 s of TCP send under adverse Wi-Fi. Letting a second
+ * concurrent request queue behind the first — on a single-worker httpd —
+ * stalls every unrelated /info /touch /navigate for the whole duration.
+ * Reject fast with 429 instead. Atomic flip makes the test + set race-
+ * free across the httpd dispatch task + any future async workers. */
+static atomic_bool s_screenshot_busy = ATOMIC_VAR_INIT(false);
 
 static esp_err_t _ensure_jpeg_encoder(void)
 {
@@ -219,10 +228,8 @@ static esp_err_t _ensure_jpeg_encoder(void)
     return ret;
 }
 
-static esp_err_t screenshot_handler(httpd_req_t *req)
+static esp_err_t screenshot_handler_impl(httpd_req_t *req)
 {
-    if (!check_auth(req)) return ESP_OK;
-
     esp_lcd_panel_handle_t panel = tab5_display_get_panel();
     if (!panel) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Display not initialized");
@@ -310,6 +317,31 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
      * the 32 KB LWIP window. No chunking needed. */
     ret = httpd_resp_send(req, (const char *)out_buf, out_size);
     free(out_buf);
+    return ret;
+}
+
+/* Outer handler with atomic busy-guard. A second concurrent /screenshot
+ * must NOT queue behind the first — on a single-worker httpd that would
+ * starve every unrelated /info /touch /navigate for the whole encode +
+ * send window. Reject fast with 429 Too Many Requests. */
+static esp_err_t screenshot_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    /* atomic_exchange returns the PREVIOUS value. If it was already true,
+     * someone else owns the slot — bail. Otherwise we acquired it and
+     * must release before every return below. */
+    if (atomic_exchange(&s_screenshot_busy, true)) {
+        ESP_LOGI(TAG, "screenshot: rejecting 429 (another in flight)");
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Retry-After", "2");
+        httpd_resp_sendstr(req, "{\"error\":\"screenshot in progress\",\"retry_after_s\":2}");
+        return ESP_OK;
+    }
+
+    esp_err_t ret = screenshot_handler_impl(req);
+    atomic_store(&s_screenshot_busy, false);
     return ret;
 }
 
