@@ -336,15 +336,48 @@ static void refresh_composite(void)
     uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier,
                                           model_out, sizeof(model_out));
     const char *mode_name[] = { "Local", "Hybrid", "Full Cloud", "Agent \xe2\x80\xa2 TinkerClaw" };
-    const char *mode_sub[]  = {
-        "ON-DEVICE \xe2\x80\xa2 FREE",
-        "STUDIO VOICE \xe2\x80\xa2 LOCAL BRAIN \xe2\x80\xa2 ~$0.02",
-        "SONNET 4 \xe2\x80\xa2 STUDIO \xe2\x80\xa2 ~$0.04",
-        "MEMORY BYPASSED \xe2\x80\xa2 GATEWAY TOOLS \xe2\x80\xa2 MULTI-STEP",
-    };
     if (resolved > 3) resolved = 0;
     lv_label_set_text(s_composite_head, mode_name[resolved]);
-    lv_label_set_text(s_composite_sub, mode_sub[resolved]);
+
+    /* Sub-label is built live so it reflects the actual LLM the user picked
+     * (gemini-3-flash-preview, gpt-4o-mini, etc) instead of hardcoding
+     * Sonnet.  Shortens vendor/model to the tail after "/" and upper-cases
+     * it to match the kicker typography. */
+    char sub_buf[96] = {0};
+    char short_model[48] = {0};
+    {
+        char lm[64] = {0};
+        tab5_settings_get_llm_model(lm, sizeof(lm));
+        if (lm[0]) {
+            const char *slash = strchr(lm, '/');
+            const char *tail  = slash ? slash + 1 : lm;
+            snprintf(short_model, sizeof(short_model), "%.47s", tail);
+            for (int i = 0; short_model[i]; i++) {
+                if (short_model[i] >= 'a' && short_model[i] <= 'z')
+                    short_model[i] -= 32;
+            }
+        }
+    }
+    switch (resolved) {
+        case 0:
+            snprintf(sub_buf, sizeof(sub_buf),
+                     "ON-DEVICE \xe2\x80\xa2 FREE");
+            break;
+        case 1:
+            snprintf(sub_buf, sizeof(sub_buf),
+                     "STUDIO VOICE \xe2\x80\xa2 LOCAL BRAIN \xe2\x80\xa2 ~$0.02");
+            break;
+        case 2:
+            snprintf(sub_buf, sizeof(sub_buf),
+                     "%s \xe2\x80\xa2 STUDIO \xe2\x80\xa2 ~$0.04",
+                     short_model[0] ? short_model : "CLOUD");
+            break;
+        case 3:
+            snprintf(sub_buf, sizeof(sub_buf),
+                     "MEMORY BYPASSED \xe2\x80\xa2 GATEWAY TOOLS");
+            break;
+    }
+    lv_label_set_text(s_composite_sub, sub_buf);
 
     /* v4·D Sovereign Halo Phase 2c: when aut_tier == 1 (Agent),
      * recolor the composite card to violet to flag the memory-bypass

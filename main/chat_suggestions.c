@@ -7,6 +7,7 @@
 #include "chat_suggestions.h"
 #include "ui_theme.h"
 #include "config.h"
+#include "settings.h"
 #include "esp_log.h"
 #include <stdlib.h>
 #include <string.h>
@@ -46,10 +47,16 @@ static const uint32_t s_mode_tint[4] = {
     TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
 };
 
+/* Local + Hybrid + Agent (TinkerClaw) leads are static -- they describe
+ * the TOPOLOGY not the model.  The Cloud lead is filled in live by
+ * chat_suggestions_set_mode() so it reads the actual llm_model from NVS
+ * ("Powered by gemini-3-flash-preview") instead of the old hardcoded
+ * Claude/GPT-4o string. */
+static char        s_cloud_lead_buf[80] = "Powered by cloud LLM.";
 static const char *s_mode_lead[4] = {
     "Fast local AI -- private by default.",
     "Local model + cloud audio for clarity.",
-    "Powered by Claude / GPT-4o for heavy lifts.",
+    s_cloud_lead_buf,
     "Your agent: memory, tools, web.",
 };
 
@@ -142,6 +149,22 @@ void chat_suggestions_set_mode(chat_suggestions_t *s, uint8_t m)
     if (!s) return;
     if (m > 3) m = 0;
     s->mode = m;
+    /* Rebuild the Cloud lead from the live llm_model so it doesn't lie
+     * when the user has picked, say, gemini or gpt-4o-mini.  Other modes
+     * keep their static topology text. */
+    if (m == 2) {
+        char lm[64] = {0};
+        tab5_settings_get_llm_model(lm, sizeof(lm));
+        if (lm[0]) {
+            const char *slash = strchr(lm, '/');
+            const char *tail  = slash ? slash + 1 : lm;
+            snprintf(s_cloud_lead_buf, sizeof(s_cloud_lead_buf),
+                     "Powered by %.40s.", tail);
+        } else {
+            snprintf(s_cloud_lead_buf, sizeof(s_cloud_lead_buf),
+                     "Powered by cloud LLM.");
+        }
+    }
     if (s->lead) lv_label_set_text(s->lead, s_mode_lead[m]);
     for (int i = 0; i < 4; i++) {
         if (s->labels[i]) lv_label_set_text(s->labels[i], s_prompts[m][i]);

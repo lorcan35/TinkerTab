@@ -228,15 +228,14 @@ static void format_right_time(char *buf, size_t n, const struct tm *tm)
 static void orb_paint_for_mode(uint8_t mode)
 {
     if (!s_orb) return;
-    if (mode >= 4) mode = 0;
-    uint32_t top, bot;
-    switch (mode) {
-        case VOICE_MODE_LOCAL:      top = 0x7DE69F; bot = 0x166C3A; break;
-        case VOICE_MODE_HYBRID:     top = 0xFFC75A; bot = 0xB9650A; break;
-        case VOICE_MODE_CLOUD:      top = 0x9AC0F9; bot = 0x1D3A78; break;
-        case VOICE_MODE_TINKERCLAW: top = 0xFF7E95; bot = 0x7A1428; break;
-        default:                    top = 0xFFC75A; bot = 0xB9650A; break;
-    }
+    (void)mode;
+    /* v4·D Sovereign Halo: the orb IS the brand -- treat it like a lantern.
+     * Mode identity lives on the small mode-chip dot under the lede, not
+     * on the orb.  Amber gradient always. Previously we tinted the orb
+     * blue/rose/emerald per mode which fought the "voice-first brand
+     * deserves maximum presence" rule from d-sovereign-halo.html. */
+    const uint32_t top = 0xFFC75A;
+    const uint32_t bot = 0xB9650A;
     lv_obj_set_style_bg_color(s_orb, lv_color_hex(top), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
@@ -487,11 +486,13 @@ lv_obj_t *ui_home_create(void)
 
     /* Kicker */
     /* Kicker now sits on the left, vertically centred in the live-line band.
-     * Width reserved = ~90 px (approx: mono 5-10 chars of FONT_SMALL). Active
-     * widgets should emit skill-id kickers of similar length. */
+     * Width clamped to 106 px with LONG_DOT so long skill IDs ("timesense.
+     * pomodoro") truncate instead of colliding with the lede to the right. */
     s_now_kicker = lv_label_create(s_now_card);
+    lv_label_set_long_mode(s_now_kicker, LV_LABEL_LONG_DOT);
     lv_label_set_text(s_now_kicker, "READY");
     lv_obj_set_pos(s_now_kicker, CARD_PAD, (CARD_H - 14) / 2);
+    lv_obj_set_width(s_now_kicker, 106);
     lv_obj_set_style_text_font(s_now_kicker, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_now_kicker, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(s_now_kicker, 4, 0);
@@ -801,7 +802,13 @@ void ui_home_update_status(void)
     if (live_w && s_now_card && s_now_lede && s_now_kicker) {
         bool is_list  = (live_w->type == WIDGET_TYPE_LIST  && live_w->items_count  > 0);
         bool is_chart = (live_w->type == WIDGET_TYPE_CHART && live_w->chart_count > 0);
-        bool is_tall  = is_list || is_chart;
+        /* Auto-grow to the tall card when the body alone would wrap past one
+         * line (> 48 chars) or when the caller included a title alongside
+         * the body -- compact live-line mode only has room for a single
+         * line of body text to the right of the kicker. */
+        bool body_long = (live_w->body[0] && strlen(live_w->body) > 48);
+        bool has_title_and_body = (live_w->title[0] && live_w->body[0]);
+        bool is_tall  = is_list || is_chart || body_long || has_title_and_body;
         int want_h = is_tall ? 168 : 88;
         if (lv_obj_get_height(s_now_card) != want_h) {
             lv_obj_set_height(s_now_card, want_h);
