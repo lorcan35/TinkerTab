@@ -82,8 +82,37 @@ void ui_mode_sheet_show(void)
     s_voi_tier = tab5_settings_get_voi_tier();
     s_aut_tier = tab5_settings_get_aut_tier();
 
-    ESP_LOGI(TAG, "Opening dial sheet (int=%d voi=%d aut=%d)",
-             s_int_tier, s_voi_tier, s_aut_tier);
+    /* If voice_mode was set via a path that bypassed the dial sheet
+     * (debug /mode, settings radio rows, orb long-press cycle), the
+     * tiers can drift out of sync with the live mode.  Reverse-derive
+     * the tiers from the current voice_mode so the dials open showing
+     * what the device is actually running on. */
+    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier,
+                                         NULL, 0);
+    uint8_t live_mode = tab5_settings_get_voice_mode();
+    if (resolved != live_mode) {
+        switch (live_mode) {
+            case 3: /* TinkerClaw / Agent */
+                s_aut_tier = 1;
+                /* leave int/voi alone -- agent wins */
+                break;
+            case 2: /* Full Cloud */
+                s_int_tier = 2; s_voi_tier = 2; s_aut_tier = 0;
+                break;
+            case 1: /* Hybrid */
+                s_int_tier = 1; s_voi_tier = 2; s_aut_tier = 0;
+                break;
+            case 0: /* Local */
+            default:
+                s_int_tier = 0; s_voi_tier = 0; s_aut_tier = 0;
+                break;
+        }
+        ESP_LOGI(TAG, "Dial sheet tiers resynced to live mode %d -> int=%d voi=%d aut=%d",
+                 live_mode, s_int_tier, s_voi_tier, s_aut_tier);
+    } else {
+        ESP_LOGI(TAG, "Opening dial sheet (int=%d voi=%d aut=%d)",
+                 s_int_tier, s_voi_tier, s_aut_tier);
+    }
 
     /* Overlay scrim — fills the screen, dim semi-transparent, tappable
      * to dismiss.  lv_layer_top() keeps it above home + any other screen. */

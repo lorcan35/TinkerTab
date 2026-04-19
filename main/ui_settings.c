@@ -1060,10 +1060,25 @@ lv_obj_t *ui_settings_create(void)
     if (s_active_tab > 3) s_active_tab = 0;
     {
         static const char *mode_names[4] = { "Local", "Hybrid", "Cloud", "TinkerClaw" };
-        static const char *mode_descs[4] = {
+        /* Cloud description reflects the LIVE llm_model from NVS so the
+         * row doesn't lie when the user has picked, say, gemini or gpt-4o
+         * instead of the original Claude default.  Condensed to the short
+         * form ("gemini-3-flash-preview" -> "gemini-3-flash-preview"
+         * truncated to fit the row). */
+        char cloud_desc[48] = "Cloud LLM";
+        {
+            char lm[64] = {0};
+            tab5_settings_get_llm_model(lm, sizeof(lm));
+            if (lm[0]) {
+                const char *slash = strchr(lm, '/');
+                const char *tail  = slash ? slash + 1 : lm;
+                snprintf(cloud_desc, sizeof(cloud_desc), "%.47s", tail);
+            }
+        }
+        const char *mode_descs[4] = {
             "Moonshine \xe2\x80\xa2 NPU",
             "Cloud STT/TTS",
-            "Claude Sonnet",
+            cloud_desc,
             "Agents \xe2\x80\xa2 Memory",
         };
         static const uint32_t mode_dot_col[4] = {
