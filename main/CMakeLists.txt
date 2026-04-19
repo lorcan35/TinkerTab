@@ -8,6 +8,10 @@ set(UI_SRCS
     "chat_input_bar.c"
     "chat_suggestions.c"
     "chat_msg_view.c"
+    "chat_session_drawer.c"
+    "fonts/fraunces_italic_32.c"
+    "fonts/fraunces_italic_22.c"
+    "fonts/jetbrains_mono_medium_14.c"
 )
 
 if(IDF_TARGET STREQUAL "linux")

@@ -4,11 +4,7 @@
  * Opts: --no-compress --no-prefilter --bpp 4 --size 14 --font fonts-src/JetBrainsMono-Medium.ttf -r 0x20-0x7F,0x2022,0xB7 --format lvgl -o main/fonts/jetbrains_mono_medium_14.c
  ******************************************************************************/
 
-#ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
-#else
-#include "lvgl/lvgl.h"
-#endif
 
 #ifndef JETBRAINS_MONO_MEDIUM_14
 #define JETBRAINS_MONO_MEDIUM_14 1

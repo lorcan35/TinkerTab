@@ -4,11 +4,7 @@
  * Opts: --no-compress --no-prefilter --bpp 4 --size 32 --font fonts-src/Fraunces-Italic.ttf -r 0x20-0x7F,0x2022,0xB7 --format lvgl -o main/fonts/fraunces_italic_32.c
  ******************************************************************************/
 
-#ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
-#else
-#include "lvgl/lvgl.h"
-#endif
 
 #ifndef FRAUNCES_ITALIC_32
 #define FRAUNCES_ITALIC_32 1

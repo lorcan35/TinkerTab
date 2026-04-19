@@ -99,12 +99,14 @@
 #define FONT_NAV         &lv_font_montserrat_18   /* Nav bar labels */
 
 // ── v4·C chat fonts (Fraunces italic + JetBrains Mono) ───────────────
+#ifdef LV_FONT_DECLARE
 LV_FONT_DECLARE(fraunces_italic_32);
 LV_FONT_DECLARE(fraunces_italic_22);
 LV_FONT_DECLARE(jetbrains_mono_medium_14);
 #define FONT_CHAT_TITLE  (&fraunces_italic_32)   /* chat header title, drawer title */
 #define FONT_CHAT_EMPH   (&fraunces_italic_22)   /* AI bubble <em> emphasis */
 #define FONT_CHAT_MONO   (&jetbrains_mono_medium_14)  /* kickers, timestamps, chip sub */
+#endif
 
 // ---------------------------------------------------------------------------
 // DPI-Aware Sizing — scales pixel values for different display densities
