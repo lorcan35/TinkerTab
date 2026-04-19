@@ -294,13 +294,27 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
     lv_obj_set_style_text_line_space(slot->body, 4, 0);
     lv_label_set_text(slot->body, msg->text);
 
-    /* Timestamp */
+    /* Timestamp (+ Phase 3d receipt stamp for AI bubbles with cost).
+     * Format: "9:42 · HAIKU-3.5 · $0.003"  (AI only, when receipt > 0). */
     if (slot->ts) {
         lv_obj_clear_flag(slot->ts, LV_OBJ_FLAG_HIDDEN);
-        char ts[32];
+        char ts[96];
         fmt_timestamp(ts, sizeof(ts),
                       msg->timestamp ? msg->timestamp : 0,
                       msg->is_user);
+        if (!msg->is_user && msg->receipt_mils > 0) {
+            /* Append receipt: " · MODEL · $X.XXX"  (rounded mils -> dollars
+             * to 3 decimal places so Haiku's ~0.3 cent turns render as
+             * "$0.003" rather than the deceptive "$0.00").  Use a small
+             * scratch buffer appended to ts. */
+            int dollars   = (int)(msg->receipt_mils / 100000);
+            int thousandths = (int)((msg->receipt_mils / 100) % 1000);
+            size_t cur = strlen(ts);
+            snprintf(ts + cur, sizeof(ts) - cur,
+                     " \xc2\xb7 %s \xc2\xb7 $%d.%03d",
+                     msg->receipt_model_short,
+                     dollars, thousandths);
+        }
         lv_label_set_text(slot->ts, ts);
         lv_obj_set_style_text_font(slot->ts, FONT_CHAT_MONO, 0);
         lv_obj_set_style_text_color(slot->ts, lv_color_hex(TH_TEXT_DIM), 0);

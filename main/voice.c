@@ -629,6 +629,27 @@ static void handle_text_message(const char *data, int len)
             extern void ui_home_update_status(void);
             lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
         }
+        /* Phase 3d: attach the receipt to the most-recent assistant bubble
+         * in the chat store so chat_msg_view can render a per-turn stamp.
+         * Falls through silently if the chat isn't open / has no assistant
+         * bubble yet (e.g. first text response before the view rendered). */
+        if (m > 0 && model && model[0]) {
+            /* Condense the model ID into something that fits the bubble
+             * subtitle ("anthropic/claude-3.5-haiku" -> "haiku-3.5"). */
+            char short_model[16] = {0};
+            const char *slash = strchr(model, '/');
+            const char *tail = slash ? slash + 1 : model;
+            const char *hyphen = strchr(tail, '-');  /* skip vendor prefix "claude-" */
+            const char *start = hyphen ? hyphen + 1 : tail;
+            snprintf(short_model, sizeof(short_model), "%s", start);
+            extern int chat_store_attach_receipt_to_last_ai(
+                uint32_t, uint16_t, uint16_t, const char *);
+            chat_store_attach_receipt_to_last_ai(
+                (uint32_t)m, (uint16_t)pt, (uint16_t)ct, short_model);
+            /* Visible refresh lands on the next natural redraw (scroll or
+             * new message arrival).  Adding a dedicated force-redraw hook
+             * is deferred so this commit keeps a small surface. */
+        }
     } else if (strcmp(type_str, "text_update") == 0) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
         if (text) {

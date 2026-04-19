@@ -49,6 +49,14 @@ typedef struct {
     uint32_t   timestamp;
     int16_t    height_px;   /* cached after first render; -1 = not measured */
     bool       active;      /* slot in use */
+    /* v4·D Phase 3d per-bubble receipt. receipt_mils==0 means no receipt
+     * attached (local turn, or receipt hasn't arrived yet).  Populated
+     * by chat_store_attach_receipt_to_last_ai() after the Dragon WS
+     * receipt frame lands. */
+    uint32_t   receipt_mils;
+    uint16_t   receipt_ptok;
+    uint16_t   receipt_ctok;
+    char       receipt_model_short[16];  /* "haiku-3.5", "sonnet-3.5", etc */
 } chat_msg_t;
 
 /* ── API ─────────────────────────────────────────────────────── */
@@ -87,6 +95,15 @@ bool chat_store_set_height(int index, int16_t h);
 
 /** Replace text on the last message (streaming + text_update). */
 bool chat_store_update_last_text(const char *text);
+
+/** Attach receipt data to the most recent assistant message (scans back
+ *  from newest to find first is_user==false bubble). Returns the index
+ *  updated, or -1 if no assistant message exists in the ring.
+ *  model_short may be a shortened display name ("haiku-3.5") or full id. */
+int  chat_store_attach_receipt_to_last_ai(uint32_t mils,
+                                          uint16_t prompt_tok,
+                                          uint16_t completion_tok,
+                                          const char *model_short);
 
 /** Remove the last message (used to drop ephemeral system placeholders). */
 bool chat_store_pop_last(void);

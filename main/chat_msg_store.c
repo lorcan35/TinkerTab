@@ -146,6 +146,29 @@ bool chat_store_update_last_text(const char *text)
     return true;
 }
 
+int chat_store_attach_receipt_to_last_ai(uint32_t mils,
+                                         uint16_t prompt_tok,
+                                         uint16_t completion_tok,
+                                         const char *model_short)
+{
+    /* Scan newest -> oldest looking for the first assistant-role bubble. */
+    for (int i = s_count - 1; i >= 0; i--) {
+        chat_msg_t *m = chat_store_get_mut(i);
+        if (!m || !m->active) continue;
+        if (m->is_user) continue;   /* skip user bubbles */
+        if (m->type == MSG_SYSTEM) continue;  /* skip system messages */
+        m->receipt_mils = mils;
+        m->receipt_ptok = prompt_tok;
+        m->receipt_ctok = completion_tok;
+        copy_str(m->receipt_model_short, sizeof(m->receipt_model_short),
+                 model_short ? model_short : "");
+        /* Bubble gets a new subtitle line, so invalidate cached height. */
+        m->height_px = -1;
+        return i;
+    }
+    return -1;
+}
+
 bool chat_store_pop_last(void)
 {
     if (s_count == 0) return false;
