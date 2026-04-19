@@ -792,11 +792,30 @@ void ui_home_update_status(void)
     /* Now-slot — widget live wins; otherwise empty-state. */
     widget_t *live_w = widget_store_live_active();
     if (live_w) {
-        char kicker[80];
-        /* NOW · <skill_id in caps> */
-        snprintf(kicker, sizeof(kicker), "NOW \xe2\x80\xa2 %.*s",
-                 (int)(sizeof(kicker) - 8),
-                 live_w->skill_id[0] ? live_w->skill_id : "WIDGET");
+        /* v4·D Gauntlet G5 fix: reveal suppressed widgets.
+         * When the priority queue is hiding N-1 other live widgets, the
+         * user has no way to know.  Append "+N MORE" to the kicker so a
+         * 10:30 calendar widget at priority 8 doesn't silently evict the
+         * running focus timer at priority 5 without the user noticing.
+         * See STORIES-GAUNTLET.md G5 "The 47-widget day". */
+        int total_live = widget_store_live_count();
+        int suppressed = total_live > 1 ? total_live - 1 : 0;
+
+        /* When suppressed > 0 we drop the "NOW ." prefix -- the kicker
+         * already clearly implies "now" by being the active live-slot.
+         * This keeps the kicker under the ~90 px reserved column so the
+         * lede next to it doesn't get collided with by a long
+         * "NOW . CALENDAR . +2 MORE" string. */
+        char kicker[96];
+        if (suppressed > 0) {
+            snprintf(kicker, sizeof(kicker),
+                     "%.12s +%d",
+                     live_w->skill_id[0] ? live_w->skill_id : "WIDGET",
+                     suppressed);
+        } else {
+            snprintf(kicker, sizeof(kicker), "NOW \xe2\x80\xa2 %.12s",
+                     live_w->skill_id[0] ? live_w->skill_id : "WIDGET");
+        }
         for (int i = 0; kicker[i]; i++) {
             if (kicker[i] >= 'a' && kicker[i] <= 'z') kicker[i] -= 32;
         }
