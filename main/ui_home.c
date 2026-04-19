@@ -752,12 +752,26 @@ void ui_home_update_status(void)
     if (s_sys_label) {
         const char *sys;
         uint32_t col = TH_TEXT_SECONDARY;
+        /* v4·D Gauntlet G7 fix: budget-capped state beats ONLINE so the
+         * user sees it without looking for a missed toast.  Rose colour
+         * matches the other "trust-broken" states (NO DRAGON, OFFLINE). */
+        bool capped = (state == ST_NORMAL)
+                      && (tab5_budget_get_cap_mils() > 0)
+                      && (tab5_budget_get_today_mils() >= tab5_budget_get_cap_mils());
         switch (state) {
             case ST_NO_WIFI:     sys = "OFFLINE";   col = TH_STATUS_RED; break;
             case ST_DRAGON_DOWN: sys = "NO DRAGON"; col = TH_STATUS_RED; break;
             case ST_MUTED:       sys = "MUTED";     col = 0x7A7A82;      break;
             case ST_QUIET:       sys = "QUIET";     col = 0x7A7A82;      break;
-            default:             sys = "ONLINE";    col = TH_TEXT_SECONDARY; break;
+            default:
+                if (capped) {
+                    sys = "CAPPED \xe2\x80\xa2 LOCAL TODAY";
+                    col = TH_STATUS_RED;
+                } else {
+                    sys = "ONLINE";
+                    col = TH_TEXT_SECONDARY;
+                }
+                break;
         }
         const char *cur = lv_label_get_text(s_sys_label);
         if (!cur || strcmp(cur, sys) != 0) lv_label_set_text(s_sys_label, sys);
