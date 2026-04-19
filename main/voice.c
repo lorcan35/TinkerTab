@@ -85,7 +85,7 @@ static const char *TAG = "tab5_voice";
 #define VOICE_RECONNECT_MAX_MS   60000
 #define VOICE_CONNECT_TIMEOUT_MS 5000
 // Keep-alive ping interval: prevents TCP idle timeout during long LLM inference
-#define VOICE_KEEPALIVE_MS       8000   /* ping every 8s during PROCESSING (was 15s — ngrok needs <20s) */
+#define VOICE_KEEPALIVE_MS       5000   /* ping every 5s during PROCESSING (was 8s — tighter for faster dead-link detection) */
 // Dragon response timeout: auto-cancel if no STT/LLM response after stop
 #define VOICE_RESPONSE_TIMEOUT_MS 35000  /* Must exceed Dragon's 30s TTS timeout */
 
@@ -193,10 +193,10 @@ static volatile uint32_t s_reconnect_backoff_ms = 1000;
 #define RECONNECT_CHECK_MS     3000   /* check every 3s (was 5s — faster detection) */
 #define RECONNECT_BACKOFF_MIN_MS  1000   /* 1s fast retry — most reconnects succeed immediately */
 #define RECONNECT_BACKOFF_MAX_MS  10000  /* 10s max cap (was 60s — user shouldn't wait >10s) */
-#define IDLE_PING_INTERVAL_MS  8000   /* ping every 8s when idle/ready (was 10s — ngrok needs <20s) */
+#define IDLE_PING_INTERVAL_MS  5000   /* ping every 5s when idle/ready (was 8s — tighter to catch half-open TCP faster) */
 
 // Keepalive degraded state (US-A05) — tolerance for missed pongs before disconnect
-#define KEEPALIVE_MISS_MAX     4      /* disconnect after 4 consecutive missed pongs (~32s) — increased from 3 to tolerate transient ngrok/WiFi hiccups */
+#define KEEPALIVE_MISS_MAX     2      /* disconnect after 2 consecutive missed pongs (~10s); was 4 (~32s) — UI stayed "ONLINE" too long when Dragon silently died */
 static volatile int64_t s_last_pong_us = 0;          /* timestamp of last received pong */
 static volatile int     s_keepalive_miss_count = 0;   /* consecutive missed pong counter */
 
@@ -240,6 +240,13 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
                          old, new_state);
             }
         }
+        /* Always poke the home screen too — ui_home_refresh_sys_label() uses
+         * lv_async_call(), which is lock-free and thread-safe. This is the
+         * fallback path: if the state_cb above got skipped by a busy LVGL
+         * lock, the home still repaints within one LVGL tick instead of
+         * waiting for the 2 s poll. Kills the "finicky disconnect" lag. */
+        extern void ui_home_refresh_sys_label(void);
+        ui_home_refresh_sys_label();
     }
 }
 
@@ -1549,6 +1556,12 @@ static void ws_receive_task(void *arg)
     // If we disconnected unexpectedly, update state
     if (!s_stop_flag && s_state != VOICE_STATE_IDLE) {
         voice_set_state(VOICE_STATE_IDLE, "disconnected");
+    } else if (!s_stop_flag) {
+        /* Disconnected while already IDLE — voice_set_state wouldn't fire,
+         * but the home sys-label still needs to flip ONLINE → NO DRAGON.
+         * lv_async_call is lock-free. */
+        extern void ui_home_refresh_sys_label(void);
+        ui_home_refresh_sys_label();
     }
 
     ESP_LOGI(TAG, "WS receive task exiting");
@@ -1698,10 +1711,23 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         esp_transport_destroy(stale);
     }
 
+    /* OS-level TCP keepalive — catches half-open sockets (Dragon / ngrok
+     * dies without sending FIN/RST) at the socket layer, independent of
+     * our app-level JSON ping. 5s idle → probe every 2s × 3 = ~11s to
+     * RST a dead peer. Values are per-connection; must be set BEFORE
+     * esp_transport_connect so setsockopt is applied to the fresh socket. */
+    esp_transport_keep_alive_t keepalive_cfg = {
+        .keep_alive_enable   = true,
+        .keep_alive_idle     = 5,
+        .keep_alive_interval = 2,
+        .keep_alive_count    = 3,
+    };
+
     /* ── Step 1: Try LOCAL LAN (modes 0 and 1) ── */
     if (conn_mode != 2) {
         esp_transport_handle_t tcp = esp_transport_tcp_init();
         if (tcp) {
+            esp_transport_tcp_set_keep_alive(tcp, &keepalive_cfg);
             s_ws = esp_transport_ws_init(tcp);
             if (s_ws) {
                 esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);
@@ -1733,6 +1759,7 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         esp_transport_handle_t ssl = esp_transport_ssl_init();
         if (ssl) {
             esp_transport_ssl_crt_bundle_attach(ssl, esp_crt_bundle_attach);
+            esp_transport_ssl_set_keep_alive(ssl, &keepalive_cfg);
             s_ws = esp_transport_ws_init(ssl);
             if (s_ws) {
                 esp_transport_ws_set_path(s_ws, TAB5_VOICE_WS_PATH);

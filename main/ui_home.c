@@ -579,7 +579,12 @@ lv_obj_t *ui_home_create(void)
     ui_home_update_status();
 
     if (s_refresh_timer == NULL) {
-        s_refresh_timer = lv_timer_create(refresh_timer_cb, 5000, NULL);
+        /* 2 s safety-net poll — the real state push is from voice.c via
+         * voice_set_state() + ws_receive_task cleanup, which fires within
+         * one LVGL tick on disconnect. This timer just catches anything
+         * the push missed (e.g. a state change during LVGL-lock contention
+         * where the fallback ui_home_refresh_sys_label() also got delayed). */
+        s_refresh_timer = lv_timer_create(refresh_timer_cb, 2000, NULL);
     }
 
     ESP_LOGI(TAG, "v4 Ambient Canvas home created (orb %dpx, mode %d)",
