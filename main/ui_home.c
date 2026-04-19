@@ -59,15 +59,18 @@ static const char *TAG = "ui_home";
 #define SH                1280
 #define SIDE_PAD          40
 
-/* Orb stage */
+/* Orb stage — v4·D Sovereign Halo (Phase 1a: geometry bump only).
+ * Orb 156→180 (voice-first identity), halos scaled 1.18x, rings scaled 1.16x.
+ * Stage position unchanged (ORB_CY=320). No shadow primitives — glow comes
+ * from the concentric ring + 2-stop radial recipe already in use. */
 #define ORB_CX            (SW / 2)
 #define ORB_CY            320
-#define ORB_SIZE          156
-#define HALO_OUTER        440
-#define HALO_INNER        300
-#define RING_OUTER        260
-#define RING_MID          210
-#define RING_INNER        175
+#define ORB_SIZE          180
+#define HALO_OUTER        520
+#define HALO_INNER        340
+#define RING_OUTER        310
+#define RING_MID          240
+#define RING_INNER        196
 
 /* Now-slot card */
 #define CARD_X            SIDE_PAD
