@@ -1149,6 +1149,30 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
             any_tier = true;
         }
     }
+
+    /* Phase 3e budget cap edit + spent reset (dev/debug knob) */
+    cJSON *cap = cJSON_GetObjectItem(req_json, "cap_mils");
+    if (cJSON_IsNumber(cap)) {
+        uint32_t v = (uint32_t)cap->valuedouble;
+        if (tab5_budget_set_cap_mils(v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("cap_mils"));
+        }
+    }
+    cJSON *reset = cJSON_GetObjectItem(req_json, "reset_spent");
+    if (cJSON_IsBool(reset) && cJSON_IsTrue(reset)) {
+        /* Zero today's spend by resetting the day marker -- the next
+         * accumulate() will see stored_day != today and wipe. */
+        extern esp_err_t nvs_flash_init(void);
+        /* Direct-write via the bounded API by briefly reparenting into
+         * settings.c's helpers is overkill; instead we rely on the
+         * accumulate path's rollover logic: bumping cap + zero-arg
+         * accumulate(0) would no-op. The cleanest path is to call the
+         * setter that already exists.  Here we just re-apply cap which
+         * implicitly keeps spent untouched; true reset is a future
+         * helper. For now, a practical workaround: set cap to a value
+         * greater than current spent so the next receipt re-evaluates. */
+        cJSON_AddItemToArray(updated, cJSON_CreateString("reset_spent_noop"));
+    }
     if (any_tier) {
         /* Resolve the new tier triple and persist the derived voice_mode +
          * llm_model. Leaves llm_model untouched when resolver doesn't pick

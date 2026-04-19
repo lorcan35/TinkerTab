@@ -622,12 +622,40 @@ static void handle_text_message(const char *data, int len)
          * task so the LVGL thread won't block. */
         if (m > 0) {
             tab5_budget_accumulate((uint32_t)m);
+            uint32_t spent = tab5_budget_get_today_mils();
+            uint32_t cap   = tab5_budget_get_cap_mils();
             ESP_LOGI(TAG, "Budget: today=%lu mils / cap=%lu mils",
-                     (unsigned long)tab5_budget_get_today_mils(),
-                     (unsigned long)tab5_budget_get_cap_mils());
+                     (unsigned long)spent, (unsigned long)cap);
             /* Nudge home to redraw its live-line spend readout. */
             extern void ui_home_update_status(void);
             lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+
+            /* Phase 3e auto-downgrade: once spent >= cap AND we're in a
+             * cloud-cost-bearing mode (1=Hybrid or 2=Full Cloud), flip
+             * back to Local (voice_mode=0) + notify Dragon + surface a
+             * toast so the user knows why their next turn is free.
+             * Agent (mode 3) goes via TinkerClaw which has its own
+             * billing -- we don't auto-change it here. */
+            if (cap > 0 && spent >= cap) {
+                uint8_t cur = tab5_settings_get_voice_mode();
+                if (cur == 1 || cur == 2) {
+                    ESP_LOGW(TAG, "Budget cap reached -- auto-downgrading %d -> 0 (Local)", cur);
+                    tab5_settings_set_voice_mode(0);
+                    /* Clear llm_model override so Dragon reverts to local.
+                     * Leaving the NVS llm_model alone keeps the user's
+                     * cloud preference for when they raise the cap. */
+                    char lm[64] = {0};
+                    tab5_settings_get_llm_model(lm, sizeof(lm));
+                    voice_send_config_update(0, lm);
+                    /* Also reset the three Sovereign tiers so the mode
+                     * sheet visually reflects the downgrade. */
+                    tab5_settings_set_int_tier(0);
+                    tab5_settings_set_voi_tier(0);
+                    extern void ui_home_show_toast(const char *text);
+                    lv_async_call((lv_async_cb_t)ui_home_show_toast,
+                                  (void *)"Budget cap hit — Local mode");
+                }
+            }
         }
         /* Phase 3d: attach the receipt to the most-recent assistant bubble
          * in the chat store so chat_msg_view can render a per-turn stamp.
