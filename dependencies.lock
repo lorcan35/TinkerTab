@@ -96,6 +96,16 @@ dependencies:
       path: /home/rebelforce/projects/TinkerTab/components/espressif__esp_serial_slave_link
       type: local
     version: 1.1.2
+  espressif/esp_websocket_client:
+    component_hash: c5a067a9fddea370c478017e66fac302f4b79c3d4027e9bdd42a019786cceb92
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.6.1
   espressif/esp_wifi_remote:
     dependencies: []
     source:
@@ -129,10 +139,11 @@ direct_dependencies:
 - espressif/esp_lcd_touch
 - espressif/esp_lcd_touch_st7123
 - espressif/esp_serial_slave_link
+- espressif/esp_websocket_client
 - espressif/esp_wifi_remote
 - espressif/mdns
 - idf
 - lvgl/lvgl
-manifest_hash: 2d128d26ea600c0f40c1f94e0898ba86deebbf5d5d27036aeb70d3d1ec12fbad
+manifest_hash: 9ce38a42a45426666b942468b3f4074c7697053a1d155d0cc0fc99958edd34cd
 target: esp32p4
 version: 2.0.0
