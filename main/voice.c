@@ -657,11 +657,12 @@ static void handle_text_message(const char *data, int len)
                 }
             }
         }
-        /* Phase 3d: attach the receipt to the most-recent assistant bubble
-         * in the chat store so chat_msg_view can render a per-turn stamp.
-         * Falls through silently if the chat isn't open / has no assistant
-         * bubble yet (e.g. first text response before the view rendered). */
-        if (m > 0 && model && model[0]) {
+        /* Phase 3d + 4a: attach the receipt to the most-recent assistant
+         * bubble in the chat store so chat_msg_view can render a per-turn
+         * stamp.  Attach regardless of cost_mils so LOCAL turns (Ollama
+         * qwen3, cost=0) also get a "qwen3 · FREE" stamp -- engine-used
+         * transparency on every bubble, not just billable ones. */
+        if (model && model[0]) {
             /* Condense the model ID into something that fits the bubble
              * subtitle ("anthropic/claude-3.5-haiku" -> "haiku-3.5"). */
             char short_model[16] = {0};
