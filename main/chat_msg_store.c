@@ -151,6 +151,16 @@ int chat_store_attach_receipt_to_last_ai(uint32_t mils,
                                          uint16_t completion_tok,
                                          const char *model_short)
 {
+    return chat_store_attach_receipt_ex(mils, prompt_tok, completion_tok,
+                                         model_short, false);
+}
+
+int chat_store_attach_receipt_ex(uint32_t mils,
+                                 uint16_t prompt_tok,
+                                 uint16_t completion_tok,
+                                 const char *model_short,
+                                 bool retried)
+{
     /* Scan newest -> oldest looking for the first assistant-role bubble. */
     for (int i = s_count - 1; i >= 0; i--) {
         chat_msg_t *m = chat_store_get_mut(i);
@@ -160,6 +170,7 @@ int chat_store_attach_receipt_to_last_ai(uint32_t mils,
         m->receipt_mils = mils;
         m->receipt_ptok = prompt_tok;
         m->receipt_ctok = completion_tok;
+        m->receipt_retried = retried;
         copy_str(m->receipt_model_short, sizeof(m->receipt_model_short),
                  model_short ? model_short : "");
         /* Bubble gets a new subtitle line, so invalidate cached height. */

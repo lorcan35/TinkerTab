@@ -303,22 +303,23 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
                       msg->timestamp ? msg->timestamp : 0,
                       msg->is_user);
         if (!msg->is_user && msg->receipt_model_short[0]) {
-            /* Phase 3d: append " · MODEL · $X.XXX" (cloud) or " · MODEL ·
-             * FREE" (local, cost_mils==0).  Showing a stamp on FREE turns
-             * too keeps the engine-used transparent on every assistant
-             * bubble regardless of mode, not just billable ones. */
+            /* Phase 3d + 4a: stamp + optional Gauntlet G2 retry marker.
+             *   cloud turn  : " · MODEL · $X.XXX"
+             *   local turn  : " · MODEL · FREE"
+             *   +retried    : prepend " · RETRIED" to either */
             size_t cur = strlen(ts);
+            const char *retry_tag = msg->receipt_retried ? " \xc2\xb7 RETRIED" : "";
             if (msg->receipt_mils > 0) {
                 int dollars     = (int)(msg->receipt_mils / 100000);
                 int thousandths = (int)((msg->receipt_mils / 100) % 1000);
                 snprintf(ts + cur, sizeof(ts) - cur,
-                         " \xc2\xb7 %s \xc2\xb7 $%d.%03d",
+                         " \xc2\xb7 %s \xc2\xb7 $%d.%03d%s",
                          msg->receipt_model_short,
-                         dollars, thousandths);
+                         dollars, thousandths, retry_tag);
             } else {
                 snprintf(ts + cur, sizeof(ts) - cur,
-                         " \xc2\xb7 %s \xc2\xb7 FREE",
-                         msg->receipt_model_short);
+                         " \xc2\xb7 %s \xc2\xb7 FREE%s",
+                         msg->receipt_model_short, retry_tag);
             }
         }
         lv_label_set_text(slot->ts, ts);

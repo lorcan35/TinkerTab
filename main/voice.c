@@ -667,6 +667,8 @@ static void handle_text_message(const char *data, int len)
          * stamp.  Attach regardless of cost_mils so LOCAL turns (Ollama
          * qwen3, cost=0) also get a "qwen3 · FREE" stamp -- engine-used
          * transparency on every bubble, not just billable ones. */
+        cJSON *retried_j = cJSON_GetObjectItem(root, "retried");
+        bool retried = cJSON_IsTrue(retried_j);
         if (model && model[0]) {
             /* Condense the model ID into something that fits the bubble
              * subtitle ("anthropic/claude-3.5-haiku" -> "haiku-3.5"). */
@@ -676,10 +678,10 @@ static void handle_text_message(const char *data, int len)
             const char *hyphen = strchr(tail, '-');  /* skip vendor prefix "claude-" */
             const char *start = hyphen ? hyphen + 1 : tail;
             snprintf(short_model, sizeof(short_model), "%s", start);
-            extern int chat_store_attach_receipt_to_last_ai(
-                uint32_t, uint16_t, uint16_t, const char *);
-            chat_store_attach_receipt_to_last_ai(
-                (uint32_t)m, (uint16_t)pt, (uint16_t)ct, short_model);
+            extern int chat_store_attach_receipt_ex(
+                uint32_t, uint16_t, uint16_t, const char *, bool);
+            chat_store_attach_receipt_ex(
+                (uint32_t)m, (uint16_t)pt, (uint16_t)ct, short_model, retried);
             /* Visible refresh lands on the next natural redraw (scroll or
              * new message arrival).  Adding a dedicated force-redraw hook
              * is deferred so this commit keeps a small surface. */

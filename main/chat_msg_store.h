@@ -57,6 +57,7 @@ typedef struct {
     uint16_t   receipt_ptok;
     uint16_t   receipt_ctok;
     char       receipt_model_short[16];  /* "haiku-3.5", "sonnet-3.5", etc */
+    bool       receipt_retried;          /* v4·D Gauntlet G2: context-trim or 429 retry */
 } chat_msg_t;
 
 /* ── API ─────────────────────────────────────────────────────── */
@@ -104,6 +105,15 @@ int  chat_store_attach_receipt_to_last_ai(uint32_t mils,
                                           uint16_t prompt_tok,
                                           uint16_t completion_tok,
                                           const char *model_short);
+
+/** Gauntlet G2 — extended form with retry flag so the bubble can
+ *  stamp a "RETRIED" chip when Dragon fell into a 429 or context-trim
+ *  retry mid-turn. */
+int  chat_store_attach_receipt_ex(uint32_t mils,
+                                  uint16_t prompt_tok,
+                                  uint16_t completion_tok,
+                                  const char *model_short,
+                                  bool retried);
 
 /** Remove the last message (used to drop ephemeral system placeholders). */
 bool chat_store_pop_last(void);
