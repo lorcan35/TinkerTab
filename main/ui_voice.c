@@ -1011,9 +1011,27 @@ static void show_state_listening(void)
     start_breathe_anim();
 }
 
+/* v4·D Gauntlet G1: render the "+N QUEUED" badge on the sub-caption slot
+ * whenever voice.c has a pending text stashed.  Kept in one helper so
+ * PROCESSING and SPEAKING both re-evaluate without duplicating code. */
+static void render_queue_badge(void)
+{
+    if (!s_lbl_sub) return;
+    int depth = voice_get_queue_depth();
+    if (depth > 0) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "+%d QUEUED", depth);
+        lv_label_set_text(s_lbl_sub, buf);
+        lv_obj_set_style_text_color(s_lbl_sub, lv_color_hex(0xA78BFA), 0);
+        lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void show_state_processing(const char *detail)
 {
-    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    render_queue_badge();
     /* Note: this is called repeatedly as LLM tokens arrive.
      * detail = STT text (first call), then LLM text (subsequent calls).
      * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */
@@ -1110,7 +1128,8 @@ static void show_state_speaking(void)
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
-    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    /* G1: queue badge keeps rendering through SPEAKING too. */
+    render_queue_badge();
 
     /* Orb: green, slightly larger */
     set_orb_color(VO_GREEN, VO_GREEN, LV_OPA_50);

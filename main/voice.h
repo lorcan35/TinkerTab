@@ -94,6 +94,11 @@ esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
                                       const char *reason);
 
+/** v4·D Gauntlet G1: depth of the queued-turn buffer (0 or 1 today).
+ *  Used by the voice overlay to render "+N QUEUED" while a previous turn
+ *  is still processing/speaking. */
+int voice_get_queue_depth(void);
+
 /** Widget Platform v1 — emit a widget_action event back to Dragon.
  *  payload_json (optional) is parsed as JSON and attached as the "payload"
  *  field. Rate-limited at 4 events/sec.

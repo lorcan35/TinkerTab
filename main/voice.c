@@ -165,6 +165,12 @@ static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
 static char s_stt_text[MAX_TRANSCRIPT_LEN]   = {0};
 static char s_llm_text[MAX_TRANSCRIPT_LEN]   = {0};
 
+/* v4·D Gauntlet G1: single-slot queued-turn buffer.  When voice_send_text
+ * is invoked while the pipeline is busy, the new text is stashed here
+ * instead of rejected.  It drains on the next transition back to READY. */
+static char s_queued_text[MAX_TRANSCRIPT_LEN] = {0};
+static bool s_queue_pending = false;
+
 /* v4·D Phase 3b: cached per-turn receipt from Dragon. */
 static int  s_last_receipt_mils       = 0;
 static int  s_last_receipt_prompt_tok = 0;
@@ -242,6 +248,27 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
          * lv_async_call(), lock-free and thread-safe. */
         extern void ui_home_refresh_sys_label(void);
         ui_home_refresh_sys_label();
+    }
+
+    /* v4·D Gauntlet G1: drain the queued turn on transition to READY.
+     * We avoid re-entering voice_send_text from voice_set_state (which
+     * itself takes the UI lock above) so the drain runs on the next event
+     * loop iteration via the WS tx task, not inline here.  Signal by
+     * leaving s_queue_pending=true and letting the caller poll. */
+    if (new_state == VOICE_STATE_READY && s_queue_pending) {
+        char pending[MAX_TRANSCRIPT_LEN];
+        if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+        strncpy(pending, s_queued_text, sizeof(pending) - 1);
+        pending[sizeof(pending) - 1] = '\0';
+        s_queued_text[0] = '\0';
+        s_queue_pending = false;
+        if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+        if (pending[0]) {
+            ESP_LOGI(TAG, "G1 drain: sending queued text -> '%s'", pending);
+            /* Fire-and-forget; if this itself requeues (racy state) we
+             * drop it rather than recurse. */
+            voice_send_text(pending);
+        }
     }
 }
 
@@ -1971,8 +1998,25 @@ esp_err_t voice_send_text(const char *text)
         voice_cancel();
     }
     if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
-        ESP_LOGW(TAG, "voice_send_text: rejected — voice pipeline active (state=%d)", s_state);
-        return ESP_ERR_INVALID_STATE;
+        /* v4·D Gauntlet G1: queue the text instead of rejecting, so the
+         * user can stack up a follow-up while the current turn is still
+         * playing.  Single-slot queue -- a 2nd stash overwrites the 1st;
+         * the voice overlay surfaces the queue depth as "+1 QUEUED". */
+        if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+        strncpy(s_queued_text, text, MAX_TRANSCRIPT_LEN - 1);
+        s_queued_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+        s_queue_pending = true;
+        if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+        ESP_LOGI(TAG, "voice_send_text: queued (pipeline busy state=%d): %s",
+                 s_state, text);
+        /* Poke the voice overlay caption so the badge updates immediately. */
+        if (s_state_cb) {
+            if (tab5_ui_try_lock(100)) {
+                s_state_cb(s_state, NULL);   /* re-render current state */
+                tab5_ui_unlock();
+            }
+        }
+        return ESP_OK;
     }
 
     cJSON *msg = cJSON_CreateObject();
@@ -2076,6 +2120,14 @@ esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
 float voice_get_current_rms(void)
 {
     return s_current_rms;
+}
+
+/* v4·D Gauntlet G1: expose queue depth so the voice overlay can render
+ * a "+N QUEUED" badge while the current turn is busy.  Single-slot
+ * queue for now, so return value is 0 or 1. */
+int voice_get_queue_depth(void)
+{
+    return s_queue_pending ? 1 : 0;
 }
 
 bool voice_get_vision_capability(char *model_out, size_t model_len,
