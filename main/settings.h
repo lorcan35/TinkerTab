@@ -56,6 +56,15 @@ esp_err_t tab5_settings_set_aut_tier(uint8_t t);
 uint8_t   tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
                             char *out_model, size_t model_len);
 
+/* v4·D Phase 3c daily cloud-spend accumulator.
+ * All values in mils (1/1000 USD cent).  Divide by 1000 for cents,
+ * 100000 for dollars.  Day rollover is automatic on read/write when the
+ * RTC shows a new days-since-epoch value. */
+uint32_t  tab5_budget_get_today_mils(void);
+uint32_t  tab5_budget_get_cap_mils(void);
+esp_err_t tab5_budget_set_cap_mils(uint32_t cap_mils);
+esp_err_t tab5_budget_accumulate(uint32_t mils);
+
 /* ── Display ──────────────────────────────────────────────────────────── */
 
 /** Returns 0-100 (default 80). */

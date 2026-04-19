@@ -797,6 +797,15 @@ void ui_home_update_status(void)
          * single short word on the left so the lede has room to breathe. */
         const char *kicker = "READY";
         const char *lede;
+        /* Phase 3c: if the user has spent real cloud money today, show a
+         * running total in place of the generic "tap to ask" line.  Buffer
+         * lives in static storage so the pointer remains valid after
+         * ui_home_update_status returns (LVGL keeps a reference until the
+         * next label_set_text). */
+        static char s_budget_lede[96];
+        uint32_t spent_mils = tab5_budget_get_today_mils();
+        uint32_t cap_mils   = tab5_budget_get_cap_mils();
+        bool show_budget    = (state == ST_NORMAL && spent_mils > 0);
         switch (state) {
             case ST_NO_WIFI:
                 lede = "Can't reach the network.\nTap the sys label to scan.";
@@ -811,7 +820,24 @@ void ui_home_update_status(void)
                 lede = "Quiet hours.\nI won't speak until 07:00.";
                 break;
             default:
-                lede = "Tap the orb to ask something.";
+                if (show_budget) {
+                    int spent_cent = (int)((spent_mils + 500) / 1000);
+                    int cap_cent   = (int)((cap_mils   + 500) / 1000);
+                    int spent_d = spent_cent / 100;
+                    int spent_c = spent_cent % 100;
+                    int cap_d   = cap_cent   / 100;
+                    int cap_c   = cap_cent   % 100;
+                    snprintf(s_budget_lede, sizeof(s_budget_lede),
+                             "Today  $%d.%02d  of  $%d.%02d",
+                             spent_d, spent_c, cap_d, cap_c);
+                    lede = s_budget_lede;
+                    /* When we switch to showing money, the kicker reads
+                     * "TODAY" instead of the generic "READY" to match the
+                     * Sovereign spec M3 budget widget. */
+                    kicker = "TODAY";
+                } else {
+                    lede = "Tap the orb to ask something.";
+                }
                 break;
         }
         if (s_now_kicker) {

@@ -18,6 +18,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 static const char *TAG = "settings";
 
@@ -184,6 +185,33 @@ static esp_err_t set_u16(const char *key, uint16_t val)
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u16(%s) failed: %s", key, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static uint32_t get_u32(const char *key, uint32_t def)
+{
+    if (!s_inited) return def;
+    uint32_t val = def;
+    esp_err_t err = nvs_get_u32(s_nvs, key, &val);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGD(TAG, "'%s' not in NVS, using default %lu", key, (unsigned long)def);
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_get_u32(%s): %s, using default", key, esp_err_to_name(err));
+    }
+    return val;
+}
+
+static esp_err_t set_u32(const char *key, uint32_t val)
+{
+    if (!s_inited) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = nvs_set_u32(s_nvs, key, val);
+    if (err == ESP_OK) {
+        err = nvs_commit(s_nvs);
+        if (err == ESP_OK) s_nvs_write_count++;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_u32(%s) failed: %s", key, esp_err_to_name(err));
     }
     return err;
 }
@@ -368,6 +396,65 @@ uint8_t tab5_settings_get_aut_tier(void)  { return get_u8("aut_tier", 0); }  /* 
 esp_err_t tab5_settings_set_int_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("int_tier", t); }
 esp_err_t tab5_settings_set_voi_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("voi_tier", t); }
 esp_err_t tab5_settings_set_aut_tier(uint8_t t) { if (t > 1) t = 0; return set_u8("aut_tier", t); }
+
+/* ── v4·D Phase 3c daily cloud spend accumulator ────────────────────── */
+
+/* NVS keys are u32:
+ *   "spent_mils"  — cumulative cost for today in mils (1/1000 USD cent)
+ *   "spent_day"   — days-since-epoch when spent_mils was last written
+ *   "cap_mils"    — per-day spending cap (default 100000 = 100 cents = $1.00)
+ *
+ * Using mils (not cents) keeps a whole day's spend precise even for very
+ * small Haiku turns (~0.3 cents each).  Max u32 = 4.29e9 mils = $42,949
+ * which is way more headroom than needed. */
+
+static uint32_t days_since_epoch(void)
+{
+    time_t now = 0;
+    time(&now);
+    if (now <= 0) return 0;
+    return (uint32_t)(now / 86400);
+}
+
+static void roll_if_new_day(void)
+{
+    uint32_t today = days_since_epoch();
+    if (today == 0) return;  /* RTC not yet synced -- don't stomp state */
+    uint32_t stored_day = get_u32("spent_day", 0);
+    if (stored_day != today) {
+        /* Fresh day: zero the accumulator. */
+        set_u32("spent_mils", 0);
+        set_u32("spent_day", today);
+    }
+}
+
+uint32_t tab5_budget_get_today_mils(void)
+{
+    roll_if_new_day();
+    return get_u32("spent_mils", 0);
+}
+
+uint32_t tab5_budget_get_cap_mils(void)
+{
+    return get_u32("cap_mils", 100000);  /* default $1.00/day cap */
+}
+
+esp_err_t tab5_budget_set_cap_mils(uint32_t cap_mils)
+{
+    return set_u32("cap_mils", cap_mils);
+}
+
+esp_err_t tab5_budget_accumulate(uint32_t mils)
+{
+    if (mils == 0) return ESP_OK;
+    roll_if_new_day();
+    uint32_t cur = get_u32("spent_mils", 0);
+    /* Saturate at u32 max — won't happen in practice but don't wrap. */
+    uint32_t next = (cur > 0xFFFFFFFFu - mils) ? 0xFFFFFFFFu : cur + mils;
+    return set_u32("spent_mils", next);
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
 
 uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
                           char *out_model, size_t model_len)

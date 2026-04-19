@@ -617,6 +617,18 @@ static void handle_text_message(const char *data, int len)
         s_last_receipt_compl_tok  = ct;
         snprintf(s_last_receipt_model, sizeof(s_last_receipt_model),
                  "%s", model ? model : "");
+        /* Phase 3c: accumulate into the daily spend counter. NVS write is
+         * serialised by the settings mutex; this runs in the voice WS rx
+         * task so the LVGL thread won't block. */
+        if (m > 0) {
+            tab5_budget_accumulate((uint32_t)m);
+            ESP_LOGI(TAG, "Budget: today=%lu mils / cap=%lu mils",
+                     (unsigned long)tab5_budget_get_today_mils(),
+                     (unsigned long)tab5_budget_get_cap_mils());
+            /* Nudge home to redraw its live-line spend readout. */
+            extern void ui_home_update_status(void);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+        }
     } else if (strcmp(type_str, "text_update") == 0) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
         if (text) {
