@@ -165,6 +165,12 @@ static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
 static char s_stt_text[MAX_TRANSCRIPT_LEN]   = {0};
 static char s_llm_text[MAX_TRANSCRIPT_LEN]   = {0};
 
+/* v4·D Phase 3b: cached per-turn receipt from Dragon. */
+static int  s_last_receipt_mils       = 0;
+static int  s_last_receipt_prompt_tok = 0;
+static int  s_last_receipt_compl_tok  = 0;
+static char s_last_receipt_model[64]  = {0};
+
 // Dictation mode
 static voice_mode_t   s_voice_mode        = VOICE_MODE_ASK;
 static char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
@@ -589,6 +595,28 @@ static void handle_text_message(const char *data, int len)
         if (s_llm_text[0]) {
             ui_chat_push_message("assistant", s_llm_text);
         }
+    } else if (strcmp(type_str, "receipt") == 0) {
+        /* v4·D Phase 3b: Dragon emits a receipt after each LLM turn on
+         * the cloud path.  Logged here for now; rendering the stamp
+         * beneath the chat bubble is a follow-up that lives in
+         * chat_msg_view.c when the store grows a receipt field.  Cost
+         * is in mils (1/1000 USD cent) so divide by 100000 for dollars
+         * or 1000 for cents. */
+        const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(root, "model"));
+        cJSON *ptok = cJSON_GetObjectItem(root, "prompt_tokens");
+        cJSON *ctok = cJSON_GetObjectItem(root, "completion_tokens");
+        cJSON *mils = cJSON_GetObjectItem(root, "cost_mils");
+        int pt = cJSON_IsNumber(ptok) ? (int)ptok->valuedouble : 0;
+        int ct = cJSON_IsNumber(ctok) ? (int)ctok->valuedouble : 0;
+        int m  = cJSON_IsNumber(mils) ? (int)mils->valuedouble : 0;
+        ESP_LOGI(TAG, "Receipt: model=%s tok=%d+%d cost=%d mils ($%d.%05d)",
+                 model ? model : "?", pt, ct, m, m / 100000, m % 100000);
+        /* Cache for UI consumption. Accessed via voice_get_last_receipt(). */
+        s_last_receipt_mils       = m;
+        s_last_receipt_prompt_tok = pt;
+        s_last_receipt_compl_tok  = ct;
+        snprintf(s_last_receipt_model, sizeof(s_last_receipt_model),
+                 "%s", model ? model : "");
     } else if (strcmp(type_str, "text_update") == 0) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
         if (text) {
