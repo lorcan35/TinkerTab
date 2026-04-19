@@ -486,6 +486,25 @@ void ui_chat_destroy(void)
 
 bool ui_chat_is_active(void) { return s_active; }
 
+/* v4·D Phase 4d async refresh: called from the WS rx task after a receipt
+ * is attached to the last assistant bubble.  Hops to the LVGL thread via
+ * lv_async_call so the paint happens under the lock. */
+static void async_refresh_receipts_cb(void *arg)
+{
+    (void)arg;
+    if (s_view) {
+        chat_msg_view_refresh(s_view);
+    }
+}
+
+void ui_chat_refresh_receipts(void)
+{
+    /* Safe to queue even if the chat view is hidden -- refresh is a no-op
+     * when s_view is NULL and will simply repaint the existing bubbles
+     * when it's mounted. */
+    lv_async_call(async_refresh_receipts_cb, NULL);
+}
+
 /* Optional helper — legacy API kept for voice.c compatibility. */
 void ui_chat_add_message(const char *text, bool is_user)
 {

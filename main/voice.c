@@ -685,9 +685,11 @@ static void handle_text_message(const char *data, int len)
                 uint32_t, uint16_t, uint16_t, const char *, bool);
             chat_store_attach_receipt_ex(
                 (uint32_t)m, (uint16_t)pt, (uint16_t)ct, short_model, retried);
-            /* Visible refresh lands on the next natural redraw (scroll or
-             * new message arrival).  Adding a dedicated force-redraw hook
-             * is deferred so this commit keeps a small surface. */
+            /* v4·D Phase 4d: force a msg-view refresh so the receipt
+             * stamp paints on the CURRENT turn's bubble, not the next
+             * one.  Thread-safe -- hops to the LVGL thread internally. */
+            extern void ui_chat_refresh_receipts(void);
+            ui_chat_refresh_receipts();
         }
     } else if (strcmp(type_str, "text_update") == 0) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));

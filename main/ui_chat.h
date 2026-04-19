@@ -34,3 +34,11 @@ void ui_chat_push_audio_clip(const char *url, float duration_s, const char *labe
  * @param text  Cleaned text to display (will be strdup'd)
  */
 void ui_chat_update_last_message(const char *text);
+
+/**
+ * v4·D Phase 4d: force a msg-view refresh so a receipt attached to the
+ * chat store (via chat_store_attach_receipt_ex) lands on the current
+ * turn's bubble instead of the next-natural-redraw.  Thread-safe; no-op
+ * if the view is not mounted.
+ */
+void ui_chat_refresh_receipts(void);
