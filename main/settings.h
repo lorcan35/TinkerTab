@@ -35,6 +35,27 @@ esp_err_t tab5_settings_set_dragon_host(const char *host);
 uint16_t  tab5_settings_get_dragon_port(void);
 esp_err_t tab5_settings_set_dragon_port(uint16_t port);
 
+/* ── v4·D Sovereign Halo mode dials ──────────────────────────────────── */
+/* Three orthogonal dials that replace the 4-mode pill.  Tab5 resolves the
+ * triple into the legacy (voice_mode, llm_model) pair Dragon expects.
+ * Defaults: 0 / 0 / 0 (fast + local + ask = free tier).
+ *   Intelligence (int_tier): 0=fast   1=balanced 2=smart
+ *   Voice       (voi_tier) : 0=local  1=neutral  2=studio
+ *   Autonomy    (aut_tier) : 0=ask    1=agent                           */
+uint8_t   tab5_settings_get_int_tier(void);
+uint8_t   tab5_settings_get_voi_tier(void);
+uint8_t   tab5_settings_get_aut_tier(void);
+esp_err_t tab5_settings_set_int_tier(uint8_t t);
+esp_err_t tab5_settings_set_voi_tier(uint8_t t);
+esp_err_t tab5_settings_set_aut_tier(uint8_t t);
+
+/* Resolve (int, voi, aut) -> voice_mode. When out_model is non-NULL and
+ * the resolver picks a specific cloud LLM, writes the OpenRouter model
+ * id into it (e.g. "anthropic/claude-sonnet-4-20250514"). Otherwise
+ * out_model is left untouched. */
+uint8_t   tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
+                            char *out_model, size_t model_len);
+
 /* ── Display ──────────────────────────────────────────────────────────── */
 
 /** Returns 0-100 (default 80). */

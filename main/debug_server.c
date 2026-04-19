@@ -1120,6 +1120,55 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
         }
     }
 
+    /* v4·D Sovereign Halo mode dials — accept tiers and auto-resolve into
+     * voice_mode + llm_model. Calling /voice/reconnect after a tier
+     * change is optional but recommended -- Dragon picks up the new mode
+     * on the next config_update that follows. */
+    bool any_tier = false;
+    cJSON *it = cJSON_GetObjectItem(req_json, "int_tier");
+    if (cJSON_IsNumber(it)) {
+        int t = (int)it->valuedouble;
+        if (t >= 0 && t <= 2 && tab5_settings_set_int_tier((uint8_t)t) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("int_tier"));
+            any_tier = true;
+        }
+    }
+    cJSON *vt = cJSON_GetObjectItem(req_json, "voi_tier");
+    if (cJSON_IsNumber(vt)) {
+        int t = (int)vt->valuedouble;
+        if (t >= 0 && t <= 2 && tab5_settings_set_voi_tier((uint8_t)t) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("voi_tier"));
+            any_tier = true;
+        }
+    }
+    cJSON *at = cJSON_GetObjectItem(req_json, "aut_tier");
+    if (cJSON_IsNumber(at)) {
+        int t = (int)at->valuedouble;
+        if (t >= 0 && t <= 1 && tab5_settings_set_aut_tier((uint8_t)t) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("aut_tier"));
+            any_tier = true;
+        }
+    }
+    if (any_tier) {
+        /* Resolve the new tier triple and persist the derived voice_mode +
+         * llm_model. Leaves llm_model untouched when resolver doesn't pick
+         * a specific cloud model (ie Local, Hybrid, TinkerClaw modes). */
+        char model_out[64] = {0};
+        uint8_t new_mode = tab5_mode_resolve(
+            tab5_settings_get_int_tier(),
+            tab5_settings_get_voi_tier(),
+            tab5_settings_get_aut_tier(),
+            model_out, sizeof(model_out));
+        tab5_settings_set_voice_mode(new_mode);
+        cJSON_AddItemToArray(updated, cJSON_CreateString("voice_mode"));
+        cJSON_AddNumberToObject(resp, "resolved_voice_mode", new_mode);
+        if (model_out[0]) {
+            tab5_settings_set_llm_model(model_out);
+            cJSON_AddItemToArray(updated, cJSON_CreateString("llm_model"));
+            cJSON_AddStringToObject(resp, "resolved_llm_model", model_out);
+        }
+    }
+
     cJSON_AddItemToObject(resp, "updated", updated);
     char *out = cJSON_PrintUnformatted(resp);
     cJSON_Delete(resp);

@@ -355,6 +355,50 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode)
     return set_u8("conn_m", mode);
 }
 
+/* ── v4·D Sovereign Halo mode dials ─────────────────────────────────── */
+
+/* Three orthogonal dials replace the 4-mode pill. Tab5-side resolver
+ * turns tiers into the legacy voice_mode + llm_model that Dragon expects,
+ * so no backend protocol change is needed for the initial UX ship. */
+
+uint8_t tab5_settings_get_int_tier(void)  { return get_u8("int_tier", 0); }  /* 0=fast 1=balanced 2=smart */
+uint8_t tab5_settings_get_voi_tier(void)  { return get_u8("voi_tier", 0); }  /* 0=local 1=neutral 2=studio */
+uint8_t tab5_settings_get_aut_tier(void)  { return get_u8("aut_tier", 0); }  /* 0=ask 1=agent */
+
+esp_err_t tab5_settings_set_int_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("int_tier", t); }
+esp_err_t tab5_settings_set_voi_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("voi_tier", t); }
+esp_err_t tab5_settings_set_aut_tier(uint8_t t) { if (t > 1) t = 0; return set_u8("aut_tier", t); }
+
+uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
+                          char *out_model, size_t model_len)
+{
+    /* Autonomy wins: agent always routes via TinkerClaw gateway, regardless
+     * of the other two dials. out_model is left untouched -- the gateway
+     * picks its own model. */
+    if (aut_tier >= 1) {
+        return 3; /* VOICE_MODE_TINKERCLAW */
+    }
+
+    bool cloud_audio = (voi_tier >= 2);  /* studio only */
+    bool cloud_llm   = (int_tier >= 2);  /* smart only */
+
+    if (cloud_audio && cloud_llm) {
+        if (out_model && model_len > 0) {
+            snprintf(out_model, model_len, "anthropic/claude-sonnet-4-20250514");
+        }
+        return 2; /* Full Cloud */
+    }
+    if (cloud_audio || cloud_llm) {
+        /* Hybrid covers "cloud voice + local brain" cleanly. The "local voice
+         * + cloud brain" combo doesn't have a clean legacy mapping -- we
+         * route it here too so the user still gets cloud STT for accuracy;
+         * the resolver caller may later override llm_model if they want a
+         * specific cloud model despite being mid-tier overall. */
+        return 1; /* Hybrid */
+    }
+    return 0; /* Local */
+}
+
 /* ── Device identity ─────────────────────────────────────────────────── */
 
 esp_err_t tab5_settings_get_device_id(char *buf, size_t len)
