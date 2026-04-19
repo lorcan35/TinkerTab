@@ -1433,6 +1433,19 @@ static esp_err_t widget_handler(httpd_req_t *req)
         }
         w.items_count = (uint8_t)cnt;
     }
+    /* v4·D Phase 4f: optional "values" + "max" fields for widget_chart. */
+    cJSON *vals = cJSON_GetObjectItem(root, "values");
+    if (cJSON_IsArray(vals)) {
+        int cnt = cJSON_GetArraySize(vals);
+        if (cnt > WIDGET_CHART_MAX_POINTS) cnt = WIDGET_CHART_MAX_POINTS;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *v = cJSON_GetArrayItem(vals, i);
+            w.chart_values[i] = cJSON_IsNumber(v) ? (float)v->valuedouble : 0.0f;
+        }
+        w.chart_count = (uint8_t)cnt;
+    }
+    cJSON *mx = cJSON_GetObjectItem(root, "max");
+    w.chart_max = cJSON_IsNumber(mx) ? (float)mx->valuedouble : 0.0f;
     widget_store_upsert(&w);
     cJSON_Delete(root);
     lv_async_call(async_widget_refresh, NULL);

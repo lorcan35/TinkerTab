@@ -946,6 +946,49 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "widget_list upsert: %s/%s items=%u",
                      w.skill_id, cid, w.items_count);
         }
+    } else if (strcmp(type_str, "widget_chart") == 0) {
+        /* v4·D Phase 4f: mini bar chart widget.  Same upsert shape as
+         * widget_list; "values" array carries up to 12 floats, optional
+         * "max" bound for normalization, optional "body" for a summary
+         * line below the bars. */
+        extern widget_t *widget_store_upsert(const widget_t *in);
+        extern widget_tone_t widget_tone_from_str(const char *s);
+        extern void ui_home_update_status(void);
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (!cid) {
+            ESP_LOGW(TAG, "widget_chart missing card_id");
+        } else {
+            widget_t w = {0};
+            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
+            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
+            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+            w.tone = widget_tone_from_str(tone_s);
+            cJSON *pri = cJSON_GetObjectItem(root, "priority");
+            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
+            cJSON *mx = cJSON_GetObjectItem(root, "max");
+            w.chart_max = cJSON_IsNumber(mx) ? (float)mx->valuedouble : 0.0f;
+            cJSON *vals = cJSON_GetObjectItem(root, "values");
+            if (cJSON_IsArray(vals)) {
+                int cnt = cJSON_GetArraySize(vals);
+                if (cnt > WIDGET_CHART_MAX_POINTS) cnt = WIDGET_CHART_MAX_POINTS;
+                for (int i = 0; i < cnt; i++) {
+                    cJSON *v = cJSON_GetArrayItem(vals, i);
+                    w.chart_values[i] = cJSON_IsNumber(v)
+                                        ? (float)v->valuedouble : 0.0f;
+                }
+                w.chart_count = (uint8_t)cnt;
+            }
+            w.type = WIDGET_TYPE_CHART;
+            widget_store_upsert(&w);
+            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            ESP_LOGI(TAG, "widget_chart upsert: %s/%s pts=%u max=%.2f",
+                     w.skill_id, cid, w.chart_count, w.chart_max);
+        }
     } else if (strcmp(type_str, "widget_live_dismiss") == 0 ||
                strcmp(type_str, "widget_dismiss") == 0) {
         extern void widget_store_dismiss(const char *card_id);

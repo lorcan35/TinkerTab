@@ -128,6 +128,12 @@ widget_t *widget_store_upsert(const widget_t *in)
      * path can iterate safely.  Non-list widgets carry items_count=0. */
     memcpy(slot->items, in->items, sizeof(slot->items));
     slot->items_count = in->items_count;
+
+    /* v4·D Phase 4f: copy widget_chart payload.  Same zero-safe
+     * semantics -- non-chart widgets carry chart_count=0. */
+    memcpy(slot->chart_values, in->chart_values, sizeof(slot->chart_values));
+    slot->chart_max   = in->chart_max;
+    slot->chart_count = in->chart_count;
     return slot;
 }
 
@@ -185,7 +191,9 @@ widget_t *widget_store_live_active(void)
          * elsewhere.  This lets web_search etc emit a LIST and take
          * the slot without needing a separate render path. */
         if (!w->active) continue;
-        if (w->type != WIDGET_TYPE_LIVE && w->type != WIDGET_TYPE_LIST) continue;
+        if (w->type != WIDGET_TYPE_LIVE
+            && w->type != WIDGET_TYPE_LIST
+            && w->type != WIDGET_TYPE_CHART) continue;
         if (!winner) { winner = w; continue; }
         if (w->priority > winner->priority) { winner = w; continue; }
         if (w->priority == winner->priority &&
@@ -203,7 +211,8 @@ int widget_store_live_count(void)
     for (int i = 0; i < s_capacity; i++) {
         if (s_widgets[i].active &&
             (s_widgets[i].type == WIDGET_TYPE_LIVE ||
-             s_widgets[i].type == WIDGET_TYPE_LIST)) n++;
+             s_widgets[i].type == WIDGET_TYPE_LIST ||
+             s_widgets[i].type == WIDGET_TYPE_CHART)) n++;
     }
     return n;
 }

@@ -58,6 +58,12 @@ typedef struct {
     char value[WIDGET_LIST_ITEM_VALUE_LEN]; /* optional right-side value */
 } widget_list_item_t;
 
+/* v4·D Phase 4f widget_chart points.  Used when widget.type==CHART.
+ * 12 points matches a week-at-a-glance / hour-by-hour / last-N-polls
+ * mini chart on the home live slot.  Skills send raw values; Tab5
+ * normalizes against chart_max for bar heights. */
+#define WIDGET_CHART_MAX_POINTS 12
+
 typedef struct {
     /* Identity */
     char          card_id[WIDGET_ID_LEN];
@@ -88,6 +94,15 @@ typedef struct {
      * items_count == 0 on non-list widgets. */
     widget_list_item_t items[WIDGET_LIST_MAX_ITEMS];
     uint8_t       items_count;
+
+    /* v4·D Phase 4f: chart-type payload (only used when type==CHART).
+     * chart_count == 0 on non-chart widgets.  chart_max is the upper
+     * bound against which each chart_values[i] is normalized for bar
+     * height.  A zero chart_max lets the renderer auto-scale to
+     * max(chart_values). */
+    float         chart_values[WIDGET_CHART_MAX_POINTS];
+    float         chart_max;
+    uint8_t       chart_count;
 } widget_t;
 
 /* ── Public API ────────────────────────────────────────────────── */

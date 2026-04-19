@@ -795,26 +795,28 @@ void ui_home_update_status(void)
      * items.  Grow the card height from 88->168 and switch lede to
      * LONG_WRAP.  Non-list widgets get the compact live-line. */
     if (live_w && s_now_card && s_now_lede && s_now_kicker) {
-        bool is_list = (live_w->type == WIDGET_TYPE_LIST && live_w->items_count > 0);
-        int want_h = is_list ? 168 : 88;
+        bool is_list  = (live_w->type == WIDGET_TYPE_LIST  && live_w->items_count  > 0);
+        bool is_chart = (live_w->type == WIDGET_TYPE_CHART && live_w->chart_count > 0);
+        bool is_tall  = is_list || is_chart;
+        int want_h = is_tall ? 168 : 88;
         if (lv_obj_get_height(s_now_card) != want_h) {
             lv_obj_set_height(s_now_card, want_h);
             /* Card bottom stays anchored at (CARD_Y + 88) -- taller
-             * list cards grow upward into the air below the mode chip. */
+             * list/chart cards grow upward into the air below the mode chip. */
             lv_obj_set_y(s_now_card, CARD_Y + (88 - want_h));
             lv_label_set_long_mode(s_now_lede,
-                is_list ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
-            /* Kicker moves to TOP in list mode so it doesn't collide
+                is_tall ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+            /* Kicker moves to TOP in tall mode so it doesn't collide
              * with row 1 of the wrapping lede.  Compact live-line mode
              * keeps the kicker vertically-centred next to the lede. */
             lv_obj_set_y(s_now_kicker,
-                is_list ? 6 : (want_h - 14) / 2);
+                is_tall ? 6 : (want_h - 14) / 2);
             lv_obj_set_y(s_now_lede,
-                is_list ? 30 : (want_h - 24) / 2);
+                is_tall ? 30 : (want_h - 24) / 2);
             lv_obj_set_width(s_now_lede,
-                is_list ? (CARD_W - CARD_PAD * 2 - 20) : (CARD_W - CARD_PAD * 2 - 120));
+                is_tall ? (CARD_W - CARD_PAD * 2 - 20) : (CARD_W - CARD_PAD * 2 - 120));
             lv_obj_set_x(s_now_lede,
-                is_list ? CARD_PAD : (CARD_PAD + 116));
+                is_tall ? CARD_PAD : (CARD_PAD + 116));
         }
     }
     if (live_w) {
@@ -873,6 +875,40 @@ void ui_home_update_status(void)
                                       "%d  %.60s\n",
                                       i + 1, it->text);
                     }
+                }
+            } else if (live_w->type == WIDGET_TYPE_CHART
+                       && live_w->chart_count > 0) {
+                /* v4·D Phase 4f: render a mini bar chart as an ASCII
+                 * histogram in the lede.  Five levels (" .:+#") give
+                 * enough resolution to see trends without requiring a
+                 * new LVGL object hierarchy or font glyphs. */
+                int p = 0;
+                if (live_w->title[0]) {
+                    p += snprintf(buf + p, sizeof(buf) - p,
+                                  "%.63s\n", live_w->title);
+                }
+                /* Determine the normalization bound. */
+                float maxv = live_w->chart_max;
+                if (maxv <= 0.0f) {
+                    for (int i = 0; i < live_w->chart_count; i++) {
+                        if (live_w->chart_values[i] > maxv) {
+                            maxv = live_w->chart_values[i];
+                        }
+                    }
+                }
+                if (maxv <= 0.0f) maxv = 1.0f;
+                static const char *levels[5] = { " ", ".", ":", "+", "#" };
+                for (int i = 0; i < live_w->chart_count
+                                && p < (int)sizeof(buf) - 8; i++) {
+                    float f  = live_w->chart_values[i] / maxv;
+                    int   lv = (int)(f * 4.0f + 0.5f);
+                    if (lv < 0) lv = 0;
+                    if (lv > 4) lv = 4;
+                    p += snprintf(buf + p, sizeof(buf) - p, "%s ", levels[lv]);
+                }
+                p += snprintf(buf + p, sizeof(buf) - p, "\n");
+                if (live_w->body[0] && p < (int)sizeof(buf) - 1) {
+                    snprintf(buf + p, sizeof(buf) - p, "%.180s", live_w->body);
                 }
             } else {
                 /* title on top, body below (matches widget spec §3.1) */
