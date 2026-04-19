@@ -171,6 +171,11 @@ static int  s_last_receipt_prompt_tok = 0;
 static int  s_last_receipt_compl_tok  = 0;
 static char s_last_receipt_model[64]  = {0};
 
+/* v4·D Phase 4b: cached vision capability from Dragon (camera screen). */
+static bool s_vision_capable   = false;
+static int  s_vision_per_frame_mils = 0;
+static char s_vision_model[64] = {0};
+
 // Dictation mode
 static voice_mode_t   s_voice_mode        = VOICE_MODE_ASK;
 static char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
@@ -685,6 +690,23 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "Text update: replacing last AI message");
             ui_chat_update_last_message(text);
         }
+    } else if (strcmp(type_str, "vision_capability") == 0) {
+        /* v4·D Phase 4b: Dragon advertises which model (if any) can see a
+         * camera frame.  Cached for ui_camera to render its violet chip.
+         * Empty/zero on local-only or non-vision models.  Triggered via
+         * Dragon's config_update ACK path so it lands whenever mode
+         * changes. */
+        cJSON *can = cJSON_GetObjectItem(root, "can_see");
+        cJSON *mdl = cJSON_GetObjectItem(root, "model");
+        cJSON *fpm = cJSON_GetObjectItem(root, "per_frame_mils");
+        s_vision_capable = cJSON_IsTrue(can);
+        s_vision_per_frame_mils = cJSON_IsNumber(fpm) ? (int)fpm->valuedouble : 0;
+        const char *m = (cJSON_IsString(mdl) && mdl->valuestring) ? mdl->valuestring : "";
+        snprintf(s_vision_model, sizeof(s_vision_model), "%s", m);
+        ESP_LOGI(TAG, "Vision capability: %s (model=%s, per_frame=%d mils)",
+                 s_vision_capable ? "YES" : "no",
+                 s_vision_model[0] ? s_vision_model : "none",
+                 s_vision_per_frame_mils);
     } else if (strcmp(type_str, "pong") == 0) {
         /* Dragon-level JSON pong — logged only. WS-level ping/pong is
          * handled automatically by esp_websocket_client (pingpong_timeout_sec). */
@@ -1992,6 +2014,18 @@ esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
 float voice_get_current_rms(void)
 {
     return s_current_rms;
+}
+
+bool voice_get_vision_capability(char *model_out, size_t model_len,
+                                 int *per_frame_mils_out)
+{
+    if (model_out && model_len > 0) {
+        snprintf(model_out, model_len, "%s", s_vision_model);
+    }
+    if (per_frame_mils_out) {
+        *per_frame_mils_out = s_vision_per_frame_mils;
+    }
+    return s_vision_capable;
 }
 
 const char *voice_get_dictation_title(void)

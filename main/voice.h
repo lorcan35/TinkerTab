@@ -98,6 +98,12 @@ esp_err_t voice_send_widget_action(const char *card_id, const char *event,
 /** Return the current mic RMS level (for live waveform visualization during dictation). */
 float voice_get_current_rms(void);
 
+/** v4·D Phase 4b — vision capability (emitted by Dragon on config ACK).
+ *  Returns true when the current LLM backend can see a camera frame.
+ *  model and per_frame_mils out-params are optional (pass NULL to skip). */
+bool voice_get_vision_capability(char *model_out, size_t model_len,
+                                 int *per_frame_mils_out);
+
 /** Return the auto-generated title from Dragon's dictation post-processing. */
 const char *voice_get_dictation_title(void);
 
