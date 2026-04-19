@@ -57,6 +57,122 @@ static const char *TAG = "debug_srv";
 #define DEBUG_PORT 8080
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Async worker pool for heavy handlers.
+ *
+ * ESP-IDF's httpd runs a single dispatch task. A handler that takes 30+
+ * seconds (the /screenshot worst case under bad SDIO pressure) starves
+ * every unrelated /info, /touch, /navigate for that entire window.
+ *
+ * Solution (canonical, from ESP-IDF's own async_handlers example):
+ *   1. Main dispatch task calls httpd_req_async_handler_begin() to clone
+ *      the request into a heap-owned copy it can park.
+ *   2. The copy is enqueued to a worker queue guarded by a counting
+ *      semaphore of free-worker slots.
+ *   3. One of DBG_ASYNC_WORKERS tasks pops the queue and runs the heavy
+ *      handler synchronously, then calls httpd_req_async_handler_complete
+ *      to let httpd recycle the socket.
+ *   4. If no worker is free OR the queue is full, the dispatch task
+ *      returns 503 immediately — back-pressure without blocking.
+ *
+ * Result: /info, /touch, /navigate keep responding at ~ms latency even
+ * while two /screenshot requests are encoding + sending.
+ * ────────────────────────────────────────────────────────────────────────── */
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+
+#define DBG_ASYNC_WORKERS        2
+#define DBG_ASYNC_QUEUE_DEPTH    4
+#define DBG_ASYNC_STACK          16384  /* 16 KB — covers screenshot's mallocs + JPEG + send */
+#define DBG_ASYNC_PRIO           (tskIDLE_PRIORITY + 5)  /* below httpd main (IDLE+6) */
+#define DBG_ASYNC_CORE           1
+
+typedef struct {
+    httpd_req_t               *req;
+    esp_err_t (*handler)(httpd_req_t *);
+} dbg_async_req_t;
+
+static QueueHandle_t     s_async_queue          = NULL;
+static SemaphoreHandle_t s_async_workers_ready  = NULL;
+static TaskHandle_t      s_async_worker_handles[DBG_ASYNC_WORKERS] = {0};
+
+/* Hand off a request to the worker pool. Must be called from the httpd
+ * dispatch task (where req is valid). Returns ESP_OK when queued
+ * successfully — in that case, the handler MUST return ESP_OK too so
+ * httpd doesn't try to send its own response (the worker will). */
+static esp_err_t dbg_queue_async(httpd_req_t *req,
+                                 esp_err_t (*handler)(httpd_req_t *))
+{
+    httpd_req_t *copy = NULL;
+    esp_err_t err = httpd_req_async_handler_begin(req, &copy);
+    if (err != ESP_OK || !copy) {
+        ESP_LOGE(TAG, "async: handler_begin failed: %s", esp_err_to_name(err));
+        return err != ESP_OK ? err : ESP_FAIL;
+    }
+
+    /* Non-blocking take — if no worker is free, bail now. */
+    if (xSemaphoreTake(s_async_workers_ready, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "async: no workers available (all %d busy)", DBG_ASYNC_WORKERS);
+        httpd_req_async_handler_complete(copy);
+        return ESP_ERR_NO_MEM;
+    }
+
+    dbg_async_req_t r = { .req = copy, .handler = handler };
+    if (xQueueSend(s_async_queue, &r, pdMS_TO_TICKS(50)) != pdTRUE) {
+        ESP_LOGW(TAG, "async: queue full (depth %d)", DBG_ASYNC_QUEUE_DEPTH);
+        xSemaphoreGive(s_async_workers_ready);   /* release the slot we took */
+        httpd_req_async_handler_complete(copy);
+        return ESP_ERR_NO_MEM;
+    }
+
+    return ESP_OK;
+}
+
+static void dbg_async_worker_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "async worker alive on core %d prio %d", xPortGetCoreID(), uxTaskPriorityGet(NULL));
+    while (true) {
+        /* Mark this worker as available before blocking on the queue so the
+         * counting-semaphore reflects real availability. */
+        xSemaphoreGive(s_async_workers_ready);
+
+        dbg_async_req_t r;
+        if (xQueueReceive(s_async_queue, &r, portMAX_DELAY) == pdTRUE) {
+            if (r.handler && r.req) {
+                r.handler(r.req);
+                if (httpd_req_async_handler_complete(r.req) != ESP_OK) {
+                    ESP_LOGW(TAG, "async: handler_complete failed");
+                }
+            }
+        }
+    }
+}
+
+static esp_err_t dbg_async_workers_start(void)
+{
+    s_async_workers_ready = xSemaphoreCreateCounting(DBG_ASYNC_WORKERS, 0);
+    if (!s_async_workers_ready) return ESP_ERR_NO_MEM;
+    s_async_queue = xQueueCreate(DBG_ASYNC_QUEUE_DEPTH, sizeof(dbg_async_req_t));
+    if (!s_async_queue) {
+        vSemaphoreDelete(s_async_workers_ready);
+        s_async_workers_ready = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    for (int i = 0; i < DBG_ASYNC_WORKERS; i++) {
+        BaseType_t ok = xTaskCreatePinnedToCore(
+            dbg_async_worker_task, "dbg_async", DBG_ASYNC_STACK,
+            NULL, DBG_ASYNC_PRIO, &s_async_worker_handles[i], DBG_ASYNC_CORE);
+        if (ok != pdPASS) {
+            ESP_LOGE(TAG, "async: worker %d create failed", i);
+            return ESP_FAIL;
+        }
+    }
+    ESP_LOGI(TAG, "async: %d workers ready (queue depth %d)",
+             DBG_ASYNC_WORKERS, DBG_ASYNC_QUEUE_DEPTH);
+    return ESP_OK;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Socket open hook — called by esp_http_server for every accepted socket.
  * We set TCP_NODELAY so small responses (/info, /voice, /touch ACKs) flush
  * without Nagle's 200 ms algorithm piling on top of an already-flaky SDIO
@@ -320,17 +436,28 @@ static esp_err_t screenshot_handler_impl(httpd_req_t *req)
     return ret;
 }
 
-/* Outer handler with atomic busy-guard. A second concurrent /screenshot
- * must NOT queue behind the first — on a single-worker httpd that would
- * starve every unrelated /info /touch /navigate for the whole encode +
- * send window. Reject fast with 429 Too Many Requests. */
+/* Async worker entry: runs screenshot_handler_impl then releases the
+ * atomic busy-guard. Must be called by the async worker, not directly. */
+static esp_err_t screenshot_async_entry(httpd_req_t *req)
+{
+    esp_err_t ret = screenshot_handler_impl(req);
+    atomic_store(&s_screenshot_busy, false);
+    return ret;
+}
+
+/* Outer handler:
+ *   1. Auth check (fast, inline).
+ *   2. Atomic busy-guard — 429 if another /screenshot is mid-flight.
+ *      (Second concurrent call would queue to async but still starves
+ *      one of our 2 workers for 15+ s — reject earlier to protect /camera.)
+ *   3. Queue to async worker pool and return immediately. The worker
+ *      does the 1.8 MB memcpy + 200 ms JPEG encode + TCP send without
+ *      blocking the httpd dispatch task, so /info /touch /navigate
+ *      keep responding normally. */
 static esp_err_t screenshot_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
-    /* atomic_exchange returns the PREVIOUS value. If it was already true,
-     * someone else owns the slot — bail. Otherwise we acquired it and
-     * must release before every return below. */
     if (atomic_exchange(&s_screenshot_busy, true)) {
         ESP_LOGI(TAG, "screenshot: rejecting 429 (another in flight)");
         httpd_resp_set_status(req, "429 Too Many Requests");
@@ -340,9 +467,18 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    esp_err_t ret = screenshot_handler_impl(req);
-    atomic_store(&s_screenshot_busy, false);
-    return ret;
+    esp_err_t qerr = dbg_queue_async(req, screenshot_async_entry);
+    if (qerr != ESP_OK) {
+        atomic_store(&s_screenshot_busy, false);
+        ESP_LOGW(TAG, "screenshot: queue failed (%s) — returning 503", esp_err_to_name(qerr));
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Retry-After", "1");
+        httpd_resp_sendstr(req, "{\"error\":\"async workers busy\"}");
+        return ESP_OK;
+    }
+    /* Worker owns the req copy now — return OK so httpd doesn't send. */
+    return ESP_OK;
 }
 
 /* ======================================================================== */
@@ -1028,11 +1164,10 @@ static void ota_apply_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static esp_err_t ota_apply_handler(httpd_req_t *req)
+static esp_err_t ota_apply_handler_impl(httpd_req_t *req)
 {
-    if (!check_auth(req)) return ESP_OK;
-
-    /* Check for update first */
+    /* Check for update first — tab5_ota_check does an HTTP round-trip
+     * to Dragon's /api/ota/check which can block 1-3 s. */
     tab5_ota_info_t info;
     esp_err_t err = tab5_ota_check(&info);
     if (err != ESP_OK || !info.available) {
@@ -1060,6 +1195,19 @@ static esp_err_t ota_apply_handler(httpd_req_t *req)
              "{\"status\":\"updating\",\"version\":\"%s\",\"url\":\"%s\",\"sha256_verify\":%s}",
              info.version, info.url, info.sha256[0] ? "true" : "false");
     httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+/* Outer OTA-apply handler — queue to async pool so the tab5_ota_check
+ * HTTP round-trip doesn't block the dispatch task. */
+static esp_err_t ota_apply_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    esp_err_t qerr = dbg_queue_async(req, ota_apply_handler_impl);
+    if (qerr != ESP_OK) {
+        ESP_LOGW(TAG, "ota/apply: queue failed — falling back to sync");
+        return ota_apply_handler_impl(req);  /* graceful degrade */
+    }
     return ESP_OK;
 }
 
@@ -1416,10 +1564,8 @@ static esp_err_t navtouch_handler(httpd_req_t *req)
 
 /* ── Camera debug endpoint ────────────────────────────────────────────── */
 
-static esp_err_t camera_handler(httpd_req_t *req)
+static esp_err_t camera_handler_impl(httpd_req_t *req)
 {
-    if (!check_auth(req)) return ESP_OK;
-
     if (!tab5_camera_initialized()) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"error\":\"camera not initialized\"}");
@@ -1460,6 +1606,20 @@ static esp_err_t camera_handler(httpd_req_t *req)
     httpd_resp_send_chunk(req, (const char *)frame.data, data_size);
     httpd_resp_send_chunk(req, NULL, 0);
 
+    return ESP_OK;
+}
+
+/* Outer camera handler — auth + queue to async pool. Camera capture
+ * can block 50-200 ms on V4L2 buffer grab; not as bad as /screenshot
+ * but still worth offloading from the dispatch slot. */
+static esp_err_t camera_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    esp_err_t qerr = dbg_queue_async(req, camera_handler_impl);
+    if (qerr != ESP_OK) {
+        ESP_LOGW(TAG, "camera: queue failed — falling back to sync");
+        return camera_handler_impl(req);  /* graceful degrade */
+    }
     return ESP_OK;
 }
 
@@ -1719,6 +1879,15 @@ esp_err_t tab5_debug_server_init(void)
      * s_jpeg_enc is populated — both tasks try to init, the second one
      * crashes in jpeg_release_codec_handle(NULL). */
     (void)_ensure_jpeg_encoder();
+
+    /* Spin up the async worker pool BEFORE httpd_start — so the queue +
+     * semaphore are ready when the first async-wrapped handler
+     * (screenshot/camera/ota_apply) arrives. */
+    esp_err_t werr = dbg_async_workers_start();
+    if (werr != ESP_OK) {
+        ESP_LOGW(TAG, "async workers failed to start: %s — heavy handlers fall back to sync",
+                 esp_err_to_name(werr));
+    }
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
