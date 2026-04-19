@@ -591,9 +591,20 @@ lv_obj_t *ui_home_create(void)
      * regions, and lv_screen_load doesn't always dirty the entire 720×1280
      * on the first create. Without this, stale PSRAM framebuffer content
      * from a previous screen (or a prior boot) persists in areas the home
-     * widgets didn't explicitly cover. Makes /screenshot + visual check
-     * actually reflect reality. */
+     * widgets didn't explicitly cover.
+     *
+     * Also tell the display that the whole area is "invalid" — belt-and-
+     * braces so the next refresh cycles through every strip on a PARTIAL
+     * render configuration (draw buffer is only 144 KB so each cycle
+     * handles ~100 rows; the dirty area must stay marked dirty until
+     * every strip is painted). */
     lv_obj_invalidate(s_screen);
+    /* lv_refr_now forces LVGL to cycle through every strip of the draw
+     * buffer before returning, guaranteeing all 1280 rows are painted to
+     * the PSRAM framebuffer — otherwise on a 144 KB buffer (~100 rows)
+     * only the first strip lands per lv_timer_handler tick and stale
+     * content in subsequent strips is visible via /screenshot. */
+    lv_refr_now(lv_display_get_default());
 
     ESP_LOGI(TAG, "v4 Ambient Canvas home created (orb %dpx, mode %d)",
              ORB_SIZE, s_badge_mode);

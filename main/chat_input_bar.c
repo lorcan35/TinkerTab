@@ -231,7 +231,7 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, int parent_h)
 
     /* Ghost text to the right of the cursor. */
     b->ghost = lv_label_create(b->pill);
-    lv_label_set_text(b->ghost, "Hold to speak \xe2\x80\xa2 or type\xe2\x80\xa6");
+    lv_label_set_text(b->ghost, "Hold to speak \xe2\x80\xa2 or type");
     lv_obj_set_style_text_font(b->ghost, FONT_BODY, 0);
     lv_obj_set_style_text_color(b->ghost, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_set_pos(b->ghost, PILL_TEXT_X + 10, (PILL_H - 24) / 2);
@@ -296,11 +296,11 @@ void chat_input_bar_set_voice_state(chat_input_bar_t *b, int state)
     /* When listening, the ghost hint shifts to reassure the user. */
     if (b->ghost) {
         switch (state) {
-            case 1: lv_label_set_text(b->ghost, "Listening\xe2\x80\xa6"); break;
-            case 2: lv_label_set_text(b->ghost, "Thinking\xe2\x80\xa6"); break;
-            case 3: lv_label_set_text(b->ghost, "Speaking\xe2\x80\xa6"); break;
+            case 1: lv_label_set_text(b->ghost, "Listening..."); break;
+            case 2: lv_label_set_text(b->ghost, "Thinking...");  break;
+            case 3: lv_label_set_text(b->ghost, "Speaking...");  break;
             default:
-                lv_label_set_text(b->ghost, "Hold to speak \xe2\x80\xa2 or type\xe2\x80\xa6");
+                lv_label_set_text(b->ghost, "Hold to speak \xe2\x80\xa2 or type");
                 break;
         }
     }

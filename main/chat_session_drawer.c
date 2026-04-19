@@ -428,7 +428,7 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
     d->loading = lv_label_create(list);
-    lv_label_set_text(d->loading, "Loading\xe2\x80\xa6");
+    lv_label_set_text(d->loading, "Loading...");
     lv_obj_set_style_text_font(d->loading, FONT_CHAT_MONO, 0);
     lv_obj_set_style_text_color(d->loading, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_align(d->loading, LV_ALIGN_TOP_MID, 0, 40);

@@ -17,26 +17,28 @@ static const char *TAG = "suggestions";
 #define SUGG_CARD_W   620
 #define SUGG_GAP      12
 
+/* Ellipsis / em-dash / NBSP-hyphen are NOT in the Montserrat font subset
+ * shipped on-device — they render as tofu boxes. Stick to ASCII here. */
 static const char *s_prompts[4][4] = {
     /* Local */
     { "What's the date?",
-      "Add a note about\xe2\x80\xa6",
-      "Remind me to\xe2\x80\xa6",
+      "Add a note about...",
+      "Remind me to...",
       "Summarize my last note" },
     /* Hybrid */
-    { "Search the web for\xe2\x80\xa6",
-      "Explain like I'm 5\xe2\x80\xa6",
+    { "Search the web for...",
+      "Explain like I'm 5...",
       "What's the weather?",
-      "Brief me on\xe2\x80\xa6" },
+      "Brief me on..." },
     /* Cloud */
-    { "Write a Python script\xe2\x80\xa6",
+    { "Write a Python script...",
       "Compare X and Y",
-      "Draft a reply to\xe2\x80\xa6",
-      "Plan my day around\xe2\x80\xa6" },
+      "Draft a reply to...",
+      "Plan my day around..." },
     /* Claw */
-    { "Search my inbox for\xe2\x80\xa6",
-      "Book a car at\xe2\x80\xa6",
-      "Update my calendar\xe2\x80\xa6",
+    { "Search my inbox for...",
+      "Book a car at...",
+      "Update my calendar...",
       "Pull the Tab5 docs" },
 };
 
@@ -45,9 +47,9 @@ static const uint32_t s_mode_tint[4] = {
 };
 
 static const char *s_mode_lead[4] = {
-    "Fast local AI \xe2\x80\x94 private by default.",
+    "Fast local AI -- private by default.",
     "Local model + cloud audio for clarity.",
-    "Powered by Claude / GPT\xe2\x80\x914o for heavy lifts.",
+    "Powered by Claude / GPT-4o for heavy lifts.",
     "Your agent: memory, tools, web.",
 };
 
@@ -89,7 +91,8 @@ chat_suggestions_t *chat_suggestions_create(lv_obj_t *parent)
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_gap(s->root, SUGG_GAP, 0);
     lv_obj_clear_flag(s->root, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(s->root, LV_ALIGN_TOP_MID, 0, 80);
+    /* Sit below the 96-h chat header + 2-px accent + breathing room. */
+    lv_obj_align(s->root, LV_ALIGN_TOP_MID, 0, 128);
 
     s->lead = lv_label_create(s->root);
     lv_label_set_text(s->lead, s_mode_lead[0]);

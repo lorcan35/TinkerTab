@@ -436,9 +436,11 @@ lv_obj_t *ui_chat_create(void)
     s_poll = lv_timer_create(poll_voice, 150, NULL);
     ui_keyboard_set_layout_cb(keyboard_layout_cb);
 
-    /* Force full invalidate — PARTIAL render + stale PSRAM framebuffer
-     * can leave prior-screen pixels visible in untouched regions. */
+    /* Force full invalidate + synchronous refresh — PARTIAL render only
+     * paints the first strip per tick; lv_refr_now cycles through every
+     * strip so all 1280 rows hit the framebuffer before we return. */
     lv_obj_invalidate(s_overlay);
+    lv_refr_now(lv_display_get_default());
 
     ESP_LOGI(TAG, "Chat v4·C created (mode=%u)", mode);
     return s_overlay;
@@ -451,7 +453,8 @@ void ui_chat_show(void)
     s_active = true;
     if (s_poll) lv_timer_resume(s_poll);
     ui_keyboard_set_layout_cb(keyboard_layout_cb);
-    lv_obj_invalidate(s_overlay);   /* repaint after show, in case of stale FB */
+    lv_obj_invalidate(s_overlay);
+    lv_refr_now(lv_display_get_default());
 }
 
 void ui_chat_hide(void)
