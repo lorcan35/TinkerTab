@@ -1674,11 +1674,16 @@ esp_err_t tab5_debug_server_init(void)
     config.lru_purge_enable = true;
     config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
-    /* A full 1.8 MB screenshot over 2.4 GHz WiFi with 400-500 ms RTT and
-     * the small default LWIP TCP send window needs ~30-60s of blocked
-     * send() calls. Default 5s kills the connection after one window-full.
-     * Bump to 90s so /screenshot can actually complete. */
-    config.send_wait_timeout = 90;
+    /* 90 s was disaster-class — a blocked send() would freeze the single
+     * httpd worker for a minute and a half while every other /info /touch
+     * /navigate timed out on the client. Refuse fast instead. The async
+     * screenshot worker no longer runs on the main dispatch slot, so a
+     * slow TCP send no longer blocks the server — see async_screenshot_
+     * task in this file + httpd_req_async_handler_begin() refactor.
+     *
+     * 15 s gives a realistic Wi-Fi link time to flush ~60 KB (JPEG) +
+     * still frees the worker before a user has given up. */
+    config.send_wait_timeout = 15;
     config.close_fn = NULL;               /* Use default close */
     /* Run httpd on Core 1 so it doesn't starve when LVGL is busy on Core 0.
      * Settings screen creates 55 objects (~500ms) which blocks Core 0 entirely.
