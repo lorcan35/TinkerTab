@@ -384,7 +384,11 @@ uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
 
     if (cloud_audio && cloud_llm) {
         if (out_model && model_len > 0) {
-            snprintf(out_model, model_len, "anthropic/claude-sonnet-4-20250514");
+            /* "anthropic/claude-sonnet-4-20250514" rejected by OpenRouter
+             * ("not a valid model ID").  Using the current valid Sonnet
+             * ID so cloud mode actually works out of the box.  Users can
+             * still pick any other model via /mode?model=... */
+            snprintf(out_model, model_len, "anthropic/claude-3.5-sonnet");
         }
         return 2; /* Full Cloud */
     }
