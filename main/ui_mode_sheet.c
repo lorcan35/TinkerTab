@@ -32,6 +32,9 @@ static lv_obj_t *s_sheet       = NULL;  /* visible sheet inside overlay */
 static lv_obj_t *s_seg_btn[3][3] = {{0}};  /* [dial][segment] for redraw */
 static lv_obj_t *s_composite_head = NULL;
 static lv_obj_t *s_composite_sub  = NULL;
+static lv_obj_t *s_composite_card = NULL;  /* container — reborder on agent */
+static lv_obj_t *s_composite_accent = NULL; /* amber/violet bar top-left */
+static lv_obj_t *s_composite_kicker = NULL; /* "RESOLVES TO" / "AGENT MODE" */
 
 static uint8_t s_int_tier = 0;
 static uint8_t s_voi_tier = 0;
@@ -61,6 +64,9 @@ void ui_mode_sheet_hide(void)
     s_sheet   = NULL;
     s_composite_head = NULL;
     s_composite_sub  = NULL;
+    s_composite_card = NULL;
+    s_composite_accent = NULL;
+    s_composite_kicker = NULL;
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) s_seg_btn[r][c] = NULL;
     }
@@ -211,32 +217,34 @@ void ui_mode_sheet_show(void)
         y += ROW_H + ROW_GAP;
     }
 
-    /* Composite preview — lives below the three dials */
-    lv_obj_t *comp = lv_obj_create(s_sheet);
-    lv_obj_remove_style_all(comp);
-    lv_obj_set_pos(comp, SIDE_PAD, y + 20);
-    lv_obj_set_size(comp, MS_W - 2 * SIDE_PAD, 140);
-    lv_obj_set_style_bg_color(comp, lv_color_hex(TH_CARD_ELEVATED), 0);
-    lv_obj_set_style_bg_opa(comp, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(comp, 20, 0);
-    lv_obj_set_style_border_width(comp, 1, 0);
-    lv_obj_set_style_border_color(comp, lv_color_hex(0x1E1E2A), 0);
-    lv_obj_clear_flag(comp, LV_OBJ_FLAG_SCROLLABLE);
+    /* Composite preview — lives below the three dials. Border / accent /
+     * kicker / text colours all swap to violet when aut_tier == 1 to
+     * signal the TinkerClaw memory-bypass (Phase 2c informed-consent). */
+    s_composite_card = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_composite_card);
+    lv_obj_set_pos(s_composite_card, SIDE_PAD, y + 20);
+    lv_obj_set_size(s_composite_card, MS_W - 2 * SIDE_PAD, 140);
+    lv_obj_set_style_bg_color(s_composite_card, lv_color_hex(TH_CARD_ELEVATED), 0);
+    lv_obj_set_style_bg_opa(s_composite_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_composite_card, 20, 0);
+    lv_obj_set_style_border_width(s_composite_card, 1, 0);
+    lv_obj_set_style_border_color(s_composite_card, lv_color_hex(0x1E1E2A), 0);
+    lv_obj_clear_flag(s_composite_card, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* amber accent bar on top-left */
-    lv_obj_t *accent = lv_obj_create(comp);
-    lv_obj_remove_style_all(accent);
-    lv_obj_set_size(accent, 140, 3);
-    lv_obj_set_pos(accent, 0, 0);
-    lv_obj_set_style_bg_color(accent, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
+    s_composite_accent = lv_obj_create(s_composite_card);
+    lv_obj_remove_style_all(s_composite_accent);
+    lv_obj_set_size(s_composite_accent, 140, 3);
+    lv_obj_set_pos(s_composite_accent, 0, 0);
+    lv_obj_set_style_bg_color(s_composite_accent, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_bg_opa(s_composite_accent, LV_OPA_COVER, 0);
 
-    lv_obj_t *comp_k = lv_label_create(comp);
-    lv_label_set_text(comp_k, "\xe2\x80\xa2 RESOLVES TO");
-    lv_obj_set_style_text_font(comp_k, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(comp_k, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_text_letter_space(comp_k, 4, 0);
-    lv_obj_set_pos(comp_k, 24, 22);
+    s_composite_kicker = lv_label_create(s_composite_card);
+    lv_label_set_text(s_composite_kicker, "\xe2\x80\xa2 RESOLVES TO");
+    lv_obj_set_style_text_font(s_composite_kicker, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(s_composite_kicker, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_text_letter_space(s_composite_kicker, 4, 0);
+    lv_obj_set_pos(s_composite_kicker, 24, 22);
+    lv_obj_t *comp = s_composite_card; /* alias for remaining label placement */
 
     s_composite_head = lv_label_create(comp);
     lv_obj_set_style_text_font(s_composite_head, FONT_HEADING, 0);
@@ -293,21 +301,40 @@ static void refresh_segments(void)
 
 static void refresh_composite(void)
 {
-    if (!s_composite_head || !s_composite_sub) return;
+    if (!s_composite_head || !s_composite_sub || !s_composite_card) return;
 
     char model_out[64] = {0};
     uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier,
                                           model_out, sizeof(model_out));
-    const char *mode_name[] = { "Local", "Hybrid", "Full Cloud", "TinkerClaw" };
+    const char *mode_name[] = { "Local", "Hybrid", "Full Cloud", "Agent \xe2\x80\xa2 TinkerClaw" };
     const char *mode_sub[]  = {
         "ON-DEVICE \xe2\x80\xa2 FREE",
         "STUDIO VOICE \xe2\x80\xa2 LOCAL BRAIN \xe2\x80\xa2 ~$0.02",
         "SONNET 4 \xe2\x80\xa2 STUDIO \xe2\x80\xa2 ~$0.04",
-        "AGENT GATEWAY \xe2\x80\xa2 MULTI-STEP",
+        "MEMORY BYPASSED \xe2\x80\xa2 GATEWAY TOOLS \xe2\x80\xa2 MULTI-STEP",
     };
     if (resolved > 3) resolved = 0;
     lv_label_set_text(s_composite_head, mode_name[resolved]);
     lv_label_set_text(s_composite_sub, mode_sub[resolved]);
+
+    /* v4·D Sovereign Halo Phase 2c: when aut_tier == 1 (Agent),
+     * recolor the composite card to violet to flag the memory-bypass
+     * boundary.  The user has already tapped Agent, so this isn't a
+     * revert-confirm modal -- just a tonally distinct "this mode runs
+     * differently" signal matching the Sovereign system-d-modes.html M5
+     * warning sheet concept. */
+    const bool agent = (s_aut_tier >= 1);
+    uint32_t accent_col = agent ? 0xA78BFA : TH_AMBER;
+    uint32_t border_col = agent ? 0xA78BFA : 0x1E1E2A;
+    const char *kicker  = agent ? "\xe2\x80\xa2 AGENT MODE" : "\xe2\x80\xa2 RESOLVES TO";
+
+    lv_obj_set_style_bg_color(s_composite_accent, lv_color_hex(accent_col), 0);
+    lv_obj_set_style_border_color(s_composite_card, lv_color_hex(border_col), 0);
+    lv_obj_set_style_border_opa(s_composite_card, agent ? 255 : 255, 0);
+    if (s_composite_kicker) {
+        lv_label_set_text(s_composite_kicker, kicker);
+        lv_obj_set_style_text_color(s_composite_kicker, lv_color_hex(accent_col), 0);
+    }
 }
 
 static void persist_and_notify_dragon(void)
