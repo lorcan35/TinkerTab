@@ -72,12 +72,14 @@ static const char *TAG = "ui_home";
 #define RING_MID          240
 #define RING_INNER        196
 
-/* Now-slot card */
+/* v4·D Sovereign Halo live-line — replaces the 240 px NOW card.
+ * Kicker + lede + optional right meta, top + bottom hairline borders,
+ * no bg fill, no stats row, no accent bar. Sits just above the strip. */
 #define CARD_X            SIDE_PAD
-#define CARD_Y            780
+#define CARD_Y            956     /* 88 px tall, bottom sits at 1044 = strip_y - 18 gap */
 #define CARD_W            (SW - 2 * SIDE_PAD)
-#define CARD_H            240
-#define CARD_PAD          28
+#define CARD_H            88
+#define CARD_PAD          20
 
 /* Bottom strip */
 #define STRIP_BOT_PAD     40
@@ -430,67 +432,62 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_letter_space(s_mode_sub, 2, 0);
 
     /* ── Now-slot card ─────────────────────────────────────── */
+    /* Live-line: no fill, 1 px borders on TOP + BOTTOM only (hairline rails) */
     s_now_card = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_now_card);
     lv_obj_set_pos(s_now_card, CARD_X, CARD_Y);
     lv_obj_set_size(s_now_card, CARD_W, CARD_H);
-    lv_obj_set_style_bg_color(s_now_card, lv_color_hex(TH_CARD), 0);
-    lv_obj_set_style_bg_opa(s_now_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_now_card, 24, 0);
+    lv_obj_set_style_bg_opa(s_now_card, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_radius(s_now_card, 0, 0);
     lv_obj_set_style_border_width(s_now_card, 1, 0);
+    lv_obj_set_style_border_side(s_now_card, LV_BORDER_SIDE_TOP | LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_set_style_border_color(s_now_card, lv_color_hex(0x1E1E2A), 0);
     lv_obj_clear_flag(s_now_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_now_card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_now_card, now_card_click_cb, LV_EVENT_CLICKED, NULL);
 
     /* Accent bar top-left (140×3 amber) */
+    /* Accent bar removed in Sovereign Halo live-line -- amber pip inline with
+     * kicker provides the equivalent colour cue.  Keep the s_now_accent
+     * pointer as a 0-size placeholder so later code that touches it is a no-op. */
     s_now_accent = lv_obj_create(s_now_card);
     lv_obj_remove_style_all(s_now_accent);
-    lv_obj_set_size(s_now_accent, 140, 3);
+    lv_obj_set_size(s_now_accent, 0, 0);
     lv_obj_set_pos(s_now_accent, 0, 0);
-    lv_obj_set_style_bg_color(s_now_accent, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(s_now_accent, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_now_accent, LV_OBJ_FLAG_HIDDEN);
 
     /* Kicker */
+    /* Kicker now sits on the left, vertically centred in the live-line band.
+     * Width reserved = ~90 px (approx: mono 5-10 chars of FONT_SMALL). Active
+     * widgets should emit skill-id kickers of similar length. */
     s_now_kicker = lv_label_create(s_now_card);
-    lv_label_set_text(s_now_kicker, "NOW \xe2\x80\xa2 STANDING BY");
-    lv_obj_set_pos(s_now_kicker, CARD_PAD, CARD_PAD);
+    lv_label_set_text(s_now_kicker, "READY");
+    lv_obj_set_pos(s_now_kicker, CARD_PAD, (CARD_H - 14) / 2);
     lv_obj_set_style_text_font(s_now_kicker, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_now_kicker, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(s_now_kicker, 4, 0);
 
     /* Lede */
+    /* Lede: single line, positioned after the ~80 px kicker column,
+     * vertically centred. Wrapping disabled -- use ellipsis on overflow. */
     s_now_lede = lv_label_create(s_now_card);
-    lv_label_set_long_mode(s_now_lede, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(s_now_lede, LV_LABEL_LONG_DOT);
     lv_label_set_text(s_now_lede, "Tap the orb to ask something.");
-    lv_obj_set_pos(s_now_lede, CARD_PAD, CARD_PAD + 26);
-    lv_obj_set_width(s_now_lede, CARD_W - CARD_PAD * 2);
-    lv_obj_set_style_text_font(s_now_lede, FONT_HEADING, 0);
+    lv_obj_set_pos(s_now_lede, CARD_PAD + 116, (CARD_H - 24) / 2);
+    lv_obj_set_width(s_now_lede, CARD_W - CARD_PAD * 2 - 120);
+    lv_obj_set_style_text_font(s_now_lede, FONT_BODY, 0);
     lv_obj_set_style_text_color(s_now_lede, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_line_space(s_now_lede, 4, 0);
 
-    /* Stats row — 3 cells, hairline divider above */
-    lv_obj_t *stats_div = lv_obj_create(s_now_card);
-    lv_obj_remove_style_all(stats_div);
-    lv_obj_set_size(stats_div, CARD_W - CARD_PAD * 2, 1);
-    lv_obj_set_pos(stats_div, CARD_PAD, CARD_H - 72);
-    lv_obj_set_style_bg_color(stats_div, lv_color_hex(0x1E1E2A), 0);
-    lv_obj_set_style_bg_opa(stats_div, LV_OPA_COVER, 0);
-
-    const int cell_w = (CARD_W - CARD_PAD * 2) / 3;
+    /* Stats row removed in Sovereign Halo live-line. Pointers kept as
+     * hidden sinks so orb/mode update code that writes to them is a no-op. */
     for (int i = 0; i < 3; i++) {
         s_stat_k[i] = lv_label_create(s_now_card);
-        lv_obj_set_pos(s_stat_k[i], CARD_PAD + cell_w * i, CARD_H - 62);
-        lv_obj_set_style_text_font(s_stat_k[i], FONT_SMALL, 0);
-        lv_obj_set_style_text_color(s_stat_k[i], lv_color_hex(TH_TEXT_DIM), 0);
-        lv_obj_set_style_text_letter_space(s_stat_k[i], 3, 0);
         lv_label_set_text(s_stat_k[i], "");
+        lv_obj_add_flag(s_stat_k[i], LV_OBJ_FLAG_HIDDEN);
 
         s_stat_v[i] = lv_label_create(s_now_card);
-        lv_obj_set_pos(s_stat_v[i], CARD_PAD + cell_w * i, CARD_H - 40);
-        lv_obj_set_style_text_font(s_stat_v[i], FONT_HEADING, 0);
-        lv_obj_set_style_text_color(s_stat_v[i], lv_color_hex(TH_TEXT_PRIMARY), 0);
         lv_label_set_text(s_stat_v[i], "");
+        lv_obj_add_flag(s_stat_v[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     /* ── Say pill (108 px) ─────────────────────────────────── */
@@ -752,8 +749,9 @@ void ui_home_update_status(void)
         }
         orb_paint_for_tone(live_w->tone);
     } else {
-        /* Empty-state kicker + lede */
-        const char *kicker = "NOW \xe2\x80\xa2 STANDING BY";
+        /* Empty-state kicker + lede — Sovereign Halo live-line uses a
+         * single short word on the left so the lede has room to breathe. */
+        const char *kicker = "READY";
         const char *lede;
         switch (state) {
             case ST_NO_WIFI:
