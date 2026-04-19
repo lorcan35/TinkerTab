@@ -108,12 +108,45 @@ Nothing is "done" until: (1) code committed, (2) `idf.py build` passes, (3) flas
 - **G10 SHIPPED** (TB `9f44f5a`) — Idempotency-Key header on OpenRouter calls.
 
 **Pending:**
-- G1 multi-turn queue feedback on voice overlay
 - G4 (investigation: memory is already global for single-user — premise doesn't apply)
 - G8 local-authoritative focus timer
-- Settings UI cap editor
-- widget_chart / widget_media / widget_prompt parser + render (stubbed types)
 - logprobs + `Tool.preferred_backend` + confidence escalation chips
+
+### Phase 4e · Settings UI cap editor ✅ SHIPPED (2026-04-19)
+TT `d08f8e2`. "Daily cap" slider in VOICE MODE section, range 0-50 in 20¢ steps ($0-$10), 500ms NVS debounce, amber label ("$1.00" / "OFF").
+
+### Phase 4f · widget_chart ✅ SHIPPED + verified (2026-04-19)
+TT `b6955fd`. `chart_values[12]` + `chart_max` in widget_t, ASCII histogram render (" .:+#" 5-level ramp), card auto-grows 88→168 on CHART. Verified "Weekly tempo" + 7-point bar row.
+
+### Phase 4g · widget_media + widget_prompt ✅ SHIPPED + verified (2026-04-20)
+TT `794e915` + TB `d032431`. media_url + media_alt + choices[3] fields; voice.c parsers + ui_home render. Dragon `Tab5Surface.media(...)` and `.prompt(...)` helpers. Verified:
+- widget_media: "Latest capture / Taken 3 min ago / IMAGE • rear window view"
+- widget_prompt: "Confirm delete? / 1 Delete all 3 items / 2 Delete selected only / 3 Cancel" with tone=urgent → rose orb
+
+### Gauntlet additions
+- **G1 SHIPPED (2026-04-19 late)** — single-slot queue in voice.c + "+1 QUEUED" badge on voice overlay (TT `6901db2`).
+- **G7-F SHIPPED** (prior)
+- **G9 SHIPPED** (prior)
+
+### Session 2026-04-20 UX audit + stability sweep
+- Nav sheet on 4-dot chip (TT `12d3b9e`): 6 tiles Chat/Notes/Settings/Camera/Files/Memory. Verified.
+- Nav load fix: `ui_home_go_home` + `ui_home_nav_settings` + `ui_focus/_memory/_agents/_sessions_show` all call `lv_screen_load(home)` when on a foreign lv_screen. Camera→home + Settings from Camera both work now.
+- UI un-hardcoding (TT `bbdb691`): widget kicker 106 px clamp + LONG_DOT, auto-tall on title+body or body>48 chars; orb amber always (no blue Cloud tint); mode sheet resolve-panel reads live llm_model; chat suggestions "Powered by <model>" live.
+- Gemini Flash 3 Preview set as default cloud model; pricing table (TB `d032431`) covers 3-flash-preview, 2.5-flash, 2.5-flash-lite, 2.0-flash.
+- **Tab5 stuck-watchdog mode-aware** (TT `5fdf729`): was a hardcoded 10 s that killed every Local turn. Now 300 s Local / 240 s Hybrid/TinkerClaw / 75 s Cloud. WS pong budget 45s→180s. Verified: Local turn "one word greeting" completed in 32 s (qwen3:1.7b 455 tokens, FREE).
+- **Internet-only mode (conn_mode=2) verified**: Tab5 → tinkerclaw-voice.ngrok.dev → Dragon 127.0.0.1:3502. "Say hi in three words." → "Hello there, friend." via gemini-3-flash-preview in ~6 s.
+- **TinkerClaw gateway (openclaw) fixed**: removed `models.providers.ollama.options` invalid key from `~/.tinkerclaw/tinkerclaw.json`. `GET /health` → 200.
+- **Mode sheet state sync** (TB `2cd48bb`): dials reverse-derive from live voice_mode on open. Previously always Fast+Local+Ask.
+- **Pipecat / LiveKit research brief** saved at `RESEARCH-pipecat-livekit.md`. Recommendation: steal pipecat patterns (frame taxonomy, interrupt frame, semantic turn detection), skip LiveKit full stack, clone Xiaozhi-ESP32's Opus+WS protocol for v2.
+
+**Still open (next sprint):**
+- ui_memory / ui_agents / ui_focus content is mocked in C; wire to Dragon `/api/v1/memory`, `/api/v1/sessions`, etc.
+- Inline image decode on widget_media (currently just caption). media_cache_fetch exists for chat; reuse.
+- widget_prompt tap → widget_action round-trip test (plumbing is there; just didn't trigger via touch yet).
+- Opus encoder on mic path (cuts ngrok upload 10x).
+- Interrupt frame (cancel in-flight LLM + TTS on barge-in, truncate bot transcript to what user heard).
+- Edge states: offline banner, Dragon-down toast, "CAPPED · LOCAL TODAY" already live.
+- Onboarding / first-run screens from `system-d-complete.html` section D.
 
 ---
 
