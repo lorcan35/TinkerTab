@@ -184,6 +184,26 @@ static const char *tone_name(widget_tone_t t)
     }
 }
 
+/* Sovereign Halo trail — single serif italic line that lives under the
+ * state word.  Matches d-sovereign-halo.html:
+ *   "Morning, Emile — where shall we begin?"
+ * Time-of-day sensitive; "Emile" hardcoded until a user-name setting is
+ * added.  em-dash is U+2014 (3-byte UTF-8 "\xe2\x80\x94"); the current
+ * Fraunces italic font subset includes it. */
+static const char *trail_for_hour(int hour)
+{
+    /* Em-dash (U+2014) is NOT in the Fraunces italic 22 font subset --
+     * using it here renders as a tofu box on device.  Workaround lifted
+     * from chat v4·C: substitute " -- " (ASCII).  Previously documented
+     * in memory feedback_ui_overhaul_lessons. When a font re-subset is
+     * done, swap these back to \xe2\x80\x94 for the real em-dash. */
+    if (hour < 5)  return "Late, Emile -- still awake?";
+    if (hour < 12) return "Morning, Emile -- where shall we begin?";
+    if (hour < 17) return "Afternoon, Emile -- what's next?";
+    if (hour < 21) return "Evening, Emile -- what's on your mind?";
+    return "Tonight, Emile -- quiet thoughts?";
+}
+
 static const char *greeting_for_hour(int hour)
 {
     if (hour < 5)  return "late night, emile";
@@ -391,14 +411,20 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_align(s_state_word, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_state_word, 0, 555);
 
+    /* v4·D Sovereign Halo trail line — 24 px Fraunces italic serif that
+     * sits under the state word.  Replaces the tiny all-caps "evening,
+     * emile" label with an editorial subtitle matching d-sovereign-halo
+     * mockup exactly.  Uses LABEL_LONG_WRAP so the em-dash clause can
+     * break gracefully on narrow content if the greeting grows. */
     s_greet_line = lv_label_create(s_screen);
-    lv_label_set_text(s_greet_line, "morning, emile");
-    lv_obj_set_style_text_font(s_greet_line, FONT_CAPTION, 0);
+    lv_label_set_long_mode(s_greet_line, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(s_greet_line, trail_for_hour(9));  /* ui_home_update_status rewrites live */
+    lv_obj_set_style_text_font(s_greet_line, FONT_CHAT_EMPH, 0);
     lv_obj_set_style_text_color(s_greet_line, lv_color_hex(TH_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_letter_space(s_greet_line, 5, 0);
-    lv_obj_set_width(s_greet_line, SW);
+    lv_obj_set_style_text_letter_space(s_greet_line, 0, 0);
+    lv_obj_set_width(s_greet_line, SW - 2 * SIDE_PAD);
     lv_obj_set_style_text_align(s_greet_line, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(s_greet_line, 0, 630);
+    lv_obj_set_pos(s_greet_line, SIDE_PAD, 640);
 
     /* ── Mode chip (pill, centered at y=680) ─────────────────── */
     s_mode_chip = lv_obj_create(s_screen);
@@ -663,9 +689,12 @@ void ui_home_update_status(void)
     struct tm tm_local;
     localtime_r(&now, &tm_local);
 
-    /* Greet line (shifts with hour) */
+    /* Trail line (shifts with hour) — v4·D Sovereign Halo editorial
+     * subtitle.  Previously used greeting_for_hour() which returned
+     * tiny all-caps labels; now uses trail_for_hour() which returns
+     * full serif italic sentences per the d-sovereign-halo mockup. */
     if (s_greet_line) {
-        const char *g = greeting_for_hour(tm_local.tm_hour);
+        const char *g = trail_for_hour(tm_local.tm_hour);
         const char *cur = lv_label_get_text(s_greet_line);
         if (!cur || strcmp(cur, g) != 0) lv_label_set_text(s_greet_line, g);
     }
