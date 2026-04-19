@@ -249,14 +249,38 @@ void ui_voice_set_boot_connect(bool silent)
     ESP_LOGI(TAG, "Boot connect mode: %s", silent ? "ON (silent)" : "OFF");
 }
 
-/* Watchdog: if stuck in PROCESSING/SPEAKING for 65s, force-cancel.
- * This catches the case where the WS receive task dies and the
- * in-task timeout never fires. */
+/* Watchdog: if stuck in PROCESSING/SPEAKING past the mode budget,
+ * force-cancel.  This catches the case where the WS receive task
+ * dies and the in-task timeout never fires.
+ *
+ * The budget is mode-aware -- local Ollama on Dragon ARM64 CPU is
+ * ~7 tok/s, so a 200-token reply can take 30 s + tool-chain latency
+ * + memory-augmented context building, easily 60-90 s.  The 10 s
+ * timer we had before killed every Local turn before the first
+ * token streamed back. */
+#define STUCK_BUDGET_LOCAL_MS        300000   /* 5 min, tool chains */
+#define STUCK_BUDGET_HYBRID_MS       240000   /* 4 min, local LLM */
+#define STUCK_BUDGET_CLOUD_MS         75000   /* 75 s incl. TTS */
+#define STUCK_BUDGET_TINKERCLAW_MS   240000   /* 4 min, agent steps */
+
+static uint32_t stuck_budget_ms_for_current_mode(void)
+{
+    uint8_t m = tab5_settings_get_voice_mode();
+    switch (m) {
+        case VOICE_MODE_LOCAL:      return STUCK_BUDGET_LOCAL_MS;
+        case VOICE_MODE_HYBRID:     return STUCK_BUDGET_HYBRID_MS;
+        case VOICE_MODE_CLOUD:      return STUCK_BUDGET_CLOUD_MS;
+        case VOICE_MODE_TINKERCLAW: return STUCK_BUDGET_TINKERCLAW_MS;
+        default:                    return STUCK_BUDGET_CLOUD_MS;
+    }
+}
+
 static void stuck_watchdog_cb(lv_timer_t *t)
 {
     s_stuck_timer = NULL;
     if (s_cur_state == VOICE_STATE_PROCESSING || s_cur_state == VOICE_STATE_SPEAKING) {
-        ESP_LOGW(TAG, "Stuck watchdog: force-cancelling after 65s in state %d", s_cur_state);
+        ESP_LOGW(TAG, "Stuck watchdog: force-cancelling after %lu ms in state %d",
+                 (unsigned long)stuck_budget_ms_for_current_mode(), s_cur_state);
         voice_cancel();
         /* Show error and auto-hide */
         stop_all_anims();
@@ -296,8 +320,11 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         s_stuck_timer = NULL;
     }
     if (state == VOICE_STATE_PROCESSING || state == VOICE_STATE_SPEAKING) {
-        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 10000, NULL);
+        uint32_t budget = stuck_budget_ms_for_current_mode();
+        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, budget, NULL);
         lv_timer_set_repeat_count(s_stuck_timer, 1);
+        ESP_LOGI(TAG, "Stuck watchdog armed -> %lu ms (mode=%d)",
+                 (unsigned long)budget, tab5_settings_get_voice_mode());
     }
 
     switch (state) {

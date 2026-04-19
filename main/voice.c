@@ -87,7 +87,13 @@ static const char *TAG = "tab5_voice";
 #define WS_CLIENT_RECONNECT_MS 2000    /* base reconnect delay — matches legacy RECONNECT_BACKOFF_MIN_MS */
 #define WS_CLIENT_NETWORK_MS   10000   /* blocking send deadline */
 #define WS_CLIENT_PING_SEC     15      /* built-in WS-level ping */
-#define WS_CLIENT_PONG_SEC     45      /* disconnect if no pong in 3× ping */
+/* Pong budget widened to 180 s (12x ping interval) so a long-running
+ * local LLM turn on Dragon's ARM64 CPU doesn't tear the WS down before
+ * the first token streams back.  Dragon's aiohttp keepalive answers
+ * pings on its own asyncio loop independent of the LLM coroutine,
+ * so bumping this doesn't hide real network failures -- it only stops
+ * us from killing the session while Ollama is genuinely thinking. */
+#define WS_CLIENT_PONG_SEC     180
 
 // Ngrok fallback is attempted after this many consecutive failed handshakes
 // against the local LAN URI (only in conn_mode=0 "auto").
