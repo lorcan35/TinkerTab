@@ -1,124 +1,166 @@
 /**
- * Mode-specific suggestion cards for empty chat state.
- * Shows 4 tappable prompt suggestions based on current voice mode.
- * Uses flex column layout, DPI_SCALE sizing.
+ * Chat Suggestions — empty-state prompt cards (chat v4·C spec §5.4).
+ *
+ * 4 cards stacked in a column. Mode-specific prompts. Card color is
+ * TH_CARD with 1 px border; pressed states handled by LVGL feedback.
  */
-
 #include "chat_suggestions.h"
+#include "ui_theme.h"
 #include "config.h"
 #include "esp_log.h"
+#include <stdlib.h>
+#include <string.h>
 
-static const char __attribute__((unused)) *TAG = "suggestions";
+static const char *TAG = "suggestions";
 
-static lv_obj_t *s_container = NULL;
+#define SUGG_CARD_H   72
+#define SUGG_CARD_W   620
+#define SUGG_GAP      12
 
-/* Suggestion texts per mode */
-static const char *s_suggestions[4][4] = {
+static const char *s_prompts[4][4] = {
     /* Local */
-    { "\"Tell me a joke\"",
-      "\"What time is it?\"",
-      "\"Set a 5 minute timer\"",
-      "\"How's the weather?\"" },
+    { "What's the date?",
+      "Add a note about\xe2\x80\xa6",
+      "Remind me to\xe2\x80\xa6",
+      "Summarize my last note" },
     /* Hybrid */
-    { "\"Tell me a joke\"",
-      "\"What time is it?\"",
-      "\"Set a 5 minute timer\"",
-      "\"Translate hello to French\"" },
+    { "Search the web for\xe2\x80\xa6",
+      "Explain like I'm 5\xe2\x80\xa6",
+      "What's the weather?",
+      "Brief me on\xe2\x80\xa6" },
     /* Cloud */
-    { "\"Explain quantum computing\"",
-      "\"Write a Python function\"",
-      "\"Compare AirPods vs Sony XM5\"",
-      "\"Summarize this article...\"" },
-    /* TinkerClaw */
-    { "\"What do you know about me?\"",
-      "\"Search the web for...\"",
-      "\"Remember that I like sushi\"",
-      "\"What can you do?\"" },
+    { "Write a Python script\xe2\x80\xa6",
+      "Compare X and Y",
+      "Draft a reply to\xe2\x80\xa6",
+      "Plan my day around\xe2\x80\xa6" },
+    /* Claw */
+    { "Search my inbox for\xe2\x80\xa6",
+      "Book a car at\xe2\x80\xa6",
+      "Update my calendar\xe2\x80\xa6",
+      "Pull the Tab5 docs" },
 };
 
-/* Mode accent colors — aligned with th_mode_colors in ui_theme */
-static const uint32_t s_mode_colors[4] = {
-    0x22C55E,  /* Local: green  (TH_MODE_LOCAL) */
-    0xF59E0B,  /* Hybrid: amber (TH_MODE_HYBRID) */
-    0x3B82F6,  /* Cloud: blue   (TH_MODE_CLOUD) */
-    0xF43F5E,  /* TinkerClaw: rose (TH_MODE_CLAW) */
+static const uint32_t s_mode_tint[4] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
 };
 
-/* Mode hints */
-static const char *s_mode_hints[4] = {
-    "Ask me anything!\nFast local AI, private.",
-    "Ask me anything!\nLocal AI, cloud audio.",
-    "Ask me anything!\nPowered by Claude / GPT-4o.",
-    "I'm your AI agent.\nMemory, web search, tools.",
+static const char *s_mode_lead[4] = {
+    "Fast local AI \xe2\x80\x94 private by default.",
+    "Local model + cloud audio for clarity.",
+    "Powered by Claude / GPT\xe2\x80\x914o for heavy lifts.",
+    "Your agent: memory, tools, web.",
 };
 
-void chat_suggestions_create(lv_obj_t *parent, uint8_t mode, lv_event_cb_t on_tap)
+struct chat_suggestions {
+    lv_obj_t *root;
+    lv_obj_t *lead;
+    lv_obj_t *cards[4];
+    lv_obj_t *labels[4];
+    uint8_t   mode;
+    chat_sugg_pick_cb_t pick_cb;
+    void     *pick_ud;
+};
+
+/* ── Event trampoline ──────────────────────────────────────────── */
+static void ev_card_click(lv_event_t *e)
 {
-    if (mode >= 4) mode = 0;
+    chat_suggestions_t *s = (chat_suggestions_t *)lv_event_get_user_data(e);
+    lv_obj_t *card = lv_event_get_target(e);
+    if (!s || !s->pick_cb || !card) return;
+    lv_obj_t *lbl = lv_obj_get_child(card, 0);
+    if (!lbl) return;
+    const char *txt = lv_label_get_text(lbl);
+    if (txt && *txt) s->pick_cb(txt, s->pick_ud);
+}
 
-    /* Destroy old container if mode changed */
-    if (s_container) {
-        lv_obj_del(s_container);
-        s_container = NULL;
-    }
+/* ── Create ────────────────────────────────────────────────────── */
 
-    s_container = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_container);
-    lv_obj_set_size(s_container, lv_pct(90), LV_SIZE_CONTENT);
-    lv_obj_align(s_container, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_flex_flow(s_container, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_container, LV_FLEX_ALIGN_CENTER,
+chat_suggestions_t *chat_suggestions_create(lv_obj_t *parent)
+{
+    chat_suggestions_t *s = calloc(1, sizeof(*s));
+    if (!s) { ESP_LOGE(TAG, "OOM"); return NULL; }
+
+    s->root = lv_obj_create(parent);
+    lv_obj_remove_style_all(s->root);
+    lv_obj_set_size(s->root, SUGG_CARD_W, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(s->root, LV_OPA_TRANSP, 0);
+    lv_obj_set_flex_flow(s->root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s->root, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(s_container, DPI_SCALE(8), 0);
-    lv_obj_clear_flag(s_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_gap(s->root, SUGG_GAP, 0);
+    lv_obj_clear_flag(s->root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s->root, LV_ALIGN_TOP_MID, 0, 80);
 
-    /* Hint text */
-    lv_obj_t *hint = lv_label_create(s_container);
-    lv_label_set_text(hint, s_mode_hints[mode]);
-    lv_obj_set_style_text_font(hint, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_bottom(hint, DPI_SCALE(12), 0);
+    s->lead = lv_label_create(s->root);
+    lv_label_set_text(s->lead, s_mode_lead[0]);
+    lv_obj_set_style_text_font(s->lead, FONT_HEADING, 0);
+    lv_obj_set_style_text_color(s->lead, lv_color_hex(TH_TEXT_BODY), 0);
+    lv_obj_set_style_text_align(s->lead, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_bottom(s->lead, 8, 0);
+    lv_obj_set_width(s->lead, SUGG_CARD_W - 40);
 
-    /* Suggestion cards */
-    uint32_t color = s_mode_colors[mode];
     for (int i = 0; i < 4; i++) {
-        lv_obj_t *card = lv_obj_create(s_container);
+        lv_obj_t *card = lv_obj_create(s->root);
         lv_obj_remove_style_all(card);
-        lv_obj_set_size(card, lv_pct(100), DPI_SCALE(48));
-        lv_obj_set_style_bg_color(card, lv_color_hex(0x111119), 0); /* TH_CARD */
+        lv_obj_set_size(card, SUGG_CARD_W, SUGG_CARD_H);
+        lv_obj_set_style_bg_color(card, lv_color_hex(TH_CARD), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(card, DPI_SCALE(10), 0);
+        lv_obj_set_style_radius(card, 16, 0);
         lv_obj_set_style_border_width(card, 1, 0);
-        lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0); /* TH_HAIRLINE */
-        lv_obj_set_style_pad_hor(card, DPI_SCALE(14), 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(0x1E1E2A), 0);
+        lv_obj_set_style_pad_hor(card, 20, 0);
+        lv_obj_set_style_pad_ver(card, 0, 0);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, ev_card_click, LV_EVENT_CLICKED, s);
 
         lv_obj_t *lbl = lv_label_create(card);
-        lv_label_set_text(lbl, s_suggestions[mode][i]);
-        lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(color), 0);
+        lv_label_set_text(lbl, s_prompts[0][i]);
+        lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
 
-        if (on_tap) {
-            lv_obj_add_event_cb(card, on_tap, LV_EVENT_CLICKED,
-                                (void *)(intptr_t)i);
+        s->cards[i]  = card;
+        s->labels[i] = lbl;
+    }
+
+    return s;
+}
+
+void chat_suggestions_destroy(chat_suggestions_t *s)
+{
+    if (!s) return;
+    if (s->root) lv_obj_del(s->root);
+    free(s);
+}
+
+void chat_suggestions_set_mode(chat_suggestions_t *s, uint8_t m)
+{
+    if (!s) return;
+    if (m > 3) m = 0;
+    s->mode = m;
+    if (s->lead) lv_label_set_text(s->lead, s_mode_lead[m]);
+    for (int i = 0; i < 4; i++) {
+        if (s->labels[i]) lv_label_set_text(s->labels[i], s_prompts[m][i]);
+        if (s->cards[i])
+            lv_obj_set_style_border_color(s->cards[i],
+                                          lv_color_hex(m == 0 ? 0x1E1E2A : s_mode_tint[m]), 0);
+        if (s->cards[i] && m != 0) {
+            lv_obj_set_style_border_opa(s->cards[i], LV_OPA_30, 0);
+        } else if (s->cards[i]) {
+            lv_obj_set_style_border_opa(s->cards[i], LV_OPA_COVER, 0);
         }
     }
 }
 
-void chat_suggestions_show(void)
-{
-    if (s_container) lv_obj_clear_flag(s_container, LV_OBJ_FLAG_HIDDEN);
-}
+void chat_suggestions_show(chat_suggestions_t *s)
+{ if (s && s->root) lv_obj_clear_flag(s->root, LV_OBJ_FLAG_HIDDEN); }
 
-void chat_suggestions_hide(void)
-{
-    if (s_container) lv_obj_add_flag(s_container, LV_OBJ_FLAG_HIDDEN);
-}
+void chat_suggestions_hide(chat_suggestions_t *s)
+{ if (s && s->root) lv_obj_add_flag(s->root, LV_OBJ_FLAG_HIDDEN); }
 
-bool chat_suggestions_visible(void)
-{
-    return s_container && !lv_obj_has_flag(s_container, LV_OBJ_FLAG_HIDDEN);
-}
+bool chat_suggestions_visible(chat_suggestions_t *s)
+{ return s && s->root && !lv_obj_has_flag(s->root, LV_OBJ_FLAG_HIDDEN); }
+
+void chat_suggestions_on_pick(chat_suggestions_t *s, chat_sugg_pick_cb_t cb, void *ud)
+{ if (s) { s->pick_cb = cb; s->pick_ud = ud; } }
