@@ -131,24 +131,24 @@
 |---|-----|----------|---------|
 | G1-F | Multi-turn queue badge + cancel-all | P0 | voice overlay |
 | G1-F2 | Mute mic during TTS playback | P0 | voice pipeline |
-| G2-F | Retry-trim receipt flag + degrade chip | P1 | receipts |
+| G2-F | Retry-trim receipt flag + degrade chip | P1 | receipts | ✅ SHIPPED (TB 5eab5a7 + TT on feat/ui-overhaul-v4, 2026-04-19) — "RETRIED" chip in stamp |
 | G3-F | First-time overlay onboarding | P1 | voice UX |
-| G3-F2 | Multi-tap 500 ms debounce | P1 | touch |
+| G3-F2 | Multi-tap 500 ms debounce | P1 | touch | ✅ SHIPPED (pre-existing in orb_click_cb:955 + 300 ms nav debounce per CLAUDE.md) |
 | G3-F3 | Orphan-transcript TTL | P1 | notes |
 | G4-F | User-scoped memory (not session) | P0 | memory |
 | G5-F | Widgets write to event bus | P0 | widget platform |
-| G5-F2 | +N more chip (designed, unbuilt) | P1 | home live-slot |
+| G5-F2 | +N more chip (designed, unbuilt) | P1 | home live-slot | ✅ SHIPPED (commit on feat/ui-overhaul-v4, 2026-04-19) — "SKILL +N" kicker format |
 | G5-F3 | Urgency field on widget schema | P1 | widget platform |
 | G6-F | Offline note title extraction | P1 | dictation |
 | G6-F2 | Cert bundle expiry warning | P1 | TLS reliability |
 | G6-F3 | Captive-portal detection | P1 | network |
-| G7-F | Spoken TTS alert on auto-downgrade | P0 | budget UX |
-| G7-F2 | Persistent CAPPED badge | P0 | mode chip |
+| G7-F | Spoken TTS alert on auto-downgrade | P0 | budget UX | 🟡 pending |
+| G7-F2 | Persistent CAPPED banner | P0 | status bar | ✅ SHIPPED (commit on feat/ui-overhaul-v4, 2026-04-19) |
 | G8-F | Local-authoritative timer | P0 | focus mode |
 | G8-F2 | Display persists during focus | P1 | focus mode |
 | G9-F | `forget_fact` tool + auth gate | P1 | memory |
 | G9-F2 | "(advisory)" marker for non-action responses | P1 | conversation engine |
-| G10-F | Idempotency keys on LLM requests | P1 | cost accuracy |
+| G10-F | Idempotency keys on LLM requests | P1 | cost accuracy | ✅ SHIPPED (TB 2026-04-19) — UUID per outer turn, reused on internal retries |
 | G10-F2 | Usage dedupe cache on Dragon | P1 | cost accuracy |
 | G10-F3 | "Turns vs billed" diff in Settings | P1 | cost accuracy |
 
