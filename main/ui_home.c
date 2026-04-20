@@ -101,6 +101,13 @@ static lv_obj_t *s_sys_dot         = NULL;
 static lv_obj_t *s_sys_label       = NULL;  /* left: "ONLINE" / "OFFLINE" / etc */
 static lv_obj_t *s_time_label      = NULL;  /* right: "Thursday · 9:42" */
 
+/* F1/F2 full-screen OFFLINE hero (audit 2026-04-20). Shown when NO_WIFI
+ * or DRAGON_DOWN persists past 8 s. Auto-dismisses on recovery. */
+static lv_obj_t *s_off_hero        = NULL;
+static lv_obj_t *s_off_hero_title  = NULL;
+static lv_obj_t *s_off_hero_body   = NULL;
+static int64_t   s_degraded_since_ms = 0;
+
 /* Orb stage */
 static lv_obj_t *s_halo_outer      = NULL;
 static lv_obj_t *s_halo_inner      = NULL;
@@ -720,6 +727,63 @@ lv_obj_t *ui_home_create(void)
 
 /* ── Periodic status refresh ─────────────────────────────────── */
 
+/* F1/F2 OFFLINE hero — lazy-create big centered card on lv_layer_top. */
+static void offline_hero_show(const char *title, const char *body)
+{
+    if (!s_off_hero) {
+        s_off_hero = lv_obj_create(lv_layer_top());
+        lv_obj_remove_style_all(s_off_hero);
+        lv_obj_set_size(s_off_hero, 720, 1280);
+        lv_obj_set_pos(s_off_hero, 0, 0);
+        lv_obj_set_style_bg_color(s_off_hero, lv_color_hex(0x08080E), 0);
+        lv_obj_set_style_bg_opa(s_off_hero, 220, 0);
+        lv_obj_clear_flag(s_off_hero, LV_OBJ_FLAG_SCROLLABLE);
+
+        /* Card */
+        lv_obj_t *card = lv_obj_create(s_off_hero);
+        lv_obj_remove_style_all(card);
+        lv_obj_set_size(card, 600, 420);
+        lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x13131F), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(card, 28, 0);
+        lv_obj_set_style_border_width(card, 2, 0);
+        lv_obj_set_style_border_color(card, lv_color_hex(TH_STATUS_RED), 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+        /* Red accent bar */
+        lv_obj_t *bar = lv_obj_create(card);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_size(bar, 140, 4);
+        lv_obj_set_pos(bar, 36, 40);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(TH_STATUS_RED), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(bar, 2, 0);
+
+        s_off_hero_title = lv_label_create(card);
+        lv_obj_set_style_text_font(s_off_hero_title, FONT_TITLE, 0);
+        lv_obj_set_style_text_color(s_off_hero_title, lv_color_hex(TH_TEXT_PRIMARY), 0);
+        lv_obj_set_pos(s_off_hero_title, 36, 68);
+
+        s_off_hero_body = lv_label_create(card);
+        lv_label_set_long_mode(s_off_hero_body, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_off_hero_body, 520);
+        lv_obj_set_style_text_font(s_off_hero_body, FONT_BODY, 0);
+        lv_obj_set_style_text_color(s_off_hero_body, lv_color_hex(TH_TEXT_DIM), 0);
+        lv_obj_set_style_text_line_space(s_off_hero_body, 6, 0);
+        lv_obj_set_pos(s_off_hero_body, 36, 140);
+    }
+    lv_label_set_text(s_off_hero_title, title ? title : "Offline");
+    lv_label_set_text(s_off_hero_body, body ? body : "");
+    lv_obj_clear_flag(s_off_hero, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_off_hero);
+}
+
+static void offline_hero_hide(void)
+{
+    if (s_off_hero) lv_obj_add_flag(s_off_hero, LV_OBJ_FLAG_HIDDEN);
+}
+
 void ui_home_update_status(void)
 {
     time_t now = 0; time(&now);
@@ -756,6 +820,33 @@ void ui_home_update_status(void)
     else if (mic_off) state = ST_MUTED;
     else if (quiet)   state = ST_QUIET;
     else              state = ST_NORMAL;
+
+    /* F1/F2 OFFLINE hero: after 8 s of persistent NO_WIFI or DRAGON_DOWN,
+     * surface a full-screen card so the user can't miss the outage.
+     * Auto-dismiss on recovery.  Pill still updates in parallel below. */
+    {
+        bool degraded = (state == ST_NO_WIFI || state == ST_DRAGON_DOWN);
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (degraded) {
+            if (s_degraded_since_ms == 0) s_degraded_since_ms = now_ms;
+            if (now_ms - s_degraded_since_ms >= 8000) {
+                if (state == ST_NO_WIFI) {
+                    offline_hero_show("No Wi-Fi",
+                        "Tab5 can't reach the network.\nVoice, memory, "
+                        "and chat will come back as soon as Wi-Fi reconnects.\n"
+                        "Notes still save to the SD card.");
+                } else {
+                    offline_hero_show("Dragon unreachable",
+                        "Wi-Fi is up but the Dragon voice server isn't "
+                        "responding.\nTab5 will auto-reconnect; your "
+                        "session will resume.\nNotes still save locally.");
+                }
+            }
+        } else {
+            s_degraded_since_ms = 0;
+            offline_hero_hide();
+        }
+    }
 
     /* Voice sub-state (overrides "ready" when something is happening) */
     voice_state_t vs = voice_get_state();
