@@ -1,0 +1,15 @@
+I (90697) tab5_voice: WS recv text (222 bytes): {"type": "widget_media", "skill_id": "audit", "card_id": "audit_media_36ab1f", "url": "http://192.168.1.91:3502/api/media/b5_fixed_1776715067.jpg", "tone": "info", "priority": 60, "alt": "B5 fixed", "
+I (90699) tab5_voice: widget_media upsert: audit/audit_media_36ab1f alt=B5 fixed
+I (90702) ui_home: widget_media fetch: http://192.168.1.91:3502/api/media/b5_fixed_1776715067.jpg
+I (90702) media_cache: Downloading: http://192.168.1.91:3502/api/media/b5_fixed_1776715067.jpg
+E (90715) dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+E (90735) dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+W (90735) H_SDIO_DRV: SDIO RX alloc failed (3584), using existing 3072 buf
+E (90735) H_SDIO_DRV: packet size too big for remaining stream data
+E (90736) H_SDIO_DRV: Failed to push data to rx queue
+I (91459) ui_core: UI task alive, next=1 ms, lvgl_fps=4
+I (96479) ui_core: UI task alive, next=1 ms, lvgl_fps=5
+I (99423) ui_notes: Transcription queue: 4 unprocessed
+I (101495) ui_core: UI task alive, next=1 ms, lvgl_fps=5
+I (106511) ui_core: UI task alive, next=1 ms, lvgl_fps=6
+I (111541) ui_core: UI task alive, next=1 ms, lvgl_fps=5

@@ -1360,14 +1360,23 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
          * crash was silent — just a frozen overlay + no answer.  The
          * home status-bar pill already picks up RECONNECTING via
          * voice_get_degraded_reason(), so the toast is a short-lived
-         * orient-the-user signal, not the permanent indicator. */
+         * orient-the-user signal, not the permanent indicator.
+         *
+         * Wave 7 F5 completion (2026-04-21): also pulse the halo orb
+         * rose for ~2.5 s so the visual signal matches the audit spec
+         * ("toast + rose orb pulse"). Toast alone was easy to miss if
+         * the user was looking at the chat area rather than the home
+         * card. ui_home_pulse_orb_alert reverts to the mode-default
+         * orb paint via an LVGL one-shot timer. */
         {
             voice_state_t cur = s_state;
             if ((cur == VOICE_STATE_PROCESSING || cur == VOICE_STATE_SPEAKING)
                 && !s_disconnecting) {
                 extern void ui_home_show_toast(const char *text);
+                extern void ui_home_pulse_orb_alert(void);
                 lv_async_call((lv_async_cb_t)ui_home_show_toast,
                               (void *)"Dragon dropped mid-turn - reconnecting");
+                lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
             }
         }
         /* T1.1: bump attempt counter + apply exponential-with-full-jitter
