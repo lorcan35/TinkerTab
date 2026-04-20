@@ -169,6 +169,11 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
     esp_http_client_config_t http_cfg = {
         .url = url,
         .timeout_ms = 60000,  /* 60s for large firmware download */
+        /* Tab5's Dragon runs on LAN HTTP (not HTTPS); without this flag
+         * esp_https_ota refuses to download with "No option for server
+         * verification is enabled".  We defend against MitM via the
+         * version.json-carried SHA256 check further down (SEC07 + J2). */
+        .skip_cert_common_name_check = true,
     };
 
     esp_https_ota_config_t ota_cfg = {
