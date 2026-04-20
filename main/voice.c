@@ -50,6 +50,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_websocket_client.h"
 #include "cJSON.h"
+#include "wifi.h"
 
 static const char *TAG = "tab5_voice";
 
@@ -1692,10 +1693,104 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         ESP_LOGW(TAG, "Failed to create playback drain task — audio may stutter");
     }
 
+    /* v4·D "fix once and for all": ngrok→LAN recovery probe task.
+     *
+     * The flakiness chain:
+     *   1. Tab5 + Dragon co-boot; Dragon WS isn't listening yet
+     *   2. Tab5 handshake fails 2x -> flip s_using_ngrok=true, swap URI
+     *   3. Ngrok reaches Dragon (eventually) but stays on 400ms RTT
+     *   4. Previous fix cleared s_handshake_fail_cnt on disconnect, but
+     *      never cleared s_using_ngrok or swapped back to LAN -- so any
+     *      Dragon hiccup that dumps us onto ngrok was permanent until
+     *      reboot.
+     *
+     * The task opens a raw TCP connect to the configured LAN host
+     * every 30 s.  If it succeeds (Dragon reachable), we stop the WS
+     * client, swap the URI back to LAN, and restart it.  Scheduling
+     * stop/start from a non-event task avoids the documented "client
+     * stops itself from its own callback" race.
+     */
+    {
+        extern void voice_lan_probe_task(void *arg);
+        BaseType_t ok = xTaskCreatePinnedToCore(
+            voice_lan_probe_task, "voice_lan_probe",
+            4096, NULL, 2, NULL, 1);
+        if (ok != pdPASS) {
+            ESP_LOGW(TAG, "Failed to start LAN probe task");
+        }
+    }
+
     s_initialized = true;
     voice_set_state(VOICE_STATE_IDLE, NULL);
     ESP_LOGI(TAG, "Voice module initialized");
     return ESP_OK;
+}
+
+/* v4·D "fix once and for all" -- LAN probe task.  Runs on Core 1 at
+ * priority 2, sleeps 30s between probes, only acts when auto mode is
+ * selected and we're currently on ngrok.  Uses a raw TCP socket with
+ * 1500 ms connect timeout so we don't block under WiFi weather. */
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+void voice_lan_probe_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "LAN probe task started (checks every 30 s)");
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(30000));
+
+        if (!s_using_ngrok) continue;
+        uint8_t conn_mode = tab5_settings_get_connection_mode();
+        if (conn_mode != 0) continue;    /* only auto-mode probes */
+        if (!tab5_wifi_connected())      continue;
+
+        char lan_host[64] = {0};
+        tab5_settings_get_dragon_host(lan_host, sizeof(lan_host));
+        uint16_t lan_port = tab5_settings_get_dragon_port();
+        if (!lan_host[0] || lan_port == 0) continue;
+
+        struct addrinfo hints = { .ai_family = AF_INET,
+                                   .ai_socktype = SOCK_STREAM };
+        struct addrinfo *res = NULL;
+        char port_s[8]; snprintf(port_s, sizeof(port_s), "%u", (unsigned)lan_port);
+        int gai = getaddrinfo(lan_host, port_s, &hints, &res);
+        if (gai != 0 || !res) {
+            ESP_LOGD(TAG, "LAN probe: getaddrinfo failed (%d)", gai);
+            if (res) freeaddrinfo(res);
+            continue;
+        }
+
+        int s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (s < 0) { freeaddrinfo(res); continue; }
+
+        /* Non-blocking connect with 1500 ms ceiling. */
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 500000 };
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        int cr = connect(s, res->ai_addr, res->ai_addrlen);
+        close(s);
+        freeaddrinfo(res);
+        if (cr != 0) {
+            ESP_LOGD(TAG, "LAN probe: %s:%u unreachable (errno=%d), staying on ngrok",
+                     lan_host, (unsigned)lan_port, errno);
+            continue;
+        }
+
+        /* LAN is back -- swap URI + restart WS client. */
+        char lan_uri[160];
+        snprintf(lan_uri, sizeof(lan_uri),
+                 "ws://%s:%u%s", lan_host, (unsigned)lan_port, TAB5_VOICE_WS_PATH);
+        ESP_LOGI(TAG, "LAN probe succeeded -> swapping client to %s", lan_uri);
+        esp_websocket_client_stop(s_ws);
+        esp_websocket_client_set_uri(s_ws, lan_uri);
+        strncpy(s_dragon_host, lan_host, sizeof(s_dragon_host) - 1);
+        s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
+        s_dragon_port = lan_port;
+        s_using_ngrok = false;
+        s_handshake_fail_cnt = 0;
+        esp_websocket_client_start(s_ws);
+    }
 }
 
 /* Initialize and start the esp_websocket_client for the given host/port.
