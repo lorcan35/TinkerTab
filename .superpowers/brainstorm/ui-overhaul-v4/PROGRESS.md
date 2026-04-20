@@ -246,6 +246,82 @@ Other screens (per `system-d-sovereign.html`) not yet spec-audited.
 
 ## Changelog
 
+### 2026-04-20 — Reconciliation sprint wave 4: voice UX + vec memory + TC race + final polish
+
+Wave 4 was about closing the big remaining infra gaps + fixing the
+persistent voice-overlay nav annoyance that had been wasting test cycles.
+
+- **Voice overlay auto-dismiss on navigation**. The overlay sits on
+  `lv_layer_top` so no screen navigation had ever hidden it — every
+  test flow in waves 2-3 had to dismiss the X manually or work around
+  stale "Tap to speak" covering the screen. Added public
+  `ui_voice_dismiss_if_idle()` that hides ONLY when state is
+  IDLE/READY/CONNECTING/RECONNECTING (leaves LISTENING/PROCESSING/
+  SPEAKING alone because the overlay IS the UI then). Wired into
+  debug_server's `async_navigate`, `ui_home_go_home`,
+  `ui_home_nav_settings`, and the `ui_nav_sheet` tile click callback.
+  Verified: /chat turn → voice overlay shows during PROCESSING →
+  turn completes → overlay sits in READY "Tap to speak" →
+  /navigate?screen=chat triggers dismiss → chat renders immediately
+  with full history + streaming text, no stale overlay.
+
+- **Dragon memory sqlite-vec + ANN search (K2)**. Top audit Dragon
+  overclaim. CLAUDE.md + README both asserted "Hybrid vector
+  (sqlite-vec) + keyword (FTS5)" but the live memory search was
+  Python-loop cosine over BLOB-packed floats. Ported the vector side:
+  load sqlite-vec via aiosqlite's async enable_load_extension +
+  load_extension coroutines at MemoryService.initialize(); on first
+  store_fact (when embed_dim is known) lazy-create memory_facts_vec
+  virtual table with `FLOAT[embed_dim]` column; every store mirrors
+  the embedding into vec table; delete removes from both; search
+  runs `MATCH ? AND k = ?` knn query over vec table, falling back
+  to Python-loop cosine on any error. Installed sqlite-vec v0.1.9
+  via `pip --break-system-packages`. **Verified:**
+  `sqlite-vec loaded OK; vector search enabled` at boot,
+  `memory_facts_vec created (dim=768)` on first store, query
+  "what does emile drink" ranks the espresso fact #1 with smallest
+  distance. Scales well past 10k facts now. FTS5 keyword side of
+  the "hybrid" claim is a separate future add.
+
+- **TC mid-turn WS-reconnect race (Bug 1 follow-up)**. Wave 2 Test 1
+  found that TC turns around the 45-50s mark were getting their
+  in-flight response lost to a WS-eviction race. Heartbeat bump
+  (30→60s, which doubled aiohttp's implicit pong grace 15→30s)
+  appeared to be a partial mitigation. Verified in wave 4:
+  submitted a 28s TC turn with a deliberate long prompt
+  ("describe the history of computing in 5 sentences"), observed
+  full multi-sentence streamed response (684 chars over 2s of
+  chunks) + `minimax/MiniMax-M2.5` receipt, WS `conn=True`
+  throughout. Race is **effectively resolved** for typical long
+  turns. Only residual risk is turns > ~90s (combined 60s ping
+  interval + 30s pong grace); defer until reported.
+
+- **widget_capabilities truncation wiring (B14)**. Audit: caps
+  stored on conn_state but no helper consumed them — list/prompt/
+  chart truncated at hardcoded 5/3/12 instead of per-device caps.
+  Tab5Surface.__init__ now takes an optional caps dict; helpers read
+  `list_max_items` / `prompt_max_choices` / `chart_max_points` from
+  caps with same defaults as fallback. SurfaceManager.register_session
+  forwards caps. server.py passes `conn_state["widget_capabilities"]`
+  on WS connect. Capability negotiation is no longer cosmetic.
+
+- **Settings "Show intro again" row (G follow-up)**. Onboarding carousel
+  shipped in wave 3 with a one-shot NVS gate. Added a ghost-pill button
+  at the bottom of Settings' About section that force-shows the
+  carousel via `ui_onboarding_force_show()` without requiring an NVS
+  erase. Useful for demos or after a factory-reset-like setup.
+
+**Still open** (unchanged):
+- FTS5 keyword side of the "hybrid" memory claim (separate sprint).
+- Rose orb pulse on Dragon crash mid-turn (cosmetic; toast already
+  shipped in wave 1).
+- OTA SHA256 mismatch test (J2; pre-release exercise).
+- Local midnight rollover soak (I3; needs RTC manipulation).
+
+Wave 4 commits: Tab5 `e9b84fb` · `cd74c4a`. Dragon `21390e5` · `22a8f87`.
+
+---
+
 ### 2026-04-20 — Reconciliation sprint wave 3: 4 more overclaims closed + 1 P0 shipped
 
 Continuing the burn. After wave 2 left a "chat view-render edge case"
