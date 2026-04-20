@@ -702,6 +702,30 @@ static void handle_text_message(const char *data, int len)
 
             ui_notes_sync_pending();
         }
+    } else if (strcmp(type_str, "session_messages") == 0) {
+        /* Audit C8/K15 (2026-04-20): Dragon replays the tail of session
+         * messages on a resumed connect.  Rehydrate chat_store so the
+         * user sees their conversation after a reconnect.  Pushed via
+         * ui_chat_push_message which is thread-safe + lv_async_call'd. */
+        cJSON *items = cJSON_GetObjectItem(root, "items");
+        if (cJSON_IsArray(items)) {
+            int n = cJSON_GetArraySize(items);
+            ESP_LOGI(TAG, "session_messages replay: %d items", n);
+            for (int i = 0; i < n; i++) {
+                cJSON *m = cJSON_GetArrayItem(items, i);
+                if (!m) continue;
+                const char *role = cJSON_GetStringValue(
+                    cJSON_GetObjectItem(m, "role"));
+                const char *content = cJSON_GetStringValue(
+                    cJSON_GetObjectItem(m, "content"));
+                if (!role || !content || !content[0]) continue;
+                /* Skip system/tool rows — chat UI only renders
+                 * user/assistant today. */
+                if (strcmp(role, "user") != 0 &&
+                    strcmp(role, "assistant") != 0) continue;
+                ui_chat_push_message(role, content);
+            }
+        }
     } else if (strcmp(type_str, "dictation_summary") == 0) {
         cJSON *title = cJSON_GetObjectItem(root, "title");
         cJSON *summary = cJSON_GetObjectItem(root, "summary");
