@@ -749,6 +749,19 @@ static void cb_ota_check(lv_event_t *e)
     xTaskCreate(ota_check_task, "ota_check", 8192, NULL, 5, NULL);
 }
 
+/* Wave 4: force-show onboarding carousel (audit G follow-up).
+ * Lets the user review the intro after first-boot without NVS erase. */
+void cb_replay_intro(lv_event_t *e)
+{
+    (void)e;
+    extern void ui_settings_hide(void);
+    extern void ui_onboarding_force_show(void);
+    /* Hide Settings first so the onboarding card isn't stacked
+     * underneath it visually. */
+    ui_settings_hide();
+    ui_onboarding_force_show();
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  *  Inline style helpers
  * ══════════════════════════════════════════════════════════════════════ */
@@ -940,6 +953,20 @@ static void phase2_timer_cb(lv_timer_t *t)
                                       lv_color_hex(TAB_LOCAL), lv_color_hex(TEXT_PRIMARY),
                                       SIDE_PAD, y + 3, CONTENT_W, 42, 8, cb_ota_apply);
         lv_obj_add_flag(s_ota_apply_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    y += ROW_H + 8;
+
+    /* Wave 4: "Show intro again" row — re-triggers the onboarding
+     * carousel without requiring an NVS erase.  Useful after a factory
+     * reset-like setup or when demoing the product. */
+    {
+        extern void cb_replay_intro(lv_event_t *e);
+        lv_obj_t *intro_btn = mk_pill_btn(s_scroll, "Show intro again",
+                                          lv_color_hex(0x2A2A3A),
+                                          lv_color_hex(TEXT_DIM),
+                                          SIDE_PAD, y + 3, CONTENT_W, 42, 8,
+                                          cb_replay_intro);
+        (void)intro_btn;
     }
     y += ROW_H + 8;
 
