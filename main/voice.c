@@ -995,6 +995,21 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "Card: %s", title);
             ui_chat_push_card(title, sub, img, desc);
         }
+    } else if (strcmp(type_str, "widget_card") == 0) {
+        /* Audit B2 (2026-04-20): widget_card from Tab5Surface.card()
+         * is a different shape than the legacy "card" message used by
+         * rich-media turns — title + body + tone + optional image_url.
+         * Route it to the same chat bubble renderer so skills can push
+         * context cards into the conversation. */
+        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+        const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+        const char *img = cJSON_GetStringValue(cJSON_GetObjectItem(root, "image_url"));
+        if (title) {
+            ESP_LOGI(TAG, "widget_card: %s", title);
+            /* chat_push_card takes (title, subtitle, image_url, description).
+             * Map body → description for read-order; subtitle stays NULL. */
+            ui_chat_push_card(title, NULL, img, body);
+        }
     } else if (strcmp(type_str, "audio_clip") == 0) {
         const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
         cJSON *dur_item = cJSON_GetObjectItem(root, "duration_s");
