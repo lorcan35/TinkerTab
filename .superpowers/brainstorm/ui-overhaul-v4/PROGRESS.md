@@ -246,6 +246,117 @@ Other screens (per `system-d-sovereign.html`) not yet spec-audited.
 
 ## Changelog
 
+### 2026-04-20 — Reconciliation sprint wave 2: 7 more audit items closed
+
+Continuing the reconciliation-driven backlog burn. After the first-wave
+fixes (receipt stamp / TimesenseTool / tool-bubbles / Agent modal / chat
+image decode / STT+TTS receipts / Gemini tool compat / em-dash tofu),
+shipped these:
+
+- **Dragon heartbeat 30→60s** (new Bug 1). aiohttp computes pong timeout
+  as heartbeat/2, so 30s heartbeat gave only 15s of pong grace — that
+  was firing mid cloud-turn. Bumped to 60s / 30s grace. Error log went
+  from "after 15.0 seconds" to "after 30.0 seconds" and fires less.
+
+- **Dragon MediaPipeline diagnostic log** (Bug 3). Now logs
+  `MediaPipeline: N event(s) for response len=X` so silent no-emission
+  cases are distinguishable from real misses. Root-cause of the
+  "flakiness" turned out to be LLM output fencing variability (short
+  replies skip fencing), not a pipeline bug.
+
+- **Chat store init at boot + set_session no-wipe on seed** (Bug 2 real
+  root cause). Two compounding bugs: (1) chat_store_init() only ran
+  inside ui_chat_create, so pre-overlay /chat pushes dropped to the
+  floor with s_inited=false; (2) ensure_session_loaded called
+  chat_store_set_session which unconditionally memset'd all messages —
+  even on the first-time seed where there was nothing previous to
+  switch FROM. Fixed: init at main.c boot + set_session now only wipes
+  when prev_valid=true AND id differs. Messages now persist through
+  the full flow at the STORE level; chat_msg_view render still has an
+  edge case under investigation.
+
+- **Agent consent modal from Settings TinkerClaw row (E3)**. Settings
+  tap now gates voice_mode=3 behind the same modal the mode sheet uses.
+  New public `ui_agent_consent_show(on_confirm, on_cancel, ctx)` entry.
+  Verified both paths: cancel keeps mode=0, confirm sets mode=3 + rail
+  highlight.
+
+- **Dragon TC gateway-fail voice_mode revert (G5)**. Was emitting
+  voice_mode:\<orig\> on gateway health-check failure, inconsistent
+  with the OpenRouter-key-missing path which always sent :0. Aligned
+  both error paths to emit voice_mode:0 so Tab5 snaps back to Local
+  instead of sitting wedged on Agent.
+
+- **Dragon widget_chart helper (B5/B13)**. Added `Tab5Surface.chart()`
+  method matching live/card/list/prompt/media pattern. Up to 12 points,
+  auto-scale when chart_max=0. **Verified:** emitted "Daily Spend"
+  chart via new `POST /debug/widget_chart` — Tab5 home live-slot
+  rendered ASCII histogram `. : . + : : # : : + .`
+
+- **Dragon TC model default (J12)**. config.py default was
+  "ollama/qwen3:1.7b" while yaml overrode to "minimax/MiniMax-M2.5".
+  Aligned code default to match yaml so deleting config.yaml doesn't
+  silently revert to an obsolete model name.
+
+- **Tab5 F1/F2 full-screen OFFLINE hero**. Previously only a 7-char
+  pill signaled outages. Built a centered red-bordered card shown on
+  lv_layer_top after 8 s of ST_NO_WIFI or ST_DRAGON_DOWN. Auto-dismiss
+  on recovery. **Verified:** stopped tinkerclaw-voice → card appeared
+  at ~20s with "Dragon unreachable" title + 3-line body; restart →
+  card auto-dismissed.
+
+- **Dragon C8/K15 session-resume message replay**. On session_start
+  with resumed=true, Dragon now fetches the last 20 messages via
+  message_store.get_messages() and emits
+  `{"type":"session_messages","items":[{role,content,timestamp}...]}`.
+  Tab5 parses the frame and rehydrates chat_store via
+  ui_chat_push_message. **Verified:** forced /voice/reconnect →
+  "Replayed 20 messages for session …" on Dragon + "session_messages
+  replay: 20 items" on Tab5 serial.
+
+- **Tab5 B6/K3 widget_prompt for non-TimeSense skill**. Added
+  `POST /debug/widget_prompt` Dragon endpoint that emits a prompt
+  widget AND registers an action handler so the tap round-trips back
+  to a Python coroutine. **Verified:** emitted "Apply OTA update? /
+  Install / Later" on home; tapped Install; Dragon log showed
+  `widget_action card=audit_prompt_… event=audit_install` + handler
+  fired. Audit's "only TimeSense round-trips" overclaim is now false.
+
+- **Tab5 memory fetch task spawn failure** (new bug surfaced during
+  proof-deficit captures). Memory overlay "Loading facts..." stuck
+  forever because xTaskCreatePinnedToCore returned pdFAIL (internal
+  SRAM fragmentation, despite 25 MB PSRAM free). Swapped to
+  xTaskCreatePinnedToCoreWithCaps(..., MALLOC_CAP_SPIRAM) with
+  internal-SRAM fallback. **Verified:** Memory screen now shows 6
+  facts with source + timestamps.
+
+**Proof-deficit captures shipped** (no code changes, pure evidence):
+- widget_chart home render (promotes K4 → VERIFIED)
+- Session drawer (D4 → VERIFIED)
+- Memory screen list (K4 → VERIFIED)
+
+**Intentionally deferred:**
+- H5 Presets tab in mode sheet — audit marked "DEFER; triple-dial
+  subsumes this". Same 4 modes are reachable from Settings already.
+
+**Still open**:
+- chat_msg_view render edge case: store has msgs, sync_sugg fires
+  HIDE, but bubbles don't visibly render on some navigate cycles.
+  Deep trace needed (slot-binding or layout pass); separate from the
+  store/sync fixes already shipped.
+- Dragon memory backend sqlite-vec + FTS5 upgrade (K2). Currently
+  Python-loop cosine over packed-float BLOBs; works but won't scale
+  past ~10k facts. Large port, own sprint.
+- Onboarding MVP (G). Zero code still; P0 UX-audit item. ~300 LOC.
+- widget_capabilities truncation wiring (B14) — cosmetic; helpers
+  already hardcode to spec-matching caps.
+
+Commits: Tab5 `eb91c02` · `3d1154e` · `057c3d3` · `4967e64` · `bf61e46` ·
+`67d03fa` · `e38db20` · `0d1fedf`. Dragon: `d9a4be9` · `4d3e18c` ·
+`71d31d0` · `e6d08fb` · `82e8ada`.
+
+---
+
 ### 2026-04-20 — Reconciliation sprint: 8 overclaims shipped + verified
 
 **Audits delivered this session** (joined the earlier 3 in `.superpowers/brainstorm/ui-overhaul-v4/`):
