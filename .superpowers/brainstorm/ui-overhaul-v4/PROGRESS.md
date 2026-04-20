@@ -246,7 +246,47 @@ Other screens (per `system-d-sovereign.html`) not yet spec-audited.
 
 ## Changelog
 
-- **2026-04-19** · Round 4 design + STORIES stress-test: SYSTEM spec + sovereign + modes + d/e/f + complete (A–J) + 100 user stories surfacing 25 new gaps — this session
-- **2026-04-19** · v4·C Ambient Canvas shipped on device (commit `8571db5`)
-- **2026-04-18** · Round 3 trio (a/b/c) drafted
-- **2026-04-16** · Round 1 exploratory (01/02/03) + Round 2 cuts (A/B/C) drafted
+### 2026-04-20 — Connectivity audit + root-cause fixes + TC mode polish
+
+**Audits delivered this session (saved in `.superpowers/brainstorm/ui-overhaul-v4/`):**
+- `AUDIT-stability-2026-04-20.md` — 30+ P0/P1/P2 entries, 5-tier fix plan
+- `AUDIT-ux-gauntlet-40-2026-04-20.md` — UI/UX scorecard + 40 compound Gauntlet scenarios
+- `AUDIT-connectivity-2026-04-20.md` — WHY isn't the device always-online; 4-tier fix plan
+- `RESEARCH-pipecat-livekit.md` — industry baseline for voice stacks
+
+**Sprint 1: Connectivity audit Tier 1** (TT `c3f322d`)
+- Exponential backoff with full jitter on WS reconnect (was fixed 2 s → self-inflicted DoS that also clogged LWIP → httpd on :8080 freezing)
+- New `VOICE_STATE_RECONNECTING` enum value — state no longer jumps CONNECTING→IDLE→CONNECTING forever
+- `voice_get_degraded_reason()` API + `voice_get_link_health()` snapshot
+- Honest status-bar pill on home: `Reconnecting... / Dragon unreachable / Remote (ngrok) / WiFi offline`
+- `voice_link_probe_task` now probes both LAN + ngrok every 30 s, auto-swaps back to LAN when reachable
+- `NGROK_FALLBACK_THRESHOLD` 2 → 4 (prevents pinning to ngrok during normal Dragon cold-start window)
+
+**Sprint 2: REAL root cause** (TT `43caa60` + TB `a1ccf5f`)
+Ethernet-attached Dragon + healthy WiFi should NEVER drop a WS. It was. Three config defaults nobody had set:
+- **Tab5 WiFi power save** was `WIFI_PS_MIN_MODEM` (correct for battery sensors, wrong for plugged-in tablet). Radio parked between beacons + half-lost AP association on fast-roaming routers. Now `WIFI_PS_NONE` right after `esp_wifi_start()`.
+- **WS socket had no `SO_KEEPALIVE`.** `esp_websocket_client` exposes `keep_alive_enable/idle/interval/count` and we weren't setting them. Half-open sockets blackholed until the 180 s pong timeout. Now enabled: `idle=10 s, interval=5 s, count=3` → dead detection in ~25 s.
+- **Dragon aiohttp `heartbeat=None`.** Server could only detect dead clients via failed sends. Now `heartbeat=30.0, receive_timeout=60.0, autoping=True`.
+
+**Soak test passed**: 5 min idle, WS stayed READY every minute. Dragon cold 90 s test → Tab5 auto-recovered in 21 s with session resumed on same id.
+
+**Sprint 3: TinkerClaw mode polish** (TT `fe8036d` + TB `f836d06`)
+- Tab5 was stuck in PROCESSING forever after TC turns (gateway is text-only, never sends tts_start/end). Fixed: `llm_done` handler transitions PROCESSING → READY when no TTS is coming + prefers the `text` field from llm_done over accumulated stream tokens.
+- Chat mode-chip subtitle showed "GEMINI-3-FLASH-PREVIEW" in TC mode (the stale NVS value). Now shows "AGENT" on `m==3`.
+- `/chat` debug endpoint didn't push the user bubble into chat_msg_store. Now it does.
+- Chat input-bar "breathing" animation was 150→255 opa over 1.8 s (aggressive strobe during 30 s+ TC turns). Dialed to 210→255 over 4 s (slow glow).
+- TC path now emits a per-turn receipt (stage=llm, cost_mils=0, model=minimax/MiniMax-M2.5) so chat bubbles get stamped.
+
+**Earlier stability-audit rounds merged this session:**
+- R1 P0: SurfaceManager wired + widget_action handler (TB `55621f1`), NVS mutex (TT `e010ed9`), ngrok counter reset on disconnect (TT `e010ed9`)
+- R1 P1: stt_partial bounds, budget local time, STT/TTS prewarm, session pause CAS, receipt fallback, tool parser brace-balance, WAL checkpoint
+- R2 P1: widget_store priority-weighted eviction, heap_wd voice grace, constant-time auth, masked token log
+- R2 P1/P2: mode-aware TTS synth timeout, post_process task cancel, openrouter ceil-divide, closed-session rebuild
+
+### 2026-04-19 — Earlier work
+
+- Round 4 design + STORIES stress-test: SYSTEM spec + sovereign + modes + d/e/f + complete (A–J) + 100 user stories surfacing 25 new gaps
+- v4·C Ambient Canvas shipped on device (commit `8571db5`)
+
+### 2026-04-18 — Round 3 trio (a/b/c) drafted
+### 2026-04-16 — Round 1 exploratory (01/02/03) + Round 2 cuts (A/B/C) drafted
