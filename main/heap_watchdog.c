@@ -48,7 +48,12 @@ static const char *TAG = "heap_wd";
  * Before this guard the device would sit in a "Dragon unreachable" state
  * until the user reflashed. Reboot after 2 consecutive minutes to recover
  * automatically; honors the same voice-active grace window as SRAM. */
-#define HEAP_WD_DMA_CRITICAL_BYTES     (8 * 1024)   /* 8KB — below this, WiFi TX/RX starves */
+/* Observed on device (#80 soak 2026-04-20): the voice pipeline sits at
+ * ~25KB DMA free in steady state and WiFi starts dropping packets as soon
+ * as that drops to ~15KB. Set the reboot threshold at 16KB so we catch
+ * the downhill slide BEFORE WiFi has been dead for a full minute — still
+ * well under the baseline so legitimate bursts don't trip it. */
+#define HEAP_WD_DMA_CRITICAL_BYTES     (16 * 1024)  /* 16KB — below this WiFi starves */
 #define HEAP_WD_DMA_REBOOT_COUNT       2            /* 2 consecutive checks (2 minutes) */
 
 static void heap_watchdog_task(void *arg)
