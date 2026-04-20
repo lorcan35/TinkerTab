@@ -174,6 +174,22 @@ Both audits (`AUDIT-stability-2026-04-20.md` + `AUDIT-ux-gauntlet-40-2026-04-20.
 - P0 #2 NVS handle mutex (`e010ed9`)
 - P0 #3 Ngrok fallback counter reset on disconnect (`e010ed9`)
 
+### Stability audit sprint round 2 ✅ SHIPPED (2026-04-20)
+
+Tab5 (`e48a588`):
+- P1 widget_store priority-weighted eviction (age_ms / (priority+1) scoring instead of pure oldest-updated)
+- P1 heap_watchdog voice-active reboot grace (don't tear down mid-LISTENING/SPEAKING/PROCESSING; log detailed heap state before reboot)
+- P1 debug_server constant-time auth compare (kills LAN timing side-channel) + masked token log (first4****last4)
+
+Dragon (`b35c546`):
+- P1 Mode-aware TTS synth timeout (Piper 90 s / OpenRouter 30 s; was hardcoded 30 s that truncated Piper replies over ~180 words)
+- P1 _handle_register surface_send + tool-event callbacks routed through `_safe_send_json`
+- P1 pipeline._post_process_task cancels the prior task before overwriting
+- P1 openrouter price_for_model ceil-divides (tiny turns no longer floor to 0 mils)
+- P2 openrouter closed-session recovery skips `/models` re-validation (was recursive-init on every SSE failure)
+- P2 Database.close() runs `PRAGMA wal_checkpoint(TRUNCATE)` before closing
+- P2 tools/registry.py parse_tool_calls uses manual brace-balancing instead of non-greedy `{.*?}` regex (nested JSON args now parse correctly)
+
 ---
 
 ## Resume checklist for the next agent
