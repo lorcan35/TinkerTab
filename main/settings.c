@@ -446,10 +446,22 @@ esp_err_t tab5_settings_set_aut_tier(uint8_t t) { if (t > 1) t = 0; return set_u
 
 static uint32_t days_since_epoch(void)
 {
+    /* v4·D audit P1 fix: previous version used (now / 86400) which
+     * counts UTC days.  A Los Angeles user's "new day" therefore rolled
+     * at 5 PM local, wiping their mid-afternoon budget mid-session.
+     * Resolve the local wall-clock instead, giving a stable rollover at
+     * local midnight.  Returns 0 if RTC isn't synced yet -- caller's
+     * early-return keeps state intact. */
     time_t now = 0;
     time(&now);
     if (now <= 0) return 0;
-    return (uint32_t)(now / 86400);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    /* Compose a canonical date index: year*366 + day-of-year.  Not
+     * strictly "days since epoch" but monotonic and unique per
+     * calendar day in the user's current timezone, which is what we
+     * actually want for budget rollover. */
+    return (uint32_t)((tm.tm_year + 1900) * 366 + tm.tm_yday);
 }
 
 static void roll_if_new_day(void)

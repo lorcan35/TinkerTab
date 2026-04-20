@@ -417,6 +417,26 @@ static esp_err_t voice_ws_send_register(void)
     cJSON_AddBoolToObject(caps, "camera", true);
     cJSON_AddBoolToObject(caps, "sd_card", true);
     cJSON_AddBoolToObject(caps, "touch", true);
+    /* v4·D audit P0 fix: widget_capability was spec-only -- now wired.
+     * Skills can downgrade widget content for low-end clients (smaller
+     * list, lower image res).  Match the actual Tab5 limits we've
+     * built out across widget_store.c / ui_home.c. */
+    cJSON *widgets = cJSON_AddObjectToObject(caps, "widgets");
+    cJSON *types = cJSON_AddArrayToObject(widgets, "types");
+    cJSON_AddItemToArray(types, cJSON_CreateString("live"));
+    cJSON_AddItemToArray(types, cJSON_CreateString("card"));
+    cJSON_AddItemToArray(types, cJSON_CreateString("list"));
+    cJSON_AddItemToArray(types, cJSON_CreateString("chart"));
+    cJSON_AddItemToArray(types, cJSON_CreateString("media"));
+    cJSON_AddItemToArray(types, cJSON_CreateString("prompt"));
+    cJSON_AddNumberToObject(widgets, "list_max_items", 5);
+    cJSON_AddNumberToObject(widgets, "chart_max_points", 12);
+    cJSON_AddNumberToObject(widgets, "prompt_max_choices", 3);
+    cJSON_AddNumberToObject(widgets, "screen_w", 720);
+    cJSON_AddNumberToObject(widgets, "screen_h", 1280);
+    cJSON_AddNumberToObject(widgets, "media_max_w", 660);
+    cJSON_AddNumberToObject(widgets, "media_max_h", 440);
+    cJSON_AddNumberToObject(widgets, "action_rate_per_sec", 4);
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -512,12 +532,22 @@ static void handle_text_message(const char *data, int len)
         cJSON *text = cJSON_GetObjectItem(root, "text");
         if (cJSON_IsString(text) && text->valuestring && s_voice_mode == VOICE_MODE_DICTATE
             && s_dictation_text) {
+            /* v4·D audit P1 fix: use bounded copy instead of unchecked
+             * strcat.  Previously the guard compared cur+add+2 against
+             * the buffer size, but under mutex-less concurrent writes
+             * cur_len could change between the check and the strcat.
+             * Take the state mutex and re-bound with snprintf so an
+             * overflow is impossible. */
+            if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
             size_t cur_len = strlen(s_dictation_text);
-            size_t add_len = strlen(text->valuestring);
-            if (cur_len + add_len + 2 < DICTATION_TEXT_SIZE) {
-                if (cur_len > 0) strcat(s_dictation_text, " ");
-                strcat(s_dictation_text, text->valuestring);
+            size_t remaining = (cur_len + 1 < DICTATION_TEXT_SIZE)
+                               ? (DICTATION_TEXT_SIZE - cur_len - 1) : 0;
+            if (remaining > 1) {
+                const char *sep = (cur_len > 0) ? " " : "";
+                snprintf(s_dictation_text + cur_len, remaining,
+                         "%s%s", sep, text->valuestring);
             }
+            if (s_state_mutex) xSemaphoreGive(s_state_mutex);
             ESP_LOGI(TAG, "STT partial: \"%s\" (total %u chars)",
                      text->valuestring, (unsigned)strlen(s_dictation_text));
             voice_set_state(VOICE_STATE_LISTENING, s_dictation_text);
@@ -705,12 +735,16 @@ static void handle_text_message(const char *data, int len)
          * transparency on every bubble, not just billable ones. */
         cJSON *retried_j = cJSON_GetObjectItem(root, "retried");
         bool retried = cJSON_IsTrue(retried_j);
-        if (model && model[0]) {
-            /* Condense the model ID into something that fits the bubble
-             * subtitle ("anthropic/claude-3.5-haiku" -> "haiku-3.5"). */
+        /* v4·D audit P1 fix: always stamp the bubble, even when model is
+         * missing -- a blank model still tells the user the turn finished
+         * and the cost was zero.  Previously the null/empty-model path
+         * silently swallowed the receipt and the user never saw any
+         * stamp on a local turn that Dragon forgot to name. */
+        {
             char short_model[16] = {0};
-            const char *slash = strchr(model, '/');
-            const char *tail = slash ? slash + 1 : model;
+            const char *m = (model && model[0]) ? model : "local";
+            const char *slash = strchr(m, '/');
+            const char *tail = slash ? slash + 1 : m;
             const char *hyphen = strchr(tail, '-');  /* skip vendor prefix "claude-" */
             const char *start = hyphen ? hyphen + 1 : tail;
             snprintf(short_model, sizeof(short_model), "%s", start);
@@ -1107,10 +1141,19 @@ static size_t upsample_16k_to_48k(const int16_t *in, size_t in_samples,
 
 static void handle_binary_message(const char *data, int len)
 {
-    if (s_state != VOICE_STATE_SPEAKING && s_state != VOICE_STATE_PROCESSING) {
+    /* v4·D audit P0 fix: snapshot s_state under the mutex so we never
+     * race with voice_set_state on another task.  The checks below
+     * formerly read s_state twice without locking -- second read could
+     * see a newer value mid-TTS-frame. */
+    voice_state_t cur;
+    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    cur = s_state;
+    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+
+    if (cur != VOICE_STATE_SPEAKING && cur != VOICE_STATE_PROCESSING) {
         return;
     }
-    if (s_state == VOICE_STATE_PROCESSING) {
+    if (cur == VOICE_STATE_PROCESSING) {
         playback_buf_reset();
         voice_set_state(VOICE_STATE_SPEAKING, NULL);
     }

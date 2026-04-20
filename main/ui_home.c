@@ -1125,6 +1125,18 @@ static void refresh_timer_cb(lv_timer_t *t)
 {
     (void)t;
     ui_home_update_status();
+
+    /* v4·D audit P0 fix: widget_store GC had zero callers.  Inactive
+     * slots leaked until the 32-slot cap was hit, at which point the
+     * eviction policy could throw out a running LIVE widget.  Tick
+     * the GC once every ~30 s (refresh timer fires every 2 s, gate
+     * on modulo so we don't burn CPU on every tick). */
+    static uint32_t s_gc_tick = 0;
+    if (++s_gc_tick >= 15) {
+        s_gc_tick = 0;
+        extern void widget_store_gc(uint32_t now_ms);
+        widget_store_gc(lv_tick_get());
+    }
 }
 
 /* ── Interactions ────────────────────────────────────────────── */
