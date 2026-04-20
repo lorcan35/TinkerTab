@@ -433,6 +433,9 @@ esp_err_t tab5_settings_set_int_tier(uint8_t t) { if (t > 2) t = 0; return set_u
 esp_err_t tab5_settings_set_voi_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("voi_tier", t); }
 esp_err_t tab5_settings_set_aut_tier(uint8_t t) { if (t > 1) t = 0; return set_u8("aut_tier", t); }
 
+bool      tab5_settings_is_onboarded(void) { return get_u8("onboard", 0) != 0; }
+esp_err_t tab5_settings_set_onboarded(bool done) { return set_u8("onboard", done ? 1 : 0); }
+
 /* ── v4·D Phase 3c daily cloud spend accumulator ────────────────────── */
 
 /* NVS keys are u32:

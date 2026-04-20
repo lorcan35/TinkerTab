@@ -405,6 +405,10 @@ void app_main(void)
         // (258) so every widget_media / chat image decode fell through
         // to the caption fallback path.  Audit B5 root cause (2026-04-20).
         ui_home_create();
+        /* Audit G (2026-04-20): first-boot onboarding carousel. Gated on
+         * NVS onboard=0; once finished, subsequent boots skip. */
+        extern void ui_onboarding_show_if_needed(void);
+        ui_onboarding_show_if_needed();
         tab5_ui_unlock();
         ESP_LOGI(TAG, "TinkerOS home screen loaded");
 

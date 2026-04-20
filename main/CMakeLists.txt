@@ -5,6 +5,7 @@ set(UI_SRCS
     "ui_chat.c" "ui_notes.c" "ui_feedback.c" "ui_agents.c" "ui_memory.c" "ui_focus.c" "ui_sessions.c"
     "ui_mode_sheet.c"
     "ui_nav_sheet.c"
+    "ui_onboarding.c"
     "chat_msg_store.c"
     "chat_header.c"
     "chat_input_bar.c"

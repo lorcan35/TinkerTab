@@ -49,6 +49,11 @@ esp_err_t tab5_settings_set_int_tier(uint8_t t);
 esp_err_t tab5_settings_set_voi_tier(uint8_t t);
 esp_err_t tab5_settings_set_aut_tier(uint8_t t);
 
+/* Onboarding gate (audit G / P0 UX).  False on first boot; set true by
+ * ui_onboarding once the user finishes the intro carousel. */
+bool      tab5_settings_is_onboarded(void);
+esp_err_t tab5_settings_set_onboarded(bool done);
+
 /* Resolve (int, voi, aut) -> voice_mode. When out_model is non-NULL and
  * the resolver picks a specific cloud LLM, writes the OpenRouter model
  * id into it (e.g. "anthropic/claude-sonnet-4-20250514"). Otherwise
