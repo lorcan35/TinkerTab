@@ -396,6 +396,14 @@ void app_main(void)
                               // silently drop.  Was lazily inited inside
                               // ui_chat_create(), which Bug 2 (audit follow-
                               // up) depended on.
+        extern esp_err_t media_cache_init(void);
+        if (media_cache_init() != ESP_OK) {
+            ESP_LOGW(TAG, "media_cache_init failed — JPEG decode unavailable");
+        }
+        // media_cache was declared but NEVER called anywhere in the tree.
+        // Without init, media_cache_fetch returns ESP_ERR_INVALID_ARG
+        // (258) so every widget_media / chat image decode fell through
+        // to the caption fallback path.  Audit B5 root cause (2026-04-20).
         ui_home_create();
         tab5_ui_unlock();
         ESP_LOGI(TAG, "TinkerOS home screen loaded");
