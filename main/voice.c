@@ -683,8 +683,23 @@ static void handle_text_message(const char *data, int len)
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
         ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
-        if (s_llm_text[0]) {
-            ui_chat_push_message("assistant", s_llm_text);
+        /* Prefer the full text field in llm_done (TC bypass uses it)
+         * falling back to the accumulated streamed tokens. */
+        cJSON *full = cJSON_GetObjectItem(root, "text");
+        const char *bubble_text = s_llm_text;
+        if (cJSON_IsString(full) && full->valuestring && full->valuestring[0]) {
+            bubble_text = full->valuestring;
+        }
+        if (bubble_text && bubble_text[0]) {
+            ui_chat_push_message("assistant", bubble_text);
+        }
+        /* v4·D TC polish: if no TTS is coming (TC bypass never sends
+         * tts_start -- gateway is text-only), transition to READY
+         * directly.  Without this, state sits in PROCESSING forever
+         * after a TC text turn, chat input pill stays on "Thinking...",
+         * voice overlay stays blocked. */
+        if (s_state == VOICE_STATE_PROCESSING) {
+            voice_set_state(VOICE_STATE_READY, "llm_done");
         }
     } else if (strcmp(type_str, "receipt") == 0) {
         /* v4·D Phase 3b: Dragon emits a receipt after each LLM turn on

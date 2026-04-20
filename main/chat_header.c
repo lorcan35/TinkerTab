@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static const char *TAG = "chat_hdr";
 
@@ -217,17 +218,27 @@ void chat_header_set_mode(chat_header_t *h, uint8_t m, const char *llm)
     }
     if (h->chip_name) lv_label_set_text(h->chip_name, s_mode_short[m]);
     if (h->chip_sub) {
-        const char *nick = llm ? llm : "";
-        const char *slash = strchr(nick, '/');
-        if (slash) nick = slash + 1;
+        /* v4·D connectivity polish: TinkerClaw mode talks to the openclaw
+         * gateway via Dragon, so the NVS llm_model (which still holds the
+         * Tab5-preferred Cloud model like "google/gemini-3-flash-preview")
+         * is NOT what's actually serving the turn.  Show AGENT instead of
+         * the stale Cloud model name.  For modes 0/1/2 we keep showing the
+         * underlying LLM id since it IS the model in use. */
         char buf[32] = {0};
-        size_t n = strlen(nick);
-        if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-        memcpy(buf, nick, n);
-        char *col = strchr(buf, ':');
-        if (col) *col = 0;
-        for (char *p = buf; *p; p++) {
-            if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+        if (m == 3) {
+            snprintf(buf, sizeof(buf), "AGENT");
+        } else {
+            const char *nick = llm ? llm : "";
+            const char *slash = strchr(nick, '/');
+            if (slash) nick = slash + 1;
+            size_t n = strlen(nick);
+            if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+            memcpy(buf, nick, n);
+            char *col = strchr(buf, ':');
+            if (col) *col = 0;
+            for (char *p = buf; *p; p++) {
+                if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+            }
         }
         lv_label_set_text(h->chip_sub, buf);
     }

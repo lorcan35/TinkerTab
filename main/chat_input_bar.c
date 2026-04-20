@@ -84,12 +84,17 @@ static void breath_anim_cb(void *var, int32_t v)
 static void start_breathing(chat_input_bar_t *b)
 {
     if (!b || b->breathing) return;
+    /* v4·D TC polish: dial way down.  Was 150->255 (58%->100%) over
+     * 900ms, which read as an aggressive flash especially during
+     * multi-second TC turns where the ball stayed breathing for
+     * 30+ s.  Now 210->255 (82%->100%) over 2000 ms -- the ball
+     * still clearly pulses, but as a slow glow instead of a strobe. */
     lv_anim_init(&b->breath_anim);
     lv_anim_set_var(&b->breath_anim, b);
     lv_anim_set_exec_cb(&b->breath_anim, breath_anim_cb);
-    lv_anim_set_values(&b->breath_anim, 150, 255);
-    lv_anim_set_time(&b->breath_anim, 900);
-    lv_anim_set_playback_time(&b->breath_anim, 900);
+    lv_anim_set_values(&b->breath_anim, 210, 255);
+    lv_anim_set_time(&b->breath_anim, 2000);
+    lv_anim_set_playback_time(&b->breath_anim, 2000);
     lv_anim_set_repeat_count(&b->breath_anim, LV_ANIM_REPEAT_INFINITE);
     lv_anim_start(&b->breath_anim);
     b->breathing = true;

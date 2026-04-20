@@ -1683,6 +1683,12 @@ static esp_err_t chat_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
+    /* Push the user's message into the chat store so the bubble appears.
+     * The normal typing path goes through chat_input_bar which calls
+     * chat_store_add + voice_send_text; /chat (debug) only called the
+     * latter, which is why debug-fired turns never showed a user bubble. */
+    extern void ui_chat_push_message(const char *role, const char *text);
+    ui_chat_push_message("user", text);
     voice_send_text(text);
 
     cJSON *root = cJSON_CreateObject();
