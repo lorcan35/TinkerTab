@@ -85,7 +85,7 @@ static const char *TAG = "tab5_voice";
 // esp_websocket_client tuning
 #define WS_CLIENT_TASK_STACK   10240   /* client event/receive task stack */
 #define WS_CLIENT_BUFFER_SIZE  4096    /* per-frame buffer; binary TTS comes in 640–1024 B chunks, headroom for text+media */
-#define WS_CLIENT_RECONNECT_MS 2000    /* base reconnect delay — matches legacy RECONNECT_BACKOFF_MIN_MS */
+#define WS_CLIENT_RECONNECT_MS 1000    /* base reconnect delay -- exponential ramp takes over from here */
 #define WS_CLIENT_NETWORK_MS   10000   /* blocking send deadline */
 #define WS_CLIENT_PING_SEC     15      /* built-in WS-level ping */
 /* Pong budget widened to 180 s (12x ping interval) so a long-running
@@ -96,9 +96,22 @@ static const char *TAG = "tab5_voice";
  * us from killing the session while Ollama is genuinely thinking. */
 #define WS_CLIENT_PONG_SEC     180
 
+/* v4·D connectivity audit T1.1: exponential backoff + full jitter on
+ * WS reconnect.  Formula per the audit:
+ *   exp = min(BACKOFF_CAP_MS, BACKOFF_MIN_MS << min(attempt, 5))
+ *   delay = esp_random() % (exp/2) + exp/2   // full jitter [exp/2, exp)
+ * attempt resets to 0 on WEBSOCKET_EVENT_CONNECTED.
+ * Before: fixed 2 s reconnect -> thundering herd on Dragon reboot. */
+#define WS_CLIENT_BACKOFF_MIN_MS 1000
+#define WS_CLIENT_BACKOFF_CAP_MS 30000
+
 // Ngrok fallback is attempted after this many consecutive failed handshakes
 // against the local LAN URI (only in conn_mode=0 "auto").
-#define NGROK_FALLBACK_THRESHOLD 2
+// Raised from 2 to 4 per connectivity audit: co-boot with Dragon almost
+// always fails the first 2 LAN handshakes while Dragon is still loading
+// Moonshine/Piper/Ollama -- raising the threshold stops us from
+// immediately pinning to ngrok on a simple server restart.
+#define NGROK_FALLBACK_THRESHOLD 4
 
 // Mic capture task — needs room for AFE feed buffer (960 int16 = 1.9KB) + TDM diagnostics
 #define MIC_TASK_STACK_SIZE    8192
@@ -146,6 +159,15 @@ static volatile bool s_initialized        = false;
 static volatile bool s_started            = false;  /* esp_websocket_client_start() has been called */
 static volatile bool s_disconnecting      = false;  /* US-C21: guard against connect-during-disconnect race */
 static volatile int  s_handshake_fail_cnt = 0;      /* consecutive handshake failures — trigger ngrok fallback in auto mode */
+/* v4·D connectivity audit T1.1: reconnect backoff state.  Counts
+ * attempts since the last successful CONNECTED event.  Applied via
+ * esp_websocket_client_set_reconnect_timeout inside the ERROR /
+ * DISCONNECTED handlers; reset on CONNECTED.  */
+static volatile int  s_connect_attempt   = 0;
+/* v4·D connectivity audit T1.3: link health published by probe task. */
+static volatile bool s_lan_tcp_ok        = false;
+static volatile bool s_ngrok_tcp_ok      = false;
+static volatile uint32_t s_last_probe_ms = 0;
 static volatile bool s_using_ngrok        = false;  /* true once we've switched to the ngrok URI */
 
 // Mic capture task
@@ -1198,6 +1220,11 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         /* US-C02: bump session gen on every successful connect. */
         s_session_gen++;
         s_handshake_fail_cnt = 0;
+        /* T1.1: reset backoff state on every successful connect so a
+         * long-running healthy session doesn't get hit with a 30 s
+         * delay on its first blip. */
+        s_connect_attempt = 0;
+        esp_websocket_client_set_reconnect_timeout(s_ws, WS_CLIENT_BACKOFF_MIN_MS);
 
         esp_err_t reg_err = voice_ws_send_register();
         if (reg_err != ESP_OK) {
@@ -1215,7 +1242,35 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         /* Flush playback so we don't keep speaking into a dead pipe. */
         playback_buf_reset();
         tab5_audio_speaker_enable(false);
-        voice_set_state(VOICE_STATE_IDLE, "disconnected");
+        /* T1.1: bump attempt counter + apply exponential-with-full-jitter
+         * backoff to the client's reconnect timer.  Prevents thundering
+         * herd if multiple Tab5s share the same Dragon + avoids 2 s
+         * hammering against a server that's 20 s into its restart. */
+        s_connect_attempt++;
+        {
+            int shift = s_connect_attempt - 1;
+            if (shift < 0) shift = 0;
+            if (shift > 5) shift = 5;
+            uint32_t exp_ms = WS_CLIENT_BACKOFF_MIN_MS << shift;
+            if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
+            uint32_t half = exp_ms / 2;
+            uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
+            uint32_t delay_ms = half + jitter;    /* [exp/2, exp) */
+            ESP_LOGI(TAG, "WS: reconnect attempt=%d backoff=%lums (exp=%lums)",
+                     s_connect_attempt, (unsigned long)delay_ms,
+                     (unsigned long)exp_ms);
+            esp_websocket_client_set_reconnect_timeout(s_ws, delay_ms);
+        }
+        /* T1.2: RECONNECTING while a backoff is queued + WiFi is up.
+         * IDLE only when WiFi is genuinely down or user stopped voice. */
+        {
+            bool wifi_up = tab5_wifi_connected();
+            if (s_initialized && !s_disconnecting && wifi_up) {
+                voice_set_state(VOICE_STATE_RECONNECTING, "backoff");
+            } else {
+                voice_set_state(VOICE_STATE_IDLE, "disconnected");
+            }
+        }
         /* v4·D audit P0 fix: ngrok fallback was one-way.  Clear the flag
          * + reset the fail counter so the NEXT successful connection
          * gets a chance to land on LAN.  The actual URI swap is deferred
@@ -1261,6 +1316,18 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         ESP_LOGW(TAG, "WS: ERROR (type=%d, handshake_status=%d, sock_errno=%d)",
                  (int)et, status,
                  data ? data->error_handle.esp_transport_sock_errno : 0);
+        /* T1.1: apply the same backoff on error as on disconnect so
+         * a handshake-fail loop doesn't pin at 2 s forever. */
+        {
+            int shift = s_connect_attempt;
+            if (shift < 0) shift = 0;
+            if (shift > 5) shift = 5;
+            uint32_t exp_ms = WS_CLIENT_BACKOFF_MIN_MS << shift;
+            if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
+            uint32_t half = exp_ms / 2;
+            uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
+            esp_websocket_client_set_reconnect_timeout(s_ws, half + jitter);
+        }
 
         /* Handshake failure → try ngrok fallback (only in conn_mode=auto,
          * only while still on local URI, after NGROK_FALLBACK_THRESHOLD fails). */
@@ -1726,70 +1793,92 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
     return ESP_OK;
 }
 
-/* v4·D "fix once and for all" -- LAN probe task.  Runs on Core 1 at
- * priority 2, sleeps 30s between probes, only acts when auto mode is
- * selected and we're currently on ngrok.  Uses a raw TCP socket with
- * 1500 ms connect timeout so we don't block under WiFi weather. */
+/* v4·D connectivity audit T1.3: link-health probe.
+ *
+ * Runs on Core 1 at priority 2, sleeps 30 s between passes.  Probes
+ * BOTH LAN and ngrok every time so voice_get_link_health() + the home
+ * pill always reflect reality ("Dragon unreachable" vs "just
+ * reconnecting" vs "remote mode").  When we're on ngrok in auto mode
+ * and the LAN probe succeeds, hot-swaps the WS client back to LAN.
+ * Doing the stop/set_uri/start from this task (not the WS event
+ * handler) avoids the documented "client stops itself from its own
+ * callback" race.  Uses a raw TCP socket with 1500 ms connect timeout
+ * so we don't block under WiFi weather. */
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+
+static bool probe_tcp_connect(const char *host, uint16_t port)
+{
+    if (!host || !host[0] || port == 0) return false;
+    struct addrinfo hints = { .ai_family = AF_INET,
+                               .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    char port_s[8]; snprintf(port_s, sizeof(port_s), "%u", (unsigned)port);
+    int gai = getaddrinfo(host, port_s, &hints, &res);
+    if (gai != 0 || !res) {
+        if (res) freeaddrinfo(res);
+        return false;
+    }
+    int s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (s < 0) { freeaddrinfo(res); return false; }
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 500000 };
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    int cr = connect(s, res->ai_addr, res->ai_addrlen);
+    close(s);
+    freeaddrinfo(res);
+    return cr == 0;
+}
+
 void voice_lan_probe_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "LAN probe task started (checks every 30 s)");
+    ESP_LOGI(TAG, "Link probe task started (both LAN + ngrok every 30 s)");
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
+        if (!tab5_wifi_connected()) {
+            s_lan_tcp_ok   = false;
+            s_ngrok_tcp_ok = false;
+            s_last_probe_ms = lv_tick_get();
+            continue;
+        }
 
-        if (!s_using_ngrok) continue;
-        uint8_t conn_mode = tab5_settings_get_connection_mode();
-        if (conn_mode != 0) continue;    /* only auto-mode probes */
-        if (!tab5_wifi_connected())      continue;
-
+        /* Probe LAN target from NVS (honors user-configured dragon_host). */
         char lan_host[64] = {0};
         tab5_settings_get_dragon_host(lan_host, sizeof(lan_host));
         uint16_t lan_port = tab5_settings_get_dragon_port();
-        if (!lan_host[0] || lan_port == 0) continue;
+        bool lan_ok = probe_tcp_connect(lan_host, lan_port ? lan_port : 3502);
 
-        struct addrinfo hints = { .ai_family = AF_INET,
-                                   .ai_socktype = SOCK_STREAM };
-        struct addrinfo *res = NULL;
-        char port_s[8]; snprintf(port_s, sizeof(port_s), "%u", (unsigned)lan_port);
-        int gai = getaddrinfo(lan_host, port_s, &hints, &res);
-        if (gai != 0 || !res) {
-            ESP_LOGD(TAG, "LAN probe: getaddrinfo failed (%d)", gai);
-            if (res) freeaddrinfo(res);
-            continue;
+        /* Probe ngrok unconditionally so we can tell the user "remote
+         * is reachable" even when on LAN.  Uses TLS port 443. */
+        bool ngrok_ok = probe_tcp_connect(TAB5_NGROK_HOST, TAB5_NGROK_PORT);
+
+        s_lan_tcp_ok   = lan_ok;
+        s_ngrok_tcp_ok = ngrok_ok;
+        s_last_probe_ms = lv_tick_get();
+        ESP_LOGI(TAG, "Link probe: lan[%s]=%d ngrok=%d (current=%s)",
+                 lan_host, lan_ok, ngrok_ok,
+                 s_using_ngrok ? "ngrok" : "lan");
+
+        /* Auto-mode: if we're stuck on ngrok but LAN is reachable, swap back. */
+        uint8_t conn_mode = tab5_settings_get_connection_mode();
+        if (conn_mode == 0 && s_using_ngrok && lan_ok) {
+            char lan_uri[160];
+            snprintf(lan_uri, sizeof(lan_uri),
+                     "ws://%s:%u%s",
+                     lan_host, (unsigned)(lan_port ? lan_port : 3502),
+                     TAB5_VOICE_WS_PATH);
+            ESP_LOGI(TAG, "Link probe: swapping ngrok -> LAN (%s)", lan_uri);
+            esp_websocket_client_stop(s_ws);
+            esp_websocket_client_set_uri(s_ws, lan_uri);
+            strncpy(s_dragon_host, lan_host, sizeof(s_dragon_host) - 1);
+            s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
+            s_dragon_port = lan_port ? lan_port : 3502;
+            s_using_ngrok = false;
+            s_handshake_fail_cnt = 0;
+            s_connect_attempt = 0;
+            esp_websocket_client_start(s_ws);
         }
-
-        int s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        if (s < 0) { freeaddrinfo(res); continue; }
-
-        /* Non-blocking connect with 1500 ms ceiling. */
-        struct timeval tv = { .tv_sec = 1, .tv_usec = 500000 };
-        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        int cr = connect(s, res->ai_addr, res->ai_addrlen);
-        close(s);
-        freeaddrinfo(res);
-        if (cr != 0) {
-            ESP_LOGD(TAG, "LAN probe: %s:%u unreachable (errno=%d), staying on ngrok",
-                     lan_host, (unsigned)lan_port, errno);
-            continue;
-        }
-
-        /* LAN is back -- swap URI + restart WS client. */
-        char lan_uri[160];
-        snprintf(lan_uri, sizeof(lan_uri),
-                 "ws://%s:%u%s", lan_host, (unsigned)lan_port, TAB5_VOICE_WS_PATH);
-        ESP_LOGI(TAG, "LAN probe succeeded -> swapping client to %s", lan_uri);
-        esp_websocket_client_stop(s_ws);
-        esp_websocket_client_set_uri(s_ws, lan_uri);
-        strncpy(s_dragon_host, lan_host, sizeof(s_dragon_host) - 1);
-        s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
-        s_dragon_port = lan_port;
-        s_using_ngrok = false;
-        s_handshake_fail_cnt = 0;
-        esp_websocket_client_start(s_ws);
     }
 }
 
@@ -2402,6 +2491,44 @@ float voice_get_current_rms(void)
 int voice_get_queue_depth(void)
 {
     return s_queue_pending ? 1 : 0;
+}
+
+void voice_get_link_health(voice_link_health_t *out)
+{
+    if (!out) return;
+    out->lan_tcp_ok     = s_lan_tcp_ok;
+    out->ngrok_tcp_ok   = s_ngrok_tcp_ok;
+    out->using_ngrok    = s_using_ngrok;
+    out->last_probe_ms  = s_last_probe_ms;
+    out->connect_attempt = s_connect_attempt;
+}
+
+/* v4·D connectivity audit T1.2: human-readable status string so the
+ * home pill always tells the truth.  Ordered worst→best so the first
+ * matching branch wins.  Returns NULL on healthy connected session. */
+const char *voice_get_degraded_reason(void)
+{
+    if (!s_initialized)                 return "Voice off";
+    if (!tab5_wifi_connected())         return "WiFi offline";
+    switch (s_state) {
+        case VOICE_STATE_READY:
+        case VOICE_STATE_LISTENING:
+        case VOICE_STATE_PROCESSING:
+        case VOICE_STATE_SPEAKING:
+            /* Healthy, but surface ngrok as a "remote mode" cue so user
+             * knows their latency is going through the tunnel. */
+            return s_using_ngrok ? "Remote (ngrok)" : NULL;
+        case VOICE_STATE_CONNECTING:
+            return "Connecting...";
+        case VOICE_STATE_RECONNECTING:
+            if (s_connect_attempt > 3 && !s_lan_tcp_ok && !s_ngrok_tcp_ok) {
+                return "Dragon unreachable";
+            }
+            return "Reconnecting...";
+        case VOICE_STATE_IDLE:
+        default:
+            return tab5_wifi_connected() ? "Offline" : "WiFi offline";
+    }
 }
 
 bool voice_get_vision_capability(char *model_out, size_t model_len,

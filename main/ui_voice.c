@@ -328,6 +328,16 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
     }
 
     switch (state) {
+    case VOICE_STATE_RECONNECTING:
+        /* T1.2: RECONNECTING is a transient backoff state.  Don't show
+         * the voice overlay, don't flash "Disconnected" in red -- the
+         * home pill (voice_get_degraded_reason) handles user-visible
+         * status.  Just let any active overlay dismiss quietly if
+         * needed. */
+        if (s_visible && !s_pending_ask && !s_dictation_from_anywhere) {
+            ui_voice_hide();
+        }
+        break;
     case VOICE_STATE_IDLE:
         /* Clear boot connect flag — either connected or failed */
         if (s_boot_connect) {
@@ -1243,6 +1253,7 @@ static void update_mic_button_state(voice_state_t state)
 
     switch (state) {
     case VOICE_STATE_IDLE:
+    case VOICE_STATE_RECONNECTING:
     case VOICE_STATE_READY:
         /* Default: small cyan dot, static */
         lv_obj_set_size(s_mic_dot, MIC_DOT_SZ, MIC_DOT_SZ);
@@ -1593,7 +1604,8 @@ static void mic_click_cb(lv_event_t *e)
         voice_cancel();
         break;
     case VOICE_STATE_CONNECTING:
-        /* Already connecting — ignore */
+    case VOICE_STATE_RECONNECTING:
+        /* Already connecting — ignore the tap; home pill will update. */
         break;
     }
 }

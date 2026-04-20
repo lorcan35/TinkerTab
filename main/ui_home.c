@@ -795,6 +795,12 @@ void ui_home_update_status(void)
         bool capped = (state == ST_NORMAL)
                       && (tab5_budget_get_cap_mils() > 0)
                       && (tab5_budget_get_today_mils() >= tab5_budget_get_cap_mils());
+        /* v4·D connectivity audit T1.2: honest degraded-state status.
+         * When we're mid-reconnect or hitting link issues, the old
+         * "ONLINE" string lied to the user.  voice_get_degraded_reason
+         * returns NULL when truly healthy; otherwise it returns a
+         * short phrase we can paint directly. */
+        const char *degraded = voice_get_degraded_reason();
         switch (state) {
             case ST_NO_WIFI:     sys = "OFFLINE";   col = TH_STATUS_RED; break;
             case ST_DRAGON_DOWN: sys = "NO DRAGON"; col = TH_STATUS_RED; break;
@@ -804,6 +810,10 @@ void ui_home_update_status(void)
                 if (capped) {
                     sys = "CAPPED \xe2\x80\xa2 LOCAL TODAY";
                     col = TH_STATUS_RED;
+                } else if (degraded) {
+                    /* Reconnecting / Remote / Dragon-unreachable, etc. */
+                    sys = degraded;
+                    col = 0xFBBF24;  /* amber-hot -- attention, not error */
                 } else {
                     sys = "ONLINE";
                     col = TH_TEXT_SECONDARY;
