@@ -73,7 +73,33 @@ static void init_auth_token(void)
         tab5_settings_set_auth_token(s_auth_token);
         ESP_LOGI(TAG, "Generated new auth token");
     }
-    ESP_LOGI(TAG, "Debug server auth token: %s", s_auth_token);
+    /* v4·D audit P1 fix: don't dump the full token on every boot log.
+     * The user can still recover it via serial by reading NVS, but
+     * anyone over-shoulder-watching the console doesn't get it. */
+    size_t tl = strlen(s_auth_token);
+    ESP_LOGI(TAG, "Debug server auth token: %.*s****%.*s (%u chars, masked)",
+             (int)(tl >= 4 ? 4 : tl), s_auth_token,
+             (int)(tl >= 4 ? 4 : 0), s_auth_token + (tl >= 4 ? tl - 4 : 0),
+             (unsigned)tl);
+}
+
+/* v4·D audit P1 fix: constant-time string compare for auth.  The
+ * previous strcmp leaked information about the prefix match length
+ * via response timing -- a local attacker on the LAN could use that
+ * to narrow down the 32-hex-char token with O(16) probes per position.
+ * This path iterates ALL bytes regardless of match -- ~100 ns extra. */
+static int ct_token_cmp(const char *a, const char *b)
+{
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    size_t n  = la > lb ? la : lb;
+    unsigned diff = (unsigned)(la ^ lb);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ca = i < la ? (unsigned char)a[i] : 0;
+        unsigned char cb = i < lb ? (unsigned char)b[i] : 0;
+        diff |= (unsigned)(ca ^ cb);
+    }
+    return diff == 0 ? 0 : 1;
 }
 
 /**
@@ -90,7 +116,8 @@ static bool check_auth(httpd_req_t *req)
         return false;
     }
     /* Expect "Bearer <token>" */
-    if (strncmp(auth_header, "Bearer ", 7) != 0 || strcmp(auth_header + 7, s_auth_token) != 0) {
+    if (strncmp(auth_header, "Bearer ", 7) != 0
+        || ct_token_cmp(auth_header + 7, s_auth_token) != 0) {
         httpd_resp_set_status(req, "401 Unauthorized");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"error\":\"Invalid token\"}");
@@ -351,12 +378,11 @@ static esp_err_t info_handler(httpd_req_t *req)
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     cJSON_AddNumberToObject(root, "tasks", (double)task_count);
 
-    /* AFE / wake word */
-    cJSON_AddBoolToObject(root, "afe_active", tab5_afe_is_active());
-    cJSON_AddBoolToObject(root, "wake_listening", voice_is_always_listening());
-    if (tab5_afe_is_active()) {
-        cJSON_AddStringToObject(root, "wake_word", tab5_afe_wake_word_name());
-    }
+    /* AFE / wake word — parked. Kept in /info so external monitors can
+     * detect the parked state, but the fields always read false/empty. */
+    cJSON_AddBoolToObject(root, "afe_active", false);
+    cJSON_AddBoolToObject(root, "wake_listening", false);
+    cJSON_AddStringToObject(root, "wake_word", "parked");
 
     /* SD card */
     cJSON_AddBoolToObject(root, "sd_mounted", tab5_sdcard_mounted());
@@ -901,24 +927,20 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
     return ret;
 }
 
-/* ── Wake word toggle ────────────────────────────────────────────────── */
+/* ── Wake word toggle (PARKED) ───────────────────────────────────────── */
 
 static esp_err_t wake_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
-    if (voice_is_always_listening()) {
-        voice_stop_always_listening();
-    } else {
-        voice_start_always_listening();
-    }
-
+    /* Feature parked — accept the request but do nothing. Return a clear
+     * status so external tools stop retrying. Un-park: restore the toggle
+     * body above and flip WAKE_WORD_PARKED in voice.c. */
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "afe_active", tab5_afe_is_active());
-    cJSON_AddBoolToObject(root, "wake_listening", voice_is_always_listening());
-    if (tab5_afe_is_active()) {
-        cJSON_AddStringToObject(root, "wake_word", tab5_afe_wake_word_name());
-    }
+    cJSON_AddBoolToObject(root, "afe_active", false);
+    cJSON_AddBoolToObject(root, "wake_listening", false);
+    cJSON_AddStringToObject(root, "wake_word", "parked");
+    cJSON_AddStringToObject(root, "status", "wake-word feature is parked — see voice.c WAKE_WORD_PARKED");
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -1036,7 +1058,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     char model[64];
     tab5_settings_get_llm_model(model, sizeof(model));
     cJSON_AddStringToObject(root, "llm_model", model);
-    cJSON_AddNumberToObject(root, "wake_word", tab5_settings_get_wake_word());
+    /* wake_word setting is parked — always reports 0 regardless of NVS value */
+    cJSON_AddNumberToObject(root, "wake_word", 0);
     cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
     cJSON_AddNumberToObject(root, "voice_state", voice_get_state());
 
@@ -1056,6 +1079,158 @@ static void async_refresh_mode_badge(void *arg)
     (void)arg;
     extern void ui_home_refresh_mode_badge(void);
     ui_home_refresh_mode_badge();
+}
+
+/* POST /settings — update NVS keys via JSON body.
+ * Supports: dragon_host (str), dragon_port (int), wifi_ssid (str).
+ * Body: {"dragon_host":"192.168.1.91","dragon_port":3502}
+ * Returns: {"updated":["dragon_host","dragon_port"]}
+ * Note: does NOT reconnect voice WS automatically — call /voice/reconnect after.
+ */
+static esp_err_t settings_set_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    int total = req->content_len;
+    if (total <= 0 || total > 512) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"body 1..512 bytes required\"}");
+        return ESP_OK;
+    }
+
+    char body[520] = {0};
+    int received = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, body + received, total - received);
+        if (r <= 0) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "{\"error\":\"recv failed\"}");
+            return ESP_OK;
+        }
+        received += r;
+    }
+    body[received] = '\0';
+
+    cJSON *req_json = cJSON_Parse(body);
+    if (!req_json) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"invalid JSON\"}");
+        return ESP_OK;
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON *updated = cJSON_CreateArray();
+
+    cJSON *host = cJSON_GetObjectItem(req_json, "dragon_host");
+    if (cJSON_IsString(host) && host->valuestring && strlen(host->valuestring) > 0) {
+        if (tab5_settings_set_dragon_host(host->valuestring) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_host"));
+        }
+    }
+
+    cJSON *port = cJSON_GetObjectItem(req_json, "dragon_port");
+    if (cJSON_IsNumber(port)) {
+        int p = (int)port->valuedouble;
+        if (p > 0 && p < 65536) {
+            if (tab5_settings_set_dragon_port((uint16_t)p) == ESP_OK) {
+                cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_port"));
+            }
+        }
+    }
+
+    cJSON *cmode = cJSON_GetObjectItem(req_json, "conn_mode");
+    if (cJSON_IsNumber(cmode)) {
+        int m = (int)cmode->valuedouble;
+        if (m >= 0 && m <= 2) {
+            if (tab5_settings_set_connection_mode((uint8_t)m) == ESP_OK) {
+                cJSON_AddItemToArray(updated, cJSON_CreateString("conn_mode"));
+            }
+        }
+    }
+
+    /* v4·D Sovereign Halo mode dials — accept tiers and auto-resolve into
+     * voice_mode + llm_model. Calling /voice/reconnect after a tier
+     * change is optional but recommended -- Dragon picks up the new mode
+     * on the next config_update that follows. */
+    bool any_tier = false;
+    cJSON *it = cJSON_GetObjectItem(req_json, "int_tier");
+    if (cJSON_IsNumber(it)) {
+        int t = (int)it->valuedouble;
+        if (t >= 0 && t <= 2 && tab5_settings_set_int_tier((uint8_t)t) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("int_tier"));
+            any_tier = true;
+        }
+    }
+    cJSON *vt = cJSON_GetObjectItem(req_json, "voi_tier");
+    if (cJSON_IsNumber(vt)) {
+        int t = (int)vt->valuedouble;
+        if (t >= 0 && t <= 2 && tab5_settings_set_voi_tier((uint8_t)t) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("voi_tier"));
+            any_tier = true;
+        }
+    }
+    cJSON *at = cJSON_GetObjectItem(req_json, "aut_tier");
+    if (cJSON_IsNumber(at)) {
+        int t = (int)at->valuedouble;
+        if (t >= 0 && t <= 1 && tab5_settings_set_aut_tier((uint8_t)t) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("aut_tier"));
+            any_tier = true;
+        }
+    }
+
+    /* Phase 3e budget cap edit + spent reset (dev/debug knob) */
+    cJSON *cap = cJSON_GetObjectItem(req_json, "cap_mils");
+    if (cJSON_IsNumber(cap)) {
+        uint32_t v = (uint32_t)cap->valuedouble;
+        if (tab5_budget_set_cap_mils(v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("cap_mils"));
+        }
+    }
+    cJSON *reset = cJSON_GetObjectItem(req_json, "reset_spent");
+    if (cJSON_IsBool(reset) && cJSON_IsTrue(reset)) {
+        /* Zero today's spend by resetting the day marker -- the next
+         * accumulate() will see stored_day != today and wipe. */
+        extern esp_err_t nvs_flash_init(void);
+        /* Direct-write via the bounded API by briefly reparenting into
+         * settings.c's helpers is overkill; instead we rely on the
+         * accumulate path's rollover logic: bumping cap + zero-arg
+         * accumulate(0) would no-op. The cleanest path is to call the
+         * setter that already exists.  Here we just re-apply cap which
+         * implicitly keeps spent untouched; true reset is a future
+         * helper. For now, a practical workaround: set cap to a value
+         * greater than current spent so the next receipt re-evaluates. */
+        cJSON_AddItemToArray(updated, cJSON_CreateString("reset_spent_noop"));
+    }
+    if (any_tier) {
+        /* Resolve the new tier triple and persist the derived voice_mode +
+         * llm_model. Leaves llm_model untouched when resolver doesn't pick
+         * a specific cloud model (ie Local, Hybrid, TinkerClaw modes). */
+        char model_out[64] = {0};
+        uint8_t new_mode = tab5_mode_resolve(
+            tab5_settings_get_int_tier(),
+            tab5_settings_get_voi_tier(),
+            tab5_settings_get_aut_tier(),
+            model_out, sizeof(model_out));
+        tab5_settings_set_voice_mode(new_mode);
+        cJSON_AddItemToArray(updated, cJSON_CreateString("voice_mode"));
+        cJSON_AddNumberToObject(resp, "resolved_voice_mode", new_mode);
+        if (model_out[0]) {
+            tab5_settings_set_llm_model(model_out);
+            cJSON_AddItemToArray(updated, cJSON_CreateString("llm_model"));
+            cJSON_AddStringToObject(resp, "resolved_llm_model", model_out);
+        }
+    }
+
+    cJSON_AddItemToObject(resp, "updated", updated);
+    char *out = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    cJSON_Delete(req_json);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
+    esp_err_t ret = httpd_resp_sendstr(req, out);
+    free(out);
+    return ret;
 }
 
 /* POST /mode?m=0|1|2|3&model=... — switch voice mode (3=TinkerClaw) */
@@ -1154,6 +1329,13 @@ static void async_navigate(void *arg)
     ui_focus_hide();
     ui_sessions_hide();
     ui_keyboard_hide();
+    /* Wave 4 UX fix: if the voice overlay is up but voice is idle, a
+     * nav request means the user has moved on.  Dismiss so the user
+     * sees the screen they just navigated to instead of a stale
+     * "Tap to speak." card blocking the view.  Active states
+     * (LISTENING / PROCESSING / SPEAKING) are left alone. */
+    extern void ui_voice_dismiss_if_idle(void);
+    ui_voice_dismiss_if_idle();
 
     if (strcmp(s_nav_target, "home") == 0) {
         ui_home_go_home();
@@ -1188,6 +1370,142 @@ static void async_navigate(void *arg)
         ui_focus_show();
     }
     s_navigating = false;
+}
+
+/* ── /widget — testing-only hook that injects a widget_live into the store
+ *   without requiring Dragon. Body is JSON matching widget_live schema (see
+ *   TinkerBox docs/protocol.md §17.2). Used by the Widget Platform test
+ *   harness before the Dragon Tab5Surface is wired. */
+#include "widget.h"
+static void async_widget_refresh(void *arg) {
+    (void)arg;
+    extern void ui_home_update_status(void);
+    ui_home_update_status();
+}
+
+static esp_err_t widget_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    /* Read body */
+    int len = req->content_len;
+    if (len <= 0 || len > 2048) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body 1..2048 bytes");
+        return ESP_FAIL;
+    }
+    char *buf = malloc(len + 1);
+    if (!buf) { httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom"); return ESP_FAIL; }
+    int got = 0;
+    while (got < len) {
+        int r = httpd_req_recv(req, buf + got, len - got);
+        if (r <= 0) { free(buf); httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "read"); return ESP_FAIL; }
+        got += r;
+    }
+    buf[len] = '\0';
+
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_FAIL;
+    }
+
+    const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(root, "action"));
+    if (action && !strcmp(action, "dismiss")) {
+        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        if (cid) widget_store_dismiss(cid);
+        cJSON_Delete(root);
+        lv_async_call(async_widget_refresh, NULL);
+        httpd_resp_sendstr(req, "{\"ok\":true}");
+        return ESP_OK;
+    }
+
+    /* Build widget_t from JSON */
+    widget_t w = {0};
+    const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
+    const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+    const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
+    const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
+    const char *icn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "icon"));
+    const char *tn  = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
+    cJSON *prog     = cJSON_GetObjectItem(root, "progress");
+    cJSON *pri      = cJSON_GetObjectItem(root, "priority");
+    cJSON *act      = cJSON_GetObjectItem(root, "action");
+
+    if (!cid) cid = "debug_1";
+    if (!sid) sid = "debug";
+    strncpy(w.card_id,  cid, WIDGET_ID_LEN - 1);
+    strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
+    if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
+    if (bdy) strncpy(w.body,  bdy, WIDGET_BODY_LEN  - 1);
+    if (icn) strncpy(w.icon,  icn, WIDGET_ICON_LEN  - 1);
+    /* v4·D Phase 4c: optional "type" + "items" fields let the debug
+     * endpoint inject widget_list payloads for visual testing. */
+    const char *tstr = cJSON_GetStringValue(cJSON_GetObjectItem(root, "type"));
+    w.type = tstr ? widget_type_from_str(tstr) : WIDGET_TYPE_LIVE;
+    if (w.type == WIDGET_TYPE_NONE) w.type = WIDGET_TYPE_LIVE;
+    w.tone     = widget_tone_from_str(tn);
+    w.progress = cJSON_IsNumber(prog) ? (float)prog->valuedouble : 0.0f;
+    w.priority = cJSON_IsNumber(pri)  ? (uint8_t)pri->valueint   : 50;
+    if (cJSON_IsObject(act)) {
+        const char *al = cJSON_GetStringValue(cJSON_GetObjectItem(act, "label"));
+        const char *ae = cJSON_GetStringValue(cJSON_GetObjectItem(act, "event"));
+        if (al) strncpy(w.action_label, al, WIDGET_ACTION_LBL_LEN - 1);
+        if (ae) strncpy(w.action_event, ae, WIDGET_ACTION_EVT_LEN - 1);
+    }
+    cJSON *items = cJSON_GetObjectItem(root, "items");
+    if (cJSON_IsArray(items)) {
+        int cnt = cJSON_GetArraySize(items);
+        if (cnt > WIDGET_LIST_MAX_ITEMS) cnt = WIDGET_LIST_MAX_ITEMS;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *it = cJSON_GetArrayItem(items, i);
+            if (!cJSON_IsObject(it)) continue;
+            const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
+            const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "value"));
+            if (t) strncpy(w.items[i].text,  t, WIDGET_LIST_ITEM_TEXT_LEN  - 1);
+            if (v) strncpy(w.items[i].value, v, WIDGET_LIST_ITEM_VALUE_LEN - 1);
+        }
+        w.items_count = (uint8_t)cnt;
+    }
+    /* v4·D Phase 4f: optional "values" + "max" fields for widget_chart. */
+    cJSON *vals = cJSON_GetObjectItem(root, "values");
+    if (cJSON_IsArray(vals)) {
+        int cnt = cJSON_GetArraySize(vals);
+        if (cnt > WIDGET_CHART_MAX_POINTS) cnt = WIDGET_CHART_MAX_POINTS;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *v = cJSON_GetArrayItem(vals, i);
+            w.chart_values[i] = cJSON_IsNumber(v) ? (float)v->valuedouble : 0.0f;
+        }
+        w.chart_count = (uint8_t)cnt;
+    }
+    cJSON *mx = cJSON_GetObjectItem(root, "max");
+    w.chart_max = cJSON_IsNumber(mx) ? (float)mx->valuedouble : 0.0f;
+    /* v4·D Phase 4g: media + prompt fields for /widget debug injection. */
+    const char *media_url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+    const char *media_alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
+    if (media_url) strncpy(w.media_url, media_url, WIDGET_MEDIA_URL_LEN - 1);
+    if (media_alt) strncpy(w.media_alt, media_alt, WIDGET_MEDIA_ALT_LEN - 1);
+    cJSON *choices = cJSON_GetObjectItem(root, "choices");
+    if (cJSON_IsArray(choices)) {
+        int cnt = cJSON_GetArraySize(choices);
+        if (cnt > WIDGET_PROMPT_MAX_CHOICES) cnt = WIDGET_PROMPT_MAX_CHOICES;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *it = cJSON_GetArrayItem(choices, i);
+            if (!cJSON_IsObject(it)) continue;
+            const char *t  = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
+            const char *ev = cJSON_GetStringValue(cJSON_GetObjectItem(it, "event"));
+            if (t)  strncpy(w.choices[i].text,  t,  WIDGET_PROMPT_CHOICE_LEN - 1);
+            if (ev) strncpy(w.choices[i].event, ev, WIDGET_PROMPT_EVENT_LEN - 1);
+        }
+        w.choices_count = (uint8_t)cnt;
+    }
+    widget_store_upsert(&w);
+    cJSON_Delete(root);
+    lv_async_call(async_widget_refresh, NULL);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
 }
 
 static esp_err_t navigate_handler(httpd_req_t *req)
@@ -1372,6 +1690,12 @@ static esp_err_t chat_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
+    /* Push the user's message into the chat store so the bubble appears.
+     * The normal typing path goes through chat_input_bar which calls
+     * chat_store_add + voice_send_text; /chat (debug) only called the
+     * latter, which is why debug-fired turns never showed a user bubble. */
+    extern void ui_chat_push_message(const char *role, const char *text);
+    ui_chat_push_message("user", text);
     voice_send_text(text);
 
     cJSON *root = cJSON_CreateObject();
@@ -1399,7 +1723,7 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "connected", voice_is_connected());
     cJSON_AddNumberToObject(root, "state", (int)voice_get_state());
 
-    const char *state_names[] = {"IDLE", "CONNECTING", "READY", "LISTENING", "PROCESSING", "SPEAKING", "DICTATING"};
+    const char *state_names[] = {"IDLE", "CONNECTING", "READY", "LISTENING", "PROCESSING", "SPEAKING", "RECONNECTING", "DICTATING"};
     int st = (int)voice_get_state();
     cJSON_AddStringToObject(root, "state_name", (st >= 0 && st <= 6) ? state_names[st] : "UNKNOWN");
 
@@ -1652,11 +1976,17 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_settings_get = {
         .uri = "/settings", .method = HTTP_GET, .handler = settings_get_handler
     };
+    const httpd_uri_t uri_settings_set = {
+        .uri = "/settings", .method = HTTP_POST, .handler = settings_set_handler
+    };
     const httpd_uri_t uri_mode_set = {
         .uri = "/mode", .method = HTTP_POST, .handler = mode_set_handler
     };
     const httpd_uri_t uri_navigate = {
         .uri = "/navigate", .method = HTTP_POST, .handler = navigate_handler
+    };
+    const httpd_uri_t uri_widget = {
+        .uri = "/widget", .method = HTTP_POST, .handler = widget_handler
     };
     const httpd_uri_t uri_camera = {
         .uri = "/camera", .method = HTTP_GET, .handler = camera_handler
@@ -1696,8 +2026,10 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_wake);
     httpd_register_uri_handler(server, &uri_settings_get);
+    httpd_register_uri_handler(server, &uri_settings_set);
     httpd_register_uri_handler(server, &uri_mode_set);
     httpd_register_uri_handler(server, &uri_navigate);
+    httpd_register_uri_handler(server, &uri_widget);
     httpd_register_uri_handler(server, &uri_camera);
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);

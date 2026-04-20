@@ -147,6 +147,13 @@ static int build_session_row(lv_obj_t *parent, int y, const session_row_t *r)
 
 void ui_sessions_show(void)
 {
+    /* Match the go-home fix: if a separate lv_screen is active, load
+     * home first so this overlay actually renders. */
+    lv_obj_t *home = ui_home_get_screen();
+    if (home && lv_screen_active() != home) {
+        lv_screen_load(home);
+    }
+
     if (s_overlay) {
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
@@ -154,7 +161,7 @@ void ui_sessions_show(void)
         return;
     }
 
-    lv_obj_t *parent = ui_home_get_screen();
+    lv_obj_t *parent = home;
     if (!parent) parent = lv_screen_active();
     if (!parent) return;
 

@@ -1,9 +1,13 @@
 /*
- * ui_memory.c — v5 Memory search overlay (minimal)
+ * ui_memory.c — v5 Memory search overlay.
  *
- * Typography-forward search surface. Top: big "Memory" title + stats line.
- * Below the title: query pill with amber cursor + placeholder text.
- * Below the query: hit rows, each one a tag + when + excerpt.
+ * Typography-forward surface showing the live contents of Dragon's
+ * fact store (POST /api/v1/memory).  On show, spawns a FreeRTOS task
+ * that GETs /api/v1/memory?limit=6, parses cJSON, and re-builds the
+ * hit rows on the LVGL thread via lv_async_call.
+ *
+ * v4·D 2026-04-20: wired to Dragon REST -- previously rendered four
+ * hardcoded mock rows.
  */
 
 #include "ui_memory.h"
@@ -11,17 +15,50 @@
 #include "ui_home.h"
 #include "ui_core.h"
 #include "config.h"
+#include "settings.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 static const char *TAG = "ui_memory";
 
 #define SW        720
 #define SH        1280
 #define SIDE_PAD  52
+#define MAX_HITS  6
 
-static lv_obj_t *s_overlay  = NULL;
-static lv_obj_t *s_back_btn = NULL;
-static bool      s_visible  = false;
+static lv_obj_t *s_overlay    = NULL;
+static lv_obj_t *s_back_btn   = NULL;
+static lv_obj_t *s_stats_lbl  = NULL;
+static lv_obj_t *s_hits_root  = NULL;   /* container that holds all hit rows */
+static lv_obj_t *s_loading    = NULL;   /* "Loading..." label while fetching */
+static bool      s_visible    = false;
+static volatile bool s_fetch_inflight = false;
+
+typedef struct {
+    char id[24];
+    char content[192];
+    char source[16];
+    double created_at;   /* unix seconds */
+} mem_hit_t;
+
+typedef struct {
+    mem_hit_t items[MAX_HITS];
+    int       count;
+    int       total;
+    bool      ok;
+} mem_fetch_result_t;
+
+/* Shared buffer the fetch task hands off to the LVGL async callback. */
+static mem_fetch_result_t s_last_fetch;
+
+/* ── UI helpers ─────────────────────────────────────────────────── */
 
 static void back_click_cb(lv_event_t *e)
 {
@@ -33,30 +70,48 @@ static void overlay_gesture_cb(lv_event_t *e)
 {
     (void)e;
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-    /* Unified with agents/focus/sessions/notes/settings: swipe RIGHT or
-     * BOTTOM closes. Memory used to be LEFT which broke muscle-memory. */
     if (dir == LV_DIR_RIGHT || dir == LV_DIR_BOTTOM) {
         ui_memory_hide();
     }
 }
 
-static void build_hit(lv_obj_t *parent, int y,
+static void format_when(char *out, size_t n, double created_at)
+{
+    time_t now   = time(NULL);
+    time_t t     = (time_t)created_at;
+    time_t delta = now - t;
+    if (delta < 0) delta = 0;
+    if (delta < 3600) {
+        int m = (int)(delta / 60);
+        snprintf(out, n, "%d MIN AGO", m);
+        return;
+    }
+    if (delta < 86400) {
+        int h = (int)(delta / 3600);
+        snprintf(out, n, "%d H AGO", h);
+        return;
+    }
+    struct tm tm;
+    localtime_r(&t, &tm);
+    strftime(out, n, "%b %d  \xe2\x80\xa2  %H:%M", &tm);
+}
+
+static void build_hit(lv_obj_t *parent,
                       const char *tag, uint32_t tag_color,
                       const char *when, const char *excerpt)
 {
     lv_obj_t *c = lv_obj_create(parent);
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
-    lv_obj_set_pos(c, SIDE_PAD, y);
     lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(c, 6, 0);
     lv_obj_set_style_pad_bottom(c, 18, 0);
+    lv_obj_set_style_pad_top(c, 12, 0);
     lv_obj_set_style_border_width(c, 1, 0);
     lv_obj_set_style_border_color(c, lv_color_hex(0x1A1A24), 0);
     lv_obj_set_style_border_side(c, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* tag + when row */
     lv_obj_t *row = lv_obj_create(c);
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -82,7 +137,6 @@ static void build_hit(lv_obj_t *parent, int y,
     lv_obj_set_style_text_color(time_lbl, lv_color_hex(0x55555D), 0);
     lv_obj_set_style_text_letter_space(time_lbl, 2, 0);
 
-    /* excerpt */
     lv_obj_t *ex = lv_label_create(c);
     lv_label_set_long_mode(ex, LV_LABEL_LONG_WRAP);
     lv_label_set_text(ex, excerpt);
@@ -92,16 +146,199 @@ static void build_hit(lv_obj_t *parent, int y,
     lv_obj_set_style_text_line_space(ex, 4, 0);
 }
 
+/* ── Render callback (LVGL thread) ──────────────────────────────── */
+
+static void render_hits_cb(void *arg)
+{
+    (void)arg;
+    if (!s_hits_root) return;
+    lv_obj_clean(s_hits_root);
+
+    if (s_loading) {
+        lv_obj_add_flag(s_loading, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (!s_last_fetch.ok) {
+        lv_obj_t *err = lv_label_create(s_hits_root);
+        lv_label_set_long_mode(err, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(err, SW - 2 * SIDE_PAD);
+        lv_label_set_text(err, "Dragon unreachable. Check Settings \xe2\x80\xa2 Network.");
+        lv_obj_set_style_text_font(err, FONT_BODY, 0);
+        lv_obj_set_style_text_color(err, lv_color_hex(0xEF4444), 0);
+        return;
+    }
+
+    if (s_stats_lbl) {
+        char sbuf[64];
+        snprintf(sbuf, sizeof(sbuf),
+                 "%d FACTS  \xe2\x80\xa2  QWEN3-EMBEDDING", s_last_fetch.total);
+        lv_label_set_text(s_stats_lbl, sbuf);
+    }
+
+    if (s_last_fetch.count == 0) {
+        lv_obj_t *empty = lv_label_create(s_hits_root);
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(empty, SW - 2 * SIDE_PAD);
+        lv_label_set_text(empty,
+            "Nothing yet. Say \"remember that...\" to start the memory.");
+        lv_obj_set_style_text_font(empty, FONT_BODY, 0);
+        lv_obj_set_style_text_color(empty, lv_color_hex(TH_TEXT_DIM), 0);
+        return;
+    }
+
+    for (int i = 0; i < s_last_fetch.count; i++) {
+        char when[32];
+        char tag[32];
+        const mem_hit_t *h = &s_last_fetch.items[i];
+        format_when(when, sizeof(when), h->created_at);
+        /* Uppercase the source as a kicker. */
+        snprintf(tag, sizeof(tag), "%.15s", h->source[0] ? h->source : "memory");
+        for (int k = 0; tag[k]; k++) {
+            if (tag[k] >= 'a' && tag[k] <= 'z') tag[k] -= 32;
+        }
+        build_hit(s_hits_root, tag, TH_AMBER, when, h->content);
+    }
+}
+
+/* ── Fetch task (background FreeRTOS) ───────────────────────────── */
+
+static void fetch_task(void *pv)
+{
+    (void)pv;
+    char host[64] = {0};
+    tab5_settings_get_dragon_host(host, sizeof(host));
+    if (!host[0]) snprintf(host, sizeof(host), "192.168.1.91");
+    uint16_t port = tab5_settings_get_dragon_port();
+    if (port == 0) port = 3502;
+
+    char url[128];
+    snprintf(url, sizeof(url),
+             "http://%s:%u/api/v1/memory?limit=%d", host, port, MAX_HITS);
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = 4000,
+        .buffer_size = 4096,
+        .buffer_size_tx = 512,
+    };
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    s_last_fetch.count = 0;
+    s_last_fetch.total = 0;
+    s_last_fetch.ok    = false;
+    if (!cli) goto done;
+
+    esp_err_t err = esp_http_client_open(cli, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "http_client_open failed: %s", esp_err_to_name(err));
+        goto cleanup;
+    }
+    int content_len = esp_http_client_fetch_headers(cli);
+    if (content_len < 0) content_len = 8192;
+    char *body = malloc(content_len + 1);
+    if (!body) goto cleanup;
+    int got = 0;
+    while (got < content_len) {
+        int r = esp_http_client_read(cli, body + got, content_len - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    body[got] = '\0';
+
+    int status = esp_http_client_get_status_code(cli);
+    ESP_LOGI(TAG, "GET %s -> %d (%d bytes)", url, status, got);
+    if (status != 200) {
+        free(body);
+        goto cleanup;
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (!root) {
+        ESP_LOGW(TAG, "cJSON parse failed");
+        goto cleanup;
+    }
+    cJSON *items = cJSON_GetObjectItem(root, "items");
+    cJSON *total = cJSON_GetObjectItem(root, "count");
+    if (cJSON_IsNumber(total)) s_last_fetch.total = total->valueint;
+    if (cJSON_IsArray(items)) {
+        int arr_n = cJSON_GetArraySize(items);
+        int n = arr_n > MAX_HITS ? MAX_HITS : arr_n;
+        for (int i = 0; i < n; i++) {
+            cJSON *it = cJSON_GetArrayItem(items, i);
+            if (!cJSON_IsObject(it)) continue;
+            mem_hit_t *h = &s_last_fetch.items[s_last_fetch.count];
+            const char *id  = cJSON_GetStringValue(cJSON_GetObjectItem(it, "id"));
+            const char *ct  = cJSON_GetStringValue(cJSON_GetObjectItem(it, "content"));
+            const char *sr  = cJSON_GetStringValue(cJSON_GetObjectItem(it, "source"));
+            cJSON *cat      = cJSON_GetObjectItem(it, "created_at");
+            if (id) strncpy(h->id,      id, sizeof(h->id)      - 1);
+            if (ct) strncpy(h->content, ct, sizeof(h->content) - 1);
+            if (sr) strncpy(h->source,  sr, sizeof(h->source)  - 1);
+            h->created_at = cJSON_IsNumber(cat) ? cat->valuedouble : 0.0;
+            s_last_fetch.count++;
+        }
+    }
+    /* If the server reports 0 total but items is empty that's still OK -- the
+     * "Nothing yet" empty-state will render. */
+    if (s_last_fetch.total == 0 && s_last_fetch.count > 0) {
+        s_last_fetch.total = s_last_fetch.count;
+    }
+    s_last_fetch.ok = true;
+    cJSON_Delete(root);
+
+cleanup:
+    esp_http_client_close(cli);
+    esp_http_client_cleanup(cli);
+done:
+    /* Hop to LVGL thread to rebuild the UI. */
+    lv_async_call(render_hits_cb, NULL);
+    s_fetch_inflight = false;
+    vTaskDelete(NULL);
+}
+
+static void kick_fetch(void)
+{
+    if (s_fetch_inflight) return;
+    s_fetch_inflight = true;
+    /* Allocate the task's TCB + stack from PSRAM (via WithCaps) so that
+     * a fragmented internal-SRAM heap doesn't block the memory overlay
+     * from ever fetching facts.  Without this, /navigate?screen=memory
+     * after several overlay cycles would log "failed to spawn fetch
+     * task" and the UI would sit stuck on "Loading facts..." forever.
+     * Fallback to regular xTaskCreatePinnedToCore if WithCaps fails
+     * (belt + braces). */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
+        fetch_task, "mem_fetch", 6144, NULL, 3, NULL, 1,
+        MALLOC_CAP_SPIRAM);
+    if (ok != pdPASS) {
+        ok = xTaskCreatePinnedToCore(
+            fetch_task, "mem_fetch", 6144, NULL, 3, NULL, 1);
+    }
+    if (ok != pdPASS) {
+        ESP_LOGW(TAG, "failed to spawn fetch task");
+        s_fetch_inflight = false;
+    }
+}
+
+/* ── Public API ──────────────────────────────────────────────────── */
+
 void ui_memory_show(void)
 {
+    lv_obj_t *home = ui_home_get_screen();
+    if (home && lv_screen_active() != home) {
+        lv_screen_load(home);
+    }
+
     if (s_overlay) {
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
         s_visible = true;
+        /* Kick a fresh fetch so the surface is always current. */
+        kick_fetch();
         return;
     }
 
-    lv_obj_t *parent = ui_home_get_screen();
+    lv_obj_t *parent = home;
     if (!parent) parent = lv_screen_active();
     if (!parent) return;
 
@@ -116,7 +353,7 @@ void ui_memory_show(void)
     lv_obj_add_event_cb(s_overlay, overlay_gesture_cb, LV_EVENT_GESTURE, NULL);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
-    /* Back affordance top-left */
+    /* Back affordance */
     s_back_btn = lv_button_create(s_overlay);
     lv_obj_set_size(s_back_btn, 120, 60);
     lv_obj_set_pos(s_back_btn, 24, 30);
@@ -138,14 +375,14 @@ void ui_memory_show(void)
     lv_obj_set_style_text_color(head, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_pos(head, SIDE_PAD, 110);
 
-    lv_obj_t *stats = lv_label_create(s_overlay);
-    lv_label_set_text(stats, "12,340  •  3.4 MB  •  QWEN3-EMBEDDING");
-    lv_obj_set_style_text_font(stats, FONT_CAPTION, 0);
-    lv_obj_set_style_text_color(stats, lv_color_hex(TH_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_letter_space(stats, 3, 0);
-    lv_obj_set_pos(stats, SIDE_PAD, 190);
+    s_stats_lbl = lv_label_create(s_overlay);
+    lv_label_set_text(s_stats_lbl, "LOADING \xe2\x80\xa2 QWEN3-EMBEDDING");
+    lv_obj_set_style_text_font(s_stats_lbl, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(s_stats_lbl, lv_color_hex(TH_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_letter_space(s_stats_lbl, 3, 0);
+    lv_obj_set_pos(s_stats_lbl, SIDE_PAD, 190);
 
-    /* Query pill */
+    /* Query pill (placeholder, not yet wired to a keyboard) */
     lv_obj_t *pill = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(pill);
     lv_obj_set_size(pill, SW - 2 * SIDE_PAD, 72);
@@ -156,40 +393,36 @@ void ui_memory_show(void)
     lv_obj_set_style_border_width(pill, 1, 0);
     lv_obj_set_style_border_color(pill, lv_color_hex(TH_CARD_BORDER), 0);
     lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
-
     lv_obj_t *cur = lv_obj_create(pill);
     lv_obj_remove_style_all(cur);
     lv_obj_set_size(cur, 2, 36);
     lv_obj_set_pos(cur, 18, 18);
     lv_obj_set_style_bg_color(cur, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_bg_opa(cur, LV_OPA_COVER, 0);
-
     lv_obj_t *q = lv_label_create(pill);
     lv_label_set_text(q, "find anything you said to me...");
     lv_obj_set_style_text_font(q, FONT_BODY, 0);
     lv_obj_set_style_text_color(q, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_set_pos(q, 34, 26);
 
-    /* Demo hits — static so the surface is demonstrable. */
-    build_hit(s_overlay, 340,
-              "CHAT  •  SONNET", TH_AMBER, "TODAY  •  10:15",
-              "\"Compare AirPods Pro 2 vs Sony XM5 -- which for calls?\" "
-              "-- XM5 won on call quality, AirPods tighter latency.");
-    build_hit(s_overlay, 500,
-              "NOTE  •  VOICE", TH_AMBER, "APR 13  •  22:04",
-              "Weekend spending: headphones case replacement, new monitor "
-              "stand, groceries.");
-    build_hit(s_overlay, 640,
-              "CHAT  •  LOCAL", TH_AMBER, "APR 9  •  08:30",
-              "\"my airpods are dropping audio mid-call\" -- yes, hold setup "
-              "button 15 s in the case to reset.");
-    build_hit(s_overlay, 800,
-              "CHAT  •  HYBRID", TH_AMBER, "MAR 28  •  13:12",
-              "Asked about spatial audio with Ableton on macOS. Answer: no, "
-              "only Music / TV apps.");
+    /* Hits container -- filled on async */
+    s_hits_root = lv_obj_create(s_overlay);
+    lv_obj_remove_style_all(s_hits_root);
+    lv_obj_set_size(s_hits_root, SW, LV_SIZE_CONTENT);
+    lv_obj_set_pos(s_hits_root, 0, 330);
+    lv_obj_set_flex_flow(s_hits_root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_hits_root, 0, 0);
+    lv_obj_clear_flag(s_hits_root, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Transient loading state */
+    s_loading = lv_label_create(s_hits_root);
+    lv_label_set_text(s_loading, "Loading facts...");
+    lv_obj_set_style_text_font(s_loading, FONT_BODY, 0);
+    lv_obj_set_style_text_color(s_loading, lv_color_hex(TH_TEXT_DIM), 0);
 
     s_visible = true;
-    ESP_LOGI(TAG, "memory overlay shown");
+    kick_fetch();
+    ESP_LOGI(TAG, "memory overlay shown (fetching from Dragon)");
 }
 
 void ui_memory_hide(void)

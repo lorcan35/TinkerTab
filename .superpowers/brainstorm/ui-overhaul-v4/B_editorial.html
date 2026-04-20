@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>TinkerTab v4 — B · EDITORIAL</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700;9..144,900&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#08080E;--card:#111119;--elev:#13131F;--amber:#F59E0B;--text:#E8E8EE;--muted:#6A6A78;--hair:#1C1C28}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#000;color:var(--text);font-family:'JetBrains Mono',monospace;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:40px;-webkit-font-smoothing:antialiased}
+  .frame{width:720px;height:1280px;background:var(--bg);position:relative;overflow:hidden;border-radius:8px;box-shadow:0 30px 100px #000}
+
+  /* top meta — thin, info-dense, replaces both mode pill + tiny clock */
+  .meta{height:52px;padding:0 28px;display:flex;align-items:center;gap:22px;border-bottom:1px solid var(--hair);font-size:11px;letter-spacing:3px;color:var(--muted)}
+  .meta .mode{color:var(--amber);font-weight:700}
+  .meta .mid{flex:1;text-align:center;font-family:'Fraunces';font-weight:300;font-size:22px;letter-spacing:0;color:var(--text);font-style:italic}
+
+  /* hero: orb sits LEFT; masthead headline sits RIGHT — editorial split */
+  .masthead{padding:36px 28px 18px;display:grid;grid-template-columns:260px 1fr;gap:24px;align-items:center}
+  .orb{width:240px;height:240px;border-radius:50%;
+       background:radial-gradient(circle at 36% 32%, #FFC36A 0%, #F59E0B 30%, #8a5a07 70%, #150d03 100%);
+       box-shadow:0 0 80px rgba(245,158,11,.30), inset 0 0 60px rgba(0,0,0,.5);
+       position:relative}
+  .orb::after{content:"";position:absolute;inset:10px;border-radius:50%;border:1px solid rgba(245,158,11,.22)}
+  .hl{font-family:'Fraunces';font-weight:900;font-size:58px;line-height:.94;letter-spacing:-2px;color:var(--text)}
+  .hl em{font-style:italic;font-weight:500;color:var(--amber)}
+  .kicker{margin-top:12px;font-size:10px;letter-spacing:4px;color:var(--muted);text-transform:uppercase}
+
+  /* rule + section */
+  hr{border:0;border-top:1px solid var(--hair);margin:10px 28px}
+  .section-head{padding:22px 28px 8px;display:flex;align-items:baseline;gap:16px}
+  .section-head h3{font-family:'Fraunces';font-weight:700;font-size:22px;letter-spacing:-.3px}
+  .section-head .stamp{margin-left:auto;font-size:10px;letter-spacing:3px;color:var(--muted);text-transform:uppercase}
+
+  /* FEED — replaces "agent card + 2 info cards". Typographic, asymmetric. */
+  .feed{padding:6px 28px 0}
+  .item{padding:22px 0;border-bottom:1px solid var(--hair);display:grid;grid-template-columns:56px 1fr;gap:16px;align-items:start}
+  .item .when{font-family:'JetBrains Mono';font-size:11px;color:var(--amber);letter-spacing:2px;padding-top:6px}
+  .item .body{font-family:'Fraunces';font-weight:500;font-size:24px;line-height:1.25;letter-spacing:-.3px;color:var(--text)}
+  .item .body b{font-weight:700;color:var(--amber)}
+  .item .body .muted{color:var(--muted);font-weight:400}
+  .item .tail{margin-top:8px;font-family:'JetBrains Mono';font-size:11px;letter-spacing:2px;color:var(--muted)}
+
+  /* footer gestures only — no nav bar, no input pill. Edge glyphs. */
+  .footer{position:absolute;bottom:0;left:0;right:0;padding:22px 28px 26px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--hair);font-family:'JetBrains Mono';font-size:11px;letter-spacing:3px;color:var(--muted)}
+  .footer .cta{color:var(--amber);font-weight:700}
+  .footer .g{font-family:'Fraunces';font-weight:700;font-size:14px;letter-spacing:2px;color:var(--text)}
+
+  /* left/right edge ticks as gesture hints */
+  .tick{position:absolute;width:3px;height:34px;background:var(--amber);opacity:.55;border-radius:0 2px 2px 0}
+  .tick.l{left:0;top:620px}
+  .tick.r{right:0;top:620px;border-radius:2px 0 0 2px}
+
+  .label{position:absolute;top:-34px;left:0;color:#888;font-size:12px;letter-spacing:3px;text-transform:uppercase}
+</style>
+</head>
+<body>
+<div style="position:relative">
+  <div class="label">B · EDITORIAL — masthead orb, typographic feed</div>
+  <div class="frame">
+
+    <div class="meta">
+      <span class="mode">● LOCAL</span>
+      <span>TUE · 14:32</span>
+      <span class="mid">good afternoon, emile</span>
+      <span>74%</span>
+      <span>◉ 3 SKILLS</span>
+    </div>
+
+    <div class="masthead">
+      <div class="orb"></div>
+      <div>
+        <div class="hl">You can just <em>ask</em>.</div>
+        <div class="kicker">— tap orb · or say "hey tinker"</div>
+      </div>
+    </div>
+
+    <hr/>
+
+    <div class="section-head">
+      <h3>The thread</h3>
+      <span class="stamp">updated 4m ago</span>
+    </div>
+
+    <div class="feed">
+      <div class="item">
+        <span class="when">04m</span>
+        <div>
+          <div class="body"><b>I'll remind you</b> at 21:00 about <span class="muted">the Sawaya router reboot.</span></div>
+          <div class="tail">thread · 1 follow-up · local llm</div>
+        </div>
+      </div>
+      <div class="item">
+        <span class="when">2h</span>
+        <div>
+          <div class="body">Drafted the <b>TinkerBox release notes</b>. <span class="muted">Want to review?</span></div>
+          <div class="tail">note · 312 words</div>
+        </div>
+      </div>
+      <div class="item">
+        <span class="when">Y'DAY</span>
+        <div>
+          <div class="body"><span class="muted">You asked me to watch</span> <b>tinkerclaw-voice</b> <span class="muted">— still green.</span></div>
+          <div class="tail">agent · heartbeat · 23h uptime</div>
+        </div>
+      </div>
+    </div>
+
+    <span class="tick l"></span><span class="tick r"></span>
+
+    <div class="footer">
+      <span>⟵ NOTES</span>
+      <span class="cta">◉  HOLD ORB TO DICTATE</span>
+      <span>FOCUS ⟶</span>
+    </div>
+  </div>
+</div>
+</body></html>

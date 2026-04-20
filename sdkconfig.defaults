@@ -161,3 +161,7 @@ CONFIG_LV_USE_TJPGD=y
 # Memory-mapped FS — required for TJPGD to decode JPEG from RAM buffers
 CONFIG_LV_USE_FS_MEMFS=y
 CONFIG_LV_FS_MEMFS_LETTER=77
+# Wave 5 (audit J2): allow OTA over plain HTTP.  Tab5 talks to Dragon on LAN
+# without HTTPS; MitM defense is the version.json-carried SHA256 hash verified
+# in ota.c after download.  Without this flag esp_https_ota_begin refuses http://.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y

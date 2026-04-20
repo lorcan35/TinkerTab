@@ -15,6 +15,7 @@
 
 #include "heap_watchdog.h"
 #include "settings.h"
+#include "voice.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -80,10 +81,30 @@ static void heap_watchdog_task(void *arg)
                      internal_frag_count, HEAP_WD_INT_FRAG_REBOOT_COUNT);
 
             if (internal_frag_count >= HEAP_WD_INT_FRAG_REBOOT_COUNT) {
-                ESP_LOGE(TAG, "Heap watchdog: severe internal SRAM fragmentation for %d minutes, rebooting",
-                         HEAP_WD_INT_FRAG_REBOOT_COUNT);
-                vTaskDelay(pdMS_TO_TICKS(100));  /* Let log flush */
-                esp_restart();
+                /* v4·D audit P1 fix: don't tear the device down while
+                 * the user is mid-turn.  Voice states SPEAKING / LISTENING
+                 * / PROCESSING / DICTATE all deserve a grace window --
+                 * fragmentation will still be there in 60 s when the
+                 * turn ends and we'll reboot then instead. */
+                extern voice_state_t voice_get_state(void);
+                voice_state_t vs = voice_get_state();
+                if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING
+                    || vs == VOICE_STATE_PROCESSING) {
+                    ESP_LOGW(TAG, "Heap watchdog: deferring reboot, voice active (state=%d)", vs);
+                } else {
+                    /* Log a detailed summary BEFORE the restart so a
+                     * future "esptool read_flash" of the coredump
+                     * partition + this log tail give enough context
+                     * to post-mortem the fragmentation trigger. */
+                    ESP_LOGE(TAG, "Heap watchdog: SRAM fragmentation %d min; internal free=%uKB largest=%u DMA free=%uKB PSRAM free=%uKB",
+                             HEAP_WD_INT_FRAG_REBOOT_COUNT,
+                             (unsigned)(internal_free / 1024),
+                             (unsigned)internal_largest,
+                             (unsigned)(dma_free / 1024),
+                             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    esp_restart();
+                }
             }
         } else {
             if (internal_frag_count > 0) {

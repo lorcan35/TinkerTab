@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v4·C — Ambient Canvas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #08080E;
+    --surface: #111119;
+    --elevated: #13131F;
+    --border: #1E1E2A;
+    --amber: #F59E0B;
+    --amber-hot: #FBBF24;
+    --emerald: #10B981;
+    --text-1: #F5F5F7;
+    --text-2: #8A8A95;
+    --text-3: #5A5A64;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #000;
+    display: flex; justify-content: center; align-items: flex-start;
+    min-height: 100vh; padding: 40px;
+    font-family: 'Manrope', sans-serif; color: var(--text-1);
+  }
+  .wrap { display: flex; gap: 32px; align-items: flex-start; }
+  .meta { color: #6a6a74; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; width: 240px; padding-top: 8px; }
+  .meta h3 { font-family: 'Fraunces', serif; color: var(--amber); font-size: 18px; margin: 0 0 4px; font-weight: 400; font-style: italic; }
+  .meta .tag { color: #4a4a54; text-transform: uppercase; letter-spacing: 0.12em; font-size: 10px; margin-top: 18px; display: block; }
+  .meta p { margin: 4px 0 0; }
+
+  .device {
+    width: 720px; height: 1280px;
+    background: var(--bg);
+    border-radius: 28px; overflow: hidden;
+    position: relative;
+    box-shadow: 0 60px 160px rgba(245, 158, 11, 0.06), 0 0 0 1px #1a1a24;
+  }
+
+  /* Quiet status: tiny row, no segmented mode. Mode is a chip
+     centered under the orb — large enough to read, quiet enough to ignore. */
+  .status {
+    position: absolute; top: 28px; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 40px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; color: var(--text-3);
+    letter-spacing: 0.14em;
+  }
+  .status .l { display: flex; align-items: center; gap: 10px; }
+  .status .l .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 10px rgba(16,185,129,0.6); }
+  .status .r {
+    font-family: 'Fraunces', serif; font-style: italic;
+    font-size: 15px; color: var(--text-2);
+    letter-spacing: 0; font-variant-numeric: tabular-nums;
+  }
+
+  /* Orb stage — centered vertically high, with ambient vignette
+     backdrop built from a 2-stop radial gradient block. */
+  .ambient {
+    position: absolute; top: 0; left: 0; right: 0; height: 760px;
+    background: radial-gradient(ellipse 640px 560px at 50% 46%, rgba(245,158,11,0.09) 0%, rgba(245,158,11,0) 70%);
+    pointer-events: none;
+  }
+
+  .orb-stage {
+    position: absolute; top: 140px; left: 0; right: 0;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .orb-field {
+    width: 440px; height: 440px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .halo-1 {
+    position: absolute; width: 440px; height: 440px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.07) 0%, rgba(245,158,11,0) 64%);
+  }
+  .halo-2 {
+    position: absolute; width: 300px; height: 300px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.22) 0%, rgba(245,158,11,0) 70%);
+  }
+  .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(245,158,11,0.14); }
+  .ring.r1 { width: 260px; height: 260px; }
+  .ring.r2 { width: 210px; height: 210px; border-color: rgba(245,158,11,0.22); }
+  .ring.r3 { width: 175px; height: 175px; border-color: rgba(245,158,11,0.32); }
+  .orb {
+    width: 156px; height: 156px; border-radius: 50%;
+    background: radial-gradient(circle at 36% 32%, var(--amber-hot) 0%, var(--amber) 100%);
+    box-shadow: 0 0 56px rgba(245,158,11,0.35);
+    position: relative;
+  }
+  .orb::after {
+    content: ''; position: absolute; inset: 10px; border-radius: 50%;
+    background: radial-gradient(circle at 40% 30%, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 48%);
+  }
+
+  /* State label — tight loop around the orb */
+  .state {
+    position: absolute; top: 600px; left: 0; right: 0;
+    text-align: center;
+  }
+  .state .word {
+    font-family: 'Fraunces', serif;
+    font-weight: 300; font-style: italic;
+    font-size: 36px;
+    color: var(--amber);
+    letter-spacing: -0.02em;
+  }
+  .state .greet {
+    margin-top: 6px;
+    font-family: 'Manrope', sans-serif;
+    font-size: 14px; color: var(--text-3);
+    letter-spacing: 0.16em; text-transform: uppercase; font-weight: 600;
+  }
+
+  /* Mode chip — bigger this time, under the state word.
+     Large enough to tap without precision. */
+  .mode-chip {
+    position: absolute; top: 710px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 14px 24px;
+    display: flex; align-items: center; gap: 14px;
+    font-size: 15px; color: var(--text-2); font-weight: 500;
+  }
+  .mode-chip .d { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); }
+  .mode-chip strong { color: var(--text-1); font-weight: 600; letter-spacing: -0.01em; }
+  .mode-chip .sep { color: var(--text-3); }
+  .mode-chip .cx { display: flex; align-items: center; gap: 4px; color: var(--text-3); font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.06em; }
+
+  /* Now-Thread — the single card. Replaces ALL of:
+     agent-summary, 2 info-cards, and greeting. It's the live widget
+     slot — exactly what Widget Platform v1 renders into.  */
+  .now {
+    position: absolute; bottom: 248px; left: 40px; right: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 28px 28px 24px;
+    overflow: hidden;
+  }
+  .now::before {
+    content: '';
+    position: absolute; top: 0; left: 0; height: 3px; width: 140px;
+    background: var(--amber);
+  }
+  .now .kicker {
+    font-size: 11px; color: var(--amber);
+    text-transform: uppercase; letter-spacing: 0.18em; font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .now .lede {
+    font-family: 'Fraunces', serif;
+    font-weight: 300; font-size: 30px;
+    letter-spacing: -0.02em; line-height: 1.1;
+    color: var(--text-1);
+    margin-bottom: 14px;
+  }
+  .now .lede em { color: var(--amber); font-style: italic; font-weight: 400; }
+  .now .stats {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+  .now .stats .cell .k { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; }
+  .now .stats .cell .v {
+    font-family: 'Fraunces', serif; font-size: 22px; color: var(--text-1);
+    font-weight: 400; font-style: italic; margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .now .stats .cell .v.am { color: var(--amber); }
+
+  /* Single action strip — fat tap-to-speak + side affordances.
+     Total chrome height: 176px (was 128 in v3, but this does more
+     AND is singular — not a stacked input+nav). */
+  .strip {
+    position: absolute; bottom: 40px; left: 40px; right: 40px;
+    height: 176px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .strip .say {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 28px;
+    display: flex; align-items: center;
+    padding: 10px 14px 10px 10px;
+  }
+  .strip .say .pulse {
+    width: 84px; height: 84px; border-radius: 50%;
+    background: var(--amber);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--bg);
+    flex-shrink: 0;
+    box-shadow: 0 0 36px rgba(245,158,11,0.32);
+  }
+  .strip .say .copy { flex: 1; padding-left: 20px; }
+  .strip .say .copy .l1 {
+    font-family: 'Fraunces', serif;
+    font-weight: 300; font-size: 26px;
+    color: var(--text-1); letter-spacing: -0.02em;
+  }
+  .strip .say .copy .l2 {
+    font-size: 12px; color: var(--text-3);
+    margin-top: 4px; letter-spacing: 0.14em;
+    text-transform: uppercase; font-weight: 600;
+  }
+  .strip .say .wave {
+    display: flex; gap: 4px; align-items: center;
+    margin-right: 18px;
+  }
+  .strip .say .wave i {
+    display: block; width: 3px; background: var(--amber);
+    border-radius: 2px;
+  }
+  .strip .say .wave i:nth-child(1){height: 14px;}
+  .strip .say .wave i:nth-child(2){height: 28px;}
+  .strip .say .wave i:nth-child(3){height: 22px;}
+  .strip .say .wave i:nth-child(4){height: 36px;}
+  .strip .say .wave i:nth-child(5){height: 18px;}
+
+  .strip .rail {
+    height: 56px;
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .strip .rail button {
+    all: unset;
+    height: 56px;
+    border-radius: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px;
+    color: var(--text-2);
+    font-size: 13px; font-weight: 500;
+    cursor: pointer;
+  }
+  .strip .rail button .ico { color: var(--amber); display: flex; }
+  .strip .rail button.on {
+    background: var(--elevated);
+    border-color: #24243a;
+    color: var(--text-1);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside class="meta">
+  <h3>C · Ambient Canvas</h3>
+  <p>Orb + ambient tint. ONE "now" thread (the live widget slot itself). Mode chip right-sized.</p>
+  <span class="tag">Bet</span>
+  <p>The Widget Platform already ships a single live-slot. Let the home screen BE that slot. Zero layout breakage when a skill emits a widget — it just fills the kicker+lede+stats slots.</p>
+  <span class="tag">Fixes</span>
+  <p>• Orb 156px + ambient halo<br>• One slot replaces greeting + 2 cards + agent summary<br>• Mode chip 14px/24pt readable<br>• Fat tap-zone 84px button in 108px pill<br>• Rail = 4 icon+label chips, not a full nav</p>
+  <span class="tag">LVGL</span>
+  <p>Ambient halo = single ARGB8888 2-stop radial canvas rendered once at boot. Slot = direct mapping of widget_t fields (kicker=skill_id, lede=body, stats[]=progress/icon/meta).</p>
+</aside>
+
+<div class="device">
+
+  <div class="ambient"></div>
+
+  <div class="status">
+    <div class="l"><span class="dot"></span><span>ONLINE</span></div>
+    <div class="r">Thursday · 9:42</div>
+  </div>
+
+  <div class="orb-stage">
+    <div class="orb-field">
+      <div class="halo-1"></div>
+      <div class="halo-2"></div>
+      <div class="ring r1"></div>
+      <div class="ring r2"></div>
+      <div class="ring r3"></div>
+      <div class="orb"></div>
+    </div>
+  </div>
+
+  <div class="state">
+    <div class="word">listening</div>
+    <div class="greet">morning, emile</div>
+  </div>
+
+  <div class="mode-chip">
+    <span class="d"></span>
+    <strong>Hybrid</strong>
+    <span class="sep">·</span>
+    <span class="cx">LOCAL + CLOUD</span>
+  </div>
+
+  <!-- THE live slot — empty-state renders this contextual thread;
+       a skill's widget_live fills the same geometry. -->
+  <div class="now">
+    <div class="kicker">NOW · WORKSHOP PLAN</div>
+    <div class="lede">
+      Draft's <em>ready</em> for review.<br>
+      Two edits queued from yesterday.
+    </div>
+    <div class="stats">
+      <div class="cell">
+        <div class="k">dictated</div>
+        <div class="v">4 min</div>
+      </div>
+      <div class="cell">
+        <div class="k">edits</div>
+        <div class="v am">2</div>
+      </div>
+      <div class="cell">
+        <div class="k">next</div>
+        <div class="v">10:30</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Single unified action strip -->
+  <div class="strip">
+    <div class="say">
+      <div class="pulse">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="2" width="6" height="12" rx="3"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+        </svg>
+      </div>
+      <div class="copy">
+        <div class="l1">Hold to speak</div>
+        <div class="l2">OR SAY "DRAGON"</div>
+      </div>
+      <div class="wave"><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="rail">
+      <button class="on">
+        <span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg></span>
+        home
+      </button>
+      <button>
+        <span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+        threads
+      </button>
+      <button>
+        <span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+        notes
+      </button>
+      <button>
+        <span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+        settings
+      </button>
+    </div>
+  </div>
+
+</div>
+
+</div>
+</body>
+</html>

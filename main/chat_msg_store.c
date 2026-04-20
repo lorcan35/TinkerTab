@@ -1,19 +1,13 @@
 /**
- * Chat Message Store — per-mode ring buffers for conversation history.
+ * Chat Message Store — session-scoped ring buffer.
  *
- * Pure C, no LVGL dependency. Each voice mode (Local, Hybrid, Cloud, TinkerClaw)
- * has its own ring buffer of BSP_CHAT_MAX_MESSAGES entries. Messages are stored
- * as structs with text, media URLs, timestamps, and cached render heights.
+ * Single active session at a time (per chat v4·C spec §2.3). Switching
+ * session wipes the buffer. The message array lives in PSRAM so the
+ * ~90 KB footprint doesn't eat limited internal SRAM.
  *
- * PSRAM allocation: The message arrays are allocated from PSRAM (SPIRAM) at
- * init time to avoid consuming ~350KB of internal SRAM. Each chat_msg_t is
- * ~908 bytes, and 4 modes * 100 messages = ~354KB.
- *
- * Thread safety: NOT thread-safe. All access must be from the LVGL thread
- * (Core 0) or protected by the LVGL lock. The push functions in ui_chat.c
- * use lv_async_call to ensure this.
+ * Thread safety: NOT thread-safe by itself. Callers push via
+ * lv_async_call so mutations happen on the LVGL thread (see ui_chat.c).
  */
-
 #include "chat_msg_store.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -21,95 +15,203 @@
 
 static const char *TAG = "chat_store";
 
-/* Allocated from PSRAM at init */
-static chat_msg_t *s_messages[CHAT_MODE_COUNT];
-static int         s_count[CHAT_MODE_COUNT];
-static int         s_write_idx[CHAT_MODE_COUNT];
-static bool        s_inited = false;
+static chat_session_t s_active   = { .valid = false };
+static chat_msg_t    *s_msgs     = NULL;   /* PSRAM-backed */
+static int            s_count    = 0;
+static int            s_write_idx = 0;
+static bool           s_inited   = false;
+
+static void copy_str(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0) return;
+    if (!src) { dst[0] = 0; return; }
+    size_t n = strlen(src);
+    if (n >= dst_sz) n = dst_sz - 1;
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
 
 void chat_store_init(void)
 {
     if (s_inited) return;
 
-    memset(s_count, 0, sizeof(s_count));
-    memset(s_write_idx, 0, sizeof(s_write_idx));
-
-    for (int i = 0; i < CHAT_MODE_COUNT; i++) {
-        s_messages[i] = heap_caps_calloc(BSP_CHAT_MAX_MESSAGES, sizeof(chat_msg_t),
-                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_messages[i]) {
-            ESP_LOGE(TAG, "PSRAM alloc failed for mode %d (%d bytes)",
-                     i, (int)(BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t)));
-            /* Fatal — can't recover. Leave NULL, callers will get NULL from get(). */
-        }
+    s_msgs = heap_caps_calloc(BSP_CHAT_MAX_MESSAGES, sizeof(chat_msg_t),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_msgs) {
+        ESP_LOGE(TAG, "PSRAM alloc failed (%d bytes)",
+                 (int)(BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t)));
+        return;
     }
-
+    memset(&s_active, 0, sizeof(s_active));
+    s_count = 0;
+    s_write_idx = 0;
     s_inited = true;
-    ESP_LOGI(TAG, "Init: %d modes x %d msgs x %d bytes = %d KB (PSRAM)",
-             CHAT_MODE_COUNT, BSP_CHAT_MAX_MESSAGES, (int)sizeof(chat_msg_t),
-             (int)(CHAT_MODE_COUNT * BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t) / 1024));
+    ESP_LOGI(TAG, "Init: %d msgs x %d bytes = %d KB (PSRAM, session-scoped)",
+             BSP_CHAT_MAX_MESSAGES, (int)sizeof(chat_msg_t),
+             (int)(BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t) / 1024));
 }
 
-int chat_store_add(uint8_t mode, const chat_msg_t *msg)
+bool chat_store_set_session(const chat_session_t *s)
 {
-    if (mode >= CHAT_MODE_COUNT || !msg || !s_messages[mode]) return -1;
-
-    int idx = s_write_idx[mode];
-    s_messages[mode][idx] = *msg;
-    s_messages[mode][idx].active = true;
-    s_messages[mode][idx].height_px = 0;  /* uncached — measure on first render */
-
-    s_write_idx[mode] = (idx + 1) % BSP_CHAT_MAX_MESSAGES;
-    if (s_count[mode] < BSP_CHAT_MAX_MESSAGES) {
-        s_count[mode]++;
+    if (!s_inited || !s_msgs) return false;
+    if (!s) {
+        memset(&s_active, 0, sizeof(s_active));
+        memset(s_msgs, 0, BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t));
+        s_count = 0;
+        s_write_idx = 0;
+        return true;
     }
-    /* If count == MAX, oldest message is overwritten (ring buffer) */
-
-    return s_count[mode] - 1;  /* return logical index of new message */
-}
-
-int chat_store_count(uint8_t mode)
-{
-    if (mode >= CHAT_MODE_COUNT) return 0;
-    return s_count[mode];
-}
-
-const chat_msg_t *chat_store_get(uint8_t mode, int index)
-{
-    if (mode >= CHAT_MODE_COUNT || index < 0 || index >= s_count[mode]) return NULL;
-    if (!s_messages[mode]) return NULL;
-
-    /* Ring buffer: oldest message is at (write_idx - count) wrapped */
-    int start = (s_write_idx[mode] - s_count[mode] + BSP_CHAT_MAX_MESSAGES) % BSP_CHAT_MAX_MESSAGES;
-    int real_idx = (start + index) % BSP_CHAT_MAX_MESSAGES;
-    return &s_messages[mode][real_idx];
-}
-
-chat_msg_t *chat_store_get_mut(uint8_t mode, int index)
-{
-    return (chat_msg_t *)chat_store_get(mode, index);
-}
-
-void chat_store_clear(uint8_t mode)
-{
-    if (mode >= CHAT_MODE_COUNT) return;
-    if (s_messages[mode])
-        memset(s_messages[mode], 0, BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t));
-    s_count[mode] = 0;
-    s_write_idx[mode] = 0;
-}
-
-void chat_store_clear_all(void)
-{
-    for (int i = 0; i < CHAT_MODE_COUNT; i++) {
-        chat_store_clear(i);
+    /* Only wipe stored messages when we are genuinely switching to a
+     * DIFFERENT session_id.  Seeding from no-active-session (first
+     * ui_chat_create after boot) would otherwise nuke any messages
+     * /chat or voice handlers pushed before the overlay was ever
+     * opened — that was the "chat shows empty after a pre-nav turn"
+     * bug from the 2026-04-20 sprint. */
+    /* Wipe only when switching FROM a valid session TO a different id.
+     * Seeding (current s_active.valid == false) must NOT wipe, or any
+     * messages pushed before the chat overlay was first created get
+     * nuked the moment ensure_session_loaded runs. */
+    bool differs = s_active.valid
+                   && strncmp(s_active.session_id, s->session_id,
+                              sizeof(s_active.session_id)) != 0;
+    s_active = *s;
+    s_active.valid = true;
+    if (differs) {
+        memset(s_msgs, 0, BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t));
+        s_count = 0;
+        s_write_idx = 0;
+        ESP_LOGI(TAG, "Session switch -> id='%.16s' mode=%u model='%s'",
+                 s_active.session_id, s_active.voice_mode, s_active.llm_model);
+    } else {
+        ESP_LOGI(TAG, "Session refresh (same id) -> mode=%u model='%s' keeping %d msgs",
+                 s_active.voice_mode, s_active.llm_model, s_count);
     }
+    return true;
 }
 
-chat_msg_t *chat_store_last(uint8_t mode)
+const chat_session_t *chat_store_active_session(void)
 {
-    if (mode >= CHAT_MODE_COUNT || s_count[mode] == 0) return NULL;
-    if (!s_messages[mode]) return NULL;
-    int idx = (s_write_idx[mode] - 1 + BSP_CHAT_MAX_MESSAGES) % BSP_CHAT_MAX_MESSAGES;
-    return &s_messages[mode][idx];
+    return s_active.valid ? &s_active : NULL;
+}
+
+void chat_store_update_session_mode(uint8_t voice_mode, const char *llm_model)
+{
+    if (!s_active.valid) return;
+    if (voice_mode <= 3) s_active.voice_mode = voice_mode;
+    if (llm_model) copy_str(s_active.llm_model, sizeof(s_active.llm_model), llm_model);
+}
+
+int chat_store_add(const chat_msg_t *msg)
+{
+    if (!s_inited || !s_msgs || !msg) return -1;
+
+    int real;
+    if (s_count < BSP_CHAT_MAX_MESSAGES) {
+        real = s_write_idx;
+        s_write_idx = (s_write_idx + 1) % BSP_CHAT_MAX_MESSAGES;
+        s_count++;
+    } else {
+        /* Ring is full — overwrite oldest (which is at s_write_idx). */
+        real = s_write_idx;
+        s_write_idx = (s_write_idx + 1) % BSP_CHAT_MAX_MESSAGES;
+    }
+    s_msgs[real] = *msg;
+    s_msgs[real].active = true;
+    if (s_msgs[real].height_px == 0) s_msgs[real].height_px = -1;
+    return s_count - 1;
+}
+
+int chat_store_count(void) { return s_count; }
+
+static int logical_to_real(int index)
+{
+    if (index < 0 || index >= s_count) return -1;
+    int start = (s_write_idx - s_count + BSP_CHAT_MAX_MESSAGES) % BSP_CHAT_MAX_MESSAGES;
+    return (start + index) % BSP_CHAT_MAX_MESSAGES;
+}
+
+const chat_msg_t *chat_store_get(int index)
+{
+    if (!s_inited || !s_msgs) return NULL;
+    int real = logical_to_real(index);
+    return real < 0 ? NULL : &s_msgs[real];
+}
+
+chat_msg_t *chat_store_get_mut(int index)
+{
+    return (chat_msg_t *)chat_store_get(index);
+}
+
+chat_msg_t *chat_store_last(void)
+{
+    return chat_store_get_mut(s_count - 1);
+}
+
+bool chat_store_set_height(int index, int16_t h)
+{
+    chat_msg_t *m = chat_store_get_mut(index);
+    if (!m) return false;
+    m->height_px = h;
+    return true;
+}
+
+bool chat_store_update_last_text(const char *text)
+{
+    chat_msg_t *m = chat_store_last();
+    if (!m) return false;
+    copy_str(m->text, sizeof(m->text), text);
+    m->height_px = -1;   /* invalidate cached height */
+    return true;
+}
+
+int chat_store_attach_receipt_to_last_ai(uint32_t mils,
+                                         uint16_t prompt_tok,
+                                         uint16_t completion_tok,
+                                         const char *model_short)
+{
+    return chat_store_attach_receipt_ex(mils, prompt_tok, completion_tok,
+                                         model_short, false);
+}
+
+int chat_store_attach_receipt_ex(uint32_t mils,
+                                 uint16_t prompt_tok,
+                                 uint16_t completion_tok,
+                                 const char *model_short,
+                                 bool retried)
+{
+    /* Scan newest -> oldest looking for the first assistant-role bubble. */
+    for (int i = s_count - 1; i >= 0; i--) {
+        chat_msg_t *m = chat_store_get_mut(i);
+        if (!m || !m->active) continue;
+        if (m->is_user) continue;   /* skip user bubbles */
+        if (m->type == MSG_SYSTEM) continue;  /* skip system messages */
+        m->receipt_mils = mils;
+        m->receipt_ptok = prompt_tok;
+        m->receipt_ctok = completion_tok;
+        m->receipt_retried = retried;
+        copy_str(m->receipt_model_short, sizeof(m->receipt_model_short),
+                 model_short ? model_short : "");
+        /* Bubble gets a new subtitle line, so invalidate cached height. */
+        m->height_px = -1;
+        return i;
+    }
+    return -1;
+}
+
+bool chat_store_pop_last(void)
+{
+    if (s_count == 0) return false;
+    int real = (s_write_idx - 1 + BSP_CHAT_MAX_MESSAGES) % BSP_CHAT_MAX_MESSAGES;
+    memset(&s_msgs[real], 0, sizeof(chat_msg_t));
+    s_write_idx = real;
+    s_count--;
+    return true;
+}
+
+void chat_store_clear(void)
+{
+    if (!s_inited || !s_msgs) return;
+    memset(s_msgs, 0, BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t));
+    s_count = 0;
+    s_write_idx = 0;
 }

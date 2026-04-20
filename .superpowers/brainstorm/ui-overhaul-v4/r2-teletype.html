@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v4·R2·3 — Teletype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500&family=Manrope:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #08080E; --surface: #0D0D14; --elevated: #13131F;
+    --border: #1E1E2A; --rule: #22222E;
+    --amber: #F59E0B; --amber-hot: #FBBF24; --amber-deep: #B4750A;
+    --emerald: #10B981;
+    --text-1: #F5F5F7; --text-2: #8A8A95; --text-3: #5A5A64; --text-4: #3A3A44;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #000;
+    display: flex; justify-content: center; align-items: flex-start;
+    min-height: 100vh; padding: 40px;
+    font-family: 'JetBrains Mono', monospace; color: var(--text-1);
+  }
+  .wrap { display: flex; gap: 32px; align-items: flex-start; }
+  .meta { color: #6a6a74; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; width: 260px; padding-top: 8px; }
+  .meta h3 { font-family: 'Fraunces', serif; color: var(--amber); font-size: 18px; margin: 0 0 4px; font-weight: 400; font-style: italic; }
+  .meta .tag { color: #4a4a54; text-transform: uppercase; letter-spacing: 0.12em; font-size: 10px; margin-top: 18px; display: block; }
+  .meta p { margin: 4px 0 0; }
+
+  .device {
+    width: 720px; height: 1280px; background: var(--bg);
+    border-radius: 28px; overflow: hidden; position: relative;
+    box-shadow: 0 60px 160px rgba(245,158,11,0.06), 0 0 0 1px #1a1a24;
+  }
+
+  /* Ticker header — scanning readout, all mono */
+  .ticker {
+    position: absolute; top: 0; left: 0; right: 0; height: 44px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 28px;
+    background: linear-gradient(to bottom, #0a0a12 0%, #08080e 100%);
+    border-bottom: 1px solid var(--rule);
+    font-size: 10px; letter-spacing: 0.26em; color: var(--text-3);
+    text-transform: uppercase; font-weight: 600;
+  }
+  .ticker .l { display: flex; align-items: center; gap: 14px; }
+  .ticker .l .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 10px rgba(16,185,129,0.8); }
+  .ticker .l .sep { color: var(--text-4); }
+  .ticker .r { letter-spacing: 0.12em; color: var(--text-2); font-weight: 500; }
+
+  /* STATE — massive terminal readout */
+  .state {
+    position: absolute; top: 88px; left: 32px; right: 32px;
+  }
+  .state .word {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 84px; font-weight: 700;
+    color: var(--amber); letter-spacing: -0.04em;
+    line-height: 0.9;
+    text-transform: lowercase;
+  }
+  .state .word .dot-char { color: var(--amber-hot); }
+  .state .since {
+    margin-top: 14px;
+    font-size: 12px; font-weight: 500; color: var(--text-3);
+    letter-spacing: 0.22em; text-transform: uppercase;
+  }
+  .state .since em {
+    font-family: 'Fraunces', serif; font-style: italic; font-weight: 400;
+    color: var(--text-1); letter-spacing: 0; font-size: 16px;
+    margin-left: 6px; text-transform: none;
+  }
+
+  /* Diagnostic strip — k/v pairs on the left, orb indicator on the right.
+     Orb here is a power-lamp, not the hero. */
+  .diag {
+    position: absolute; top: 300px; left: 32px; right: 32px;
+    display: flex; align-items: center;
+  }
+  .diag .kv {
+    flex: 1;
+    display: grid; grid-template-columns: auto 1fr; column-gap: 22px; row-gap: 10px;
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--text-3); font-weight: 500;
+  }
+  .diag .kv .v { color: var(--text-1); font-weight: 600; }
+  .diag .kv .v.am { color: var(--amber); }
+
+  /* Power-lamp orb: 120px, pinned right. Not the focal point — the DATA is. */
+  .lamp {
+    width: 160px; height: 160px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .lamp .halo {
+    position: absolute; width: 160px; height: 160px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.22) 0%, rgba(245,158,11,0) 68%);
+  }
+  .lamp .ring {
+    position: absolute; width: 140px; height: 140px; border-radius: 50%;
+    border: 1px solid rgba(245,158,11,0.3);
+  }
+  .lamp .orb {
+    width: 120px; height: 120px; border-radius: 50%;
+    background: radial-gradient(circle at 36% 32%, var(--amber-hot) 0%, var(--amber) 100%);
+    box-shadow: 0 0 44px rgba(245,158,11,0.38);
+    position: relative;
+  }
+  .lamp .orb::after {
+    content: ''; position: absolute; inset: 8px; border-radius: 50%;
+    background: radial-gradient(circle at 40% 30%, rgba(255,255,255,0.24) 0%, rgba(255,255,255,0) 46%);
+  }
+  .lamp .label {
+    position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%);
+    font-size: 9px; letter-spacing: 0.3em; color: var(--amber);
+    text-transform: uppercase; font-weight: 700; white-space: nowrap;
+  }
+
+  /* Feed — a terminal-style list of "lines". Replaces agent-summary +
+     info-cards + greeting with ONE structured stream. */
+  .feed {
+    position: absolute; top: 528px; left: 32px; right: 32px;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    padding: 20px 0 22px;
+  }
+  .feed .line {
+    display: flex; align-items: baseline; gap: 16px;
+    padding: 8px 0;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+  }
+  .feed .line .prompt {
+    color: var(--amber); font-weight: 700; flex-shrink: 0;
+    width: 14px;
+  }
+  .feed .line .time {
+    color: var(--text-4); font-size: 11px; flex-shrink: 0; width: 56px;
+    letter-spacing: 0.08em; font-weight: 500;
+  }
+  .feed .line .body {
+    flex: 1; color: var(--text-1); font-weight: 500; line-height: 1.35;
+  }
+  .feed .line .body em { color: var(--amber); font-style: normal; font-weight: 600; }
+  .feed .line.dim .body { color: var(--text-2); font-weight: 400; }
+
+  /* Command strip — a real terminal input. Tap to speak, or type. */
+  .cmd {
+    position: absolute; bottom: 40px; left: 32px; right: 32px;
+    height: 112px;
+    background: var(--elevated);
+    border: 1px solid var(--border); border-radius: 18px;
+    display: flex; align-items: center;
+    padding: 0 16px 0 18px;
+  }
+  .cmd .caret {
+    font-size: 44px; color: var(--amber); font-weight: 700;
+    line-height: 0.8; margin-right: 14px;
+    animation: blink 1.1s steps(2, start) infinite;
+  }
+  @keyframes blink { to { visibility: hidden; } }
+  .cmd .copy { flex: 1; }
+  .cmd .copy .l1 {
+    font-size: 20px; font-weight: 600; color: var(--text-1);
+    letter-spacing: 0; font-family: 'JetBrains Mono', monospace;
+  }
+  .cmd .copy .l1 .hint { color: var(--text-3); font-weight: 400; }
+  .cmd .copy .l2 {
+    margin-top: 4px;
+    font-size: 10px; color: var(--text-3); letter-spacing: 0.24em;
+    text-transform: uppercase; font-weight: 600;
+  }
+  .cmd .mic {
+    width: 80px; height: 80px; border-radius: 16px;
+    background: var(--amber);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--bg); flex-shrink: 0;
+    box-shadow: 0 0 36px rgba(245,158,11,0.32);
+  }
+
+  /* Footer — system status line at the very bottom */
+  .sysfoot {
+    position: absolute; bottom: 6px; left: 32px; right: 32px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 9px; letter-spacing: 0.28em; color: var(--text-4);
+    text-transform: uppercase; font-weight: 600;
+    height: 24px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside class="meta">
+  <h3>R2·3 · Teletype</h3>
+  <p>Brutalist readout. The DATA is the hero — not the orb. State word at 84px dominates. Orb demoted to power-lamp.</p>
+  <span class="tag">Fixes v3</span>
+  <p>• Orb 120px — smaller on purpose (counter-argument: "voice-first" can be told via language, not size)<br>
+     • ONE feed replaces agent-summary+cards+greeting<br>
+     • Mode = one line in the diag block<br>
+     • Timer killed — feed shows real next-up<br>
+     • Chrome: 112px command strip only</p>
+  <span class="tag">Bet</span>
+  <p>Privacy-conscious nerds (the target r/selfhosted audience) love the terminal. This is the "it's MY computer" aesthetic.</p>
+  <span class="tag">LVGL</span>
+  <p>All mono text. Zero gradients except the small orb radial. 1px rules, solid fills. Very cheap to render. Biggest cost: the big 84px state text — needs a subset of Montserrat condensed or JetBrains Mono at 84pt.</p>
+</aside>
+
+<div class="device">
+
+  <div class="ticker">
+    <div class="l">
+      <span class="dot"></span>
+      <span>ONLINE</span>
+      <span class="sep">·</span>
+      <span>WS 192.168.70.242</span>
+      <span class="sep">·</span>
+      <span>LAT 12MS</span>
+    </div>
+    <div class="r">THU 09:42</div>
+  </div>
+
+  <div class="state">
+    <div class="word">listening<span class="dot-char">.</span></div>
+    <div class="since">READY SINCE<em>09:41:28</em></div>
+  </div>
+
+  <div class="diag">
+    <div class="kv">
+      <div class="k">MODE</div>   <div class="v am">HYBRID · LOCAL+CLOUD</div>
+      <div class="k">MODEL</div>  <div class="v">qwen3:1.7b</div>
+      <div class="k">SKILL</div>  <div class="v">time_sense</div>
+      <div class="k">SESSION</div><div class="v">00:23:14</div>
+      <div class="k">BATTERY</div><div class="v">86%</div>
+    </div>
+    <div class="lamp">
+      <div class="halo"></div>
+      <div class="ring"></div>
+      <div class="orb"></div>
+      <div class="label">PWR</div>
+    </div>
+  </div>
+
+  <div class="feed">
+    <div class="line">
+      <span class="prompt">&gt;</span>
+      <span class="time">09:41</span>
+      <span class="body">workshop draft <em>ready</em>. two edits queued.</span>
+    </div>
+    <div class="line dim">
+      <span class="prompt">·</span>
+      <span class="time">09:38</span>
+      <span class="body">rohan pushed comment: "cut intro to 2 paras."</span>
+    </div>
+    <div class="line">
+      <span class="prompt">&gt;</span>
+      <span class="time">10:30</span>
+      <span class="body">next — <em>review with rohan</em>.</span>
+    </div>
+  </div>
+
+  <div class="cmd">
+    <div class="caret">_</div>
+    <div class="copy">
+      <div class="l1">hold to speak<span class="hint"> · or type</span></div>
+      <div class="l2">WAKE WORD: "DRAGON"</div>
+    </div>
+    <div class="mic">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="2" width="6" height="12" rx="3"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="sysfoot">
+    <span>TINKERTAB v0.8.0</span>
+    <span>HEAP 312K · LARGEST 64K</span>
+    <span>FPS 60</span>
+  </div>
+
+</div>
+
+</div>
+</body>
+</html>

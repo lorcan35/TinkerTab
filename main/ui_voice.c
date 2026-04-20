@@ -249,14 +249,38 @@ void ui_voice_set_boot_connect(bool silent)
     ESP_LOGI(TAG, "Boot connect mode: %s", silent ? "ON (silent)" : "OFF");
 }
 
-/* Watchdog: if stuck in PROCESSING/SPEAKING for 65s, force-cancel.
- * This catches the case where the WS receive task dies and the
- * in-task timeout never fires. */
+/* Watchdog: if stuck in PROCESSING/SPEAKING past the mode budget,
+ * force-cancel.  This catches the case where the WS receive task
+ * dies and the in-task timeout never fires.
+ *
+ * The budget is mode-aware -- local Ollama on Dragon ARM64 CPU is
+ * ~7 tok/s, so a 200-token reply can take 30 s + tool-chain latency
+ * + memory-augmented context building, easily 60-90 s.  The 10 s
+ * timer we had before killed every Local turn before the first
+ * token streamed back. */
+#define STUCK_BUDGET_LOCAL_MS        300000   /* 5 min, tool chains */
+#define STUCK_BUDGET_HYBRID_MS       240000   /* 4 min, local LLM */
+#define STUCK_BUDGET_CLOUD_MS         75000   /* 75 s incl. TTS */
+#define STUCK_BUDGET_TINKERCLAW_MS   240000   /* 4 min, agent steps */
+
+static uint32_t stuck_budget_ms_for_current_mode(void)
+{
+    uint8_t m = tab5_settings_get_voice_mode();
+    switch (m) {
+        case VOICE_MODE_LOCAL:      return STUCK_BUDGET_LOCAL_MS;
+        case VOICE_MODE_HYBRID:     return STUCK_BUDGET_HYBRID_MS;
+        case VOICE_MODE_CLOUD:      return STUCK_BUDGET_CLOUD_MS;
+        case VOICE_MODE_TINKERCLAW: return STUCK_BUDGET_TINKERCLAW_MS;
+        default:                    return STUCK_BUDGET_CLOUD_MS;
+    }
+}
+
 static void stuck_watchdog_cb(lv_timer_t *t)
 {
     s_stuck_timer = NULL;
     if (s_cur_state == VOICE_STATE_PROCESSING || s_cur_state == VOICE_STATE_SPEAKING) {
-        ESP_LOGW(TAG, "Stuck watchdog: force-cancelling after 65s in state %d", s_cur_state);
+        ESP_LOGW(TAG, "Stuck watchdog: force-cancelling after %lu ms in state %d",
+                 (unsigned long)stuck_budget_ms_for_current_mode(), s_cur_state);
         voice_cancel();
         /* Show error and auto-hide */
         stop_all_anims();
@@ -296,11 +320,24 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         s_stuck_timer = NULL;
     }
     if (state == VOICE_STATE_PROCESSING || state == VOICE_STATE_SPEAKING) {
-        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, 10000, NULL);
+        uint32_t budget = stuck_budget_ms_for_current_mode();
+        s_stuck_timer = lv_timer_create(stuck_watchdog_cb, budget, NULL);
         lv_timer_set_repeat_count(s_stuck_timer, 1);
+        ESP_LOGI(TAG, "Stuck watchdog armed -> %lu ms (mode=%d)",
+                 (unsigned long)budget, tab5_settings_get_voice_mode());
     }
 
     switch (state) {
+    case VOICE_STATE_RECONNECTING:
+        /* T1.2: RECONNECTING is a transient backoff state.  Don't show
+         * the voice overlay, don't flash "Disconnected" in red -- the
+         * home pill (voice_get_degraded_reason) handles user-visible
+         * status.  Just let any active overlay dismiss quietly if
+         * needed. */
+        if (s_visible && !s_pending_ask && !s_dictation_from_anywhere) {
+            ui_voice_hide();
+        }
+        break;
     case VOICE_STATE_IDLE:
         /* Clear boot connect flag — either connected or failed */
         if (s_boot_connect) {
@@ -551,6 +588,23 @@ void ui_voice_hide(void)
     lv_obj_set_style_opa(s_overlay, LV_OPA_COVER, 0);
 
     ESP_LOGI(TAG, "Voice overlay hidden (instant)");
+}
+
+void ui_voice_dismiss_if_idle(void)
+{
+    if (!s_overlay || !s_visible) return;
+    voice_state_t st = voice_get_state();
+    /* Overlay is THE UI during LISTENING / PROCESSING / SPEAKING — leave it.
+     * READY / IDLE / CONNECTING / RECONNECTING are "not actively interacting",
+     * so hiding is safe and matches user intent when they navigate away. */
+    if (st == VOICE_STATE_LISTENING
+        || st == VOICE_STATE_PROCESSING
+        || st == VOICE_STATE_SPEAKING) {
+        ESP_LOGD(TAG, "dismiss_if_idle: skip (state=%d active)", (int)st);
+        return;
+    }
+    ESP_LOGI(TAG, "dismiss_if_idle: hiding (state=%d)", (int)st);
+    ui_voice_hide();
 }
 
 bool ui_voice_is_visible(void)
@@ -1011,9 +1065,27 @@ static void show_state_listening(void)
     start_breathe_anim();
 }
 
+/* v4·D Gauntlet G1: render the "+N QUEUED" badge on the sub-caption slot
+ * whenever voice.c has a pending text stashed.  Kept in one helper so
+ * PROCESSING and SPEAKING both re-evaluate without duplicating code. */
+static void render_queue_badge(void)
+{
+    if (!s_lbl_sub) return;
+    int depth = voice_get_queue_depth();
+    if (depth > 0) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "+%d QUEUED", depth);
+        lv_label_set_text(s_lbl_sub, buf);
+        lv_obj_set_style_text_color(s_lbl_sub, lv_color_hex(0xA78BFA), 0);
+        lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void show_state_processing(const char *detail)
 {
-    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    render_queue_badge();
     /* Note: this is called repeatedly as LLM tokens arrive.
      * detail = STT text (first call), then LLM text (subsequent calls).
      * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */
@@ -1110,7 +1182,8 @@ static void show_state_speaking(void)
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
-    if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+    /* G1: queue badge keeps rendering through SPEAKING too. */
+    render_queue_badge();
 
     /* Orb: green, slightly larger */
     set_orb_color(VO_GREEN, VO_GREEN, LV_OPA_50);
@@ -1197,6 +1270,7 @@ static void update_mic_button_state(voice_state_t state)
 
     switch (state) {
     case VOICE_STATE_IDLE:
+    case VOICE_STATE_RECONNECTING:
     case VOICE_STATE_READY:
         /* Default: small cyan dot, static */
         lv_obj_set_size(s_mic_dot, MIC_DOT_SZ, MIC_DOT_SZ);
@@ -1547,7 +1621,8 @@ static void mic_click_cb(lv_event_t *e)
         voice_cancel();
         break;
     case VOICE_STATE_CONNECTING:
-        /* Already connecting — ignore */
+    case VOICE_STATE_RECONNECTING:
+        /* Already connecting — ignore the tap; home pill will update. */
         break;
     }
 }

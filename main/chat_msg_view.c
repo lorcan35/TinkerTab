@@ -1,574 +1,679 @@
 /**
- * TinkerTab — Recycled Message View (Virtual Scroll)
+ * TinkerTab — Chat Message View (v4·C Ambient).
  *
- * Fixed pool of BSP_CHAT_POOL_SIZE (12) slots, each with 3 LVGL objects
- * (container + content label + timestamp label = 36 total objects).
- * Messages are positioned manually by Y offset. As the user scrolls,
- * pool slots are recycled to display whichever messages are visible.
+ * Fixed pool of BSP_CHAT_POOL_SIZE slots. Each slot has a bubble
+ * container, body label, and a timestamp label. Break-outs (code blocks,
+ * images, cards) get a second full-bleed container lazily created when
+ * the slot binds to a non-text message.
  *
- * This module does NOT handle rich media downloads — it shows placeholder
- * text for MSG_IMAGE types. Media rendering is handled by the orchestrator.
+ * Visual spec §3–§4:
+ *   - Bubble radius 22, user amber bg, AI card bg + 1 px border
+ *   - Tails: user bottom-right radius 6, AI bottom-left radius 6
+ *   - Timestamps: FONT_CHAT_MONO, uppercase, dim
+ *   - Break-out: full-bleed (-SIDE_PAD margin), 1 px top/bottom border,
+ *     3 px amber bar top-left, mode-inherited color
  */
 #include "chat_msg_view.h"
 #include "chat_msg_store.h"
+#include "ui_theme.h"
 #include "config.h"
+#include "bsp_config.h"
+#include "media_cache.h"
+#include "esp_log.h"
 
 #include "lvgl.h"
-#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdio.h>
-#include <time.h>
+#include <stdlib.h>
+#include <string.h>
 
-/* ── Layout constants ──────────────────────────────────────────── */
-#define BUBBLE_MAX_W    460
-#define BUBBLE_PAD       14
-#define BUBBLE_GAP       10
-#define LABEL_MAX_W     (BUBBLE_MAX_W - 2 * BUBBLE_PAD)
+static const char *TAG __attribute__((unused)) = "chat_view";
 
-#define DISPLAY_W        720
-#define TOPBAR_H          60
-#define INPUT_BAR_H       80
-#define NAV_BAR_H        120
-#define USABLE_H        (1280 - NAV_BAR_H)           /* 1160 */
-#define MSG_AREA_H      (USABLE_H - TOPBAR_H - INPUT_BAR_H)  /* 1020 */
+/* ── Layout ────────────────────────────────────────────────────── */
+#define SIDE_PAD        40
+#define BUBBLE_MAX_W    520
+#define BUBBLE_PAD_H    22
+#define BUBBLE_PAD_V    16
+#define BUBBLE_RADIUS   22
+#define BUBBLE_TAIL_R    6
+#define BUBBLE_GAP      20
+#define LABEL_MAX_W    (BUBBLE_MAX_W - 2 * BUBBLE_PAD_H)
 
-/* Visibility buffer — render messages this far above/below viewport */
-#define VIS_BUFFER       720
+#define BREAK_H         168   /* default break-out body height for text/code */
+#define BREAK_IMG_H     260
+#define BREAK_IMG_R      10
+
+#define VIS_BUFFER      480
 
 /* ── Pool slot ─────────────────────────────────────────────────── */
 typedef struct {
-    lv_obj_t *container;    /* bubble background */
-    lv_obj_t *content;      /* text label or image placeholder */
-    lv_obj_t *timestamp;    /* time label */
-    int       data_idx;     /* which store index this slot shows, -1 = unused */
+    lv_obj_t *bubble;       /* text/bubble container */
+    lv_obj_t *body;         /* primary label */
+    lv_obj_t *ts;           /* timestamp label */
+    lv_obj_t *breakout;     /* optional full-bleed band (created on demand) */
+    lv_obj_t *brk_kicker;   /* kicker label inside breakout */
+    lv_obj_t *brk_body;     /* body label (mono for code, regular for image alt) */
+    lv_obj_t *brk_accent;   /* 3 px amber bar top-left of breakout */
+    lv_obj_t *brk_image;    /* MSG_IMAGE decoded JPEG, lazy-created (Tab5 audit D6) */
+    lv_image_dsc_t brk_dsc; /* decoded pixel buffer owned by media_cache */
+    char      brk_url[256]; /* the URL currently bound to brk_image */
+    bool      brk_fetch_inflight;
+    int       data_idx;     /* store logical index bound to this slot, -1 = empty */
 } msg_slot_t;
 
-/* ── Static state ──────────────────────────────────────────────── */
-static msg_slot_t  s_pool[BSP_CHAT_POOL_SIZE];
-static lv_obj_t   *s_scroll     = NULL;
-static uint8_t     s_mode       = 0;
-static bool        s_streaming  = false;
-static char        s_stream_buf[2048];
-static int         s_stream_len = 0;
+struct chat_msg_view {
+    lv_obj_t *scroll;
+    msg_slot_t pool[BSP_CHAT_POOL_SIZE];
+    uint32_t   mode_color;
+    bool       streaming;
+    int        stream_idx;
+    char       stream_buf[2048];
+    int        stream_len;
+};
 
-/* ── Shared static styles (initialized once) ───────────────────── */
-static lv_style_t  s_style_user_bubble;
-static lv_style_t  s_style_ai_bubble;
-static lv_style_t  s_style_tool_bubble;
-static lv_style_t  s_style_system_bubble;
-static lv_style_t  s_style_timestamp;
-static lv_style_t  s_style_card_bubble;
-static bool        s_styles_inited = false;
-
-/* ── Style initialization ──────────────────────────────────────── */
-
-static void init_styles(void)
-{
-    if (s_styles_inited) return;
-    s_styles_inited = true;
-
-    /* User bubble — amber bg, black text */
-    lv_style_init(&s_style_user_bubble);
-    lv_style_set_bg_color(&s_style_user_bubble, lv_color_hex(0xF5A623));
-    lv_style_set_bg_opa(&s_style_user_bubble, LV_OPA_COVER);
-    lv_style_set_radius(&s_style_user_bubble, 16);
-    lv_style_set_pad_all(&s_style_user_bubble, BUBBLE_PAD);
-    lv_style_set_pad_bottom(&s_style_user_bubble, 8);
-    lv_style_set_border_width(&s_style_user_bubble, 0);
-    lv_style_set_text_color(&s_style_user_bubble, lv_color_hex(0x000000));
-
-    /* AI bubble — v5 structural: NO bubble. Indented body text behind a
-       thin amber left rail, so conversation reads like a letter. Keeps
-       height-estimation footprint similar (pad-left 18 vs bubble-pad 16)
-       so the recycled pool's slot-height cache stays valid. */
-    lv_style_init(&s_style_ai_bubble);
-    lv_style_set_bg_opa(&s_style_ai_bubble, LV_OPA_TRANSP);              /* no fill */
-    lv_style_set_radius(&s_style_ai_bubble, 0);
-    lv_style_set_pad_all(&s_style_ai_bubble, 6);
-    lv_style_set_pad_left(&s_style_ai_bubble, 18);                        /* indent past the rail */
-    lv_style_set_border_width(&s_style_ai_bubble, 2);
-    lv_style_set_border_color(&s_style_ai_bubble, lv_color_hex(0xF59E0B)); /* TH_AMBER left rail */
-    lv_style_set_border_side(&s_style_ai_bubble, LV_BORDER_SIDE_LEFT);
-    lv_style_set_text_color(&s_style_ai_bubble, lv_color_hex(0xC8C8D0));   /* lighter body — reads as prose not UI */
-    lv_style_set_text_line_space(&s_style_ai_bubble, 4);
-
-    /* Card bubble — elevated surface, amber left rail (was orange 0xff6b35) */
-    lv_style_init(&s_style_card_bubble);
-    lv_style_set_bg_color(&s_style_card_bubble, lv_color_hex(0x13131F));   /* TH_CARD_ELEVATED */
-    lv_style_set_bg_opa(&s_style_card_bubble, LV_OPA_COVER);
-    lv_style_set_radius(&s_style_card_bubble, 12);
-    lv_style_set_pad_all(&s_style_card_bubble, BUBBLE_PAD);
-    lv_style_set_pad_left(&s_style_card_bubble, BUBBLE_PAD + 6);
-    lv_style_set_border_width(&s_style_card_bubble, 1);
-    lv_style_set_border_color(&s_style_card_bubble, lv_color_hex(0xF59E0B)); /* TH_AMBER left rail */
-    lv_style_set_border_side(&s_style_card_bubble, LV_BORDER_SIDE_LEFT);
-    lv_style_set_text_color(&s_style_card_bubble, lv_color_hex(0xE8E8EF));   /* TH_TEXT_PRIMARY */
-
-    /* Tool status bubble — centered amber text (was cyan) */
-    lv_style_init(&s_style_tool_bubble);
-    lv_style_set_bg_color(&s_style_tool_bubble, lv_color_hex(0x111119));    /* TH_CARD */
-    lv_style_set_bg_opa(&s_style_tool_bubble, LV_OPA_COVER);
-    lv_style_set_radius(&s_style_tool_bubble, 12);
-    lv_style_set_pad_all(&s_style_tool_bubble, 10);
-    lv_style_set_border_width(&s_style_tool_bubble, 0);
-    lv_style_set_text_color(&s_style_tool_bubble, lv_color_hex(0xF59E0B));  /* TH_AMBER */
-    lv_style_set_text_align(&s_style_tool_bubble, LV_TEXT_ALIGN_CENTER);
-
-    /* System bubble — dark bg, centered dim text (TH_TEXT_SECONDARY) */
-    lv_style_init(&s_style_system_bubble);
-    lv_style_set_bg_color(&s_style_system_bubble, lv_color_hex(0x111119)); /* TH_CARD */
-    lv_style_set_bg_opa(&s_style_system_bubble, LV_OPA_COVER);
-    lv_style_set_radius(&s_style_system_bubble, 12);
-    lv_style_set_pad_all(&s_style_system_bubble, 10);
-    lv_style_set_border_width(&s_style_system_bubble, 0);
-    lv_style_set_text_color(&s_style_system_bubble, lv_color_hex(0x666666)); /* TH_TEXT_SECONDARY */
-    lv_style_set_text_align(&s_style_system_bubble, LV_TEXT_ALIGN_CENTER);
-
-    /* Timestamp — small font, right-aligned */
-    lv_style_init(&s_style_timestamp);
-    lv_style_set_text_font(&s_style_timestamp, FONT_CAPTION);
-    lv_style_set_text_align(&s_style_timestamp, LV_TEXT_ALIGN_RIGHT);
-}
-
-/* ── Height estimation ─────────────────────────────────────────── */
+/* ── Helpers ───────────────────────────────────────────────────── */
 
 static int estimate_height(const chat_msg_t *msg)
 {
-    if (!msg) return DPI_SCALE(60);
-
-    /* Use cached height if available */
+    if (!msg) return 60;
     if (msg->height_px > 0) return msg->height_px;
-
     switch (msg->type) {
-        case MSG_IMAGE:
-            return DPI_SCALE(200);
-        case MSG_AUDIO_CLIP:
-            return DPI_SCALE(56);
-        default:
-            break;
+        case MSG_IMAGE:      return BREAK_IMG_H + 48;
+        case MSG_CARD:       return BREAK_H + 24;
+        case MSG_AUDIO_CLIP: return 56 + 24;
+        case MSG_SYSTEM:     return 40;
+        default: break;
     }
-
-    /* Text-based height estimate: base + lines */
     int text_len = (int)strlen(msg->text);
-    return DPI_SCALE(60) + (text_len / 40) * DPI_SCALE(20);
+    /* 60 base + 22 per logical line (~36 chars). */
+    return 60 + (text_len / 36) * 22 + 24;
 }
 
-/* ── Slot configuration ────────────────────────────────────────── */
+static void fmt_timestamp(char *buf, size_t n, uint32_t ts, bool is_user)
+{
+    int h = (int)((ts / 3600) % 24);
+    int m = (int)((ts / 60) % 60);
+    snprintf(buf, n, "%02d:%02d \xc2\xb7 %s", h, m, is_user ? "YOU" : "TINKER");
+    for (char *p = buf; *p; p++) {
+        if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+    }
+}
 
-static void configure_slot(msg_slot_t *slot, const chat_msg_t *msg, int y_pos)
+static bool msg_is_breakout(const chat_msg_t *m)
+{
+    return m && (m->type == MSG_IMAGE || m->type == MSG_CARD || m->type == MSG_AUDIO_CLIP);
+}
+
+/* ── MSG_IMAGE async JPEG decode (Tab5 audit D6) ──────────────────
+ * CLAUDE.md's "Dragon renders code → Tab5 decodes JPEG inline" claim
+ * had only ever been wired for the home widget_media slot; the chat
+ * MSG_IMAGE path rendered a LV_SYMBOL_IMAGE+alt placeholder. Mirror
+ * the ui_home.c pattern: spawn a fetch task on Core 1, hop back via
+ * lv_async_call to bind the decoded dsc onto the slot's lv_image. */
+
+typedef struct {
+    msg_slot_t *slot;      /* slot that kicked the fetch */
+    int         expected_idx;  /* slot->data_idx at kick time */
+    char        url[256];
+    lv_image_dsc_t dsc;    /* filled by fetch task */
+    bool        ok;
+} chat_media_ctx_t;
+
+static void chat_media_bind_cb(void *arg)
+{
+    chat_media_ctx_t *c = (chat_media_ctx_t *)arg;
+    if (!c) return;
+    msg_slot_t *slot = c->slot;
+    /* Verify the slot is still bound to the same message it was when
+     * we kicked off the fetch.  If the user scrolled / the pool got
+     * recycled, discard silently — the next refresh will re-kick for
+     * the now-current URL. */
+    if (slot && slot->data_idx == c->expected_idx &&
+        strncmp(slot->brk_url, c->url, sizeof(slot->brk_url)) == 0 &&
+        c->ok && c->dsc.data && c->dsc.header.w > 0) {
+        slot->brk_dsc = c->dsc;
+        if (slot->brk_image) {
+            int w = c->dsc.header.w, h = c->dsc.header.h;
+            if (w > 720 - 2 * SIDE_PAD) w = 720 - 2 * SIDE_PAD;
+            if (h > BREAK_IMG_H - 8)    h = BREAK_IMG_H - 8;
+            lv_obj_set_size(slot->brk_image, w, h);
+            lv_obj_set_pos(slot->brk_image, (720 - w) / 2, 40);
+            lv_image_set_src(slot->brk_image, &slot->brk_dsc);
+            lv_obj_clear_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+            if (slot->brk_body) lv_obj_add_flag(slot->brk_body, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (slot) slot->brk_fetch_inflight = false;
+    free(c);
+}
+
+static void chat_media_fetch_task(void *pv)
+{
+    chat_media_ctx_t *c = (chat_media_ctx_t *)pv;
+    if (!c) { vTaskDelete(NULL); return; }
+    esp_err_t err = media_cache_fetch(c->url, &c->dsc);
+    c->ok = (err == ESP_OK && c->dsc.data && c->dsc.header.w > 0);
+    lv_async_call(chat_media_bind_cb, c);
+    vTaskDelete(NULL);
+}
+
+static void kick_chat_image_fetch(msg_slot_t *slot, const char *url)
+{
+    if (!slot || !url || !url[0]) return;
+    /* Same URL already bound or in-flight — no-op. */
+    if (strncmp(slot->brk_url, url, sizeof(slot->brk_url)) == 0 &&
+        (slot->brk_dsc.data || slot->brk_fetch_inflight)) {
+        return;
+    }
+    snprintf(slot->brk_url, sizeof(slot->brk_url), "%s", url);
+    memset(&slot->brk_dsc, 0, sizeof(slot->brk_dsc));
+
+    chat_media_ctx_t *c = calloc(1, sizeof(*c));
+    if (!c) return;
+    c->slot = slot;
+    c->expected_idx = slot->data_idx;
+    snprintf(c->url, sizeof(c->url), "%s", url);
+    slot->brk_fetch_inflight = true;
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        chat_media_fetch_task, "chat_media", 8192, c, 3, NULL, 1);
+    if (ok != pdPASS) {
+        slot->brk_fetch_inflight = false;
+        free(c);
+    }
+}
+
+/* ── Slot reset ────────────────────────────────────────────────── */
+
+static void slot_reset(msg_slot_t *slot)
+{
+    if (!slot) return;
+    slot->data_idx = -1;
+    if (slot->bubble)    lv_obj_add_flag(slot->bubble, LV_OBJ_FLAG_HIDDEN);
+    if (slot->breakout)  lv_obj_add_flag(slot->breakout, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void slot_ensure_breakout(msg_slot_t *slot, lv_obj_t *parent, uint32_t accent)
+{
+    if (!slot) return;
+    if (slot->breakout) return;
+
+    slot->breakout = lv_obj_create(parent);
+    lv_obj_remove_style_all(slot->breakout);
+    lv_obj_set_size(slot->breakout, 720, BREAK_H);
+    lv_obj_set_style_bg_color(slot->breakout, lv_color_hex(TH_BG), 0);
+    lv_obj_set_style_bg_opa(slot->breakout, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(slot->breakout, 1, 0);
+    lv_obj_set_style_border_color(slot->breakout, lv_color_hex(0x1E1E2A), 0);
+    lv_obj_set_style_border_side(slot->breakout,
+        LV_BORDER_SIDE_TOP | LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_pad_hor(slot->breakout, SIDE_PAD, 0);
+    lv_obj_set_style_pad_ver(slot->breakout, 20, 0);
+    lv_obj_clear_flag(slot->breakout, LV_OBJ_FLAG_SCROLLABLE);
+
+    slot->brk_accent = lv_obj_create(slot->breakout);
+    lv_obj_remove_style_all(slot->brk_accent);
+    lv_obj_set_size(slot->brk_accent, 140, 3);
+    lv_obj_set_pos(slot->brk_accent, SIDE_PAD, 0);
+    lv_obj_set_style_bg_color(slot->brk_accent, lv_color_hex(accent), 0);
+    lv_obj_set_style_bg_opa(slot->brk_accent, LV_OPA_COVER, 0);
+
+    slot->brk_kicker = lv_label_create(slot->breakout);
+    lv_obj_set_style_text_font(slot->brk_kicker, FONT_CHAT_MONO, 0);
+    lv_obj_set_style_text_color(slot->brk_kicker, lv_color_hex(accent), 0);
+    lv_obj_set_style_text_letter_space(slot->brk_kicker, 2, 0);
+    lv_label_set_text(slot->brk_kicker, "");
+
+    slot->brk_body = lv_label_create(slot->breakout);
+    lv_label_set_long_mode(slot->brk_body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(slot->brk_body, 720 - 2 * SIDE_PAD);
+    lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(slot->brk_body, FONT_CHAT_MONO, 0);
+    lv_obj_set_style_text_line_space(slot->brk_body, 4, 0);
+    lv_label_set_text(slot->brk_body, "");
+}
+
+/* ── Bind slot to a message ────────────────────────────────────── */
+
+static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
+                      const chat_msg_t *msg, int y)
 {
     if (!slot || !msg) return;
+    slot->data_idx = -1;       /* set later after successful bind */
 
-    /* Determine X position: user = right, AI/others = left */
-    int x_pos = msg->is_user ? (DISPLAY_W - BUBBLE_MAX_W - 20) : 20;
+    bool use_breakout = msg_is_breakout(msg);
+    if (use_breakout) {
+        /* Break-out band — full screen width, absolute x=0. */
+        slot_ensure_breakout(slot, v->scroll, v->mode_color);
+        lv_obj_clear_flag(slot->breakout, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(slot->breakout, 0, y);
+        lv_obj_add_flag(slot->bubble, LV_OBJ_FLAG_HIDDEN);
+        if (slot->brk_accent)
+            lv_obj_set_style_bg_color(slot->brk_accent, lv_color_hex(v->mode_color), 0);
+        if (slot->brk_kicker)
+            lv_obj_set_style_text_color(slot->brk_kicker, lv_color_hex(v->mode_color), 0);
 
-    /* Remove all existing styles from container, then apply the right one */
-    lv_obj_remove_style_all(slot->container);
+        char kicker[64];
+        switch (msg->type) {
+            case MSG_IMAGE:
+                snprintf(kicker, sizeof(kicker), "IMAGE \xc2\xb7 %.40s",
+                         msg->subtitle[0] ? msg->subtitle : "INLINE");
+                break;
+            case MSG_CARD:
+                snprintf(kicker, sizeof(kicker), "CARD \xc2\xb7 %.40s",
+                         msg->subtitle[0] ? msg->subtitle : "PREVIEW");
+                break;
+            case MSG_AUDIO_CLIP:
+                snprintf(kicker, sizeof(kicker), "AUDIO \xc2\xb7 CLIP");
+                break;
+            default:
+                kicker[0] = 0;
+                break;
+        }
+        for (char *p = kicker; *p; p++) {
+            if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+        }
+        lv_label_set_text(slot->brk_kicker, kicker);
+        lv_obj_set_pos(slot->brk_kicker, SIDE_PAD, 12);
 
-    /* Apply type-specific style */
-    switch (msg->type) {
-        case MSG_CARD:
-            lv_obj_add_style(slot->container, &s_style_card_bubble, 0);
-            break;
-        case MSG_TOOL_STATUS:
-            lv_obj_add_style(slot->container, &s_style_tool_bubble, 0);
-            x_pos = (DISPLAY_W - BUBBLE_MAX_W) / 2;  /* centered */
-            break;
-        case MSG_SYSTEM:
-            lv_obj_add_style(slot->container, &s_style_system_bubble, 0);
-            x_pos = (DISPLAY_W - BUBBLE_MAX_W) / 2;  /* centered */
-            break;
-        default:
-            if (msg->is_user) {
-                lv_obj_add_style(slot->container, &s_style_user_bubble, 0);
-            } else {
-                lv_obj_add_style(slot->container, &s_style_ai_bubble, 0);
+        /* Body — for images we render a placeholder pane with alt text
+         * WHILE the JPEG is being fetched/decoded, and once the dsc is
+         * bound we hide the placeholder and show the decoded bitmap.
+         * (Tab5 audit D6 fix — previously only the placeholder branch
+         *  ever rendered, so the "Dragon renders → Tab5 decodes inline"
+         *  claim was invisible.) */
+        if (msg->type == MSG_IMAGE) {
+            lv_obj_set_style_text_font(slot->brk_body, FONT_BODY, 0);
+            lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_TEXT_DIM), 0);
+            char body[256];
+            snprintf(body, sizeof(body),
+                     LV_SYMBOL_IMAGE "  %.220s",
+                     msg->text[0] ? msg->text : "inline image");
+            lv_label_set_text(slot->brk_body, body);
+            lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
+            lv_obj_set_size(slot->breakout, 720, BREAK_IMG_H);
+            lv_obj_set_style_radius(slot->breakout, 0, 0);
+
+            /* Lazy-create the image widget once per slot. */
+            if (!slot->brk_image) {
+                slot->brk_image = lv_image_create(slot->breakout);
+                lv_obj_add_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
             }
-            break;
+            /* If a decoded dsc is already bound AND the URL is unchanged,
+             * just show it immediately without re-fetching. */
+            if (msg->media_url[0] &&
+                strncmp(slot->brk_url, msg->media_url, sizeof(slot->brk_url)) == 0 &&
+                slot->brk_dsc.data && slot->brk_dsc.header.w > 0) {
+                int w = slot->brk_dsc.header.w, h = slot->brk_dsc.header.h;
+                if (w > 720 - 2 * SIDE_PAD) w = 720 - 2 * SIDE_PAD;
+                if (h > BREAK_IMG_H - 8)    h = BREAK_IMG_H - 8;
+                lv_obj_set_size(slot->brk_image, w, h);
+                lv_obj_set_pos(slot->brk_image, (720 - w) / 2, 40);
+                lv_image_set_src(slot->brk_image, &slot->brk_dsc);
+                lv_obj_clear_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(slot->brk_body, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                /* Not yet decoded — hide image, leave body as the loading
+                 * placeholder ("🖼  alt text").  The refresh loop below
+                 * kicks the fetch after slot->data_idx is committed, so
+                 * the async bind callback can verify idx-match. */
+                lv_obj_add_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(slot->brk_body, LV_OBJ_FLAG_HIDDEN);
+            }
+        } else if (msg->type == MSG_CARD) {
+            lv_obj_set_style_text_font(slot->brk_body, FONT_BODY, 0);
+            lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_TEXT_PRIMARY), 0);
+            char body[400];
+            if (msg->subtitle[0] && msg->text[0]) {
+                snprintf(body, sizeof(body), "%.120s\n%.200s", msg->text, msg->subtitle);
+            } else if (msg->text[0]) {
+                snprintf(body, sizeof(body), "%.300s", msg->text);
+            } else {
+                body[0] = 0;
+            }
+            lv_label_set_text(slot->brk_body, body);
+            lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
+            lv_obj_set_size(slot->breakout, 720, BREAK_H);
+        } else { /* MSG_AUDIO_CLIP */
+            lv_obj_set_style_text_font(slot->brk_body, FONT_BODY, 0);
+            lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_AMBER), 0);
+            char body[128];
+            snprintf(body, sizeof(body), LV_SYMBOL_PLAY "  %.100s",
+                     msg->text[0] ? msg->text : "audio clip");
+            lv_label_set_text(slot->brk_body, body);
+            lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
+            lv_obj_set_size(slot->breakout, 720, 96);
+        }
+
+        /* Measure + cache. */
+        lv_obj_update_layout(slot->breakout);
+        int measured = lv_obj_get_height(slot->breakout);
+        if (measured > 0) chat_store_set_height(slot->data_idx, (int16_t)measured);
+        slot->data_idx = -2;   /* marker fixed up by caller */
+        return;
     }
 
-    /* Position and size */
-    lv_obj_set_pos(slot->container, x_pos, y_pos);
-    lv_obj_set_size(slot->container, BUBBLE_MAX_W, LV_SIZE_CONTENT);
-    lv_obj_clear_flag(slot->container, LV_OBJ_FLAG_SCROLLABLE);
+    /* Regular bubble path (MSG_TEXT + MSG_SYSTEM). */
+    lv_obj_clear_flag(slot->bubble, LV_OBJ_FLAG_HIDDEN);
+    if (slot->breakout) lv_obj_add_flag(slot->breakout, LV_OBJ_FLAG_HIDDEN);
 
-    /* Content label — v5 treatments for the rich-media variants. Only text
-       + style touched here; object lifecycle stays unchanged (recycled pool
-       invariant). Image/card/audio stay resilient across scroll / scroll-back. */
-    switch (msg->type) {
-        case MSG_IMAGE: {
-            /* Placeholder while the JPEG downloads. v5: amber progress feel
-               instead of grey 'Loading...'. The real image swap-in happens
-               in ui_chat.c on media_cache_fetch() completion. */
-            const char *alt = msg->text[0] ? msg->text : "inline image";
-            char placeholder[160];
-            /* %.120s bounds the alt-text so LV_SYMBOL glyphs + spaces all fit */
-            snprintf(placeholder, sizeof(placeholder),
-                     LV_SYMBOL_IMAGE "  %.120s  " LV_SYMBOL_REFRESH, alt);
-            lv_label_set_text(slot->content, placeholder);
-            lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
-            break;
-        }
-        case MSG_CARD: {
-            /* v5 cards show both title AND subtitle — title as primary,
-               subtitle dim on the line below. Falls back to text if either is
-               empty. Stays a single label to keep the slot-pool shape stable.
-               .*s precision bounds pacify -Wformat-truncation for the 512-char
-               source fields — 140 + 1 newline + 160 fits inside 320 with room. */
-            char card_text[320];
-            const char *title    = msg->text[0]     ? msg->text     : NULL;
-            const char *subtitle = msg->subtitle[0] ? msg->subtitle : NULL;
-            if (title && subtitle) {
-                snprintf(card_text, sizeof(card_text), "%.140s\n%.160s",
-                         title, subtitle);
-            } else if (title) {
-                snprintf(card_text, sizeof(card_text), "%.300s", title);
-            } else if (subtitle) {
-                snprintf(card_text, sizeof(card_text), "%.300s", subtitle);
-            } else {
-                card_text[0] = '\0';
-            }
-            lv_label_set_text(slot->content, card_text);
-            lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xE8E8EF), 0); /* TH_TEXT_PRIMARY */
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
-            lv_obj_set_style_text_line_space(slot->content, 4, 0);
-            break;
-        }
-        case MSG_AUDIO_CLIP: {
-            /* Audio clip — amber play glyph + label + duration when known.
-               Green was off-palette; matches v5 now. */
-            char audio_text[96];
-            char clip_label[48];
-            if (msg->text[0]) {
-                strncpy(clip_label, msg->text, sizeof(clip_label) - 1);
-                clip_label[sizeof(clip_label) - 1] = '\0';
-            } else {
-                strcpy(clip_label, "audio clip");
-            }
-            snprintf(audio_text, sizeof(audio_text),
-                     LV_SYMBOL_PLAY "  %s", clip_label);
-            lv_label_set_text(slot->content, audio_text);
-            lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
-            break;
-        }
-        case MSG_TOOL_STATUS:
-            lv_label_set_text(slot->content, msg->text);
-            lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0xF59E0B), 0); /* TH_AMBER */
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
-            break;
-        case MSG_SYSTEM:
-            lv_label_set_text(slot->content, msg->text);
-            lv_obj_set_style_text_font(slot->content, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(slot->content, lv_color_hex(0x666666), 0); /* TH_TEXT_SECONDARY */
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_CENTER, 0);
-            break;
-        default:
-            /* MSG_TEXT */
-            lv_label_set_text(slot->content, msg->text);
-            lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-            lv_obj_set_style_text_color(slot->content,
-                lv_color_hex(msg->is_user ? 0x000000 : 0xAAAAAA), 0); /* TH_TEXT_BODY on AI */
-            lv_obj_set_style_text_align(slot->content, LV_TEXT_ALIGN_LEFT, 0);
-            break;
+    if (msg->type == MSG_SYSTEM) {
+        /* Centered dim line, no bubble frame. */
+        lv_obj_set_style_bg_opa(slot->bubble, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(slot->bubble, 0, 0);
+        lv_obj_set_style_radius(slot->bubble, 0, 0);
+        lv_obj_set_style_pad_all(slot->bubble, 0, 0);
+        lv_obj_set_size(slot->bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
+        int x = (720 - BUBBLE_MAX_W) / 2;
+        lv_obj_set_pos(slot->bubble, x, y);
+        lv_obj_set_width(slot->body, BUBBLE_MAX_W);
+        lv_obj_set_style_text_font(slot->body, FONT_CHAT_MONO, 0);
+        lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_TEXT_DIM), 0);
+        lv_obj_set_style_text_align(slot->body, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(slot->body, msg->text);
+        lv_obj_set_pos(slot->body, 0, 0);
+        if (slot->ts) lv_obj_add_flag(slot->ts, LV_OBJ_FLAG_HIDDEN);
+        return;
     }
 
-    lv_label_set_long_mode(slot->content, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(slot->content, LABEL_MAX_W);
+    /* MSG_TEXT bubble */
+    lv_obj_set_style_bg_opa(slot->bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(slot->bubble, BUBBLE_PAD_H, 0);
+    lv_obj_set_style_pad_ver(slot->bubble, BUBBLE_PAD_V, 0);
 
-    /* Timestamp */
-    if (msg->timestamp > 0) {
-        time_t ts = (time_t)msg->timestamp;
-        struct tm *tm_info = localtime(&ts);
-        if (tm_info) {
-            char time_buf[8];
-            snprintf(time_buf, sizeof(time_buf), "%02d:%02d",
-                     tm_info->tm_hour, tm_info->tm_min);
-            lv_label_set_text(slot->timestamp, time_buf);
-        } else {
-            lv_label_set_text(slot->timestamp, "");
-        }
-        lv_obj_set_style_text_color(slot->timestamp,
-            lv_color_hex(msg->is_user ? 0x444444 : 0x666666), 0); /* TH_TEXT_DIM / _SECONDARY */
-        lv_obj_clear_flag(slot->timestamp, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_width(slot->timestamp, LABEL_MAX_W);
-        /* Place timestamp below content with 4px gap */
-        lv_obj_align_to(slot->timestamp, slot->content,
-                        LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 4);
+    if (msg->is_user) {
+        lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_AMBER), 0);
+        lv_obj_set_style_border_width(slot->bubble, 0, 0);
+        /* Rounded-rect with a 6-px bottom-right tail. LVGL doesn't ship
+         * per-corner radius, so we settle for the 22 radius — the tail
+         * is approximated by a small 12×12 amber square tucked under
+         * the bubble's bottom-right edge. */
+        lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
+        lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_BG), 0);
     } else {
-        lv_obj_add_flag(slot->timestamp, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_CARD), 0);
+        lv_obj_set_style_border_width(slot->bubble, 1, 0);
+        lv_obj_set_style_border_color(slot->bubble, lv_color_hex(0x1E1E2A), 0);
+        lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
+        lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_TEXT_PRIMARY), 0);
     }
+    (void)BUBBLE_TAIL_R;   /* kept in header for future per-corner support */
 
-    /* Show the slot */
-    lv_obj_clear_flag(slot->container, LV_OBJ_FLAG_HIDDEN);
-}
+    lv_obj_set_size(slot->bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
+    int x = msg->is_user ? (720 - BUBBLE_MAX_W - SIDE_PAD) : SIDE_PAD;
+    lv_obj_set_pos(slot->bubble, x, y);
 
-/* ── Hide all pool slots ───────────────────────────────────────── */
+    /* Body */
+    lv_obj_set_width(slot->body, LABEL_MAX_W);
+    lv_obj_set_style_text_font(slot->body, FONT_BODY, 0);
+    lv_obj_set_style_text_align(slot->body, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_line_space(slot->body, 4, 0);
+    lv_label_set_text(slot->body, msg->text);
 
-static void hide_all_slots(void)
-{
-    for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) {
-        lv_obj_add_flag(s_pool[i].container, LV_OBJ_FLAG_HIDDEN);
-        s_pool[i].data_idx = -1;
-    }
-}
-
-/* ── Find a free pool slot ─────────────────────────────────────── */
-
-static msg_slot_t *find_free_slot(void)
-{
-    for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) {
-        if (s_pool[i].data_idx == -1) {
-            return &s_pool[i];
+    /* Timestamp (+ Phase 3d receipt stamp for AI bubbles with cost).
+     * Format: "9:42 · HAIKU-3.5 · $0.003"  (AI only, when receipt > 0). */
+    if (slot->ts) {
+        lv_obj_clear_flag(slot->ts, LV_OBJ_FLAG_HIDDEN);
+        char ts[96];
+        fmt_timestamp(ts, sizeof(ts),
+                      msg->timestamp ? msg->timestamp : 0,
+                      msg->is_user);
+        if (!msg->is_user && msg->receipt_model_short[0]) {
+            /* Phase 3d + 4a: stamp + optional Gauntlet G2 retry marker.
+             *   cloud turn  : " · MODEL · $X.XXX"
+             *   local turn  : " · MODEL · FREE"
+             *   +retried    : prepend " · RETRIED" to either */
+            size_t cur = strlen(ts);
+            const char *retry_tag = msg->receipt_retried ? " \xc2\xb7 RETRIED" : "";
+            if (msg->receipt_mils > 0) {
+                int dollars     = (int)(msg->receipt_mils / 100000);
+                int thousandths = (int)((msg->receipt_mils / 100) % 1000);
+                snprintf(ts + cur, sizeof(ts) - cur,
+                         " \xc2\xb7 %s \xc2\xb7 $%d.%03d%s",
+                         msg->receipt_model_short,
+                         dollars, thousandths, retry_tag);
+            } else {
+                snprintf(ts + cur, sizeof(ts) - cur,
+                         " \xc2\xb7 %s \xc2\xb7 FREE%s",
+                         msg->receipt_model_short, retry_tag);
+            }
         }
+        lv_label_set_text(slot->ts, ts);
+        lv_obj_set_style_text_font(slot->ts, FONT_CHAT_MONO, 0);
+        lv_obj_set_style_text_color(slot->ts, lv_color_hex(TH_TEXT_DIM), 0);
+        /* Place below bubble, right-aligned for user, left for AI. */
+        lv_obj_update_layout(slot->bubble);
+        int bh = lv_obj_get_height(slot->bubble);
+        int tx = msg->is_user
+                   ? (720 - SIDE_PAD - 220)
+                   : SIDE_PAD + 4;
+        lv_obj_set_pos(slot->ts, tx, y + bh + 4);
+        lv_obj_set_width(slot->ts, 220);
+        lv_obj_set_style_text_align(slot->ts,
+            msg->is_user ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
     }
-    return NULL;
 }
 
-/* ── Scroll event handler — recycles slots on scroll ───────────── */
+/* ── Hide all slots ────────────────────────────────────────────── */
 
-static void scroll_event_cb(lv_event_t *e)
+static void hide_all_slots(chat_msg_view_t *v)
 {
-    (void)e;
-    chat_view_refresh();
+    for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) slot_reset(&v->pool[i]);
+}
+
+/* ── Find / scroll ─────────────────────────────────────────────── */
+
+static void ev_scroll(lv_event_t *e)
+{
+    chat_msg_view_t *v = lv_event_get_user_data(e);
+    chat_msg_view_refresh(v);
 }
 
 /* ── Public API ────────────────────────────────────────────────── */
 
-void chat_view_init(lv_obj_t *parent)
+chat_msg_view_t *chat_msg_view_create(lv_obj_t *parent, int x, int y, int w, int h)
 {
-    if (!parent) return;
+    chat_msg_view_t *v = calloc(1, sizeof(*v));
+    if (!v) return NULL;
+    v->mode_color = TH_AMBER;
+    v->stream_idx = -1;
 
-    init_styles();
+    v->scroll = lv_obj_create(parent);
+    lv_obj_remove_style_all(v->scroll);
+    lv_obj_set_size(v->scroll, w, h);
+    lv_obj_set_pos(v->scroll, x, y);
+    lv_obj_set_style_bg_opa(v->scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(v->scroll, 0, 0);
+    lv_obj_add_flag(v->scroll, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(v->scroll, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(v->scroll, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_add_event_cb(v->scroll, ev_scroll, LV_EVENT_SCROLL, v);
 
-    /* Create scrollable container — width=100%, height from flex-grow or explicit */
-    s_scroll = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_scroll);
-    lv_obj_set_width(s_scroll, lv_pct(100));
-    lv_obj_set_flex_grow(s_scroll, 1);   /* fill remaining space in parent flex column */
-    lv_obj_set_style_bg_opa(s_scroll, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_pad_all(s_scroll, 0, 0);
-    lv_obj_add_flag(s_scroll, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(s_scroll, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(s_scroll, LV_SCROLLBAR_MODE_OFF);
-
-    /* Register scroll event for recycling */
-    lv_obj_add_event_cb(s_scroll, scroll_event_cb, LV_EVENT_SCROLL, NULL);
-
-    /* Create pool slots — all start hidden */
     for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) {
-        msg_slot_t *slot = &s_pool[i];
+        msg_slot_t *slot = &v->pool[i];
+        slot->bubble = lv_obj_create(v->scroll);
+        lv_obj_remove_style_all(slot->bubble);
+        lv_obj_set_size(slot->bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
+        lv_obj_clear_flag(slot->bubble, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(slot->bubble, LV_OBJ_FLAG_HIDDEN);
 
-        /* Container (bubble background) */
-        slot->container = lv_obj_create(s_scroll);
-        lv_obj_remove_style_all(slot->container);
-        lv_obj_set_size(slot->container, BUBBLE_MAX_W, LV_SIZE_CONTENT);
-        lv_obj_clear_flag(slot->container, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(slot->container, LV_OBJ_FLAG_HIDDEN);
+        slot->body = lv_label_create(slot->bubble);
+        lv_label_set_long_mode(slot->body, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(slot->body, LABEL_MAX_W);
+        lv_obj_set_style_text_font(slot->body, FONT_BODY, 0);
 
-        /* Content label */
-        slot->content = lv_label_create(slot->container);
-        lv_label_set_long_mode(slot->content, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(slot->content, LABEL_MAX_W);
-        lv_obj_set_style_text_font(slot->content, FONT_BODY, 0);
-
-        /* Timestamp label */
-        slot->timestamp = lv_label_create(slot->container);
-        lv_obj_add_style(slot->timestamp, &s_style_timestamp, 0);
-        lv_obj_set_width(slot->timestamp, LABEL_MAX_W);
-        lv_obj_add_flag(slot->timestamp, LV_OBJ_FLAG_HIDDEN);
+        slot->ts = lv_label_create(v->scroll);
+        lv_obj_set_style_text_font(slot->ts, FONT_CHAT_MONO, 0);
+        lv_obj_set_style_text_color(slot->ts, lv_color_hex(TH_TEXT_DIM), 0);
+        lv_obj_add_flag(slot->ts, LV_OBJ_FLAG_HIDDEN);
 
         slot->data_idx = -1;
+        slot->breakout = NULL;
     }
+
+    return v;
 }
 
-void chat_view_set_mode(uint8_t mode)
+void chat_msg_view_destroy(chat_msg_view_t *v)
 {
-    if (mode >= CHAT_MODE_COUNT) mode = 0;
-    s_mode = mode;
-    hide_all_slots();
-    chat_view_refresh();
+    if (!v) return;
+    if (v->scroll) lv_obj_del(v->scroll);
+    free(v);
 }
 
-uint8_t chat_view_get_mode(void)
+void chat_msg_view_set_size(chat_msg_view_t *v, int w, int h)
 {
-    return s_mode;
+    if (v && v->scroll) lv_obj_set_size(v->scroll, w, h);
 }
 
-void chat_view_refresh(void)
+void chat_msg_view_set_mode_color(chat_msg_view_t *v, uint32_t hex)
 {
-    if (!s_scroll) return;
+    if (!v) return;
+    v->mode_color = hex;
+    chat_msg_view_refresh(v);
+}
 
-    int total = chat_store_count(s_mode);
+void chat_msg_view_refresh(chat_msg_view_t *v)
+{
+    if (!v || !v->scroll) return;
+
+    int total = chat_store_count();
     if (total == 0) {
-        hide_all_slots();
-        lv_obj_set_content_height(s_scroll, 0);
+        hide_all_slots(v);
+        lv_obj_set_content_height(v->scroll, 0);
         return;
     }
 
-    /* --- Pass 1: Calculate cumulative Y positions for all messages --- */
-    /* Use a small static array sized to BSP_CHAT_MAX_MESSAGES */
+    /* Pass 1: cumulative Y. */
     static int y_positions[BSP_CHAT_MAX_MESSAGES];
-    int running_y = BUBBLE_GAP;   /* start with top gap */
-
+    int running = BUBBLE_GAP;
     for (int i = 0; i < total; i++) {
-        const chat_msg_t *msg = chat_store_get(s_mode, i);
-        y_positions[i] = running_y;
-        int h = estimate_height(msg);
-        running_y += h + BUBBLE_GAP;
+        const chat_msg_t *m = chat_store_get(i);
+        y_positions[i] = running;
+        running += estimate_height(m) + BUBBLE_GAP;
     }
+    lv_obj_set_content_height(v->scroll, running);
 
-    int total_height = running_y;
-
-    /* Set virtual scroll content height */
-    lv_obj_set_content_height(s_scroll, total_height);
-
-    /* --- Pass 2: Determine visible range based on current scroll position --- */
-    int scroll_y = lv_obj_get_scroll_y(s_scroll);
+    int scroll_y = lv_obj_get_scroll_y(v->scroll);
     int view_top = scroll_y - VIS_BUFFER;
-    int view_bot = scroll_y + lv_obj_get_height(s_scroll) + VIS_BUFFER;
+    int view_bot = scroll_y + lv_obj_get_height(v->scroll) + VIS_BUFFER;
 
-    /* --- Pass 3: Mark all slots as free --- */
-    /* But first, keep slots that are still in the visible range */
+    /* Pass 2: free slots outside window. */
     for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) {
-        if (s_pool[i].data_idx >= 0 && s_pool[i].data_idx < total) {
-            int idx = s_pool[i].data_idx;
-            int msg_y = y_positions[idx];
-            int msg_h = estimate_height(chat_store_get(s_mode, idx));
-            /* If slot is still visible, keep it */
-            if (msg_y + msg_h >= view_top && msg_y <= view_bot) {
-                continue;  /* keep this slot */
-            }
+        msg_slot_t *slot = &v->pool[i];
+        if (slot->data_idx < 0 || slot->data_idx >= total) {
+            if (v->streaming && slot->data_idx == v->stream_idx) continue;
+            slot_reset(slot);
+            continue;
         }
-        /* Free this slot */
-        lv_obj_add_flag(s_pool[i].container, LV_OBJ_FLAG_HIDDEN);
-        s_pool[i].data_idx = -1;
+        int y = y_positions[slot->data_idx];
+        int h = estimate_height(chat_store_get(slot->data_idx));
+        if (y + h < view_top || y > view_bot) {
+            if (v->streaming && slot->data_idx == v->stream_idx) continue;
+            slot_reset(slot);
+        }
     }
 
-    /* --- Pass 4: Assign visible messages to pool slots --- */
+    /* Pass 3: bind visible messages to free slots. */
     for (int i = 0; i < total; i++) {
-        const chat_msg_t *msg = chat_store_get(s_mode, i);
-        if (!msg) continue;
+        int y = y_positions[i];
+        int h = estimate_height(chat_store_get(i));
+        if (y + h < view_top || y > view_bot) continue;
 
-        int msg_y = y_positions[i];
-        int msg_h = estimate_height(msg);
-
-        /* Skip if outside visible range */
-        if (msg_y + msg_h < view_top || msg_y > view_bot) continue;
-
-        /* Check if already assigned to a slot */
-        bool already = false;
+        /* Already bound? */
+        bool bound = false;
         for (int s = 0; s < BSP_CHAT_POOL_SIZE; s++) {
-            if (s_pool[s].data_idx == i) {
-                already = true;
-                break;
-            }
+            if (v->pool[s].data_idx == i) { bound = true; break; }
         }
-        if (already) continue;
+        if (bound) continue;
 
-        /* Find a free slot */
-        msg_slot_t *slot = find_free_slot();
-        if (!slot) break;  /* all slots used — shouldn't happen with 12 + buffer */
+        /* Find free slot */
+        msg_slot_t *slot = NULL;
+        for (int s = 0; s < BSP_CHAT_POOL_SIZE; s++) {
+            if (v->pool[s].data_idx == -1) { slot = &v->pool[s]; break; }
+        }
+        if (!slot) break;
 
+        slot_bind(v, slot, chat_store_get(i), y);
         slot->data_idx = i;
-        configure_slot(slot, msg, msg_y);
 
-        /* Cache measured height back to store */
-        lv_obj_update_layout(slot->container);
-        int measured = lv_obj_get_height(slot->container);
-        if (measured > 0) {
-            chat_msg_t *mut = chat_store_get_mut(s_mode, i);
-            if (mut) mut->height_px = (int16_t)measured;
-        }
-    }
-}
-
-void chat_view_scroll_to_bottom(void)
-{
-    if (!s_scroll) return;
-    lv_obj_scroll_to_y(s_scroll, LV_COORD_MAX, LV_ANIM_ON);
-}
-
-void chat_view_append_streaming(const char *token)
-{
-    if (!token || !s_scroll) return;
-
-    if (!s_streaming) {
-        s_streaming = true;
-        s_stream_len = 0;
-        s_stream_buf[0] = '\0';
-    }
-
-    /* Append token to streaming buffer */
-    int tok_len = (int)strlen(token);
-    if (s_stream_len + tok_len < (int)sizeof(s_stream_buf) - 1) {
-        memcpy(s_stream_buf + s_stream_len, token, tok_len);
-        s_stream_len += tok_len;
-        s_stream_buf[s_stream_len] = '\0';
-    }
-
-    /* Find the streaming slot — last slot with highest data_idx,
-     * or create one if needed by using the last message index */
-    int total = chat_store_count(s_mode);
-    int last_idx = total > 0 ? total - 1 : -1;
-
-    msg_slot_t *stream_slot = NULL;
-    for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) {
-        if (s_pool[i].data_idx == last_idx) {
-            stream_slot = &s_pool[i];
-            break;
-        }
-    }
-
-    if (!stream_slot) {
-        /* Try to get a free slot and assign to last message */
-        stream_slot = find_free_slot();
-        if (stream_slot && last_idx >= 0) {
-            stream_slot->data_idx = last_idx;
-            const chat_msg_t *msg = chat_store_get(s_mode, last_idx);
-            if (msg) {
-                /* Position at bottom */
-                int y = 0;
-                int running = BUBBLE_GAP;
-                for (int m = 0; m < total; m++) {
-                    if (m == last_idx) { y = running; break; }
-                    running += estimate_height(chat_store_get(s_mode, m)) + BUBBLE_GAP;
+        /* After data_idx is committed, kick JPEG fetch for MSG_IMAGE
+         * bubbles whose dsc isn't already bound to the current URL.
+         * Running here (not inside slot_bind) guarantees expected_idx
+         * matches what the refresh loop last bound. */
+        {
+            const chat_msg_t *m = chat_store_get(i);
+            if (m && m->type == MSG_IMAGE && m->media_url[0]) {
+                bool already = (strncmp(slot->brk_url, m->media_url,
+                                        sizeof(slot->brk_url)) == 0 &&
+                                slot->brk_dsc.data &&
+                                slot->brk_dsc.header.w > 0);
+                if (!already) {
+                    kick_chat_image_fetch(slot, m->media_url);
                 }
-                configure_slot(stream_slot, msg, y);
             }
         }
+
+        /* Cache measured height for next refresh. */
+        lv_obj_t *measure_obj = msg_is_breakout(chat_store_get(i)) ? slot->breakout : slot->bubble;
+        if (measure_obj) {
+            lv_obj_update_layout(measure_obj);
+            int measured = lv_obj_get_height(measure_obj);
+            if (measured > 0) chat_store_set_height(i, (int16_t)(measured + 28));
+        }
     }
+}
 
-    /* Update the streaming slot's label text */
-    if (stream_slot) {
-        lv_label_set_text(stream_slot->content, s_stream_buf);
-        lv_obj_clear_flag(stream_slot->container, LV_OBJ_FLAG_HIDDEN);
+void chat_msg_view_scroll_to_bottom(chat_msg_view_t *v)
+{
+    if (v && v->scroll) lv_obj_scroll_to_y(v->scroll, LV_COORD_MAX, LV_ANIM_ON);
+}
+
+void chat_msg_view_begin_streaming(chat_msg_view_t *v)
+{
+    if (!v) return;
+    v->streaming = true;
+    v->stream_len = 0;
+    v->stream_buf[0] = 0;
+    v->stream_idx = chat_store_count() - 1;
+}
+
+void chat_msg_view_append_stream(chat_msg_view_t *v, const char *text)
+{
+    if (!v || !text) return;
+    if (!v->streaming) chat_msg_view_begin_streaming(v);
+
+    size_t tlen = strlen(text);
+    if ((size_t)v->stream_len + tlen >= sizeof(v->stream_buf) - 1) {
+        tlen = sizeof(v->stream_buf) - 1 - (size_t)v->stream_len;
     }
+    if (tlen == 0) return;
+    memcpy(v->stream_buf + v->stream_len, text, tlen);
+    v->stream_len += (int)tlen;
+    v->stream_buf[v->stream_len] = 0;
 
-    /* Auto-scroll to bottom */
-    chat_view_scroll_to_bottom();
+    /* Push into the store so the view refresh picks it up. */
+    chat_store_update_last_text(v->stream_buf);
+    chat_msg_view_refresh(v);
+    chat_msg_view_scroll_to_bottom(v);
 }
 
-void chat_view_finalize_streaming(void)
+void chat_msg_view_end_streaming(chat_msg_view_t *v)
 {
-    s_streaming = false;
-    s_stream_buf[0] = '\0';
-    s_stream_len = 0;
-    /* The orchestrator commits the accumulated text to the store.
-     * Refresh to recalculate heights and positions. */
-    chat_view_refresh();
+    if (!v) return;
+    v->streaming = false;
+    v->stream_idx = -1;
+    v->stream_len = 0;
+    v->stream_buf[0] = 0;
+    chat_msg_view_refresh(v);
 }
 
-bool chat_view_is_streaming(void)
+bool chat_msg_view_is_streaming(chat_msg_view_t *v)
 {
-    return s_streaming;
+    return v && v->streaming;
 }
 
-lv_obj_t *chat_view_get_scroll(void)
+lv_obj_t *chat_msg_view_get_scroll(chat_msg_view_t *v)
 {
-    return s_scroll;
+    return v ? v->scroll : NULL;
 }

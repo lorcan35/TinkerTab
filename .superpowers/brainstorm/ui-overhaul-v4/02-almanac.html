@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TinkerTab v4 — Direction B: Almanac</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,500;1,9..144,400&family=Manrope:wght@300;400;500;600&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#08080E; --paper:#0E0E16; --card:#111119; --elev:#13131F;
+    --rule:#1A1A24; --rule-soft:rgba(255,255,255,.045);
+    --text:#E8E8EF; --body:#AAAAAA; --meta:#666; --dim:#44444C;
+    --amber:#F59E0B; --amber-warm:#E0842A; --amber-ink:#D97706;
+    --amber-soft:rgba(245,158,11,.12);
+    --green:#22C55E; --rose:#F43F5E;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{background:#030306;color:var(--text);font-family:'Manrope',sans-serif;min-height:100%}
+  body{padding:48px 24px;display:flex;flex-direction:column;align-items:center;gap:40px}
+
+  /* Page caption */
+  .caption{max-width:720px;text-align:center}
+  .caption .kicker{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:6px;color:var(--amber);text-transform:uppercase}
+  .caption h1{font-family:'Fraunces',serif;font-optical-sizing:auto;font-variation-settings:"SOFT" 100,"WONK" 1;font-size:60px;font-weight:400;letter-spacing:-1px;margin-top:4px;line-height:1.05}
+  .caption h1 em{font-style:italic;color:var(--amber);font-variation-settings:"WONK" 1}
+  .caption p{color:#777;font-size:14px;line-height:1.7;max-width:600px;margin:14px auto 0;font-weight:300}
+  .caption p b{color:#b5b5bd;font-weight:500}
+
+  /* Stage */
+  .stage{position:relative;width:360px;height:640px;flex-shrink:0}
+  .frame{
+    position:absolute;top:0;left:0;width:720px;height:1280px;
+    transform:scale(.5);transform-origin:top left;
+    background:var(--bg);
+    border:2px solid #131318;border-radius:26px;
+    overflow:hidden;
+    box-shadow:0 40px 80px rgba(0,0,0,.55), 0 0 0 1px #08080F inset;
+  }
+  /* Paper-like ambient texture — 1px hairline vignette */
+  .frame::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:
+      radial-gradient(ellipse at 50% 10%, rgba(245,158,11,.05), transparent 60%),
+      radial-gradient(ellipse at 50% 100%, rgba(244,63,94,.04), transparent 55%);
+  }
+  .screen{position:relative;width:100%;height:100%;display:flex;flex-direction:column;font-family:'Manrope',sans-serif}
+
+  /* Masthead: date line + tiny mode chip */
+  .mast{
+    padding:28px 32px 14px;display:flex;align-items:center;justify-content:space-between;
+    font-family:'DM Mono',monospace;font-size:12px;letter-spacing:3px;color:#6a6a74;
+  }
+  .mast .rule{flex:1;height:1px;background:var(--rule-soft);margin:0 16px}
+  .mode-chip{
+    display:inline-flex;align-items:center;gap:8px;
+    background:rgba(244,63,94,.12);color:#ffd7df;
+    padding:6px 12px;border-radius:20px;
+    border:1px solid rgba(244,63,94,.22);
+    font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;
+  }
+  .mode-chip .sq{width:6px;height:6px;border-radius:2px;background:var(--rose);box-shadow:0 0 6px rgba(244,63,94,.7)}
+
+  /* Hero — editorial daybook */
+  .hero{padding:4px 32px 20px;display:flex;flex-direction:column;gap:6px}
+  .greet-kicker{font-family:'DM Mono',monospace;font-size:12px;letter-spacing:4px;color:var(--amber);text-transform:uppercase}
+  .greet{
+    font-family:'Fraunces',serif;
+    font-variation-settings:"SOFT" 100,"WONK" 1,"opsz" 80;
+    font-weight:400;font-size:84px;line-height:.98;letter-spacing:-2px;color:#ECECEE;
+  }
+  .greet em{font-style:italic;color:var(--amber);font-variation-settings:"WONK" 1}
+  .sub{
+    display:flex;align-items:center;gap:16px;margin-top:10px;
+    font-family:'Manrope',sans-serif;font-weight:300;font-size:18px;color:#9a9aa2;letter-spacing:.2px
+  }
+  .sub .dot{width:4px;height:4px;border-radius:50%;background:#3b3b44}
+
+  /* Orb floats to the right of the greeting, integrated — not a hero on its own */
+  .hero-row{display:flex;align-items:flex-start;gap:16px;margin-top:16px}
+  .hero-txt{flex:1;min-width:0}
+  .orb-wrap{
+    position:relative;flex-shrink:0;width:150px;height:150px;margin-top:6px;
+    display:grid;place-items:center;
+  }
+  .orb-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-96deg)}
+  .orb-wrap .track{fill:none;stroke:rgba(255,255,255,.045);stroke-width:2.5}
+  .orb-wrap .fill{
+    fill:none;stroke:var(--amber);stroke-width:2.5;stroke-linecap:round;
+    stroke-dasharray:460;stroke-dashoffset:160;
+    filter:drop-shadow(0 0 6px rgba(245,158,11,.25));
+    animation:arcbreath 6s ease-in-out infinite alternate;
+  }
+  @keyframes arcbreath{from{stroke-dashoffset:200}to{stroke-dashoffset:110}}
+  .orb{
+    width:110px;height:110px;border-radius:50%;
+    background:radial-gradient(circle at 38% 30%,#FFCB70 0%,#F59E0B 44%,#9A6308 100%);
+    box-shadow:0 0 50px rgba(245,158,11,.3),0 0 100px rgba(245,158,11,.1),inset 0 -8px 16px rgba(0,0,0,.35),inset 0 5px 12px rgba(255,255,255,.2);
+    animation:orbfloat 5s ease-in-out infinite;
+    position:relative;
+  }
+  @keyframes orbfloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+
+  /* Diary entry — agent card as narrative */
+  .entry{
+    margin:8px 32px 0;padding:22px 24px;
+    background:var(--elev);border:1px solid var(--rule);
+    border-radius:22px;
+    position:relative;
+  }
+  .entry::before{
+    content:"";position:absolute;top:0;left:24px;right:24px;height:1px;
+    background:linear-gradient(90deg,transparent,var(--amber),transparent);
+    opacity:.5;
+  }
+  .entry-top{
+    display:flex;align-items:center;justify-content:space-between;
+    font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2.5px;color:#7d7d87
+  }
+  .entry-top .live{display:inline-flex;align-items:center;gap:8px}
+  .entry-top .live .dot{
+    width:7px;height:7px;border-radius:50%;background:var(--rose);
+    box-shadow:0 0 0 0 rgba(244,63,94,.55);animation:pulse 2s ease-out infinite;
+  }
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(244,63,94,.55)}100%{box-shadow:0 0 0 9px rgba(244,63,94,0)}}
+  .entry-body{
+    font-family:'Fraunces',serif;font-optical-sizing:auto;
+    font-variation-settings:"SOFT" 100,"opsz" 14;
+    font-weight:400;font-size:22px;line-height:1.35;color:#DCDCE2;margin-top:10px;
+  }
+  .entry-body em{color:var(--amber);font-style:italic;font-variation-settings:"WONK" 1}
+  .entry-foot{
+    display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:14px;
+    border-top:1px dashed rgba(255,255,255,.05);
+    font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;color:#61616a;
+  }
+  .entry-foot .link{color:var(--amber);letter-spacing:3px}
+
+  /* Feed — chronological single column, no cards */
+  .feed{margin:10px 32px 0;padding-top:2px}
+  .feed-title{
+    font-family:'DM Mono',monospace;font-size:11px;letter-spacing:4px;color:#5c5c66;text-transform:uppercase;
+    display:flex;align-items:center;gap:12px;margin-bottom:4px;
+  }
+  .feed-title::after{content:"";flex:1;height:1px;background:var(--rule-soft)}
+  .feed-row{
+    display:flex;align-items:baseline;gap:16px;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.04);
+  }
+  .feed-row:last-child{border-bottom:0}
+  .feed-time{font-family:'DM Mono',monospace;font-size:12px;color:#5c5c66;letter-spacing:1px;min-width:52px}
+  .feed-tag{
+    display:inline-block;padding:2px 8px;border-radius:4px;
+    font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;
+  }
+  .feed-tag.note{color:var(--amber);background:rgba(245,158,11,.08)}
+  .feed-tag.chat{color:#89b0ff;background:rgba(59,130,246,.1)}
+  .feed-body{flex:1;min-width:0}
+  .feed-body .t{font-family:'Fraunces',serif;font-size:18px;font-weight:400;color:#D2D2D8;line-height:1.35;font-variation-settings:"SOFT" 100,"opsz" 14}
+  .feed-body .s{font-size:12px;color:#5a5a63;margin-top:2px;font-weight:300}
+
+  /* Inline actions as margin-style bullets at the bottom of feed */
+  .side-acts{display:flex;gap:14px;margin:14px 32px 0}
+  .act{
+    flex:1;padding:12px 14px;border:1px solid var(--rule);border-radius:14px;
+    background:rgba(255,255,255,.012);
+    display:flex;align-items:center;gap:10px;
+  }
+  .act .i{width:30px;height:30px;border-radius:8px;background:var(--amber-soft);color:var(--amber);display:grid;place-items:center}
+  .act .i svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8}
+  .act .l{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;color:#8c8c95}
+
+  /* Bottom: single merged bar — pill flush with nav underline */
+  .dock{
+    margin-top:auto;padding:14px 32px 18px;display:flex;flex-direction:column;gap:10px;
+    border-top:1px solid var(--rule-soft);
+    background:linear-gradient(180deg,transparent,rgba(8,8,14,.8));
+  }
+  .pill{
+    display:flex;align-items:center;gap:12px;
+    background:#0D0D15;border:1px solid #1A1A24;border-radius:30px;padding:6px 6px 6px 22px;height:54px;
+  }
+  .pill .hint{
+    flex:1;font-family:'Fraunces',serif;font-style:italic;font-size:18px;color:#4f4f58;font-weight:400;
+    font-variation-settings:"SOFT" 100,"opsz" 14;letter-spacing:.2px
+  }
+  .pill .mic{
+    width:44px;height:44px;border-radius:50%;
+    background:linear-gradient(140deg,#FFC75A,#F59E0B 60%,#C17009);
+    display:grid;place-items:center;color:#0a0a0a;
+    box-shadow:0 4px 16px rgba(245,158,11,.28),inset 0 1px 0 rgba(255,255,255,.35);
+  }
+  .pill .mic svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2}
+
+  .nav{display:flex;gap:4px}
+  .tab{
+    flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 0;
+    font-family:'DM Mono',monospace;font-size:11px;letter-spacing:2px;color:#3c3c44;
+    position:relative;
+  }
+  .tab svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .tab.on{color:var(--amber)}
+  .tab.on::after{
+    content:"";position:absolute;top:-4px;width:24px;height:3px;border-radius:2px;background:var(--amber);
+  }
+
+  /* Annotations */
+  .layout{display:flex;gap:40px;align-items:flex-start}
+  .notes{max-width:340px;font-size:13px;color:#888;line-height:1.7;font-weight:300}
+  .notes h3{font-family:'Fraunces',serif;font-size:32px;font-weight:400;color:var(--text);margin-bottom:6px;letter-spacing:-.5px;font-variation-settings:"SOFT" 100}
+  .notes h3 .num{font-family:'DM Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--amber);display:block;margin-bottom:4px;text-transform:uppercase}
+  .notes ul{list-style:none;margin-top:14px;display:flex;flex-direction:column;gap:14px}
+  .notes li{padding-left:18px;position:relative}
+  .notes li::before{content:"";position:absolute;left:0;top:10px;width:10px;height:1px;background:var(--amber)}
+  .notes li b{color:#E8E8EF;font-weight:500}
+  .notes .lvgl{margin-top:24px;padding:14px 16px;background:rgba(245,158,11,.04);border:1px solid rgba(245,158,11,.15);border-radius:12px;font-family:'DM Mono',monospace;font-size:11px;color:#9a9aa3;line-height:1.8}
+  .notes .lvgl .k{color:var(--amber)}
+</style>
+</head>
+<body>
+
+<div class="caption">
+  <div class="kicker">Direction B · Almanac</div>
+  <h1>A <em>daybook</em> that listens.</h1>
+  <p>Warm, editorial, slow. The tablet opens like a page in a quiet book. The orb recedes into the hero — <b>not a centerpiece, a companion</b>. Time is handled by a large variable serif; activity is a diary entry, not a card stack. The voice is there, but it's not shouting at you.</p>
+</div>
+
+<div class="layout">
+  <div class="stage">
+    <div class="frame">
+      <div class="screen">
+
+        <!-- Masthead -->
+        <div class="mast">
+          <span>WED · APR 16</span>
+          <div class="rule"></div>
+          <div class="mode-chip"><span class="sq"></span>CLAW</div>
+          <div class="rule" style="max-width:40px"></div>
+          <span>87%</span>
+        </div>
+
+        <!-- Hero -->
+        <div class="hero">
+          <div class="hero-row">
+            <div class="hero-txt">
+              <div class="greet-kicker">Afternoon</div>
+              <div class="greet">Hello,<br><em>Emile</em>.</div>
+              <div class="sub"><span>14:32</span><span class="dot"></span><span>Two things moved.</span></div>
+            </div>
+            <div class="orb-wrap">
+              <svg viewBox="0 0 150 150"><circle class="track" cx="75" cy="75" r="73"/><circle class="fill" cx="75" cy="75" r="73"/></svg>
+              <div class="orb"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Diary entry -->
+        <div class="entry">
+          <div class="entry-top">
+            <span class="live"><span class="dot"></span>HEARTBEAT · 2m ago</span>
+            <span>OPEN →</span>
+          </div>
+          <div class="entry-body">
+            I scanned your inbox — <em>three replies</em> were waiting. I've drafted one to Aisha and queued the morning digest for when you're ready.
+          </div>
+          <div class="entry-foot">
+            <span>3 DONE · 1 WIP · 1 QUEUED</span>
+            <span class="link">READ MORE</span>
+          </div>
+        </div>
+
+        <!-- Feed -->
+        <div class="feed">
+          <div class="feed-title">EARLIER TODAY</div>
+          <div class="feed-row">
+            <div class="feed-time">11:42</div>
+            <div class="feed-tag note">NOTE</div>
+            <div class="feed-body">
+              <div class="t">TinkerClaw roadmap — Phase 2 outline</div>
+              <div class="s">voice · 847 words</div>
+            </div>
+          </div>
+          <div class="feed-row">
+            <div class="feed-time">10:15</div>
+            <div class="feed-tag chat">CHAT</div>
+            <div class="feed-body">
+              <div class="t">"Compare AirPods vs Sony XM5"</div>
+              <div class="s">Cloud · Claude Sonnet</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inline actions -->
+        <div class="side-acts">
+          <div class="act"><div class="i"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="l">CAMERA</div></div>
+          <div class="act"><div class="i"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg></div><div class="l">FILES</div></div>
+          <div class="act"><div class="i"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg></div><div class="l">MEMORY</div></div>
+        </div>
+
+        <!-- Dock -->
+        <div class="dock">
+          <div class="pill">
+            <span class="hint">what's on your mind?</span>
+            <div class="mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></div>
+          </div>
+          <div class="nav">
+            <div class="tab on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z"/></svg>HOME</div>
+            <div class="tab"><svg viewBox="0 0 24 24"><path d="M5 4h12l4 4v12H5z"/><path d="M9 10h8M9 14h6"/></svg>NOTES</div>
+            <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></svg>CHAT</div>
+            <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>SETTINGS</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h3><span class="num">NOTES · 02</span>IA principles</h3>
+    <ul>
+      <li><b>Language, not cards.</b> The agent speaks in first person: "I scanned your inbox…". Typography does the emotional work.</li>
+      <li><b>Orb as companion.</b> 110px, off-center — part of the hero, not hoarding it. The big presence is the <i>greeting</i>.</li>
+      <li><b>Feed is a stream.</b> Two compact rows with time + tag + title. No cards, no subtitles cluttering. Scroll-able underneath.</li>
+      <li><b>Three verbs at the edge.</b> Camera / Files / Memory sit as thin pill-rows — affordances, not hero buttons.</li>
+      <li><b>Single bottom dock.</b> Pill + nav share 124px but feel like one object thanks to the matching top rule.</li>
+    </ul>
+
+    <div class="lvgl">
+      <span class="k">▸ Trade-off</span><br>
+      Fraunces italic is pretty but NOT on-device — on Tab5 we use Montserrat Bold 48 for the greeting (still distinctive via size + weight contrast, no serif).<br>
+      <span class="k">▸ LVGL budget</span> ~44 obj (smaller than A)<br>
+      <span class="k">▸ Risk</span> greeting-first IA depends on a named user — fallback "Good afternoon" if no name stored.
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

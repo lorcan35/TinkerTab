@@ -1,29 +1,43 @@
+/**
+ * chat_header — composite header widget (chat v4·C Ambient).
+ *
+ * Layout (720 × 96):
+ *   [← 44]  Chat ▾         [mode chip 44h radius-22]  [+ 44]
+ * Followed by a 140 × 2 amber accent bar at y=96 (color inherits the
+ * session's mode tint via chat_header_set_accent_color).
+ *
+ * Reusable by Notes / voice overlay (pass hide_chip / hide_plus later).
+ * Tokens sourced from ui_theme.h + config.h.
+ */
 #pragma once
 
 #include "lvgl.h"
 #include <stdint.h>
 
-typedef struct {
-    lv_obj_t *container;     /* horizontal flex row */
-    lv_obj_t *back_btn;      /* back arrow (left) */
-    lv_obj_t *title;         /* screen title (flex-grow) */
-    lv_obj_t *status_dot;    /* connection indicator dot */
-    lv_obj_t *status_label;  /* "Ready" / "Processing..." */
-    lv_obj_t *action_btn;    /* optional right button (+ for new chat) */
-    lv_obj_t *mode_badge;    /* mode indicator (right) */
-} chat_header_t;
+typedef struct chat_header chat_header_t;
 
-/**
- * Create a reusable header widget. Returns heap-allocated struct (caller frees on destroy).
- * @param parent      LVGL parent object
- * @param title       Screen title ("Chat", "Notes", etc.)
- * @param accent_color Mode accent color (hex)
- * @param show_action true to show + button
- */
-chat_header_t *chat_header_create(lv_obj_t *parent, const char *title,
-                                   uint32_t accent_color, bool show_action);
+typedef void (*chat_header_evt_cb_t)(void *user_data);
 
-void chat_header_set_status(chat_header_t *hdr, const char *text, bool connected);
-void chat_header_set_mode(chat_header_t *hdr, const char *mode_name, uint32_t color);
-void chat_header_set_back_cb(chat_header_t *hdr, lv_event_cb_t cb, void *user_data);
-void chat_header_set_action_cb(chat_header_t *hdr, lv_event_cb_t cb, void *user_data);
+/** Create the header at the top of `parent`. `title` may be NULL (defaults to "Chat"). */
+chat_header_t *chat_header_create(lv_obj_t *parent, const char *title);
+
+void chat_header_destroy(chat_header_t *h);
+
+/** Set title label (used when drawer opens -> "Conversations"). */
+void chat_header_set_title(chat_header_t *h, const char *title);
+
+/** Paint the mode chip + sub-label from (voice_mode, llm_model).
+ *  Also repaints the accent bar in the matching mode color. */
+void chat_header_set_mode(chat_header_t *h, uint8_t voice_mode, const char *llm_model);
+
+/** Override the 140×2 accent bar color. */
+void chat_header_set_accent_color(chat_header_t *h, uint32_t hex);
+
+/** Flip the chevron glyph. Chat spec §4.2: down = closed, up = open. */
+void chat_header_set_chevron_open(chat_header_t *h, bool open);
+
+/* Event wiring */
+void chat_header_on_back(chat_header_t *h, chat_header_evt_cb_t cb, void *ud);
+void chat_header_on_chevron(chat_header_t *h, chat_header_evt_cb_t cb, void *ud);
+void chat_header_on_plus(chat_header_t *h, chat_header_evt_cb_t cb, void *ud);
+void chat_header_on_mode_long_press(chat_header_t *h, chat_header_evt_cb_t cb, void *ud);

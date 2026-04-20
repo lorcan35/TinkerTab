@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TinkerTab v4 — Direction C: Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Archivo+Black&family=Space+Grotesk:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#08080E; --card:#0E0E18; --elev:#12121E; --line:#1C1C28;
+    --text:#E8E8EF; --body:#B0B0B8; --meta:#6a6a74; --dim:#3A3A42;
+    --amber:#F59E0B; --amber-hot:#FFB637; --amber-shadow:rgba(245,158,11,.22);
+    --rose:#F43F5E; --green:#22C55E; --red:#EF4444;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{background:#030306;color:var(--text);font-family:'Space Grotesk',sans-serif;min-height:100%}
+  body{padding:48px 24px;display:flex;flex-direction:column;align-items:center;gap:40px}
+
+  .caption{max-width:720px;text-align:center}
+  .caption .kicker{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:6px;color:var(--amber);text-transform:uppercase}
+  .caption h1{font-family:'Archivo Black',sans-serif;font-size:48px;font-weight:900;letter-spacing:-1.5px;margin-top:6px;text-transform:uppercase;color:#F0F0F4}
+  .caption h1 .amb{color:var(--amber)}
+  .caption p{color:#787882;font-size:14px;line-height:1.65;max-width:620px;margin:14px auto 0;font-weight:300}
+  .caption p b{color:#c2c2ca;font-weight:500}
+
+  /* Stage */
+  .stage{position:relative;width:360px;height:640px;flex-shrink:0}
+  .frame{
+    position:absolute;top:0;left:0;width:720px;height:1280px;
+    transform:scale(.5);transform-origin:top left;
+    background:var(--bg);
+    border:2px solid #131318;border-radius:22px;overflow:hidden;
+    box-shadow:0 40px 80px rgba(0,0,0,.55), 0 0 0 1px #08080F inset;
+  }
+  /* Faint grid texture */
+  .frame::before{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.012) 1px, transparent 1px);
+    background-size:36px 36px,36px 36px;
+    mask-image:radial-gradient(ellipse at 50% 30%, black, transparent 80%);
+  }
+  .screen{position:relative;width:100%;height:100%;display:flex;flex-direction:column}
+
+  /* Telemetry status strip */
+  .tele{
+    height:42px;padding:0 20px;border-bottom:1px solid var(--line);
+    display:grid;grid-template-columns:auto 1fr auto auto auto;gap:16px;align-items:center;
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:1.8px;color:#6a6a74;text-transform:uppercase;
+  }
+  .tele .cell{display:flex;align-items:center;gap:8px}
+  .tele .k{color:#3f3f48}
+  .tele .v{color:#d0d0d8}
+  .tele .mode{
+    color:var(--rose);letter-spacing:2.2px;font-weight:500;display:inline-flex;align-items:center;gap:8px;
+    padding:4px 10px;background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.24);border-radius:4px;
+  }
+  .tele .mode .sq{width:7px;height:7px;background:var(--rose);box-shadow:0 0 8px var(--rose)}
+  .tele .ok{color:var(--green)}
+  .tele .bat{color:var(--amber)}
+
+  /* Hero — orb dominant, numeric time on mono */
+  .hero{
+    padding:30px 20px 20px;display:flex;gap:28px;align-items:center;
+    border-bottom:1px solid var(--line);
+    position:relative;
+  }
+  .orb-wrap{position:relative;width:240px;height:240px;flex-shrink:0;display:grid;place-items:center}
+  .orb-wrap svg{position:absolute;inset:0;width:100%;height:100%;transform:rotate(-96deg)}
+  .orb-wrap .track{fill:none;stroke:rgba(255,255,255,.035);stroke-width:4}
+  .orb-wrap .fill{
+    fill:none;stroke:var(--amber);stroke-width:4;stroke-linecap:butt;
+    stroke-dasharray:753;stroke-dashoffset:260;
+    filter:drop-shadow(0 0 6px var(--amber-shadow));
+    animation:arc-fill 8s ease-in-out infinite alternate;
+  }
+  @keyframes arc-fill{
+    from{stroke-dashoffset:320}
+    to{stroke-dashoffset:180}
+  }
+  /* Tick marks on the outer ring — hand-drawn in HTML, would be lv_canvas on device (keep simple) */
+  .ticks{position:absolute;inset:0;pointer-events:none}
+  .ticks i{
+    position:absolute;left:50%;top:0;width:2px;height:8px;background:rgba(255,255,255,.08);
+    transform-origin:1px 120px;
+  }
+  .orb{
+    width:168px;height:168px;border-radius:50%;
+    background:radial-gradient(circle at 36% 28%,#FFCA5E 0%,#F59E0B 44%,#7A4A06 100%);
+    box-shadow:
+      0 0 80px rgba(245,158,11,.35),
+      0 0 160px rgba(245,158,11,.14),
+      inset 0 -12px 24px rgba(0,0,0,.35),
+      inset 0 8px 16px rgba(255,255,255,.2);
+    position:relative;animation:orbfloat 4.5s ease-in-out infinite;
+  }
+  @keyframes orbfloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+  .orb::before{
+    content:"";position:absolute;inset:12px;border-radius:50%;
+    background:radial-gradient(circle at 40% 32%,rgba(255,255,255,.18),transparent 55%);
+  }
+  .hero .txt{flex:1;min-width:0}
+  .hero .row-k{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3.5px;color:var(--amber);text-transform:uppercase;margin-bottom:4px}
+  .hero .time{
+    font-family:'Archivo Black',sans-serif;font-weight:900;
+    font-size:108px;line-height:.88;letter-spacing:-4px;color:#F4F4F8;
+  }
+  .hero .time span.c{color:var(--amber)}
+  .hero .date{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:2px;color:#6a6a74;margin-top:14px;text-transform:uppercase}
+  .hero .greet{font-family:'Space Grotesk',sans-serif;font-size:16px;color:#9a9aa3;margin-top:6px;font-weight:300}
+  .hero .greet b{color:#d0d0d8;font-weight:500}
+
+  /* STACK — agent orchestration as terminal stack */
+  .section{padding:18px 20px;border-bottom:1px solid var(--line)}
+  .sec-head{
+    display:flex;align-items:center;gap:12px;margin-bottom:12px;
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--amber);text-transform:uppercase;
+  }
+  .sec-head::before{content:"█";color:var(--amber);font-size:12px}
+  .sec-head .meta{margin-left:auto;color:#5a5a63;letter-spacing:2px}
+  .sec-head .meta .pulse{display:inline-block;width:7px;height:7px;background:var(--rose);margin-right:6px;vertical-align:middle;box-shadow:0 0 0 0 rgba(244,63,94,.55);animation:pulse 1.8s ease-out infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(244,63,94,.55)}100%{box-shadow:0 0 0 9px rgba(244,63,94,0)}}
+
+  .stack{display:flex;flex-direction:column;gap:6px}
+  .op{
+    display:grid;grid-template-columns:18px 1fr auto 120px;gap:12px;align-items:center;
+    padding:10px 12px;background:var(--card);border:1px solid var(--line);
+    border-left:3px solid transparent;border-radius:2px;
+    font-family:'JetBrains Mono',monospace;font-size:14px;
+  }
+  .op .s{font-size:12px}
+  .op.done{border-left-color:var(--green)}
+  .op.wip{border-left-color:var(--amber)}
+  .op.wait{border-left-color:var(--dim);opacity:.7}
+  .op .s{color:#5a5a63}
+  .op.done .s{color:var(--green)}
+  .op.wip .s{color:var(--amber)}
+  .op .label{font-family:'Space Grotesk',sans-serif;font-size:15px;color:#d2d2d8;font-weight:400}
+  .op .t{font-family:'JetBrains Mono',monospace;font-size:11px;color:#5a5a63;letter-spacing:1.5px;text-align:right}
+  .op .g{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+  .op .bar{flex:1;max-width:72px;height:4px;background:rgba(255,255,255,.05);border-radius:0}
+  .op .bar>i{display:block;height:100%;background:var(--amber)}
+  .op .pct{font-size:11px;color:var(--amber);letter-spacing:1px;min-width:34px;text-align:right}
+
+  .sig-caption{
+    margin-top:12px;padding:8px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;
+    color:#6a6a74;letter-spacing:1.5px;background:rgba(245,158,11,.04);border-left:2px solid var(--amber);
+  }
+  .sig-caption b{color:#c8c8d0;font-weight:500}
+
+  /* LOG — minimal single-row strip */
+  .log{padding:14px 20px;display:flex;flex-direction:column;gap:0;border-bottom:1px solid var(--line)}
+  .log-row{
+    display:grid;grid-template-columns:60px 54px 1fr auto;gap:16px;align-items:center;padding:10px 0;
+    font-family:'JetBrains Mono',monospace;font-size:12px;
+  }
+  .log-row + .log-row{border-top:1px solid rgba(255,255,255,.035)}
+  .log-row .t{color:#5a5a63;letter-spacing:1px}
+  .log-row .tag{letter-spacing:2px;text-align:center;padding:3px 6px;border-radius:2px;font-weight:500}
+  .log-row .tag.note{color:var(--amber);background:rgba(245,158,11,.08)}
+  .log-row .tag.chat{color:#8eb3ff;background:rgba(59,130,246,.1)}
+  .log-row .tit{font-family:'Space Grotesk',sans-serif;font-size:15px;color:#d2d2d8;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .log-row .chev{color:#40404a}
+
+  /* Hardware toggles — 3 actions along the bottom */
+  .toggles{padding:14px 20px 0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .tgl{
+    display:flex;align-items:center;gap:10px;
+    padding:12px 12px;background:var(--card);border:1px solid var(--line);border-radius:4px;
+  }
+  .tgl .i{width:32px;height:32px;border-radius:2px;background:rgba(245,158,11,.1);color:var(--amber);display:grid;place-items:center;flex-shrink:0}
+  .tgl .i svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.8}
+  .tgl .l{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:2px;color:#9a9aa3;text-transform:uppercase}
+
+  /* Bottom chrome: pill + segmented nav */
+  .dock{margin-top:auto;padding:14px 20px 16px;display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--line);background:linear-gradient(180deg,transparent,rgba(8,8,14,.5))}
+  .pill{display:flex;align-items:center;gap:12px;background:#0B0B14;border:1px solid var(--line);border-radius:4px;padding:6px 6px 6px 16px;height:56px}
+  .pill .hint{flex:1;font-family:'JetBrains Mono',monospace;font-size:14px;color:#42424a;letter-spacing:1.2px;text-transform:uppercase}
+  .pill .hint .cur{display:inline-block;width:8px;height:16px;background:var(--amber);vertical-align:-2px;margin-right:6px;animation:blink 1.2s steps(1) infinite}
+  @keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}
+  .pill .mic{width:44px;height:44px;background:linear-gradient(140deg,#FFC75A,#F59E0B 60%,#B9650A);display:grid;place-items:center;color:#0a0a0a;border-radius:2px;box-shadow:0 6px 20px rgba(245,158,11,.3),inset 0 1px 0 rgba(255,255,255,.32)}
+  .pill .mic svg{width:19px;height:19px;stroke:currentColor;fill:none;stroke-width:2}
+
+  .nav{display:grid;grid-template-columns:repeat(4,1fr);background:#0B0B14;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+  .tab{
+    padding:10px 0;display:flex;flex-direction:column;align-items:center;gap:4px;
+    font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2.5px;color:#3c3c44;
+    border-right:1px solid var(--line);
+  }
+  .tab:last-child{border-right:0}
+  .tab svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .tab.on{color:var(--amber);background:rgba(245,158,11,.08);position:relative}
+  .tab.on::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:var(--amber)}
+
+  /* Notes */
+  .layout{display:flex;gap:40px;align-items:flex-start}
+  .notes{max-width:340px;font-size:13px;color:#888;line-height:1.7;font-weight:300}
+  .notes h3{font-family:'Archivo Black',sans-serif;font-size:30px;font-weight:900;color:var(--text);margin-bottom:6px;letter-spacing:-.5px;text-transform:uppercase}
+  .notes h3 .num{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:var(--amber);display:block;margin-bottom:4px}
+  .notes ul{list-style:none;margin-top:14px;display:flex;flex-direction:column;gap:14px}
+  .notes li{padding-left:18px;position:relative}
+  .notes li::before{content:"▸";position:absolute;left:0;top:1px;color:var(--amber);font-size:10px}
+  .notes li b{color:#E8E8EF;font-weight:500}
+  .notes .lvgl{margin-top:24px;padding:14px 16px;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.18);border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#9a9aa3;line-height:1.8}
+  .notes .lvgl .k{color:var(--amber)}
+</style>
+</head>
+<body>
+
+<div class="caption">
+  <div class="kicker">Direction C · Console</div>
+  <h1>A <span class="amb">serious piece</span> of gear.</h1>
+  <p>Dense, grid-aligned, telemetry-forward. The tablet wears its wiring — monospace everywhere, sharp corners, amber as a signal color. Agent activity is a <b>stack trace</b> you can read at a glance. For users who like their tools to look like tools.</p>
+</div>
+
+<div class="layout">
+  <div class="stage">
+    <div class="frame">
+      <div class="screen">
+
+        <!-- Telemetry bar -->
+        <div class="tele">
+          <div class="cell mode"><span class="sq"></span>CLAW</div>
+          <div class="cell"><span class="k">DRAGON</span><span class="v ok">LINK·OK</span></div>
+          <div class="cell"><span class="k">WIFI</span><span class="v">2.4G</span></div>
+          <div class="cell"><span class="k">BAT</span><span class="v bat">87%</span></div>
+          <div class="cell"><span class="k">UP</span><span class="v">66m</span></div>
+        </div>
+
+        <!-- Hero -->
+        <div class="hero">
+          <div class="orb-wrap">
+            <svg viewBox="0 0 240 240"><circle class="track" cx="120" cy="120" r="118"/><circle class="fill" cx="120" cy="120" r="118"/></svg>
+            <div class="ticks">
+              <i style="transform:rotate(0deg)"></i><i style="transform:rotate(30deg)"></i><i style="transform:rotate(60deg)"></i>
+              <i style="transform:rotate(90deg)"></i><i style="transform:rotate(120deg)"></i><i style="transform:rotate(150deg)"></i>
+              <i style="transform:rotate(180deg)"></i><i style="transform:rotate(210deg)"></i><i style="transform:rotate(240deg)"></i>
+              <i style="transform:rotate(270deg)"></i><i style="transform:rotate(300deg)"></i><i style="transform:rotate(330deg)"></i>
+            </div>
+            <div class="orb"></div>
+          </div>
+          <div class="txt">
+            <div class="row-k">WED · APR 16</div>
+            <div class="time">14<span class="c">:</span>32</div>
+            <div class="date">LOCAL · UTC+04</div>
+            <div class="greet">Hey <b>Emile</b> — 2 events while away.</div>
+          </div>
+        </div>
+
+        <!-- STACK: agent -->
+        <div class="section">
+          <div class="sec-head">AGENT · STACK<span class="meta"><span class="pulse"></span>LIVE · HEARTBEAT</span></div>
+          <div class="stack">
+            <div class="op done"><div class="s">✓</div><div class="label">inbox_scan()</div><div class="t">234MS</div><div class="g">  <span class="pct" style="color:var(--green)">3 FND</span></div></div>
+            <div class="op wip"><div class="s">◐</div><div class="label">draft_reply(aisha)</div><div class="t">RUNNING</div><div class="g"><div class="bar"><i style="width:70%"></i></div><span class="pct">70%</span></div></div>
+            <div class="op wait"><div class="s">○</div><div class="label">news_digest()</div><div class="t">ETA 1m</div><div class="g"><span class="pct" style="color:#5a5a63">QUEUE</span></div></div>
+          </div>
+          <div class="sig-caption"><b>morning_check_in.run</b> — TAP TO OPEN</div>
+        </div>
+
+        <!-- LOG: recent -->
+        <div class="log">
+          <div class="sec-head" style="padding:0;margin-bottom:8px">LOG · RECENT</div>
+          <div class="log-row"><span class="t">11:42</span><span class="tag note">NOTE</span><span class="tit">TinkerClaw roadmap — Phase 2 outline</span><span class="chev">›</span></div>
+          <div class="log-row"><span class="t">10:15</span><span class="tag chat">CHAT</span><span class="tit">"Compare AirPods vs XM5"</span><span class="chev">›</span></div>
+        </div>
+
+        <!-- Toggles -->
+        <div class="toggles">
+          <div class="tgl"><div class="i"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-2h6l2 2h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></div><div class="l">CAM</div></div>
+          <div class="tgl"><div class="i"><svg viewBox="0 0 24 24"><path d="M3 7h6l2 2h10v10H3z"/></svg></div><div class="l">FILE</div></div>
+          <div class="tgl"><div class="i"><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg></div><div class="l">MEM</div></div>
+        </div>
+
+        <!-- Dock -->
+        <div class="dock">
+          <div class="pill">
+            <span class="hint"><span class="cur"></span>CMD // ASK, DICTATE, OR SPEAK</span>
+            <div class="mic"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></div>
+          </div>
+          <div class="nav">
+            <div class="tab on"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z"/></svg>HOME</div>
+            <div class="tab"><svg viewBox="0 0 24 24"><path d="M5 4h12l4 4v12H5z"/><path d="M9 10h8M9 14h6"/></svg>NOTE</div>
+            <div class="tab"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H8l-4 4z"/></svg>CHAT</div>
+            <div class="tab"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>CFG</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h3><span class="num">NOTES · 03</span>IA principles</h3>
+    <ul>
+      <li><b>Telemetry on top.</b> Mode · Dragon · WiFi · Bat · Uptime. The device shows its wiring. Taps: mode chip cycles; Dragon cell opens diagnostics.</li>
+      <li><b>Orb still wins.</b> 168px with tick marks and a visible arc. The only "glowing" element — amber used sparingly elsewhere.</li>
+      <li><b>Agent as stack.</b> Function-call syntax (<i>inbox_scan()</i>, <i>draft_reply(aisha)</i>) with timing + progress. Reads like `ps` + `systemctl status`.</li>
+      <li><b>Log as log.</b> Two rows, each prefixed with a mono time and a colored tag. No cards at all.</li>
+      <li><b>Sharp corners.</b> 2-4px radii throughout. The round orb is the exception — and that's what makes it pop.</li>
+    </ul>
+
+    <div class="lvgl">
+      <span class="k">▸ LVGL fit</span><br>
+      All rectangles, no heavy shadow. Grid texture = <span class="k">optional</span>, can skip on device. Tick marks = lv_canvas or 12 lv_lines at 30° angles (small win, optional).<br>
+      <span class="k">▸ LVGL budget</span> ~52 obj · <span class="k">styles</span> s_style_tele_cell, s_style_op_row, s_style_log_row, s_style_tgl, s_style_pill_sharp<br>
+      <span class="k">▸ Risk</span> density may feel hostile on a voice-first product. Great for tinkerers, harder for normies (CLAUDE.md audience).
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

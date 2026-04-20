@@ -3,11 +3,18 @@ set(UI_SRCS
     "ui_splash.c" "ui_home.c" "ui_settings.c"
     "ui_camera.c" "ui_files.c" "ui_audio.c" "ui_keyboard.c" "ui_voice.c" "ui_wifi.c"
     "ui_chat.c" "ui_notes.c" "ui_feedback.c" "ui_agents.c" "ui_memory.c" "ui_focus.c" "ui_sessions.c"
+    "ui_mode_sheet.c"
+    "ui_nav_sheet.c"
+    "ui_onboarding.c"
     "chat_msg_store.c"
     "chat_header.c"
     "chat_input_bar.c"
     "chat_suggestions.c"
     "chat_msg_view.c"
+    "chat_session_drawer.c"
+    "fonts/fraunces_italic_32.c"
+    "fonts/fraunces_italic_22.c"
+    "fonts/jetbrains_mono_medium_14.c"
 )
 
 if(IDF_TARGET STREQUAL "linux")
@@ -29,6 +36,7 @@ else()
              "service_audio.c" "service_network.c" "service_dragon.c"
              "ui_core.c" ${UI_SRCS}
              "settings.c" "ota.c" "media_cache.c"
+             "widget_store.c"
         INCLUDE_DIRS "."
         REQUIRES tab5
                  esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer

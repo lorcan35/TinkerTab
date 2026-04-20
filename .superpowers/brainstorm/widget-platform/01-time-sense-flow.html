@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Time Sense · 5 states · 720×1280</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700;9..144,900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#08080E; --text:#EDEDEF; --body:#8A8A93; --meta:#4D4D56; --hair:#1C1C28;
+    --amber:#F59E0B; --amber-hot:#FFB637; --amber-deep:#7A4A06;
+    --emerald:#22C55E; --azure:#3B82F6; --rose:#F43F5E; --red:#EF4444;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+  html,body{background:#030305;color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;padding:56px 32px 100px}
+  .wrap{max-width:1800px;margin:0 auto}
+  .hero{max-width:980px;margin:0 auto 80px;text-align:center}
+  .kicker{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:6px;color:var(--amber);text-transform:uppercase}
+  h1{font-family:'Fraunces',serif;font-size:72px;font-weight:500;line-height:.98;letter-spacing:-2px;margin-top:22px}
+  h1 em{color:var(--amber);font-style:italic;font-weight:700}
+  .deck{color:#7a7a82;font-size:16px;line-height:1.75;max-width:680px;margin:26px auto 0;font-weight:300}
+  .deck b{color:#c0c0c8;font-weight:500}
+
+  /* frames */
+  .row{display:flex;gap:36px;flex-wrap:wrap;justify-content:center;align-items:flex-start;margin-top:20px}
+  .tile{display:flex;flex-direction:column;align-items:center;gap:18px;max-width:300px}
+  .flabel{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:3px;color:#55555d;text-transform:uppercase;display:flex;align-items:center;gap:10px}
+  .flabel .d{width:7px;height:7px;border-radius:50%;background:var(--amber)}
+  .flabel .em{color:#c0c0c8}
+  .stage{position:relative;width:300px;height:533px;flex-shrink:0}
+  .frame{position:absolute;top:0;left:0;width:720px;height:1280px;transform:scale(.417);transform-origin:top left;background:radial-gradient(ellipse at 50% 55%,#0B0B14 0%,#050509 100%);border:2px solid #12121A;border-radius:32px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px #08080F inset}
+  .screen{position:relative;width:100%;height:100%;overflow:hidden;font-family:'Inter',sans-serif}
+  .note{max-width:280px;margin-top:14px;color:#6a6a72;font-size:12px;line-height:1.65;font-family:'JetBrains Mono',monospace;letter-spacing:.5px;text-align:center}
+  .note b{color:var(--amber)}
+
+  /* topbar (sys + mode) shared across frames */
+  .sys{position:absolute;left:52px;top:52px;display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:17px;letter-spacing:3px;color:#8a8a93;text-transform:uppercase}
+  .sys .dot{width:8px;height:8px;border-radius:50%;background:var(--emerald);box-shadow:0 0 12px var(--emerald)}
+  .sys.red .dot{background:var(--red);box-shadow:0 0 12px var(--red)}
+  .icon-mark{position:absolute;right:52px;top:44px;display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+  .icon-mark .glyph{width:46px;height:46px;display:flex;align-items:center;justify-content:center;opacity:.78}
+  .icon-mark .glyph svg{width:100%;height:100%;stroke:#d8d8dc;stroke-width:2.2;fill:none}
+  .icon-mark .lbl{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:4px;color:#8a8a93;text-transform:uppercase}
+
+  /* central hero-text */
+  .hero-text{position:absolute;left:52px;right:52px;top:138px;text-align:center}
+  .hero-text .part{font-family:'Inter',sans-serif;font-size:56px;font-weight:500;letter-spacing:-1.4px;color:var(--text);line-height:1}
+  .hero-text .clock{margin-top:18px;font-family:'JetBrains Mono',monospace;font-size:34px;letter-spacing:10px;color:#8a8a93}
+  .hero-text .date{margin-top:14px;font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:5px;color:#55555d}
+
+  /* orb */
+  .orb-stage{position:absolute;left:50%;top:50%;width:500px;height:500px;transform:translate(-50%,-50%)}
+  .orb-halo{position:absolute;inset:-120px;border-radius:50%;pointer-events:none}
+  .orb-ring{position:absolute;border-radius:50%;pointer-events:none}
+  .orb-ring.r1{inset:-26px;border:1px solid rgba(245,158,11,.09)}
+  .orb-ring.r2{inset:-70px;border:1px solid rgba(245,158,11,.05)}
+  .orb-ring.r3{inset:-120px;border:1px solid rgba(245,158,11,.03)}
+  .orb{position:absolute;inset:0;border-radius:50%}
+
+  .orb.idle{background:radial-gradient(circle at 38% 30%,#FFE6A8 0%,#F59E0B 42%,#8E5506 100%);box-shadow:0 0 120px rgba(245,158,11,.35),0 0 240px rgba(245,158,11,.16),inset 0 -28px 60px rgba(0,0,0,.42),inset 0 16px 40px rgba(255,255,255,.14)}
+  .orb-halo.idle{background:radial-gradient(circle,rgba(245,158,11,.18) 0%,rgba(245,158,11,.04) 40%,transparent 72%)}
+
+  .orb.calm{background:radial-gradient(circle at 38% 30%,#DDFFC8 0%,#5BE18A 30%,#166C3A 100%);box-shadow:0 0 110px rgba(34,197,94,.28),inset 0 -28px 60px rgba(0,0,0,.42),inset 0 16px 40px rgba(255,255,255,.14)}
+  .orb-halo.calm{background:radial-gradient(circle,rgba(34,197,94,.22) 0%,rgba(34,197,94,.04) 40%,transparent 72%)}
+
+  .orb.approaching{background:radial-gradient(circle at 38% 30%,#FFC75A 0%,#F59E0B 42%,#7A4A06 100%);box-shadow:0 0 140px rgba(245,158,11,.48),inset 0 -28px 60px rgba(0,0,0,.42),inset 0 18px 40px rgba(255,255,255,.16)}
+  .orb-halo.approaching{background:radial-gradient(circle,rgba(245,158,11,.38) 0%,rgba(245,158,11,.08) 40%,transparent 72%)}
+
+  .orb.urgent{background:radial-gradient(circle at 38% 30%,#FF7E95 0%,#F43F5E 42%,#7A1428 100%);box-shadow:0 0 180px rgba(244,63,94,.55),0 0 360px rgba(244,63,94,.22),inset 0 -28px 60px rgba(0,0,0,.42),inset 0 18px 40px rgba(255,255,255,.2)}
+  .orb-halo.urgent{background:radial-gradient(circle,rgba(244,63,94,.45) 0%,rgba(244,63,94,.08) 40%,transparent 72%)}
+
+  .orb.done{background:radial-gradient(circle at 38% 30%,#BBFFCC 0%,#22C55E 42%,#0E5E2A 100%);box-shadow:0 0 90px rgba(34,197,94,.45),inset 0 -28px 60px rgba(0,0,0,.42),inset 0 16px 40px rgba(255,255,255,.16)}
+  .orb-halo.done{background:radial-gradient(circle,rgba(34,197,94,.32) 0%,rgba(34,197,94,.04) 40%,transparent 72%)}
+
+  .orb-small{width:360px;height:360px}
+  .orb-smallest{width:260px;height:260px}
+
+  /* subtle progress ring around orb */
+  .progring{position:absolute;inset:0;border-radius:50%;pointer-events:none}
+  .progring svg{width:100%;height:100%;transform:rotate(-90deg)}
+  .progring circle{fill:none;stroke-width:6;stroke-linecap:round}
+  .progring .bg{stroke:rgba(255,255,255,.04)}
+  .progring .fg{stroke:var(--amber)}
+
+  /* live caption (replaces home poem) */
+  .live-cap{position:absolute;left:52px;right:52px;bottom:200px;text-align:center}
+  .live-cap .kind{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:5px;color:var(--amber);text-transform:uppercase;margin-bottom:10px}
+  .live-cap .title{font-family:'Fraunces',serif;font-size:54px;font-weight:500;line-height:1;letter-spacing:-1.5px;color:var(--text)}
+  .live-cap .title em{font-style:italic;color:var(--amber)}
+  .live-cap .body{margin-top:18px;color:#c0c0c8;font-size:22px;line-height:1.4;font-weight:300}
+  .live-cap .body b{color:var(--text);font-weight:500}
+  .live-cap .body em{color:var(--amber);font-style:italic}
+
+  /* action affordance */
+  .action{position:absolute;left:52px;right:52px;bottom:100px;display:flex;justify-content:center}
+  .action .btn{font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:5px;color:var(--amber);text-transform:uppercase;padding:16px 32px;border:1px solid rgba(245,158,11,.32);border-radius:2px}
+  .action .btn.red{color:var(--red);border-color:rgba(239,68,68,.32)}
+  .action .btn.green{color:var(--emerald);border-color:rgba(34,197,94,.35)}
+  .action .hint{position:absolute;right:52px;bottom:56px;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:#45454c;text-transform:uppercase}
+
+  /* bottom progress bar (only DONE state shows the number) */
+  .prog-bar{position:absolute;left:52px;right:52px;bottom:180px;height:2px;background:rgba(255,255,255,.06)}
+  .prog-bar .f{position:absolute;left:0;top:0;bottom:0;background:var(--amber)}
+
+  /* completion stats */
+  .stats{position:absolute;left:52px;right:52px;bottom:98px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px}
+  .stat{text-align:center}
+  .stat .n{font-family:'JetBrains Mono',monospace;font-size:28px;color:var(--amber);letter-spacing:-.5px}
+  .stat .l{margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:3px;color:#55555d;text-transform:uppercase}
+
+  /* hairline band */
+  .band{position:absolute;left:0;right:0;height:1px;background:var(--hair)}
+
+  /* focus hint at very bottom */
+  .hint-bot{position:absolute;left:0;right:0;bottom:44px;text-align:center;font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:5px;color:#3a3a45;text-transform:uppercase}
+
+  /* ── states row ── */
+  .sec-head{padding:0 0 40px;border-bottom:1px solid rgba(255,255,255,.05);margin:80px 0 50px;max-width:1800px;margin-left:auto;margin-right:auto}
+  .sec-num{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:5px;color:var(--amber);text-transform:uppercase;margin-bottom:12px}
+  .sec-title{font-family:'Fraunces',serif;font-size:56px;font-weight:500;line-height:1;letter-spacing:-1.5px}
+  .sec-title em{color:var(--amber);font-style:italic;font-weight:700}
+  .sec-deck{color:#7a7a82;font-size:15px;line-height:1.7;max-width:800px;font-weight:300;margin-top:16px}
+  .sec-deck b{color:#c0c0c8;font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="hero">
+  <div class="kicker">TIME SENSE · THE REFERENCE SKILL</div>
+  <h1>The orb <em>feels time</em> with you.</h1>
+  <p class="deck">
+    A skill for ADHD brains. No numbers on screen (until the end). The orb's
+    <b>color + breathing rate</b> is the entire interface — calm at the start,
+    alive mid-flow, rose in the last minute. A short narrative line says what's
+    happening, not what's counting. Dragon does the reasoning; Tab5 renders it.
+    <br><br>
+    This is the <em>canonical v1 skill</em> — everything the widget platform
+    has to support fits inside it.
+  </p>
+</div>
+
+<div class="sec-head">
+  <div class="sec-num">◦ The five states</div>
+  <h2 class="sec-title">One skill, <em>five faces.</em></h2>
+  <p class="sec-deck">
+    Each state is a <code>widget_live</code> update — same slots, different <b>tone</b>, <b>progress</b>,
+    and <b>narrative</b>. On Tab5 the orb + copy + halo all shift in sync.
+    Dragon decides the tone based on time remaining, not Tab5 — the skill is still just
+    emitting state.
+  </p>
+</div>
+
+<div class="row">
+
+<!-- ═══════════════════════════════ 1 · IDLE ═══════════════════════════════ -->
+<div class="tile">
+  <div class="flabel"><span class="d" style="background:var(--amber)"></span>1 · IDLE <span class="em">&nbsp;no active widget</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;14:32</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 6 v6 l4 2"/></svg></div>
+      <div class="lbl">CLAW</div>
+    </div>
+    <div class="hero-text">
+      <div class="part">Afternoon</div>
+      <div class="clock">14 : 32</div>
+      <div class="date">FRI&nbsp;&nbsp;•&nbsp;&nbsp;APRIL 17</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-ring r3"></div><div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+      <div class="orb-halo idle"></div>
+      <div class="orb idle"></div>
+    </div>
+    <div class="live-cap">
+      <div class="body"><em>Earlier —</em> you asked about AirPods.<br>I saved the thread.</div>
+    </div>
+    <div class="hint-bot">FOCUS ⌄</div>
+  </div></div></div>
+  <div class="note">No widget active. Orb is its default <b>amber idle</b>. Poem area shows last note, exactly as before. <b>Widget platform is invisible until a skill speaks.</b></div>
+</div>
+
+<!-- ═══════════════════════════════ 2 · ACTIVE ═══════════════════════════════ -->
+<div class="tile">
+  <div class="flabel"><span class="d" style="background:var(--emerald)"></span>2 · ACTIVE <span class="em">&nbsp;calm flow</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;TIMER 38:14</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="1.5"/><path d="M9 7 V5 a2 2 0 0 1 2-2 h2 a2 2 0 0 1 2 2 V7"/></svg></div>
+      <div class="lbl">WORK</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+      <div class="orb-halo calm"></div>
+      <div class="orb calm"></div>
+      <div class="progring"><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="48"/><circle class="fg" cx="50" cy="50" r="48" stroke-dasharray="302" stroke-dashoffset="188" style="stroke:var(--emerald)"/></svg></div>
+    </div>
+    <div class="live-cap">
+      <div class="kind">Deep work</div>
+      <div class="title">You're <em>in it.</em></div>
+      <div class="body">38 minutes in.<br>Flow territory.</div>
+    </div>
+    <div class="action">
+      <div class="btn green">PAUSE</div>
+    </div>
+    <div class="hint-bot">HOLD ORB TO SPEAK</div>
+  </div></div></div>
+  <div class="note">Orb tint = <b>calm emerald</b>. Slow breathing anim (4 s inhale/exhale). Narrative replaces poem. Progress ring at 38 %. <b>No numeric countdown until the end.</b></div>
+</div>
+
+<!-- ═══════════════════════════════ 3 · APPROACHING ═══════════════════════════════ -->
+<div class="tile">
+  <div class="flabel"><span class="d" style="background:var(--amber)"></span>3 · APPROACHING <span class="em">&nbsp;past the hour</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;TIMER 07:46</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="1.5"/><path d="M9 7 V5 a2 2 0 0 1 2-2 h2 a2 2 0 0 1 2 2 V7"/></svg></div>
+      <div class="lbl">WORK</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+      <div class="orb-halo approaching"></div>
+      <div class="orb approaching"></div>
+      <div class="progring"><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="48"/><circle class="fg" cx="50" cy="50" r="48" stroke-dasharray="302" stroke-dashoffset="50"/></svg></div>
+    </div>
+    <div class="live-cap">
+      <div class="kind">Deep work · 82%</div>
+      <div class="title">Past your <em>usual.</em></div>
+      <div class="body">You're beyond the hour mark.<br>Typing has <b>slowed 20%</b>.</div>
+    </div>
+    <div class="action">
+      <div class="btn">STRETCH — 5 MIN</div>
+    </div>
+    <div class="hint-bot">AI DETECTED SLOW-DOWN</div>
+  </div></div></div>
+  <div class="note">Orb shifts to <b>amber</b>. Breathing quickens (2s pulse). Dragon notices typing pattern changed and inserts a <b>learned insight</b> into body. Optional break affordance appears.</div>
+</div>
+
+</div>
+
+<div class="row" style="margin-top:56px">
+
+<!-- ═══════════════════════════════ 4 · URGENT ═══════════════════════════════ -->
+<div class="tile">
+  <div class="flabel"><span class="d" style="background:var(--red)"></span>4 · URGENT <span class="em">&nbsp;last 60 seconds</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys red"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;00:58</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="1.5"/><path d="M9 7 V5 a2 2 0 0 1 2-2 h2 a2 2 0 0 1 2 2 V7"/></svg></div>
+      <div class="lbl" style="color:var(--red)">WORK</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-ring r2" style="border-color:rgba(244,63,94,.12)"></div>
+      <div class="orb-ring r1" style="border-color:rgba(244,63,94,.2)"></div>
+      <div class="orb-halo urgent"></div>
+      <div class="orb urgent orb-small"></div>
+      <div class="progring"><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="48"/><circle class="fg" cx="50" cy="50" r="48" stroke-dasharray="302" stroke-dashoffset="4" style="stroke:var(--red)"/></svg></div>
+    </div>
+    <div class="live-cap">
+      <div class="kind" style="color:var(--red)">Final stretch</div>
+      <div class="title">Last <em>minute.</em></div>
+      <div class="body">One more push.</div>
+    </div>
+    <div class="prog-bar" style="bottom:172px"><div class="f" style="width:98%;background:var(--red)"></div></div>
+    <div class="action">
+      <div class="btn red">STOP NOW</div>
+    </div>
+  </div></div></div>
+  <div class="note">Orb <b>shrinks + reddens</b>. Halo pulses rapidly (1s). Serif headline stays — only numbers appear in sys label <b>the last minute</b>. User can stop early.</div>
+</div>
+
+<!-- ═══════════════════════════════ 5 · DONE ═══════════════════════════════ -->
+<div class="tile">
+  <div class="flabel"><span class="d" style="background:var(--emerald)"></span>5 · DONE <span class="em">&nbsp;retrospective</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;14:32</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><path d="M4 12 l5 5 L20 6" stroke="#22C55E"/></svg></div>
+      <div class="lbl" style="color:var(--emerald)">DONE</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-halo done"></div>
+      <div class="orb done orb-smallest"></div>
+    </div>
+    <div class="live-cap" style="bottom:340px">
+      <div class="kind" style="color:var(--emerald)">Session complete</div>
+      <div class="title">Well <em>done.</em></div>
+      <div class="body">1 h 02 m of focus.<br>Longer than any block this week.</div>
+    </div>
+    <div class="prog-bar" style="bottom:260px"><div class="f" style="width:100%;background:var(--emerald)"></div></div>
+    <div class="stats">
+      <div class="stat"><div class="n">1:02</div><div class="l">ELAPSED</div></div>
+      <div class="stat"><div class="n" style="color:var(--emerald)">+12m</div><div class="l">VS AVG</div></div>
+      <div class="stat"><div class="n">94%</div><div class="l">FOCUS</div></div>
+    </div>
+  </div></div></div>
+  <div class="note">Orb <b>settles green + small</b>, halo dims. Serif "Well done." + retrospective stats. Card auto-dismisses in 10 s, then <b>live slot empties</b> and idle returns.</div>
+</div>
+
+</div>
+
+<!-- ═══════════════════════════════ MULTI TIMER ═══════════════════════════════ -->
+<div class="sec-head">
+  <div class="sec-num">◦ Multi-timer</div>
+  <h2 class="sec-title">One orb. <em>Many timers.</em></h2>
+  <p class="sec-deck">
+    You can't show 5 orbs at once — but you can show one <em>and</em> know the rest are running.
+    A small <b>counter pill</b> appears bottom-left; tap it to cycle, long-press to reveal the stack.
+    Critical events <b>auto-promote</b> themselves to the orb regardless of what's in front. The brain picks the winner.
+  </p>
+</div>
+
+<div class="row">
+
+<!-- counter pill state -->
+<div class="tile">
+  <div class="flabel"><span class="d"></span>STACK · <span class="em">counter pill</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;TIMER 24:00</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="1.5"/><path d="M9 7 V5 a2 2 0 0 1 2-2 h2 a2 2 0 0 1 2 2 V7"/></svg></div>
+      <div class="lbl">WORK</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+      <div class="orb-halo calm"></div>
+      <div class="orb calm"></div>
+    </div>
+    <div class="live-cap">
+      <div class="kind">Deep work</div>
+      <div class="title">24 min <em>left.</em></div>
+    </div>
+    <!-- counter pill bottom-left -->
+    <div style="position:absolute;left:52px;bottom:128px;display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono',monospace;font-size:14px;letter-spacing:3px;color:var(--amber);text-transform:uppercase">
+      <div style="width:44px;height:44px;border:1px solid var(--amber);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:22px;letter-spacing:0;color:var(--amber);font-weight:500">3</div>
+      <span style="color:#8a8a93">MORE RUNNING</span>
+    </div>
+  </div></div></div>
+  <div class="note"><b>Work timer</b> owns the orb. Counter pill shows 3 others running silently. Tap counter → cycle. Long-press → stack sheet.</div>
+</div>
+
+<!-- stack sheet state -->
+<div class="tile">
+  <div class="flabel"><span class="d"></span>STACK · <span class="em">bottom sheet</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys"><span class="dot"></span><span>DRAGON&nbsp;&nbsp;•&nbsp;&nbsp;TIMERS</span></div>
+    <div class="icon-mark"><div class="lbl">4 ACTIVE</div></div>
+
+    <!-- mini orb in top-third -->
+    <div style="position:absolute;left:50%;top:30%;transform:translate(-50%,-50%);width:300px;height:300px">
+      <div class="orb-ring r2"></div><div class="orb-ring r1"></div>
+      <div class="orb-halo calm"></div>
+      <div class="orb calm"></div>
+    </div>
+
+    <!-- stack sheet -->
+    <div style="position:absolute;left:36px;right:36px;bottom:80px;background:#111119;border:1px solid var(--hair);border-left:3px solid var(--amber)">
+      <!-- row 1 (current) -->
+      <div style="padding:26px 28px;border-bottom:1px solid var(--hair);display:flex;align-items:center;gap:22px">
+        <span style="width:12px;height:12px;border-radius:50%;background:var(--emerald);flex-shrink:0"></span>
+        <span style="font-family:'Fraunces',serif;font-size:26px;font-weight:500;color:var(--text);flex:1">Deep work</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:17px;color:var(--amber);letter-spacing:2px">24 MIN LEFT</span>
+      </div>
+      <div style="padding:24px 28px;border-bottom:1px solid var(--hair);display:flex;align-items:center;gap:22px">
+        <span style="width:10px;height:10px;border-radius:50%;background:var(--amber);flex-shrink:0"></span>
+        <span style="font-family:'Fraunces',serif;font-size:24px;font-weight:400;color:#c0c0c8;flex:1">Parking</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:15px;color:#8a8a93;letter-spacing:2px">EXP 14:00</span>
+      </div>
+      <div style="padding:24px 28px;border-bottom:1px solid var(--hair);display:flex;align-items:center;gap:22px">
+        <span style="width:10px;height:10px;border-radius:50%;background:var(--rose);flex-shrink:0"></span>
+        <span style="font-family:'Fraunces',serif;font-size:24px;font-weight:400;color:#c0c0c8;flex:1">Laundry</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:15px;color:#8a8a93;letter-spacing:2px">8 MIN</span>
+      </div>
+      <div style="padding:24px 28px;display:flex;align-items:center;gap:22px">
+        <span style="width:10px;height:10px;border-radius:50%;background:#45454c;flex-shrink:0"></span>
+        <span style="font-family:'Fraunces',serif;font-size:24px;font-weight:400;color:#8a8a93;flex:1">Coffee</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:15px;color:#45454c;letter-spacing:2px">DONE</span>
+      </div>
+    </div>
+    <div class="hint-bot" style="bottom:38px;color:#5c5c68">TAP ROW TO SWITCH · SWIPE DOWN TO CLOSE</div>
+  </div></div></div>
+  <div class="note">Long-press counter pill → <b>stack sheet slides up</b>. Current on top (amber weight), others by age. Tap any row to swap the orb to that timer. Swipe down dismisses.</div>
+</div>
+
+<!-- auto promotion state -->
+<div class="tile">
+  <div class="flabel"><span class="d" style="background:var(--red)"></span>STACK · <span class="em">auto-promote</span></div>
+  <div class="stage"><div class="frame"><div class="screen">
+    <div class="sys red"><span class="dot"></span><span>PARKING&nbsp;&nbsp;•&nbsp;&nbsp;EXP IN 02:00</span></div>
+    <div class="icon-mark">
+      <div class="glyph"><svg viewBox="0 0 24 24"><path d="M4 12 h16 M6 16 h2 M16 16 h2 M5 12 L7 6 h10 l2 6 M5 12 v5 M19 12 v5"/></svg></div>
+      <div class="lbl" style="color:var(--red)">PARKING</div>
+    </div>
+    <div class="orb-stage">
+      <div class="orb-ring r2" style="border-color:rgba(244,63,94,.12)"></div>
+      <div class="orb-ring r1" style="border-color:rgba(244,63,94,.2)"></div>
+      <div class="orb-halo urgent"></div>
+      <div class="orb urgent"></div>
+    </div>
+    <div class="live-cap">
+      <div class="kind" style="color:var(--red)">Move the car</div>
+      <div class="title">2 minutes <em>left.</em></div>
+      <div class="body">Spot on Maple expires at 14:00.</div>
+    </div>
+    <div class="action">
+      <div class="btn red">EXTEND 30 MIN</div>
+    </div>
+    <!-- counter still shows others -->
+    <div style="position:absolute;left:52px;bottom:48px;display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:3px;color:#6a6a72;text-transform:uppercase">
+      <div style="width:32px;height:32px;border:1px solid #45454c;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#8a8a93">3</div>
+      <span>DEEP WORK PAUSED</span>
+    </div>
+  </div></div></div>
+  <div class="note">Parking timer hits its alert threshold. Brain <b>auto-promotes</b> it over work. Icon changes, orb reddens, narrative explains what and why. Deep-work slides to queue. No user action required.</div>
+</div>
+
+</div>
+
+<!-- ═══════════════════════════════ COMMAND LIFECYCLE ═══════════════════════════════ -->
+<div class="sec-head">
+  <div class="sec-num">◦ Protocol</div>
+  <h2 class="sec-title">One skill, <em>four messages.</em></h2>
+  <p class="sec-deck">
+    The whole conversation between Dragon and Tab5 for Time Sense is four WebSocket messages
+    (plus ticks). This is every bit of network traffic between them for the entire lifecycle.
+  </p>
+</div>
+
+<div style="max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr;gap:60px">
+
+<div>
+<div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:var(--amber);margin-bottom:12px">① DRAGON → TAB5</div>
+<pre style="background:#0a0a10;border:1px solid var(--hair);border-left:3px solid var(--amber);padding:28px 32px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.8;color:#c8c8d0;overflow-x:auto">{
+  "type": "widget_live",
+  "skill_id": "timesense.pomodoro",
+  "card_id": "ts_25",
+  "title": "Deep work",
+  "body": "25:00 remaining",
+  "icon": "briefcase",
+  "tone": "calm",
+  "progress": 0.0,
+  "action": {
+    "label": "PAUSE",
+    "event": "ts.pause"
+  },
+  "priority": 80
+}</pre>
+
+<div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:var(--amber);margin:36px 0 12px">② DRAGON → TAB5 (every tick)</div>
+<pre style="background:#0a0a10;border:1px solid var(--hair);border-left:3px solid var(--amber);padding:28px 32px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.8;color:#c8c8d0;overflow-x:auto">{
+  "type": "widget_live_update",
+  "card_id": "ts_25",
+  "body": "23:58 remaining",
+  "progress": 0.08,
+  "tone": "active"
+}</pre>
+</div>
+
+<div>
+<div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:var(--amber);margin-bottom:12px">③ TAB5 → DRAGON (user tapped pause)</div>
+<pre style="background:#0a0a10;border:1px solid var(--hair);border-left:3px solid var(--amber);padding:28px 32px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.8;color:#c8c8d0;overflow-x:auto">{
+  "type": "widget_action",
+  "card_id": "ts_25",
+  "event": "ts.pause"
+}</pre>
+
+<div style="font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:var(--amber);margin:36px 0 12px">④ DRAGON → TAB5 (completion)</div>
+<pre style="background:#0a0a10;border:1px solid var(--hair);border-left:3px solid var(--amber);padding:28px 32px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.8;color:#c8c8d0;overflow-x:auto">{
+  "type": "widget_live_dismiss",
+  "card_id": "ts_25"
+}
+
+{
+  "type": "widget_card",
+  "skill_id": "timesense.pomodoro",
+  "title": "Done",
+  "body": "25 min · well run",
+  "tone": "success",
+  "icon": "check"
+}</pre>
+</div>
+
+</div>
+
+</div>
+</body></html>

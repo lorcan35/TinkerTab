@@ -208,6 +208,49 @@ lv_obj_t *ui_camera_create(void)
         lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
         lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
         lv_obj_center(arrow);
+
+        /* v4·D Phase 4b vision chip — right-aligned violet pill that reads
+         * "VISION · <MODEL>  READY" when Dragon has advertised a
+         * vision-capable LLM backend.  When not capable (local-only
+         * ollama without "vision" in name), the chip is hidden so the
+         * top bar stays clean.  See system-d-modes.html M8 mockup +
+         * system-d-sovereign.html camera screen. */
+        {
+            extern bool voice_get_vision_capability(char *, size_t, int *);
+            char vm[64] = {0};
+            int per_frame_mils = 0;
+            bool vcap = voice_get_vision_capability(vm, sizeof(vm), &per_frame_mils);
+            if (vcap && vm[0]) {
+                /* Shorten model ID for chip: "anthropic/claude-3.5-haiku"
+                 * -> "haiku-3.5".  Same recipe as chat receipt stamp. */
+                char short_vm[24] = {0};
+                const char *slash = strchr(vm, '/');
+                const char *tail  = slash ? slash + 1 : vm;
+                const char *hy    = strchr(tail, '-');
+                const char *start = hy ? hy + 1 : tail;
+                snprintf(short_vm, sizeof(short_vm), "%s", start);
+
+                lv_obj_t *vchip = lv_obj_create(topbar);
+                lv_obj_remove_style_all(vchip);
+                lv_obj_set_size(vchip, 280, 40);
+                lv_obj_set_style_bg_color(vchip, lv_color_hex(0x1A1020), 0);
+                lv_obj_set_style_bg_opa(vchip, LV_OPA_COVER, 0);
+                lv_obj_set_style_radius(vchip, 20, 0);
+                lv_obj_set_style_border_width(vchip, 1, 0);
+                lv_obj_set_style_border_color(vchip, lv_color_hex(0xA78BFA), 0);
+                lv_obj_align(vchip, LV_ALIGN_RIGHT_MID, -8, 0);
+                lv_obj_clear_flag(vchip, LV_OBJ_FLAG_SCROLLABLE);
+
+                lv_obj_t *vlbl = lv_label_create(vchip);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "\xe2\x80\xa2 VISION  %s  READY", short_vm);
+                lv_label_set_text(vlbl, buf);
+                lv_obj_set_style_text_font(vlbl, FONT_CHAT_MONO, 0);
+                lv_obj_set_style_text_color(vlbl, lv_color_hex(0xA78BFA), 0);
+                lv_obj_set_style_text_letter_space(vlbl, 2, 0);
+                lv_obj_center(vlbl);
+            }
+        }
     }
 
     /* ── Viewfinder area (below topbar) ─────────────────────────── */

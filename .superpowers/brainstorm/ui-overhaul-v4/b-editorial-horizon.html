@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v4·B — Editorial Horizon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,400;9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #08080E;
+    --surface: #111119;
+    --elevated: #13131F;
+    --border: #1E1E2A;
+    --amber: #F59E0B;
+    --amber-hot: #FBBF24;
+    --emerald: #10B981;
+    --text-1: #F5F5F7;
+    --text-2: #8A8A95;
+    --text-3: #5A5A64;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #000;
+    display: flex; justify-content: center; align-items: flex-start;
+    min-height: 100vh; padding: 40px;
+    font-family: 'Manrope', sans-serif; color: var(--text-1);
+  }
+  .wrap { display: flex; gap: 32px; align-items: flex-start; }
+  .meta { color: #6a6a74; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; width: 240px; padding-top: 8px; }
+  .meta h3 { font-family: 'Fraunces', serif; color: var(--amber); font-size: 18px; margin: 0 0 4px; font-weight: 400; font-style: italic; }
+  .meta .tag { color: #4a4a54; text-transform: uppercase; letter-spacing: 0.12em; font-size: 10px; margin-top: 18px; display: block; }
+  .meta p { margin: 4px 0 0; }
+
+  .device {
+    width: 720px; height: 1280px;
+    background: var(--bg);
+    border-radius: 28px; overflow: hidden;
+    position: relative;
+    box-shadow: 0 60px 160px rgba(245, 158, 11, 0.06), 0 0 0 1px #1a1a24;
+  }
+
+  /* Thin top bar — mode + weather + time, horizon-line style */
+  .topbar {
+    position: absolute; top: 0; left: 0; right: 0; height: 72px;
+    display: flex; align-items: center; padding: 0 36px;
+    border-bottom: 1px solid var(--border);
+    gap: 24px;
+    font-size: 13px;
+    color: var(--text-2);
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0.06em;
+  }
+  .topbar .pair { display: flex; align-items: center; gap: 10px; }
+  .topbar .mode-chip {
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 8px 14px;
+    display: flex; gap: 8px; align-items: center;
+    color: var(--text-1); font-weight: 500;
+  }
+  .topbar .mode-chip .swatch { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); }
+  .topbar .spacer { flex: 1; }
+  .topbar .wx { color: var(--text-2); }
+  .topbar .tm { font-family: 'Fraunces', serif; font-size: 18px; color: var(--text-1); font-variant-numeric: tabular-nums; font-style: italic; }
+
+  /* Editorial marquee: giant serif caption above the orb.
+     Everything that used to be 3 cards is now ONE sentence. */
+  .marquee {
+    position: absolute; top: 108px; left: 48px; right: 48px;
+    font-family: 'Fraunces', serif;
+    font-weight: 300;
+    font-size: 52px;
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    color: var(--text-1);
+  }
+  .marquee .lead {
+    font-size: 12px; color: var(--text-3);
+    text-transform: uppercase; letter-spacing: 0.18em; font-weight: 600;
+    font-family: 'Manrope', sans-serif;
+    margin-bottom: 16px; display: block;
+  }
+  .marquee em { color: var(--amber); font-style: italic; font-weight: 400; }
+  .marquee .dim { color: var(--text-2); font-weight: 300; }
+
+  /* Orb — offset right, magazine-style hero.
+     Dominates but composes with the text rather than centering alone. */
+  .orb-stage {
+    position: absolute; top: 380px; left: 0; right: 0; height: 420px;
+  }
+  .orb-field {
+    position: absolute; right: 40px; top: 0;
+    width: 380px; height: 380px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .halo {
+    position: absolute; width: 380px; height: 380px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.1) 0%, rgba(245,158,11,0) 64%);
+  }
+  .halo-2 {
+    position: absolute; width: 260px; height: 260px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.18) 0%, rgba(245,158,11,0) 70%);
+  }
+  .ring { position: absolute; border-radius: 50%; border: 1px solid rgba(245,158,11,0.16); }
+  .ring.r1 { width: 220px; height: 220px; }
+  .ring.r2 { width: 180px; height: 180px; border-color: rgba(245,158,11,0.24); }
+  .orb {
+    width: 150px; height: 150px; border-radius: 50%;
+    background: radial-gradient(circle at 36% 32%, var(--amber-hot) 0%, var(--amber) 100%);
+    box-shadow: 0 0 52px rgba(245,158,11,0.32);
+    position: relative;
+  }
+  .orb::after {
+    content: ''; position: absolute; inset: 10px; border-radius: 50%;
+    background: radial-gradient(circle at 40% 30%, rgba(255,255,255,0.22) 0%, rgba(255,255,255,0) 48%);
+  }
+
+  /* Status — subtle label stacked beside orb, clearly second-class */
+  .orb-label {
+    position: absolute; left: 56px; top: 40px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .orb-label .big {
+    font-family: 'Fraunces', serif; font-style: italic;
+    font-size: 30px; color: var(--amber);
+    margin-top: 8px; text-transform: none; letter-spacing: -0.01em;
+  }
+  .orb-label .state-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--emerald); margin-right: 8px; vertical-align: middle; box-shadow: 0 0 10px rgba(16,185,129,0.6); }
+
+  /* Continuity strip — "Pick up where you left off" — replaces the filler Timer */
+  .continuity {
+    position: absolute; bottom: 208px; left: 40px; right: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    padding: 24px 28px;
+    display: flex; align-items: center; gap: 20px;
+  }
+  .continuity .thumb {
+    width: 72px; height: 72px; border-radius: 18px;
+    background: var(--elevated);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--amber);
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+  }
+  .continuity .body { flex: 1; min-width: 0; }
+  .continuity .label {
+    font-size: 11px; color: var(--text-3);
+    text-transform: uppercase; letter-spacing: 0.16em; font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .continuity .title {
+    font-family: 'Fraunces', serif; font-weight: 400; font-style: italic;
+    font-size: 22px; color: var(--text-1); letter-spacing: -0.01em;
+    margin-bottom: 4px;
+  }
+  .continuity .meta {
+    font-size: 13px; color: var(--text-2);
+  }
+  .continuity .cta {
+    display: flex; align-items: center; justify-content: center;
+    width: 56px; height: 56px;
+    border-radius: 50%; background: var(--amber); color: var(--bg);
+    flex-shrink: 0;
+  }
+
+  /* Unified action bar: single 96px dock, collapses input+nav into one */
+  .dock {
+    position: absolute; bottom: 32px; left: 32px; right: 32px; height: 144px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 26px;
+    padding: 16px;
+    display: grid; grid-template-columns: 1fr auto;
+    gap: 14px;
+    align-items: stretch;
+  }
+  .dock .say {
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px 18px;
+    border-radius: 18px;
+    background: var(--elevated);
+    border: 1px solid var(--border);
+  }
+  .dock .say .pulse {
+    width: 48px; height: 48px; border-radius: 50%;
+    background: var(--amber);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--bg); flex-shrink: 0;
+  }
+  .dock .say .txt { flex: 1; }
+  .dock .say .txt .l1 { font-size: 16px; color: var(--text-1); font-weight: 600; }
+  .dock .say .txt .l2 { font-size: 12px; color: var(--text-3); margin-top: 2px; font-family: 'JetBrains Mono', monospace; letter-spacing: 0.08em; }
+  .dock .nav {
+    display: grid; grid-template-columns: repeat(3, 56px); gap: 8px;
+    align-items: center;
+    padding: 0 6px;
+  }
+  .dock .nav button {
+    all: unset;
+    width: 56px; height: 56px;
+    border-radius: 16px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-2);
+    background: transparent;
+  }
+  .dock .nav button.act {
+    background: var(--elevated); color: var(--text-1);
+    border: 1px solid var(--border);
+  }
+
+  .dock .kb-row {
+    grid-column: 1 / -1;
+    display: flex; gap: 12px; align-items: center;
+    padding: 0 4px;
+  }
+  .dock .kb-row .chip {
+    background: var(--elevated);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 10px 14px;
+    font-size: 13px; color: var(--text-2);
+    display: flex; gap: 8px; align-items: center;
+    font-family: 'Fraunces', serif; font-style: italic;
+  }
+  .dock .kb-row .chip svg { color: var(--amber); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside class="meta">
+  <h3>B · Editorial Horizon</h3>
+  <p>Magazine hierarchy. A single editorial sentence replaces all 3 context cards.</p>
+  <span class="tag">Bet</span>
+  <p>Nothing reads faster across a room than one big serif sentence. Orb becomes pictorial anchor, not sole communicator.</p>
+  <span class="tag">Fixes</span>
+  <p>• 52px serif caption = single source of "what's up"<br>• Orb 150px, offset right (not shrunk, just composed)<br>• Continuity card replaces Timer<br>• Unified dock (144px) merges input + 3 nav items + keyboard hint</p>
+  <span class="tag">LVGL</span>
+  <p>Marquee = lv_label with custom font (Fraunces static subset). Ring halos = 2 concentric circles with bg_opa. Dock grid = flex row.</p>
+</aside>
+
+<div class="device">
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="mode-chip"><span class="swatch"></span>Hybrid</div>
+    <div class="pair"><span style="color:var(--text-3);">·</span><span class="wx">CLEAR · 14°</span></div>
+    <div class="spacer"></div>
+    <div class="tm">9:42</div>
+  </div>
+
+  <!-- Editorial marquee (the one sentence that used to be 3 cards) -->
+  <div class="marquee">
+    <span class="lead">Thursday, 17 April</span>
+    <div>
+      Morning, <em>Emile</em>.<br>
+      <span class="dim">Studio sync in an hour —</span><br>
+      two threads <em>want you</em>.
+    </div>
+  </div>
+
+  <!-- Orb + status label -->
+  <div class="orb-stage">
+    <div class="orb-label">
+      <span><span class="state-dot"></span>STATUS</span>
+      <div class="big">listening</div>
+    </div>
+    <div class="orb-field">
+      <div class="halo"></div>
+      <div class="halo-2"></div>
+      <div class="ring r1"></div>
+      <div class="ring r2"></div>
+      <div class="orb"></div>
+    </div>
+  </div>
+
+  <!-- Continuity (replaces Timer filler) -->
+  <div class="continuity">
+    <div class="thumb">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="5 3 19 12 5 21 5 3"/>
+      </svg>
+    </div>
+    <div class="body">
+      <div class="label">Pick up where you left off</div>
+      <div class="title">"Workshop plan" dictation</div>
+      <div class="meta">4 min · draft ready for review</div>
+    </div>
+    <div class="cta">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Unified dock: say-bar + 3 nav + keyboard chip -->
+  <div class="dock">
+    <div class="say">
+      <div class="pulse">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="2" width="6" height="12" rx="3"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+        </svg>
+      </div>
+      <div class="txt">
+        <div class="l1">Hold to speak</div>
+        <div class="l2">OR SAY "DRAGON"</div>
+      </div>
+    </div>
+    <div class="nav">
+      <button class="act" title="Home">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+      </button>
+      <button title="Threads">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      </button>
+      <button title="Notes">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </button>
+    </div>
+    <div class="kb-row">
+      <div class="chip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="7" y1="15" x2="17" y2="15"/></svg>
+        keyboard
+      </div>
+      <div class="chip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M23 12h-4M5 12H1M12 1v4M12 23v-4"/></svg>
+        camera
+      </div>
+      <div class="chip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        history
+      </div>
+    </div>
+  </div>
+
+</div>
+
+</div>
+</body>
+</html>

@@ -110,10 +110,13 @@ static char      s_ota_sha256[65] = {0};
 /* Sliders */
 static lv_obj_t *s_slider_bright  = NULL;
 static lv_obj_t *s_slider_volume  = NULL;
+static lv_obj_t *s_slider_cap     = NULL;  /* v4·D Phase 4e daily budget cap */
 
 /* Slider value labels */
 static lv_obj_t *s_lbl_bright_val = NULL;
 static lv_obj_t *s_lbl_vol_val    = NULL;
+static lv_obj_t *s_lbl_cap_val    = NULL;  /* v4·D Phase 4e cap readout ($X.XX / OFF) */
+static lv_timer_t *s_cap_save_timer = NULL;
 
 /* Auto-rotate switch */
 static lv_obj_t *s_sw_autorot     = NULL;
@@ -261,6 +264,20 @@ static void volume_save_cb(lv_timer_t *t)
     s_vol_save_timer = NULL;
 }
 
+/* v4·D Phase 4e: daily budget cap slider.
+ * Slider range 0-50, each step = 20 cents = 20,000 mils.
+ *   0  -> cap=0 (OFF, no auto-downgrade)
+ *   5  -> $1.00
+ *   50 -> $10.00
+ * Debounced 500ms like brightness/volume. */
+static void cap_save_cb(lv_timer_t *t)
+{
+    uint32_t mils = (uint32_t)(intptr_t)lv_timer_get_user_data(t);
+    tab5_budget_set_cap_mils(mils);
+    ESP_LOGI(TAG, "Cap %lu mils saved to NVS (debounced)", (unsigned long)mils);
+    s_cap_save_timer = NULL;
+}
+
 static void cb_brightness(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
@@ -273,6 +290,27 @@ static void cb_brightness(lv_event_t *e)
     s_bright_save_timer = lv_timer_create(brightness_save_cb, 500,
                                           (void *)(intptr_t)val);
     lv_timer_set_repeat_count(s_bright_save_timer, 1);
+}
+
+static void cb_cap(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    int step = lv_slider_get_value(slider);     /* 0..50 */
+    uint32_t cents = (uint32_t)step * 20;       /* 20¢ per step */
+    uint32_t mils  = cents * 1000;              /* 1 cent = 1000 mils */
+    if (s_lbl_cap_val) {
+        if (mils == 0) {
+            lv_label_set_text(s_lbl_cap_val, "OFF");
+        } else {
+            int dollars = cents / 100;
+            int remc    = cents % 100;
+            lv_label_set_text_fmt(s_lbl_cap_val, "$%d.%02d", dollars, remc);
+        }
+    }
+    if (s_cap_save_timer) lv_timer_delete(s_cap_save_timer);
+    s_cap_save_timer = lv_timer_create(cap_save_cb, 500,
+                                       (void *)(intptr_t)mils);
+    lv_timer_set_repeat_count(s_cap_save_timer, 1);
 }
 
 static void cb_volume(lv_event_t *e)
@@ -363,11 +401,37 @@ static void voice_tab_switch(uint8_t new_tab)
     send_voice_config();
 }
 
+/* Audit E3 (2026-04-20): tapping TinkerClaw from Settings used to hot-switch
+ * into voice_mode=3 with zero guardrails — the easiest path to the memory-
+ * bypass boundary had the weakest consent.  The mode sheet has always shown
+ * a modal before the same switch; Settings now reuses it via
+ * ui_agent_consent_show(). Consent-mode switch deferred until confirm. */
+static void consent_confirm_tc_cb(void *ctx)
+{
+    (void)ctx;
+    voice_tab_switch(3);
+}
+
+static void consent_cancel_tc_cb(void *ctx)
+{
+    (void)ctx;
+    /* No-op — voice_tab_switch never ran, so nothing to revert. */
+}
+
 /* Single click handler for all 4 radio rows. Mode index comes via user_data. */
 static void cb_tab_local(lv_event_t *e)
 {
     intptr_t idx = (intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < 4) voice_tab_switch((uint8_t)idx);
+    if (idx < 0 || idx >= 4) return;
+    if ((uint8_t)idx == 3 && s_active_tab != 3) {
+        /* Going from any mode -> Agent: gate the switch behind the consent
+         * modal.  If already on Agent the tap is a no-op and no modal is
+         * needed (no tier change). */
+        extern void ui_agent_consent_show(void (*)(void *), void (*)(void *), void *);
+        ui_agent_consent_show(consent_confirm_tc_cb, consent_cancel_tc_cb, NULL);
+        return;
+    }
+    voice_tab_switch((uint8_t)idx);
 }
 
 static void cb_local_model(lv_event_t *e)
@@ -412,23 +476,11 @@ static void cb_quiet_on(lv_event_t *e)
     ui_home_refresh_sys_label();
 }
 
-static void cb_wake_word(lv_event_t *e)
-{
-    lv_obj_t *sw = lv_event_get_target(e);
-    lv_obj_t *hint = lv_event_get_user_data(e);
-    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    tab5_settings_set_wake_word(on ? 1 : 0);
-    ESP_LOGI(TAG, "Wake word %s", on ? "ON" : "OFF");
-    if (hint) {
-        lv_label_set_text(hint, on ? "On" : "Off");
-        lv_obj_set_style_text_color(hint, on ? lv_color_hex(TAB_LOCAL) : lv_color_hex(TEXT_DIM), 0);
-    }
-    if (on) {
-        voice_start_always_listening();
-    } else {
-        voice_stop_always_listening();
-    }
-}
+/* Wake-word callback removed — feature parked. AFE + WakeNet remain wired in
+ * firmware (afe.c, voice_{start,stop}_always_listening) but hidden from the
+ * UI because TDM slot mapping for the AEC reference channel is still broken.
+ * When un-parked, restore the Wake Word row + this callback. See CLAUDE.md
+ * "Phase 2" and Espressif issue #TBD. */
 
 /* ── WiFi picker ────────────────────────────────────────────────────── */
 
@@ -697,6 +749,19 @@ static void cb_ota_check(lv_event_t *e)
     xTaskCreate(ota_check_task, "ota_check", 8192, NULL, 5, NULL);
 }
 
+/* Wave 4: force-show onboarding carousel (audit G follow-up).
+ * Lets the user review the intro after first-boot without NVS erase. */
+void cb_replay_intro(lv_event_t *e)
+{
+    (void)e;
+    extern void ui_settings_hide(void);
+    extern void ui_onboarding_force_show(void);
+    /* Hide Settings first so the onboarding card isn't stacked
+     * underneath it visually. */
+    ui_settings_hide();
+    ui_onboarding_force_show();
+}
+
 /* ══════════════════════════════════════════════════════════════════════
  *  Inline style helpers
  * ══════════════════════════════════════════════════════════════════════ */
@@ -891,6 +956,20 @@ static void phase2_timer_cb(lv_timer_t *t)
     }
     y += ROW_H + 8;
 
+    /* Wave 4: "Show intro again" row — re-triggers the onboarding
+     * carousel without requiring an NVS erase.  Useful after a factory
+     * reset-like setup or when demoing the product. */
+    {
+        extern void cb_replay_intro(lv_event_t *e);
+        lv_obj_t *intro_btn = mk_pill_btn(s_scroll, "Show intro again",
+                                          lv_color_hex(0x2A2A3A),
+                                          lv_color_hex(TEXT_DIM),
+                                          SIDE_PAD, y + 3, CONTENT_W, 42, 8,
+                                          cb_replay_intro);
+        (void)intro_btn;
+    }
+    y += ROW_H + 8;
+
     /* Free Heap + PSRAM (debug info -- small and dim) */
     s_lbl_heap = lv_label_create(s_scroll);
     lv_label_set_text(s_lbl_heap, "Heap: -- KB  |  PSRAM: -- MB");
@@ -1034,10 +1113,25 @@ lv_obj_t *ui_settings_create(void)
     if (s_active_tab > 3) s_active_tab = 0;
     {
         static const char *mode_names[4] = { "Local", "Hybrid", "Cloud", "TinkerClaw" };
-        static const char *mode_descs[4] = {
+        /* Cloud description reflects the LIVE llm_model from NVS so the
+         * row doesn't lie when the user has picked, say, gemini or gpt-4o
+         * instead of the original Claude default.  Condensed to the short
+         * form ("gemini-3-flash-preview" -> "gemini-3-flash-preview"
+         * truncated to fit the row). */
+        char cloud_desc[48] = "Cloud LLM";
+        {
+            char lm[64] = {0};
+            tab5_settings_get_llm_model(lm, sizeof(lm));
+            if (lm[0]) {
+                const char *slash = strchr(lm, '/');
+                const char *tail  = slash ? slash + 1 : lm;
+                snprintf(cloud_desc, sizeof(cloud_desc), "%.47s", tail);
+            }
+        }
+        const char *mode_descs[4] = {
             "Moonshine \xe2\x80\xa2 NPU",
             "Cloud STT/TTS",
-            "Claude Sonnet",
+            cloud_desc,
             "Agents \xe2\x80\xa2 Memory",
         };
         static const uint32_t mode_dot_col[4] = {
@@ -1084,11 +1178,10 @@ lv_obj_t *ui_settings_create(void)
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
 
     /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
-     * section visually — single amber caption, rows straight below). */
-    mk_row_label(s_scroll, "Wake Word", y);
-    mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_wake_word() != 0,
-              cb_wake_word, NULL);
-    y += ROW_H + 16;
+     * section visually — single amber caption, rows straight below).
+     *
+     * Wake Word row intentionally OMITTED — feature parked until AEC TDM
+     * slot mapping is resolved. See cb_wake_word comment above. */
     mk_row_label(s_scroll, "Mic mute", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
               cb_mic_mute, NULL);
@@ -1096,6 +1189,31 @@ lv_obj_t *ui_settings_create(void)
     mk_row_label(s_scroll, "Quiet hours", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
               cb_quiet_on, NULL);
+    y += ROW_H + 16;
+
+    /* v4·D Phase 4e: daily budget cap editor.  Slider range 0-50, each
+     * step = 20¢, so 0 = OFF, 50 = $10.00.  Maps to NVS cap_mils field
+     * consumed by the auto-downgrade path in voice.c. */
+    mk_row_label(s_scroll, "Daily cap", y);
+    {
+        uint32_t cap_mils = tab5_budget_get_cap_mils();
+        uint32_t cents    = cap_mils / 1000;
+        int step          = (int)((cents + 10) / 20);   /* round to nearest 20¢ */
+        if (step > 50) step = 50;
+        s_slider_cap = mk_slider(s_scroll, acc_voice, RIGHT_X, y,
+                                 0, 50, step, cb_cap);
+        s_lbl_cap_val = lv_label_create(s_scroll);
+        lv_obj_set_pos(s_lbl_cap_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+        lv_obj_set_style_text_color(s_lbl_cap_val, lv_color_hex(0xF59E0B), 0);
+        lv_obj_set_style_text_font(s_lbl_cap_val, FONT_SECONDARY, 0);
+        if (cap_mils == 0) {
+            lv_label_set_text(s_lbl_cap_val, "OFF");
+        } else {
+            int dollars = (int)(cents / 100);
+            int remc    = (int)(cents % 100);
+            lv_label_set_text_fmt(s_lbl_cap_val, "$%d.%02d", dollars, remc);
+        }
+    }
     y += ROW_H + 20;
 
     /* ════════════════════════════════════════════════════════════════

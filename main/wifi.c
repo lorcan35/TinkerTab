@@ -87,6 +87,25 @@ esp_err_t tab5_wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 
+    /* v4·D connectivity audit -- ROOT CAUSE FIX for "WS drops even
+     * though the network is fine".
+     *
+     * Default ESP32 WiFi power-save is WIFI_PS_MIN_MODEM, which parks
+     * the radio between beacon intervals to save ~40 mA.  On a
+     * plugged-in voice-assistant tablet that's the wrong trade: the
+     * radio sleep window introduces 100-300 ms latency spikes AND can
+     * cause the AP to drop the association on certain routers (Asus,
+     * Ubiquiti UniFi with fast-roaming) if Tab5 misses a beacon window
+     * while replying to a TCP ACK.  That's why the "always-healthy"
+     * connection was randomly going dead -- WiFi was quietly
+     * half-losing the association without either TCP peer noticing
+     * until the next write.
+     *
+     * WIFI_PS_NONE keeps the radio always on.  Slightly higher idle
+     * current (~60 mA more) but the device is tethered to USB-C
+     * anyway.  Stability > power for this form factor. */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
     ESP_LOGI(TAG, "WiFi init done, connecting to '%s' (pass len=%d)",
              (char *)wifi_config.sta.ssid, (int)strlen((char *)wifi_config.sta.password));
     return ESP_OK;

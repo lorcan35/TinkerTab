@@ -132,6 +132,13 @@ static void build_agent_entry(lv_obj_t *parent, int y,
 
 void ui_agents_show(void)
 {
+    /* Match the go-home fix: if a secondary lv_screen (camera/files) is
+     * currently active, load home first so our overlay renders. */
+    lv_obj_t *home = ui_home_get_screen();
+    if (home && lv_screen_active() != home) {
+        lv_screen_load(home);
+    }
+
     /* Re-use hidden overlay (hide/show pattern). */
     if (s_overlay) {
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
@@ -141,7 +148,7 @@ void ui_agents_show(void)
     }
 
     /* Fullscreen overlay — parent is home screen, same pattern as chat/settings */
-    lv_obj_t *parent = ui_home_get_screen();
+    lv_obj_t *parent = home;
     if (!parent) parent = lv_screen_active();
     if (!parent) return;
 

@@ -19,12 +19,17 @@
 
 // Voice states
 typedef enum {
-    VOICE_STATE_IDLE,        // Not connected or waiting
-    VOICE_STATE_CONNECTING,  // Connecting to Dragon voice server
-    VOICE_STATE_READY,       // Connected, waiting for push-to-talk
-    VOICE_STATE_LISTENING,   // Recording mic, streaming to Dragon
-    VOICE_STATE_PROCESSING,  // Waiting for Dragon STT/LLM
-    VOICE_STATE_SPEAKING,    // Playing TTS audio from Dragon
+    VOICE_STATE_IDLE,          // Not connected and not trying (WiFi down / user disabled)
+    VOICE_STATE_CONNECTING,    // First-try connect in progress (no prior successful connect)
+    VOICE_STATE_READY,         // Connected, waiting for push-to-talk
+    VOICE_STATE_LISTENING,     // Recording mic, streaming to Dragon
+    VOICE_STATE_PROCESSING,    // Waiting for Dragon STT/LLM
+    VOICE_STATE_SPEAKING,      // Playing TTS audio from Dragon
+    /* v4·D connectivity audit T1.2: explicit reconnect state so the UI
+     * can render a calm "Reconnecting..." pill instead of the red
+     * "Disconnected" flash that makes the user think something's broken
+     * when we're actually inside the backoff window recovering. */
+    VOICE_STATE_RECONNECTING,
 } voice_state_t;
 
 // Voice modes
@@ -88,8 +93,57 @@ esp_err_t voice_send_text(const char *text);
 /** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 
+/** v4·D Gauntlet G7-F: like voice_send_config_update but with an optional
+ *  reason string (e.g. "cap_downgrade") so Dragon can speak a brief system
+ *  TTS confirming an auto mode-switch.  Pass reason=NULL for normal changes. */
+esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
+                                      const char *reason);
+
+/** v4·D Gauntlet G1: depth of the queued-turn buffer (0 or 1 today).
+ *  Used by the voice overlay to render "+N QUEUED" while a previous turn
+ *  is still processing/speaking. */
+int voice_get_queue_depth(void);
+
+/** v4·D connectivity audit T1.2: human-readable degraded-state reason
+ *  for the home pill.  Returns NULL when the session is healthy (state
+ *  is READY/LISTENING/PROCESSING/SPEAKING).  Otherwise one of:
+ *      "WiFi offline"
+ *      "Reconnecting..."
+ *      "Dragon unreachable"
+ *      "Remote mode (ngrok)"
+ *      "Connecting..."   (first-time connect, not yet seen a success)
+ *  The string is a static pointer; safe to read from the LVGL thread. */
+const char *voice_get_degraded_reason(void);
+
+/** v4·D connectivity audit T1.3: live link health snapshot.
+ *  Filled by the voice_link_probe_task every 30 s.  All fields are
+ *  scalar reads; atomic on ESP32-P4.  lan_tcp_ok/ngrok_tcp_ok are the
+ *  last TCP-connect result to each; last_probe_us is the tick at which
+ *  the probe task finished a full pass. */
+typedef struct {
+    bool     lan_tcp_ok;
+    bool     ngrok_tcp_ok;
+    bool     using_ngrok;       /* current client URI target */
+    uint32_t last_probe_ms;     /* lv_tick_get() of most recent probe */
+    int      connect_attempt;   /* 0 = healthy; N = N failed attempts since last success */
+} voice_link_health_t;
+void voice_get_link_health(voice_link_health_t *out);
+
+/** Widget Platform v1 — emit a widget_action event back to Dragon.
+ *  payload_json (optional) is parsed as JSON and attached as the "payload"
+ *  field. Rate-limited at 4 events/sec.
+ *  See docs/WIDGETS.md §11 and TinkerBox docs/protocol.md §17.11. */
+esp_err_t voice_send_widget_action(const char *card_id, const char *event,
+                                   const char *payload_json);
+
 /** Return the current mic RMS level (for live waveform visualization during dictation). */
 float voice_get_current_rms(void);
+
+/** v4·D Phase 4b — vision capability (emitted by Dragon on config ACK).
+ *  Returns true when the current LLM backend can see a camera frame.
+ *  model and per_frame_mils out-params are optional (pass NULL to skip). */
+bool voice_get_vision_capability(char *model_out, size_t model_len,
+                                 int *per_frame_mils_out);
 
 /** Return the auto-generated title from Dragon's dictation post-processing. */
 const char *voice_get_dictation_title(void);

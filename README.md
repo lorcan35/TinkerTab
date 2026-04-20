@@ -68,6 +68,9 @@ OpenRouter).
 - **mDNS Discovery** -- Automatic Dragon server discovery on the local network.
 - **Hardware Diagnostics** -- Full serial command interface for testing every subsystem
   (audio, mic, camera, IMU, RTC, battery, touch, SD card, I2C scan).
+- **Widget Platform (v1)** -- Skills on Dragon emit typed widget state (`live`, `card`,
+  `list`, `chart`, `media`, `prompt`); Tab5 renders it opinionatedly. New features ship as
+  Python files on Dragon, no firmware flash. See [`docs/WIDGETS.md`](./docs/WIDGETS.md).
 
 ---
 

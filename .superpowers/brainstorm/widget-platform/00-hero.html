@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>TinkerTab · Widget Platform · v1</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700;9..144,900&family=JetBrains+Mono:wght@300;400;500;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#08080E; --bg-deep:#050509; --card:#111119; --elev:#13131F;
+    --amber:#F59E0B; --amber-hot:#FFB637; --amber-deep:#7A4A06; --amber-glow:rgba(245,158,11,.28);
+    --rose:#F43F5E; --emerald:#22C55E; --azure:#3B82F6; --red:#EF4444;
+    --text:#EDEDEF; --body:#8A8A93; --meta:#4D4D56; --hair:#1C1C28;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-font-smoothing:antialiased}
+  html,body{background:#030305;color:var(--text);font-family:'Inter',sans-serif;min-height:100vh;padding:80px 40px 120px}
+  .wrap{max-width:1500px;margin:0 auto}
+
+  /* ── hero ── */
+  .hero{text-align:center;max-width:900px;margin:0 auto 120px}
+  .kicker{display:inline-flex;align-items:center;gap:18px;font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:7px;color:var(--amber);text-transform:uppercase}
+  .kicker::before,.kicker::after{content:"";width:60px;height:1px;background:var(--amber)}
+  h1{font-family:'Fraunces',serif;font-size:104px;font-weight:500;line-height:.95;letter-spacing:-3px;margin-top:28px}
+  h1 em{color:var(--amber);font-style:italic;font-weight:700}
+  .deck{color:#7a7a82;font-size:18px;line-height:1.75;max-width:720px;margin:32px auto 0;font-weight:300}
+  .deck b{color:#c0c0c8;font-weight:500}
+
+  /* ── section ── */
+  .sec{margin:0 auto 100px;max-width:1500px}
+  .sec-head{padding:0 0 40px;border-bottom:1px solid rgba(255,255,255,.04);margin-bottom:60px}
+  .sec-num{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:5px;color:var(--amber);text-transform:uppercase;margin-bottom:12px}
+  .sec-title{font-family:'Fraunces',serif;font-size:72px;font-weight:500;line-height:1;letter-spacing:-2px}
+  .sec-title em{color:var(--amber);font-style:italic;font-weight:700}
+  .sec-deck{color:#7a7a82;font-size:16px;line-height:1.7;max-width:800px;font-weight:300;margin-top:18px}
+  .sec-deck b{color:#c0c0c8;font-weight:500}
+
+  /* ── concept diagram ── */
+  .diagram{display:grid;grid-template-columns:1fr 80px 1fr 80px 1fr;gap:0;align-items:stretch;margin:60px 0}
+  .node{background:var(--card);border:1px solid var(--hair);border-radius:2px;padding:36px 28px;min-height:260px;display:flex;flex-direction:column;gap:16px}
+  .node.amber{border-left:3px solid var(--amber)}
+  .node .num{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:4px;color:var(--amber);text-transform:uppercase}
+  .node h4{font-family:'Fraunces',serif;font-size:28px;font-weight:500;line-height:1.1;letter-spacing:-.5px}
+  .node h4 em{color:var(--amber);font-style:italic}
+  .node p{color:#8a8a93;font-size:14px;line-height:1.6;font-weight:300}
+  .node .tag{margin-top:auto;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:3px;color:#45454c;text-transform:uppercase}
+
+  .arrow{display:flex;align-items:center;justify-content:center;color:var(--amber);font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:2px;position:relative}
+  .arrow::before{content:"";position:absolute;left:20%;right:20%;top:50%;height:1px;background:linear-gradient(90deg,transparent,var(--amber),transparent)}
+  .arrow span{background:#030305;padding:0 8px;position:relative;text-transform:uppercase}
+
+  /* ── widget type grid ── */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:rgba(255,255,255,.04);padding:2px;margin-top:60px}
+  .cell{background:var(--bg);padding:44px 36px;display:flex;flex-direction:column;gap:14px;min-height:360px}
+  .cell .ct{font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:5px;color:var(--amber);text-transform:uppercase}
+  .cell h5{font-family:'Fraunces',serif;font-size:44px;font-weight:500;line-height:1;letter-spacing:-1px}
+  .cell h5 em{color:var(--amber);font-style:italic;font-weight:700}
+  .cell .desc{color:#8a8a93;font-size:14px;line-height:1.7;font-weight:300}
+  .cell .slots{margin-top:18px;font-family:'JetBrains Mono',monospace;font-size:11px;line-height:1.9;color:#6a6a72;letter-spacing:.5px}
+  .cell .slots b{color:var(--text);font-weight:500}
+  .cell .slots i{color:var(--amber);font-style:normal}
+  .cell .ex{margin-top:auto;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:2px;color:#45454c;text-transform:uppercase}
+
+  /* ── code snippet ── */
+  .snippet{background:#0a0a10;border:1px solid var(--hair);border-left:3px solid var(--amber);padding:32px 40px;font-family:'JetBrains Mono',monospace;font-size:13px;line-height:1.75;color:#c8c8d0;margin:40px 0;overflow-x:auto}
+  .snippet .k{color:var(--amber)}
+  .snippet .s{color:#6aa1ff}
+  .snippet .n{color:#7a7a82}
+  .snippet .c{color:#45454c;font-style:italic}
+
+  /* ── two col ── */
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:60px;margin-top:60px}
+  .pane h4{font-family:'Fraunces',serif;font-size:36px;font-weight:500;margin-bottom:16px;letter-spacing:-.8px}
+  .pane h4 em{color:var(--amber);font-style:italic;font-weight:700}
+  .pane .lead{color:#8a8a93;font-size:15px;line-height:1.7;font-weight:300;margin-bottom:24px}
+  .pane .list{font-family:'JetBrains Mono',monospace;font-size:12px;line-height:2.2;color:#6a6a72;letter-spacing:.5px}
+  .pane .list b{color:var(--text);font-weight:500}
+
+  /* ── principle row ── */
+  .principles{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:rgba(255,255,255,.04);padding:2px;margin-top:40px}
+  .p{background:var(--bg);padding:36px 24px}
+  .p .n{font-family:'JetBrains Mono',monospace;font-size:48px;color:var(--amber);line-height:1;font-weight:700;letter-spacing:-2px}
+  .p h6{font-family:'Fraunces',serif;font-size:22px;font-weight:500;margin-top:14px;line-height:1.2;letter-spacing:-.3px}
+  .p .pd{color:#7a7a82;font-size:13px;line-height:1.6;margin-top:12px;font-weight:300}
+
+  /* ── footnote ── */
+  .foot{max-width:900px;margin:120px auto 0;padding-top:50px;border-top:1px solid rgba(255,255,255,.04);color:#5c5c68;font-size:13px;line-height:1.8;font-family:'JetBrains Mono',monospace;letter-spacing:.5px}
+  .foot b{color:var(--amber)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ═══════════════════════════════ HERO ═══════════════════════════════ -->
+<div class="hero">
+  <div class="kicker">TinkerTab · Widget Platform · V1</div>
+  <h1>The screen becomes <em>an extension</em> of the brain.</h1>
+  <p class="deck">
+    Today, every new feature on Tab5 means editing C, recompiling, flashing.
+    196 skills live on Dragon and <b>none of them show up on the device</b>.
+    The platform is <b>storefront without goods</b>.
+    <br><br>
+    The Widget Platform fixes that. Skills emit <em>state</em>. Tab5 renders it through
+    six typed widgets. Write a Python file, pick a widget, done. No firmware
+    flash. Every future idea ships in minutes, not weeks.
+  </p>
+</div>
+
+<!-- ═══════════════════════════════ ARCHITECTURE ═══════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">01 · Architecture</div>
+    <h2 class="sec-title">Three layers, <em>strict contracts</em> between them.</h2>
+    <p class="sec-deck">
+      Skills live on the brain. Tab5 owns rendering. The protocol between them is
+      a small typed vocabulary. Any device that implements the vocabulary gets
+      every skill for free — Tab5, Waveshare round display, a bare ESP32-S3 with
+      a 128×64 OLED. The product stops being <b>the hardware</b> and becomes
+      <b>the design language + the skill registry</b>.
+    </p>
+  </div>
+
+  <div class="diagram">
+    <div class="node">
+      <div class="num">Layer 3 · Skill</div>
+      <h4>Python <em>on Dragon</em></h4>
+      <p>Hot-reload, data lives here (APIs, calendars, memory). Authors write <b>state</b>, not layout.</p>
+      <div class="tag">timesense.py · 80 LOC</div>
+    </div>
+    <div class="arrow"><span>state</span></div>
+    <div class="node amber">
+      <div class="num">Layer 2 · Protocol</div>
+      <h4>Typed <em>widget messages</em></h4>
+      <p>WebSocket JSON envelopes. 6 widget types. Capability handshake. Action events flow back.</p>
+      <div class="tag">widget_live · widget_card · widget_action</div>
+    </div>
+    <div class="arrow"><span>render</span></div>
+    <div class="node">
+      <div class="num">Layer 1 · Device</div>
+      <h4>Renderer <em>per hardware</em></h4>
+      <p>Each device implements the 6 widgets opinionatedly. Tab5 renders in LVGL v5, an OLED renders in scrolling text. Same skill works on both.</p>
+      <div class="tag">ui_widget.c · lv_obj_t primitives</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ THE SIX WIDGETS ═══════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">02 · Vocabulary</div>
+    <h2 class="sec-title">Six widgets. <em>Not twenty.</em></h2>
+    <p class="sec-deck">
+      Every skill fits into one of these shapes. Unlimited data inside each, but the
+      interaction contract is fixed. That's how skills stay portable across devices
+      and how the UI never becomes a novice-designed mess.
+    </p>
+  </div>
+
+  <div class="grid">
+
+    <div class="cell">
+      <div class="ct">◦ LIVE</div>
+      <h5>One thing, <em>now.</em></h5>
+      <p class="desc">Owns the home hero slot. Replaces the orb's idle color + poem. Exactly one live widget at a time — brain picks by priority weight.</p>
+      <div class="slots"><b>title</b> · <b>body</b> · <b>icon</b><br><b>tone</b><i> calm|active|approaching|urgent|done</i><br><b>progress</b> 0..1<br><b>action</b> <i>{label,event}</i><br><b>priority</b> 0..100</div>
+      <div class="ex">timer · drafting · heartbeat · routing</div>
+    </div>
+
+    <div class="cell">
+      <div class="ct">◦ CARD</div>
+      <h5>A moment <em>in conversation.</em></h5>
+      <p class="desc">Lands in chat or the activity feed. Short-form. Optional single amber action. For completions, alerts, notifications with optional reply.</p>
+      <div class="slots"><b>title</b> · <b>body</b> · <b>image_url?</b><br><b>tone</b><i> info|success|alert</i><br><b>action</b> <i>{label,event}?</i></div>
+      <div class="ex">timer done · email drafted · meeting in 10</div>
+    </div>
+
+    <div class="cell">
+      <div class="ct">◦ LIST</div>
+      <h5>Pick <em>one.</em></h5>
+      <p class="desc">Scrollable row list, each row with title + optional subtitle. Tap-to-select emits the item's id. For "which recipe?" "which song?" "which room?"</p>
+      <div class="slots"><b>title</b><br><b>items[]</b> <i>{id,title,subtitle?}</i><br><b>on_select</b> <i>event name</i></div>
+      <div class="ex">pick a recipe · choose a room · route to …</div>
+    </div>
+
+    <div class="cell">
+      <div class="ct">◦ CHART</div>
+      <h5>A number <em>with a shape.</em></h5>
+      <p class="desc">Sparkline, bar, or single gauge. Dragon sends normalized points; Tab5 picks the best rendering for its screen. Low-capability devices degrade to "avg: 42, trending up".</p>
+      <div class="slots"><b>title</b> · <b>series[]</b><br><b>kind</b> <i>spark|bar|gauge</i><br><b>unit?</b> · <b>range?</b></div>
+      <div class="ex">spend this week · focus minutes · mood arc</div>
+    </div>
+
+    <div class="cell">
+      <div class="ct">◦ MEDIA</div>
+      <h5>A picture <em>with a caption.</em></h5>
+      <p class="desc">Image or generated visual + label. Reuses the existing rich-media pipeline (Pygments code blocks, Pillow tables → JPEG). The escape hatch for anything the typed widgets can't express.</p>
+      <div class="slots"><b>url</b> · <b>alt</b><br><b>caption?</b> · <b>w/h?</b><br><b>action?</b> <i>{label,event}</i></div>
+      <div class="ex">generated chart · rendered code · photo</div>
+    </div>
+
+    <div class="cell">
+      <div class="ct">◦ PROMPT</div>
+      <h5>Ask <em>then act.</em></h5>
+      <p class="desc">One question with a typed expected response — number, text, choice. Keyboard or voice answers both honored. For "how many reps?", "which person?", "confirm send?"</p>
+      <div class="slots"><b>question</b> · <b>input</b><br><i>{kind,placeholder?,choices?}</i><br><b>on_answer</b> <i>event name</i></div>
+      <div class="ex">how many? · confirm? · which dog?</div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ SKILL EXAMPLE ═══════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">03 · Author experience</div>
+    <h2 class="sec-title">A whole skill, <em>under 80 lines.</em></h2>
+    <p class="sec-deck">
+      This is the entire author-facing surface. A Python file + a short YAML manifest.
+      No layout syntax, no CSS, no LVGL. The manifest lists voice triggers and
+      which widget slots the skill uses. The Python emits state into those slots.
+      <b>Everything else is the platform's problem.</b>
+    </p>
+  </div>
+
+  <div class="two">
+    <div class="pane">
+      <h4>skills/timesense/ <em>manifest.yml</em></h4>
+      <p class="lead">Metadata only. Voice triggers, which widget surfaces, default icon, priority weight. No layout instructions — that's the renderer's job.</p>
+      <div class="snippet"><span class="k">skill_id</span>: <span class="s">timesense.pomodoro</span>
+<span class="k">name</span>: <span class="s">Time Sense</span>
+<span class="k">description</span>: <span class="s">AI-first timer</span>
+<span class="k">voice_triggers</span>:
+  - <span class="s">"set a timer for {min:int} minutes"</span>
+  - <span class="s">"pomodoro"</span>
+  - <span class="s">"deep work for {min:int}"</span>
+<span class="k">icon_default</span>: <span class="s">briefcase</span>
+<span class="k">surfaces</span>:
+  - <span class="k">widget</span>: <span class="s">live</span>
+    <span class="k">priority</span>: 80
+    <span class="k">when</span>: <span class="s">running</span>
+  - <span class="k">widget</span>: <span class="s">card</span>
+    <span class="k">when</span>: <span class="s">done</span></div>
+    </div>
+    <div class="pane">
+      <h4>skills/timesense/ <em>skill.py</em></h4>
+      <p class="lead">Pure Python. Emits widget state. Dragon handles WS transport, voice trigger matching, and capability-aware routing.</p>
+      <div class="snippet"><span class="c"># timesense.py — the whole thing.</span>
+<span class="k">from</span> openclaw <span class="k">import</span> Skill, Surface
+
+<span class="k">class</span> Timesense(Skill):
+  <span class="k">def</span> <span class="s">start</span>(self, minutes: <span class="k">int</span>):
+    self.remaining = minutes * 60
+    self.surface.live(
+      title=<span class="s">"Deep work"</span>,
+      body=<span class="s">f"{minutes}:00 remaining"</span>,
+      icon=<span class="s">"briefcase"</span>,
+      tone=<span class="s">"calm"</span>,
+      progress=0,
+      action=(<span class="s">"PAUSE"</span>, <span class="s">"ts.pause"</span>),
+      priority=80,
+    )
+    self.schedule_tick(1)   <span class="c"># tick every 1s</span>
+
+  <span class="k">def</span> <span class="s">on_tick</span>(self):
+    self.remaining -= 1
+    pct = 1 - self.remaining / self.total
+    tone = <span class="s">"urgent"</span> <span class="k">if</span> pct &gt; .95 <span class="k">else</span> \
+           <span class="s">"approaching"</span> <span class="k">if</span> pct &gt; .9 <span class="k">else</span> \
+           <span class="s">"active"</span>
+    self.surface.live_update(
+      body=fmt(self.remaining),
+      tone=tone,
+      progress=pct,
+    )
+    <span class="k">if</span> self.remaining &lt;= 0:
+      self.surface.live_clear()
+      self.surface.chat_card(
+        title=<span class="s">"Done"</span>,
+        body=<span class="s">f"{self.total//60} min · well run"</span>,
+        tone=<span class="s">"success"</span>,
+      )</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ DESIGN PRINCIPLES ═══════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">04 · Rules we keep</div>
+    <h2 class="sec-title">Opinionated <em>on purpose.</em></h2>
+    <p class="sec-deck">
+      The platform enforces taste by vocabulary. Authors can't make ugly layouts because
+      there's nothing to lay out. These are the non-negotiables for v1.
+    </p>
+  </div>
+
+  <div class="principles">
+    <div class="p">
+      <div class="n">1</div>
+      <h6>One live, full stop.</h6>
+      <div class="pd">Exactly one widget owns the orb at a time. Brain resolves priority. Others queue.</div>
+    </div>
+    <div class="p">
+      <div class="n">2</div>
+      <h6>Amber is the only accent.</h6>
+      <div class="pd">One signal color per moment. Tone modifiers use existing status red / emerald / rose — never new hues.</div>
+    </div>
+    <div class="p">
+      <div class="n">3</div>
+      <h6>No layout from skills.</h6>
+      <div class="pd">Manifest declares surfaces; never coordinates. Renderer owns everything visual.</div>
+    </div>
+    <div class="p">
+      <div class="n">4</div>
+      <h6>Renderer degrades gracefully.</h6>
+      <div class="pd">A chart on an OLED becomes "avg 42 ↑". A prompt on a keyboard-less device becomes voice-only.</div>
+    </div>
+    <div class="p">
+      <div class="n">5</div>
+      <h6>Typography carries meaning.</h6>
+      <div class="pd">Letter-spaced caption = state. Serif display = headline. Amber italic = <em>signal</em>. Never color alone.</div>
+    </div>
+    <div class="p">
+      <div class="n">6</div>
+      <h6>Actions are always single.</h6>
+      <div class="pd">Widgets expose at most one primary action. Secondary actions surface via long-press.</div>
+    </div>
+    <div class="p">
+      <div class="n">7</div>
+      <h6>Idle has no widget.</h6>
+      <div class="pd">No skill forced onto an empty home. Calm orb is the default, always.</div>
+    </div>
+    <div class="p">
+      <div class="n">8</div>
+      <h6>Skills never block.</h6>
+      <div class="pd">Async everything. Tab5 UI stays interactive while skills run on Dragon.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ NON-GOALS ═══════════════════════════════ -->
+<div class="sec">
+  <div class="sec-head">
+    <div class="sec-num">05 · What this is not</div>
+    <h2 class="sec-title">No app store. <em>No layout engine.</em> No JavaScript.</h2>
+    <p class="sec-deck">
+      Every feature we explicitly cut. Skills are not apps. Widgets are not layouts.
+      The vocabulary is the product.
+    </p>
+  </div>
+
+  <div class="two">
+    <div class="pane">
+      <h4><em>No</em> layout YAML / HTML.</h4>
+      <p class="lead">Skill authors never write <code>row, column, label x:12 y:42</code>. The vocabulary is the layout. This is the Garmin watchface trap; we avoid it.</p>
+    </div>
+    <div class="pane">
+      <h4><em>No</em> interpreter on Tab5.</h4>
+      <p class="lead">No JS, no Lua, no sandboxed code. Skills run on the brain in Python. Tab5 only renders JSON state. Security model is trivial.</p>
+    </div>
+    <div class="pane">
+      <h4><em>No</em> app install flow.</h4>
+      <p class="lead">Skills sync from Dragon's registry. Install a skill = git pull on the brain. No firmware flash, no Tab5 restart, no per-device distribution.</p>
+    </div>
+    <div class="pane">
+      <h4><em>No</em> third-party UI chrome.</h4>
+      <p class="lead">Every widget rendering obeys v5 tokens. Skills can't override colors, fonts, or spacing. Taste is centrally enforced.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════ FOOTNOTE ═══════════════════════════════ -->
+<div class="foot">
+  <b>NEXT</b> · Build widget_live on Tab5 · ship Time Sense (Pomodoro) end-to-end · 1 week.
+  <br>
+  <b>THEN</b> · widget_card + action bus · widget_list + widget_prompt · first three real OpenClaw skills ported.
+  <br>
+  <b>LATER</b> · widget_chart · widget_media refined · second renderer (Waveshare round) · skill registry sync to TinkerClaw.
+  <br><br>
+  <b>WHAT CHANGES</b> · Tab5 stops being a fixed-feature device. It becomes the face of an extensible ecosystem. Every skill written in the ecosystem gets a voice-first surface. Every hardware partner that implements the renderer gets the whole skill catalog. The unit of product velocity moves from firmware to Python.
+</div>
+
+</div>
+</body></html>

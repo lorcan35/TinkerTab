@@ -932,3 +932,45 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Each image download allocated a ~500KB PSRAM buffer, and freeing it after the image was no longer visible left fragmented holes. Over time, PSRAM fragmentation mirrored the internal SRAM fragmentation problem (see "Internal SRAM Fragmentation" entry) — total free was fine but largest contiguous block was too small.
 - **Fix:** Pre-allocate 5 fixed PSRAM slots (581KB each, ~2.9MB total) at boot in `media_cache_init()`. Images are written into these slots using LRU eviction. No runtime malloc/free for image data — the 5 slots are reused forever.
 - **Prevention:** For large, repeatedly allocated/freed buffers on ESP32-P4 (images, audio, video frames), always pre-allocate a fixed pool at boot. Use LRU or ring-buffer eviction within the pool. Runtime `heap_caps_malloc`/`heap_caps_free` of large PSRAM blocks will fragment the heap within hours of continuous use.
+
+---
+
+## Widget Platform (April 2026) — Architecture Decisions
+
+### Why typed widget vocabulary and not a layout engine
+- **Date:** 2026-04-18
+- **Context:** Designing v1 of the skill-surface platform. Alternative options were (a) Python-only with Tab5 rendering opinionated native screens, (b) YAML-declared layouts, (c) full L3 app manifest with a JSON layout engine.
+- **Decision:** Typed widget vocabulary (6 primitives: live, card, list, chart, media, prompt). Skills emit state with fixed slots; device renders opinionatedly.
+- **Why:** (a) fails portability — skills tied to one device. (b)/(c) fail because every skill author has to understand every device's screen size, touch capability, and color depth; novice authors ship broken layouts. See `docs/WIDGETS.md` §1 non-goals.
+- **Prevention:** Don't revisit this decision unless adding a 2nd renderer surfaces a widget type the 6 can't cover. Escape hatch is `widget_media` (JPEG pre-rendered on the brain).
+
+### Why live slot reuses `s_poem_label` instead of new LVGL objects
+- **Date:** 2026-04-18
+- **Context:** The home screen already has a bottom text slot (`s_poem_label`) that switches between "last note", "offline", "standing by", and edge states. The widget platform's live slot needs to render a title + body on top of the orb.
+- **Decision:** Extend `s_poem_label`'s state machine to include a widget-live source, highest priority. Create zero new LVGL objects per widget update.
+- **Why:** Creating new LVGL objects per widget tick was the root cause of the LV pool fragmentation crashes from the v5 UI pass (see "Internal SRAM Fragmentation" and "lv_malloc NULL deref in circ_calc_aa4"). Reusing existing objects with text updates is O(1) memory.
+- **Prevention:** Never create new LVGL objects in the widget live render path. If a new visual element is absolutely required, pre-allocate it in `ui_home.c` init and toggle visibility.
+
+### Widget action rate-limiting prevents SDIO TX flooding
+- **Date:** 2026-04-18
+- **Context:** Earlier stress tests (rapid nav + rapid orb taps) exhausted the ESP-Hosted SDIO TX `copy_buff` pool and panicked. Patched in `components/espressif__esp_hosted/host/drivers/transport/transport_drv.c` to drop-not-crash.
+- **Decision:** The widget platform's Tab5→Dragon `widget_action` emitter rate-limits at 4/sec. Rapid button-mashing collapses to 4 events per second regardless of tap count.
+- **Why:** Even with the copy_buff patch, flooding would drop legitimate LWIP traffic. The rate-limit matches user intent (nobody legitimately taps an action 10 times in a second) while preserving SDIO headroom.
+- **Prevention:** Any new Tab5-initiated WS message type should include a rate limit. Consider 4/sec default; raise only if a specific use case demands it.
+
+### Skills vs native screens — the product split
+- **Date:** 2026-04-18
+- **Context:** The widget platform's success depends on choosing what becomes a "skill" (Python on Dragon) vs what stays as a "native screen" (C firmware on Tab5).
+- **Decision:**
+  - **Widget-worthy:** anything with *state* — timers, reminders, notifications, polls, ambient updates, completion cards, agent activity, list pickers.
+  - **Native-only:** hardware-specific features — camera viewfinder, keyboard layout, voice overlay orb (the voice pipeline itself), touch calibration, OTA UI.
+  - **Gray area:** home screen, settings. These are native but *hold widget slots* — home has the live slot; settings may eventually show a widget per skill for config.
+- **Prevention:** When adding a new feature, first ask "does it have state that changes over time based on external data?" If yes → widget. If no → native screen.
+
+### Capability downgrade belongs on the brain, not the device
+- **Date:** 2026-04-18
+- **Context:** If a device doesn't support `widget_chart`, something has to fall back. Options: device ignores, device synthesizes a text fallback, brain synthesizes and emits a `widget_card` instead.
+- **Decision:** Brain synthesizes, emits `widget_card` with text body ("avg 42, trending up"). Device never sees a widget type it can't render.
+- **Why:** Pushing the fallback to the brain keeps device renderers simple ("render exactly the 6 widgets"). Tab5 has enough on its plate. Also: brain has better context to synthesize meaningful text summaries than device code would.
+- **Prevention:** New widget types must be accompanied by a brain-side fallback to an existing supported type before they're added to the protocol.
+

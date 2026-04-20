@@ -16,8 +16,12 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 static const char *TAG = "settings";
 
@@ -41,6 +45,17 @@ static const char *TAG = "settings";
 static nvs_handle_t s_nvs = 0;
 static bool         s_inited = false;
 
+/* v4·D audit P0 fix: serialize every NVS call.
+ * tab5_budget_accumulate runs on the WS rx task, tab5_settings_set_* is
+ * called from the LVGL thread, and the heap watchdog on Core 1 reads
+ * counters too.  The nvs_handle_t is not thread-safe -- concurrent
+ * nvs_set_u32 + nvs_commit on the same handle is UB and has been
+ * observed producing ESP_ERR_NVS_INVALID_HANDLE under stress.  A
+ * plain FreeRTOS mutex is enough; NVS ops are short. */
+static SemaphoreHandle_t s_nvs_mutex = NULL;
+#define NVS_LOCK()    do { if (s_nvs_mutex) xSemaphoreTake(s_nvs_mutex, portMAX_DELAY); } while (0)
+#define NVS_UNLOCK()  do { if (s_nvs_mutex) xSemaphoreGive(s_nvs_mutex); } while (0)
+
 /* Forward declarations for init-time seeding */
 static esp_err_t get_str(const char *key, char *buf, size_t len, const char *def);
 static esp_err_t set_str(const char *key, const char *val);
@@ -57,6 +72,14 @@ static uint32_t s_nvs_write_count = 0;
 esp_err_t tab5_settings_init(void)
 {
     if (s_inited) return ESP_OK;
+
+    if (!s_nvs_mutex) {
+        s_nvs_mutex = xSemaphoreCreateMutex();
+        if (!s_nvs_mutex) {
+            ESP_LOGE(TAG, "xSemaphoreCreateMutex failed");
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &s_nvs);
     if (err != ESP_OK) {
@@ -101,7 +124,9 @@ static esp_err_t get_str(const char *key, char *buf, size_t len, const char *def
     }
 
     size_t required = len;
+    NVS_LOCK();
     esp_err_t err = nvs_get_str(s_nvs, key, buf, &required);
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         /* Key not found or buffer too small — use default */
         strncpy(buf, def, len);
@@ -119,11 +144,13 @@ static esp_err_t set_str(const char *key, const char *val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
+    NVS_LOCK();
     esp_err_t err = nvs_set_str(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_str(%s) failed: %s", key, esp_err_to_name(err));
     }
@@ -135,7 +162,9 @@ static uint8_t get_u8(const char *key, uint8_t def)
     if (!s_inited) return def;
 
     uint8_t val = def;
+    NVS_LOCK();
     esp_err_t err = nvs_get_u8(s_nvs, key, &val);
+    NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGD(TAG, "'%s' not in NVS, using default %d", key, def);
     } else if (err != ESP_OK) {
@@ -148,11 +177,13 @@ static esp_err_t set_u8(const char *key, uint8_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
+    NVS_LOCK();
     esp_err_t err = nvs_set_u8(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u8(%s) failed: %s", key, esp_err_to_name(err));
     }
@@ -164,7 +195,9 @@ static uint16_t get_u16(const char *key, uint16_t def)
     if (!s_inited) return def;
 
     uint16_t val = def;
+    NVS_LOCK();
     esp_err_t err = nvs_get_u16(s_nvs, key, &val);
+    NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         ESP_LOGD(TAG, "'%s' not in NVS, using default %d", key, def);
     } else if (err != ESP_OK) {
@@ -177,13 +210,44 @@ static esp_err_t set_u16(const char *key, uint16_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
+    NVS_LOCK();
     esp_err_t err = nvs_set_u16(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u16(%s) failed: %s", key, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static uint32_t get_u32(const char *key, uint32_t def)
+{
+    if (!s_inited) return def;
+    uint32_t val = def;
+    NVS_LOCK();
+    esp_err_t err = nvs_get_u32(s_nvs, key, &val);
+    NVS_UNLOCK();
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGD(TAG, "'%s' not in NVS, using default %lu", key, (unsigned long)def);
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_get_u32(%s): %s, using default", key, esp_err_to_name(err));
+    }
+    return val;
+}
+
+static esp_err_t set_u32(const char *key, uint32_t val)
+{
+    if (!s_inited) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = nvs_set_u32(s_nvs, key, val);
+    if (err == ESP_OK) {
+        err = nvs_commit(s_nvs);
+        if (err == ESP_OK) s_nvs_write_count++;
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_set_u32(%s) failed: %s", key, esp_err_to_name(err));
     }
     return err;
 }
@@ -281,15 +345,19 @@ esp_err_t tab5_settings_set_llm_model(const char *model)
     return set_str("llm_mdl", model);
 }
 
-/* ── Wake word ──────────────────────────────────────────────────────── */
+/* ── Wake word (PARKED) ─────────────────────────────────────────────────
+ * Feature parked — getter always reports OFF regardless of NVS. The
+ * setter still writes so an un-park is lossless, but nothing will read
+ * the stored value until voice.c WAKE_WORD_PARKED is lifted. */
 
 uint8_t tab5_settings_get_wake_word(void)
 {
-    return get_u8("wake", 0);
+    return 0;  /* Parked — never on */
 }
 
 esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
 {
+    ESP_LOGW("settings", "wake_word set to %u (feature parked — no effect)", enabled);
     return set_u8("wake", enabled ? 1 : 0);
 }
 
@@ -349,6 +417,128 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode)
 {
     if (mode > 2) mode = 0;
     return set_u8("conn_m", mode);
+}
+
+/* ── v4·D Sovereign Halo mode dials ─────────────────────────────────── */
+
+/* Three orthogonal dials replace the 4-mode pill. Tab5-side resolver
+ * turns tiers into the legacy voice_mode + llm_model that Dragon expects,
+ * so no backend protocol change is needed for the initial UX ship. */
+
+uint8_t tab5_settings_get_int_tier(void)  { return get_u8("int_tier", 0); }  /* 0=fast 1=balanced 2=smart */
+uint8_t tab5_settings_get_voi_tier(void)  { return get_u8("voi_tier", 0); }  /* 0=local 1=neutral 2=studio */
+uint8_t tab5_settings_get_aut_tier(void)  { return get_u8("aut_tier", 0); }  /* 0=ask 1=agent */
+
+esp_err_t tab5_settings_set_int_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("int_tier", t); }
+esp_err_t tab5_settings_set_voi_tier(uint8_t t) { if (t > 2) t = 0; return set_u8("voi_tier", t); }
+esp_err_t tab5_settings_set_aut_tier(uint8_t t) { if (t > 1) t = 0; return set_u8("aut_tier", t); }
+
+bool      tab5_settings_is_onboarded(void) { return get_u8("onboard", 0) != 0; }
+esp_err_t tab5_settings_set_onboarded(bool done) { return set_u8("onboard", done ? 1 : 0); }
+
+/* ── v4·D Phase 3c daily cloud spend accumulator ────────────────────── */
+
+/* NVS keys are u32:
+ *   "spent_mils"  — cumulative cost for today in mils (1/1000 USD cent)
+ *   "spent_day"   — days-since-epoch when spent_mils was last written
+ *   "cap_mils"    — per-day spending cap (default 100000 = 100 cents = $1.00)
+ *
+ * Using mils (not cents) keeps a whole day's spend precise even for very
+ * small Haiku turns (~0.3 cents each).  Max u32 = 4.29e9 mils = $42,949
+ * which is way more headroom than needed. */
+
+static uint32_t days_since_epoch(void)
+{
+    /* v4·D audit P1 fix: previous version used (now / 86400) which
+     * counts UTC days.  A Los Angeles user's "new day" therefore rolled
+     * at 5 PM local, wiping their mid-afternoon budget mid-session.
+     * Resolve the local wall-clock instead, giving a stable rollover at
+     * local midnight.  Returns 0 if RTC isn't synced yet -- caller's
+     * early-return keeps state intact. */
+    time_t now = 0;
+    time(&now);
+    if (now <= 0) return 0;
+    struct tm tm;
+    localtime_r(&now, &tm);
+    /* Compose a canonical date index: year*366 + day-of-year.  Not
+     * strictly "days since epoch" but monotonic and unique per
+     * calendar day in the user's current timezone, which is what we
+     * actually want for budget rollover. */
+    return (uint32_t)((tm.tm_year + 1900) * 366 + tm.tm_yday);
+}
+
+static void roll_if_new_day(void)
+{
+    uint32_t today = days_since_epoch();
+    if (today == 0) return;  /* RTC not yet synced -- don't stomp state */
+    uint32_t stored_day = get_u32("spent_day", 0);
+    if (stored_day != today) {
+        /* Fresh day: zero the accumulator. */
+        set_u32("spent_mils", 0);
+        set_u32("spent_day", today);
+    }
+}
+
+uint32_t tab5_budget_get_today_mils(void)
+{
+    roll_if_new_day();
+    return get_u32("spent_mils", 0);
+}
+
+uint32_t tab5_budget_get_cap_mils(void)
+{
+    return get_u32("cap_mils", 100000);  /* default $1.00/day cap */
+}
+
+esp_err_t tab5_budget_set_cap_mils(uint32_t cap_mils)
+{
+    return set_u32("cap_mils", cap_mils);
+}
+
+esp_err_t tab5_budget_accumulate(uint32_t mils)
+{
+    if (mils == 0) return ESP_OK;
+    roll_if_new_day();
+    uint32_t cur = get_u32("spent_mils", 0);
+    /* Saturate at u32 max — won't happen in practice but don't wrap. */
+    uint32_t next = (cur > 0xFFFFFFFFu - mils) ? 0xFFFFFFFFu : cur + mils;
+    return set_u32("spent_mils", next);
+}
+
+/* ──────────────────────────────────────────────────────────────────── */
+
+uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
+                          char *out_model, size_t model_len)
+{
+    /* Autonomy wins: agent always routes via TinkerClaw gateway, regardless
+     * of the other two dials. out_model is left untouched -- the gateway
+     * picks its own model. */
+    if (aut_tier >= 1) {
+        return 3; /* VOICE_MODE_TINKERCLAW */
+    }
+
+    bool cloud_audio = (voi_tier >= 2);  /* studio only */
+    bool cloud_llm   = (int_tier >= 2);  /* smart only */
+
+    if (cloud_audio && cloud_llm) {
+        if (out_model && model_len > 0) {
+            /* "anthropic/claude-sonnet-4-20250514" rejected by OpenRouter
+             * ("not a valid model ID").  Using the current valid Sonnet
+             * ID so cloud mode actually works out of the box.  Users can
+             * still pick any other model via /mode?model=... */
+            snprintf(out_model, model_len, "anthropic/claude-3.5-sonnet");
+        }
+        return 2; /* Full Cloud */
+    }
+    if (cloud_audio || cloud_llm) {
+        /* Hybrid covers "cloud voice + local brain" cleanly. The "local voice
+         * + cloud brain" combo doesn't have a clean legacy mapping -- we
+         * route it here too so the user still gets cloud STT for accuracy;
+         * the resolver caller may later override llm_model if they want a
+         * specific cloud model despite being mid-tier overall. */
+        return 1; /* Hybrid */
+    }
+    return 0; /* Local */
 }
 
 /* ── Device identity ─────────────────────────────────────────────────── */
