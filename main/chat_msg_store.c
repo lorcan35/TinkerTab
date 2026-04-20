@@ -61,13 +61,31 @@ bool chat_store_set_session(const chat_session_t *s)
         s_write_idx = 0;
         return true;
     }
+    /* Only wipe stored messages when we are genuinely switching to a
+     * DIFFERENT session_id.  Seeding from no-active-session (first
+     * ui_chat_create after boot) would otherwise nuke any messages
+     * /chat or voice handlers pushed before the overlay was ever
+     * opened — that was the "chat shows empty after a pre-nav turn"
+     * bug from the 2026-04-20 sprint. */
+    /* Wipe only when switching FROM a valid session TO a different id.
+     * Seeding (current s_active.valid == false) must NOT wipe, or any
+     * messages pushed before the chat overlay was first created get
+     * nuked the moment ensure_session_loaded runs. */
+    bool differs = s_active.valid
+                   && strncmp(s_active.session_id, s->session_id,
+                              sizeof(s_active.session_id)) != 0;
     s_active = *s;
     s_active.valid = true;
-    memset(s_msgs, 0, BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t));
-    s_count = 0;
-    s_write_idx = 0;
-    ESP_LOGI(TAG, "Session switch -> id='%.16s' mode=%u model='%s'",
-             s_active.session_id, s_active.voice_mode, s_active.llm_model);
+    if (differs) {
+        memset(s_msgs, 0, BSP_CHAT_MAX_MESSAGES * sizeof(chat_msg_t));
+        s_count = 0;
+        s_write_idx = 0;
+        ESP_LOGI(TAG, "Session switch -> id='%.16s' mode=%u model='%s'",
+                 s_active.session_id, s_active.voice_mode, s_active.llm_model);
+    } else {
+        ESP_LOGI(TAG, "Session refresh (same id) -> mode=%u model='%s' keeping %d msgs",
+                 s_active.voice_mode, s_active.llm_model, s_count);
+    }
     return true;
 }
 
