@@ -73,7 +73,33 @@ static void init_auth_token(void)
         tab5_settings_set_auth_token(s_auth_token);
         ESP_LOGI(TAG, "Generated new auth token");
     }
-    ESP_LOGI(TAG, "Debug server auth token: %s", s_auth_token);
+    /* v4·D audit P1 fix: don't dump the full token on every boot log.
+     * The user can still recover it via serial by reading NVS, but
+     * anyone over-shoulder-watching the console doesn't get it. */
+    size_t tl = strlen(s_auth_token);
+    ESP_LOGI(TAG, "Debug server auth token: %.*s****%.*s (%u chars, masked)",
+             (int)(tl >= 4 ? 4 : tl), s_auth_token,
+             (int)(tl >= 4 ? 4 : 0), s_auth_token + (tl >= 4 ? tl - 4 : 0),
+             (unsigned)tl);
+}
+
+/* v4·D audit P1 fix: constant-time string compare for auth.  The
+ * previous strcmp leaked information about the prefix match length
+ * via response timing -- a local attacker on the LAN could use that
+ * to narrow down the 32-hex-char token with O(16) probes per position.
+ * This path iterates ALL bytes regardless of match -- ~100 ns extra. */
+static int ct_token_cmp(const char *a, const char *b)
+{
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    size_t n  = la > lb ? la : lb;
+    unsigned diff = (unsigned)(la ^ lb);
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ca = i < la ? (unsigned char)a[i] : 0;
+        unsigned char cb = i < lb ? (unsigned char)b[i] : 0;
+        diff |= (unsigned)(ca ^ cb);
+    }
+    return diff == 0 ? 0 : 1;
 }
 
 /**
@@ -90,7 +116,8 @@ static bool check_auth(httpd_req_t *req)
         return false;
     }
     /* Expect "Bearer <token>" */
-    if (strncmp(auth_header, "Bearer ", 7) != 0 || strcmp(auth_header + 7, s_auth_token) != 0) {
+    if (strncmp(auth_header, "Bearer ", 7) != 0
+        || ct_token_cmp(auth_header + 7, s_auth_token) != 0) {
         httpd_resp_set_status(req, "401 Unauthorized");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"error\":\"Invalid token\"}");

@@ -11,6 +11,7 @@
 #include "widget.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "lvgl.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -41,27 +42,48 @@ static void slot_clear(widget_t *w)
     w->tone = WIDGET_TONE_CALM;
 }
 
+/* v4·D audit P1: priority-weighted eviction.
+ *
+ * The previous policy picked the "oldest" (smallest updated_at_ms)
+ * active widget regardless of priority -- a running Pomodoro at
+ * priority 80 would lose its slot to a stale info card at priority
+ * 20 just because it had updated earlier.  Score each active slot
+ * with (age_ms / (priority + 1)) so high-priority or recently-touched
+ * slots resist eviction; lowest-score wins. */
 static widget_t *slot_for_new(void)
 {
-    /* Prefer an inactive slot; fall back to the oldest active one. */
-    widget_t *oldest_inactive = NULL;
-    widget_t *oldest_active   = NULL;
+    widget_t *best_inactive = NULL;
+    widget_t *best_active   = NULL;
+    uint32_t best_active_score = 0;
+    uint32_t now = lv_tick_get();
+
     for (int i = 0; i < s_capacity; i++) {
         widget_t *w = &s_widgets[i];
         if (!w->active) {
-            if (!oldest_inactive || w->updated_at_ms < oldest_inactive->updated_at_ms) {
-                oldest_inactive = w;
+            if (!best_inactive
+                || w->updated_at_ms < best_inactive->updated_at_ms) {
+                best_inactive = w;
             }
-        } else {
-            if (!oldest_active || w->updated_at_ms < oldest_active->updated_at_ms) {
-                oldest_active = w;
-            }
+            continue;
+        }
+        /* Score: older + lower-priority ⇒ higher score ⇒ more evictable. */
+        uint32_t age_ms = (now >= w->updated_at_ms)
+                         ? (now - w->updated_at_ms) : 0;
+        uint32_t pri    = w->priority ? w->priority : 50;
+        uint32_t score  = age_ms / (pri + 1);
+        if (!best_active || score > best_active_score) {
+            best_active = w;
+            best_active_score = score;
         }
     }
-    if (oldest_inactive) return oldest_inactive;
-    ESP_LOGW(TAG, "store full — evicting oldest active widget id=%s",
-             oldest_active ? oldest_active->card_id : "?");
-    return oldest_active;
+
+    if (best_inactive) return best_inactive;
+    ESP_LOGW(TAG,
+             "store full -- evicting id=%s (priority=%u, score=%lu)",
+             best_active ? best_active->card_id : "?",
+             best_active ? best_active->priority : 0,
+             (unsigned long)best_active_score);
+    return best_active;
 }
 
 /* ── Public API ─────────────────────────────────────────────── */
