@@ -1945,6 +1945,22 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
         .ping_interval_sec      = WS_CLIENT_PING_SEC,
         .pingpong_timeout_sec   = WS_CLIENT_PONG_SEC,
         .disable_auto_reconnect = false,
+        /* v4·D connectivity audit -- ROOT CAUSE FIX #2.
+         *
+         * Enable TCP-level keepalive on the underlying socket so we
+         * detect half-open connections at the OS layer rather than
+         * waiting for the next app-level write to fail.  With no
+         * keepalive, a WiFi blip that silently breaks the TCP 4-tuple
+         * mapping on the AP leaves both sides thinking the socket is
+         * alive until the 180 s WS pong timeout finally fires -- hence
+         * the long mysterious "stuck connecting" windows.
+         *
+         * Values: idle 10 s, probe every 5 s, 3 probes -> dead socket
+         * detected in ~25 s even if the app path is quiet. */
+        .keep_alive_enable      = true,
+        .keep_alive_idle        = 10,
+        .keep_alive_interval    = 5,
+        .keep_alive_count       = 3,
         /* Attach cert bundle unconditionally — harmless on ws:// (plain TCP),
          * required for wss:// ngrok.  This sidesteps the need to tear down
          * and recreate the client when falling back from local to ngrok. */
