@@ -40,11 +40,23 @@ static const char *TAG = "heap_wd";
 #define HEAP_WD_INT_FRAG_TOTAL_MIN     (16 * 1024)  /* 16KB — must have enough free for it to be fragmentation, not exhaustion */
 #define HEAP_WD_INT_FRAG_REBOOT_COUNT  3        /* 3 consecutive checks (3 minutes) */
 
+/* DMA pool exhaustion thresholds (audit #80):
+ * WiFi driver + TLS need DMA-capable buffers for RX/TX descriptors. When
+ * free DMA pool drops below 8KB the driver silently fails — packets never
+ * leave the chip, ARP responses stop, device becomes unreachable but the
+ * LVGL loop keeps running so the heap_wd/SRAM/PSRAM paths don't trigger.
+ * Before this guard the device would sit in a "Dragon unreachable" state
+ * until the user reflashed. Reboot after 2 consecutive minutes to recover
+ * automatically; honors the same voice-active grace window as SRAM. */
+#define HEAP_WD_DMA_CRITICAL_BYTES     (8 * 1024)   /* 8KB — below this, WiFi TX/RX starves */
+#define HEAP_WD_DMA_REBOOT_COUNT       2            /* 2 consecutive checks (2 minutes) */
+
 static void heap_watchdog_task(void *arg)
 {
     (void)arg;
     int frag_count = 0;
     int internal_frag_count = 0;
+    int dma_critical_count = 0;
 
     ESP_LOGI(TAG, "Heap watchdog started (check every %ds, reboot after %d consecutive fragmentation events)",
              HEAP_WD_CHECK_INTERVAL_MS / 1000, HEAP_WD_FRAG_REBOOT_COUNT);
@@ -114,8 +126,39 @@ static void heap_watchdog_task(void *arg)
             internal_frag_count = 0;
         }
 
+        /* Audit #80: DMA exhaustion reboot path — WiFi TX/RX dies silently
+         * without this.  Log at 16KB (soft warning), count toward reboot
+         * below HEAP_WD_DMA_CRITICAL_BYTES. */
         if (dma_free < 16384) {
             ESP_LOGE(TAG, "DMA pool critically low: %zu bytes free (largest block %zu)", dma_free, dma_largest);
+        }
+        if (dma_free < HEAP_WD_DMA_CRITICAL_BYTES) {
+            dma_critical_count++;
+            ESP_LOGE(TAG, "DMA pool exhausted: %zu bytes free, largest %zu (count=%d/%d)",
+                     dma_free, dma_largest,
+                     dma_critical_count, HEAP_WD_DMA_REBOOT_COUNT);
+            if (dma_critical_count >= HEAP_WD_DMA_REBOOT_COUNT) {
+                extern voice_state_t voice_get_state(void);
+                voice_state_t vs = voice_get_state();
+                if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING
+                    || vs == VOICE_STATE_PROCESSING) {
+                    ESP_LOGW(TAG, "Heap watchdog: deferring DMA reboot, voice active (state=%d)", vs);
+                } else {
+                    ESP_LOGE(TAG, "Heap watchdog: DMA exhausted %d min; free=%zuKB largest=%zu internal=%uKB PSRAM=%uKB — rebooting to restore WiFi",
+                             HEAP_WD_DMA_REBOOT_COUNT,
+                             dma_free / 1024, dma_largest,
+                             (unsigned)(internal_free / 1024),
+                             (unsigned)(psram_free / 1024));
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    esp_restart();
+                }
+            }
+        } else {
+            if (dma_critical_count > 0) {
+                ESP_LOGI(TAG, "DMA pool recovered (was %d/%d)",
+                         dma_critical_count, HEAP_WD_DMA_REBOOT_COUNT);
+            }
+            dma_critical_count = 0;
         }
 
         /* C14: Monitor system event task stack high-water mark */
