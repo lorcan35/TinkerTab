@@ -389,6 +389,13 @@ void app_main(void)
         ui_theme_init();  // must run before any screen that uses TH_* styles
         extern void widget_store_init(void);
         widget_store_init();  // widget platform — bounded PSRAM cache
+        extern void chat_store_init(void);
+        chat_store_init();    // chat ring buffer — needed at boot so messages
+                              // pushed via /chat (or voice handlers) before
+                              // the Chat overlay has ever been opened don't
+                              // silently drop.  Was lazily inited inside
+                              // ui_chat_create(), which Bug 2 (audit follow-
+                              // up) depended on.
         ui_home_create();
         tab5_ui_unlock();
         ESP_LOGI(TAG, "TinkerOS home screen loaded");

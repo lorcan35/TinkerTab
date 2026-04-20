@@ -1315,6 +1315,22 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         /* Flush playback so we don't keep speaking into a dead pipe. */
         playback_buf_reset();
         tab5_audio_speaker_enable(false);
+        /* Tab5 audit F5 (2026-04-20): if the drop landed MID-TURN (voice
+         * state was PROCESSING or SPEAKING), surface a toast so the user
+         * knows why the reply stopped.  Previously a mid-turn Dragon
+         * crash was silent — just a frozen overlay + no answer.  The
+         * home status-bar pill already picks up RECONNECTING via
+         * voice_get_degraded_reason(), so the toast is a short-lived
+         * orient-the-user signal, not the permanent indicator. */
+        {
+            voice_state_t cur = s_state;
+            if ((cur == VOICE_STATE_PROCESSING || cur == VOICE_STATE_SPEAKING)
+                && !s_disconnecting) {
+                extern void ui_home_show_toast(const char *text);
+                lv_async_call((lv_async_cb_t)ui_home_show_toast,
+                              (void *)"Dragon dropped mid-turn - reconnecting");
+            }
+        }
         /* T1.1: bump attempt counter + apply exponential-with-full-jitter
          * backoff to the client's reconnect timer.  Prevents thundering
          * herd if multiple Tab5s share the same Dragon + avoids 2 s

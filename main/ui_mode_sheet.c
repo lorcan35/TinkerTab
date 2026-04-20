@@ -39,6 +39,13 @@ static lv_obj_t *s_composite_kicker = NULL; /* "RESOLVES TO" / "AGENT MODE" */
 /* Phase 2c Agent consent modal — own scrim, shown on top of the sheet. */
 static lv_obj_t *s_consent_overlay = NULL;
 static uint8_t   s_pre_consent_aut = 0;  /* tier to revert to on Cancel */
+/* Generic callback mode (audit E3): when non-NULL, hide_agent_consent
+ * invokes these instead of the tier-revert / persist logic. Used by the
+ * Settings TinkerClaw row so the same UI can drive a different commit
+ * path (settings already has its own voice_tab_switch flow). */
+static void (*s_consent_confirm_cb)(void *) = NULL;
+static void (*s_consent_cancel_cb)(void *)  = NULL;
+static void  *s_consent_cb_ctx              = NULL;
 
 static uint8_t s_int_tier = 0;
 static uint8_t s_voi_tier = 0;
@@ -499,6 +506,18 @@ static void hide_agent_consent(bool commit)
         lv_obj_del(s_consent_overlay);
         s_consent_overlay = NULL;
     }
+    /* Generic callback mode (E3) — invoke caller's decision handler and
+     * reset the callback slots. Does NOT touch s_aut_tier / persist. */
+    if (s_consent_confirm_cb || s_consent_cancel_cb) {
+        void (*cb)(void *) = commit ? s_consent_confirm_cb : s_consent_cancel_cb;
+        void  *ctx         = s_consent_cb_ctx;
+        s_consent_confirm_cb = NULL;
+        s_consent_cancel_cb  = NULL;
+        s_consent_cb_ctx     = NULL;
+        if (cb) cb(ctx);
+        return;
+    }
+    /* Legacy mode-sheet flow: commit persists tiers, cancel reverts. */
     if (commit) {
         persist_and_notify_dragon();
     } else {
@@ -507,6 +526,22 @@ static void hide_agent_consent(bool commit)
         refresh_segments();
         refresh_composite();
     }
+}
+
+void ui_agent_consent_show(void (*on_confirm)(void *ctx),
+                           void (*on_cancel)(void *ctx),
+                           void *ctx)
+{
+    /* Guard: if callback-mode modal is already up, chain-cancel it first
+     * so we don't leak state. */
+    if (s_consent_overlay) {
+        hide_agent_consent(false);
+    }
+    s_consent_confirm_cb = on_confirm;
+    s_consent_cancel_cb  = on_cancel;
+    s_consent_cb_ctx     = ctx;
+    s_pre_consent_aut    = s_aut_tier;  /* irrelevant in cb-mode, but safe */
+    show_agent_consent(s_aut_tier);
 }
 
 static void show_agent_consent(uint8_t prev_aut_tier)

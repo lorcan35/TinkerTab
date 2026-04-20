@@ -401,11 +401,37 @@ static void voice_tab_switch(uint8_t new_tab)
     send_voice_config();
 }
 
+/* Audit E3 (2026-04-20): tapping TinkerClaw from Settings used to hot-switch
+ * into voice_mode=3 with zero guardrails — the easiest path to the memory-
+ * bypass boundary had the weakest consent.  The mode sheet has always shown
+ * a modal before the same switch; Settings now reuses it via
+ * ui_agent_consent_show(). Consent-mode switch deferred until confirm. */
+static void consent_confirm_tc_cb(void *ctx)
+{
+    (void)ctx;
+    voice_tab_switch(3);
+}
+
+static void consent_cancel_tc_cb(void *ctx)
+{
+    (void)ctx;
+    /* No-op — voice_tab_switch never ran, so nothing to revert. */
+}
+
 /* Single click handler for all 4 radio rows. Mode index comes via user_data. */
 static void cb_tab_local(lv_event_t *e)
 {
     intptr_t idx = (intptr_t)lv_event_get_user_data(e);
-    if (idx >= 0 && idx < 4) voice_tab_switch((uint8_t)idx);
+    if (idx < 0 || idx >= 4) return;
+    if ((uint8_t)idx == 3 && s_active_tab != 3) {
+        /* Going from any mode -> Agent: gate the switch behind the consent
+         * modal.  If already on Agent the tap is a no-op and no modal is
+         * needed (no tier change). */
+        extern void ui_agent_consent_show(void (*)(void *), void (*)(void *), void *);
+        ui_agent_consent_show(consent_confirm_tc_cb, consent_cancel_tc_cb, NULL);
+        return;
+    }
+    voice_tab_switch((uint8_t)idx);
 }
 
 static void cb_local_model(lv_event_t *e)

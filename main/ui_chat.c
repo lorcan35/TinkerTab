@@ -385,6 +385,19 @@ lv_obj_t *ui_chat_create(void)
         if (!s_poll) s_poll = lv_timer_create(poll_voice, 150, NULL);
         else         lv_timer_resume(s_poll);
         ui_keyboard_set_layout_cb(keyboard_layout_cb);
+        /* Re-sync view + suggestions against chat_store after hide.  Messages
+         * pushed via /chat or voice handlers while the overlay was hidden
+         * would otherwise show as empty-state until next interaction. */
+        {
+            uint8_t mode = tab5_settings_get_voice_mode();
+            paint_header_and_view_for_mode(mode);
+            if (s_sugg) chat_suggestions_set_mode(s_sugg, mode);
+        }
+        suggestions_sync_visibility();
+        if (s_view) {
+            chat_msg_view_refresh(s_view);
+            chat_msg_view_scroll_to_bottom(s_view);
+        }
         return s_overlay;
     }
 
@@ -453,6 +466,21 @@ void ui_chat_show(void)
     s_active = true;
     if (s_poll) lv_timer_resume(s_poll);
     ui_keyboard_set_layout_cb(keyboard_layout_cb);
+    /* Re-sync view + suggestions against chat_store after a hide.  Without
+     * this, navigating back to chat after a mode change, + New, or a turn
+     * that landed while the overlay was hidden shows a stale view — empty-
+     * state suggestions on top of bubbles, or vice versa.  The refresh is
+     * a no-op when nothing changed. */
+    {
+        uint8_t mode = tab5_settings_get_voice_mode();
+        paint_header_and_view_for_mode(mode);
+        if (s_sugg) chat_suggestions_set_mode(s_sugg, mode);
+    }
+    suggestions_sync_visibility();
+    if (s_view) {
+        chat_msg_view_refresh(s_view);
+        chat_msg_view_scroll_to_bottom(s_view);
+    }
     lv_obj_invalidate(s_overlay);
     lv_refr_now(lv_display_get_default());
 }

@@ -27,6 +27,14 @@ void ui_mode_sheet_hide(void);
 /* Returns true if the sheet is currently visible. */
 bool ui_mode_sheet_visible(void);
 
+/* Show the Agent-mode consent modal standalone — for callers outside the
+ * mode sheet (e.g. the Settings TinkerClaw row). On Switch: on_confirm is
+ * invoked. On Keep Ask / scrim-dismiss: on_cancel is invoked (may be NULL
+ * if the caller has nothing to revert). Audit E3 (2026-04-20). */
+void ui_agent_consent_show(void (*on_confirm)(void *ctx),
+                           void (*on_cancel)(void *ctx),
+                           void *ctx);
+
 #ifdef __cplusplus
 }
 #endif
