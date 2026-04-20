@@ -18,9 +18,12 @@
 #include "ui_theme.h"
 #include "config.h"
 #include "bsp_config.h"
+#include "media_cache.h"
 #include "esp_log.h"
 
 #include "lvgl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +55,10 @@ typedef struct {
     lv_obj_t *brk_kicker;   /* kicker label inside breakout */
     lv_obj_t *brk_body;     /* body label (mono for code, regular for image alt) */
     lv_obj_t *brk_accent;   /* 3 px amber bar top-left of breakout */
+    lv_obj_t *brk_image;    /* MSG_IMAGE decoded JPEG, lazy-created (Tab5 audit D6) */
+    lv_image_dsc_t brk_dsc; /* decoded pixel buffer owned by media_cache */
+    char      brk_url[256]; /* the URL currently bound to brk_image */
+    bool      brk_fetch_inflight;
     int       data_idx;     /* store logical index bound to this slot, -1 = empty */
 } msg_slot_t;
 
@@ -96,6 +103,84 @@ static void fmt_timestamp(char *buf, size_t n, uint32_t ts, bool is_user)
 static bool msg_is_breakout(const chat_msg_t *m)
 {
     return m && (m->type == MSG_IMAGE || m->type == MSG_CARD || m->type == MSG_AUDIO_CLIP);
+}
+
+/* ── MSG_IMAGE async JPEG decode (Tab5 audit D6) ──────────────────
+ * CLAUDE.md's "Dragon renders code → Tab5 decodes JPEG inline" claim
+ * had only ever been wired for the home widget_media slot; the chat
+ * MSG_IMAGE path rendered a LV_SYMBOL_IMAGE+alt placeholder. Mirror
+ * the ui_home.c pattern: spawn a fetch task on Core 1, hop back via
+ * lv_async_call to bind the decoded dsc onto the slot's lv_image. */
+
+typedef struct {
+    msg_slot_t *slot;      /* slot that kicked the fetch */
+    int         expected_idx;  /* slot->data_idx at kick time */
+    char        url[256];
+    lv_image_dsc_t dsc;    /* filled by fetch task */
+    bool        ok;
+} chat_media_ctx_t;
+
+static void chat_media_bind_cb(void *arg)
+{
+    chat_media_ctx_t *c = (chat_media_ctx_t *)arg;
+    if (!c) return;
+    msg_slot_t *slot = c->slot;
+    /* Verify the slot is still bound to the same message it was when
+     * we kicked off the fetch.  If the user scrolled / the pool got
+     * recycled, discard silently — the next refresh will re-kick for
+     * the now-current URL. */
+    if (slot && slot->data_idx == c->expected_idx &&
+        strncmp(slot->brk_url, c->url, sizeof(slot->brk_url)) == 0 &&
+        c->ok && c->dsc.data && c->dsc.header.w > 0) {
+        slot->brk_dsc = c->dsc;
+        if (slot->brk_image) {
+            int w = c->dsc.header.w, h = c->dsc.header.h;
+            if (w > 720 - 2 * SIDE_PAD) w = 720 - 2 * SIDE_PAD;
+            if (h > BREAK_IMG_H - 8)    h = BREAK_IMG_H - 8;
+            lv_obj_set_size(slot->brk_image, w, h);
+            lv_obj_set_pos(slot->brk_image, (720 - w) / 2, 40);
+            lv_image_set_src(slot->brk_image, &slot->brk_dsc);
+            lv_obj_clear_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+            if (slot->brk_body) lv_obj_add_flag(slot->brk_body, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (slot) slot->brk_fetch_inflight = false;
+    free(c);
+}
+
+static void chat_media_fetch_task(void *pv)
+{
+    chat_media_ctx_t *c = (chat_media_ctx_t *)pv;
+    if (!c) { vTaskDelete(NULL); return; }
+    esp_err_t err = media_cache_fetch(c->url, &c->dsc);
+    c->ok = (err == ESP_OK && c->dsc.data && c->dsc.header.w > 0);
+    lv_async_call(chat_media_bind_cb, c);
+    vTaskDelete(NULL);
+}
+
+static void kick_chat_image_fetch(msg_slot_t *slot, const char *url)
+{
+    if (!slot || !url || !url[0]) return;
+    /* Same URL already bound or in-flight — no-op. */
+    if (strncmp(slot->brk_url, url, sizeof(slot->brk_url)) == 0 &&
+        (slot->brk_dsc.data || slot->brk_fetch_inflight)) {
+        return;
+    }
+    snprintf(slot->brk_url, sizeof(slot->brk_url), "%s", url);
+    memset(&slot->brk_dsc, 0, sizeof(slot->brk_dsc));
+
+    chat_media_ctx_t *c = calloc(1, sizeof(*c));
+    if (!c) return;
+    c->slot = slot;
+    c->expected_idx = slot->data_idx;
+    snprintf(c->url, sizeof(c->url), "%s", url);
+    slot->brk_fetch_inflight = true;
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        chat_media_fetch_task, "chat_media", 8192, c, 3, NULL, 1);
+    if (ok != pdPASS) {
+        slot->brk_fetch_inflight = false;
+        free(c);
+    }
 }
 
 /* ── Slot reset ────────────────────────────────────────────────── */
@@ -191,8 +276,12 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
         lv_label_set_text(slot->brk_kicker, kicker);
         lv_obj_set_pos(slot->brk_kicker, SIDE_PAD, 12);
 
-        /* Body — for images we render a placeholder pane with alt text;
-         * for cards + audio we use a simple line label. */
+        /* Body — for images we render a placeholder pane with alt text
+         * WHILE the JPEG is being fetched/decoded, and once the dsc is
+         * bound we hide the placeholder and show the decoded bitmap.
+         * (Tab5 audit D6 fix — previously only the placeholder branch
+         *  ever rendered, so the "Dragon renders → Tab5 decodes inline"
+         *  claim was invisible.) */
         if (msg->type == MSG_IMAGE) {
             lv_obj_set_style_text_font(slot->brk_body, FONT_BODY, 0);
             lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_TEXT_DIM), 0);
@@ -204,6 +293,33 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
             lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
             lv_obj_set_size(slot->breakout, 720, BREAK_IMG_H);
             lv_obj_set_style_radius(slot->breakout, 0, 0);
+
+            /* Lazy-create the image widget once per slot. */
+            if (!slot->brk_image) {
+                slot->brk_image = lv_image_create(slot->breakout);
+                lv_obj_add_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+            }
+            /* If a decoded dsc is already bound AND the URL is unchanged,
+             * just show it immediately without re-fetching. */
+            if (msg->media_url[0] &&
+                strncmp(slot->brk_url, msg->media_url, sizeof(slot->brk_url)) == 0 &&
+                slot->brk_dsc.data && slot->brk_dsc.header.w > 0) {
+                int w = slot->brk_dsc.header.w, h = slot->brk_dsc.header.h;
+                if (w > 720 - 2 * SIDE_PAD) w = 720 - 2 * SIDE_PAD;
+                if (h > BREAK_IMG_H - 8)    h = BREAK_IMG_H - 8;
+                lv_obj_set_size(slot->brk_image, w, h);
+                lv_obj_set_pos(slot->brk_image, (720 - w) / 2, 40);
+                lv_image_set_src(slot->brk_image, &slot->brk_dsc);
+                lv_obj_clear_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(slot->brk_body, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                /* Not yet decoded — hide image, leave body as the loading
+                 * placeholder ("🖼  alt text").  The refresh loop below
+                 * kicks the fetch after slot->data_idx is committed, so
+                 * the async bind callback can verify idx-match. */
+                lv_obj_add_flag(slot->brk_image, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_clear_flag(slot->brk_body, LV_OBJ_FLAG_HIDDEN);
+            }
         } else if (msg->type == MSG_CARD) {
             lv_obj_set_style_text_font(slot->brk_body, FONT_BODY, 0);
             lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_TEXT_PRIMARY), 0);
@@ -480,6 +596,23 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
 
         slot_bind(v, slot, chat_store_get(i), y);
         slot->data_idx = i;
+
+        /* After data_idx is committed, kick JPEG fetch for MSG_IMAGE
+         * bubbles whose dsc isn't already bound to the current URL.
+         * Running here (not inside slot_bind) guarantees expected_idx
+         * matches what the refresh loop last bound. */
+        {
+            const chat_msg_t *m = chat_store_get(i);
+            if (m && m->type == MSG_IMAGE && m->media_url[0]) {
+                bool already = (strncmp(slot->brk_url, m->media_url,
+                                        sizeof(slot->brk_url)) == 0 &&
+                                slot->brk_dsc.data &&
+                                slot->brk_dsc.header.w > 0);
+                if (!already) {
+                    kick_chat_image_fetch(slot, m->media_url);
+                }
+            }
+        }
 
         /* Cache measured height for next refresh. */
         lv_obj_t *measure_obj = msg_is_breakout(chat_store_get(i)) ? slot->breakout : slot->bubble;
