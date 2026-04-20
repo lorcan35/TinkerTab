@@ -140,13 +140,39 @@ TT `794e915` + TB `d032431`. media_url + media_alt + choices[3] fields; voice.c 
 - **Pipecat / LiveKit research brief** saved at `RESEARCH-pipecat-livekit.md`. Recommendation: steal pipecat patterns (frame taxonomy, interrupt frame, semantic turn detection), skip LiveKit full stack, clone Xiaozhi-ESP32's Opus+WS protocol for v2.
 
 **Still open (next sprint):**
-- ui_memory / ui_agents / ui_focus content is mocked in C; wire to Dragon `/api/v1/memory`, `/api/v1/sessions`, etc.
-- Inline image decode on widget_media (currently just caption). media_cache_fetch exists for chat; reuse.
-- widget_prompt tap → widget_action round-trip test (plumbing is there; just didn't trigger via touch yet).
 - Opus encoder on mic path (cuts ngrok upload 10x).
 - Interrupt frame (cancel in-flight LLM + TTS on barge-in, truncate bot transcript to what user heard).
-- Edge states: offline banner, Dragon-down toast, "CAPPED · LOCAL TODAY" already live.
 - Onboarding / first-run screens from `system-d-complete.html` section D.
+- ui_agents / ui_focus still rendering mocked content (ui_memory wired in this sprint).
+- Pre-existing voice WS flakiness on reconnect (not introduced by audit fixes; warrants its own investigation).
+
+### Stability audit sprint ✅ SHIPPED (2026-04-20)
+
+Both audits (`AUDIT-stability-2026-04-20.md` + `AUDIT-ux-gauntlet-40-2026-04-20.md`) saved in this folder.
+
+**Tab5 (`4849655`):**
+- P0 widget_capability sent in register + Dragon stores on conn_state
+- P0 handle_binary_message reads s_state under mutex
+- P0 widget_store_gc ticks every ~30 s from home refresh timer
+- P1 stt_partial bounded snprintf under state mutex
+- P1 budget rollover uses local midnight (year*366+yday) not UTC
+- P1 local-turn receipt no longer filtered out by empty model string
+
+**Dragon (`2a6c677`):**
+- P0 inference ThreadPoolExecutor shutdown hook on server exit
+- P0 on_audio/on_event route through _safe_send_bytes/_safe_send_json
+- P0 minimal-receipt fallback on the exception path (cost_mils=0 + retry_reason)
+- P0 OpenRouter error + ClientError + proxy-HTML errors no longer leak into token stream (logged + friendly fallback sentence)
+- P1 widget_capabilities.widgets stashed on conn_state for skill downgrade
+- P1 config_update rate-limited to 2/sec/conn
+- P1 Hallucination regex incremental scan with 32-byte overlap (O(N) instead of O(N^2))
+- P1 Pre-warmed fallback STT + TTS cached on pipeline (released in shutdown)
+- P1 pause_session is now atomic CAS via new Database.update_session_status_if
+
+**Prior-session audit fixes already shipped (previous commits):**
+- P0 #1 SurfaceManager + widget_action handler (`55621f1`)
+- P0 #2 NVS handle mutex (`e010ed9`)
+- P0 #3 Ngrok fallback counter reset on disconnect (`e010ed9`)
 
 ---
 
