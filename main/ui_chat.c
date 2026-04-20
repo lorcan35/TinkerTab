@@ -558,6 +558,34 @@ void ui_chat_push_message(const char *role, const char *text)
     lv_async_call(async_push_msg_cb, p);
 }
 
+/* System / status bubble (tool-call activity, session notices). */
+static void async_push_system_cb(void *arg)
+{
+    char *text = (char *)arg;
+    if (!text) return;
+    chat_msg_t msg = {0};
+    msg.type = MSG_SYSTEM;
+    msg.is_user = false;
+    msg.timestamp = now_ts();
+    msg.height_px = -1;
+    safe_copy(msg.text, sizeof(msg.text), text);
+    chat_store_add(&msg);
+    suggestions_sync_visibility();
+    if (s_view) {
+        chat_msg_view_refresh(s_view);
+        chat_msg_view_scroll_to_bottom(s_view);
+    }
+    free(text);
+}
+
+void ui_chat_push_system(const char *text)
+{
+    if (!text || !*text) return;
+    char *copy = strdup(text);
+    if (!copy) return;
+    lv_async_call(async_push_system_cb, copy);
+}
+
 static void async_push_media_cb(void *arg)
 {
     push_media_t *m = (push_media_t *)arg;

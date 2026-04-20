@@ -248,6 +248,47 @@ static void voice_build_local_uri(char *out, size_t out_cap,
                                    const char *host, uint16_t port);
 
 // ---------------------------------------------------------------------------
+// Deferred receipt attach — hops from voice WS rx task onto LVGL thread so
+// it queues AFTER ui_chat_push_message("assistant", …) from llm_done.
+// ---------------------------------------------------------------------------
+typedef struct {
+    uint32_t mils;
+    uint16_t ptok;
+    uint16_t ctok;
+    bool     retried;
+    char     model_short[16];
+} receipt_attach_async_t;
+
+static void receipt_attach_async_cb(void *arg)
+{
+    receipt_attach_async_t *r = (receipt_attach_async_t *)arg;
+    if (!r) return;
+    extern int  chat_store_attach_receipt_ex(uint32_t, uint16_t, uint16_t,
+                                              const char *, bool);
+    extern void ui_chat_refresh_receipts(void);
+    chat_store_attach_receipt_ex(r->mils, r->ptok, r->ctok,
+                                  r->model_short, r->retried);
+    ui_chat_refresh_receipts();
+    free(r);
+}
+
+void voice_defer_receipt_attach(uint32_t mils,
+                                uint16_t ptok, uint16_t ctok,
+                                const char *model_short, bool retried)
+{
+    receipt_attach_async_t *r = calloc(1, sizeof(*r));
+    if (!r) return;
+    r->mils    = mils;
+    r->ptok    = ptok;
+    r->ctok    = ctok;
+    r->retried = retried;
+    if (model_short) {
+        snprintf(r->model_short, sizeof(r->model_short), "%s", model_short);
+    }
+    lv_async_call(receipt_attach_async_cb, r);
+}
+
+// ---------------------------------------------------------------------------
 // State machine
 // ---------------------------------------------------------------------------
 static void voice_set_state(voice_state_t new_state, const char *detail)
@@ -780,21 +821,27 @@ static void handle_text_message(const char *data, int len)
          * stamp on a local turn that Dragon forgot to name. */
         {
             char short_model[16] = {0};
-            const char *m = (model && model[0]) ? model : "local";
-            const char *slash = strchr(m, '/');
-            const char *tail = slash ? slash + 1 : m;
+            const char *mp = (model && model[0]) ? model : "local";
+            const char *slash = strchr(mp, '/');
+            const char *tail = slash ? slash + 1 : mp;
             const char *hyphen = strchr(tail, '-');  /* skip vendor prefix "claude-" */
             const char *start = hyphen ? hyphen + 1 : tail;
             snprintf(short_model, sizeof(short_model), "%s", start);
-            extern int chat_store_attach_receipt_ex(
-                uint32_t, uint16_t, uint16_t, const char *, bool);
-            chat_store_attach_receipt_ex(
-                (uint32_t)m, (uint16_t)pt, (uint16_t)ct, short_model, retried);
-            /* v4·D Phase 4d: force a msg-view refresh so the receipt
-             * stamp paints on the CURRENT turn's bubble, not the next
-             * one.  Thread-safe -- hops to the LVGL thread internally. */
-            extern void ui_chat_refresh_receipts(void);
-            ui_chat_refresh_receipts();
+            /* Defer the attach onto the LVGL thread.  ui_chat_push_message
+             * ("assistant", …) from llm_done enqueues via lv_async_call a
+             * few ms before this handler runs; if we attach synchronously
+             * here (on the voice WS rx task) the assistant bubble is not
+             * yet in chat_store, attach returns -1, and the stamp is
+             * silently dropped.  Queuing via lv_async_call after the push
+             * preserves FIFO order — push lands first, attach lands
+             * second — and both run on the LVGL thread. */
+            extern void voice_defer_receipt_attach(uint32_t mils,
+                                                    uint16_t ptok,
+                                                    uint16_t ctok,
+                                                    const char *model_short,
+                                                    bool retried);
+            voice_defer_receipt_attach((uint32_t)m, (uint16_t)pt,
+                                        (uint16_t)ct, short_model, retried);
         }
     } else if (strcmp(type_str, "text_update") == 0) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
@@ -885,6 +932,11 @@ static void handle_text_message(const char *data, int len)
             status_text = "Using tools...";
         }
         voice_set_state(VOICE_STATE_PROCESSING, status_text);
+        /* Tab5 audit D5: also push a system bubble so the user can see
+         * tool activity in chat (not just on the voice overlay label).
+         * CLAUDE.md's "thinking + tool indicator bubbles" claim was wired
+         * only to the overlay-state string previously. */
+        ui_chat_push_system(status_text);
     } else if (strcmp(type_str, "tool_result") == 0) {
         cJSON *tool = cJSON_GetObjectItem(root, "tool");
         cJSON *exec_ms = cJSON_GetObjectItem(root, "execution_ms");
@@ -892,6 +944,12 @@ static void handle_text_message(const char *data, int len)
         double ms = cJSON_IsNumber(exec_ms) ? exec_ms->valuedouble : 0.0;
         ESP_LOGI(TAG, "Tool result: %s (%.0fms)", tool_name, ms);
         voice_set_state(VOICE_STATE_PROCESSING, "Thinking...");
+        /* Tab5 audit D5: close the loop with a completion bubble so the
+         * chat timeline shows what ran + how long it took. */
+        char done_buf[80];
+        snprintf(done_buf, sizeof(done_buf), "%s done (%.0fms)",
+                 tool_name, ms);
+        ui_chat_push_system(done_buf);
     } else if (strcmp(type_str, "media") == 0) {
         const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
         const char *mtype = cJSON_GetStringValue(cJSON_GetObjectItem(root, "media_type"));

@@ -27,6 +27,14 @@ void ui_chat_push_card(const char *title, const char *subtitle,
 void ui_chat_push_audio_clip(const char *url, float duration_s, const char *label);
 
 /**
+ * Thread-safe: push a system/status bubble (e.g. "Searching the web…",
+ * "Memory saved"). Renders centered + dim per chat_msg_view MSG_SYSTEM
+ * treatment. Safe from any task; uses lv_async_call internally.
+ * Use for tool-call activity indicators and session-change notices.
+ */
+void ui_chat_push_system(const char *text);
+
+/**
  * Thread-safe: replace the last AI bubble's text with a cleaned version.
  * Used to remove raw code blocks / image URLs after they've been rendered
  * as media bubbles, so the user doesn't see the markdown source text.

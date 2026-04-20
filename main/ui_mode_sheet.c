@@ -36,6 +36,10 @@ static lv_obj_t *s_composite_card = NULL;  /* container — reborder on agent */
 static lv_obj_t *s_composite_accent = NULL; /* amber/violet bar top-left */
 static lv_obj_t *s_composite_kicker = NULL; /* "RESOLVES TO" / "AGENT MODE" */
 
+/* Phase 2c Agent consent modal — own scrim, shown on top of the sheet. */
+static lv_obj_t *s_consent_overlay = NULL;
+static uint8_t   s_pre_consent_aut = 0;  /* tier to revert to on Cancel */
+
 static uint8_t s_int_tier = 0;
 static uint8_t s_voi_tier = 0;
 static uint8_t s_aut_tier = 0;
@@ -47,6 +51,10 @@ static void persist_and_notify_dragon(void);
 static void seg_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
+static void show_agent_consent(uint8_t prev_aut_tier);
+static void hide_agent_consent(bool commit);
+static void consent_confirm_cb(lv_event_t *e);
+static void consent_cancel_cb(lv_event_t *e);
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
@@ -57,6 +65,13 @@ bool ui_mode_sheet_visible(void)
 
 void ui_mode_sheet_hide(void)
 {
+    /* If an Agent consent modal is still up when the sheet gets hidden
+     * (e.g. user backs out via nav), treat that as Cancel — do NOT commit. */
+    if (s_consent_overlay) {
+        lv_obj_del(s_consent_overlay);
+        s_consent_overlay = NULL;
+        s_aut_tier = s_pre_consent_aut;
+    }
     if (s_overlay) {
         lv_obj_del(s_overlay);
     }
@@ -431,6 +446,19 @@ static void seg_click_cb(lv_event_t *e)
     int row = (int)((pack >> 4) & 0x0F);
     int col = (int)(pack & 0x0F);
 
+    /* Phase 2c gate: tapping AUTONOMY→Agent while not already on Agent
+     * must trigger the consent modal before we commit the mode switch.
+     * Memory bypass is the most sensitive boundary in the system and
+     * deserves an explicit acknowledge+back path, not a silent recolor. */
+    if (row == 2 && col == 1 && s_aut_tier != 1) {
+        uint8_t prev = s_aut_tier;
+        s_aut_tier = 1;
+        refresh_segments();
+        refresh_composite();
+        show_agent_consent(prev);
+        return;  /* do NOT persist yet — modal commits or reverts */
+    }
+
     switch (row) {
         case 0: s_int_tier = (uint8_t)col; break;
         case 1: s_voi_tier = (uint8_t)col; break;
@@ -441,6 +469,169 @@ static void seg_click_cb(lv_event_t *e)
     refresh_segments();
     refresh_composite();
     persist_and_notify_dragon();
+}
+
+/* ── Agent consent modal ─────────────────────────────────────────────── */
+
+static void consent_confirm_cb(lv_event_t *e)
+{
+    (void)e;
+    hide_agent_consent(true);
+}
+
+static void consent_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    hide_agent_consent(false);
+}
+
+static void consent_scrim_cb(lv_event_t *e)
+{
+    /* Tapping the scrim behaves like Cancel — safe default. */
+    if (lv_event_get_target(e) == s_consent_overlay) {
+        hide_agent_consent(false);
+    }
+}
+
+static void hide_agent_consent(bool commit)
+{
+    if (s_consent_overlay) {
+        lv_obj_del(s_consent_overlay);
+        s_consent_overlay = NULL;
+    }
+    if (commit) {
+        persist_and_notify_dragon();
+    } else {
+        /* Revert to the pre-modal autonomy tier + rebuild segment UI. */
+        s_aut_tier = s_pre_consent_aut;
+        refresh_segments();
+        refresh_composite();
+    }
+}
+
+static void show_agent_consent(uint8_t prev_aut_tier)
+{
+    s_pre_consent_aut = prev_aut_tier;
+
+    /* Scrim over the whole screen (on top layer so it covers the sheet
+     * plus any transient chrome). */
+    s_consent_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_consent_overlay);
+    lv_obj_set_size(s_consent_overlay, MS_W, MS_H);
+    lv_obj_set_pos(s_consent_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_consent_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_consent_overlay, 200, 0);
+    lv_obj_clear_flag(s_consent_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_consent_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_consent_overlay, consent_scrim_cb, LV_EVENT_CLICKED, NULL);
+
+    /* Card — centered, tall enough for 4 bullets + 2 buttons. */
+    lv_obj_t *card = lv_obj_create(s_consent_overlay);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, 640, 780);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x13131F), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, 24, 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0xA78BFA), 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Violet accent bar top. */
+    lv_obj_t *bar = lv_obj_create(card);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, 140, 4);
+    lv_obj_set_pos(bar, 36, 32);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(0xA78BFA), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bar, 2, 0);
+
+    /* Kicker */
+    lv_obj_t *kicker = lv_label_create(card);
+    lv_label_set_text(kicker, "\xe2\x80\xa2 AGENT MODE");
+    lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(kicker, lv_color_hex(0xA78BFA), 0);
+    lv_obj_set_style_text_letter_space(kicker, 4, 0);
+    lv_obj_set_pos(kicker, 36, 52);
+
+    /* Title */
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "Switch to Agent?");
+    lv_obj_set_style_text_font(title, FONT_TITLE, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_pos(title, 36, 80);
+
+    /* Subtitle */
+    lv_obj_t *sub = lv_label_create(card);
+    lv_label_set_text(sub, "This changes how she thinks about you.");
+    lv_obj_set_style_text_font(sub, FONT_BODY, 0);
+    lv_obj_set_style_text_color(sub, lv_color_hex(TH_TEXT_DIM), 0);
+    lv_obj_set_pos(sub, 36, 128);
+
+    /* Bullets — 4 items, each a row with a violet dot + text label. */
+    const char *bullets[4] = {
+        "Your on-device memory is NOT injected.\nAgent runs from the gateway's own context.",
+        "Tools drive the turn — search, calendar,\ninbox, etc. — not your recall of facts.",
+        "All routed through the TinkerClaw gateway.\nLatency is higher; responses can run 30-60s.",
+        "Billing flows through the gateway tier,\nnot your daily cap here.",
+    };
+    int y = 180;
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *dot = lv_obj_create(card);
+        lv_obj_remove_style_all(dot);
+        lv_obj_set_size(dot, 8, 8);
+        lv_obj_set_pos(dot, 36, y + 8);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(0xA78BFA), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(dot, 4, 0);
+
+        lv_obj_t *txt = lv_label_create(card);
+        lv_label_set_text(txt, bullets[i]);
+        lv_obj_set_style_text_font(txt, FONT_BODY, 0);
+        lv_obj_set_style_text_color(txt, lv_color_hex(TH_TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_line_space(txt, 4, 0);
+        lv_obj_set_width(txt, 540);
+        lv_obj_set_pos(txt, 60, y);
+        y += 100;
+    }
+
+    /* Primary button: Switch to Agent (violet fill). */
+    lv_obj_t *confirm = lv_obj_create(card);
+    lv_obj_remove_style_all(confirm);
+    lv_obj_set_size(confirm, 568, 64);
+    lv_obj_set_pos(confirm, 36, 620);
+    lv_obj_set_style_bg_color(confirm, lv_color_hex(0xA78BFA), 0);
+    lv_obj_set_style_bg_opa(confirm, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(confirm, 32, 0);
+    lv_obj_set_style_border_width(confirm, 0, 0);
+    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(confirm, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(confirm, consent_confirm_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *confirm_lbl = lv_label_create(confirm);
+    lv_label_set_text(confirm_lbl, "Switch to Agent");
+    lv_obj_set_style_text_font(confirm_lbl, FONT_HEADING, 0);
+    lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x08080E), 0);
+    lv_obj_center(confirm_lbl);
+
+    /* Secondary button: Keep Ask mode (ghost / outlined). */
+    lv_obj_t *cancel = lv_obj_create(card);
+    lv_obj_remove_style_all(cancel);
+    lv_obj_set_size(cancel, 568, 64);
+    lv_obj_set_pos(cancel, 36, 694);
+    lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cancel, 1, 0);
+    lv_obj_set_style_border_color(cancel, lv_color_hex(0x2A2A3A), 0);
+    lv_obj_set_style_radius(cancel, 32, 0);
+    lv_obj_clear_flag(cancel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(cancel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *cancel_lbl = lv_label_create(cancel);
+    lv_label_set_text(cancel_lbl, "Keep Ask mode");
+    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
+    lv_obj_center(cancel_lbl);
 }
 
 static void done_click_cb(lv_event_t *e)
