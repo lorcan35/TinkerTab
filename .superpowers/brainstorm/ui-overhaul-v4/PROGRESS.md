@@ -246,6 +246,78 @@ Other screens (per `system-d-sovereign.html`) not yet spec-audited.
 
 ## Changelog
 
+### 2026-04-20 — Reconciliation sprint wave 3: 4 more overclaims closed + 1 P0 shipped
+
+Continuing the burn. After wave 2 left a "chat view-render edge case"
+note + several widget proof-deficits still open.
+
+- **Bug 2 fully resolved (chat render edge case)**. The remaining piece
+  of wave 2's Bug 2 was `ensure_session_loaded` calling
+  `chat_store_set_session`, which unconditionally memset'd all stored
+  messages. Fixed earlier with the "differs=prev_valid && id!=current"
+  guard — but the screen-level verification hit another wrinkle: the
+  chat overlay being created AFTER messages were pre-pushed. After
+  reflash with the session_messages replay + chat_store_init boot +
+  set_session no-wipe, the chat screen now fully reliably shows
+  complete history: user/assistant bubbles for "hello/hi there",
+  "test/test", "a/a", "echo test/test", "Eagles./Super Bowl answer",
+  mode chip "Cloud · CLAUDE-3.5-HAIKU", plus live streaming of the
+  next turn at the bottom. Verified via screenshot.
+
+- **widget_card (B2) — handler wired**. Audit said parser exists + no
+  chat verification. Turns out Tab5 had `card` handler (legacy rich-
+  media shape) but NO `widget_card` handler. Every `Tab5Surface.card()`
+  emission from Dragon hit `Unknown message type: widget_card` on
+  Tab5. Added dedicated `widget_card` branch in voice.c that maps
+  {title, body, image_url} to `ui_chat_push_card()`. Verified via
+  serial: `widget_card: Verify card` fires when Dragon emits via new
+  `POST /debug/widget_card` endpoint.
+
+- **widget_media decoded JPEG (B5) — top-3 overclaim fully resolved**.
+  Audit: "claimed verified 2026-04-20, only caption-fallback path
+  witnessed". Root cause: **`media_cache_init()` was declared in
+  media_cache.h + defined in media_cache.c but LITERALLY NEVER called
+  anywhere in the tree**. Without init, `media_cache_fetch()` returns
+  `ESP_ERR_INVALID_ARG` (258) on every call, so every widget_media +
+  chat-image-decode path silently fell through to the caption
+  fallback. Same boot-init bug pattern as chat_store_init from wave 2.
+  Added call in main.c. Verified end-to-end: uploaded a 480×300
+  test JPEG via `/api/media/upload`, emitted via new
+  `POST /debug/widget_media`, screenshot shows **actual decoded
+  bitmap** (bar chart + text) rendered on home live-slot next to the
+  kicker. Not the placeholder anymore.
+
+- **Onboarding MVP (G) — P0 UX shipped**. Audit: "zero lines of code,
+  not even a stub". Built 3-card welcome carousel on lv_layer_top:
+  (1) "Hey, I'm Tinker." intro; (2) "Four ways to reply." modes
+  overview; (3) "Memory is yours." privacy + Agent warning. Primary
+  "Next / Get started" button + Skip. Gated on new NVS key `onboard`
+  (u8, default 0). Finish writes onboard=1 so subsequent boots skip.
+  `tab5_settings_is_onboarded()` / `set_onboarded(bool)` API.
+  Verified all three cards + Get-started dismiss on device. ~230 LOC
+  in `ui_onboarding.c`.
+
+**Bonus: 3 new Dragon debug endpoints** used for today's evidence
+captures, kept in the tree as future audit tooling:
+- `POST /debug/widget_chart` — emits a chart on every surface (B5).
+- `POST /debug/widget_prompt` — emits a prompt + registers an action
+  handler so taps round-trip (B6/K3).
+- `POST /debug/widget_card` — emits a card (B2).
+- `POST /debug/widget_media` — emits a media widget pointing at a
+  previously uploaded image (B5 decoded-JPEG).
+
+**Still open** (unchanged):
+- Dragon memory backend sqlite-vec + FTS5 upgrade (K2, large port).
+- widget_capabilities truncation wiring (B14, cosmetic).
+- Tab5 F5 rose orb pulse (toast shipped; pulse is cosmetic follow-up).
+- J2 SHA256 mismatch abort (never triggered; pre-release task).
+- I3 local midnight rollover soak (needs RTC manipulation).
+
+Wave 3 commits: Tab5 `aebc956` · `9849cfa` · `7b220a5`. Dragon:
+`835f57e`.
+
+---
+
 ### 2026-04-20 — Reconciliation sprint wave 2: 7 more audit items closed
 
 Continuing the reconciliation-driven backlog burn. After the first-wave
