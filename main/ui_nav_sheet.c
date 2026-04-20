@@ -80,6 +80,10 @@ static void tile_click_cb(lv_event_t *e)
     if (idx < 0 || idx >= (int)NAV_TILE_COUNT) return;
     ESP_LOGI(TAG, "tile %d (%s) tapped", idx, s_tiles[idx].title);
     ui_nav_sheet_hide();
+    /* Dismiss stale idle voice overlay so the user actually sees where
+     * they're navigating to. */
+    extern void ui_voice_dismiss_if_idle(void);
+    ui_voice_dismiss_if_idle();
     if (s_tiles[idx].action) s_tiles[idx].action();
 }
 

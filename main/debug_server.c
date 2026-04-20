@@ -1329,6 +1329,13 @@ static void async_navigate(void *arg)
     ui_focus_hide();
     ui_sessions_hide();
     ui_keyboard_hide();
+    /* Wave 4 UX fix: if the voice overlay is up but voice is idle, a
+     * nav request means the user has moved on.  Dismiss so the user
+     * sees the screen they just navigated to instead of a stale
+     * "Tap to speak." card blocking the view.  Active states
+     * (LISTENING / PROCESSING / SPEAKING) are left alone. */
+    extern void ui_voice_dismiss_if_idle(void);
+    ui_voice_dismiss_if_idle();
 
     if (strcmp(s_nav_target, "home") == 0) {
         ui_home_go_home();

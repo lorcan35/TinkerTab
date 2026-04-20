@@ -1647,6 +1647,9 @@ void ui_home_go_home(void)
     if (s_screen && lv_screen_active() != s_screen) {
         lv_screen_load(s_screen);
     }
+    /* Wave 4 UX: drop a stale idle voice overlay so the user sees home. */
+    extern void ui_voice_dismiss_if_idle(void);
+    ui_voice_dismiss_if_idle();
 }
 
 lv_obj_t *ui_home_get_tileview(void) { return NULL; }
@@ -1664,6 +1667,8 @@ void ui_home_nav_settings(void)
     if (s_screen && lv_screen_active() != s_screen) {
         lv_screen_load(s_screen);
     }
+    extern void ui_voice_dismiss_if_idle(void);
+    ui_voice_dismiss_if_idle();
     ui_settings_create();
 }
 

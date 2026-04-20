@@ -26,6 +26,15 @@ void ui_voice_show(void);
 void ui_voice_hide(void);
 bool ui_voice_is_visible(void);
 
+/**
+ * Dismiss the overlay only if voice is in a non-active state
+ * (IDLE/READY/RECONNECTING/CONNECTING).  During LISTENING / PROCESSING /
+ * SPEAKING the overlay is the UI so we leave it alone.  Used by nav
+ * paths so switching screens doesn't leave a stale "Tap to speak." card
+ * blocking whatever the user navigated to.
+ */
+void ui_voice_dismiss_if_idle(void);
+
 // Get the floating mic button (for external positioning)
 lv_obj_t *ui_voice_get_mic_btn(void);
 

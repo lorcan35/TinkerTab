@@ -590,6 +590,23 @@ void ui_voice_hide(void)
     ESP_LOGI(TAG, "Voice overlay hidden (instant)");
 }
 
+void ui_voice_dismiss_if_idle(void)
+{
+    if (!s_overlay || !s_visible) return;
+    voice_state_t st = voice_get_state();
+    /* Overlay is THE UI during LISTENING / PROCESSING / SPEAKING — leave it.
+     * READY / IDLE / CONNECTING / RECONNECTING are "not actively interacting",
+     * so hiding is safe and matches user intent when they navigate away. */
+    if (st == VOICE_STATE_LISTENING
+        || st == VOICE_STATE_PROCESSING
+        || st == VOICE_STATE_SPEAKING) {
+        ESP_LOGD(TAG, "dismiss_if_idle: skip (state=%d active)", (int)st);
+        return;
+    }
+    ESP_LOGI(TAG, "dismiss_if_idle: hiding (state=%d)", (int)st);
+    ui_voice_hide();
+}
+
 bool ui_voice_is_visible(void)
 {
     return s_visible;
