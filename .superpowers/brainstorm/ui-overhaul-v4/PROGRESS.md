@@ -246,6 +246,46 @@ Other screens (per `system-d-sovereign.html`) not yet spec-audited.
 
 ## Changelog
 
+### 2026-04-20 — Reconciliation sprint: 8 overclaims shipped + verified
+
+**Audits delivered this session** (joined the earlier 3 in `.superpowers/brainstorm/ui-overhaul-v4/`):
+- `AUDIT-reconciliation-2026-04-20.md` — Tab5 spec↔code↔device reconciliation, ~30 items, 10 overclaims ranked by user impact
+- `AUDIT-reconciliation-dragon-2026-04-20.md` — Dragon+openclaw full-stack, ~213 items, 10 overclaims, 349 lines
+
+**Proof-tests run live** (promoted CODE-ONLY → DEVICE-VERIFIED):
+- ✅ Test 4 — nav sheet renders cleanly (2×3 grid; Chat/Notes/Settings/Camera/Files/Memory)
+- ✅ Test 5 — mode-sheet reverse-derive works (vmode=2 + gemini → Smart/Studio/Ask/Full Cloud)
+- ✅ Test 6 — daily-cap slider interactive ($1.00 → $7.60 on tap)
+
+**Fixes shipped, each flashed + verified on device:**
+
+- **TC receipt stamp on chat bubble** (TT commit `eb91c02`). Two compounding bugs: (1) shadow `m` variable in voice.c receipt block where `const char *m = …` shadowed the outer `int m` (cost_mils), causing `(uint32_t)m` at the attach call to pass a pointer instead of the cost; (2) race — `chat_store_attach_receipt_ex` ran synchronously on the voice WS rx task while the assistant bubble push from `llm_done` was still queued on LVGL via `lv_async_call`; attach scanned chat_store, found no AI bubble, returned -1, silently dropped the stamp. Fix: rename shadow to `mp`; defer attach via new `voice_defer_receipt_attach` that goes through `lv_async_call` so FIFO order guarantees push lands before attach. **Verified:** TC "say ok" turn now stamps `07:45 · TINKER · M2.5 · FREE` on the Hey bubble.
+
+- **Tool-indicator chat bubbles** (TT `eb91c02`). CLAUDE.md's "thinking + tool indicator bubbles" was wired only to the voice-overlay status-label string. Added `ui_chat_push_system()` and MSG_SYSTEM path in voice.c `tool_call` / `tool_result` handlers. **Verified:** Cloud+Haiku web_search turn renders centered-dim bubbles "Searching the web…" → "web_search done (3276ms)" in the chat timeline.
+
+- **Real Agent-mode consent modal** (TT `eb91c02`, em-dash follow-up). Commit `98648aa` had self-described as "lighter version, no second modal, no revert-on-cancel flow" — violet recolor of the composite card, no bullets, no back-out. Built the Phase 2c modal: violet scrim + 4 bullets (memory not injected / tools drive the turn / gateway-routed / separate billing) + Switch-to-Agent (violet fill) and Keep-Ask-mode (ghost) buttons, with scrim-tap treated as Cancel. **Verified both paths:** Cancel reverts `s_aut_tier` and does NOT persist (NVS voice_mode stays 0); Confirm commits and fires `config_update` (NVS → 3, composite card flips to violet "MEMORY BYPASSED · GATEWAY TOOLS").
+
+- **Chat image decode** (TT commit `3d1154e`). Tab5-side mirror of the home widget_media fetch+decode pattern: each `msg_slot_t` gets `brk_image` + `brk_dsc` + `brk_url` + `brk_fetch_inflight`; on MSG_IMAGE bind we lazy-create the `lv_image`; the refresh loop (after `slot->data_idx` is committed) kicks a Core-1 `media_cache_fetch` task whose `chat_media_bind_cb` verifies `slot->data_idx == expected_idx` before applying `lv_image_set_src`. CLAUDE.md "Dragon renders → Tab5 decodes JPEG inline" claim now has a real path in chat bubbles, not just the home widget slot. **Device-verify pending** — Dragon's `_handle_text` media pipeline trigger is flaky in this session.
+
+- **TimesenseTool registered on Dragon** (TB commit `d9a4be9`). Audit top overclaim: the reference widget-emitting skill was never instantiated in `_on_startup`. Voice command "set a 25-minute timer" was hitting TimerTool (text-only, no widget). Added `TimesenseTool(self._surface_mgr)` registration after SurfaceManager init. **Verified via Dragon log:** `TimesenseTool registered (widget emitter)`. Distinct `name=timer` vs `timesense_timer` so both coexist; LLM picks per description.
+
+- **STT + TTS receipt emission on Dragon** (TB `d9a4be9`). Audit F4/F5: only `stage:"llm"` was ever emitted; the protocol implied all 3 stages. Added receipts after STT completion in `pipeline.py`, after TTS sentence flush in `pipeline.py`, and after TTS synthesis in `server.py` `_handle_text`. **Verified via Tab5 serial:** `{"type":"receipt","stage":"tts","model":"openrouter","tts_ms":591}` lands alongside the LLM receipt on a cloud text turn.
+
+- **Gemini-via-OpenRouter tool compatibility** (TB commit `4d3e18c`). Every Gemini turn with prior tool use was silently dying with HTTP 400 "Tool message must have either name or tool_call_id" — Dragon stores tool results as role="tool" messages without `tool_call_id`, which Anthropic/OpenAI tolerate but Google rejects. Fix: pre-flight rewrite any role="tool" message without `tool_call_id` to `role="user"` with `"(tool output) …"` prefix. Universal across providers. **Verified live:** Gemini 3 Flash Preview now completes a web_search turn with `The **Philadelphia Eagles** won Super Bowl LIX…` where before it 400'd.
+
+- **Em-dash tofu in Agent consent modal** (TT follow-up). Bullet 2 was "Tools drive the turn — search, calendar, inbox, etc. — not your recall of facts" with U+2014 em-dashes rendering as tofu boxes (font subset gap in FONT_BODY). Replaced with ASCII hyphens. **Verified** on-device screenshot.
+
+**Deferred to next sprint** (intentional scoping, not skipped):
+- Onboarding MVP (audit §G, P0 UX). Zero lines of code today; the modal/carousel + WiFi pair flow is a self-contained ~300 LOC piece that deserves its own focused sprint.
+- Session resume message replay (audit C8/K15). Current session_start carries only `message_count`; full replay needs both Dragon-side `session_messages` push AND Tab5 rehydration handler.
+
+**Known new bugs surfaced** (logged, not fixed yet):
+- Dragon heartbeat watchdog occasionally fires `No PONG received after 15.0 seconds` during the exact moment Tab5 is mid-PROCESSING on a long cloud turn. Separate from the audit's WS-drop class; related to aiohttp heartbeat vs our ping cadence.
+- Tab5 /navigate?screen=chat sometimes lands on the empty-state Chat Home instead of the active conversation after a mode switch + turn. Likely a session-vs-view routing issue; not reproducible deterministically.
+- widget_media decoded-JPEG chat path: Tab5 side wired (commit `3d1154e`), but Dragon-side MediaPipeline.process_response on text path appears flaky — code blocks in LLM responses don't consistently trigger a `media` WS event. Needs Dragon-side trace.
+
+---
+
 ### 2026-04-20 — Connectivity audit + root-cause fixes + TC mode polish
 
 **Audits delivered this session (saved in `.superpowers/brainstorm/ui-overhaul-v4/`):**

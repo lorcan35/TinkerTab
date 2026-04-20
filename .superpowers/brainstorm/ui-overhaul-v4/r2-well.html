@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v4·R2·2 — Well</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,200;9..144,300;9..144,400;9..144,500&family=Manrope:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #08080E; --surface: #111119; --elevated: #13131F;
+    --border: #1E1E2A; --rule: #22222E;
+    --amber: #F59E0B; --amber-hot: #FBBF24; --emerald: #10B981;
+    --text-1: #F5F5F7; --text-2: #8A8A95; --text-3: #5A5A64; --text-4: #3A3A44;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #000;
+    display: flex; justify-content: center; align-items: flex-start;
+    min-height: 100vh; padding: 40px;
+    font-family: 'Manrope', sans-serif; color: var(--text-1);
+  }
+  .wrap { display: flex; gap: 32px; align-items: flex-start; }
+  .meta { color: #6a6a74; font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6; width: 260px; padding-top: 8px; }
+  .meta h3 { font-family: 'Fraunces', serif; color: var(--amber); font-size: 18px; margin: 0 0 4px; font-weight: 400; font-style: italic; }
+  .meta .tag { color: #4a4a54; text-transform: uppercase; letter-spacing: 0.12em; font-size: 10px; margin-top: 18px; display: block; }
+  .meta p { margin: 4px 0 0; }
+
+  .device {
+    width: 720px; height: 1280px; background: var(--bg);
+    border-radius: 28px; overflow: hidden; position: relative;
+    box-shadow: 0 60px 160px rgba(245,158,11,0.06), 0 0 0 1px #1a1a24;
+  }
+
+  /* Status thin at very top */
+  .status {
+    position: absolute; top: 28px; left: 40px; right: 40px;
+    display: flex; align-items: center; justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; color: var(--text-3); letter-spacing: 0.22em;
+  }
+  .status .l { display: flex; align-items: center; gap: 10px; }
+  .status .l .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 10px rgba(16,185,129,0.7); }
+  .status .r { font-family: 'Fraunces', serif; font-style: italic; font-size: 15px; color: var(--text-2); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+
+  /* Greeting — large, at top. The ONE time we use the user's name. */
+  .greeting {
+    position: absolute; top: 92px; left: 40px; right: 40px;
+  }
+  .greeting .hi {
+    font-family: 'Fraunces', serif; font-weight: 200; font-style: italic;
+    font-size: 56px; color: var(--text-1); letter-spacing: -0.03em;
+    line-height: 1.05;
+  }
+  .greeting .hi em { color: var(--amber); font-weight: 300; }
+
+  /* ONE line — the contextual brief. No kicker, no card, no stats. */
+  .brief {
+    position: absolute; top: 212px; left: 40px; right: 40px;
+    font-family: 'Manrope', sans-serif; font-weight: 400;
+    font-size: 18px; color: var(--text-2); letter-spacing: 0;
+    line-height: 1.55;
+  }
+  .brief strong { color: var(--text-1); font-weight: 500; }
+  .brief .am { color: var(--amber); }
+  .brief .sep { color: var(--text-4); margin: 0 10px; }
+
+  /* Thin rule to separate top zone from the well */
+  .rule {
+    position: absolute; top: 296px; left: 40px; right: 40px; height: 1px;
+    background: var(--rule);
+  }
+
+  /* "What are you doing" quiet mono tag */
+  .quiet {
+    position: absolute; top: 320px; left: 40px; right: 40px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: 0.28em; color: var(--text-4);
+    text-transform: uppercase;
+  }
+
+  /* Ambient for the well — tall, vertically elongated */
+  .ambient {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 780px;
+    background: radial-gradient(ellipse 420px 520px at 50% 68%, rgba(245,158,11,0.12) 0%, rgba(245,158,11,0) 75%);
+    pointer-events: none;
+  }
+
+  /* The WELL — orb at bottom acts as BOTH focal + tap target.
+     No separate mic pill. No nav rail. Voice-first literalized. */
+  .well {
+    position: absolute; bottom: 168px; left: 0; right: 0;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .well .word {
+    font-family: 'Fraunces', serif; font-weight: 200; font-style: italic;
+    font-size: 34px; color: var(--amber); letter-spacing: -0.02em;
+    margin-bottom: 32px;
+    opacity: 0.92;
+  }
+  .well .orb-field {
+    width: 340px; height: 340px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .well .halo-1 {
+    position: absolute; width: 340px; height: 340px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.12) 0%, rgba(245,158,11,0) 60%);
+  }
+  .well .halo-2 {
+    position: absolute; width: 240px; height: 240px; border-radius: 50%;
+    background: radial-gradient(circle at center, rgba(245,158,11,0.26) 0%, rgba(245,158,11,0) 70%);
+  }
+  .well .ring {
+    position: absolute; width: 210px; height: 210px;
+    border-radius: 50%; border: 1px solid rgba(245,158,11,0.20);
+  }
+  .well .ring2 {
+    position: absolute; width: 185px; height: 185px;
+    border-radius: 50%; border: 1px solid rgba(245,158,11,0.32);
+  }
+  .well .orb {
+    width: 170px; height: 170px; border-radius: 50%;
+    background: radial-gradient(circle at 36% 32%, var(--amber-hot) 0%, var(--amber) 100%);
+    box-shadow: 0 0 70px rgba(245,158,11,0.42);
+    position: relative; z-index: 2;
+  }
+  .well .orb::after {
+    content: ''; position: absolute; inset: 12px; border-radius: 50%;
+    background: radial-gradient(circle at 40% 30%, rgba(255,255,255,0.24) 0%, rgba(255,255,255,0) 48%);
+  }
+  /* orb caption — held inside the orb's glow */
+  .well .hold {
+    position: absolute; left: 50%; bottom: -52px; transform: translateX(-50%);
+    font-family: 'Manrope', sans-serif; font-weight: 600;
+    font-size: 13px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--text-2);
+    white-space: nowrap;
+  }
+  .well .hold em { color: var(--amber); font-style: normal; font-weight: 700; }
+
+  /* Footer — mode + nav hints, minimal */
+  .foot {
+    position: absolute; bottom: 40px; left: 40px; right: 40px; height: 72px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 8px;
+    border-top: 1px solid var(--rule);
+    padding-top: 24px;
+  }
+  .foot .mode {
+    display: flex; align-items: center; gap: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--text-2); font-weight: 600;
+  }
+  .foot .mode .d { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 8px rgba(245,158,11,0.8); }
+  .foot .mode strong { color: var(--text-1); }
+  .foot .nav {
+    display: flex; align-items: center; gap: 22px;
+    font-family: 'Manrope', sans-serif; font-weight: 500;
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .foot .nav span { padding: 6px 2px; }
+  .foot .nav .on { color: var(--amber); border-bottom: 1px solid var(--amber); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<aside class="meta">
+  <h3>R2·2 · Well</h3>
+  <p>Radical voice-first: the orb IS the input. No mic pill. Content flows top-down: greeting → brief → empty → orb (home of attention).</p>
+  <span class="tag">Fixes v3</span>
+  <p>• Orb 170px — largest of the lot<br>
+     • ONE greeting, ONE brief line — zero redundancy<br>
+     • Mode lives as a quiet footer token (not hunting for it)<br>
+     • Timer is gone<br>
+     • Chrome: 72px footer only. No mic pill.</p>
+  <span class="tag">Bet</span>
+  <p>Voice-first tablets shouldn't ship a typing pill by default. If the user wants keyboard, swipe-up reveals it.</p>
+  <span class="tag">LVGL</span>
+  <p>Vertical ambient = 1 pre-baked ARGB8888 canvas, 720×780, drawn bottom-aligned. Orb = 170px radial. Halos = 2 more radial canvases. All static, rendered once.</p>
+</aside>
+
+<div class="device">
+
+  <div class="ambient"></div>
+
+  <div class="status">
+    <div class="l"><span class="dot"></span><span>ONLINE</span></div>
+    <div class="r">Thursday · 9:42</div>
+  </div>
+
+  <div class="greeting">
+    <div class="hi">Morning,<br><em>Emile.</em></div>
+  </div>
+
+  <div class="brief">
+    Workshop draft is <strong>ready</strong>. Two edits queued from yesterday.<span class="sep">·</span>Next at <strong>10:30</strong>.
+  </div>
+
+  <div class="rule"></div>
+  <div class="quiet">THE TAB · VOICE READY</div>
+
+  <div class="well">
+    <div class="word">listening</div>
+    <div class="orb-field">
+      <div class="halo-1"></div>
+      <div class="halo-2"></div>
+      <div class="ring"></div>
+      <div class="ring2"></div>
+      <div class="orb"></div>
+      <div class="hold">HOLD ORB <em>·</em> OR SAY "DRAGON"</div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="mode">
+      <span class="d"></span>
+      <span><strong>HYBRID</strong></span>
+    </div>
+    <div class="nav">
+      <span class="on">home</span>
+      <span>chat</span>
+      <span>notes</span>
+      <span>settings</span>
+    </div>
+  </div>
+
+</div>
+
+</div>
+</body>
+</html>

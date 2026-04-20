@@ -571,7 +571,7 @@ static void show_agent_consent(uint8_t prev_aut_tier)
     /* Bullets — 4 items, each a row with a violet dot + text label. */
     const char *bullets[4] = {
         "Your on-device memory is NOT injected.\nAgent runs from the gateway's own context.",
-        "Tools drive the turn — search, calendar,\ninbox, etc. — not your recall of facts.",
+        "Tools drive the turn - search, calendar,\ninbox, etc. - not your recall of facts.",
         "All routed through the TinkerClaw gateway.\nLatency is higher; responses can run 30-60s.",
         "Billing flows through the gateway tier,\nnot your daily cap here.",
     };
