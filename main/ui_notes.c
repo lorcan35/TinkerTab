@@ -1444,10 +1444,16 @@ static void cb_new_voice(lv_event_t *e)
             ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
         }
     } else {
-        /* Offline or busy — SD-only recording with standalone mic task */
+        /* Offline or busy — SD-only recording with standalone mic task.
+         * Wave 14 W14-H07: stack bumped from 4 KB to 8 KB. The task
+         * calls tab5_mic_read (I2S DMA path) then funnels through
+         * FATFS/VFS (~2-4 KB of FATFS sector buffers + libc FILE state)
+         * plus ESP_LOGI with formatted args. 4 KB trapped stack_chk_fail
+         * on long offline recordings (>20 s). 8 KB matches the voice
+         * mic task and gives comfortable headroom in PSRAM. */
         s_sd_rec_running = true;
         xTaskCreatePinnedToCore(
-            sd_record_task, "sd_rec", 4096, NULL, 5, &s_sd_rec_task, 1);
+            sd_record_task, "sd_rec", 8192, NULL, 5, &s_sd_rec_task, 1);
         ESP_LOGI(TAG, "Recording to SD only: %s", wav);
 
         /* Try to connect Dragon in background for later transcription */

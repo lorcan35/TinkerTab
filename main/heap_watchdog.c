@@ -279,7 +279,15 @@ void heap_watchdog_start(void)
     xTaskCreatePinnedToCore(
         heap_watchdog_task,
         "heap_wd",
-        3072,           /* Stack: 3KB — heap_caps + LVGL mem_monitor + task HWM queries + logging */
+        /* Wave 14 W14-H07: bumped 3 KB → 4 KB.  The task does
+         * heap_caps_get_free_size + takes NVS mutex (via
+         * tab5_settings_get_nvs_write_count) + ESP_LOGI with formatted
+         * args.  Formatted logging alone can burn 400-600 B of stack.
+         * Ironic failure: the task designed to *detect* low-memory
+         * conditions could itself stack_chk_fail during a real frag
+         * storm, masking the root cause with a cryptic guru rather
+         * than the intended controlled reboot. */
+        4096,
         NULL,
         1,              /* Priority 1 — lowest, background monitoring */
         NULL,
