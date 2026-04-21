@@ -372,7 +372,7 @@ esp_err_t tab5_settings_set_volume(uint8_t vol)
 
 uint8_t tab5_settings_get_voice_mode(void)
 {
-    return get_u8("vmode", 0);  /* 0=local, 1=hybrid, 2=cloud */
+    return get_u8("vmode", 0);  /* 0=local, 1=hybrid, 2=cloud, 3=tinkerclaw */
 }
 
 esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
