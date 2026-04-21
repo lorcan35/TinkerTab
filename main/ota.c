@@ -347,3 +347,111 @@ const char *tab5_ota_current_partition(void)
     const esp_partition_t *p = esp_ota_get_running_partition();
     return p ? p->label : "unknown";
 }
+
+/* ── Wave 10 #77 extended-use fix: OTA_PENDING pattern ──────────────────
+ *
+ * Direct tab5_ota_apply() from long-running sessions fails when the DMA-
+ * capable internal SRAM has drifted below the esp_https_ota TLS/HTTP
+ * buffer requirement (observed: ~10 KB or less after 30+ min of normal
+ * chat use). The reactive DMA watchdog catches the hang but doesn't get
+ * the firmware updated.
+ *
+ * Schedule-and-reboot pattern: caller stores url + sha in NVS, sets a
+ * pending flag, then reboots immediately. The fresh boot picks up the
+ * flag very early (before voice/camera/LVGL allocate their share of
+ * DMA) and calls tab5_ota_apply() with a pristine heap — OTA succeeds.
+ */
+
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "esp_system.h"
+
+#define OTA_NVS_NS     "ota_pending"
+#define OTA_NVS_FLAG   "pending"
+#define OTA_NVS_URL    "url"
+#define OTA_NVS_SHA    "sha256"
+
+esp_err_t tab5_ota_schedule(const char *url, const char *expected_sha256)
+{
+    if (!url || !url[0]) return ESP_ERR_INVALID_ARG;
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(OTA_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "tab5_ota_schedule: nvs_open failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = nvs_set_str(h, OTA_NVS_URL, url);
+    if (err == ESP_OK && expected_sha256 && expected_sha256[0]) {
+        err = nvs_set_str(h, OTA_NVS_SHA, expected_sha256);
+    } else if (err == ESP_OK) {
+        /* Clear any stale SHA from a previous schedule. */
+        nvs_erase_key(h, OTA_NVS_SHA);  /* ignore error if key absent */
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, OTA_NVS_FLAG, 1);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "tab5_ota_schedule: NVS write failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "OTA scheduled for next boot: url=%s (sha=%.16s...)", url,
+             expected_sha256 ? expected_sha256 : "none");
+    ESP_LOGI(TAG, "Rebooting in 2 seconds to apply on fresh heap...");
+    /* Small delay so the debug HTTP response can flush to the caller. */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    esp_restart();
+    return ESP_OK;  /* unreachable */
+}
+
+esp_err_t tab5_ota_apply_pending_if_any(void)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(OTA_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return ESP_ERR_NOT_FOUND;  /* no NS yet == nothing pending */
+
+    uint8_t pending = 0;
+    err = nvs_get_u8(h, OTA_NVS_FLAG, &pending);
+    if (err != ESP_OK || pending == 0) {
+        nvs_close(h);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    /* Read url + sha, clear flag + keys BEFORE applying so a crash
+     * during apply doesn't loop the device forever on the same bad URL. */
+    char url[256] = {0};
+    char sha[65] = {0};
+    size_t sz = sizeof(url);
+    err = nvs_get_str(h, OTA_NVS_URL, url, &sz);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "tab5_ota_apply_pending_if_any: url missing from NVS");
+        nvs_erase_key(h, OTA_NVS_FLAG);
+        nvs_commit(h);
+        nvs_close(h);
+        return err;
+    }
+    sz = sizeof(sha);
+    esp_err_t sha_err = nvs_get_str(h, OTA_NVS_SHA, sha, &sz);
+    if (sha_err != ESP_OK) sha[0] = 0;  /* no SHA supplied — warn path */
+
+    nvs_erase_key(h, OTA_NVS_FLAG);
+    nvs_erase_key(h, OTA_NVS_URL);
+    nvs_erase_key(h, OTA_NVS_SHA);
+    nvs_commit(h);
+    nvs_close(h);
+
+    ESP_LOGI(TAG, "OTA pending from NVS — applying now (fresh heap)");
+    esp_err_t apply_err = tab5_ota_apply(url, sha[0] ? sha : NULL);
+    /* tab5_ota_apply esp_restarts on success; if it returns we failed. */
+    if (apply_err != ESP_OK) {
+        ESP_LOGE(TAG, "Pending OTA apply failed: %s — continuing boot", esp_err_to_name(apply_err));
+    }
+    return apply_err;
+}
