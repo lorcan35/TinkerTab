@@ -304,8 +304,19 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `vmode` | u8 | 0 | 0-3 | Voice mode: 0=local, 1=hybrid, 2=cloud, 3=TinkerClaw |
 | `llm_mdl` | str | `anthropic/claude-3.5-haiku` | — | LLM model identifier for cloud mode |
 | `wake` | u8 | 0 | 0-1 | Wake word detection: 0=off, 1=on |
-| `conn_m` | u8 | 0 | 0-2 | Connection mode: 0=auto, 1=local only, 2=remote only |
+| `conn_m` | u8 | 0 | 0-2 | Connection mode: 0=auto (ngrok first then LAN), 1=local only, 2=remote only (Tab5-internal; never crosses the wire — see `voice_ws_start_client`) |
 | `auth_tok` | str | auto-generated (32 hex chars) | — | Debug server bearer auth token, generated on first boot |
+| `mic_mute` | u8 | 0 | 0-1 | Master mic mute — voice_start_listening refuses with a toast if set |
+| `quiet_on` | u8 | 0 | 0-1 | Quiet hours master switch |
+| `quiet_start` | u8 | 22 | 0-23 | Quiet-hours start hour (local clock, 24h) |
+| `quiet_end` | u8 | 7 | 0-23 | Quiet-hours end hour; can wrap past midnight |
+| `int_tier` | u8 | 0 | 0-2 | v4·D Sovereign-Halo intelligence dial (0=fast, 1=balanced, 2=smart) |
+| `voi_tier` | u8 | 0 | 0-2 | v4·D voice dial (0=local Piper, 1=neutral, 2=studio OpenRouter) |
+| `aut_tier` | u8 | 0 | 0-1 | v4·D autonomy dial (0=ask first, 1=agent mode) |
+| `onboard` | u8 | 0 | 0-1 | Onboarding-flow completion marker (set once the user clears the welcome screens) |
+| `spent_mils` | u32 | 0 | 0-UINT32_MAX | Today's cumulative LLM spend, in mils (1/1000 ¢). Resets when `spent_day` rolls to a new day. u32 with daily writes — wear bounded to ~one commit per LLM turn. |
+| `spent_day` | u32 | 0 | 0-UINT32_MAX | Days-since-epoch of the last `spent_mils` write — the dayroll guard. |
+| `cap_mils` | u32 | 100000 | 0-UINT32_MAX | Per-day spend cap in mils (default $1.00/day). Exceeding it triggers cap_downgrade in voice_send_config_update_ex. |
 
 ### ⚠️ LVGL Configuration — CRITICAL
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
@@ -379,7 +390,7 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 4. **Text Input:** `{"type":"text","content":"..."}` — skips STT, goes straight to LLM
 5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"..."}` — four-tier mode switch. Backward compat: `cloud_mode` bool still accepted.
 6. **Device Registration:** `{"type":"register","device_id":"...","session_id":"..."}` on WS connect
-7. **Clear History:** `{"type":"clear_history"}` — reset conversation context
+7. **Clear History:** `{"type":"clear"}` — reset conversation context (W14-H20: was documented as `clear_history`; Tab5's `voice.c` + Dragon's dispatcher have always agreed on `clear`)
 
 ### Dragon → Tab5 (receiving)
 1. **session_start** — session_id for NVS persistence
