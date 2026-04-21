@@ -482,7 +482,11 @@ static lv_obj_t *s_rec_text_lbl = NULL;   /* "Recording..." or "Paused" */
 static lv_obj_t *s_topbar_meta  = NULL;   /* v5 right-aligned count/size */
 static lv_timer_t *s_rec_timer = NULL;    /* 1s update timer */
 static int s_rec_seconds = 0;
-static bool s_rec_paused = false;         /* TODO: pause/resume not yet implemented */
+/* Wave 14 W14-L01: deleted `s_rec_paused` + its three callsites.
+ * Pause/resume was never implemented; the variable was always false,
+ * the guard in rec_timer_cb was a no-op, and the two assignments-to-
+ * false at recording start/stop were dead stores. If/when we actually
+ * add pause/resume, re-introduce with a matching toggle path. */
 
 /* ── Edit overlay state ────────────────────────────────── */
 static lv_obj_t *s_edit_overlay = NULL;
@@ -511,7 +515,6 @@ static void hide_recording_indicator(void);
 static void rec_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    if (s_rec_paused) return;
     s_rec_seconds++;
     if (s_rec_time_lbl) {
         lv_label_set_text_fmt(s_rec_time_lbl, "%d:%02d", s_rec_seconds / 60, s_rec_seconds % 60);
@@ -531,7 +534,6 @@ static void show_recording_indicator(void)
     if (s_rec_indicator) return;  /* already showing */
 
     s_rec_seconds = 0;
-    s_rec_paused = false;
 
     /* Bar: full width, 40px tall, positioned below search bar above notes list.
      * Search bar ends at TOPBAR_H + BTN_ROW_H + SEARCH_H + 4.
@@ -599,7 +601,6 @@ static void hide_recording_indicator(void)
     s_rec_text_lbl = NULL;
     s_rec_time_lbl = NULL;
     s_rec_seconds = 0;
-    s_rec_paused = false;
 
     /* Restore list position */
     if (s_list) {
@@ -1030,21 +1031,35 @@ static void transcription_queue_task(void *arg)
             notes_save();
             continue;
         }
-        /* Fix WAV header if it was from a crashed recording (header says 0 data) */
+        /* Fix WAV header if it was from a crashed recording (header says 0 data).
+         * Wave 14 W14-M04: check every fread/fwrite return.  A short
+         * read used to leave `hdr_data_size` with stack garbage, which
+         * then got written to disk — silent corruption of the RIFF
+         * size fields on a flaky SD card. */
         if (file_size > 44) {
             uint32_t hdr_data_size = 0;
-            fseek(f, 40, SEEK_SET);
-            fread(&hdr_data_size, 4, 1, f);
-            if (hdr_data_size == 0 || hdr_data_size > (uint32_t)(file_size - 44)) {
+            if (fseek(f, 40, SEEK_SET) != 0 ||
+                fread(&hdr_data_size, 4, 1, f) != 1) {
+                ESP_LOGW(TAG, "WAV header read failed for %s — skipping repair",
+                         n->audio_path);
+            } else if (hdr_data_size == 0 ||
+                       hdr_data_size > (uint32_t)(file_size - 44)) {
                 /* Fix the header in place */
                 uint32_t actual_data = (uint32_t)(file_size - 44);
                 uint32_t riff_size = actual_data + 36;
-                fseek(f, 4, SEEK_SET);
-                fwrite(&riff_size, 4, 1, f);
-                fseek(f, 40, SEEK_SET);
-                fwrite(&actual_data, 4, 1, f);
-                fflush(f);
-                ESP_LOGI(TAG, "Fixed WAV header: %lu data bytes", (unsigned long)actual_data);
+                bool ok =
+                    (fseek(f, 4, SEEK_SET) == 0) &&
+                    (fwrite(&riff_size, 4, 1, f) == 1) &&
+                    (fseek(f, 40, SEEK_SET) == 0) &&
+                    (fwrite(&actual_data, 4, 1, f) == 1);
+                if (ok) {
+                    fflush(f);
+                    ESP_LOGI(TAG, "Fixed WAV header: %lu data bytes",
+                             (unsigned long)actual_data);
+                } else {
+                    ESP_LOGW(TAG, "WAV header repair fwrite failed for %s",
+                             n->audio_path);
+                }
             }
             fseek(f, 0, SEEK_SET);
         }

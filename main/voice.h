@@ -75,6 +75,17 @@ const char *voice_get_stt_text(void);
 /** Return the last LLM response text (what Tinker is saying, streams in incrementally). */
 const char *voice_get_llm_text(void);
 
+/* Wave 14 W14-M01: snapshot-under-mutex variants.  Writers mutate
+ * the underlying buffers via strcat under s_state_mutex; a cross-task
+ * caller of the pointer-returning getters above can observe a
+ * half-written mid-strcat string.  These copy variants take the same
+ * mutex so they always return a consistent snapshot.  NUL-terminates
+ * the output.  Returns false on bad args. */
+#include <stdbool.h>
+bool voice_get_last_transcript_copy(char *buf, size_t len);
+bool voice_get_stt_text_copy(char *buf, size_t len);
+bool voice_get_llm_text_copy(char *buf, size_t len);
+
 /** Start dictation mode: unlimited recording, STT-only, no LLM/TTS, auto-stops after 5s silence. */
 esp_err_t voice_start_dictation(void);
 

@@ -1732,16 +1732,17 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
     int st = (int)voice_get_state();
     cJSON_AddStringToObject(root, "state_name", (st >= 0 && st <= 6) ? state_names[st] : "UNKNOWN");
 
-    /* Include last LLM text if available */
-    const char *llm_text = voice_get_llm_text();
-    if (llm_text && llm_text[0]) {
-        cJSON_AddStringToObject(root, "last_llm_text", llm_text);
+    /* Wave 14 W14-M01: the debug httpd task races with voice.c's
+     * WS RX task.  Use the copy-under-mutex variants to avoid
+     * observing a mid-strcat string. */
+    char llm_buf[512];
+    if (voice_get_llm_text_copy(llm_buf, sizeof(llm_buf)) && llm_buf[0]) {
+        cJSON_AddStringToObject(root, "last_llm_text", llm_buf);
     }
 
-    /* Include last STT text */
-    const char *stt_text = voice_get_stt_text();
-    if (stt_text && stt_text[0]) {
-        cJSON_AddStringToObject(root, "last_stt_text", stt_text);
+    char stt_buf[512];
+    if (voice_get_stt_text_copy(stt_buf, sizeof(stt_buf)) && stt_buf[0]) {
+        cJSON_AddStringToObject(root, "last_stt_text", stt_buf);
     }
 
     char *json = cJSON_PrintUnformatted(root);

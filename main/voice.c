@@ -22,6 +22,7 @@
  */
 
 #include "voice.h"
+#include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
 #include "afe.h"
 #include "widget.h"
 #include "ui_voice.h"
@@ -159,7 +160,12 @@ static SemaphoreHandle_t s_state_mutex = NULL;
 static volatile uint32_t s_session_gen = 0;
 
 // WebSocket client (esp_websocket_client managed component)
-static esp_websocket_client_handle_t s_ws = NULL;
+/* Wave 14 W14-M03: volatile because s_ws is written on Core 1's WS
+ * task (connect/disconnect) and read on Core 0's LVGL thread
+ * (voice_send_text, voice_start_listening, async_connect_task poll).
+ * Without volatile the compiler may cache the load across a
+ * disconnect and use-after-free the freed WS client. */
+static esp_websocket_client_handle_t volatile s_ws = NULL;
 
 // Dragon connection info (last-known, updated on each connect)
 static char     s_dragon_host[64] = {0};
@@ -299,7 +305,13 @@ void voice_defer_receipt_attach(uint32_t mils,
                                 const char *model_short, bool retried)
 {
     receipt_attach_async_t *r = calloc(1, sizeof(*r));
-    if (!r) return;
+    if (!r) {
+        /* Wave 14 W14-M08: log the drop so "my cost tracking is off"
+         * bug reports have a trail. */
+        ESP_LOGW(TAG, "voice_defer_receipt_attach OOM — dropped receipt (mils=%lu)",
+                 (unsigned long)mils);
+        return;
+    }
     r->mils    = mils;
     r->ptok    = ptok;
     r->ctok    = ctok;
@@ -429,8 +441,14 @@ static esp_err_t voice_ws_send_text(const char *msg)
 {
     if (!s_ws) return ESP_ERR_INVALID_STATE;
     if (!esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
+    if (!msg) return ESP_ERR_INVALID_ARG;
 
     size_t len = strlen(msg);
+    /* Wave 14 W14-L02: bound the size_t→int cast.  Realistic messages
+     * are <256 bytes but an unchecked cast would silently truncate on
+     * an accidental >2 GB string (e.g. a corrupted LLM response
+     * flowing through text_update). */
+    if (len > INT_MAX) return ESP_ERR_INVALID_ARG;
     int w = esp_websocket_client_send_text(s_ws, msg, (int)len, pdMS_TO_TICKS(1000));
     if (w < 0) {
         ESP_LOGW(TAG, "WS text send failed (%zu bytes)", len);
@@ -443,6 +461,9 @@ static esp_err_t voice_ws_send_binary(const void *data, size_t len)
 {
     if (!s_ws) return ESP_ERR_INVALID_STATE;
     if (!esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
+    if (!data) return ESP_ERR_INVALID_ARG;
+    /* W14-L02: same bound as text. */
+    if (len > INT_MAX) return ESP_ERR_INVALID_ARG;
 
     /* Short 100 ms timeout — we drop frames under pressure rather than
      * block the mic task. If WiFi stalls, I2S DMA would overflow. */
@@ -580,7 +601,15 @@ static void async_refresh_badge_cb(void *arg)
 static void voice_async_toast(char *text)
 {
     voice_async_toast_t *t = malloc(sizeof(voice_async_toast_t));
-    if (!t) { free(text); return; }
+    if (!t) {
+        /* Wave 14 W14-M08: log the silent-drop so ops can see we
+         * squeezed internal SRAM and a user-facing toast never reached
+         * LVGL. */
+        ESP_LOGW(TAG, "voice_async_toast OOM — dropping toast (text=%.40s)",
+                 text ? text : "");
+        free(text);
+        return;
+    }
     t->gen = s_session_gen;
     t->text = text;
     lv_async_call(async_show_toast_cb, t);
@@ -589,7 +618,10 @@ static void voice_async_toast(char *text)
 static void voice_async_refresh_badge(void)
 {
     voice_async_badge_t *b = malloc(sizeof(voice_async_badge_t));
-    if (!b) return;
+    if (!b) {
+        ESP_LOGW(TAG, "voice_async_refresh_badge OOM — badge will lag a tick");
+        return;
+    }
     b->gen = s_session_gen;
     lv_async_call(async_refresh_badge_cb, b);
 }
@@ -960,6 +992,7 @@ static void handle_text_message(const char *data, int len)
             voice_async_refresh_badge();
         }
         cJSON *config = cJSON_GetObjectItem(root, "config");
+        bool applied_cloud = false;
         if (config) {
             cJSON *cloud = cJSON_GetObjectItem(config, "cloud_mode");
             if (cJSON_IsBool(cloud)) {
@@ -967,8 +1000,18 @@ static void handle_text_message(const char *data, int len)
                 if (!cJSON_IsNumber(vmode)) {
                     tab5_settings_set_voice_mode(is_cloud ? 1 : 0);
                     voice_async_refresh_badge();
+                    applied_cloud = true;
                 }
             }
+        }
+        /* Wave 14 W14-L03: if neither voice_mode nor cloud_mode was
+         * present, the handler used to exit silently and Tab5 would
+         * disagree with Dragon about the active mode with no trace.
+         * Log at DEBUG so it's visible via /log without spamming INFO. */
+        if (!cJSON_IsNumber(vmode) && !applied_cloud &&
+            !cJSON_IsString(error)) {
+            ESP_LOGD(TAG, "config_update received with no voice_mode/"
+                         "cloud_mode/error field — no-op");
         }
     } else if (strcmp(type_str, "tool_call") == 0) {
         cJSON *tool = cJSON_GetObjectItem(root, "tool");
@@ -2574,6 +2617,12 @@ voice_state_t voice_get_state(void)
     return state;
 }
 
+/* Wave 14 W14-M01: raw-pointer getters kept for back-compat with
+ * same-task readers (main.c:184 logs them synchronously).  Prefer
+ * voice_get_*_copy below when the caller runs on a task that races
+ * with the WS RX path (debug_server handlers, UI thread).  The
+ * pointer-returning variants can observe a half-written strcat
+ * because writers mutate these buffers under s_state_mutex. */
 const char *voice_get_last_transcript(void)
 {
     return s_transcript;
@@ -2587,6 +2636,34 @@ const char *voice_get_stt_text(void)
 const char *voice_get_llm_text(void)
 {
     return s_llm_text;
+}
+
+/* Wave 14 W14-M01: copy-under-mutex variants.  `buf` receives a
+ * NUL-terminated snapshot; returns true on success, false on invalid
+ * args.  An empty source copies the empty string (still returns true). */
+static bool _voice_copy_under_lock(const char *src, char *buf, size_t len)
+{
+    if (!buf || len == 0) return false;
+    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    strncpy(buf, src, len - 1);
+    buf[len - 1] = '\0';
+    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+    return true;
+}
+
+bool voice_get_last_transcript_copy(char *buf, size_t len)
+{
+    return _voice_copy_under_lock(s_transcript, buf, len);
+}
+
+bool voice_get_stt_text_copy(char *buf, size_t len)
+{
+    return _voice_copy_under_lock(s_stt_text, buf, len);
+}
+
+bool voice_get_llm_text_copy(char *buf, size_t len)
+{
+    return _voice_copy_under_lock(s_llm_text, buf, len);
 }
 
 esp_err_t voice_send_text(const char *text)
