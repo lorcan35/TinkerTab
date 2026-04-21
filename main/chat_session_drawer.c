@@ -10,6 +10,7 @@
  * aren't touched from Core 1.
  */
 #include "chat_session_drawer.h"
+#include "task_worker.h"
 #include "ui_theme.h"
 #include "config.h"
 #include "settings.h"
@@ -322,13 +323,15 @@ static void parse_sessions_json(const char *json_txt, size_t len,
     cJSON_Delete(root);
 }
 
+/* Wave 14 W14-H06: runs on the shared tab5_worker, not its own task.
+ * Plain function body — early returns instead of vTaskSuspend(NULL). */
 static void drawer_fetch_task(void *arg)
 {
     drawer_fetch_ctx_t *ctx = (drawer_fetch_ctx_t *)arg;
-    if (!ctx) { vTaskSuspend(NULL); return; }
+    if (!ctx) return;
 
     drawer_fetch_result_t *res = calloc(1, sizeof(*res));
-    if (!res) { free(ctx); vTaskSuspend(NULL); return; }
+    if (!res) { free(ctx); return; }
     res->d = ctx->d;
     res->gen = ctx->gen;
 
@@ -367,7 +370,6 @@ static void drawer_fetch_task(void *arg)
 
     lv_async_call(on_result_async, res);
     free(ctx);
-    vTaskSuspend(NULL);
 }
 
 /* ── Public API ────────────────────────────────────────────────── */
@@ -488,10 +490,10 @@ void chat_session_drawer_show(chat_session_drawer_t *d)
     if (!host[0]) snprintf(host, sizeof(host), "%s", TAB5_DRAGON_HOST);
     snprintf(ctx->url, sizeof(ctx->url),
              "http://%s:%u/api/v1/sessions?limit=10", host, port);
-    BaseType_t ok = xTaskCreatePinnedToCore(drawer_fetch_task, "drawer_fetch",
-                                             8192, ctx, 3, NULL, 1);
-    if (ok != pdPASS) {
-        ESP_LOGE(TAG, "drawer_fetch spawn failed");
+    /* W14-H06: shared worker; ctx is freed inside drawer_fetch_task. */
+    esp_err_t enq = tab5_worker_enqueue(drawer_fetch_task, ctx, "drawer_fetch");
+    if (enq != ESP_OK) {
+        ESP_LOGE(TAG, "drawer_fetch enqueue failed: %s", esp_err_to_name(enq));
         free(ctx);
     }
 }

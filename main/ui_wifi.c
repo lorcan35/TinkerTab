@@ -18,6 +18,7 @@
 #include "wifi.h"
 #include "settings.h"
 #include "config.h"
+#include "task_worker.h"
 
 #include "esp_wifi.h"
 #include "esp_netif.h"
@@ -164,8 +165,8 @@ static void cb_network_row(lv_event_t *e)
     if (s_ap_records[idx].authmode == WIFI_AUTH_OPEN) {
         strncpy(s_selected_ssid, ssid, sizeof(s_selected_ssid) - 1);
         s_selected_ssid[sizeof(s_selected_ssid) - 1] = '\0';
-        /* Connect with empty password */
-        xTaskCreate(wifi_connect_task, "wifi_conn", 8192, strdup(""), 5, NULL);
+        /* Connect with empty password (W14-H06: shared worker, no task leak). */
+        tab5_worker_enqueue(wifi_connect_task, strdup(""), "wifi_conn");
     } else {
         show_password_dialog(ssid);
     }
@@ -198,7 +199,8 @@ static void cb_pwd_connect(lv_event_t *e)
     ui_keyboard_hide();
 
     char *pwd_copy = strdup(pwd);
-    xTaskCreate(wifi_connect_task, "wifi_conn", 8192, pwd_copy, 5, NULL);
+    /* W14-H06: shared worker, no task leak. */
+    tab5_worker_enqueue(wifi_connect_task, pwd_copy, "wifi_conn");
 }
 
 static void cb_pwd_cancel(lv_event_t *e)
@@ -273,11 +275,15 @@ static void scan_done_handler(void *arg, esp_event_base_t event_base,
 
 /* ── WiFi connect background task ──────────────────────────────────── */
 
+/* Wave 14 W14-H06: dispatched via tab5_worker; no longer its own
+ * FreeRTOS task.  Early-exit paths now just `return` — caller owns
+ * nothing past this point and the worker loops back to service the
+ * next job. */
 static void wifi_connect_task(void *arg)
 {
     char *password = (char *)arg;
 
-    if (s_destroying) { free(password); vTaskSuspend(NULL); return; }
+    if (s_destroying) { free(password); return; }
 
     ESP_LOGI(TAG, "Connecting to '%s'...", s_selected_ssid);
 
@@ -314,7 +320,6 @@ static void wifi_connect_task(void *arg)
             tab5_ui_unlock();
         }
         free(password);
-        vTaskSuspend(NULL);
         return;
     }
 
@@ -330,7 +335,6 @@ static void wifi_connect_task(void *arg)
             tab5_ui_unlock();
         }
         free(password);
-        vTaskSuspend(NULL);
         return;
     }
 
@@ -379,7 +383,6 @@ static void wifi_connect_task(void *arg)
     }
 
     free(password);
-    vTaskSuspend(NULL);
 }
 
 /* ── RSSI to signal bars ───────────────────────────────────────────── */

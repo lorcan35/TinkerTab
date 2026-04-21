@@ -18,6 +18,7 @@
 #include "mode_manager.h"
 #include "config.h"
 #include "settings.h"
+#include "task_worker.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -29,8 +30,8 @@
 static const char *TAG = "ui_voice";
 
 /* Forward declarations for mode switch helper tasks */
-static void mode_switch_voice_task(void *arg);
-static void mode_switch_idle_task(void *arg);
+static void mode_switch_voice_job(void *arg);
+static void mode_switch_idle_job(void *arg);
 
 /* ── Palette — Voice overlay (v5 Zero Interface — amber-led) ─────
    Names kept for minimal-diff; values map to the v5 ui_theme palette.
@@ -345,11 +346,13 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             ESP_LOGI(TAG, "Boot connect ended (IDLE)");
         }
         /* Voice session ended — return to IDLE (no auto-streaming).
-         * Must defer to a task because we're inside the LVGL mutex here. */
+         * Must defer because we're inside the LVGL mutex here.
+         * Wave 14 W14-H06: dispatch via the shared tab5_worker queue
+         * instead of spawning a one-shot task that would leak its
+         * 8 KB stack + TCB. */
         if (tab5_mode_get() == MODE_VOICE) {
             ESP_LOGI(TAG, "Voice ended, scheduling switch to IDLE");
-            xTaskCreatePinnedToCore(
-                mode_switch_idle_task, "mode_idle", 8192, NULL, 5, NULL, 1);
+            tab5_worker_enqueue(mode_switch_idle_job, NULL, "mode_idle");
         }
         /* C5: Offline recording fallback — if connect failed and user wanted
          * to record, fall back to local SD card recording via Notes. */
@@ -1566,16 +1569,21 @@ static void rec_timer_cb(lv_timer_t *t)
 /* ================================================================
  *  Mode switch helper (runs outside LVGL context to avoid watchdog)
  * ================================================================ */
-static void mode_switch_voice_task(void *arg)
+/* Wave 14 W14-H06: these are now plain job functions, not FreeRTOS
+ * tasks.  The tab5_worker task runs them one at a time, so the old
+ * "spawn 8 KB task + vTaskSuspend forever" leak pattern is gone.
+ * Firing the mic orb 40 times no longer costs 320 KB of PSRAM + 40
+ * permanently-suspended TCBs. */
+static void mode_switch_voice_job(void *arg)
 {
+    (void)arg;
     tab5_mode_switch(MODE_VOICE);
-    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
 }
 
-static void mode_switch_idle_task(void *arg)
+static void mode_switch_idle_job(void *arg)
 {
+    (void)arg;
     tab5_mode_switch(MODE_IDLE);
-    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
 }
 
 /* ================================================================
@@ -1591,11 +1599,11 @@ static void mic_click_cb(lv_event_t *e)
 
     switch (state) {
     case VOICE_STATE_IDLE:
-        /* Not connected — connect to Dragon, then auto-start Ask mode */
+        /* Not connected — connect to Dragon, then auto-start Ask mode.
+         * W14-H06: dispatched on the shared worker. */
         ESP_LOGI(TAG, "Requesting VOICE mode (pending: ask)...");
         s_pending_ask = true;
-        xTaskCreatePinnedToCore(
-            mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+        tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
         break;
     case VOICE_STATE_READY: {
         /* Connected — start Ask mode, but stop streaming first if active */
@@ -1603,8 +1611,7 @@ static void mic_click_cb(lv_event_t *e)
         if (cur_mode == MODE_STREAMING || cur_mode == MODE_BROWSING) {
             ESP_LOGI(TAG, "READY but streaming active — mode switch first");
             s_pending_ask = true;
-            xTaskCreatePinnedToCore(
-                mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+            tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
         } else {
             ESP_LOGI(TAG, "READY → Ask mode");
             voice_start_listening();
@@ -1636,14 +1643,12 @@ static void mic_long_press_cb(lv_event_t *e)
     s_dictation_from_anywhere = true;
 
     if (state == VOICE_STATE_IDLE) {
-        xTaskCreatePinnedToCore(
-            mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+        tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
     } else if (state == VOICE_STATE_READY) {
         tab5_mode_t cur_mode = tab5_mode_get();
         if (cur_mode == MODE_STREAMING || cur_mode == MODE_BROWSING) {
             ESP_LOGI(TAG, "READY but streaming — mode switch, then dictate");
-            xTaskCreatePinnedToCore(
-                mode_switch_voice_task, "mode_voice", 8192, NULL, 5, NULL, 1);
+            tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
         } else {
             esp_err_t ret = voice_start_dictation();
             if (ret != ESP_OK) {
