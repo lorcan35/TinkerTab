@@ -59,6 +59,8 @@ static void seg_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
 static void show_agent_consent(uint8_t prev_aut_tier);
+/* Wave 10 H5 Presets: forward decl — body below seg_click_cb. */
+void preset_click_cb(lv_event_t *e);
 static void hide_agent_consent(bool commit);
 static void consent_confirm_cb(lv_event_t *e);
 static void consent_cancel_cb(lv_event_t *e);
@@ -268,6 +270,55 @@ void ui_mode_sheet_show(void)
         y += ROW_H + ROW_GAP;
     }
 
+    /* Wave 10 H5: Presets row — four chips matching the legacy voice_mode
+     * values so users can one-tap a recipe instead of spinning each dial.
+     * Presets set (int/voi/aut) to the same mapping the reverse-derive
+     * uses at line ~115 above:
+     *   Local  -> (0,0,0)   Hybrid -> (1,2,0)
+     *   Cloud  -> (2,2,0)   Agent  -> keep int/voi, aut=1 (triggers consent)
+     * Tapping Agent routes through show_agent_consent just like the
+     * dial segment does at line 460 — no silent mode-3 switch. */
+    {
+        lv_obj_t *rk = lv_label_create(s_sheet);
+        lv_label_set_text(rk, "\xe2\x80\xa2 PRESETS");
+        lv_obj_set_style_text_font(rk, FONT_SMALL, 0);
+        lv_obj_set_style_text_color(rk, lv_color_hex(TH_AMBER), 0);
+        lv_obj_set_style_text_letter_space(rk, 4, 0);
+        lv_obj_set_pos(rk, SIDE_PAD, y);
+
+        lv_obj_t *row = lv_obj_create(s_sheet);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_pos(row, SIDE_PAD, y + 30);
+        lv_obj_set_size(row, MS_W - 2 * SIDE_PAD, SEG_H);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        const int gap = 10;
+        const int chip_count = 4;
+        const int chip_w = ((MS_W - 2 * SIDE_PAD) - gap * (chip_count - 1)) / chip_count;
+        const char *labels[4] = { "Local", "Hybrid", "Cloud", "Agent" };
+        extern void preset_click_cb(lv_event_t *e);
+        for (int c = 0; c < chip_count; c++) {
+            lv_obj_t *chip = lv_obj_create(row);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_pos(chip, c * (chip_w + gap), 0);
+            lv_obj_set_size(chip, chip_w, SEG_H);
+            lv_obj_set_style_bg_color(chip, lv_color_hex(TH_CARD_ELEVATED), 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(chip, SEG_H / 2, 0);
+            lv_obj_set_style_border_width(chip, 1, 0);
+            lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
+            lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(chip, preset_click_cb, LV_EVENT_CLICKED,
+                                (void *)(uintptr_t)c);
+            lv_obj_t *lbl = lv_label_create(chip);
+            lv_label_set_text(lbl, labels[c]);
+            lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+            lv_obj_center(lbl);
+        }
+        y += ROW_H + ROW_GAP;
+    }
+
     /* Composite preview — lives below the three dials. Border / accent /
      * kicker / text colours all swap to violet when aut_tier == 1 to
      * signal the TinkerClaw memory-bypass (Phase 2c informed-consent). */
@@ -445,6 +496,35 @@ static void persist_and_notify_dragon(void)
 
     ESP_LOGI(TAG, "Tier change resolved -> voice_mode=%d model=%s",
              new_mode, model_to_send);
+}
+
+/* Wave 10 H5 Presets: one-tap recipes that set all three dials to the
+ * tier combination matching the legacy voice_mode (0=Local, 1=Hybrid,
+ * 2=Cloud, 3=Agent). Agent preset routes through the same consent modal
+ * that the AUTONOMY dial does so there's no silent bypass path. */
+void preset_click_cb(lv_event_t *e)
+{
+    int preset = (int)(uintptr_t)lv_event_get_user_data(e);
+    uint8_t prev_aut = s_aut_tier;
+    switch (preset) {
+        case 0: /* Local   */ s_int_tier = 0; s_voi_tier = 0; s_aut_tier = 0; break;
+        case 1: /* Hybrid  */ s_int_tier = 1; s_voi_tier = 2; s_aut_tier = 0; break;
+        case 2: /* Cloud   */ s_int_tier = 2; s_voi_tier = 2; s_aut_tier = 0; break;
+        case 3: /* Agent   */
+            /* Keep intelligence + voice tiers as-is — agent mode is only
+             * about autonomy/memory-bypass. If already on Agent, no-op.
+             * Otherwise gate behind the consent modal. */
+            if (s_aut_tier == 1) return;
+            s_aut_tier = 1;
+            refresh_segments();
+            refresh_composite();
+            show_agent_consent(prev_aut);
+            return;  /* do NOT persist yet — modal commits or reverts */
+        default: return;
+    }
+    refresh_segments();
+    refresh_composite();
+    persist_and_notify_dragon();
 }
 
 static void seg_click_cb(lv_event_t *e)

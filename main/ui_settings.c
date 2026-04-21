@@ -630,11 +630,17 @@ static void ota_progress_cb(int percent, const char *phase)
 
 static void ota_apply_task(void *arg)
 {
-    ESP_LOGI(TAG, "OTA apply: downloading from %s", s_ota_url);
-    tab5_ota_set_progress_cb(ota_progress_cb);
-    esp_err_t err = tab5_ota_apply(s_ota_url, s_ota_sha256[0] ? s_ota_sha256 : NULL);
-    tab5_ota_set_progress_cb(NULL);
-    ESP_LOGE(TAG, "OTA apply failed: %s", esp_err_to_name(err));
+    ESP_LOGI(TAG, "OTA apply: scheduling %s for next boot", s_ota_url);
+    /* Wave 10 #77 extended-use fix: schedule and reboot. The fresh boot
+     * applies the stored OTA before any heavy subsystems have claimed
+     * DMA-capable internal SRAM. If we stay here and call tab5_ota_apply
+     * directly, a user applying after a 30+ min session hits the
+     * "esp_dma_capable_malloc: Not enough heap memory" path and the
+     * watchdog reboots without the firmware actually landing. */
+    esp_err_t err = tab5_ota_schedule(s_ota_url,
+                                      s_ota_sha256[0] ? s_ota_sha256 : NULL);
+    /* tab5_ota_schedule esp_restarts on success; if we're here, failed. */
+    ESP_LOGE(TAG, "OTA schedule failed: %s", esp_err_to_name(err));
     if (s_destroying) { vTaskSuspend(NULL); return; }
     tab5_ui_lock();
     if (s_ota_btn_label) lv_label_set_text(s_ota_btn_label, "Update failed!");

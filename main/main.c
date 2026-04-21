@@ -349,6 +349,19 @@ void app_main(void)
         tab5_services_start(SERVICE_DRAGON);
     }
 
+    /* Wave 10 #77 extended-use OTA fix: after WiFi is up but BEFORE
+     * LVGL / voice / camera init have allocated their share of DMA,
+     * drain any OTA that was scheduled on the previous session.
+     * Heap is pristine here — esp_https_ota has enough runway to
+     * complete even large firmwares without hitting the 181-byte
+     * alloc failure that plagued in-session apply.  Reboots on
+     * success (esp_restart in tab5_ota_apply); continues on no-op. */
+    if (s_wifi_ok) {
+        if (tab5_ota_apply_pending_if_any() == ESP_OK) {
+            ESP_LOGI(TAG, "OTA: applied pending update (unreachable)");
+        }
+    }
+
     // Initialize LVGL UI layer (deferred until after WiFi to avoid PSRAM contention)
     ESP_LOGI(TAG, "Initializing LVGL UI...");
     ret = tab5_ui_init(tab5_display_get_panel());

@@ -992,11 +992,16 @@ typedef struct {
 static void ota_apply_task(void *arg)
 {
     ota_apply_args_t *args = (ota_apply_args_t *)arg;
-    ESP_LOGI("ota", "Applying OTA from: %s (sha256=%s)", args->url,
+    ESP_LOGI("ota", "Scheduling OTA for next boot: %s (sha256=%s)", args->url,
              args->sha256[0] ? args->sha256 : "none");
-    esp_err_t err = tab5_ota_apply(args->url, args->sha256[0] ? args->sha256 : NULL);
-    /* If we get here, it failed (success reboots) */
-    ESP_LOGE("ota", "OTA apply failed: %s", esp_err_to_name(err));
+    /* Wave 10 #77 extended-use fix: schedule instead of apply in-process.
+     * tab5_ota_schedule stores url+sha to NVS, reboots, and the fresh
+     * boot applies with a pristine DMA heap (see main.c near WiFi init).
+     * Prevents the "esp_dma_capable_malloc: Not enough heap memory"
+     * failure mode that hits after 30+ min of normal use. */
+    esp_err_t err = tab5_ota_schedule(args->url, args->sha256[0] ? args->sha256 : NULL);
+    /* If we get here, schedule failed (success reboots) */
+    ESP_LOGE("ota", "OTA schedule failed: %s", esp_err_to_name(err));
     free(args->url);
     free(args);
     vTaskDelete(NULL);
