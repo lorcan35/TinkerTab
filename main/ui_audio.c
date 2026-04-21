@@ -42,7 +42,12 @@ static const char *TAG = "ui_audio";
 
 /* ── Audio buffer ────────────────────────────────────────────── */
 #define AUDIO_CHUNK_SAMPLES  8192
-#define PLAYBACK_STACK_SIZE  4096
+/* Wave 14 W14-H07: bumped 4 KB → 8 KB.  The playback task holds an
+ * open FATFS FILE (~2-4 KB sector buffers), an I2S handle, and
+ * LVGL calls that grab the display mutex (tab5_ui_lock +
+ * lv_label_set_text_fmt at 100-137).  Long WAV playback on a fresh
+ * boot was trapping stack_chk_fail.  PSRAM cost is trivial. */
+#define PLAYBACK_STACK_SIZE  8192
 
 /* ── WAV header (standard 44-byte RIFF/PCM) ──────────────────── */
 typedef struct __attribute__((packed)) {
