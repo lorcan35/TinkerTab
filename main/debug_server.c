@@ -54,6 +54,12 @@ static const char *TAG = "debug_srv";
 
 #define DEBUG_PORT 8080
 
+/* Wave 15 W15-C02: file-scoped httpd handle so `tab5_debug_server_stop()`
+ * can actually stop the server on demand.  The original code stashed the
+ * handle in a function-local and leaked it — making the server a one-shot
+ * with no recovery path. */
+static httpd_handle_t s_httpd = NULL;
+
 /* ======================================================================== */
 /*  Bearer token authentication                                              */
 /* ======================================================================== */
@@ -2006,12 +2012,22 @@ esp_err_t tab5_debug_server_init(void)
     config.core_id = 1;
     config.task_priority = tskIDLE_PRIORITY + 6;  /* Above LVGL (prio 5) */
 
+    if (s_httpd != NULL) {
+        /* Already running — treat as idempotent.  Caller should stop
+         * first if they want a restart.  Returning ESP_OK preserves
+         * the old pre-W15-C02 behaviour where a second call was a
+         * benign no-op (would have leaked a second server). */
+        ESP_LOGW(TAG, "debug server already running, skipping re-init");
+        return ESP_OK;
+    }
+
     httpd_handle_t server = NULL;
     esp_err_t ret = httpd_start(&server, &config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start debug server: %s", esp_err_to_name(ret));
         return ret;
     }
+    s_httpd = server;
 
     /* Register URI handlers */
     const httpd_uri_t uri_index = {
@@ -2128,4 +2144,19 @@ esp_err_t tab5_debug_server_init(void)
     ESP_LOGI(TAG, "Debug server: http://%s:%d/", ip, DEBUG_PORT);
 
     return ESP_OK;
+}
+
+esp_err_t tab5_debug_server_stop(void)
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = httpd_stop(s_httpd);
+    s_httpd = NULL;
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Debug server stopped");
+    } else {
+        ESP_LOGW(TAG, "httpd_stop returned %s", esp_err_to_name(err));
+    }
+    return err;
 }
