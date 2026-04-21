@@ -45,6 +45,7 @@
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_netif.h"
 #include "esp_core_dump.h"
+#include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "cJSON.h"
@@ -866,6 +867,96 @@ static esp_err_t crashlog_handler(httpd_req_t *req)
     esp_err_t ret = httpd_resp_sendstr(req, json);
     free(json);
     return ret;
+}
+
+/* ── Coredump binary download ─────────────────────────────────────────── */
+
+/* Wave 15 W15-C05: stream the raw coredump partition bytes so we can
+ * decode them offline with `espcoredump.py info_corefile -t elf`.
+ * Partition reads are chunked into 4 KiB so the httpd task stack stays
+ * tiny regardless of the dump size (~3 MB on this board).  Erase is
+ * NOT performed here — the operator explicitly calls /crashlog?erase=1
+ * or runs the esptool after confirming the dump was captured.  This
+ * avoids the pathological loop where a corrupted dump keeps crashing
+ * the decoder and gets wiped on every fetch attempt. */
+static esp_err_t coredump_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    size_t addr = 0, size = 0;
+    esp_err_t err = esp_core_dump_image_get(&addr, &size);
+    if (err != ESP_OK) {
+        if (err == ESP_ERR_NOT_FOUND) {
+            httpd_resp_set_status(req, "404 Not Found");
+            httpd_resp_send(req, "{\"error\":\"no coredump\"}", HTTPD_RESP_USE_STRLEN);
+            return ESP_OK;
+        }
+        ESP_LOGE(TAG, "coredump_image_get failed: %s", esp_err_to_name(err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "read error");
+        return ESP_FAIL;
+    }
+    if (size == 0) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "{\"error\":\"empty coredump\"}", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    /* Find the coredump partition so we can read via partition-relative
+     * offsets.  `esp_core_dump_image_get` returns absolute flash addrs
+     * but `esp_partition_read` wants offset-from-partition-start. */
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, NULL);
+    if (!part) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no coredump partition");
+        return ESP_FAIL;
+    }
+    if (addr < part->address || addr + size > part->address + part->size) {
+        ESP_LOGE(TAG, "coredump range 0x%zx+%zu outside partition 0x%lx+%lu",
+                 addr, size, (unsigned long)part->address, (unsigned long)part->size);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "range mismatch");
+        return ESP_FAIL;
+    }
+    const size_t rel = addr - part->address;
+
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                      "attachment; filename=\"tab5_coredump.elf\"");
+    /* Advertise size via X-Content-Length so the client can track
+     * progress without conflicting with the chunked Transfer-Encoding
+     * that httpd_resp_send_chunk() emits. */
+    char len[32];
+    snprintf(len, sizeof(len), "%zu", size);
+    httpd_resp_set_hdr(req, "X-Content-Length", len);
+
+    /* Stream in 4 KiB chunks. */
+    const size_t CHUNK = 4096;
+    uint8_t *buf = heap_caps_malloc(CHUNK, MALLOC_CAP_DEFAULT);
+    if (!buf) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "oom");
+        return ESP_FAIL;
+    }
+    size_t sent = 0;
+    while (sent < size) {
+        size_t to_read = size - sent;
+        if (to_read > CHUNK) to_read = CHUNK;
+        err = esp_partition_read(part, rel + sent, buf, to_read);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "partition_read@%zu: %s", rel + sent, esp_err_to_name(err));
+            break;
+        }
+        if (httpd_resp_send_chunk(req, (const char *)buf, to_read) != ESP_OK) {
+            /* Client dropped — bail silently. */
+            break;
+        }
+        sent += to_read;
+    }
+    heap_caps_free(buf);
+    /* Terminate chunked stream. */
+    httpd_resp_send_chunk(req, NULL, 0);
+    ESP_LOGI(TAG, "/coredump: sent %zu/%zu bytes", sent, size);
+    return ESP_OK;
 }
 
 /* ── SD card file listing ─────────────────────────────────────────────── */
@@ -2058,6 +2149,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_open = {
         .uri = "/open", .method = HTTP_POST, .handler = open_handler
     };
+    const httpd_uri_t uri_coredump = {
+        .uri = "/coredump", .method = HTTP_GET, .handler = coredump_handler
+    };
     const httpd_uri_t uri_crashlog = {
         .uri = "/crashlog", .method = HTTP_GET, .handler = crashlog_handler
     };
@@ -2121,6 +2215,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_log);
     httpd_register_uri_handler(server, &uri_open);
     httpd_register_uri_handler(server, &uri_crashlog);
+    httpd_register_uri_handler(server, &uri_coredump);
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_wake);
     httpd_register_uri_handler(server, &uri_settings_get);
