@@ -821,15 +821,24 @@ void ui_home_update_status(void)
     else if (quiet)   state = ST_QUIET;
     else              state = ST_NORMAL;
 
-    /* F1/F2 OFFLINE hero: after 8 s of persistent NO_WIFI or DRAGON_DOWN,
+    /* F1/F2 OFFLINE hero: after 20 s of persistent NO_WIFI or DRAGON_DOWN,
      * surface a full-screen card so the user can't miss the outage.
-     * Auto-dismiss on recovery.  Pill still updates in parallel below. */
+     * Auto-dismiss on recovery.  Pill still updates in parallel below.
+     *
+     * Wave 12 threshold bump 8 s -> 20 s: the old 8-s window was tighter
+     * than a healthy WS reconnect cycle.  The wave 9 DMA watchdog can
+     * rescue Tab5 with a reboot that takes ~15 s end-to-end (reboot +
+     * WiFi + Dragon WS handshake); during that window state was
+     * DRAGON_DOWN and the hero kept flashing.  Users reported seeing
+     * "Dragon unreachable" every few minutes under heavy stress when
+     * Dragon was in fact fine.  20 s is past the worst-case reconnect
+     * so the hero only fires on a genuinely sustained outage. */
     {
         bool degraded = (state == ST_NO_WIFI || state == ST_DRAGON_DOWN);
         int64_t now_ms = esp_timer_get_time() / 1000;
         if (degraded) {
             if (s_degraded_since_ms == 0) s_degraded_since_ms = now_ms;
-            if (now_ms - s_degraded_since_ms >= 8000) {
+            if (now_ms - s_degraded_since_ms >= 20000) {
                 if (state == ST_NO_WIFI) {
                     offline_hero_show("No Wi-Fi",
                         "Tab5 can't reach the network.\nVoice, memory, "
