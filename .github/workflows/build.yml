@@ -16,36 +16,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache ESP-IDF
-        id: cache-idf
-        uses: actions/cache@v4
+      # Wave 13 C1 security: CI needs a working WiFi SSID/pass combo to
+      # compile (the build bakes them into the firmware via Kconfig).
+      # We generate a placeholder sdkconfig.local so the build compiles;
+      # production firmware must ship with a real sdkconfig.local
+      # (gitignored, copied from sdkconfig.local.example).
+      - name: Create CI sdkconfig.local placeholder
+        run: |
+          cat > sdkconfig.local <<'EOF'
+          CONFIG_TAB5_WIFI_SSID="CI-BUILD-SSID"
+          CONFIG_TAB5_WIFI_PASS="CI-BUILD-PASS"
+          CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
+          CONFIG_TAB5_DRAGON_PORT=3502
+          EOF
+
+      # The espressif/esp-idf-ci-action marketplace action handles the
+      # IDF clone, Python deps, activation, and `idf.py build` in one shot.
+      # Rolling our own was fragile — install.sh's pwd-based IDF_PATH
+      # detection kept picking up /home/runner/work/_temp instead of the
+      # downloaded tree, regardless of how we exported IDF_PATH.
+      - name: Build with ESP-IDF v5.4.3
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          path: ~/esp/esp-idf
-          key: esp-idf-v5.5.2-${{ runner.os }}
-
-      - name: Download ESP-IDF
-        if: steps.cache-idf.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/esp
-          curl -L -o ~/esp/esp-idf-v5.5.2.zip https://github.com/espressif/esp-idf/releases/download/v5.5.2/esp-idf-v5.5.2.zip
-          unzip -q ~/esp/esp-idf-v5.5.2.zip -d ~/esp/
-          rm ~/esp/esp-idf-v5.5.2.zip
-
-      - name: Install ESP-IDF
-        run: |
-          . ~/esp/esp-idf/install.sh
-          . ~/esp/esp-idf/export.sh
-          idf.py --version
-
-      - name: Set target
-        run: |
-          . ~/esp/esp-idf/export.sh
-          idf.py set-target esp32p4
-
-      - name: Build
-        run: |
-          . ~/esp/esp-idf/export.sh
-          idf.py build
+          esp_idf_version: v5.4.3
+          target: esp32p4
+          path: .
 
       - name: Verify artifact
         run: test -f build/tinkertab.bin

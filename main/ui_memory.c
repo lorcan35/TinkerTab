@@ -293,7 +293,7 @@ done:
     /* Hop to LVGL thread to rebuild the UI. */
     lv_async_call(render_hits_cb, NULL);
     s_fetch_inflight = false;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 static void kick_fetch(void)

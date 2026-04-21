@@ -53,7 +53,23 @@ static bool         s_inited = false;
  * observed producing ESP_ERR_NVS_INVALID_HANDLE under stress.  A
  * plain FreeRTOS mutex is enough; NVS ops are short. */
 static SemaphoreHandle_t s_nvs_mutex = NULL;
-#define NVS_LOCK()    do { if (s_nvs_mutex) xSemaphoreTake(s_nvs_mutex, portMAX_DELAY); } while (0)
+/* Wave 13 H10: bounded NVS mutex timeout.
+ *
+ * Previously NVS_LOCK() used portMAX_DELAY. A single long-running NVS write
+ * (observed up to ~800 ms on a freshly-erased partition after corruption)
+ * blocked the heap watchdog task (Core 1) when it tried to read the
+ * nvs_write counter, and since the watchdog's own WDT is 5s, the sequence
+ * LVGL-write + Core-1 read could have tipped the device over.  2000 ms is
+ * 2.5x the worst observed write, so contended callers get a clear error
+ * back instead of silently stalling.  Returns true if the lock was taken,
+ * false on timeout. */
+#define NVS_LOCK_TIMEOUT_MS 2000
+static inline bool nvs_try_lock(uint32_t timeout_ms)
+{
+    if (!s_nvs_mutex) return true;  /* pre-init: no other tasks yet */
+    return xSemaphoreTake(s_nvs_mutex, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+#define NVS_LOCK()    nvs_try_lock(NVS_LOCK_TIMEOUT_MS)
 #define NVS_UNLOCK()  do { if (s_nvs_mutex) xSemaphoreGive(s_nvs_mutex); } while (0)
 
 /* Forward declarations for init-time seeding */
@@ -124,7 +140,11 @@ static esp_err_t get_str(const char *key, char *buf, size_t len, const char *def
     }
 
     size_t required = len;
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGW(TAG, "nvs_get_str(%s): mutex timeout, using default", key);
+        strncpy(buf, def, len); buf[len - 1] = '\0';
+        return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = nvs_get_str(s_nvs, key, buf, &required);
     NVS_UNLOCK();
     if (err != ESP_OK) {
@@ -144,7 +164,10 @@ static esp_err_t set_str(const char *key, const char *val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGE(TAG, "nvs_set_str(%s): mutex timeout", key);
+        return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = nvs_set_str(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
@@ -162,7 +185,10 @@ static uint8_t get_u8(const char *key, uint8_t def)
     if (!s_inited) return def;
 
     uint8_t val = def;
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGW(TAG, "nvs_get_u8(%s): mutex timeout, using default %d", key, def);
+        return def;
+    }
     esp_err_t err = nvs_get_u8(s_nvs, key, &val);
     NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -177,7 +203,10 @@ static esp_err_t set_u8(const char *key, uint8_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGE(TAG, "nvs_set_u8(%s): mutex timeout", key);
+        return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = nvs_set_u8(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
@@ -195,7 +224,10 @@ static uint16_t get_u16(const char *key, uint16_t def)
     if (!s_inited) return def;
 
     uint16_t val = def;
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGW(TAG, "nvs_get_u16(%s): mutex timeout, using default %d", key, def);
+        return def;
+    }
     esp_err_t err = nvs_get_u16(s_nvs, key, &val);
     NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -210,7 +242,10 @@ static esp_err_t set_u16(const char *key, uint16_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
 
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGE(TAG, "nvs_set_u16(%s): mutex timeout", key);
+        return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = nvs_set_u16(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
@@ -227,7 +262,10 @@ static uint32_t get_u32(const char *key, uint32_t def)
 {
     if (!s_inited) return def;
     uint32_t val = def;
-    NVS_LOCK();
+    if (!NVS_LOCK()) {
+        ESP_LOGW(TAG, "nvs_get_u32(%s): mutex timeout, using default %lu", key, (unsigned long)def);
+        return def;
+    }
     esp_err_t err = nvs_get_u32(s_nvs, key, &val);
     NVS_UNLOCK();
     if (err == ESP_ERR_NVS_NOT_FOUND) {
@@ -241,11 +279,19 @@ static uint32_t get_u32(const char *key, uint32_t def)
 static esp_err_t set_u32(const char *key, uint32_t val)
 {
     if (!s_inited) return ESP_ERR_INVALID_STATE;
+    /* Wave 13 H10: set_u32 was missing the NVS mutex entirely while every
+     * other setter had it -- races with set_u8 et al. on the same handle
+     * were possible.  Lock it, with the same bounded timeout. */
+    if (!NVS_LOCK()) {
+        ESP_LOGE(TAG, "nvs_set_u32(%s): mutex timeout", key);
+        return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = nvs_set_u32(s_nvs, key, val);
     if (err == ESP_OK) {
         err = nvs_commit(s_nvs);
         if (err == ESP_OK) s_nvs_write_count++;
     }
+    NVS_UNLOCK();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nvs_set_u32(%s) failed: %s", key, esp_err_to_name(err));
     }

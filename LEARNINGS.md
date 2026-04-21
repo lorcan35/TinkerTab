@@ -1007,3 +1007,38 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** Tab5's DMA + WiFi issues are orthogonal to Dragon-side audit fixes. Using Tab5 as the test harness conflates two failure modes.
 - **Fix:** Added `tests/audit/test_d5_d6_ws.py` in TinkerBox — connects directly to Dragon's `/ws/voice` WebSocket with a synthetic device registration, exercises the same code paths Tab5 does, and asserts the protocol invariants (`text_update` before `media`, no `<tool>` markup in `llm` stream). Bypasses Tab5 entirely.
 - **Prevention:** For audit/regression tests that verify server-side behavior, prefer a WS-level probe over a device-level visual. Reserve device screenshots for end-to-end UX verification once protocol correctness is established. Keep the probe in the TinkerBox repo (not in a separate test infrastructure) so any Dragon change can trigger it.
+
+### vTaskDelete(NULL) on P4 corrupts TLSP cleanup
+- **Date:** 2026-04-20 (wave 13 C4)
+- **Symptom:** Several helper tasks (in `voice.c`, `debug_server.c`, `ui_home.c`, `ui_memory.c`, `chat_msg_view.c`) called `vTaskDelete(NULL)` as their exit path. On ESP32-P4 with PSRAM XIP this occasionally tripped `esp_ptr_executable()` inside FreeRTOS's TLSP deletion callbacks — because `.text` at `0x4800xxxx` isn't recognized as executable — causing a LoadStoreError on task teardown.
+- **Root Cause:** Known issue #20 — `CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=n` in `sdkconfig.defaults` masks the *default* TLSP handler, but any code path that calls `vTaskDelete(NULL)` from inside the task being deleted is still fragile on P4 because the kernel has to unwind the TLSP slot list with the task stack already being torn down.
+- **Fix:** Swept all 12 sites to `vTaskSuspend(NULL)` with an inline comment. The task stays parked; FreeRTOS reclaims stack via the IDLE task's cleanup path without running the in-task deletion code. Memory overhead is ~10 TCBs that never run again — negligible.
+- **Prevention:** `vTaskDelete(NULL)` is banned on ESP32-P4 with PSRAM XIP. Use `vTaskSuspend(NULL)`. Grep should catch any new additions — if one sneaks in, the crash is a LoadStore at `xPortRaisePrivilege` which is easy to misattribute.
+
+### Brownout detector saves coredumps from USB supply dips
+- **Date:** 2026-04-20 (wave 13 C5)
+- **Symptom:** During sustained WiFi TX bursts on USB power the Tab5 would sometimes hang with the LVGL thread stuck and no reboot — observable as a frozen screen that never came back without a physical replug.
+- **Root Cause:** The USB supply dips during WiFi TX peaks are enough to corrupt PSRAM + internal SRAM mid-instruction, but not enough to power-cycle the P4. The CPU runs through the dip with scrambled state; the main loop looks alive but pointers are torched.
+- **Fix:** Enabled `CONFIG_ESP_BROWNOUT_DET=y` with `CONFIG_ESP_BROWNOUT_DET_LVL_SEL_0=y` (the most tolerant threshold — ESP32-P4 is noisier than S3/C-series on this rail). A dip now triggers a clean reboot, and wave-11's coredump path captures it for post-mortem.
+- **Prevention:** Always enable the brownout detector on any board that can run on cheap USB power. The cost is measured in tens of nanoamps.
+
+### voice.c public APIs read s_state without the state mutex
+- **Date:** 2026-04-20 (wave 13 H1)
+- **Symptom:** Concurrency audit: `voice_start_listening`, `voice_cancel`, `voice_send_text`, and the async_connect_task poll all read `s_state` directly without `s_state_mutex`. No visible bug surfaced in hand-testing, but the race is real — WS RX callback runs on Core 1's WS task, every caller runs on Core 0 LVGL, and the P4 has per-core caches that can tear-read a `voice_state_t`.
+- **Root Cause:** The original code assumed aligned enum reads are atomic, which is true on single-core ARM but not on dual-core P4 when two tasks pin to different cores and the enum lives in DRAM with no explicit barrier.
+- **Fix:** All public API state checks now go through `voice_get_state()` which takes `s_state_mutex`. The async_connect_task polling loop uses the same accessor. `voice_start_listening` and `voice_send_text` snapshot state once at entry into a local `cur_state` so the whole function reasons about the same tick.
+- **Prevention:** Every multi-task-visible field should have one read path (through a mutex-taking accessor) and one write path (through `voice_set_state` which already locks). No direct reads outside the mutex. Treat the static field as if it were volatile-fetched-under-lock.
+
+### NVS mutex used portMAX_DELAY, starving the heap watchdog
+- **Date:** 2026-04-20 (wave 13 H10)
+- **Symptom:** Under a corrupted-NVS recovery scenario, an NVS write on Core 0 took ~800 ms. Core 1's heap watchdog tried to read the `s_nvs_write_count` counter (which is `uint32_t` and protected by the same mutex on writes), waited on `portMAX_DELAY`, and tripped the heap-watchdog's own 5 s WDT. Device rebooted without a clean coredump.
+- **Root Cause:** `NVS_LOCK()` macro used unbounded wait. `set_u32` was missing the mutex entirely (concurrent `set_u8` + `set_u32` on the same handle is UB per ESP-IDF docs).
+- **Fix:** New `nvs_try_lock(timeout_ms)` with 2000 ms bound (2.5x the worst observed write). All getters fall back to the default value on timeout and log a warning; all setters return `ESP_ERR_TIMEOUT`. `set_u32` now locks. Callers were not updated — an old caller that ignored the return value of `set_u32` still works; a new caller that checks the return now gets the real error.
+- **Prevention:** Every mutex take in an embedded system should have a bounded timeout. `portMAX_DELAY` is a debugging convenience, not production code. If the caller can't handle a timeout, the bound should still exist but with a log + abort (fail-fast beats silent deadlock).
+
+### SD-card note writes needed fsync, not just fflush
+- **Date:** 2026-04-20 (wave 13 H8)
+- **Symptom:** Power-loss testing: a yank during a note save left `notes.json.tmp` readable but with stale/partial content, which `rename()` then promoted to `notes.json`. Silent data corruption.
+- **Root Cause:** `fflush()` pushes libc's buffer into the kernel; the ESP-IDF FATFS VFS still holds dirty sectors in its own cache until an `f_sync()` lands. The atomic-rename pattern doesn't help if the "new" file is itself half-written.
+- **Fix:** Added `fsync(fileno(f))` between `fflush` and `fclose`. ESP-IDF VFS routes `fsync()` to FATFS's `f_sync()` which pushes dirty sectors to the SD card before we even try the rename.
+- **Prevention:** Atomic-write-via-rename is only atomic if you `fsync` the temp file before renaming. The pattern is: write → fflush → fsync → fclose → rename. Skip any of those steps and the atomicity is theatrical.

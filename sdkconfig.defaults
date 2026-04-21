@@ -26,6 +26,18 @@ CONFIG_FREERTOS_HZ=1000
 # Task WDT — 60s timeout (settings screen creation takes 5-10s with feed_wdt yields)
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 
+# ---------------------------------------------------------------------------
+# Wave 13 C5: Brownout detector
+# ESP32-P4 on USB-powered Tab5 experiences supply dips during WiFi TX peaks.
+# Without a brownout detector the CPU runs through the dip and can silently
+# corrupt PSRAM / RAM / PC — observable as a "stuck LVGL" state with no reboot.
+# Brownout detector reboots cleanly on voltage drop instead, and the
+# wave-11 coredump path captures it for post-mortem.
+# ---------------------------------------------------------------------------
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_0=y
+CONFIG_ESP_BROWNOUT_DET_LVL=0
+
 # Partition table — custom for 16MB flash (4MB app + 12MB storage)
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
@@ -55,11 +67,24 @@ CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 
 # ---------------------------------------------------------------------------
-# WiFi credentials and Dragon server (overridable via menuconfig)
+# WiFi credentials and Dragon server — PLACEHOLDERS ONLY.
+#
+# Wave 13 SECURITY FIX: never commit real WiFi creds to a public repo.
+# Override via `sdkconfig.local` (already in .gitignore) which the ESP-IDF
+# build system merges on top of this file.
+#
+# Bootstrap:
+#   cp sdkconfig.local.example sdkconfig.local
+#   # edit sdkconfig.local with your real SSID + password + Dragon host
+#   idf.py fullclean build
+#
+# The old placeholders leaked in git history (commits 29699e2 onward).
+# If you forked this tree you MUST rotate the WiFi password on your
+# router; the old string is part of the public repo history forever.
 # ---------------------------------------------------------------------------
-CONFIG_TAB5_WIFI_SSID="Sawaya-2.4G"
-CONFIG_TAB5_WIFI_PASS="Jx3dzz8t///"
-CONFIG_TAB5_DRAGON_HOST="192.168.70.242"
+CONFIG_TAB5_WIFI_SSID="CHANGEME_SET_IN_SDKCONFIG_LOCAL"
+CONFIG_TAB5_WIFI_PASS="CHANGEME_SET_IN_SDKCONFIG_LOCAL"
+CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
 CONFIG_TAB5_DRAGON_PORT=3502
 
 # ---------------------------------------------------------------------------

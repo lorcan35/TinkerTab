@@ -1620,7 +1620,7 @@ static void mic_capture_task(void *arg)
         heap_caps_free(mono_buf);
         heap_caps_free(afe_buf);
         s_mic_task = NULL;
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
         return;
     }
 
@@ -1818,7 +1818,7 @@ static void mic_capture_task(void *arg)
 
     ESP_LOGI(TAG, "Mic capture task exiting");
     s_mic_task = NULL;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 // ---------------------------------------------------------------------------
@@ -1834,7 +1834,7 @@ static void playback_drain_task(void *arg)
     if (!chunk) {
         ESP_LOGE(TAG, "Playback drain: failed to allocate chunk buffer");
         s_play_task = NULL;
-        vTaskDelete(NULL);
+        vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
         return;
     }
 
@@ -1861,7 +1861,7 @@ static void playback_drain_task(void *arg)
     heap_caps_free(chunk);
     ESP_LOGI(TAG, "Playback drain task exiting");
     s_play_task = NULL;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 // ---------------------------------------------------------------------------
@@ -2232,11 +2232,13 @@ static void async_connect_task(void *arg)
              esp_err_to_name(ret));
 
     if (ret == ESP_OK && args->auto_listen) {
-        /* Wait for WS + session_start → READY (up to 15s). */
-        for (int i = 0; i < 150 && s_state != VOICE_STATE_READY; i++) {
+        /* Wait for WS + session_start → READY (up to 15s).
+         * Wave 13 H1: read s_state through voice_get_state() so the poll
+         * is torn-read-safe on multi-core ESP32-P4. */
+        for (int i = 0; i < 150 && voice_get_state() != VOICE_STATE_READY; i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
-        if (s_state == VOICE_STATE_READY) {
+        if (voice_get_state() == VOICE_STATE_READY) {
             ESP_LOGI(TAG, "async_connect_task: calling voice_start_listening (auto_listen)");
             voice_start_listening();
         } else {
@@ -2245,7 +2247,7 @@ static void async_connect_task(void *arg)
     }
 
     free(args);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
@@ -2293,8 +2295,11 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
 esp_err_t voice_start_listening(void)
 {
     bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
+    /* Wave 13 H1: snapshot state once under the mutex so the log and the
+     * guard below see the same value, and neither races the WS RX callback. */
+    voice_state_t cur_state = voice_get_state();
     ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_live=%d, state=%d",
-             s_initialized, ws_live, s_state);
+             s_initialized, ws_live, cur_state);
 
     if (tab5_settings_get_mic_mute()) {
         ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
@@ -2308,8 +2313,8 @@ esp_err_t voice_start_listening(void)
                  s_initialized, ws_live);
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_state != VOICE_STATE_READY) {
-        ESP_LOGW(TAG, "Cannot start listening in state %d", s_state);
+    if (cur_state != VOICE_STATE_READY) {
+        ESP_LOGW(TAG, "Cannot start listening in state %d", cur_state);
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -2448,7 +2453,9 @@ esp_err_t voice_stop_listening(void)
 
 esp_err_t voice_cancel(void)
 {
-    if (s_state == VOICE_STATE_IDLE) {
+    /* Wave 13 H1: read s_state under mutex so WS RX callback can't flip
+     * us into IDLE mid-check and then have voice_set_state lose a wakeup. */
+    if (voice_get_state() == VOICE_STATE_IDLE) {
         return ESP_OK;
     }
     ESP_LOGI(TAG, "Cancelling voice session");
@@ -2567,11 +2574,15 @@ esp_err_t voice_send_text(const char *text)
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
     if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
 
-    if (s_state == VOICE_STATE_LISTENING) {
+    /* Wave 13 H1: snapshot state once so the LISTENING branch and the
+     * PROCESSING/SPEAKING branch below reason about the same tick. */
+    voice_state_t cur_state = voice_get_state();
+    if (cur_state == VOICE_STATE_LISTENING) {
         ESP_LOGI(TAG, "voice_send_text: cancelling active LISTENING to allow text send");
         voice_cancel();
+        cur_state = voice_get_state();
     }
-    if (s_state == VOICE_STATE_PROCESSING || s_state == VOICE_STATE_SPEAKING) {
+    if (cur_state == VOICE_STATE_PROCESSING || cur_state == VOICE_STATE_SPEAKING) {
         /* v4·D Gauntlet G1: queue the text instead of rejecting, so the
          * user can stack up a follow-up while the current turn is still
          * playing.  Single-slot queue -- a 2nd stash overwrites the 1st;
@@ -2582,7 +2593,7 @@ esp_err_t voice_send_text(const char *text)
         s_queue_pending = true;
         if (s_state_mutex) xSemaphoreGive(s_state_mutex);
         ESP_LOGI(TAG, "voice_send_text: queued (pipeline busy state=%d): %s",
-                 s_state, text);
+                 cur_state, text);
         /* Poke the voice overlay caption so the badge updates immediately. */
         if (s_state_cb) {
             if (tab5_ui_try_lock(100)) {
@@ -2877,7 +2888,7 @@ static void afe_detect_task(void *arg)
 
     ESP_LOGI(TAG, "AFE detect task exiting");
     s_afe_detect_task = NULL;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 esp_err_t _voice_start_always_listening_impl(void)

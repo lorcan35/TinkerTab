@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <unistd.h>  /* wave 13 H8: fsync() */
 #include "esp_http_client.h"
 #include "dragon_link.h"
 #include "wifi.h"
@@ -263,12 +264,25 @@ static void notes_save(void)
     cJSON_Delete(root);
     if (!json) return;
 
-    /* Atomic write: .tmp → rename. Prevents corruption on power loss. */
+    /* Atomic write: .tmp → rename. Prevents corruption on power loss.
+     *
+     * Wave 13 H8: fflush() only pushes libc's buffer into the kernel; the
+     * ESP-IDF FATFS driver still holds dirty sectors in its own cache until
+     * an f_sync() lands. A yank during that window left NOTES_TMP_PATH
+     * readable but with stale content, which rename() then promoted to
+     * NOTES_SD_PATH — a silent data corruption.  Use fsync(fd) on the raw
+     * descriptor, which the ESP-IDF VFS routes to FATFS f_sync(). */
     if (tab5_sdcard_mounted()) {
         FILE *f = fopen(NOTES_TMP_PATH, "w");
         if (f) {
             int written = fputs(json, f);
             fflush(f);
+            int fd = fileno(f);
+            if (fd >= 0) {
+                if (fsync(fd) != 0) {
+                    ESP_LOGW(TAG, "fsync of notes.json.tmp failed (errno=%d)", errno);
+                }
+            }
             fclose(f);
             if (written >= 0) {
                 /* Atomic rename — old file replaced only after new is complete */
