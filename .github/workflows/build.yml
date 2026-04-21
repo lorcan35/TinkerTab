@@ -30,50 +30,17 @@ jobs:
           CONFIG_TAB5_DRAGON_PORT=3502
           EOF
 
-      - name: Cache ESP-IDF
-        id: cache-idf
-        uses: actions/cache@v4
+      # The espressif/esp-idf-ci-action marketplace action handles the
+      # IDF clone, Python deps, activation, and `idf.py build` in one shot.
+      # Rolling our own was fragile — install.sh's pwd-based IDF_PATH
+      # detection kept picking up /home/runner/work/_temp instead of the
+      # downloaded tree, regardless of how we exported IDF_PATH.
+      - name: Build with ESP-IDF v5.4.3
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          path: ~/esp/esp-idf
-          key: esp-idf-v5.4.3-${{ runner.os }}
-
-      - name: Download ESP-IDF
-        if: steps.cache-idf.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/esp
-          # The Espressif release zip unpacks as esp-idf-v5.4.3/ but the rest
-          # of this workflow (and the cache key) expect the plain esp-idf/
-          # name.  Rename after unzip so install.sh lives at
-          # ~/esp/esp-idf/install.sh.
-          curl -L -o ~/esp/esp-idf-v5.4.3.zip https://github.com/espressif/esp-idf/releases/download/v5.4.3/esp-idf-v5.4.3.zip
-          unzip -q ~/esp/esp-idf-v5.4.3.zip -d ~/esp/
-          if [ -d "$HOME/esp/esp-idf-v5.4.3" ] && [ ! -d "$HOME/esp/esp-idf" ]; then
-            mv ~/esp/esp-idf-v5.4.3 ~/esp/esp-idf
-          fi
-          rm ~/esp/esp-idf-v5.4.3.zip
-          ls -la ~/esp/esp-idf | head -5
-
-      - name: Install ESP-IDF
-        run: |
-          # ESP-IDF's install.sh uses $IDF_PATH (or pwd) — set it explicitly
-          # because sourcing from an arbitrary cwd makes install.sh detect the
-          # wrong tree and try to install into /home/runner/work/_temp.
-          export IDF_PATH="$HOME/esp/esp-idf"
-          . "$IDF_PATH/install.sh"
-          . "$IDF_PATH/export.sh"
-          idf.py --version
-
-      - name: Set target
-        run: |
-          export IDF_PATH="$HOME/esp/esp-idf"
-          . "$IDF_PATH/export.sh"
-          idf.py set-target esp32p4
-
-      - name: Build
-        run: |
-          export IDF_PATH="$HOME/esp/esp-idf"
-          . "$IDF_PATH/export.sh"
-          idf.py build
+          esp_idf_version: v5.4.3
+          target: esp32p4
+          path: .
 
       - name: Verify artifact
         run: test -f build/tinkertab.bin
