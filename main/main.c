@@ -53,6 +53,7 @@
 #include "mode_manager.h"
 #include "service_registry.h"
 #include "heap_watchdog.h"
+#include "task_worker.h"
 
 static const char *TAG = "tab5";
 
@@ -456,6 +457,12 @@ void app_main(void)
 
     // Print service status table
     tab5_services_print_status();
+
+    // Wave 14 W14-H06: start the shared job-worker task before any UI
+    // surface dispatches background work through it.  Must come before
+    // heap_watchdog_start() and user-reachable UI callbacks so the
+    // first enqueue doesn't race the init.
+    tab5_worker_init();
 
     // Start PSRAM heap fragmentation watchdog (background, Core 1, prio 1)
     heap_watchdog_start();

@@ -37,6 +37,7 @@ else()
              "ui_core.c" ${UI_SRCS}
              "settings.c" "ota.c" "media_cache.c"
              "widget_store.c"
+             "task_worker.c"
         INCLUDE_DIRS "."
         REQUIRES tab5
                  esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer

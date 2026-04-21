@@ -44,6 +44,7 @@
 #include "dragon_link.h"
 #include "wifi.h"
 #include "widget.h"
+#include "task_worker.h"
 #include "media_cache.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -1416,10 +1417,13 @@ static void media_image_clear_cb(void *arg)
     memset(&s_media_dsc, 0, sizeof(s_media_dsc));
 }
 
+/* Wave 14 W14-H06: dispatched via tab5_worker; no longer its own
+ * FreeRTOS task.  Plain function — early returns instead of
+ * vTaskSuspend(NULL), and the trailing suspend is gone. */
 static void media_fetch_task(void *pv)
 {
     char *url = (char *)pv;
-    if (!url) { vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */; return; }
+    if (!url) return;
     ESP_LOGI(TAG, "widget_media fetch: %s", url);
     lv_image_dsc_t dsc = {0};
     esp_err_t err = media_cache_fetch(url, &dsc);
@@ -1432,7 +1436,6 @@ static void media_fetch_task(void *pv)
     }
     free(url);
     s_media_fetch_inflight = false;
-    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 static void refresh_media_image(const widget_t *w)
@@ -1459,10 +1462,10 @@ static void refresh_media_image(const widget_t *w)
     char *copy = strdup(w->media_url);
     if (!copy) return;
     s_media_fetch_inflight = true;
-    BaseType_t ok = xTaskCreatePinnedToCore(
-        media_fetch_task, "widget_media", 8192, copy, 3, NULL, 1);
-    if (ok != pdPASS) {
-        ESP_LOGW(TAG, "widget_media: failed to spawn fetch task");
+    /* W14-H06: shared worker. */
+    esp_err_t enq = tab5_worker_enqueue(media_fetch_task, copy, "widget_media");
+    if (enq != ESP_OK) {
+        ESP_LOGW(TAG, "widget_media: enqueue failed (%s), dropping", esp_err_to_name(enq));
         free(copy);
         s_media_fetch_inflight = false;
     }
