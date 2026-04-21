@@ -27,7 +27,11 @@
 static const char *TAG = "dragon_link";
 
 // State
-static dragon_state_t s_state = DRAGON_STATE_IDLE;
+/* Wave 14 W14-M03: volatile — written on dragon_link_task (Core 0),
+ * read on LVGL home refresh loop from any core.  Without volatile
+ * the compiler may cache the load and pin the home pill on
+ * "discovering" after a real reconnect. */
+static volatile dragon_state_t s_state = DRAGON_STATE_IDLE;
 static volatile bool s_stop_requested = false;
 static volatile bool s_start_requested = false;
 static uint32_t s_backoff_ms = TAB5_DRAGON_RECONNECT_BASE_MS;
