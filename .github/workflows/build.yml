@@ -55,18 +55,24 @@ jobs:
 
       - name: Install ESP-IDF
         run: |
-          . ~/esp/esp-idf/install.sh
-          . ~/esp/esp-idf/export.sh
+          # ESP-IDF's install.sh uses $IDF_PATH (or pwd) — set it explicitly
+          # because sourcing from an arbitrary cwd makes install.sh detect the
+          # wrong tree and try to install into /home/runner/work/_temp.
+          export IDF_PATH="$HOME/esp/esp-idf"
+          . "$IDF_PATH/install.sh"
+          . "$IDF_PATH/export.sh"
           idf.py --version
 
       - name: Set target
         run: |
-          . ~/esp/esp-idf/export.sh
+          export IDF_PATH="$HOME/esp/esp-idf"
+          . "$IDF_PATH/export.sh"
           idf.py set-target esp32p4
 
       - name: Build
         run: |
-          . ~/esp/esp-idf/export.sh
+          export IDF_PATH="$HOME/esp/esp-idf"
+          . "$IDF_PATH/export.sh"
           idf.py build
 
       - name: Verify artifact
