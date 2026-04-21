@@ -86,6 +86,10 @@ CONFIG_TAB5_WIFI_SSID="CHANGEME_SET_IN_SDKCONFIG_LOCAL"
 CONFIG_TAB5_WIFI_PASS="CHANGEME_SET_IN_SDKCONFIG_LOCAL"
 CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
 CONFIG_TAB5_DRAGON_PORT=3502
+# Wave 14 W14-C04: bearer token for the /ws/voice upgrade request.
+# Must match Dragon's server.api_token (DRAGON_API_TOKEN env).
+# Override in sdkconfig.local, do NOT commit a real value.
+CONFIG_TAB5_DRAGON_TOKEN="CHANGEME_SET_IN_SDKCONFIG_LOCAL"
 
 # ---------------------------------------------------------------------------
 # LVGL Configuration

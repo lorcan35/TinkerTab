@@ -4,6 +4,15 @@ sdkconfig
 sdkconfig.old
 managed_components/
 
+# Wave 14 W14-H15: IDF Component Manager generates dependencies.lock with
+# absolute paths for any locally-cloned (type: local) component. The path
+# bakes in the dev-machine layout (e.g. /home/rebelforce/...) which makes
+# CI completely unable to resolve components. Component Manager regenerates
+# a fresh lock from main/idf_component.yml during idf.py reconfigure, so
+# dropping this file from version control costs nothing — each developer
+# and CI get their own valid lock on checkout.
+dependencies.lock
+
 # Large design files (kept locally, not tracked)
 stitch-designs/
 

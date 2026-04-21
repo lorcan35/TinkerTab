@@ -86,8 +86,18 @@ esp_err_t tab5_ota_check(tab5_ota_info_t *info)
      * the response, we need to re-fetch. Simpler: use fetch approach. */
     esp_http_client_cleanup(client);
 
-    /* Re-fetch with read method */
+    /* Re-fetch with read method.
+     * Wave 14 W14-C02: under internal SRAM pressure (observed after ~30 min
+     * uptime per wave-10 #77) esp_http_client_init returns NULL.  The prior
+     * code called esp_http_client_open(client, 0) unconditionally, which
+     * NULL-derefs and WDT-reboots.  OTA check runs on every Settings
+     * "Check Update" tap, so the crash was user-reachable. */
     client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGW(TAG, "OTA check: esp_http_client_init returned NULL (heap pressure?)");
+        free(body);
+        return ESP_ERR_NO_MEM;
+    }
     err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         esp_http_client_cleanup(client);

@@ -2130,6 +2130,25 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
         return ESP_OK;
     }
 
+    /* Wave 14 W14-C04: attach `Authorization: Bearer <token>` to the
+     * WS upgrade request.  Dragon's /ws/voice handler validates this
+     * against server.api_token (DRAGON_API_TOKEN env on Dragon) before
+     * ws.prepare().  Without the header, Dragon 401s the upgrade.
+     *
+     * `headers` is a CRLF-separated string of "Header: value\r\n" pairs
+     * per esp_websocket_client docs.  Static buffer so it outlives this
+     * function (the client stores the pointer, not a copy). */
+    static char s_ws_headers[128];
+    if (TAB5_DRAGON_TOKEN && TAB5_DRAGON_TOKEN[0] &&
+        strcmp(TAB5_DRAGON_TOKEN, "CHANGEME_SET_IN_SDKCONFIG_LOCAL") != 0) {
+        snprintf(s_ws_headers, sizeof(s_ws_headers),
+                 "Authorization: Bearer %s\r\n", TAB5_DRAGON_TOKEN);
+    } else {
+        s_ws_headers[0] = '\0';
+        ESP_LOGW(TAG, "TAB5_DRAGON_TOKEN not configured — WS upgrade will "
+                      "fail if Dragon has DRAGON_API_TOKEN set.");
+    }
+
     esp_websocket_client_config_t cfg = {
         .uri                    = uri,
         .task_stack             = WS_CLIENT_TASK_STACK,
@@ -2140,6 +2159,7 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
         .ping_interval_sec      = WS_CLIENT_PING_SEC,
         .pingpong_timeout_sec   = WS_CLIENT_PONG_SEC,
         .disable_auto_reconnect = false,
+        .headers                = (s_ws_headers[0] ? s_ws_headers : NULL),
         /* v4·D connectivity audit -- ROOT CAUSE FIX #2.
          *
          * Enable TCP-level keepalive on the underlying socket so we
