@@ -416,39 +416,99 @@ See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 - **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable. (Issue #44)
 
 ## Key Files
+
+Generated from `ls main/` — if you add or remove a file, update this section.
+
+### Boot + infrastructure
 ```
-main/voice.c           — Voice WS client, mic capture, TTS playback, dictation, reconnect watchdog, three-tier mode, tool event handling (tool_call/tool_result), rich media WS handlers (media/card/audio_clip/text_update)
-main/voice.h           — Voice API: connect, listen, dictate, cancel, mode switch, reconnect watchdog
-main/ota.c             — OTA: check Dragon for updates, download via esp_https_ota, auto-rollback
-main/ota.h             — OTA API: tab5_ota_check(), tab5_ota_apply(), tab5_ota_mark_valid()
-main/camera.c          — Camera: esp_video V4L2 stack, SC202CS sensor, MMAP capture, exposure tuning. V4L2 format string issues resolved (cast __u32 to unsigned long for %lu/%lx).
-main/camera.h          — Camera API: init, capture, save_jpeg, set_resolution
-main/afe.c             — ESP-SR Audio Front End wrapper (AEC + WakeNet9, parked)
-main/audio.c           — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
-main/mic.c             — ES7210 quad-mic via esp_codec_dev
-main/dragon_link.c     — Dragon mDNS discovery + CDP connection state
-main/mode_manager.c    — Mode FSM (IDLE/STREAMING/VOICE/BROWSING), voice WS kept across transitions
-main/config.h          — Pin definitions, constants, OTA paths, firmware version (v0.8.0), VOICE_MODE_TINKERCLAW=3
-main/settings.c        — NVS: WiFi, Dragon host, volume, brightness, voice_mode, llm_model, session_id
-main/settings.h        — Settings API including three-tier voice_mode + llm_model
-main/ui_voice.c        — Voice overlay (orb, LISTENING/DICTATION label, chat bubbles, stop button)
-main/ui_home.c         — Home screen (clock, orb, Ask Tinker, Camera, Files, notes card, nav bar)
-main/ui_chat.c         — Chat overlay (text conversation, mic button, message persistence across close/open, rich media: image/card/audio_clip bubble renderers, text_update handler)
-main/ui_chat.h         — Chat API: push_media(), push_card(), push_audio_clip(), update_last_message()
-main/media_cache.c     — HTTP image downloader + 5-slot PSRAM LRU cache (~2.9MB). Downloads JPEG from Dragon's /api/media/{id}, decodes via TJPGD, displays inline in chat
-main/media_cache.h     — Media cache API: media_cache_init(), media_cache_fetch()
-main/ui_notes.c        — Notes screen (search, compact cards, edit overlay, voice/text, SD storage, Dragon sync)
-main/ui_settings.c     — Settings fullscreen overlay with manual Y positioning (no flex layout, no separate screen). Sections: Display, Network+WiFi+Dragon host, Voice mode+model, Storage, Battery, OTA, About. Uses voice_send_config_update(mode, model) for full three-tier config_update (integer voice_mode + llm_model string, not boolean bridge).
-main/ui_camera.c       — Camera viewfinder (1280x720 canvas, capture to SD, resolution picker, gallery)
-main/ui_files.c        — SD card file browser (directories, WAV playback, image preview)
-main/ui_wifi.c         — WiFi setup (scan, select, password entry)
-main/ui_keyboard.c     — On-screen keyboard overlay (shared by all text inputs)
-main/ui_core.c         — LVGL display init, screen management, theme
-main/debug_server.c    — HTTP debug server (22 endpoints, bearer token auth on all except /info and /selftest)
-main/main.c            — Boot sequence: hardware init → WiFi → Dragon link → LVGL → voice auto-connect → watchdog
-main/imu.c             — BMI270 IMU via I2C
-partitions.csv         — OTA dual-slot partition table (ota_0 + ota_1, 3MB each)
-LEARNINGS.md           — Institutional knowledge (MANDATORY reading before any changes)
+main/main.c               — Boot sequence: HW init → service bring-up → LVGL → watchdog
+main/config.h             — Pin map, firmware version, OTA paths, VOICE_MODE_TINKERCLAW=3
+main/service_registry.*   — Service-pattern scaffolding (audio/display/dragon/network/storage)
+main/service_audio.c      — Audio service init (I2S, ES8388 DAC, ES7210 mic)
+main/service_display.c    — LVGL + panel init, DSI display bring-up
+main/service_dragon.c     — Dragon-link service (voice WS + mDNS + touch relay lifecycle)
+main/service_network.c    — Wi-Fi service (STA, connect, reconnect)
+main/service_storage.c    — SD card + NVS storage service
+main/task_worker.{c,h}    — Shared FreeRTOS job queue (W14-H06) — kills per-action task leaks
+main/heap_watchdog.{c,h}  — Periodic heap + PSRAM monitoring, logs to /heap debug endpoint
+main/debug_server.{c,h}   — HTTP debug server (22 endpoints, bearer-auth except /info /selftest)
+```
+
+### Hardware
+```
+main/audio.c              — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
+main/mic.c                — ES7210 quad-mic via esp_codec_dev
+main/afe.c                — ESP-SR AFE wrapper (AEC + WakeNet9, parked)
+main/camera.{c,h}         — esp_video V4L2 stack, SC202CS sensor, MMAP capture
+main/imu.c                — BMI270 IMU via I2C
+main/sdcard.{c,h}         — SDMMC 4-bit, FAT32, coexists with Wi-Fi SDIO
+main/wifi.{c,h}           — Wi-Fi stack wrapper (STA/AP, reconnect, country code)
+main/settings.{c,h}       — NVS-backed settings (see "NVS Settings Keys" table for full list)
+```
+
+### Dragon link
+```
+main/voice.{c,h}          — Voice WS client, mic capture, TTS playback, dictation,
+                             reconnect watchdog, three-tier mode, tool events, rich-media handlers
+main/dragon_link.{c,h}    — Dragon mDNS + CDP connection state machine
+main/mdns_discovery.{c,h} — _tinkerclaw._tcp discovery
+main/touch_ws.{c,h}       — Touch-relay WS client to Dragon CDP (port 3501)
+main/udp_stream.{c,h}     — UDP JPEG streamer for CDP low-latency mode
+main/mjpeg_stream.{c,h}   — Alternate MJPEG-over-HTTP fallback for browsing mode
+main/mode_manager.{c,h}   — Mode FSM (IDLE / STREAMING / VOICE / BROWSING)
+```
+
+### UI framework
+```
+main/ui_core.{c,h}        — LVGL display init, screen management, root screen
+main/ui_theme.{c,h}       — v5 Material Dark theme tokens (colors, radii, typography)
+main/ui_port.h            — Port-abstraction typedefs (LV_EXT*, color shims)
+main/ui_focus.{c,h}       — Focus-ring helpers for touch + remote navigation
+main/ui_feedback.{c,h}    — Haptic-style visual feedback (flash, shake, toast)
+```
+
+### UI screens + overlays
+```
+main/ui_splash.{c,h}      — Boot animation
+main/ui_home.{c,h}        — Home screen (v4·C Ambient Canvas: clock, orb, greeting, mode pill,
+                             nav sheet, widget slots)
+main/ui_voice.{c,h}       — Voice overlay (orb, LISTENING / DICTATION, chat bubbles, stop)
+main/ui_chat.{c,h}        — Chat overlay (iMessage-style, rich-media bubbles, tool indicators)
+main/chat_header.{c,h}    — Chat top bar (mode badge, session switcher, new-chat button)
+main/chat_input_bar.{c,h} — Chat bottom bar (keyboard, mic, camera)
+main/chat_msg_store.{c,h} — In-memory chat buffer (persists across close/open)
+main/chat_msg_view.{c,h}  — Message renderer (text / media / card / audio clip)
+main/chat_session_drawer.{c,h} — Session list drawer
+main/chat_suggestions.{c,h}    — Quick-reply suggestions strip
+main/ui_settings.{c,h}    — Settings fullscreen overlay (Display, Network, Voice, Storage,
+                             Battery, OTA, About)
+main/ui_wifi.{c,h}        — Wi-Fi setup (scan, select, password entry)
+main/ui_keyboard.{c,h}    — On-screen keyboard (shared)
+main/ui_camera.{c,h}      — Camera viewfinder (1280x720, capture to SD, gallery)
+main/ui_files.{c,h}       — SD file browser (directories, WAV playback, image preview)
+main/ui_notes.{c,h}       — Notes screen (search, compact cards, edit overlay, dragon sync)
+main/ui_sessions.{c,h}    — Session browser (cross-session history)
+main/ui_memory.{c,h}      — Memory facts browser
+main/ui_agents.{c,h}      — Agents / TinkerClaw status panel
+main/ui_audio.{c,h}       — Audio settings (volume, mute, routing)
+main/ui_mode_sheet.{c,h}  — Three-tier voice-mode picker sheet
+main/ui_nav_sheet.{c,h}   — Bottom nav sheet (home / chat / notes / settings / camera / files)
+main/ui_onboarding.{c,h}  — First-boot tutorial flow
+```
+
+### Widgets + media
+```
+main/widget.h             — Widget data model (six types: live/card/list/chart/media/prompt)
+main/widget_store.c       — Priority-resolved widget queue (bounded 32 entries)
+main/media_cache.{c,h}    — HTTP image downloader + 5-slot PSRAM LRU (~2.9 MB),
+                             JPEG decode via TJPGD, feeds chat rich media
+```
+
+### OTA
+```
+main/ota.{c,h}            — OTA check/apply/mark-valid via esp_https_ota with auto-rollback
+partitions.csv            — OTA dual-slot partition table (ota_0 + ota_1)
+LEARNINGS.md              — Institutional knowledge (MANDATORY reading before any changes)
 ```
 
 ## UI Screens
@@ -506,12 +566,53 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 5. OTA firmware updates
 
 ## Recovery & Rollback
-If something breaks after a build/flash:
-- Physical backup: `/home/rebelforce/projects/TinkerTab-backups/rollback-20260331-132117`
-- Backup git branch: `backup/pre-rollback-20260331-132117`
-- Stash: `stash@{0}` holds uncommitted work before rollback
-- To restore pre-rollback work: `git switch main && git stash apply stash@{0}`
-- Safe rollback branch: `rollback/e7c7253-clean-20260331` at commit `e7c7253`
+
+There are three layers of recovery, cheapest first. Try them in order.
+
+### 1. On-device OTA rollback (Tab5 currently boots)
+The firmware runs two OTA slots (`ota_0` / `ota_1`) and `esp_https_ota` with
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. If the new image boots but the
+"self-test" phase fails (never calls `esp_ota_mark_app_valid_cancel_rollback`),
+the bootloader automatically swaps back on the next reboot.
+
+Manual trigger from a workstation:
+```bash
+curl -sS -H "Authorization: Bearer $TAB5_DEBUG_TOKEN" \
+     -X POST http://<tab5-ip>:3500/ota/rollback
+# ↑ forces a reboot into the inactive slot
+```
+
+### 2. Reflash a known-good image (Tab5 bricked)
+Re-flash the currently deployed Dragon build (it's always the last known-good
+binary served via `/api/ota/firmware.bin`):
+```bash
+cd ~/projects/TinkerTab
+# Grab whichever binary Dragon is advertising as current:
+curl -sS "http://192.168.1.91:3502/api/ota/check?current=0.0.0" \
+     -H "Authorization: Bearer $DRAGON_API_TOKEN"
+# Then either OTA it, or serial-flash directly:
+idf.py -p /dev/ttyUSB0 flash
+```
+
+### 3. Git rollback (code regressed)
+TinkerTab's git history IS the backup — PRs land as squash-merges on `main`,
+so every feature has exactly one revert-able commit. To undo the last
+landed feature:
+```bash
+cd ~/projects/TinkerTab
+git log --oneline -5
+git revert <sha>        # creates a forward commit; preserves history
+idf.py build && idf.py -p /dev/ttyUSB0 flash
+```
+
+Before touching hardware in the middle of risky work, cut a snapshot branch
+(`git branch snapshot/$(date +%Y%m%d-%H%M%S)`) rather than relying on
+stashes — they silently evaporate on `git clean` or branch deletion.
+
+> Historical: the old manual "physical backup" path
+> (`/home/rebelforce/projects/TinkerTab-backups/rollback-20260331-132117`,
+> `backup/pre-rollback-20260331-132117`, stashes) is retired as of
+> wave 14 L10. Don't add to it — use the three layers above.
 
 ## Widget Platform (April 2026) — Skills Surface on Tab5
 
