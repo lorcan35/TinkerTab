@@ -1419,7 +1419,7 @@ static void media_image_clear_cb(void *arg)
 static void media_fetch_task(void *pv)
 {
     char *url = (char *)pv;
-    if (!url) { vTaskDelete(NULL); return; }
+    if (!url) { vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */; return; }
     ESP_LOGI(TAG, "widget_media fetch: %s", url);
     lv_image_dsc_t dsc = {0};
     esp_err_t err = media_cache_fetch(url, &dsc);
@@ -1432,7 +1432,7 @@ static void media_fetch_task(void *pv)
     }
     free(url);
     s_media_fetch_inflight = false;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 static void refresh_media_image(const widget_t *w)

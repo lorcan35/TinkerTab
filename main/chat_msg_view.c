@@ -151,11 +151,11 @@ static void chat_media_bind_cb(void *arg)
 static void chat_media_fetch_task(void *pv)
 {
     chat_media_ctx_t *c = (chat_media_ctx_t *)pv;
-    if (!c) { vTaskDelete(NULL); return; }
+    if (!c) { vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */; return; }
     esp_err_t err = media_cache_fetch(c->url, &c->dsc);
     c->ok = (err == ESP_OK && c->dsc.data && c->dsc.header.w > 0);
     lv_async_call(chat_media_bind_cb, c);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 static void kick_chat_image_fetch(msg_slot_t *slot, const char *url)

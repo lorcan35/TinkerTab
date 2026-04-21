@@ -16,20 +16,34 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Wave 13 C1 security: CI needs a working WiFi SSID/pass combo to
+      # compile (the build bakes them into the firmware via Kconfig).
+      # We generate a placeholder sdkconfig.local so the build compiles;
+      # production firmware must ship with a real sdkconfig.local
+      # (gitignored, copied from sdkconfig.local.example).
+      - name: Create CI sdkconfig.local placeholder
+        run: |
+          cat > sdkconfig.local <<'EOF'
+          CONFIG_TAB5_WIFI_SSID="CI-BUILD-SSID"
+          CONFIG_TAB5_WIFI_PASS="CI-BUILD-PASS"
+          CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
+          CONFIG_TAB5_DRAGON_PORT=3502
+          EOF
+
       - name: Cache ESP-IDF
         id: cache-idf
         uses: actions/cache@v4
         with:
           path: ~/esp/esp-idf
-          key: esp-idf-v5.5.2-${{ runner.os }}
+          key: esp-idf-v5.4.3-${{ runner.os }}
 
       - name: Download ESP-IDF
         if: steps.cache-idf.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/esp
-          curl -L -o ~/esp/esp-idf-v5.5.2.zip https://github.com/espressif/esp-idf/releases/download/v5.5.2/esp-idf-v5.5.2.zip
-          unzip -q ~/esp/esp-idf-v5.5.2.zip -d ~/esp/
-          rm ~/esp/esp-idf-v5.5.2.zip
+          curl -L -o ~/esp/esp-idf-v5.4.3.zip https://github.com/espressif/esp-idf/releases/download/v5.4.3/esp-idf-v5.4.3.zip
+          unzip -q ~/esp/esp-idf-v5.4.3.zip -d ~/esp/
+          rm ~/esp/esp-idf-v5.4.3.zip
 
       - name: Install ESP-IDF
         run: |

@@ -1,0 +1,10 @@
+# Copy to sdkconfig.local (gitignored) and fill in real values.
+# ESP-IDF merges this on top of sdkconfig.defaults during idf.py reconfigure.
+#
+# Wave 13 security: never commit real WiFi credentials to a public repo.
+# sdkconfig.local is ignored by git via .gitignore.
+
+CONFIG_TAB5_WIFI_SSID="your-2.4GHz-ssid"
+CONFIG_TAB5_WIFI_PASS="your-password"
+CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
+CONFIG_TAB5_DRAGON_PORT=3502

@@ -1004,7 +1004,7 @@ static void ota_apply_task(void *arg)
     ESP_LOGE("ota", "OTA schedule failed: %s", esp_err_to_name(err));
     free(args->url);
     free(args);
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 
 static esp_err_t ota_apply_handler(httpd_req_t *req)
