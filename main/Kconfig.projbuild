@@ -24,4 +24,13 @@ menu "TinkerClaw Tab5 Configuration"
         help
             Port for the streaming server on Dragon.
 
+    config TAB5_DRAGON_TOKEN
+        string "Dragon API bearer token"
+        default "CHANGEME_SET_IN_SDKCONFIG_LOCAL"
+        help
+            Bearer token sent on the /ws/voice upgrade request.  Must
+            match Dragon's server.api_token (DRAGON_API_TOKEN env in
+            /home/radxa/.env).  Leave the placeholder in sdkconfig.defaults
+            and override in sdkconfig.local (gitignored).
+
 endmenu

@@ -8,3 +8,5 @@ CONFIG_TAB5_WIFI_SSID="your-2.4GHz-ssid"
 CONFIG_TAB5_WIFI_PASS="your-password"
 CONFIG_TAB5_DRAGON_HOST="192.168.1.91"
 CONFIG_TAB5_DRAGON_PORT=3502
+# Wave 14 W14-C04: MUST match Dragon's DRAGON_API_TOKEN in /home/radxa/.env
+CONFIG_TAB5_DRAGON_TOKEN="paste-your-dragon-api-token-here"

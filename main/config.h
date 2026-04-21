@@ -20,6 +20,15 @@
 #define TAB5_DRAGON_PORT     CONFIG_TAB5_DRAGON_PORT
 #endif
 
+/* Wave 14 W14-C04: Dragon API bearer token, sent as `Authorization: Bearer`
+ * on the /ws/voice upgrade request.  Must match server.api_token on Dragon
+ * (populated from DRAGON_API_TOKEN in /home/radxa/.env).  Default is the
+ * placeholder string so an un-provisioned Tab5 makes the failure obvious —
+ * real tokens belong in sdkconfig.local. */
+#ifndef TAB5_DRAGON_TOKEN
+#define TAB5_DRAGON_TOKEN    CONFIG_TAB5_DRAGON_TOKEN
+#endif
+
 #define TAB5_STREAM_PATH     "/stream"
 #define TAB5_TOUCH_WS_PATH   "/ws/touch"
 
