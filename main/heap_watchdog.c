@@ -24,6 +24,35 @@
 #include "esp_system.h"
 #include "lvgl.h"
 
+/* Wave 11: pull media_cache_stats so we can log the rich-media cache
+ * footprint alongside PSRAM / LVGL pool / DMA. Helps diagnose rare
+ * cases where many widget_media events leave all 5 slots occupied
+ * (2.9 MB PSRAM resident) and user sees decode stalls. */
+#include "media_cache.h"
+
+static const char *HW_TAG = "heap_wd";
+
+/* Wave 11 stability P1: route heap-watchdog reboots through
+ * esp_system_abort() instead of plain esp_restart(). abort() panics,
+ * the panic handler saves a full coredump to the dedicated 256 KB
+ * partition (0x620000, defined in partitions.csv), and the bootloader
+ * reboots after. Post-mortem becomes `esptool read_flash 0x620000
+ * 0x40000 cd.bin` + `espcoredump.py info_corefile`.
+ *
+ * Previously each of the three reboot paths (SRAM frag, DMA exhausted,
+ * PSRAM frag) just called esp_restart() directly — no coredump saved,
+ * no way to figure out which task held the heap at the moment of the
+ * decision. `reason` is stamped into the panic message so the summary
+ * tells you which threshold tripped. */
+static void __attribute__((noreturn)) hw_restart_with_coredump(const char *reason)
+{
+    ESP_LOGE(HW_TAG, "reboot reason=%s — aborting for coredump", reason ? reason : "unknown");
+    vTaskDelay(pdMS_TO_TICKS(100));  /* Let log flush before the panic */
+    char details[64];
+    snprintf(details, sizeof(details), "heap_wd: %s", reason ? reason : "unknown");
+    esp_system_abort(details);
+}
+
 static const char *TAG = "heap_wd";
 
 #define HEAP_WD_CHECK_INTERVAL_MS   60000   /* 60 seconds between checks */
@@ -119,8 +148,7 @@ static void heap_watchdog_task(void *arg)
                              (unsigned)internal_largest,
                              (unsigned)(dma_free / 1024),
                              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    esp_restart();
+                    hw_restart_with_coredump("sram_frag");
                 }
             }
         } else {
@@ -154,8 +182,7 @@ static void heap_watchdog_task(void *arg)
                              dma_free / 1024, dma_largest,
                              (unsigned)(internal_free / 1024),
                              (unsigned)(psram_free / 1024));
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    esp_restart();
+                    hw_restart_with_coredump("dma_exhausted");
                 }
             }
         } else {
@@ -182,6 +209,31 @@ static void heap_watchdog_task(void *arg)
                  (unsigned)((lvgl_mon.total_size - lvgl_mon.free_size) / 1024),
                  (unsigned)(lvgl_mon.free_size / 1024),
                  (unsigned)lvgl_mon.frag_pct);
+
+        /* Wave 11 stability P1: warn when the LVGL pool is highly
+         * fragmented. A burst of overlay create/destroy cycles (old
+         * code path) could leave frag > 50 % even while free_size
+         * looked healthy; widgets then fail silently when the next
+         * alloc can't find a contiguous slot. Soft warning only —
+         * we don't reboot here because the pool is LVGL-managed PSRAM
+         * and recoverable by closing any overlay. */
+        if (lvgl_mon.frag_pct > 50) {
+            ESP_LOGW(TAG, "LVGL pool fragmented %u%% — close an overlay to coalesce",
+                     (unsigned)lvgl_mon.frag_pct);
+        }
+
+        /* Wave 11 stability P1: media cache footprint log. 5 slots ×
+         * 567 KB = ~2.9 MB resident when saturated. Soft observation
+         * only (cache is bounded by its own LRU). */
+        {
+            int mc_used = 0;
+            unsigned mc_kb = 0;
+            media_cache_stats(&mc_used, &mc_kb);
+            if (mc_used > 0) {
+                ESP_LOGI(TAG, "Media cache: %d/%d slots, %u KB resident",
+                         mc_used, MEDIA_CACHE_SLOTS, mc_kb);
+            }
+        }
 
         /* Monitor critical task stacks */
         static const char *task_names[] = {"voice_mic", "voice_ws", "voice_recon", "heap_wd", "voice_play"};
@@ -210,8 +262,7 @@ static void heap_watchdog_task(void *arg)
 
             if (frag_count >= HEAP_WD_FRAG_REBOOT_COUNT) {
                 ESP_LOGE(TAG, "Heap watchdog: severe PSRAM fragmentation detected, rebooting");
-                vTaskDelay(pdMS_TO_TICKS(100));  /* Let log flush */
-                esp_restart();
+                hw_restart_with_coredump("psram_frag");
             }
         } else {
             if (frag_count > 0) {

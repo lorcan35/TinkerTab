@@ -263,3 +263,21 @@ void media_cache_clear(void)
     xSemaphoreGive(s_mutex);
     ESP_LOGI(TAG, "Cache cleared");
 }
+
+/* Wave 11 stability P1: heap_watchdog calls this each tick for a one-line
+ * telemetry entry. Running count of occupied slots × slot byte cost gives
+ * the current PSRAM footprint of the cache so a 5-slot × 567 KB ceiling
+ * (~2.9 MB) is observable alongside the main PSRAM graph. */
+void media_cache_stats(int *used_slots, unsigned *resident_kb)
+{
+    int used = 0;
+    if (s_inited && s_mutex) {
+        xSemaphoreTake(s_mutex, portMAX_DELAY);
+        for (int i = 0; i < MEDIA_CACHE_SLOTS; i++) {
+            if (s_slots[i].data_len > 0) used++;
+        }
+        xSemaphoreGive(s_mutex);
+    }
+    if (used_slots) *used_slots = used;
+    if (resident_kb) *resident_kb = (unsigned)((used * MEDIA_CACHE_SLOT_BYTES) / 1024);
+}
