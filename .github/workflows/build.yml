@@ -41,9 +41,17 @@ jobs:
         if: steps.cache-idf.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/esp
+          # The Espressif release zip unpacks as esp-idf-v5.4.3/ but the rest
+          # of this workflow (and the cache key) expect the plain esp-idf/
+          # name.  Rename after unzip so install.sh lives at
+          # ~/esp/esp-idf/install.sh.
           curl -L -o ~/esp/esp-idf-v5.4.3.zip https://github.com/espressif/esp-idf/releases/download/v5.4.3/esp-idf-v5.4.3.zip
           unzip -q ~/esp/esp-idf-v5.4.3.zip -d ~/esp/
+          if [ -d "$HOME/esp/esp-idf-v5.4.3" ] && [ ! -d "$HOME/esp/esp-idf" ]; then
+            mv ~/esp/esp-idf-v5.4.3 ~/esp/esp-idf
+          fi
           rm ~/esp/esp-idf-v5.4.3.zip
+          ls -la ~/esp/esp-idf | head -5
 
       - name: Install ESP-IDF
         run: |
