@@ -24,6 +24,22 @@
 esp_err_t tab5_debug_server_init(void);
 
 /**
+ * Stop the debug HTTP server (if running).
+ *
+ * Wave 15 W15-C02: `tab5_debug_server_init()` used to leak the
+ * `httpd_handle_t` in a function-local `server` variable, so once
+ * the server was started there was no way to stop it — not even on
+ * clean shutdown or a recovery path.  The handle is now cached in
+ * a file-scoped static and exposed via this function so future work
+ * can tear it down and re-start it on a fresh port or with different
+ * config.
+ *
+ * Returns ESP_OK when the server was stopped, or ESP_ERR_INVALID_STATE
+ * when no server was running.
+ */
+esp_err_t tab5_debug_server_stop(void);
+
+/**
  * Check if the debug server is injecting a touch event.
  * Call from the LVGL touch read callback. If true, use the returned
  * coordinates instead of the physical touch controller.
