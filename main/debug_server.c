@@ -1776,6 +1776,78 @@ static esp_err_t voice_reconnect_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── Wave 12 observability: /heap endpoint ─────────────────────────────
+ *
+ * Exposes the per-pool heap state + last reboot reason in one call so
+ * dashboards and post-mortem scripts can track device health over time.
+ * This pairs with the wave 11 coredump path — if last_reboot_reason is
+ * something like "abort" or a heap_wd string, the coredump partition
+ * at 0x620000 has a forensic dump available via
+ *     esptool read_flash 0x620000 0x40000 cd.bin
+ *     espcoredump.py info_corefile -t elf ... cd.bin
+ *
+ * No auth-gate — the debug server overall requires auth per
+ * reference_tab5_debug_access.md, but /heap is READ-ONLY and useful
+ * to have behind the same bearer token.
+ */
+esp_err_t heap_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    extern void media_cache_stats(int *used_slots, unsigned *resident_kb);
+    int mc_used = 0; unsigned mc_kb = 0;
+    media_cache_stats(&mc_used, &mc_kb);
+
+    size_t psram_free    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    size_t int_free      = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t int_largest   = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t dma_free      = heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    size_t dma_largest   = heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+
+    lv_mem_monitor_t lvgl;
+    lv_mem_monitor(&lvgl);
+
+    const char *reset_str = "unknown";
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   reset_str = "poweron"; break;
+        case ESP_RST_EXT:       reset_str = "external_pin"; break;
+        case ESP_RST_SW:        reset_str = "esp_restart"; break;
+        case ESP_RST_PANIC:     reset_str = "panic_abort"; break;   /* wave 11 coredump path */
+        case ESP_RST_INT_WDT:   reset_str = "int_wdt"; break;
+        case ESP_RST_TASK_WDT:  reset_str = "task_wdt"; break;
+        case ESP_RST_WDT:       reset_str = "other_wdt"; break;
+        case ESP_RST_DEEPSLEEP: reset_str = "deepsleep_wake"; break;
+        case ESP_RST_BROWNOUT:  reset_str = "brownout"; break;
+        case ESP_RST_SDIO:      reset_str = "sdio"; break;
+        default:                reset_str = "unknown"; break;
+    }
+
+    char buf[640];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"uptime_ms\":%llu,\"reset_reason\":\"%s\","
+        "\"psram\":{\"free_kb\":%u,\"largest_kb\":%u},"
+        "\"internal\":{\"free_kb\":%u,\"largest_kb\":%u,\"frag_pct\":%d},"
+        "\"dma\":{\"free_kb\":%u,\"largest_kb\":%u},"
+        "\"lvgl\":{\"used_kb\":%u,\"free_kb\":%u,\"frag_pct\":%u},"
+        "\"media_cache\":{\"slots_used\":%d,\"resident_kb\":%u},"
+        "\"coredump_available\":%s}",
+        (unsigned long long)(esp_timer_get_time() / 1000),
+        reset_str,
+        (unsigned)(psram_free / 1024), (unsigned)(psram_largest / 1024),
+        (unsigned)(int_free / 1024), (unsigned)(int_largest / 1024),
+        int_free ? (int)(100 - (int_largest * 100 / int_free)) : 0,
+        (unsigned)(dma_free / 1024), (unsigned)(dma_largest / 1024),
+        (unsigned)((lvgl.total_size - lvgl.free_size) / 1024),
+        (unsigned)(lvgl.free_size / 1024), (unsigned)lvgl.frag_pct,
+        mc_used, mc_kb,
+        (esp_core_dump_image_check() == ESP_OK) ? "true" : "false");
+    (void)n;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* ── Full self-test endpoint ──────────────────────────────────────────── */
 
 static esp_err_t selftest_handler(httpd_req_t *req)
@@ -2017,6 +2089,10 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_navtouch = {
         .uri = "/navtouch", .method = HTTP_POST, .handler = navtouch_handler
     };
+    extern esp_err_t heap_handler(httpd_req_t *req);
+    const httpd_uri_t uri_heap = {
+        .uri = "/heap", .method = HTTP_GET, .handler = heap_handler
+    };
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -2043,6 +2119,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_selftest);
     httpd_register_uri_handler(server, &uri_navtouch);
+    httpd_register_uri_handler(server, &uri_heap);
 
     /* Log the URL */
     char ip[20];
