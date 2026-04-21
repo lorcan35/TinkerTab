@@ -120,11 +120,15 @@ CONFIG_LWIP_IP_REASSEMBLY=y
 CONFIG_LWIP_IP_REASS_MAX_PBUFS=64
 
 # ---------------------------------------------------------------------------
-# Memory — reserve internal RAM for DMA (SDIO WiFi + TCP buffers)
-# 128KB is the minimum for concurrent voice WS + HTTP debug server + SDIO RX.
-# Reducing below 128KB causes WiFi/TCP subsystem to spill into general heap.
+# Memory — reserve internal RAM for DMA (SDIO WiFi + TCP buffers + OTA TLS)
+# Wave 10 #77 fix: bumped 64 KB -> 128 KB so the esp_https_ota flow has
+# headroom for its internal TLS/HTTP buffers even after 5+ minutes of
+# steady-state operation.  At 64 KB the DMA-capable free pool dwindled
+# to ~8 KB by the time a user tapped "Apply Update" and
+# esp_dma_capable_malloc failed at 181 bytes.  128 KB leaves enough
+# runway for OTA, WS, SDIO RX, and HTTP debug server to coexist.
 # ---------------------------------------------------------------------------
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=131072
 
 # ---------------------------------------------------------------------------
 # SDIO WiFi stability — tuned for concurrent WS + HTTP traffic
