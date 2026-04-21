@@ -291,7 +291,12 @@ void tab5_touch_ws_send_release(void)
     }
 
     // Send empty touch array to signal release: {"t":[]}
-    const char *msg = "{\"t\":[]}";
+    // Wave 14 W14-C01: esp_transport_ws_send_raw masks the buffer in place.
+    // Passing a string literal here XORs into .rodata (PSRAM XIP on P4),
+    // silently corrupting read-only memory on every touch release. Copy to
+    // a stack buffer first — matches the pong/heartbeat paths above.
+    char msg[16];
+    strcpy(msg, "{\"t\":[]}");
     int ret = esp_transport_ws_send_raw(s_ws,
         WS_TRANSPORT_OPCODES_TEXT | WS_TRANSPORT_OPCODES_FIN,
         msg, strlen(msg), 100);

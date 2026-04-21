@@ -1064,6 +1064,17 @@ static void transcription_queue_task(void *arg)
             .buffer_size = 4096,
         };
         esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
+        /* Wave 14 W14-C03: esp_http_client_init can return NULL under
+         * fragmented internal SRAM.  Prior code called set_header on NULL
+         * and crashed the transcribe_q task, which silently dies until the
+         * next reboot. Fail the note cleanly instead. */
+        if (!client) {
+            ESP_LOGE(TAG, "transcribe: esp_http_client_init NULL (heap pressure?)");
+            fclose(f);
+            n->state = NOTE_STATE_FAILED;
+            notes_save();
+            continue;
+        }
         esp_http_client_set_header(client, "Content-Type", "audio/wav");
 
         fseek(f, 0, SEEK_SET);
