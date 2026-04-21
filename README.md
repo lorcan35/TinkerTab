@@ -636,6 +636,16 @@ TinkerTab/
 allocation failures, check that `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` is set to at least
 131072 in `sdkconfig.defaults`.
 
+**Related (audit #80 / wave 6, 2026-04-20):** If Tab5 stays up (LVGL running, `/info`
+returns `wifi_connected=True`) but the router shows ARP incomplete and every Dragon WS
+reconnect fails with `ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT errno=119`, the DMA pool has
+dropped below ~15 KB free and the WiFi driver can't allocate its Rx ring slot. The heap
+watchdog in `main/heap_watchdog.c` now catches this: when `MALLOC_CAP_DMA |
+MALLOC_CAP_INTERNAL` free drops below 16 KB for 2 consecutive 60 s samples, it calls
+`esp_restart()` (honoring a voice-active grace window). Before the fix the device would
+stay radio-silent until the user serial-reflashed. This is a RECOVERY fix — deeper DMA
+leak root-cause is tracked separately at issue #80.
+
 ### WiFi SDIO Init Failure
 
 **Symptom:** WiFi never connects, ESP-Hosted errors in log.

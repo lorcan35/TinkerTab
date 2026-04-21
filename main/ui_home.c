@@ -1680,6 +1680,23 @@ void ui_home_refresh_mode_badge(void)
 
 void ui_home_show_toast(const char *text) { show_toast_internal(text); }
 
+/* Wave 7 F5 crash surface: paint the orb rose for ~2.5 s so a mid-turn
+ * Dragon drop has a visual signal beyond the toast. Restores the
+ * mode-default orb paint afterwards. Runs on the LVGL thread. */
+static void orb_pulse_revert_cb(lv_timer_t *t)
+{
+    lv_timer_del(t);
+    if (s_orb) orb_paint_for_mode(s_badge_mode);
+}
+
+void ui_home_pulse_orb_alert(void)
+{
+    if (!s_orb) return;
+    orb_paint_for_tone(WIDGET_TONE_URGENT);
+    lv_timer_t *rev = lv_timer_create(orb_pulse_revert_cb, 2500, NULL);
+    if (rev) lv_timer_set_repeat_count(rev, 1);
+}
+
 /* Voice-state-driven state-word refresh — marshalled onto the LVGL thread. */
 static void sys_label_refresh_async_cb(void *arg)
 {

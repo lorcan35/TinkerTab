@@ -133,13 +133,27 @@ esp_err_t media_cache_fetch(const char *relative_url, lv_image_dsc_t *out_dsc)
         return ESP_OK;
     }
 
-    /* Cache miss — download from Dragon */
-    char host[64];
-    tab5_settings_get_dragon_host(host, sizeof(host));
-    uint16_t port = tab5_settings_get_dragon_port();
-
+    /* Cache miss — download from Dragon.
+     *
+     * Wave 7 B5 fix: widget_media events from /debug/widget_media arrive
+     * with an ABSOLUTE URL ("http://192.168.1.91:3502/api/media/foo.jpg"),
+     * while chat media events from the rich-media pipeline arrive RELATIVE
+     * ("/api/media/foo.jpg"). Detect the scheme prefix and use the URL
+     * verbatim when absolute; otherwise prepend the configured Dragon host.
+     * Previously the prepend was unconditional, so absolute URLs became
+     * "http://host:porthttp://host:port/..." → esp_http_client_open OOM
+     * (error 257 == ESP_ERR_NO_MEM) and the decode path silently failed. */
     char full_url[384];
-    snprintf(full_url, sizeof(full_url), "http://%s:%u%s", host, port, relative_url);
+    if (strncasecmp(relative_url, "http://", 7) == 0
+        || strncasecmp(relative_url, "https://", 8) == 0) {
+        snprintf(full_url, sizeof(full_url), "%s", relative_url);
+    } else {
+        char host[64];
+        tab5_settings_get_dragon_host(host, sizeof(host));
+        uint16_t port = tab5_settings_get_dragon_port();
+        snprintf(full_url, sizeof(full_url), "http://%s:%u%s",
+                 host, port, relative_url);
+    }
 
     ESP_LOGI(TAG, "Downloading: %s", full_url);
 

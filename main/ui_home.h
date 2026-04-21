@@ -32,6 +32,13 @@ void ui_home_refresh_mode_badge(void);
  *  Safe to call from LVGL thread only — use lv_async_call from other cores. */
 void ui_home_show_toast(const char *text);
 
+/** Wave 7 F5 crash surface: brief rose pulse on the halo orb.
+ *  Used when a mid-turn Dragon drop is detected so the user has a visual
+ *  signal alongside the "Dragon dropped mid-turn" toast. Reverts to the
+ *  mode-default orb paint after ~2.5 s.
+ *  LVGL thread only — marshal from other tasks via lv_async_call. */
+void ui_home_pulse_orb_alert(void);
+
 /** Refresh just the top-left sys label (DRAGON / OFFLINE + battery + voice
  *  state) without waiting for the 5 s poll. Called from voice state callbacks
  *  so LISTENING / THINKING / SPEAKING appear within one LVGL tick. Thread-safe

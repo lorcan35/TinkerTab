@@ -119,8 +119,19 @@ static const char *TAG = "tab5_voice";
 #define MIC_TASK_CORE          1
 
 // Playback drain task — higher priority than WS receive so I2S stays fed
-#define PLAY_TASK_STACK_SIZE   4096
-#define PLAY_TASK_PRIORITY     6
+/* Wave 9 audit #80 fix: raise playback drain priority so TTS audio
+ * gets consumed faster than it arrives. At priority 6 the WS rx task
+ * (priority ~7-8 from esp_websocket_client) can out-run the drain,
+ * lwIP recv buffers pile up against DMA-capable internal SRAM, and
+ * WiFi Rx ring starves at ~15KB free (device goes one-way dead).
+ * Bumping to priority 9 preempts WS rx so the ring drains with the
+ * playback cadence.
+ *
+ * Stack bumped 4 KB -> 6 KB at the same time: the longer-TTS regression
+ * test caught a "Stack protection fault" at task priority 9 because the
+ * deeper preemption stored more context per entry. */
+#define PLAY_TASK_STACK_SIZE   6144
+#define PLAY_TASK_PRIORITY     9
 #define PLAY_TASK_CORE         1
 
 // Max transcript length
@@ -188,6 +199,17 @@ static size_t            s_play_rd       = 0;
 static size_t            s_play_count    = 0;
 static SemaphoreHandle_t s_play_mutex    = NULL;
 #define PLAY_BUF_CAPACITY  s_play_capacity
+
+/* Wave 9 audit #80 + AUDIT-stability P0: pre-allocated upsample buffer
+ * reused across every TTS chunk. Dragon TTS chunks are <=1024 bytes in
+ * (512 samples), so the worst-case upsample output is 512 * UPSAMPLE_RATIO
+ * samples (~3 KB for the typical 16k->48k ratio). Allocating 4096 samples
+ * gives headroom for edge cases. The old per-chunk heap_caps_malloc +
+ * heap_caps_free in handle_binary_message caused PSRAM fragmentation
+ * over long sessions and — combined with DMA pressure from the WS rx
+ * backlog — was a contributor to the one-way WiFi death at ~15 KB DMA. */
+#define UPSAMPLE_BUF_CAPACITY  (4096 * 2)  /* samples — 8 KB PSRAM */
+static int16_t          *s_upsample_buf  = NULL;
 
 // Last transcript from Dragon STT
 static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
@@ -640,12 +662,21 @@ static void handle_text_message(const char *data, int len)
             }
         }
     } else if (strcmp(type_str, "tts_start") == 0) {
-        ESP_LOGI(TAG, "TTS start — preparing playback");
+        /* Audit #80 DMA leak hunt (wave 9): log heap state at the 5
+         * interesting boundaries of a chat turn (llm_done, tts_start,
+         * tts_end, media, text_update) so we can diff which stage leaks.
+         * Heap caps are DMA-capable internal SRAM — same pool the WiFi
+         * Rx ring needs to stay alive. */
+        ESP_LOGI(TAG, "TTS start — preparing playback | heap_dma_free=%u largest=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
         tab5_audio_speaker_enable(true);
         playback_buf_reset();
         voice_set_state(VOICE_STATE_SPEAKING, NULL);
     } else if (strcmp(type_str, "tts_end") == 0) {
-        ESP_LOGI(TAG, "TTS end — drain task will finish playback");
+        ESP_LOGI(TAG, "TTS end — drain task will finish playback | heap_dma_free=%u largest=%u",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
         s_tts_done = true;
         if (s_play_sem) xSemaphoreGive(s_play_sem);
     } else if (strcmp(type_str, "llm") == 0) {
@@ -747,7 +778,10 @@ static void handle_text_message(const char *data, int len)
                  cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
     } else if (strcmp(type_str, "llm_done") == 0) {
         cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
-        ESP_LOGI(TAG, "LLM done (%.0fms)", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
+        ESP_LOGI(TAG, "LLM done (%.0fms) | heap_dma_free=%u largest=%u",
+                 cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
         /* Prefer the full text field in llm_done (TC bypass uses it)
          * falling back to the accumulated streamed tokens. */
         cJSON *full = cJSON_GetObjectItem(root, "text");
@@ -1285,6 +1319,7 @@ static void handle_binary_message(const char *data, int len)
     cur = s_state;
     if (s_state_mutex) xSemaphoreGive(s_state_mutex);
 
+
     if (cur != VOICE_STATE_SPEAKING && cur != VOICE_STATE_PROCESSING) {
         return;
     }
@@ -1299,17 +1334,21 @@ static void handle_binary_message(const char *data, int len)
      * input samples to stay well under the managed-client buffer. */
     const size_t in_samples   = len / sizeof(int16_t);
     if (in_samples == 0) return;
-    const size_t max_out      = in_samples * UPSAMPLE_RATIO;
-    int16_t *upsample_buf = (int16_t *)heap_caps_malloc(
-        max_out * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!upsample_buf) {
-        ESP_LOGW(TAG, "handle_binary: OOM for %zu samples", max_out);
+    size_t max_out = in_samples * UPSAMPLE_RATIO;
+    /* Wave 9 audit #80 + stability P0: use the pre-allocated upsample
+     * buffer from voice_init instead of malloc/free on every chunk. */
+    if (!s_upsample_buf) {
+        ESP_LOGW(TAG, "handle_binary: upsample_buf not initialized");
         return;
     }
+    if (max_out > UPSAMPLE_BUF_CAPACITY) {
+        ESP_LOGW(TAG, "handle_binary: chunk too large (in=%zu out=%zu cap=%d) — truncating",
+                 in_samples, max_out, UPSAMPLE_BUF_CAPACITY);
+        max_out = UPSAMPLE_BUF_CAPACITY;
+    }
     size_t out_samples = upsample_16k_to_48k((const int16_t *)data, in_samples,
-                                              upsample_buf, max_out);
-    playback_buf_write(upsample_buf, out_samples);
-    heap_caps_free(upsample_buf);
+                                              s_upsample_buf, max_out);
+    playback_buf_write(s_upsample_buf, out_samples);
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,14 +1399,23 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
          * crash was silent — just a frozen overlay + no answer.  The
          * home status-bar pill already picks up RECONNECTING via
          * voice_get_degraded_reason(), so the toast is a short-lived
-         * orient-the-user signal, not the permanent indicator. */
+         * orient-the-user signal, not the permanent indicator.
+         *
+         * Wave 7 F5 completion (2026-04-21): also pulse the halo orb
+         * rose for ~2.5 s so the visual signal matches the audit spec
+         * ("toast + rose orb pulse"). Toast alone was easy to miss if
+         * the user was looking at the chat area rather than the home
+         * card. ui_home_pulse_orb_alert reverts to the mode-default
+         * orb paint via an LVGL one-shot timer. */
         {
             voice_state_t cur = s_state;
             if ((cur == VOICE_STATE_PROCESSING || cur == VOICE_STATE_SPEAKING)
                 && !s_disconnecting) {
                 extern void ui_home_show_toast(const char *text);
+                extern void ui_home_pulse_orb_alert(void);
                 lv_async_call((lv_async_cb_t)ui_home_show_toast,
                               (void *)"Dragon dropped mid-turn - reconnecting");
+                lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
             }
         }
         /* T1.1: bump attempt counter + apply exponential-with-full-jitter
@@ -1866,6 +1914,25 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         TAB5_VOICE_PLAYBACK_BUF, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_play_buf) {
         ESP_LOGE(TAG, "Failed to allocate playback buffer in PSRAM");
+        vSemaphoreDelete(s_play_sem);
+        vSemaphoreDelete(s_play_mutex);
+        vSemaphoreDelete(s_state_mutex);
+        s_play_sem = NULL;
+        s_play_mutex = NULL;
+        s_state_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Wave 9 #80 fix: pre-allocate the TTS upsample buffer once. See
+     * handle_binary_message for why — per-chunk malloc churn was a PSRAM
+     * fragmentation source and contributed to the DMA-starve spiral. */
+    s_upsample_buf = (int16_t *)heap_caps_malloc(
+        UPSAMPLE_BUF_CAPACITY * sizeof(int16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_upsample_buf) {
+        ESP_LOGE(TAG, "Failed to allocate upsample buffer in PSRAM");
+        heap_caps_free(s_play_buf);
+        s_play_buf = NULL;
         vSemaphoreDelete(s_play_sem);
         vSemaphoreDelete(s_play_mutex);
         vSemaphoreDelete(s_state_mutex);

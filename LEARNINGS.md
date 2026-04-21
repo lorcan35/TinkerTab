@@ -974,3 +974,36 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Why:** Pushing the fallback to the brain keeps device renderers simple ("render exactly the 6 widgets"). Tab5 has enough on its plate. Also: brain has better context to synthesize meaningful text summaries than device code would.
 - **Prevention:** New widget types must be accompanied by a brain-side fallback to an existing supported type before they're added to the protocol.
 
+
+---
+
+## Audit Wave 6 — Stability + D5/D6 (April 2026)
+
+### DMA pool exhaustion is a third reboot class, distinct from SRAM/PSRAM frag
+- **Date:** 2026-04-20
+- **Symptom:** Tab5 silently dropped off LAN 2-5 min into any session. LVGL loop kept running (`ui_task alive, lvgl_fps=29` in serial), device still logged on `/info` with `wifi_connected=True`, but ARP from the router went incomplete and every WS reconnect hit `ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT errno=119`. Users saw "Dragon unreachable" until they reflashed.
+- **Root Cause:** WiFi TX/RX descriptor ring is allocated from the DMA-capable internal SRAM pool. When the pool drops below ~15KB free, the WiFi driver can no longer allocate its Rx slot. The radio stays associated (driver flag `wifi_connected=True`) but no packets actually flow. `heap_watchdog.c` logged the "DMA pool critically low" warning at the 16KB soft threshold but had NO reboot path — only SRAM and PSRAM fragmentation triggered `esp_restart()`. So the device sat stuck alive-but-WiFi-dead until the user intervened.
+- **Fix:** Added a third reboot class to `heap_watchdog.c`. When `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL` free size drops below `HEAP_WD_DMA_CRITICAL_BYTES (16 KB)` for 2 consecutive 60 s samples (2 min), esp_restart() — with the same voice-active grace window that the SRAM path uses. Threshold was initially 8KB (too conservative) per on-device soak showing WiFi starts dropping packets at ~15KB free, before exhaustion.
+- **Prevention:** Monitor DMA pool alongside PSRAM and SRAM. Any shared-pool subsystem (WiFi driver, SPI flash, I2S) needs a reboot safety net, not just a soft warning. When adding a new watchdog class, test both the trigger AND the recovery on hardware — thresholds chosen from `menuconfig` defaults rarely match real device wear.
+- **Known limitation:** This is a RECOVERY fix, not a PREVENTION fix. The underlying DMA drain still needs root-cause investigation — audit P0 candidates include per-TTS-chunk `heap_caps_malloc` churn (`voice.c:1303-1312`) and `widget_store_gc` call frequency. A 3-minute reboot cycle is better than indefinite unreachability, but a stable device should never hit the threshold.
+
+### Empty text_update must pop the last bubble, not be silently dropped
+- **Date:** 2026-04-20
+- **Symptom:** Dragon rendered a pure-code-block response as a JPEG media event + sent `text_update` with an empty string to clear the raw-markdown chat bubble. Tab5 dropped the empty update silently; the raw markdown stayed visible ABOVE the decoded JPEG.
+- **Root Cause:** `ui_chat_update_last_message()` had `if (!text || !*text) return;` at both the entry and inside the async callback. This was a defensive guard against bad WS input, but it collapsed the legitimate "clear the bubble" signal into a no-op. Dragon's protocol assumes Tab5 will interpret empty text as "remove".
+- **Fix:** Accept empty strings. In the async callback, if the text is empty, call `chat_store_pop_last()` to remove the now-stale AI text bubble. The accompanying media event then renders alone.
+- **Prevention:** When designing "replace last" protocol messages, define what empty payload means explicitly (remove, clear, or retain). Document it in `docs/protocol.md`. Don't let input validators accidentally strip semantic content.
+
+### Dragon must send text_update BEFORE media events, not after
+- **Date:** 2026-04-20
+- **Symptom:** Related to the bubble-pop fix above. Even after Tab5 accepted empty updates, the wrong bubble was being removed because media events arrived first, making them the "last" bubble.
+- **Root Cause:** Event order is load-bearing. Tab5's `chat_store_pop_last` removes the tail of the store. If the media event appends MSG_IMAGE before text_update fires, the pop removes the image, not the obsolete text bubble.
+- **Fix:** Reorder in `server.py` both cloud and TC paths: emit `text_update` FIRST, then media events. Verified via `tests/audit/test_d5_d6_ws.py` (TinkerBox) which asserts `text_update.index < media.index` in the outbound event stream.
+- **Prevention:** When designing multi-message protocol replacements, document the required order in `docs/protocol.md` and back it up with an assertion test that runs against a live server. The Python-side test is in the TinkerBox repo; Tab5 clients that consume this protocol should mirror the contract.
+
+### Objective WS-level audit tests are better than device screenshots for proving Dragon correctness
+- **Date:** 2026-04-20
+- **Symptom:** Visual verification on Tab5 kept failing — not because Dragon was wrong, but because Tab5's WiFi kept dying (see DMA entry above). Trying to prove audit fixes with device screenshots produced flaky results dependent on device stability.
+- **Root Cause:** Tab5's DMA + WiFi issues are orthogonal to Dragon-side audit fixes. Using Tab5 as the test harness conflates two failure modes.
+- **Fix:** Added `tests/audit/test_d5_d6_ws.py` in TinkerBox — connects directly to Dragon's `/ws/voice` WebSocket with a synthetic device registration, exercises the same code paths Tab5 does, and asserts the protocol invariants (`text_update` before `media`, no `<tool>` markup in `llm` stream). Bypasses Tab5 entirely.
+- **Prevention:** For audit/regression tests that verify server-side behavior, prefer a WS-level probe over a device-level visual. Reserve device screenshots for end-to-end UX verification once protocol correctness is established. Keep the probe in the TinkerBox repo (not in a separate test infrastructure) so any Dragon change can trigger it.

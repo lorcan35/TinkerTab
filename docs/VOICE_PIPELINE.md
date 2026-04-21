@@ -64,6 +64,8 @@ The Tab5 (ESP32-P4) captures microphone audio and streams it over WiFi to the Dr
 
 The voice server uses a single WebSocket connection carrying both JSON control messages and binary audio frames.
 
+> **Full spec:** [TinkerBox docs/protocol.md](https://github.com/lorcan35/TinkerBox/blob/main/docs/protocol.md) is the source of truth. The summary below is a quick reference for the core flow; the protocol has since gained rich-media (`media`, `card`, `audio_clip`, `text_update`), widget (`widget_live`, `widget_card`, `widget_list`, `widget_chart`, `widget_prompt`, `widget_action`), tool-call (`tool_call`, `tool_result`), receipt, and session-resume (`session_messages`) messages. See the canonical doc for the full list.
+
 ### Message Types
 
 #### Client -> Server (Tab5 -> Dragon)

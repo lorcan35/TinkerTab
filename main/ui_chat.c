@@ -713,8 +713,16 @@ static void async_update_last_cb(void *arg)
 {
     push_update_t *u = (push_update_t *)arg;
     if (!u) return;
-    if (u->text && *u->text) {
-        chat_store_update_last_text(u->text);
+    if (u->text) {
+        if (*u->text) {
+            chat_store_update_last_text(u->text);
+        } else {
+            /* Audit D6: Dragon stripped the whole response (pure code block
+             * that was rendered as a JPEG media event). Remove the now-empty
+             * MSG_TEXT bubble so the image breakout stands alone — otherwise
+             * the user sees a blank bubble above the rendered code. */
+            chat_store_pop_last();
+        }
         if (s_view) chat_msg_view_refresh(s_view);
     }
     free(u->text); free(u);
@@ -722,9 +730,10 @@ static void async_update_last_cb(void *arg)
 
 void ui_chat_update_last_message(const char *text)
 {
-    if (!text || !*text) return;
+    if (!text) return;
     push_update_t *u = calloc(1, sizeof(*u));
     if (!u) return;
+    /* strdup("") is legal; async callback distinguishes empty → remove. */
     u->text = strdup(text);
     if (!u->text) { free(u); return; }
     lv_async_call(async_update_last_cb, u);
