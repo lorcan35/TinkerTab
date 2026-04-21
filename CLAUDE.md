@@ -106,7 +106,7 @@ sudo journalctl -u tinkerclaw-voice --no-pager -n 50
 
 ## Build & Flash
 ```bash
-# Always use ESP-IDF v5.4.3 — matches dependencies.lock
+# Always use ESP-IDF v5.5.2 — matches dependencies.lock
 . /home/rebelforce/esp/esp-idf/export.sh
 
 cd /home/rebelforce/projects/TinkerTab
@@ -216,7 +216,7 @@ curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 - **Mic audio:** Slot 0 = MIC-L (primary). Extract from 4-ch TDM interleaved buffer.
 
 ## IDF Version
-- **Use IDF v5.4.3** — matches `dependencies.lock`. Build always requires `idf.py set-target esp32p4` after any clean build or target change. Run `idf.py fullclean build` when in doubt.
+- **Use IDF v5.5.2** — matches `dependencies.lock`. Build always requires `idf.py set-target esp32p4` after any clean build or target change. Run `idf.py fullclean build` when in doubt.
 - Tab5 camera is SC202CS at SCCB 0x36 (NOT SC2336 at 0x30)
 - SD card uses SDMMC SLOT 0 with LDO channel 4
 
@@ -431,7 +431,8 @@ main/service_network.c    — Wi-Fi service (STA, connect, reconnect)
 main/service_storage.c    — SD card + NVS storage service
 main/task_worker.{c,h}    — Shared FreeRTOS job queue (W14-H06) — kills per-action task leaks
 main/heap_watchdog.{c,h}  — Periodic heap + PSRAM monitoring, logs to /heap debug endpoint
-main/debug_server.{c,h}   — HTTP debug server (22 endpoints, bearer-auth except /info /selftest)
+main/debug_server.{c,h}   — HTTP debug server (bearer-auth except /info /selftest);
+                             count endpoints with: grep -c 'httpd_register_uri_handler' main/debug_server.c
 ```
 
 ### Hardware
