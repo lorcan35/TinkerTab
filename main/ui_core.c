@@ -301,16 +301,46 @@ esp_err_t tab5_ui_init(esp_lcd_panel_handle_t panel)
         return ret;
     }
 
-    /* ---- Start UI task ---- */
-    BaseType_t xret = xTaskCreatePinnedToCore(
+    /* ---- Start UI task ----
+     *
+     * Wave 15 W15-C06: the pre-existing comment on this task claimed
+     * "(PSRAM)" but the call was plain `xTaskCreatePinnedToCore` which
+     * allocates the stack from internal SRAM.  Fulfilling the
+     * original intent: use `WithCaps(MALLOC_CAP_SPIRAM)` so the 32 KB
+     * stack lives in PSRAM.  That reclaims 32 KB of internal SRAM for
+     * LVGL's sub-allocations (labels, sliders, switches — these hit
+     * internal on every create).  Settings, the heaviest screen
+     * (~55 LVGL objects), was hitting `lv_label_create → NULL` when
+     * internal dropped to the single-digit-KB range, then panicking
+     * on the next `lv_obj_set_pos`.
+     *
+     * PSRAM stack latency trade-off: the LVGL render loop pushes
+     * pixel buffers through flush callbacks and doesn't allocate
+     * deep stack frames; PSRAM reads take a few ns more per access
+     * but the overall render rate is unaffected in practice.
+     *
+     * Falls back to internal-SRAM if PSRAM alloc somehow fails so the
+     * device still boots on stripped PSRAM configs. */
+    BaseType_t xret = xTaskCreatePinnedToCoreWithCaps(
         ui_task,
         "ui_task",
-        32768,      /* 32KB stack (PSRAM) — overlays + LVGL timer callbacks */
+        32768,
         NULL,
-        5,          /* priority */
+        5,
         &s_ui_task_handle,
-        0           /* core 0 */
-    );
+        0,
+        MALLOC_CAP_SPIRAM);
+    if (xret != pdPASS) {
+        ESP_LOGW(TAG, "ui_task: PSRAM stack alloc failed — falling back to internal SRAM");
+        xret = xTaskCreatePinnedToCore(
+            ui_task,
+            "ui_task",
+            32768,
+            NULL,
+            5,
+            &s_ui_task_handle,
+            0);
+    }
     if (xret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create UI task");
         return ESP_ERR_NO_MEM;

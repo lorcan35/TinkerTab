@@ -175,10 +175,24 @@ static const char *s_local_model_names[] = {
  * ══════════════════════════════════════════════════════════════════════ */
 
 /** Section header with accent-colored label.
- *  Returns the Y position after the header (y + HDR_H). */
+ *  Returns the Y position after the header (y + HDR_H).
+ *
+ *  Wave 15 W15-C06: NULL-guard on `lv_label_create`.  When internal
+ *  heap is exhausted (observed live: `/heap` shows internal 6 KB free,
+ *  largest 5 KB) LVGL returns NULL from the create call; the old code
+ *  then passed NULL to `lv_label_set_text` → dereference → panic in
+ *  `lv_obj_get_ext_draw_size (obj=0x0)` → hard reboot.  Now we skip
+ *  the styling silently and return the same Y offset so the rest of
+ *  the screen can still render.  The user sees a missing label but
+ *  the device stays alive — infinitely better than a panic-reboot
+ *  mid-navigation. */
 static int mk_section(lv_obj_t *parent, const char *text, lv_color_t accent, int y)
 {
     lv_obj_t *lbl = lv_label_create(parent);
+    if (!lbl) {
+        ESP_LOGW("ui_settings", "mk_section: lv_label_create failed (text=%s y=%d)", text, y);
+        return y + HDR_H;
+    }
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, accent, 0);
     lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
@@ -192,16 +206,25 @@ static int mk_section(lv_obj_t *parent, const char *text, lv_color_t accent, int
 static void mk_row_label(lv_obj_t *parent, const char *label, int y)
 {
     lv_obj_t *lbl = lv_label_create(parent);
+    if (!lbl) {
+        ESP_LOGW("ui_settings", "mk_row_label: lv_label_create failed (label=%s y=%d)", label, y);
+        return;
+    }
     lv_label_set_text(lbl, label);
     lv_obj_set_style_text_color(lbl, lv_color_hex(TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
     lv_obj_set_pos(lbl, SIDE_PAD, y + (ROW_H - 20) / 2);
 }
 
-/** Right-aligned value text. Returns the label object. */
+/** Right-aligned value text. Returns the label object (or NULL on OOM).
+ *  W15-C06 NULL guard. */
 static lv_obj_t *mk_row_value(lv_obj_t *parent, const char *text, lv_color_t color, int y)
 {
     lv_obj_t *lbl = lv_label_create(parent);
+    if (!lbl) {
+        ESP_LOGW("ui_settings", "mk_row_value: lv_label_create failed (text=%s y=%d)", text, y);
+        return NULL;
+    }
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, color, 0);
     lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
@@ -772,11 +795,19 @@ void cb_replay_intro(lv_event_t *e)
  *  Inline style helpers
  * ══════════════════════════════════════════════════════════════════════ */
 
-/** Create a Material Dark slider: 200px wide, 4px track, 16px accent knob. */
+/** Create a Material Dark slider: 200px wide, 4px track, 16px accent knob.
+ *
+ *  Wave 15 W15-C06: NULL-guard on `lv_slider_create` — returns NULL
+ *  silently so caller sees a missing slider but the device doesn't
+ *  panic on the next `lv_obj_set_pos(NULL, ...)`. */
 static lv_obj_t *mk_slider(lv_obj_t *parent, lv_color_t accent, int x, int y,
                             int min, int max, int val, lv_event_cb_t cb)
 {
     lv_obj_t *s = lv_slider_create(parent);
+    if (!s) {
+        ESP_LOGW("ui_settings", "mk_slider: lv_slider_create failed (x=%d y=%d)", x, y);
+        return NULL;
+    }
     lv_obj_set_pos(s, x, y + (ROW_H - 4) / 2 - 2);
     lv_obj_set_size(s, 200, 4);
     lv_slider_set_range(s, min, max);
@@ -792,11 +823,15 @@ static lv_obj_t *mk_slider(lv_obj_t *parent, lv_color_t accent, int x, int y,
     return s;
 }
 
-/** Create a Material Dark toggle switch: 44x24px. */
+/** Create a Material Dark toggle switch: 44x24px.  W15-C06 NULL-guard. */
 static lv_obj_t *mk_switch(lv_obj_t *parent, lv_color_t accent, int x, int y,
                             bool checked, lv_event_cb_t cb, void *user_data)
 {
     lv_obj_t *sw = lv_switch_create(parent);
+    if (!sw) {
+        ESP_LOGW("ui_settings", "mk_switch: lv_switch_create failed");
+        return NULL;
+    }
     lv_obj_set_pos(sw, x, y + (ROW_H - 24) / 2);
     lv_obj_set_size(sw, 44, 24);
     lv_obj_set_style_bg_color(sw, lv_color_hex(0x1A1A24), LV_PART_MAIN);
@@ -810,12 +845,16 @@ static lv_obj_t *mk_switch(lv_obj_t *parent, lv_color_t accent, int x, int y,
     return sw;
 }
 
-/** Create a pill-shaped button with centered text. */
+/** Create a pill-shaped button with centered text.  W15-C06 NULL guards. */
 static lv_obj_t *mk_pill_btn(lv_obj_t *parent, const char *text, lv_color_t bg,
                               lv_color_t text_color, int x, int y, int w, int h,
                               int radius, lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_button_create(parent);
+    if (!btn) {
+        ESP_LOGW("ui_settings", "mk_pill_btn: lv_button_create failed (text=%s)", text);
+        return NULL;
+    }
     lv_obj_remove_style_all(btn);
     lv_obj_set_pos(btn, x, y);
     lv_obj_set_size(btn, w, h);
@@ -825,10 +864,12 @@ static lv_obj_t *mk_pill_btn(lv_obj_t *parent, const char *text, lv_color_t bg,
     lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, text);
-    lv_obj_set_style_text_color(lbl, text_color, 0);
-    lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
-    lv_obj_center(lbl);
+    if (lbl) {
+        lv_label_set_text(lbl, text);
+        lv_obj_set_style_text_color(lbl, text_color, 0);
+        lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
+        lv_obj_center(lbl);
+    }
 
     return btn;
 }
@@ -1002,6 +1043,31 @@ lv_obj_t *ui_settings_create(void)
     if (s_creating) {
         ESP_LOGW(TAG, "Settings creation already in progress — skipping");
         return s_screen;
+    }
+
+    /* Wave 15 W15-C06: refuse to start a fresh creation pass when
+     * internal heap is so low that a child widget alloc is likely to
+     * return NULL.  Settings renders ~55 LVGL objects (big box of
+     * labels, sliders, dropdowns, switches); every one of those that
+     * returns NULL must then not be dereferenced.  Guarding every
+     * caller is impractical, so we bail once upfront.
+     *
+     * Threshold chosen from live observation: /heap showed 6 KB free
+     * when the screen crashed.  8 KB gives a small cushion without
+     * being so conservative that the screen refuses to open in any
+     * real-world condition.  Returning NULL from here makes the
+     * navigation tap appear to "do nothing" instead of rebooting
+     * the device mid-use. */
+    if (!s_screen) {
+        size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (internal_free < 8 * 1024) {
+            ESP_LOGW(TAG, "Settings: deferring create — internal heap too low (%u bytes free)",
+                     (unsigned)internal_free);
+            extern void ui_home_show_toast(const char *text);
+            lv_async_call((lv_async_cb_t)ui_home_show_toast,
+                          (void *)"Low memory — reboot Tab5 to open Settings");
+            return NULL;
+        }
     }
 
     if (s_screen) {
@@ -1235,23 +1301,41 @@ lv_obj_t *ui_settings_create(void)
     mk_row_label(s_scroll, "Brightness", y);
     s_slider_bright = mk_slider(s_scroll, acc_display, RIGHT_X, y,
                                 0, 100, tab5_settings_get_brightness(), cb_brightness);
+    /* Wave 15 W15-C06: NULL guard — in rapid nav cycling the first
+     * Settings create after boot has been observed to return NULL
+     * from `lv_label_create` despite 50 KB+ LVGL pool free.  Root
+     * cause under investigation; the immediate fix is defence in
+     * depth — skip styling if create fails so we don't NULL-deref
+     * and panic the whole device. */
     s_lbl_bright_val = lv_label_create(s_scroll);
-    lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
-    lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
-    lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF59E0B), 0);
-    lv_obj_set_style_text_font(s_lbl_bright_val, FONT_SECONDARY, 0);
+    if (s_lbl_bright_val) {
+        lv_obj_set_pos(s_lbl_bright_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+        lv_label_set_text_fmt(s_lbl_bright_val, "%d%%", tab5_settings_get_brightness());
+        lv_obj_set_style_text_color(s_lbl_bright_val, lv_color_hex(0xF59E0B), 0);
+        lv_obj_set_style_text_font(s_lbl_bright_val, FONT_SECONDARY, 0);
+    } else {
+        ESP_LOGW(TAG, "s_lbl_bright_val: lv_label_create returned NULL — skipping style");
+    }
     y += ROW_H + 4;
 
     /* Volume */
     mk_row_label(s_scroll, "Volume", y);
     s_slider_volume = mk_slider(s_scroll, acc_display, RIGHT_X, y,
                                 0, 100, tab5_settings_get_volume(), cb_volume);
-    lv_obj_add_event_cb(s_slider_volume, cb_volume_released, LV_EVENT_RELEASED, NULL);
+    /* W15-C06: mk_slider now NULL-checks internally — still guard
+     * the caller-side deref (add_event_cb) against NULL. */
+    if (s_slider_volume) {
+        lv_obj_add_event_cb(s_slider_volume, cb_volume_released, LV_EVENT_RELEASED, NULL);
+    }
     s_lbl_vol_val = lv_label_create(s_scroll);
-    lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
-    lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
-    lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF59E0B), 0);
-    lv_obj_set_style_text_font(s_lbl_vol_val, FONT_SECONDARY, 0);
+    if (s_lbl_vol_val) {
+        lv_obj_set_pos(s_lbl_vol_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+        lv_label_set_text_fmt(s_lbl_vol_val, "%d%%", tab5_settings_get_volume());
+        lv_obj_set_style_text_color(s_lbl_vol_val, lv_color_hex(0xF59E0B), 0);
+        lv_obj_set_style_text_font(s_lbl_vol_val, FONT_SECONDARY, 0);
+    } else {
+        ESP_LOGW(TAG, "s_lbl_vol_val: lv_label_create returned NULL — skipping style");
+    }
     y += ROW_H + 4;
 
     /* Auto-rotate */
