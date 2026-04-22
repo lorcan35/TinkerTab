@@ -12,6 +12,7 @@ set(UI_SRCS
     "chat_suggestions.c"
     "chat_msg_view.c"
     "chat_session_drawer.c"
+    "md_strip.c"
     "fonts/fraunces_italic_32.c"
     "fonts/fraunces_italic_22.c"
     "fonts/jetbrains_mono_medium_14.c"
