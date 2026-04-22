@@ -74,8 +74,12 @@ static void mode_switch_idle_job(void *arg);
 /* v5: orb carries the identity. Push from 200 -> 300 for LISTENING and
    320 for SPEAKING so presence matches the home orb. Ring stroke slightly
    heavier (2 -> 3) so the arc reads from across the desk. */
+/* closes #114: distinct orb sizes per state — LISTENING medium,
+ * PROCESSING smaller (visually "compressed" while thinking), SPEAKING
+ * largest (emphasis while the device is talking). */
 #define ORB_SZ_LISTEN      300
-#define ORB_SZ_SPEAK       320
+#define ORB_SZ_PROCESS     240
+#define ORB_SZ_SPEAK       340
 #define ORB_RING_W         3
 #define ORB_GLOW_LAYERS    4         /* concentric circles for radial gradient */
 
@@ -1184,7 +1188,9 @@ static void show_state_processing(const char *detail)
     if (!s_has_llm_text) {
         stop_all_anims();
         set_orb_color(VO_PURPLE, VO_PURPLE, LV_OPA_50);
-        set_orb_size(ORB_SZ_LISTEN);
+        /* #114: PROCESSING shrinks the orb so the state-change is
+         * visible at a glance even without the label text changing. */
+        set_orb_size(ORB_SZ_PROCESS);
         start_pulse_anim();
     }
 
