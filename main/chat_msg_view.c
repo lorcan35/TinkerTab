@@ -78,7 +78,13 @@ struct chat_msg_view {
     int        stream_idx;
     char       stream_buf[2048];
     int        stream_len;
+    /* #142: user-drove-scroll latch.  Set in ev_scroll whenever the
+     * scroll position is more than AUTOPIN_PX pixels above the bottom.
+     * chat_msg_view_refresh only force-jumps to bottom while this is
+     * false — so reading old bubbles no longer snap-backs. */
+    bool       user_scrolled_up;
 };
+#define AUTOPIN_PX 48
 
 /* ── Helpers ───────────────────────────────────────────────────── */
 
@@ -506,6 +512,18 @@ static void hide_all_slots(chat_msg_view_t *v)
 static void ev_scroll(lv_event_t *e)
 {
     chat_msg_view_t *v = lv_event_get_user_data(e);
+    if (!v || !v->scroll) return;
+    /* #142: decide whether the user is trying to read history or is
+     * pinned at the bottom.  `content_height - visible_h - scroll_y`
+     * is the distance from the current top-of-viewport to the last
+     * bubble; > AUTOPIN_PX means they've dragged up and we should
+     * stop auto-jumping to the tail on subsequent refreshes. */
+    int32_t scroll_y  = lv_obj_get_scroll_y(v->scroll);
+    int32_t content_h = lv_obj_get_content_height(v->scroll);
+    int32_t visible_h = lv_obj_get_height(v->scroll);
+    int32_t distance_from_bottom = content_h - visible_h - scroll_y;
+    if (distance_from_bottom < 0) distance_from_bottom = 0;
+    v->user_scrolled_up = (distance_from_bottom > AUTOPIN_PX);
     chat_msg_view_refresh(v);
 }
 
@@ -597,22 +615,22 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
     }
     lv_obj_set_content_height(v->scroll, running);
 
-    /* closes #138: pool recycle below uses scroll_y to decide which
-     * slots to keep.  Override scroll_y LOCALLY to the new bottom so
-     * the recycle picks the right slots regardless of whether the
-     * hardware scroll has actually moved yet.  We also call
-     * lv_obj_scroll_to_y so the user sees the bottom on the next
-     * draw; but we don't depend on it updating before we read it. */
+    /* #142: only force-jump to bottom when the user is pinned there
+     * (new session, or they've already scrolled all the way down).
+     * If they dragged up to read history, leave scroll_y alone so
+     * old bubbles stay visible.  ev_scroll sets user_scrolled_up. */
     lv_obj_update_layout(v->scroll);
     int32_t visible_h = lv_obj_get_height(v->scroll);
     int32_t target_y  = running - visible_h;
     if (target_y < 0) target_y = 0;
-    lv_obj_scroll_to_y(v->scroll, target_y, LV_ANIM_OFF);
-
-    /* closes #138: use our local target_y instead of reading
-     * scroll_y back — scroll_to_y may not have applied yet, leaving
-     * the pool recycle looking at the pre-scroll window. */
-    int scroll_y = target_y;
+    int32_t scroll_y;
+    if (!v->user_scrolled_up || v->streaming) {
+        lv_obj_scroll_to_y(v->scroll, target_y, LV_ANIM_OFF);
+        scroll_y = target_y;
+    } else {
+        /* Read the actual current scroll position (user-driven). */
+        scroll_y = lv_obj_get_scroll_y(v->scroll);
+    }
     int view_top = scroll_y - VIS_BUFFER;
     int view_bot = scroll_y + visible_h + VIS_BUFFER;
 
@@ -685,6 +703,9 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
 void chat_msg_view_scroll_to_bottom(chat_msg_view_t *v)
 {
     if (!v || !v->scroll) return;
+    /* #142: explicit jump-to-bottom clears the "reading history" latch
+     * so the next refresh auto-pins to the tail again. */
+    v->user_scrolled_up = false;
     /* closes #136: was LV_ANIM_ON (animated over ~400ms).  poll_voice
      * refreshes the view every 150ms during streaming; each refresh
      * called scroll_to_bottom which restarted the animation from the
@@ -706,6 +727,10 @@ void chat_msg_view_begin_streaming(chat_msg_view_t *v)
     v->stream_len = 0;
     v->stream_buf[0] = 0;
     v->stream_idx = chat_store_count() - 1;
+    /* #142: a new assistant turn re-pins to the tail even if the user
+     * was reading history — otherwise the streamed tokens are written
+     * off-screen and they'd think the send didn't work. */
+    v->user_scrolled_up = false;
 }
 
 void chat_msg_view_append_stream(chat_msg_view_t *v, const char *text)
