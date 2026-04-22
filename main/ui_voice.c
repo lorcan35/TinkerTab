@@ -182,6 +182,13 @@ static bool       s_visible       = false;
 static lv_obj_t  *s_orb_container = NULL;   /* invisible sizer for scaling */
 static lv_obj_t  *s_orb_ring      = NULL;   /* outer ring stroke */
 static lv_obj_t  *s_orb_glow[ORB_GLOW_LAYERS]; /* concentric gradient circles */
+/* closes #113: home-parity halo rings.  The home screen's v4 Ambient
+ * Canvas orb has 3 concentric border-only rings (310/240/196) that
+ * make it feel alive.  Port them into the overlay so engaging the
+ * device doesn't visually downgrade the orb. */
+static lv_obj_t  *s_orb_halo_outer = NULL;     /* 310 px border-only */
+static lv_obj_t  *s_orb_halo_mid   = NULL;     /* 240 px border-only */
+static lv_obj_t  *s_orb_halo_inner = NULL;     /* 196 px border-only */
 
 /* Text labels */
 static lv_obj_t  *s_lbl_status    = NULL;   /* "Listening..." / "Thinking..." / "Speaking..." */
@@ -792,7 +799,11 @@ static void build_orb(lv_obj_t *parent)
     /* Invisible container for logical grouping (moved up to make room for chat) */
     s_orb_container = lv_obj_create(parent);
     if (!s_orb_container) { ESP_LOGE(TAG, "OOM creating orb container"); return; }
-    lv_obj_set_size(s_orb_container, ORB_SZ_SPEAK + 20, ORB_SZ_SPEAK + 20);
+    /* #113: make the container big enough for home-parity halo rings
+     * (outer = 310 px).  Was ORB_SZ_SPEAK+20=340 which only fit the
+     * 300/320 glow+ring stack.  Now 360 px so the 310 halo nests
+     * inside with room for the centered position. */
+    lv_obj_set_size(s_orb_container, 360, 360);
     lv_obj_align(s_orb_container, LV_ALIGN_CENTER, 0, ORB_Y_OFFSET);
     lv_obj_set_style_bg_opa(s_orb_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_orb_container, 0, 0);
@@ -835,6 +846,42 @@ static void build_orb(lv_obj_t *parent)
     lv_obj_set_style_border_opa(s_orb_ring, LV_OPA_60, 0);
     lv_obj_set_style_pad_all(s_orb_ring, 0, 0);
     lv_obj_clear_flag(s_orb_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    /* closes #113: three concentric border-only halo rings that mirror
+     * home's v4 Ambient orb (RING_OUTER=310, RING_MID=240, RING_INNER=196
+     * from ui_home.c).  Low-intensity amber strokes that make the overlay
+     * orb feel like a continuation of home, not a visual downgrade.
+     * Each one is NULL-guarded — under tight LVGL pool the orb still
+     * works without the decoration.
+     *
+     * Order matters: added AFTER the ring so they sit on top in z-order,
+     * but none have bg fill (border-only) so they layer like home's. */
+    struct { lv_obj_t **ptr; int sz; lv_opa_t opa; } halos[] = {
+        { &s_orb_halo_outer, 310,  60 },
+        { &s_orb_halo_mid,   240,  90 },
+        { &s_orb_halo_inner, 196, 140 },
+    };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *r = lv_obj_create(s_orb_container);
+        if (!r) {
+            ESP_LOGW(TAG, "OOM creating halo ring %d — skipping", i);
+            continue;
+        }
+        *halos[i].ptr = r;
+        lv_obj_set_size(r, halos[i].sz, halos[i].sz);
+        lv_obj_center(r);
+        lv_obj_set_style_radius(r, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(r, 1, 0);
+        lv_obj_set_style_border_color(r, lv_color_hex(VO_CYAN), 0);
+        lv_obj_set_style_border_opa(r, halos[i].opa, 0);
+        lv_obj_set_style_pad_all(r, 0, 0);
+        lv_obj_clear_flag(r, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        /* Halos render BEHIND the orb filling (glow layers) by
+         * being drawn first.  Move them to background explicitly
+         * in case LVGL's z-order derived from sibling order differs. */
+        lv_obj_move_background(r);
+    }
 }
 
 /* ── Wave bars — speaking visualization ───────────────────────── */
