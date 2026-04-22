@@ -16,6 +16,7 @@
 #include "heap_watchdog.h"
 #include "settings.h"
 #include "voice.h"
+#include "ui_core.h"       /* #131: tab5_ui_try_lock for safe lv_mem_monitor */
 
 #include <limits.h>
 
@@ -229,13 +230,35 @@ static void heap_watchdog_task(void *arg)
             }
         }
 
-        /* LVGL memory pool monitoring */
-        lv_mem_monitor_t lvgl_mon;
-        lv_mem_monitor(&lvgl_mon);
-        ESP_LOGI(TAG, "LVGL pool: used=%uKB free=%uKB frag=%u%%",
-                 (unsigned)((lvgl_mon.total_size - lvgl_mon.free_size) / 1024),
-                 (unsigned)(lvgl_mon.free_size / 1024),
-                 (unsigned)lvgl_mon.frag_pct);
+        /* LVGL memory pool monitoring.
+         *
+         * closes #131: lv_mem_monitor walks the TLSF pool via
+         * lv_tlsf_walk_pool \u2192 block_size().  Calling it from
+         * heap_watchdog_task (a non-UI FreeRTOS task) without the
+         * LVGL mutex raced with concurrent allocations on the UI
+         * task and occasionally dereferenced a block whose metadata
+         * was mid-mutation, crashing the heap_wd task.  Captured
+         * coredump: lv_tlsf_walk_pool \u2192 block_size(0x97f72c4c).
+         *
+         * Take tab5_ui_try_lock first and skip the monitor call if
+         * the UI is busy.  Skipping one 60-second sample is harmless;
+         * crashing the watchdog defeats its purpose.
+         */
+        lv_mem_monitor_t lvgl_mon = {0};
+        bool lvgl_ok = false;
+        if (tab5_ui_try_lock(500)) {
+            lv_mem_monitor(&lvgl_mon);
+            tab5_ui_unlock();
+            lvgl_ok = true;
+        } else {
+            ESP_LOGD(TAG, "heap_wd: skipped lv_mem_monitor (UI lock busy)");
+        }
+        if (lvgl_ok) {
+            ESP_LOGI(TAG, "LVGL pool: used=%uKB free=%uKB frag=%u%%",
+                     (unsigned)((lvgl_mon.total_size - lvgl_mon.free_size) / 1024),
+                     (unsigned)(lvgl_mon.free_size / 1024),
+                     (unsigned)lvgl_mon.frag_pct);
+        }
 
         /* Wave 11 stability P1: warn when the LVGL pool is highly
          * fragmented. A burst of overlay create/destroy cycles (old
@@ -244,7 +267,7 @@ static void heap_watchdog_task(void *arg)
          * alloc can't find a contiguous slot. Soft warning only —
          * we don't reboot here because the pool is LVGL-managed PSRAM
          * and recoverable by closing any overlay. */
-        if (lvgl_mon.frag_pct > 50) {
+        if (lvgl_ok && lvgl_mon.frag_pct > 50) {
             ESP_LOGW(TAG, "LVGL pool fragmented %u%% — close an overlay to coalesce",
                      (unsigned)lvgl_mon.frag_pct);
         }
