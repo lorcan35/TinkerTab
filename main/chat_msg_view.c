@@ -392,8 +392,15 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
         lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_BG), 0);
     } else {
         lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_CARD), 0);
-        lv_obj_set_style_border_width(slot->bubble, 1, 0);
-        lv_obj_set_style_border_color(slot->bubble, lv_color_hex(0x1E1E2A), 0);
+        /* Wave 15 W15-C09: was `border_width=1 + radius=22`.  LVGL's
+         * draw_border_complex → lv_draw_mask_radius → get_next_line
+         * path crashed drawing a 1 px border on a 22 px-rounded widget
+         * (coredump captured this during second-turn chat render).
+         * Same class of rasterizer bug as W15-C07 (voice overlay fade).
+         * Dark card (0x111119) on near-black (0x08080E) is visibly
+         * distinct without a border, so dropping it eliminates the
+         * crash path while keeping the bubble readable. */
+        lv_obj_set_style_border_width(slot->bubble, 0, 0);
         lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
         lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_TEXT_PRIMARY), 0);
     }
