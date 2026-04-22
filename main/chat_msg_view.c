@@ -84,6 +84,10 @@ struct chat_msg_view {
 static int estimate_height(const chat_msg_t *msg)
 {
     if (!msg) return 60;
+    /* closes #112: empty-text bubbles contribute zero vertical space
+     * so the view doesn't leave a gap where a pop_last'd or
+     * placeholder-only slot used to be. */
+    if (msg->type == MSG_TEXT && !msg->text[0]) return 0;
     if (msg->height_px > 0) return msg->height_px;
     switch (msg->type) {
         case MSG_IMAGE:      return BREAK_IMG_H + 48;
@@ -247,6 +251,21 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
 {
     if (!slot || !msg) return;
     slot->data_idx = -1;       /* set later after successful bind */
+
+    /* closes #112: don't render a MSG_TEXT bubble with empty text.
+     * Observed path: Dragon strips a pure-code response via
+     * text_update to ""; Tab5's async_update_last_cb calls
+     * chat_store_pop_last() which works, but a prior
+     * poll_voice-streamed bubble may already be in the store with
+     * text="" if the first 'llm' delta was the keep-alive ""
+     * placeholder.  Hide those slots entirely — the media break-out
+     * bubble (if any) still renders separately. */
+    if (msg->type == MSG_TEXT && !msg->text[0]) {
+        if (slot->bubble)   lv_obj_add_flag(slot->bubble, LV_OBJ_FLAG_HIDDEN);
+        if (slot->ts)       lv_obj_add_flag(slot->ts, LV_OBJ_FLAG_HIDDEN);
+        if (slot->breakout) lv_obj_add_flag(slot->breakout, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
 
     bool use_breakout = msg_is_breakout(msg);
     if (use_breakout) {
