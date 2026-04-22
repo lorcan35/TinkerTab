@@ -422,6 +422,18 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             ESP_LOGI(TAG, "Boot connect: CONNECTING (silent)");
             break;
         }
+        /* closes #140: only pop the voice overlay on CONNECTING if the
+         * user actually initiated something (mic tap pending, or
+         * overlay was already visible mid-turn).  Previously EVERY
+         * reconnect after boot would pop the overlay, even when the
+         * user was on chat or home — the typing flow got hijacked
+         * whenever WS bounced for ngrok/LAN auto-fallback.  Boot path
+         * already had its own silent gate; this adds one for runtime
+         * reconnects. */
+        if (!s_visible && !s_pending_ask && !s_dictation_from_anywhere) {
+            ESP_LOGI(TAG, "Silent reconnect: CONNECTING (no overlay popup)");
+            break;
+        }
         /* Show overlay immediately with "Connecting..." */
         if (!s_visible) {
             ui_voice_show();

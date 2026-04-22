@@ -112,7 +112,13 @@
 LV_FONT_DECLARE(fraunces_italic_32);
 LV_FONT_DECLARE(fraunces_italic_22);
 LV_FONT_DECLARE(jetbrains_mono_medium_14);
-#define FONT_CHAT_TITLE  (&fraunces_italic_32)   /* chat header title, drawer title */
+/* closes #139: FONT_CHAT_TITLE was fraunces_italic_32.  Coredump
+ * captured in draw_letter for letter 'C' while painting the chat
+ * header title ('Chat' / 'Conversations' — both start with 'C').
+ * Intermittent, reproducible under long sessions.  Swap to the
+ * well-tested Montserrat Bold 28 (FONT_TITLE) for stability.
+ * fraunces stays available for inline emphasis via FONT_CHAT_EMPH. */
+#define FONT_CHAT_TITLE  FONT_TITLE              /* was &fraunces_italic_32 */
 #define FONT_CHAT_EMPH   (&fraunces_italic_22)   /* AI bubble <em> emphasis */
 #define FONT_CHAT_MONO   (&jetbrains_mono_medium_14)  /* kickers, timestamps, chip sub */
 #endif
