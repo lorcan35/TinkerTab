@@ -409,8 +409,11 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                      ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
-        /* Show orb in dim cyan during connect */
-        set_orb_color(VO_CYAN, VO_CYAN_DIM, LV_OPA_30);
+        /* W15-P01 voice-flow polish: same hollow-outline bug as READY
+         * — dark-amber glow on near-black bg renders as invisible.
+         * Use VO_CYAN for both ring + glow; lower opa keeps it subtler
+         * than LISTENING. */
+        set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_30);
         set_orb_size(ORB_SZ_LISTEN);
         start_pulse_anim();
         break;
@@ -481,7 +484,16 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_CYAN), 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
         lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
-        set_orb_color(VO_CYAN, VO_CYAN_DIM, LV_OPA_50);
+        /* W15-P01 voice-flow polish: was (VO_CYAN, VO_CYAN_DIM, LV_OPA_50)
+         * → dark-amber glow on near-black renders as near-invisible,
+         * leaving ONLY the ring stroke.  On-screen result was a hollow
+         * orange outline at end-of-turn (screenshot 07), visually
+         * indistinguishable from a rendering bug.  Use VO_CYAN for both
+         * ring + glow so the orb has a visible warm fill in READY —
+         * the breathe animation still provides motion, and brightness
+         * stays subordinate to the hotter LISTENING/SPEAKING states
+         * via a slightly lower ring opa. */
+        set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_50);
         set_orb_size(ORB_SZ_LISTEN);
         start_breathe_anim();
         /* Hide elements from other states */
