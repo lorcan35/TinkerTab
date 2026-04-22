@@ -15,8 +15,10 @@
  *   ui_keyboard_is_visible();             // Check state
  */
 
-// Keyboard height in pixels (used by screens to adjust layout)
-#define UI_KB_HEIGHT  420
+// Keyboard height in pixels (used by screens to adjust layout).
+// Dropped from 500 → 380 on 2026-04-23 after removing the redundant
+// preview row (chat pill + textarea already show typed text).
+#define UI_KB_HEIGHT  380
 
 // Callback type for keyboard show/hide notifications.
 // @param visible  true when keyboard is showing, false when hiding
@@ -45,6 +47,11 @@ void ui_keyboard_set_target(lv_obj_t *target_textarea);
 
 // Get the floating trigger button (for positioning from other screens)
 lv_obj_t *ui_keyboard_get_trigger_btn(void);
+
+// Show / hide the floating trigger.  Screens with their own keyboard
+// affordance (e.g. Chat's pill, Notes' input bar) should hide it on
+// show() and restore it on hide() so users don't see two entry points.
+void ui_keyboard_set_trigger_visible(bool visible);
 
 // Register a callback to be notified when keyboard shows/hides.
 // Only one callback active at a time (last registration wins).

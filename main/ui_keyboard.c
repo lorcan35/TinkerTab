@@ -38,7 +38,10 @@ static const char *TAG = "ui_kbd";
 /* ── Layout constants — v5: 72 px keys meet TOUCH_MIN on 218 DPI ─ */
 #define SW              720
 #define SH              1280
-#define KB_HEIGHT       500        /* was 420 — +80 for 72 px rows + gaps */
+/* 2026-04-23 keyboard UX pass: dropped 500 → 380 after removing the
+ * redundant preview row.  The chat pill already mirrors typed text,
+ * so 120 px of chrome was dead weight. */
+#define KB_HEIGHT       380
 #define KB_ANIM_SHOW_MS 300
 #define KB_ANIM_HIDE_MS 250
 
@@ -50,12 +53,6 @@ static const char *TAG = "ui_kbd";
 
 #define TRIGGER_SZ      60         /* was 56 — above TOUCH_MIN */
 #define TRIGGER_MARGIN  20
-
-/* v5 preview row — cursor + typed text + mic handoff + send buttons. */
-#define PREVIEW_H       60
-#define PREVIEW_Y       12         /* under the drag handle */
-#define PREVIEW_PAD_X   18
-#define PREVIEW_BTN_SZ  44
 
 /* ── Key definitions ───────────────────────────────────────────── */
 
@@ -93,6 +90,8 @@ static bool       s_shifted       = false;  /* shift state */
 static bool       s_caps_lock     = false;  /* double-tap shift */
 static bool       s_num_layer     = false;  /* numbers/symbols layer */
 static bool       s_num_built     = false;  /* lazy: number rows created? */
+static bool       s_auto_cap      = true;   /* capitalize next letter on start or after .!? + space */
+static bool       s_sentence_ended = false; /* set after .!?, consumed by next space to arm s_auto_cap */
 
 /* Layout callback — notifies the active screen so it can adjust for keyboard */
 static ui_keyboard_cb_t s_layout_cb = NULL;
@@ -116,10 +115,6 @@ static lv_obj_t  *s_layer_lbl_nums    = NULL; /* "ABC" on num layer */
 
 /* ── Forward declarations ──────────────────────────────────────── */
 static void build_keyboard_panel(void);
-static void build_preview_row(void);
-static void preview_mic_cb(lv_event_t *e);
-static void preview_send_cb(lv_event_t *e);
-static void preview_sync_from_target(void);
 static void build_trigger_button(void);
 static void build_letter_rows(lv_obj_t *parent);
 static void build_number_rows(lv_obj_t *parent);
@@ -159,13 +154,20 @@ void ui_keyboard_show(lv_obj_t *target_textarea)
     if (s_visible) {
         /* Already visible — just update target */
         s_target_ta = target_textarea;
-        preview_sync_from_target();
         return;
     }
 
     s_target_ta = target_textarea;
     s_visible = true;
-    preview_sync_from_target();
+    /* 2026-04-23: fresh show resets the auto-capitalize latch so the
+     * first letter of a new message comes out uppercase.  Also light
+     * up the shift visual so the user sees the armed state. */
+    s_auto_cap = true;
+    s_sentence_ended = false;
+    if (!s_shifted) {
+        s_shifted = true;
+        apply_shift_state();
+    }
 
     /* Notify the active screen BEFORE animation so it can adjust layout
        immediately — the textarea must be visible above the keyboard area
@@ -226,9 +228,11 @@ void ui_keyboard_hide(void)
     lv_anim_set_ready_cb(&a, hide_anim_ready_cb);
     lv_anim_start(&a);
 
-    /* Reset shift/caps on hide */
+    /* Reset shift/caps + auto-cap on hide.  Next show() re-arms auto-cap. */
     s_shifted = false;
     s_caps_lock = false;
+    s_auto_cap = false;
+    s_sentence_ended = false;
     apply_shift_state();
 
     /* Reset to letter layer on hide */
@@ -267,155 +271,23 @@ lv_obj_t *ui_keyboard_get_trigger_btn(void)
     return s_trigger_btn;
 }
 
+void ui_keyboard_set_trigger_visible(bool visible)
+{
+    if (!s_trigger_btn) return;
+    if (visible) lv_obj_clear_flag(s_trigger_btn, LV_OBJ_FLAG_HIDDEN);
+    else         lv_obj_add_flag(s_trigger_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
 /* ========================================================================= */
 /*  Build keyboard panel                                                      */
 /* ========================================================================= */
 
-/* ========================================================================= */
-/*  Preview row — typed text, voice handoff, send (v5)                        */
-/* ========================================================================= */
-
-static lv_obj_t *s_preview_row     = NULL;
-static lv_obj_t *s_preview_cursor  = NULL;
-static lv_obj_t *s_preview_label   = NULL;
-static lv_obj_t *s_preview_mic_btn = NULL;
-static lv_obj_t *s_preview_send_btn = NULL;
-
-/* Blink the amber cursor once per ~500 ms. LVGL timer on the top layer. */
-static lv_timer_t *s_cursor_timer = NULL;
-static bool s_cursor_on = true;
-
-static void cursor_blink_cb(lv_timer_t *t)
-{
-    (void)t;
-    s_cursor_on = !s_cursor_on;
-    if (s_preview_cursor) {
-        lv_obj_set_style_bg_opa(s_preview_cursor,
-            s_cursor_on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    }
-}
-
-static void build_preview_row(void)
-{
-    s_preview_row = lv_obj_create(s_kb_panel);
-    lv_obj_remove_style_all(s_preview_row);
-    lv_obj_set_size(s_preview_row, SW - 2 * PREVIEW_PAD_X, PREVIEW_H);
-    lv_obj_set_pos(s_preview_row, PREVIEW_PAD_X, PREVIEW_Y);
-    lv_obj_set_style_bg_color(s_preview_row, lv_color_hex(KB_KEY_PRESS), 0); /* amber-tinted */
-    lv_obj_set_style_bg_opa(s_preview_row, 60, 0); /* ~24 % — hairline fill */
-    lv_obj_set_style_radius(s_preview_row, 14, 0);
-    lv_obj_set_style_border_width(s_preview_row, 1, 0);
-    lv_obj_set_style_border_color(s_preview_row, lv_color_hex(KB_TRIGGER_BRD), 0);
-    lv_obj_clear_flag(s_preview_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* Amber cursor bar — left side of preview row */
-    s_preview_cursor = lv_obj_create(s_preview_row);
-    lv_obj_remove_style_all(s_preview_cursor);
-    lv_obj_set_size(s_preview_cursor, 2, 28);
-    lv_obj_set_pos(s_preview_cursor, 14, (PREVIEW_H - 28) / 2);
-    lv_obj_set_style_bg_color(s_preview_cursor, lv_color_hex(KB_CYAN), 0); /* TH_AMBER */
-    lv_obj_set_style_bg_opa(s_preview_cursor, LV_OPA_COVER, 0);
-
-    /* Placeholder hint text — doesn't mirror the target for now; just shows
-       the affordance. Swap to live text-mirror via keypress hook later. */
-    s_preview_label = lv_label_create(s_preview_row);
-    lv_label_set_text(s_preview_label, "type, or hand off");
-    lv_obj_set_style_text_font(s_preview_label, FONT_BODY, 0);
-    lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT_DIM), 0);
-    lv_obj_set_pos(s_preview_label, 28, (PREVIEW_H - 22) / 2);
-
-    /* Voice handoff button — 🎤 glyph (LV_SYMBOL_AUDIO). Opens voice overlay. */
-    s_preview_mic_btn = lv_button_create(s_preview_row);
-    lv_obj_set_size(s_preview_mic_btn, PREVIEW_BTN_SZ, PREVIEW_BTN_SZ);
-    lv_obj_set_pos(s_preview_mic_btn,
-                   SW - 2 * PREVIEW_PAD_X - 2 * PREVIEW_BTN_SZ - 16,
-                   (PREVIEW_H - PREVIEW_BTN_SZ) / 2);
-    lv_obj_set_style_radius(s_preview_mic_btn, 12, 0);
-    lv_obj_set_style_bg_color(s_preview_mic_btn, lv_color_hex(KB_KEY_SPECIAL), 0);
-    lv_obj_set_style_bg_opa(s_preview_mic_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_width(s_preview_mic_btn, 0, 0);
-    lv_obj_set_style_border_width(s_preview_mic_btn, 1, 0);
-    lv_obj_set_style_border_color(s_preview_mic_btn, lv_color_hex(KB_TRIGGER_BRD), 0);
-    lv_obj_t *mic_lbl = lv_label_create(s_preview_mic_btn);
-    lv_label_set_text(mic_lbl, LV_SYMBOL_AUDIO);
-    lv_obj_set_style_text_font(mic_lbl, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(mic_lbl, lv_color_hex(KB_CYAN), 0);
-    lv_obj_center(mic_lbl);
-    lv_obj_add_event_cb(s_preview_mic_btn, preview_mic_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Send button — primary amber, fires LV_EVENT_READY on the target textarea. */
-    s_preview_send_btn = lv_button_create(s_preview_row);
-    lv_obj_set_size(s_preview_send_btn, PREVIEW_BTN_SZ, PREVIEW_BTN_SZ);
-    lv_obj_set_pos(s_preview_send_btn,
-                   SW - 2 * PREVIEW_PAD_X - PREVIEW_BTN_SZ - 8,
-                   (PREVIEW_H - PREVIEW_BTN_SZ) / 2);
-    lv_obj_set_style_radius(s_preview_send_btn, 12, 0);
-    lv_obj_set_style_bg_color(s_preview_send_btn, lv_color_hex(KB_KEY_ENTER), 0);
-    lv_obj_set_style_bg_opa(s_preview_send_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_shadow_width(s_preview_send_btn, 0, 0);
-    lv_obj_set_style_border_width(s_preview_send_btn, 0, 0);
-    lv_obj_t *send_lbl = lv_label_create(s_preview_send_btn);
-    lv_label_set_text(send_lbl, LV_SYMBOL_OK);
-    lv_obj_set_style_text_font(send_lbl, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(send_lbl, lv_color_hex(0x08080E), 0);
-    lv_obj_center(send_lbl);
-    lv_obj_add_event_cb(s_preview_send_btn, preview_send_cb, LV_EVENT_CLICKED, NULL);
-
-    /* Start cursor blink timer */
-    if (s_cursor_timer == NULL) {
-        s_cursor_timer = lv_timer_create(cursor_blink_cb, 500, NULL);
-    }
-}
-
-static void preview_mic_cb(lv_event_t *e)
-{
-    (void)e;
-    /* Hide keyboard, open voice overlay — typed buffer is preserved on the
-       target textarea; user can keep typing after dictation via show() again. */
-    extern void ui_keyboard_hide(void);
-    extern void ui_voice_show(void);
-    ui_keyboard_hide();
-    ui_voice_show();
-}
-
-/* Mirror the target textarea's tail (last 32 chars) into the preview label.
-   Called after every keypress / backspace so the user sees what they typed. */
-static void preview_sync_from_target(void)
-{
-    if (!s_preview_label) return;
-    const char *txt = s_target_ta ? lv_textarea_get_text(s_target_ta) : NULL;
-    if (!txt || txt[0] == '\0') {
-        lv_label_set_text(s_preview_label, "type, or hand off");
-        lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT_DIM), 0);
-        return;
-    }
-    /* Clip to last PREVIEW_MAX chars to avoid overflow past the buttons. */
-    #define PREVIEW_MAX 32
-    size_t len = strlen(txt);
-    const char *start = txt;
-    char buf[PREVIEW_MAX + 8];
-    if (len > PREVIEW_MAX) {
-        start = txt + (len - PREVIEW_MAX);
-        buf[0] = '.'; buf[1] = '.'; buf[2] = '.'; buf[3] = ' ';
-        strncpy(buf + 4, start, sizeof(buf) - 5);
-        buf[sizeof(buf) - 1] = '\0';
-        lv_label_set_text(s_preview_label, buf);
-    } else {
-        lv_label_set_text(s_preview_label, txt);
-    }
-    lv_obj_set_style_text_color(s_preview_label, lv_color_hex(KB_TEXT), 0);
-}
-
-static void preview_send_cb(lv_event_t *e)
-{
-    (void)e;
-    /* Fire LV_EVENT_READY on the currently-targeted textarea. Consumers
-       (chat, notes, wifi password) already subscribe to READY to dispatch
-       send / save / connect. */
-    if (s_target_ta) {
-        lv_obj_send_event(s_target_ta, LV_EVENT_READY, NULL);
-    }
-}
+/* 2026-04-23 UX pass: the preview row (typed-text mirror + mic + send
+ * inside the keyboard panel) was removed.  The chat pill and Notes
+ * input bar already show typed text and already have mic + send
+ * affordances, so the preview was redundant chrome costing 80 px.
+ * If a new screen ever needs an in-keyboard preview, reinstate it in
+ * its own file behind a flag. */
 
 static void build_keyboard_panel(void)
 {
@@ -449,11 +321,8 @@ static void build_keyboard_panel(void)
     lv_obj_set_style_radius(handle, 2, 0);
     lv_obj_clear_flag(handle, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
 
-    /* ── Preview row — v5: typed text + voice handoff + send ───── */
-    build_preview_row();
-
     /* ── Key container ─────────────────────────────────────────── */
-    int keys_top = PREVIEW_Y + PREVIEW_H + 8;  /* below preview + 8 px gap */
+    int keys_top = 20;  /* just past the drag handle (no preview row) */
     lv_obj_t *key_area = lv_obj_create(s_kb_panel);
     lv_obj_set_size(key_area, SW, KB_HEIGHT - keys_top);
     lv_obj_set_pos(key_area, 0, keys_top);
@@ -591,13 +460,17 @@ static void build_letter_rows(lv_obj_t *parent)
     }
     y += KEY_H + ROW_GAP_Y;
 
-    /* ── Row 3: 123 + "," + space + "." + enter ───────────────── */
+    /* ── Row 3: 123 + "!" + space + "?" + Send ──────────────────
+     * 2026-04-23 UX pass: swapped "," and "." for "!" and "?".  Chat
+     * writes use the latter pair far more than the former, and the
+     * layer-switch cost of reaching 123 for every exclamation was
+     * brutal.  Comma/period now live on long-press of `?` / `!` in a
+     * future pass; for now they're still one layer-switch away. */
     {
         int layer_w = 64;
-        int comma_w = 44;
-        int dot_w   = 44;
-        int enter_w = 80;
-        int fixed_w = layer_w + comma_w + dot_w + enter_w + 4 * KEY_GAP;
+        int punc_w  = 52;   /* widened from 44 so "!"/"?" hit > TOUCH_MIN comfortably */
+        int enter_w = 96;   /* widened from 80 so Send glyph breathes */
+        int fixed_w = layer_w + 2 * punc_w + enter_w + 4 * KEY_GAP;
         int space_w = avail_w - fixed_w;
 
         lv_obj_t *row = lv_obj_create(parent);
@@ -619,27 +492,29 @@ static void build_letter_rows(lv_obj_t *parent)
         s_layer_lbl_letters = lv_obj_get_child(layer_key, 0);
         x += layer_w + KEY_GAP;
 
-        /* comma */
-        lv_obj_t *comma = make_key(row, ",", comma_w, KEY_H,
-                                    KB_KEY_BG, KB_TEXT_DIM, FONT_KEY, KEY_CHAR);
-        lv_obj_set_pos(comma, x, 0);
-        x += comma_w + KEY_GAP;
+        /* ! */
+        lv_obj_t *excl = make_key(row, "!", punc_w, KEY_H,
+                                    KB_KEY_BG, KB_TEXT, FONT_KEY, KEY_CHAR);
+        lv_obj_set_pos(excl, x, 0);
+        x += punc_w + KEY_GAP;
 
-        /* space bar */
-        lv_obj_t *space = make_key(row, " ", space_w, KEY_H,
-                                    KB_SPACE_BG, KB_TEXT, FONT_KEY, KEY_SPACE);
+        /* space bar — visible "space" label in dim text, iOS-style */
+        lv_obj_t *space = make_key(row, "space", space_w, KEY_H,
+                                    KB_SPACE_BG, KB_TEXT_DIM, FONT_NAV, KEY_SPACE);
         lv_obj_set_pos(space, x, 0);
         x += space_w + KEY_GAP;
 
-        /* period */
-        lv_obj_t *dot = make_key(row, ".", dot_w, KEY_H,
-                                  KB_KEY_BG, KB_TEXT_DIM, FONT_KEY, KEY_CHAR);
-        lv_obj_set_pos(dot, x, 0);
-        x += dot_w + KEY_GAP;
+        /* ? */
+        lv_obj_t *qmark = make_key(row, "?", punc_w, KEY_H,
+                                    KB_KEY_BG, KB_TEXT, FONT_KEY, KEY_CHAR);
+        lv_obj_set_pos(qmark, x, 0);
+        x += punc_w + KEY_GAP;
 
-        /* enter/done */
-        lv_obj_t *enter = make_key(row, "Done", enter_w, KEY_H,
-                                    KB_KEY_ENTER, KB_CYAN, FONT_NAV, KEY_ENTER);
+        /* Send — right-pointing glyph.  LV_SYMBOL_RIGHT is the closest
+         * paper-plane analogue shipped with LVGL without adding a
+         * custom font. */
+        lv_obj_t *enter = make_key(row, LV_SYMBOL_RIGHT, enter_w, KEY_H,
+                                    KB_KEY_ENTER, 0x08080E, FONT_KEY, KEY_ENTER);
         lv_obj_set_pos(enter, x, 0);
     }
 }
@@ -931,38 +806,64 @@ static void key_press_cb(lv_event_t *e)
     key_type_t type = (key_type_t)(uintptr_t)lv_obj_get_user_data(key);
 
     switch (type) {
-    case KEY_CHAR:
     case KEY_SPACE: {
-        /* Get the label text from the key's child label */
+        if (s_target_ta) lv_textarea_add_char(s_target_ta, ' ');
+        /* End-of-sentence → space: next letter should be capitalized. */
+        if (s_sentence_ended) {
+            s_auto_cap = true;
+            s_sentence_ended = false;
+            if (!s_shifted && !s_num_layer) {
+                s_shifted = true;
+                apply_shift_state();
+            }
+        }
+        break;
+    }
+    case KEY_CHAR: {
         lv_obj_t *lbl = lv_obj_get_child(key, 0);
         if (lbl == NULL) break;
         const char *txt = lv_label_get_text(lbl);
-        if (txt == NULL || txt[0] == '\0') {
-            /* Space key — label is empty/space */
-            if (s_target_ta) lv_textarea_add_char(s_target_ta, ' ');
+        if (txt == NULL || txt[0] == '\0') break;
+        if (!s_target_ta) break;
+        /* Single-char keys: uppercase if shifted OR auto-cap armed. */
+        size_t tlen = strlen(txt);
+        if (tlen == 1 && isalpha((unsigned char)txt[0])) {
+            bool upper = s_shifted || s_auto_cap;
+            char ch = upper ? (char)toupper((unsigned char)txt[0])
+                            : (char)tolower((unsigned char)txt[0]);
+            lv_textarea_add_char(s_target_ta, ch);
+            s_auto_cap = false;
+            s_sentence_ended = false;
         } else {
-            if (s_target_ta) {
-                /* If shifted and it's a single letter, send uppercase */
-                if (s_shifted && strlen(txt) == 1 && isalpha((unsigned char)txt[0])) {
-                    char upper = (char)toupper((unsigned char)txt[0]);
-                    lv_textarea_add_char(s_target_ta, upper);
-                } else {
-                    lv_textarea_add_text(s_target_ta, txt);
-                }
+            lv_textarea_add_text(s_target_ta, txt);
+            /* Mark sentence-end so next space arms auto-cap. */
+            if (tlen == 1 && (txt[0] == '.' || txt[0] == '!' || txt[0] == '?')) {
+                s_sentence_ended = true;
+            } else {
+                s_sentence_ended = false;
             }
         }
-        /* Auto-unshift after typing (unless caps lock) */
+        /* Auto-unshift after typing (unless caps lock). */
         if (s_shifted && !s_caps_lock && !s_num_layer) {
             s_shifted = false;
             apply_shift_state();
         }
-        preview_sync_from_target();
         break;
     }
 
     case KEY_BACKSPACE:
         if (s_target_ta) lv_textarea_delete_char(s_target_ta);
-        preview_sync_from_target();
+        /* 2026-04-23: re-arm auto-cap if user emptied the field. */
+        if (s_target_ta) {
+            const char *t = lv_textarea_get_text(s_target_ta);
+            if (!t || !t[0]) {
+                s_auto_cap = true;
+                if (!s_shifted) {
+                    s_shifted = true;
+                    apply_shift_state();
+                }
+            }
+        }
         break;
 
     case KEY_ENTER:
