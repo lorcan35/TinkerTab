@@ -22,6 +22,7 @@
  */
 
 #include "voice.h"
+#include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
 #include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
 #include "afe.h"
 #include "widget.h"
@@ -262,6 +263,7 @@ static volatile int64_t s_last_activity_us = 0;
 // Forward declarations
 // ---------------------------------------------------------------------------
 static void voice_set_state(voice_state_t new_state, const char *detail);
+static void _drain_queued_text_job(void *arg);   /* #133 */
 static void mic_capture_task(void *arg);
 static void playback_drain_task(void *arg);
 static void handle_text_message(const char *data, int len);
@@ -355,25 +357,56 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
     }
 
     /* v4·D Gauntlet G1: drain the queued turn on transition to READY.
-     * We avoid re-entering voice_send_text from voice_set_state (which
-     * itself takes the UI lock above) so the drain runs on the next event
-     * loop iteration via the WS tx task, not inline here.  Signal by
-     * leaving s_queue_pending=true and letting the caller poll. */
+     *
+     * closes #133: was `voice_send_text(pending)` called inline here.
+     * That recursed voice_set_state → ui_voice_on_state_change → ESP_LOGI
+     * on the CURRENT task's stack.  When the current task was voice_play
+     * (6 KB stack) and the log chain went deep into newlib's vfprintf,
+     * the stack blew up and the task panicked.  Captured coredump:
+     * voice_play → voice_set_state(READY) → voice_send_text('And 5 times
+     * 3?') → voice_set_state(PROCESSING) → ui_voice_on_state_change →
+     * _vfprintf_r → fault.
+     *
+     * Defer the drain via tab5_worker_enqueue so it runs on the shared
+     * worker task (16 KB stack in PSRAM) instead of whatever task
+     * triggered the state change.  */
     if (new_state == VOICE_STATE_READY && s_queue_pending) {
-        char pending[MAX_TRANSCRIPT_LEN];
+        char *pending = malloc(MAX_TRANSCRIPT_LEN);
+        if (!pending) {
+            ESP_LOGW(TAG, "queue drain: malloc failed; dropping queued text");
+            s_queued_text[0] = '\0';
+            s_queue_pending = false;
+            return;
+        }
         if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-        strncpy(pending, s_queued_text, sizeof(pending) - 1);
-        pending[sizeof(pending) - 1] = '\0';
+        strncpy(pending, s_queued_text, MAX_TRANSCRIPT_LEN - 1);
+        pending[MAX_TRANSCRIPT_LEN - 1] = '\0';
         s_queued_text[0] = '\0';
         s_queue_pending = false;
         if (s_state_mutex) xSemaphoreGive(s_state_mutex);
         if (pending[0]) {
-            ESP_LOGI(TAG, "G1 drain: sending queued text -> '%s'", pending);
-            /* Fire-and-forget; if this itself requeues (racy state) we
-             * drop it rather than recurse. */
-            voice_send_text(pending);
+            ESP_LOGI(TAG, "G1 drain: deferring queued text -> '%s'", pending);
+            if (tab5_worker_enqueue(_drain_queued_text_job, pending,
+                                    "voice-drain-queue") != ESP_OK) {
+                ESP_LOGW(TAG, "queue drain: enqueue failed; dropping '%s'",
+                         pending);
+                free(pending);
+            }
+        } else {
+            free(pending);
         }
     }
+}
+
+/* closes #133: runs on the shared worker (16 KB PSRAM stack), safe for
+ * the deep voice_send_text → voice_set_state → ESP_LOGI call chain. */
+static void _drain_queued_text_job(void *arg)
+{
+    char *text = (char *)arg;
+    if (text && text[0]) {
+        voice_send_text(text);
+    }
+    free(text);
 }
 
 // ---------------------------------------------------------------------------

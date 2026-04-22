@@ -365,7 +365,24 @@ static void poll_voice(lv_timer_t *t)
     if (st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING) {
         const char *llm = voice_get_llm_text();
         if (llm && llm[0]) {
-            if (!s_streaming) {
+            /* closes #129: before adding a fresh bubble, walk back
+             * past any system messages (tool activity) to see if the
+             * most recent assistant bubble already exists \u2014 re-use it.
+             * This covers the state-oscillation case (SPEAKING \u2192 brief
+             * READY \u2192 SPEAKING for multi-chunk TTS) that cleared
+             * s_streaming and otherwise created a second AI bubble
+             * carrying a suffix of the same response. */
+            int count_ = chat_store_count();
+            int reuse_idx = -1;
+            for (int k = count_ - 1; k >= 0 && k >= count_ - 6; k--) {
+                const chat_msg_t *m = chat_store_get(k);
+                if (!m) continue;
+                if (m->type == MSG_TEXT && !m->is_user) { reuse_idx = k; break; }
+                if (m->type == MSG_SYSTEM) continue;
+                break;
+            }
+
+            if (!s_streaming && reuse_idx < 0) {
                 chat_msg_t m = {0};
                 m.type = MSG_TEXT;
                 m.is_user = false;
@@ -376,8 +393,21 @@ static void poll_voice(lv_timer_t *t)
                 suggestions_sync_visibility();
                 if (s_view) chat_msg_view_begin_streaming(s_view);
                 s_streaming = true;
+            } else if (reuse_idx >= 0) {
+                chat_msg_t *m = chat_store_get_mut(reuse_idx);
+                if (m) {
+                    safe_copy(m->text, sizeof(m->text), llm);
+                    m->height_px = -1;
+                }
+                if (s_view) {
+                    chat_msg_view_refresh(s_view);
+                    chat_msg_view_scroll_to_bottom(s_view);
+                }
+                s_streaming = true;
             } else {
-                /* Replace text in place. */
+                /* s_streaming is true but reuse_idx < 0 \u2014 shouldn't
+                 * happen in practice (streaming implies our bubble is
+                 * somewhere in recent history) but handle anyway. */
                 chat_store_update_last_text(llm);
                 if (s_view) {
                     chat_msg_view_refresh(s_view);
@@ -602,25 +632,54 @@ static void async_push_msg_cb(void *arg)
     if (is_user) {
         ui_chat_add_message(p->text, true);
     } else {
-        /* closes #129: dedupe against the last assistant bubble.  The
-         * streaming path (poll_voice) already adds a store entry when
-         * llm tokens arrive; this push_message from llm_done would
-         * create a SECOND bubble with the same text.  If the most
-         * recent store entry is an assistant message, just update its
-         * text instead of appending.  If it's empty or a user bubble,
-         * fall through to the normal add path.  This also covers the
-         * `!s_streaming` case where state changed faster than our
-         * streaming guard could reset. */
-        const chat_msg_t *last = chat_store_get(chat_store_count() - 1);
-        bool can_merge_into_last =
-            last && last->type == MSG_TEXT && !last->is_user;
-        if (s_streaming || can_merge_into_last) {
-            chat_store_update_last_text(p->text ? p->text : "");
+        /* closes #129: dedupe against the most recent assistant bubble.
+         * The streaming path (poll_voice) already appended an assistant
+         * MSG_TEXT when llm tokens arrived; llm_done then fires another
+         * push_message with the same final text and would create a
+         * SECOND identical TINKER bubble.
+         *
+         * Walk back up to 6 messages looking for the most recent
+         * assistant MSG_TEXT — tool-call activity arrives as MSG_SYSTEM
+         * ('Calculating...', 'calculator done') which sits between the
+         * streaming bubble and the final push, so simply checking the
+         * last message misses this case (seen in retest screenshot).
+         * If we find one, update its text instead of appending. */
+        int count = chat_store_count();
+        int merge_idx = -1;
+        for (int k = count - 1; k >= 0 && k >= count - 6; k--) {
+            const chat_msg_t *m = chat_store_get(k);
+            if (!m) continue;
+            if (m->type == MSG_TEXT && !m->is_user) {
+                merge_idx = k;
+                break;
+            }
+            /* Keep walking through system messages (tool activity). */
+            if (m->type == MSG_SYSTEM) continue;
+            /* User bubble hit — stop: newer assistant text goes in a
+             * fresh bubble after the user's turn. */
+            break;
+        }
+        if (merge_idx >= 0) {
+            /* Update the assistant bubble we just found, whether it's
+             * the last entry or something older with system messages
+             * in between. */
+            chat_msg_t *m = chat_store_get_mut(merge_idx);
+            if (m) {
+                safe_copy(m->text, sizeof(m->text), p->text ? p->text : "");
+                m->height_px = -1;
+            }
             if (s_view) {
                 chat_msg_view_refresh(s_view);
                 chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
             }
         } else {
+            /* No assistant bubble within the walkback window — append
+             * fresh.  Also covers the case where the user bubble was
+             * just added and this is the first AI response.
+             *
+             * Previously this branch fired `chat_store_update_last_text`
+             * when s_streaming was true even though merge_idx was -1,
+             * which overwrote a USER bubble with the AI text. */
             ui_chat_add_message(p->text, false);
         }
     }
