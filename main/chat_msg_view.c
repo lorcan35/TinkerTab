@@ -669,7 +669,19 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
 
 void chat_msg_view_scroll_to_bottom(chat_msg_view_t *v)
 {
-    if (v && v->scroll) lv_obj_scroll_to_y(v->scroll, LV_COORD_MAX, LV_ANIM_ON);
+    if (!v || !v->scroll) return;
+    /* closes #136: was LV_ANIM_ON (animated over ~400ms).  poll_voice
+     * refreshes the view every 150ms during streaming; each refresh
+     * called scroll_to_bottom which restarted the animation from the
+     * current (still-parked-at-top) y.  Net effect: the view never
+     * reached the actual bottom over a 13-turn session \u2014 captured in
+     * all five tc20_* screenshots where T1-T2 stayed pinned at the top.
+     *
+     * Flush the layout first (content_height was just updated by the
+     * enclosing refresh, but LVGL hasn't re-laid the scroll container),
+     * then scroll INSTANTLY to avoid the animation-restart race. */
+    lv_obj_update_layout(v->scroll);
+    lv_obj_scroll_to_y(v->scroll, LV_COORD_MAX, LV_ANIM_OFF);
 }
 
 void chat_msg_view_begin_streaming(chat_msg_view_t *v)
