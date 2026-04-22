@@ -142,6 +142,11 @@ static void mic_dot_pulse_cb(void *obj, int32_t val);
 
 static void start_breathe_anim(void);
 static void start_pulse_anim(void);
+/* W15-P02: RMS-driven "listening back" glow on the innermost orb layer
+ * during LISTENING so the orb visibly reacts to the user's voice. */
+static void start_rms_anim(void);
+static void stop_rms_anim(void);
+static void rms_tick_cb(lv_timer_t *t);
 static void start_wave_anim(void);
 static void stop_all_anims(void);
 
@@ -212,6 +217,7 @@ static lv_timer_t *s_dot_timer    = NULL;
 static lv_timer_t *s_hide_timer   = NULL;
 static lv_timer_t *s_stuck_timer  = NULL;  /* watchdog for stuck PROCESSING state */
 static lv_timer_t *s_auto_hide   = NULL;   /* READY-state auto-dismiss (was local static — caused UAF) */
+static lv_timer_t *s_rms_timer   = NULL;   /* W15-P02: live RMS → inner-glow opa during LISTENING */
 static int         s_dot_phase    = 0;
 
 /* Current state tracking */
@@ -1085,6 +1091,9 @@ static void show_state_listening(void)
     lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
 
     start_breathe_anim();
+    /* W15-P02: overlay the breathe anim's innermost layer with live
+     * RMS so the orb visibly reacts to the user's voice. */
+    start_rms_anim();
 }
 
 /* v4·D Gauntlet G1: render the "+N QUEUED" badge on the sub-caption slot
@@ -1437,6 +1446,77 @@ static void start_pulse_anim(void)
     }
 }
 
+/* ================================================================
+ * W15-P02: live RMS → inner-glow opacity.
+ * Makes the orb visibly "listen back" to the user's voice during
+ * LISTENING.  Without this, the overlay feels static/unresponsive —
+ * all the user got was the breathe animation, which doesn't track
+ * what they're saying.  voice.c computes s_current_rms every mic
+ * frame (int16 PCM magnitude); typical values:
+ *    ambient quiet room : ~200-400
+ *    normal speech      : ~1500-3000
+ *    loud / shout       : 6000+
+ * Map RMS → opacity so the innermost (hottest) glow layer modulates
+ * with voice energy.  Keep the other 3 layers on the existing breathe
+ * anim so the orb still feels alive even in silence.
+ * ================================================================ */
+static void rms_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    /* Only run when the overlay is visible and in LISTENING; the
+     * LVGL timer system lives on the UI task, so we're serialized
+     * with state transitions. */
+    if (!s_visible) return;
+    if (s_cur_state != VOICE_STATE_LISTENING
+     && s_cur_state != VOICE_STATE_CONNECTING) return;
+
+    float rms = voice_get_current_rms();
+    /* Floor / ceiling clamp.  Below 200 = ambient noise, ignore.
+     * Above 3000 = already loud, cap.  30-100 opa range so the
+     * inner glow is always at least dimly visible (never goes dark). */
+    int32_t opa = 30;
+    if (rms > 200.0f) {
+        float span = rms - 200.0f;
+        if (span > 2800.0f) span = 2800.0f;
+        opa = 30 + (int32_t)(70.0f * (span / 2800.0f));
+    }
+    if (opa < 30) opa = 30;
+    if (opa > 100) opa = 100;
+
+    /* Apply to the innermost (hottest) glow layer only.  The set_orb_size
+     * loop uses i=ORB_GLOW_LAYERS-1 for the SMALLEST layer (frac=1/N),
+     * which is the bright core of the orb — exactly the one the eye
+     * reads as "intensity". */
+    lv_obj_t *core = s_orb_glow[ORB_GLOW_LAYERS - 1];
+    if (core) {
+        lv_obj_set_style_bg_opa(core, (lv_opa_t)opa, 0);
+    }
+}
+
+static void start_rms_anim(void)
+{
+    /* Remove the breathe-anim that would otherwise keep overwriting
+     * the innermost layer's opa every frame.  The other 3 layers
+     * keep breathing — they provide the "ambient alive" layer. */
+    lv_anim_delete(s_orb_glow[ORB_GLOW_LAYERS - 1], orb_breathe_cb);
+
+    if (s_rms_timer) {
+        lv_timer_delete(s_rms_timer);
+        s_rms_timer = NULL;
+    }
+    /* 60 ms cadence — fast enough to feel responsive to speech
+     * envelope, slow enough to not thrash the LVGL style system. */
+    s_rms_timer = lv_timer_create(rms_tick_cb, 60, NULL);
+}
+
+static void stop_rms_anim(void)
+{
+    if (s_rms_timer) {
+        lv_timer_delete(s_rms_timer);
+        s_rms_timer = NULL;
+    }
+}
+
 static void start_wave_anim(void)
 {
     /*
@@ -1504,6 +1584,9 @@ static void stop_all_anims(void)
         lv_timer_delete(s_hide_timer);
         s_hide_timer = NULL;
     }
+
+    /* W15-P02: cancel RMS tick if it's running. */
+    stop_rms_anim();
 
     /* Remove orb click handler if set (Fix #4 cleanup) */
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);

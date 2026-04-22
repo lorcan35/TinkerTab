@@ -1792,13 +1792,25 @@ static void mic_capture_task(void *arg)
             break;
         }
 
-        if (s_voice_mode == VOICE_MODE_DICTATE && !s_afe_enabled) {
+        /* Wave 15 W15-P02: compute RMS for BOTH Ask and Dictate modes
+         * so the voice overlay can render a live "listening back" glow
+         * on the orb driven by voice_get_current_rms().  Previously RMS
+         * was gated to DICTATE and the UI orb stayed static during
+         * normal Ask turns, which made the overlay feel unresponsive.
+         * The expensive VAD-driven auto-stop logic below is still
+         * scoped to DICTATE (the only mode that uses it). */
+        if (!s_afe_enabled && out_idx > 0) {
             int64_t sqsum = 0;
             for (int k = 0; k < out_idx; k++) {
                 sqsum += (int64_t)mono_buf[k] * mono_buf[k];
             }
-            float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
+            float rms = sqrtf((float)(sqsum / out_idx));
             s_current_rms = rms;
+        }
+
+        if (s_voice_mode == VOICE_MODE_DICTATE && !s_afe_enabled) {
+            /* Re-read the just-computed RMS rather than recomputing. */
+            float rms = s_current_rms;
 
             if (cal_count < CALIBRATION_FRAMES) {
                 noise_sum += rms;
