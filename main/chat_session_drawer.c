@@ -394,11 +394,30 @@ static void drawer_fetch_task(void *arg)
 
 chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
 {
+    if (!parent) return NULL;
+
+    /* closes #120: pre-flight LVGL pool check.  The drawer builds ~20
+     * widgets (scrim + spine + 4 segments + panel + list + footer + 8
+     * row slots × 5 widgets each).  If the pool is already tight from
+     * a busy chat session, lv_obj_create starts returning NULL midway
+     * and the unguarded lv_obj_remove_style_all(NULL) calls crash
+     * ui_task (captured coredump: #120).  Bail with an ESP_LOGW +
+     * return NULL so the caller can render chat without the drawer. */
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    if (mon.free_biggest_size < 16 * 1024) {
+        ESP_LOGW(TAG, "drawer_create: LVGL pool too tight "
+                      "(largest_free=%u < 16384) — skipping drawer build",
+                 (unsigned)mon.free_biggest_size);
+        return NULL;
+    }
+
     chat_session_drawer_t *d = calloc(1, sizeof(*d));
     if (!d) return NULL;
 
     /* Full-screen scrim: tap outside panel to dismiss. */
     d->scrim = lv_obj_create(parent);
+    if (!d->scrim) { ESP_LOGW(TAG, "drawer: scrim OOM"); free(d); return NULL; }
     lv_obj_remove_style_all(d->scrim);
     lv_obj_set_size(d->scrim, 720, 1280);
     lv_obj_set_pos(d->scrim, 0, 0);
@@ -411,6 +430,7 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
 
     /* Gradient spine (4 equal segments). */
     d->spine = lv_obj_create(d->scrim);
+    if (!d->spine) { ESP_LOGW(TAG, "drawer: spine OOM"); goto fail; }
     lv_obj_remove_style_all(d->spine);
     lv_obj_set_size(d->spine, DRAWER_W, SPINE_H);
     lv_obj_set_pos(d->spine, 0, DRAWER_Y);
@@ -422,6 +442,7 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
     const int seg_w = DRAWER_W / 4;
     for (int i = 0; i < 4; i++) {
         lv_obj_t *seg = lv_obj_create(d->spine);
+        if (!seg) { ESP_LOGW(TAG, "drawer: seg%d OOM", i); continue; }
         lv_obj_remove_style_all(seg);
         lv_obj_set_size(seg, seg_w, SPINE_H);
         lv_obj_set_pos(seg, i * seg_w, 0);
@@ -431,6 +452,7 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
 
     /* Panel — scrollable list container. */
     d->panel = lv_obj_create(d->scrim);
+    if (!d->panel) { ESP_LOGW(TAG, "drawer: panel OOM"); goto fail; }
     lv_obj_remove_style_all(d->panel);
     lv_obj_set_size(d->panel, DRAWER_W, DRAWER_H);
     lv_obj_set_pos(d->panel, 0, DRAWER_Y + SPINE_H);
@@ -439,6 +461,7 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
     lv_obj_clear_flag(d->panel, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *list = lv_obj_create(d->panel);
+    if (!list) { ESP_LOGW(TAG, "drawer: list OOM"); goto fail; }
     lv_obj_remove_style_all(list);
     lv_obj_set_size(list, DRAWER_W, DRAWER_H - 96);   /* footer = 96 px tall */
     lv_obj_set_pos(list, 0, 0);
@@ -459,6 +482,7 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
 
     /* Footer — + Start new conversation */
     d->footer = lv_obj_create(d->panel);
+    if (!d->footer) { ESP_LOGW(TAG, "drawer: footer OOM"); goto fail; }
     lv_obj_remove_style_all(d->footer);
     lv_obj_set_size(d->footer, DRAWER_W - 2 * ROW_SIDE_PAD, 80);
     lv_obj_set_pos(d->footer, ROW_SIDE_PAD, DRAWER_H - 90);
@@ -473,12 +497,22 @@ chat_session_drawer_t *chat_session_drawer_create(lv_obj_t *parent)
     lv_obj_add_event_cb(d->footer, ev_footer_click, LV_EVENT_CLICKED, d);
 
     lv_obj_t *f_lbl = lv_label_create(d->footer);
-    lv_label_set_text(f_lbl, "+  Start new conversation");
-    lv_obj_set_style_text_font(f_lbl, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(f_lbl, lv_color_hex(TH_AMBER), 0);
-    lv_obj_center(f_lbl);
+    if (f_lbl) {
+        lv_label_set_text(f_lbl, "+  Start new conversation");
+        lv_obj_set_style_text_font(f_lbl, FONT_HEADING, 0);
+        lv_obj_set_style_text_color(f_lbl, lv_color_hex(TH_AMBER), 0);
+        lv_obj_center(f_lbl);
+    }
 
     return d;
+
+fail:
+    /* closes #120: partial-build cleanup.  Deleting d->scrim releases
+     * every child widget we allocated (spine, panel, list, footer,
+     * rows, labels) in one shot since LVGL owns the object tree. */
+    if (d->scrim) lv_obj_del(d->scrim);
+    free(d);
+    return NULL;
 }
 
 void chat_session_drawer_destroy(chat_session_drawer_t *d)
