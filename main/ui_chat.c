@@ -602,14 +602,26 @@ static void async_push_msg_cb(void *arg)
     if (is_user) {
         ui_chat_add_message(p->text, true);
     } else {
-        if (!s_streaming) ui_chat_add_message(p->text, false);
-        else {
-            /* Finalise streaming with the complete text. */
+        /* closes #129: dedupe against the last assistant bubble.  The
+         * streaming path (poll_voice) already adds a store entry when
+         * llm tokens arrive; this push_message from llm_done would
+         * create a SECOND bubble with the same text.  If the most
+         * recent store entry is an assistant message, just update its
+         * text instead of appending.  If it's empty or a user bubble,
+         * fall through to the normal add path.  This also covers the
+         * `!s_streaming` case where state changed faster than our
+         * streaming guard could reset. */
+        const chat_msg_t *last = chat_store_get(chat_store_count() - 1);
+        bool can_merge_into_last =
+            last && last->type == MSG_TEXT && !last->is_user;
+        if (s_streaming || can_merge_into_last) {
             chat_store_update_last_text(p->text ? p->text : "");
             if (s_view) {
                 chat_msg_view_refresh(s_view);
                 chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
             }
+        } else {
+            ui_chat_add_message(p->text, false);
         }
     }
     free(p->role); free(p->text); free(p);
