@@ -597,9 +597,24 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
     }
     lv_obj_set_content_height(v->scroll, running);
 
-    int scroll_y = lv_obj_get_scroll_y(v->scroll);
+    /* closes #138: pool recycle below uses scroll_y to decide which
+     * slots to keep.  Override scroll_y LOCALLY to the new bottom so
+     * the recycle picks the right slots regardless of whether the
+     * hardware scroll has actually moved yet.  We also call
+     * lv_obj_scroll_to_y so the user sees the bottom on the next
+     * draw; but we don't depend on it updating before we read it. */
+    lv_obj_update_layout(v->scroll);
+    int32_t visible_h = lv_obj_get_height(v->scroll);
+    int32_t target_y  = running - visible_h;
+    if (target_y < 0) target_y = 0;
+    lv_obj_scroll_to_y(v->scroll, target_y, LV_ANIM_OFF);
+
+    /* closes #138: use our local target_y instead of reading
+     * scroll_y back — scroll_to_y may not have applied yet, leaving
+     * the pool recycle looking at the pre-scroll window. */
+    int scroll_y = target_y;
     int view_top = scroll_y - VIS_BUFFER;
-    int view_bot = scroll_y + lv_obj_get_height(v->scroll) + VIS_BUFFER;
+    int view_bot = scroll_y + visible_h + VIS_BUFFER;
 
     /* Pass 2: free slots outside window. */
     for (int i = 0; i < BSP_CHAT_POOL_SIZE; i++) {
