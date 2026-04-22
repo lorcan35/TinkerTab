@@ -19,6 +19,7 @@
 #include "config.h"
 #include "bsp_config.h"
 #include "media_cache.h"
+#include "md_strip.h"                 /* #116: inline markdown cleanup */
 #include "esp_log.h"
 
 #include "lvgl.h"
@@ -441,7 +442,13 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
     lv_obj_set_style_text_font(slot->body, FONT_BODY, 0);
     lv_obj_set_style_text_align(slot->body, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_line_space(slot->body, 4, 0);
-    lv_label_set_text(slot->body, msg->text);
+    /* #116: strip inline markdown so '**bold**' doesn't render as literal
+     * asterisks in the bubble.  Uses a stack buffer capped at
+     * sizeof(chat_msg_t::text); markdown-stripped output is always
+     * same-or-shorter than input. */
+    char body_buf[sizeof(msg->text)];
+    md_strip_inline(msg->text, body_buf, sizeof(body_buf));
+    lv_label_set_text(slot->body, body_buf);
 
     /* Timestamp (+ Phase 3d receipt stamp for AI bubbles with cost).
      * Format: "9:42 · HAIKU-3.5 · $0.003"  (AI only, when receipt > 0). */
