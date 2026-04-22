@@ -204,3 +204,12 @@ CONFIG_LV_FS_MEMFS_LETTER=77
 # without HTTPS; MitM defense is the version.json-carried SHA256 hash verified
 # in ota.c after download.  Without this flag esp_https_ota_begin refuses http://.
 CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+
+# --- Wave 15 #134: route mbedtls allocations to PSRAM ---
+# Default CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC fails after ~15 min uptime
+# because internal SRAM fragments below the ~20 KB contiguous block
+# that SSL_setup needs.  PSRAM has 20+ MB free, zero fragmentation
+# issue, and mbedtls handles the cache coherency correctly.  This
+# fixes conn_mode=2 (ngrok / internet-only) being unusable after
+# extended LAN use.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
