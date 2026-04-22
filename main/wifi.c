@@ -22,8 +22,19 @@ static const char *TAG = "tab5_wifi";
 
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_count = 0;
-#define MAX_RETRY 30
 
+/* Wave 15 W15-H07: NO latching failure bit.  The old code gave up forever
+ * after 30 consecutive disassociations and then NEVER retried Wi-Fi — a
+ * reboot was the only recovery.  That's the "keeps connecting but can't
+ * hold a connection" symptom reported by the user: a single rough period
+ * (router reboot, AP channel hop, PMF desync) exhausted the 30-slot
+ * counter, after which the Wi-Fi layer was dead but the voice WS kept
+ * hammering against a dead netif with 20-s select() timeouts.
+ *
+ * New policy: retry forever.  `esp_wifi_connect()` is non-blocking and
+ * the Wi-Fi driver has its own internal scan/auth backoff, so calling
+ * it on every DISCONNECTED event is cheap and correct for a tethered
+ * assistant.  We keep the counter only for log rate-limiting. */
 static void event_handler(void *arg, esp_event_base_t event_base,
                           int32_t event_id, void *event_data)
 {
@@ -32,19 +43,18 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_event_sta_disconnected_t *disconn = (wifi_event_sta_disconnected_t *)event_data;
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        if (s_retry_count < MAX_RETRY) {
-            esp_wifi_connect();
-            s_retry_count++;
-            ESP_LOGI(TAG, "Retrying WiFi (%d/%d) reason=%d",
-                     s_retry_count, MAX_RETRY, disconn->reason);
-        } else {
-            ESP_LOGE(TAG, "WiFi failed after %d retries (reason=%d)",
-                     MAX_RETRY, disconn->reason);
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        esp_wifi_connect();
+        s_retry_count++;
+        /* Log every disconnect for the first 5, then every 20th so we
+         * don't spam the UART during a long outage (AP down for hours). */
+        if (s_retry_count <= 5 || (s_retry_count % 20) == 0) {
+            ESP_LOGI(TAG, "Retrying WiFi (attempt=%d, reason=%d)",
+                     s_retry_count, disconn->reason);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
-        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        ESP_LOGI(TAG, "Got IP: " IPSTR " (after %d retry attempts)",
+                 IP2STR(&event->ip_info.ip), s_retry_count);
         s_retry_count = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
