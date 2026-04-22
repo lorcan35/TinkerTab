@@ -142,3 +142,19 @@ bool tab5_wifi_connected(void)
     if (!s_wifi_event_group) return false;
     return (xEventGroupGetBits(s_wifi_event_group) & WIFI_CONNECTED_BIT) != 0;
 }
+
+void tab5_wifi_kick(void)
+{
+    /* Wave 15 W15-H08: force a fresh association.  Used by the link
+     * probe when both LAN and ngrok TCP connects fail while the radio
+     * still reports associated — i.e. the AP has silently stopped
+     * passing our traffic.  esp_wifi_disconnect() synthesises a
+     * WIFI_EVENT_STA_DISCONNECTED which our handler already routes
+     * into esp_wifi_connect(), so one call is enough. */
+    if (!s_wifi_event_group) return;
+    ESP_LOGW(TAG, "Kicking Wi-Fi (forcing re-association)");
+    esp_err_t r = esp_wifi_disconnect();
+    if (r != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_disconnect failed: %s", esp_err_to_name(r));
+    }
+}
