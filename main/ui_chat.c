@@ -458,9 +458,16 @@ lv_obj_t *ui_chat_create(void)
     chat_suggestions_on_pick(s_sugg, on_sugg_pick, NULL);
 
     s_drawer = chat_session_drawer_create(s_overlay);
-    chat_session_drawer_on_pick(s_drawer, on_pick_session, NULL);
-    chat_session_drawer_on_new(s_drawer, on_drawer_new, NULL);
-    chat_session_drawer_on_dismiss(s_drawer, on_drawer_dismiss, NULL);
+    /* #120: drawer_create can now return NULL when the LVGL pool is
+     * too tight to build its ~20 widgets.  Chat must still work
+     * without it (the chevron/drawer is secondary UI). */
+    if (s_drawer) {
+        chat_session_drawer_on_pick(s_drawer, on_pick_session, NULL);
+        chat_session_drawer_on_new(s_drawer, on_drawer_new, NULL);
+        chat_session_drawer_on_dismiss(s_drawer, on_drawer_dismiss, NULL);
+    } else {
+        ESP_LOGW(TAG, "chat: session drawer unavailable (LVGL pool tight)");
+    }
 
     uint8_t mode = tab5_settings_get_voice_mode();
     if (mode >= VOICE_MODE_COUNT) mode = 0;
