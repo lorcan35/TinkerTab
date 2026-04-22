@@ -215,6 +215,13 @@ static lv_obj_t  *s_user_bubble   = NULL;   /* user's STT text (right-aligned) *
 static lv_obj_t  *s_user_label    = NULL;   /* label inside user bubble */
 static lv_obj_t  *s_ai_bubble     = NULL;   /* Tinker's response (left-aligned) */
 static lv_obj_t  *s_ai_label      = NULL;   /* label inside AI bubble */
+/* closes #115: simple fixed-position response label below the orb.
+ * The chat_cont/ai_bubble path (flex layout, scrollable) was not
+ * rendering reliably during SPEAKING — bubble was hidden behind the
+ * orb's z-order or sized to zero.  This label lives directly on the
+ * overlay, positioned absolutely, and shows whatever voice_get_llm_text
+ * returned during the turn.  Simple, visible, always on top. */
+static lv_obj_t  *s_response_label = NULL;
 static bool       s_has_llm_text  = false;  /* whether LLM response has started */
 
 /* Recording duration label + timer */
@@ -519,9 +526,36 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
-        /* Keep chat bubbles visible if there's conversation context */
+        /* Keep chat bubbles visible if there's conversation context.
+         * closes #115: also re-apply the last LLM text to s_ai_label and
+         * unhide s_ai_bubble + chat_cont so the user actually SEES the
+         * response in the overlay during the auto-hide window.  Before
+         * this fix the response was TTS'd and the overlay dismissed
+         * with no visible record — user had to open chat to find it.  */
         if (!has_conversation) {
             lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            const char *llm_txt2 = voice_get_llm_text();
+            if (llm_txt2 && llm_txt2[0] && s_ai_label) {
+                lv_label_set_text(s_ai_label, llm_txt2);
+                if (s_ai_bubble) lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
+            }
+            const char *stt_txt = voice_get_stt_text();
+            if (stt_txt && stt_txt[0] && s_user_label) {
+                lv_label_set_text(s_user_label, stt_txt);
+                if (s_user_bubble) lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
+            }
+            lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+            /* Bring chat above the orb z-order so the bubbles render on
+             * top of the orb's halo rings rather than being occluded. */
+            lv_obj_move_foreground(s_chat_cont);
+            lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
+            /* #115: drive the fixed-position response label. */
+            if (llm_txt2 && llm_txt2[0] && s_response_label) {
+                lv_label_set_text(s_response_label, llm_txt2);
+                lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_move_foreground(s_response_label);
+            }
         }
         /* Make orb tappable to start recording.
          * Remove first to avoid stacking duplicate callbacks on re-entry. */
@@ -767,6 +801,24 @@ static void build_overlay(void)
     lv_obj_set_style_text_align(s_lbl_dots, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 90);
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+
+    /* closes #115: response text label below the orb.  Simple absolute-
+     * positioned label so it's always visible during SPEAKING and for
+     * the auto-hide window afterward. */
+    s_response_label = lv_label_create(s_overlay);
+    if (s_response_label) {
+        lv_label_set_text(s_response_label, "");
+        lv_label_set_long_mode(s_response_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(s_response_label, FONT_BODY, 0);
+        lv_obj_set_style_text_color(s_response_label, lv_color_hex(VO_TEXT_BRIGHT), 0);
+        lv_obj_set_style_text_align(s_response_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_line_space(s_response_label, 4, 0);
+        lv_obj_set_width(s_response_label, SW - 80);
+        /* Centered below the orb (orb y-center ~360 with halo out to ~515).
+         * Place the label at y=580 to clear the orb on all sizes. */
+        lv_obj_align(s_response_label, LV_ALIGN_TOP_MID, 0, 600);
+        lv_obj_add_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* v5 sub-caption: 'LISTENING • HOLD TO TALK' / 'DICTATION • TAP TO STOP'.
      * Appears below the main status, letter-spaced amber for v5 feel. */
@@ -1091,6 +1143,12 @@ static void show_state_listening(void)
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
 
+    /* #115: clear + hide the previous turn's response label. */
+    if (s_response_label) {
+        lv_label_set_text(s_response_label, "");
+        lv_obj_add_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+    }
+
     /* Orb: cyan, 200px, breathing */
     set_orb_color(VO_CYAN, VO_CYAN, LV_OPA_60);
     set_orb_size(ORB_SZ_LISTEN);
@@ -1224,9 +1282,18 @@ static void show_state_processing(const char *detail)
 
         lv_label_set_text(s_ai_label, llm);
         lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
+        /* closes #115: lift above orb z-order, same as SPEAKING. */
+        lv_obj_move_foreground(s_chat_cont);
 
         /* Auto-scroll to bottom */
         lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
+
+        /* #115: drive the fixed-position response label too. */
+        if (s_response_label) {
+            lv_label_set_text(s_response_label, llm);
+            lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_response_label);
+        }
     } else {
         /* STT arrived but no LLM yet — show thinking status.
          * TinkerClaw mode: "Agent thinking..." to signal agent reasoning */
@@ -1285,12 +1352,31 @@ static void show_state_speaking(void)
 
     /* Keep chat area visible with both bubbles */
     const char *llm = voice_get_llm_text();
+    const char *stt = voice_get_stt_text();
+    if (stt && stt[0] && s_user_label) {
+        lv_label_set_text(s_user_label, stt);
+        lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
+    }
     if (llm && llm[0]) {
         lv_label_set_text(s_ai_label, llm);
+        lv_obj_set_width(s_ai_label, CHAT_BUBBLE_MAX_W - 2 * CHAT_BUBBLE_PAD);
+        lv_label_set_long_mode(s_ai_label, LV_LABEL_LONG_WRAP);
         lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_update_layout(s_ai_bubble);
         lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
+        /* #115: drive the fixed-position response label — this is the
+         * reliable path when the flex chat_cont doesn't render. */
+        if (s_response_label) {
+            lv_label_set_text(s_response_label, llm);
+            lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_response_label);
+        }
     }
     lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
+    /* closes #115: lift chat above the orb z-order so bubbles aren't
+     * occluded by the halo rings during SPEAKING.  Without this the
+     * overlay rendered with the orb on top and the AI text invisible. */
+    lv_obj_move_foreground(s_chat_cont);
 
     /* Show wave bars below orb */
     lv_obj_align(s_wave_cont, LV_ALIGN_CENTER, 0, ORB_SZ_SPEAK / 2 + ORB_Y_OFFSET + 20);
