@@ -1507,8 +1507,39 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         break;
 
     case WEBSOCKET_EVENT_CLOSED:
-        ESP_LOGI(TAG, "WS: CLOSED");
-        voice_set_state(VOICE_STATE_IDLE, "closed");
+        /* closes #110: was voice_set_state(IDLE, "closed") with NO
+         * reconnect scheduled — if Dragon sends a graceful WS close
+         * frame (restart, idle timeout, etc.) Tab5 parked in IDLE
+         * forever until the user hit /voice/reconnect manually.
+         * DISCONNECTED re-armed the reconnect timer; CLOSED did not.
+         *
+         * Mirror the DISCONNECTED path: bump attempt, apply
+         * exponential-with-full-jitter backoff, transition to
+         * RECONNECTING when Wi-Fi is up so the state bar reflects
+         * that Tab5 is actively trying, not dead.  The managed WS
+         * client's auto-reconnect picks up the new timeout. */
+        ESP_LOGI(TAG, "WS: CLOSED — scheduling reconnect");
+        if (s_ws && !s_disconnecting) {
+            s_connect_attempt++;
+            int shift = s_connect_attempt - 1;
+            if (shift < 0) shift = 0;
+            if (shift > 5) shift = 5;
+            uint32_t exp_ms = WS_CLIENT_BACKOFF_MIN_MS << shift;
+            if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
+            uint32_t half = exp_ms / 2;
+            uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
+            uint32_t delay_ms = half + jitter;
+            ESP_LOGI(TAG, "WS: CLOSED reconnect attempt=%d backoff=%lums",
+                     s_connect_attempt, (unsigned long)delay_ms);
+            esp_websocket_client_set_reconnect_timeout(s_ws, delay_ms);
+            if (tab5_wifi_connected()) {
+                voice_set_state(VOICE_STATE_RECONNECTING, "closed");
+            } else {
+                voice_set_state(VOICE_STATE_IDLE, "closed-nowifi");
+            }
+        } else {
+            voice_set_state(VOICE_STATE_IDLE, "closed");
+        }
         break;
 
     case WEBSOCKET_EVENT_DATA:
