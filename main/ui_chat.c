@@ -92,11 +92,33 @@ static void safe_copy(char *dst, size_t n, const char *src)
 
 static uint32_t now_ts(void)
 {
-    time_t t = 0; time(&t);
-    if (t > 0) return (uint32_t)t;
+    /* Prefer the system clock (set by NTP sync at boot).  If NTP hasn't
+     * synced yet, fall back to composing a proper unix epoch from the
+     * RX8130CE RTC chip (year/month/day + hour/min/sec).
+     *
+     * closes #108: the old fallback returned `hour*3600 + min*60 + sec`
+     * — seconds-within-today — which fmt_timestamp then ran through
+     * (ts/3600) % 24 and got random hours back.  That's why messages
+     * sent at 14:00 rendered as "09:17" etc. */
+    time_t t = 0;
+    time(&t);
+    /* Any year >= 2024 means NTP (or a previously-synced system clock)
+     * has given us a real epoch.  Below that we're on ESP-IDF's default
+     * 2020 / 2000 boot time and should fall through to the RTC. */
+    if (t >= 1704067200L /* 2024-01-01 */) return (uint32_t)t;
+
     tab5_rtc_time_t r;
     if (tab5_rtc_get_time(&r) == ESP_OK) {
-        return (uint32_t)(r.hour * 3600 + r.minute * 60 + r.second);
+        struct tm tm_r = {
+            .tm_year = (int)r.year + 100,   /* RTC stores year as offset-from-2000; tm wants offset-from-1900 */
+            .tm_mon  = (int)r.month - 1,    /* tm months are 0-based */
+            .tm_mday = (int)r.day,
+            .tm_hour = (int)r.hour,
+            .tm_min  = (int)r.minute,
+            .tm_sec  = (int)r.second,
+        };
+        time_t epoch = mktime(&tm_r);
+        if (epoch > 0) return (uint32_t)epoch;
     }
     return 0;
 }
