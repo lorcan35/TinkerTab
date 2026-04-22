@@ -2072,12 +2072,22 @@ void voice_lan_probe_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "Link probe task started (both LAN + ngrok every 30 s)");
+    /* Wave 15 W15-H08: "zombie association" detector.  Counts
+     * consecutive rounds where BOTH LAN and ngrok TCP connects fail
+     * while the Wi-Fi layer still claims we're associated.  After
+     * W15_ZOMBIE_THRESHOLD consecutive fails we call tab5_wifi_kick()
+     * to force a fresh association.  Threshold is 2 → 60 s of total
+     * unreachability before we intervene (avoids kicking on a
+     * transient router blip or a brief internet outage). */
+    int zombie_rounds = 0;
+    const int ZOMBIE_THRESHOLD = 2;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         if (!tab5_wifi_connected()) {
             s_lan_tcp_ok   = false;
             s_ngrok_tcp_ok = false;
             s_last_probe_ms = lv_tick_get();
+            zombie_rounds = 0;   /* fresh start once Wi-Fi is back */
             continue;
         }
 
@@ -2094,9 +2104,26 @@ void voice_lan_probe_task(void *arg)
         s_lan_tcp_ok   = lan_ok;
         s_ngrok_tcp_ok = ngrok_ok;
         s_last_probe_ms = lv_tick_get();
-        ESP_LOGI(TAG, "Link probe: lan[%s]=%d ngrok=%d (current=%s)",
+        ESP_LOGI(TAG, "Link probe: lan[%s]=%d ngrok=%d (current=%s) zombie_rounds=%d",
                  lan_host, lan_ok, ngrok_ok,
-                 s_using_ngrok ? "ngrok" : "lan");
+                 s_using_ngrok ? "ngrok" : "lan", zombie_rounds);
+
+        /* W15-H08 zombie-association check: both probes failed while
+         * Wi-Fi reports associated.  That means the AP has black-holed
+         * our client (bridge flush, client isolation, deauth-without-
+         * notify).  Kick Wi-Fi after two consecutive fails. */
+        if (!lan_ok && !ngrok_ok) {
+            zombie_rounds++;
+            if (zombie_rounds >= ZOMBIE_THRESHOLD) {
+                ESP_LOGW(TAG, "Zombie Wi-Fi detected: both probes failed "
+                              "%d rounds in a row — kicking association",
+                         zombie_rounds);
+                tab5_wifi_kick();
+                zombie_rounds = 0;
+            }
+        } else {
+            zombie_rounds = 0;
+        }
 
         /* Auto-mode: if we're stuck on ngrok but LAN is reachable, swap back. */
         uint8_t conn_mode = tab5_settings_get_connection_mode();
