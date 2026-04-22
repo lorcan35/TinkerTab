@@ -130,6 +130,12 @@ CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_HEAP_POISONING_DISABLED=y
 CONFIG_HEAP_POISONING_LIGHT=
+# Wave 15 leak hunt — enable standalone heap tracing so /debug/heap_trace_*
+# endpoints can capture live alloc/free records and surface which caller is
+# leaking internal SRAM over time.
+CONFIG_HEAP_TRACING_OFF=
+CONFIG_HEAP_TRACING_STANDALONE=y
+CONFIG_HEAP_TRACING=y
 # IDLE task: 2048 (stock-compatible). 4096 was pushing internal SRAM over the
 # cliff on fresh builds → xPortcheckValidStackMem assert (stacks fell to PSRAM).
 # vTaskDelete(NULL) is banned on P4 anyway (use vTaskSuspend — issue #20).

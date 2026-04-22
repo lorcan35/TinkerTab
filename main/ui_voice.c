@@ -556,21 +556,28 @@ void ui_voice_show(void)
 
     s_visible = true;
 
+    /* Wave 15 W15-C07: INSTANT show — removed the 200 ms fade-in
+     * animation.  During fade-in, LVGL has to composite the partially-
+     * transparent overlay against whatever is behind it (home screen
+     * with a live chart widget, active chat history, etc.).  When the
+     * background contains layered masks, the SW rasterizer crashes in
+     * `lv_draw_sw_fill → lv_memset` with a bad dst pointer.
+     * Repro: fire a chart widget → tap big orb → device panics in
+     * ui_task during the 200 ms fade window.
+     *
+     * The HIDE path already went instant for the same class of bug
+     * (see ui_voice_hide comment below).  This is the fade-IN
+     * equivalent fix. */
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);  /* re-enable tap capture */
-    lv_obj_set_style_opa(s_overlay, LV_OPA_TRANSP, 0);
+    lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(s_overlay, VO_BG_OPA, 0);
 
-    /* Fade in */
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, s_overlay);
-    lv_anim_set_values(&a, 0, VO_BG_OPA);
-    lv_anim_set_duration(&a, ANIM_FADE_IN_MS);
-    lv_anim_set_exec_cb(&a, fade_overlay_cb);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_start(&a);
+    /* Child-opacity ramp is driven by fade_overlay_cb from start→end
+     * in the old animation; skipping it means child content snaps on
+     * too.  If a gentler reveal is needed later, animate individual
+     * text labels' opacity instead of the container. */
 
-    ESP_LOGI(TAG, "Voice overlay shown");
+    ESP_LOGI(TAG, "Voice overlay shown (instant, W15-C07)");
 }
 
 void ui_voice_hide(void)

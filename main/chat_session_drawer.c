@@ -114,7 +114,15 @@ static void ev_scrim_click(lv_event_t *e)
 static void row_create(chat_session_drawer_t *d, drawer_row_t *r,
                        lv_obj_t *parent, int idx)
 {
+    /* Wave 15 W15-C06: each `lv_*_create` can return NULL when the LVGL
+     * pool is under pressure (observed after Home→Chat nav with multiple
+     * session rows to render).  Zero-out `r` first so partial failure
+     * doesn't leave stale pointers, and NULL-guard every immediate
+     * deref so one failed alloc doesn't crash the whole task. */
+    memset(r, 0, sizeof(*r));
+
     r->row = lv_obj_create(parent);
+    if (!r->row) return;
     lv_obj_remove_style_all(r->row);
     lv_obj_set_size(r->row, DRAWER_W, ROW_H);
     lv_obj_set_pos(r->row, 0, idx * ROW_H);
@@ -129,44 +137,54 @@ static void row_create(chat_session_drawer_t *d, drawer_row_t *r,
     lv_obj_add_event_cb(r->row, ev_row_click, LV_EVENT_CLICKED, d);
 
     r->left_bar = lv_obj_create(r->row);
-    lv_obj_remove_style_all(r->left_bar);
-    lv_obj_set_size(r->left_bar, 3, ROW_H);
-    lv_obj_set_pos(r->left_bar, 0, 0);
-    lv_obj_set_style_bg_color(r->left_bar, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(r->left_bar, LV_OPA_COVER, 0);
-    lv_obj_add_flag(r->left_bar, LV_OBJ_FLAG_HIDDEN);
+    if (r->left_bar) {
+        lv_obj_remove_style_all(r->left_bar);
+        lv_obj_set_size(r->left_bar, 3, ROW_H);
+        lv_obj_set_pos(r->left_bar, 0, 0);
+        lv_obj_set_style_bg_color(r->left_bar, lv_color_hex(TH_AMBER), 0);
+        lv_obj_set_style_bg_opa(r->left_bar, LV_OPA_COVER, 0);
+        lv_obj_add_flag(r->left_bar, LV_OBJ_FLAG_HIDDEN);
+    }
 
     r->dot = lv_obj_create(r->row);
-    lv_obj_remove_style_all(r->dot);
-    lv_obj_set_size(r->dot, DOT_SZ, DOT_SZ);
-    lv_obj_set_pos(r->dot, ROW_SIDE_PAD, (ROW_H - DOT_SZ) / 2);
-    lv_obj_set_style_radius(r->dot, DOT_SZ / 2, 0);
-    lv_obj_set_style_bg_color(r->dot, lv_color_hex(TH_MODE_LOCAL), 0);
-    lv_obj_set_style_bg_opa(r->dot, LV_OPA_COVER, 0);
+    if (r->dot) {
+        lv_obj_remove_style_all(r->dot);
+        lv_obj_set_size(r->dot, DOT_SZ, DOT_SZ);
+        lv_obj_set_pos(r->dot, ROW_SIDE_PAD, (ROW_H - DOT_SZ) / 2);
+        lv_obj_set_style_radius(r->dot, DOT_SZ / 2, 0);
+        lv_obj_set_style_bg_color(r->dot, lv_color_hex(TH_MODE_LOCAL), 0);
+        lv_obj_set_style_bg_opa(r->dot, LV_OPA_COVER, 0);
+    }
 
     int info_x = ROW_SIDE_PAD + DOT_SZ + 16;
     r->info = lv_label_create(r->row);
-    lv_obj_set_style_text_font(r->info, FONT_CHAT_MONO, 0);
-    lv_obj_set_style_text_color(r->info, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_style_text_letter_space(r->info, 2, 0);
-    lv_label_set_text(r->info, "");
-    lv_obj_set_pos(r->info, info_x, 10);
+    if (r->info) {
+        lv_obj_set_style_text_font(r->info, FONT_CHAT_MONO, 0);
+        lv_obj_set_style_text_color(r->info, lv_color_hex(TH_TEXT_DIM), 0);
+        lv_obj_set_style_text_letter_space(r->info, 2, 0);
+        lv_label_set_text(r->info, "");
+        lv_obj_set_pos(r->info, info_x, 10);
+    }
 
     r->title = lv_label_create(r->row);
-    lv_obj_set_style_text_font(r->title, FONT_BODY, 0);
-    lv_obj_set_style_text_color(r->title, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_label_set_text(r->title, "");
-    lv_obj_set_pos(r->title, info_x, 32);
-    lv_obj_set_width(r->title, DRAWER_W - info_x - 120 - ROW_SIDE_PAD);
-    lv_label_set_long_mode(r->title, LV_LABEL_LONG_DOT);
+    if (r->title) {
+        lv_obj_set_style_text_font(r->title, FONT_BODY, 0);
+        lv_obj_set_style_text_color(r->title, lv_color_hex(TH_TEXT_PRIMARY), 0);
+        lv_label_set_text(r->title, "");
+        lv_obj_set_pos(r->title, info_x, 32);
+        lv_obj_set_width(r->title, DRAWER_W - info_x - 120 - ROW_SIDE_PAD);
+        lv_label_set_long_mode(r->title, LV_LABEL_LONG_DOT);
+    }
 
     r->time = lv_label_create(r->row);
-    lv_obj_set_style_text_font(r->time, FONT_CHAT_MONO, 0);
-    lv_obj_set_style_text_color(r->time, lv_color_hex(TH_TEXT_SECONDARY), 0);
-    lv_label_set_text(r->time, "");
-    lv_obj_set_pos(r->time, DRAWER_W - ROW_SIDE_PAD - 80, 22);
-    lv_obj_set_width(r->time, 80);
-    lv_obj_set_style_text_align(r->time, LV_TEXT_ALIGN_RIGHT, 0);
+    if (r->time) {
+        lv_obj_set_style_text_font(r->time, FONT_CHAT_MONO, 0);
+        lv_obj_set_style_text_color(r->time, lv_color_hex(TH_TEXT_SECONDARY), 0);
+        lv_label_set_text(r->time, "");
+        lv_obj_set_pos(r->time, DRAWER_W - ROW_SIDE_PAD - 80, 22);
+        lv_obj_set_width(r->time, 80);
+        lv_obj_set_style_text_align(r->time, LV_TEXT_ALIGN_RIGHT, 0);
+    }
 
     lv_obj_add_flag(r->row, LV_OBJ_FLAG_HIDDEN);
 }

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -63,10 +64,29 @@ esp_err_t tab5_worker_init(void)
         ESP_LOGE(TAG, "xQueueCreate failed");
         return ESP_ERR_NO_MEM;
     }
-    BaseType_t ok = xTaskCreatePinnedToCore(
+    /* Wave 15 W15-C06: stack in PSRAM instead of internal SRAM.
+     * The 16 KB stack was costing internal SRAM the UI/LVGL path
+     * needs.  Worker jobs (mode_switch, wifi_connect, media_fetch,
+     * drawer_fetch) run network / HTTP / JSON work — none are on
+     * the LVGL render hot path, so the PSRAM access latency is
+     * acceptable.  Other tasks in this codebase that already use
+     * the same pattern: voice.c mic/detector/ingest and ui_memory.c.
+     *
+     * If the WithCaps variant fails (e.g. PSRAM exhausted which would
+     * be bizarre — we have 21 MB), fall back to the internal-SRAM
+     * create so the device still boots. */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
         worker_task, "tab5_worker",
-        16384,         /* stack: sized for the largest job family. */
-        NULL, 5, &s_task, 1);
+        16384,
+        NULL, 5, &s_task, 1,
+        MALLOC_CAP_SPIRAM);
+    if (ok != pdPASS) {
+        ESP_LOGW(TAG, "PSRAM stack alloc failed — falling back to internal");
+        ok = xTaskCreatePinnedToCore(
+            worker_task, "tab5_worker",
+            16384,
+            NULL, 5, &s_task, 1);
+    }
     if (ok != pdPASS) {
         vQueueDelete(s_queue);
         s_queue = NULL;

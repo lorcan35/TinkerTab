@@ -17,6 +17,8 @@
 #include "settings.h"
 #include "voice.h"
 
+#include <limits.h>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -74,40 +76,32 @@ static const char *TAG = "heap_wd";
  * free DMA pool drops too low the driver silently fails — packets never
  * leave the chip, ARP responses stop, device becomes unreachable but the
  * LVGL loop keeps running so the heap_wd/SRAM/PSRAM paths don't trigger.
- * Before this guard the device would sit in a "Dragon unreachable" state
- * until the user reflashed. Reboot after N consecutive minutes to recover
- * automatically; honors the voice-active grace window.
  *
- * Wave 15 W15-C05: the original 16 KB threshold was set based on a
- * single soak run (#80, 2026-04-20). On the current firmware the
- * steady-state DMA free is ~6 KB with WiFi and voice working fine —
- * /info, /heap, and WS voice all respond. So the 16 KB threshold was
- * permanently below the "critical" line, and the ONLY thing keeping
- * the device from rebooting constantly was the voice-active grace
- * check (if user is LISTENING/SPEAKING/PROCESSING, defer the reboot).
+ * Wave 15 history:
+ *   - C05 first-pass: threshold was 16 KB but steady-state floor is ~6 KB.
+ *     Dragon-reconnect churn + normal activity would trip the 16 KB line
+ *     + reboot Tab5 every ~5 min.  Lowered to 4 KB + grace list.
+ *   - C05 second-pass (this commit): even at 4 KB the reboot still
+ *     fires under combined load (screenshot spam + voice + Dragon
+ *     restart).  Live observation in the user-flow test showed DMA
+ *     genuinely drains below 4 KB after ~5 min of mixed activity, but
+ *     WiFi + voice + debug-httpd all keep working.  Rebooting the user's
+ *     device because an internal pool is "low" — when everything the
+ *     user can actually see is fine — is more disruptive than the
+ *     theoretical WiFi-stall scenario this was guarding against.
  *
- * When Dragon's voice service restarts, voice state transitions to
- * RECONNECTING — which was NOT in the grace list — so the watchdog
- * decided "DMA exhausted + voice idle → reboot", and Tab5 would
- * panic-reboot ~30 s into the Dragon restart.  From the user's POV
- * this looked like the "Dragon unreachable" UI banner, but was
- * actually Tab5 full-rebooting each time Dragon's voice service
- * cycled.
+ * Current disposition: the reboot path is DISABLED by setting the
+ * counter cap to INT_MAX (the watchdog still logs warnings, still
+ * tracks the running count, but never triggers hw_restart_with_coredump).
+ * The real DMA leak is filed as a separate bug for proper
+ * root-causing; this workaround buys the device stability until that
+ * investigation completes.
  *
- * Fix has two halves:
- *   1. Drop the threshold to 4 KB (below observed steady-state
- *      floor).  At this level the device really is close to WiFi
- *      failure — not just "bit low".  The 8 KB soft-warning log
- *      below still fires at the old level for observability.
- *   2. Add RECONNECTING to the grace list so Dragon-side blips
- *      never reboot Tab5, even with truly exhausted DMA — the
- *      reconnect watchdog in voice.c should resolve it within
- *      seconds.
- *   3. Bump reboot-count from 2 to 5 (5 minute sustained
- *      exhaustion, not a transient 2-minute spike).
+ * If you genuinely want the reboot behaviour back, set
+ * HEAP_WD_DMA_REBOOT_COUNT to a small positive number (e.g. 10).
  */
 #define HEAP_WD_DMA_CRITICAL_BYTES     (4 * 1024)   /* 4KB — below observed floor */
-#define HEAP_WD_DMA_REBOOT_COUNT       5            /* 5 consecutive checks (5 minutes) */
+#define HEAP_WD_DMA_REBOOT_COUNT       INT_MAX      /* effectively disabled (was 5) */
 #define HEAP_WD_DMA_WARN_BYTES         (16 * 1024)  /* 16KB — soft warning only */
 
 static void heap_watchdog_task(void *arg)
