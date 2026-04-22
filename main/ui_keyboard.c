@@ -650,6 +650,39 @@ static void build_letter_rows(lv_obj_t *parent)
 
 static void build_number_rows(lv_obj_t *parent)
 {
+    /* Wave 15 W15-H10: pre-flight check.  If the LVGL pool is already
+     * tight (a long chat session + the letter keyboard already
+     * consume a chunk of the 96 KB base pool), creating ~40 more
+     * widgets can corrupt internal state — we've seen this crash at
+     * lv_event_add on a key whose event-list pointer was garbage.
+     * Log the pool state and bail cleanly on low memory; switch_layer
+     * then leaves the letter layout visible instead of silently
+     * half-drawing numbers.  The `if (key) ...` guards in make_key
+     * are a belt-and-braces defense for the same class of bug.  */
+    if (!parent) {
+        ESP_LOGW(TAG, "build_number_rows: NULL parent, aborting");
+        return;
+    }
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    ESP_LOGI(TAG,
+             "build_number_rows: LVGL pool free=%u / total=%u (%u%%), "
+             "frag=%u%%, largest_free=%u",
+             (unsigned)mon.free_size, (unsigned)mon.total_size,
+             100 - (unsigned)mon.used_pct, (unsigned)mon.frag_pct,
+             (unsigned)mon.free_biggest_size);
+    /* Minimum budget for the number layer: ~12 KB covers 30+ widgets
+     * with styles and event lists.  If largest contiguous free block
+     * is smaller, we WILL allocate some but not all widgets and
+     * corrupt pool state.  Better to just not build. */
+    if (mon.free_biggest_size < 12 * 1024) {
+        ESP_LOGW(TAG,
+                 "build_number_rows: LVGL pool too fragmented "
+                 "(largest_free=%u < 12288) — keeping letter layer",
+                 (unsigned)mon.free_biggest_size);
+        return;
+    }
+
     int y = 8;
     int avail_w = SW - 2 * ROW_PAD_X;
 
@@ -660,6 +693,7 @@ static void build_number_rows(lv_obj_t *parent)
         int key_w = (avail_w - total_gap) / num_keys;
 
         lv_obj_t *row = lv_obj_create(parent);
+        if (!row) { ESP_LOGW(TAG, "num row0 OOM"); return; }
         lv_obj_set_size(row, SW, KEY_H);
         lv_obj_set_pos(row, 0, y);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -673,7 +707,7 @@ static void build_number_rows(lv_obj_t *parent)
             int x = ROW_PAD_X + i * (key_w + KEY_GAP);
             lv_obj_t *key = make_key(row, s_num_row0[i], key_w, KEY_H,
                                       KB_KEY_BG, KB_TEXT, FONT_KEY, KEY_CHAR);
-            lv_obj_set_pos(key, x, 0);
+            if (key) lv_obj_set_pos(key, x, 0);
         }
     }
 
@@ -686,6 +720,7 @@ static void build_number_rows(lv_obj_t *parent)
         int key_w = (avail_w - total_gap) / num_keys;
 
         lv_obj_t *row = lv_obj_create(parent);
+        if (!row) { ESP_LOGW(TAG, "num row1 OOM"); return; }
         lv_obj_set_size(row, SW, KEY_H);
         lv_obj_set_pos(row, 0, y);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -699,7 +734,7 @@ static void build_number_rows(lv_obj_t *parent)
             int x = ROW_PAD_X + i * (key_w + KEY_GAP);
             lv_obj_t *key = make_key(row, s_num_row1[i], key_w, KEY_H,
                                       KB_KEY_BG, KB_TEXT, FONT_KEY, KEY_CHAR);
-            lv_obj_set_pos(key, x, 0);
+            if (key) lv_obj_set_pos(key, x, 0);
         }
     }
 
@@ -714,6 +749,7 @@ static void build_number_rows(lv_obj_t *parent)
         int key_w = char_area / num_char_keys;
 
         lv_obj_t *row = lv_obj_create(parent);
+        if (!row) { ESP_LOGW(TAG, "num row2 OOM"); return; }
         lv_obj_set_size(row, SW, KEY_H);
         lv_obj_set_pos(row, 0, y);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -727,14 +763,14 @@ static void build_number_rows(lv_obj_t *parent)
         for (int i = 0; s_num_row2[i] != NULL; i++) {
             lv_obj_t *key = make_key(row, s_num_row2[i], key_w, KEY_H,
                                       KB_KEY_BG, KB_TEXT, FONT_KEY, KEY_CHAR);
-            lv_obj_set_pos(key, x, 0);
+            if (key) lv_obj_set_pos(key, x, 0);
             x += key_w + KEY_GAP;
         }
 
         /* Backspace */
         lv_obj_t *bksp = make_key(row, LV_SYMBOL_BACKSPACE, special_w, KEY_H,
                                    KB_KEY_SPECIAL, KB_TEXT, FONT_KEY, KEY_BACKSPACE);
-        lv_obj_set_pos(bksp, SW - ROW_PAD_X - special_w, 0);
+        if (bksp) lv_obj_set_pos(bksp, SW - ROW_PAD_X - special_w, 0);
     }
 
     y += KEY_H + ROW_GAP_Y;
@@ -749,6 +785,7 @@ static void build_number_rows(lv_obj_t *parent)
         int space_w = avail_w - fixed_w;
 
         lv_obj_t *row = lv_obj_create(parent);
+        if (!row) { ESP_LOGW(TAG, "num row3 OOM"); return; }
         lv_obj_set_size(row, SW, KEY_H);
         lv_obj_set_pos(row, 0, y);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
@@ -763,32 +800,34 @@ static void build_number_rows(lv_obj_t *parent)
         /* "ABC" layer toggle */
         lv_obj_t *layer_key = make_key(row, "ABC", layer_w, KEY_H,
                                         KB_KEY_SPECIAL, KB_TEXT, FONT_NAV, KEY_LAYER);
-        lv_obj_set_pos(layer_key, x, 0);
-        s_layer_lbl_nums = lv_obj_get_child(layer_key, 0);
+        if (layer_key) {
+            lv_obj_set_pos(layer_key, x, 0);
+            s_layer_lbl_nums = lv_obj_get_child(layer_key, 0);
+        }
         x += layer_w + KEY_GAP;
 
         /* comma */
         lv_obj_t *comma = make_key(row, ",", comma_w, KEY_H,
                                     KB_KEY_BG, KB_TEXT_DIM, FONT_KEY, KEY_CHAR);
-        lv_obj_set_pos(comma, x, 0);
+        if (comma) lv_obj_set_pos(comma, x, 0);
         x += comma_w + KEY_GAP;
 
         /* space bar */
         lv_obj_t *space = make_key(row, " ", space_w, KEY_H,
                                     KB_SPACE_BG, KB_TEXT, FONT_KEY, KEY_SPACE);
-        lv_obj_set_pos(space, x, 0);
+        if (space) lv_obj_set_pos(space, x, 0);
         x += space_w + KEY_GAP;
 
         /* period */
         lv_obj_t *dot = make_key(row, ".", dot_w, KEY_H,
                                   KB_KEY_BG, KB_TEXT_DIM, FONT_KEY, KEY_CHAR);
-        lv_obj_set_pos(dot, x, 0);
+        if (dot) lv_obj_set_pos(dot, x, 0);
         x += dot_w + KEY_GAP;
 
         /* enter/done */
         lv_obj_t *enter = make_key(row, "Done", enter_w, KEY_H,
                                     KB_KEY_ENTER, KB_CYAN, FONT_NAV, KEY_ENTER);
-        lv_obj_set_pos(enter, x, 0);
+        if (enter) lv_obj_set_pos(enter, x, 0);
     }
 }
 
@@ -800,7 +839,22 @@ static lv_obj_t *make_key(lv_obj_t *row, const char *label, int w, int h,
                            uint32_t bg_col, uint32_t txt_col, const lv_font_t *font,
                            key_type_t type)
 {
+    /* Wave 15 W15-H10: NULL-guard every allocation.  With LVGL's
+     * CONFIG_LV_USE_ASSERT_MALLOC disabled (intentional — we prefer a
+     * live crash with backtrace over a silent while(1) WDT loop),
+     * lv_obj_create / lv_label_create return NULL on pool exhaustion
+     * and subsequent style/size/event calls crash deep in lv_event_add.
+     * Observed crash: tapping "123" to switch to the numbers layer
+     * after a few chat bubbles + the letters keyboard had filled the
+     * 96 KB LVGL pool → make_key OOM → crash on
+     * lv_obj_add_event_cb(NULL-ish, ...). Now we bail early and let
+     * switch_layer degrade gracefully (keyboard stays on letters). */
+    if (!row) return NULL;
     lv_obj_t *key = lv_obj_create(row);
+    if (!key) {
+        ESP_LOGW(TAG, "make_key: lv_obj_create OOM (label=%s)", label ? label : "?");
+        return NULL;
+    }
     lv_obj_set_size(key, w, h);
     lv_obj_set_style_bg_color(key, lv_color_hex(bg_col), 0);
     lv_obj_set_style_bg_opa(key, LV_OPA_COVER, 0);
@@ -814,6 +868,13 @@ static lv_obj_t *make_key(lv_obj_t *row, const char *label, int w, int h,
 
     /* Label */
     lv_obj_t *lbl = lv_label_create(key);
+    if (!lbl) {
+        ESP_LOGW(TAG, "make_key: lv_label_create OOM (label=%s)", label ? label : "?");
+        /* Key object exists but no label — delete it so the parent
+         * doesn't hold a half-built widget that breaks layout. */
+        lv_obj_del(key);
+        return NULL;
+    }
     lv_label_set_text(lbl, label);
     lv_obj_set_style_text_color(lbl, lv_color_hex(txt_col), 0);
     lv_obj_set_style_text_font(lbl, font, 0);
@@ -1040,14 +1101,28 @@ static void apply_shift_state(void)
 
 static void switch_layer(bool to_numbers)
 {
-    s_num_layer = to_numbers;
-
     /* Lazy-build number rows on first switch */
     if (to_numbers && !s_num_built && s_key_area) {
         ESP_LOGI(TAG, "Lazy-building number rows...");
         build_number_rows(s_key_area);
         s_num_built = true;
     }
+
+    /* W15-H10: build_number_rows may have bailed out of one or more
+     * rows under LVGL memory pressure.  If ANY of the 4 num rows are
+     * missing, the numbers layer would be half-drawn — keep the user
+     * on the letters layer instead of silently hiding letters behind
+     * nothing.  The letters layer is always fully built (it's created
+     * eagerly at ui_keyboard_create time when memory is abundant). */
+    if (to_numbers) {
+        for (int i = 0; i < 4; i++) {
+            if (!s_num_rows[i]) {
+                ESP_LOGW(TAG, "switch_layer: number row %d missing — staying on letters", i);
+                return;
+            }
+        }
+    }
+    s_num_layer = to_numbers;
 
     for (int i = 0; i < 4; i++) {
         if (to_numbers) {
