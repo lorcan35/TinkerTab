@@ -37,7 +37,14 @@ static const char *TAG __attribute__((unused)) = "chat_view";
 #define BUBBLE_PAD_V    16
 #define BUBBLE_RADIUS   22
 #define BUBBLE_TAIL_R    6
-#define BUBBLE_GAP      20
+/* closes #109: bump from 20 to 36 so the timestamp label (placed at
+ * `y + bh + 4` with font FONT_CHAT_MONO ~18 px tall + descenders)
+ * doesn't bleed over the next bubble's top edge.  estimate_height
+ * is a heuristic only — the real bubble uses LV_SIZE_CONTENT and can
+ * exceed the estimate, which means the previous layout with GAP=20
+ * routinely collided under wrapping text. */
+#define BUBBLE_GAP      36
+#define BUBBLE_TS_H     22   /* reserved height for the timestamp line */
 #define LABEL_MAX_W    (BUBBLE_MAX_W - 2 * BUBBLE_PAD_H)
 
 #define BREAK_H         168   /* default break-out body height for text/code */
@@ -557,7 +564,10 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
     for (int i = 0; i < total; i++) {
         const chat_msg_t *m = chat_store_get(i);
         y_positions[i] = running;
-        running += estimate_height(m) + BUBBLE_GAP;
+        /* closes #109: reserve the timestamp row height inside each
+         * bubble's slot so the next bubble doesn't start before the
+         * current bubble's ts has room to render. */
+        running += estimate_height(m) + BUBBLE_TS_H + BUBBLE_GAP;
     }
     lv_obj_set_content_height(v->scroll, running);
 
