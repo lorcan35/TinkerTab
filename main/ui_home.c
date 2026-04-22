@@ -822,35 +822,34 @@ void ui_home_update_status(void)
     else if (quiet)   state = ST_QUIET;
     else              state = ST_NORMAL;
 
-    /* F1/F2 OFFLINE hero: after 20 s of persistent NO_WIFI or DRAGON_DOWN,
-     * surface a full-screen card so the user can't miss the outage.
-     * Auto-dismiss on recovery.  Pill still updates in parallel below.
+    /* F1/F2 OFFLINE hero — shown only on GENUINE user-actionable outages.
      *
-     * Wave 12 threshold bump 8 s -> 20 s: the old 8-s window was tighter
-     * than a healthy WS reconnect cycle.  The wave 9 DMA watchdog can
-     * rescue Tab5 with a reboot that takes ~15 s end-to-end (reboot +
-     * WiFi + Dragon WS handshake); during that window state was
-     * DRAGON_DOWN and the hero kept flashing.  Users reported seeing
-     * "Dragon unreachable" every few minutes under heavy stress when
-     * Dragon was in fact fine.  20 s is past the worst-case reconnect
-     * so the hero only fires on a genuinely sustained outage. */
+     * Wave 15 UX revision: previously the hero fired on any 20-s WS blip
+     * to Dragon.  In practice that meant every Dragon restart, ngrok
+     * handshake retry, router blip, or Tab5 Wi-Fi flap produced a big
+     * "Dragon unreachable" full-screen card that the user could not
+     * usefully act on — the device was already auto-reconnecting and
+     * the card just added noise.  Feedback: "it's stupid because it
+     * just doesn't work" (the DEVICE works; the BANNER was the problem).
+     *
+     * New policy:
+     *   - Hero only fires for ST_NO_WIFI (user CAN act: go into
+     *     Settings → Wi-Fi and pick a network).
+     *   - ST_DRAGON_DOWN surfaces ONLY in the small top-left status
+     *     pill (`NO DRAGON` / `Reconnecting...` via
+     *     voice_get_degraded_reason).  If the user taps the orb while
+     *     Dragon is down, orb_click_cb shows a brief toast instead.
+     *     That's enough signal without hijacking the screen. */
     {
-        bool degraded = (state == ST_NO_WIFI || state == ST_DRAGON_DOWN);
+        bool degraded = (state == ST_NO_WIFI);
         int64_t now_ms = esp_timer_get_time() / 1000;
         if (degraded) {
             if (s_degraded_since_ms == 0) s_degraded_since_ms = now_ms;
             if (now_ms - s_degraded_since_ms >= 20000) {
-                if (state == ST_NO_WIFI) {
-                    offline_hero_show("No Wi-Fi",
-                        "Tab5 can't reach the network.\nVoice, memory, "
-                        "and chat will come back as soon as Wi-Fi reconnects.\n"
-                        "Notes still save to the SD card.");
-                } else {
-                    offline_hero_show("Dragon unreachable",
-                        "Wi-Fi is up but the Dragon voice server isn't "
-                        "responding.\nTab5 will auto-reconnect; your "
-                        "session will resume.\nNotes still save locally.");
-                }
+                offline_hero_show("No Wi-Fi",
+                    "Tab5 can't reach the network.\nVoice, memory, "
+                    "and chat will come back as soon as Wi-Fi reconnects.\n"
+                    "Notes still save to the SD card.");
             }
         } else {
             s_degraded_since_ms = 0;
@@ -1269,10 +1268,18 @@ static void orb_click_cb(lv_event_t *e)
     last_tap_ms = now;
 
     ESP_LOGI(TAG, "orb/pill tap -> open voice");
+    /* Wave 15 banner-UX: if the WS is currently disconnected we don't
+     * want to open the LISTENING overlay and then silently drop audio
+     * frames (they go to a closed socket).  Instead, kick off a
+     * reconnect + show a brief toast so the user knows why their tap
+     * didn't do anything yet, then return.  They can tap again when
+     * the top-left pill reads "ready". */
     if (!voice_is_connected()) {
         char dhost[64];
         tab5_settings_get_dragon_host(dhost, sizeof(dhost));
         if (dhost[0]) voice_connect_async(dhost, TAB5_VOICE_PORT, false);
+        ui_home_show_toast("Reconnecting to Dragon… try again in a moment.");
+        return;
     }
     ui_voice_show();
     voice_start_listening();
