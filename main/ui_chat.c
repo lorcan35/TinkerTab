@@ -265,7 +265,10 @@ static void on_pick_session(const chat_session_t *s, void *ud)
     paint_header_and_view_for_mode(s->voice_mode);
     if (s_sugg) chat_suggestions_set_mode(s_sugg, s->voice_mode);
     suggestions_sync_visibility();
-    if (s_view) chat_msg_view_refresh(s_view);
+    if (s_view) {
+        chat_msg_view_refresh(s_view);
+        chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
+    }
     chat_session_drawer_hide(s_drawer);
     chat_header_set_title(s_hdr, "Chat");
     chat_header_set_chevron_open(s_hdr, false);
@@ -443,6 +446,7 @@ lv_obj_t *ui_chat_create(void)
     chat_suggestions_set_mode(s_sugg, mode);
     suggestions_sync_visibility();
     chat_msg_view_refresh(s_view);
+    chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
 
     s_active = true;
     s_last_state = voice_get_state();
@@ -522,6 +526,10 @@ static void async_refresh_receipts_cb(void *arg)
     (void)arg;
     if (s_view) {
         chat_msg_view_refresh(s_view);
+        /* closes #107: a receipt attached to the last bubble can change
+         * its rendered height; scroll so the newest content stays in
+         * view rather than drifting off-screen. */
+        chat_msg_view_scroll_to_bottom(s_view);
     }
 }
 
@@ -569,7 +577,10 @@ static void async_push_msg_cb(void *arg)
         else {
             /* Finalise streaming with the complete text. */
             chat_store_update_last_text(p->text ? p->text : "");
-            if (s_view) chat_msg_view_refresh(s_view);
+            if (s_view) {
+                chat_msg_view_refresh(s_view);
+                chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
+            }
         }
     }
     free(p->role); free(p->text); free(p);
@@ -723,7 +734,10 @@ static void async_update_last_cb(void *arg)
              * the user sees a blank bubble above the rendered code. */
             chat_store_pop_last();
         }
-        if (s_view) chat_msg_view_refresh(s_view);
+        if (s_view) {
+            chat_msg_view_refresh(s_view);
+            chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
+        }
     }
     free(u->text); free(u);
 }
