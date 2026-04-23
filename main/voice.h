@@ -174,15 +174,6 @@ void voice_stop_reconnect_watchdog(void);
 /** Return true if the voice WebSocket is connected and the receive task is running. */
 bool voice_is_connected(void);
 
-/** Start always-listening mode: initializes AFE pipeline (AEC + WakeNet) and spawns mic/detect tasks. */
-esp_err_t voice_start_always_listening(void);
-
-/** Stop always-listening mode: tears down AFE pipeline and stops continuous mic capture. */
-esp_err_t voice_stop_always_listening(void);
-
-/** Return true if always-listening mode (AFE + wake word) is currently active. */
-bool voice_is_always_listening(void);
-
 /** Force an immediate reconnect attempt, resetting the exponential backoff.
  *  Call when the user actively interacts (e.g., taps the orb) while disconnected.
  *  This bypasses the watchdog delay so the user doesn't wait up to 60s. */
