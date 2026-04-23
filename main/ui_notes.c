@@ -33,7 +33,6 @@
 #include <sys/stat.h>
 #include <unistd.h>  /* wave 13 H8: fsync() */
 #include "esp_http_client.h"
-#include "dragon_link.h"
 #include "wifi.h"
 
 static const char *TAG = "ui_notes";
@@ -960,7 +959,6 @@ void ui_notes_stop_recording(const char *transcript)
  * POSTs to Dragon's /api/v1/transcribe, and updates the note.
  */
 #include "esp_http_client.h"
-#include "dragon_link.h"
 #include "wifi.h"
 
 static void transcription_queue_task(void *arg)

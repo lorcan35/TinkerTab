@@ -29,9 +29,6 @@
 #include "display.h"
 #include "touch.h"
 #include "wifi.h"
-#include "dragon_link.h"
-#include "mjpeg_stream.h"
-#include "touch_ws.h"
 #include "sdcard.h"
 #include "camera.h"
 #include "audio.h"
@@ -131,13 +128,13 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
     ui_notes_start_transcription_queue();
 }
 
-// Voice E2E test task — uses mode manager for clean MJPEG↔voice switching
+// Voice E2E test task — serial REPL helper that exercises the mic pipeline
 static void voice_test_task(void *arg)
 {
     printf("[voice_test] Mode: %s, heap: %lu\n",
            tab5_mode_str(), (unsigned long)esp_get_free_heap_size());
 
-    // Switch to VOICE mode — stops MJPEG, starts voice connect
+    // Switch to VOICE mode — starts voice connect
     printf("[voice_test] Switching to VOICE mode...\n");
     esp_err_t mr = tab5_mode_switch(MODE_VOICE);
     if (mr != ESP_OK) {
@@ -189,9 +186,8 @@ static void voice_test_task(void *arg)
     }
 
 done:
-    // Switch back to STREAMING — stops voice, resumes MJPEG
-    printf("[voice_test] Switching back to STREAMING...\n");
-    tab5_mode_switch(MODE_STREAMING);
+    printf("[voice_test] Switching back to IDLE...\n");
+    tab5_mode_switch(MODE_IDLE);
     printf("[voice_test] Complete. Mode: %s\n", tab5_mode_str());
     vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
 }
@@ -523,12 +519,9 @@ void app_main(void)
                         {
                             char dhost[64];
                             tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-                            printf("Dragon: %s (target: %s:%d)\n",
-                                   tab5_dragon_state_str(), dhost, tab5_settings_get_dragon_port());
-                        }
-                        if (tab5_dragon_is_streaming()) {
-                            printf("  MJPEG: %.1f FPS\n", tab5_dragon_get_fps());
-                            printf("  Touch WS: %s\n", tab5_touch_ws_connected() ? "connected" : "disconnected");
+                            printf("Dragon: %s (voice WS target: %s:%d)\n",
+                                   voice_is_connected() ? "connected" : "disconnected",
+                                   dhost, tab5_settings_get_dragon_port());
                         }
                     } else if (strcmp(cmd_buf, "red") == 0) {
                         tab5_display_fill_color(0xF800);

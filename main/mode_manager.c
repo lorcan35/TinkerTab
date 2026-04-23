@@ -1,13 +1,12 @@
 /**
- * TinkerTab Mode FSM — Resource Manager (closes #20)
+ * TinkerTab Mode FSM — voice-pipeline coordinator
  *
- * Coordinates exclusive access to SDIO WiFi bandwidth.
- * Only one heavy consumer (MJPEG streaming OR voice WebSocket) runs at a time.
+ * Post-#154 the only real responsibility is serializing voice_connect
+ * and voice_disconnect across tasks (orb-tap, long-press, settings,
+ * debug server).  The streaming stop/start helpers are gone.
  */
 
 #include "mode_manager.h"
-#include "mjpeg_stream.h"
-#include "touch_ws.h"
 #include "voice.h"
 #include "config.h"
 #include "settings.h"
@@ -22,28 +21,10 @@ static const char *TAG = "mode";
 static tab5_mode_t s_mode = MODE_IDLE;
 static SemaphoreHandle_t s_mutex = NULL;
 
-// Settle time between stopping one service and starting another (ms).
-// Lets SDIO DMA buffers drain and be freed.
-#define MODE_SETTLE_MS 200
-
 static const char *mode_names[] = {
-    [MODE_IDLE]      = "IDLE",
-    [MODE_STREAMING] = "STREAMING",
-    [MODE_VOICE]     = "VOICE",
-    [MODE_BROWSING]  = "BROWSING",
+    [MODE_IDLE]  = "IDLE",
+    [MODE_VOICE] = "VOICE",
 };
-
-// -------------------------------------------------------------------------
-// Stop helpers — each is idempotent
-// -------------------------------------------------------------------------
-
-static void stop_streaming(void)
-{
-    if (tab5_mjpeg_is_running()) {
-        tab5_mjpeg_stop();
-    }
-    tab5_touch_ws_stop();
-}
 
 static void stop_voice(void)
 {
@@ -51,28 +32,6 @@ static void stop_voice(void)
     if (vs != VOICE_STATE_IDLE) {
         voice_disconnect();
     }
-}
-
-// Wait for MJPEG task to actually exit (it sets s_running = false).
-// HTTP read can block up to 5s + retry delay, so wait up to 8s.
-static void wait_streams_stopped(void)
-{
-    for (int i = 0; i < 80 && tab5_mjpeg_is_running(); i++) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    if (tab5_mjpeg_is_running()) {
-        ESP_LOGW(TAG, "MJPEG task did not exit in 8s");
-    }
-}
-
-// -------------------------------------------------------------------------
-// Start helpers
-// -------------------------------------------------------------------------
-
-static void start_streaming(void)
-{
-    tab5_mjpeg_start();
-    tab5_touch_ws_start();
 }
 
 static void start_voice(void)
@@ -83,10 +42,6 @@ static void start_voice(void)
     // Short tap from READY → Ask (30s), Long-press from READY → Dictate (unlimited)
     voice_connect_async(dhost, TAB5_VOICE_PORT, false);
 }
-
-// -------------------------------------------------------------------------
-// Public API
-// -------------------------------------------------------------------------
 
 void tab5_mode_init(void)
 {
@@ -103,7 +58,7 @@ tab5_mode_t tab5_mode_get(void)
 const char *tab5_mode_str(void)
 {
     tab5_mode_t m = s_mode;
-    if (m <= MODE_BROWSING) return mode_names[m];
+    if (m <= MODE_VOICE) return mode_names[m];
     return "UNKNOWN";
 }
 
@@ -111,7 +66,6 @@ esp_err_t tab5_mode_switch(tab5_mode_t new_mode)
 {
     if (!s_mutex) return ESP_ERR_INVALID_STATE;
 
-    // Try to acquire with timeout — prevents deadlock if called from competing tasks
     if (xSemaphoreTake(s_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
         ESP_LOGE(TAG, "Mode switch mutex timeout");
         return ESP_ERR_TIMEOUT;
@@ -134,37 +88,15 @@ esp_err_t tab5_mode_switch(tab5_mode_t new_mode)
 
     ESP_LOGI(TAG, "%s -> %s", mode_names[old_mode], mode_names[new_mode]);
 
-    // --- Phase 1: Stop services from old mode ---
-    switch (old_mode) {
-    case MODE_STREAMING:
-    case MODE_BROWSING:
-        stop_streaming();
-        wait_streams_stopped();
-        break;
-    case MODE_VOICE:
-        /* Keep voice WS connected across screen transitions.
-         * Session survives going to Notes/Settings and back.
-         * Only disconnect on explicit voice_disconnect() call. */
-        break;
-    case MODE_IDLE:
-        break;
-    }
-
-    // --- Phase 2: Settle — let DMA buffers drain ---
-    vTaskDelay(pdMS_TO_TICKS(MODE_SETTLE_MS));
-
-    // --- Phase 3: Start services for new mode ---
     switch (new_mode) {
-    case MODE_STREAMING:
-        start_streaming();
-        break;
-    case MODE_BROWSING:
-        // Connected to Dragon but no active streaming — don't start MJPEG
-        break;
     case MODE_VOICE:
         start_voice();
         break;
     case MODE_IDLE:
+        /* Keep voice WS connected across screen transitions.
+         * Session survives going to Notes/Settings and back.
+         * Only disconnect on explicit voice_disconnect() call. */
+        (void)stop_voice;  /* kept for future use; no-op today */
         break;
     }
 

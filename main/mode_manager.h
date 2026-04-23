@@ -1,42 +1,29 @@
 /**
- * TinkerTab Mode FSM — Resource Manager
+ * TinkerTab Mode FSM — voice-pipeline coordinator
  *
- * The device is in ONE mode at a time. Switching modes stops/starts
- * services to prevent DMA RAM exhaustion from concurrent SDIO usage.
- *
- * Mode switches are mutex-protected and idempotent.
+ * Post-#154 this is a thin wrapper: the CDP browser-streaming states
+ * (STREAMING/BROWSING) are gone, leaving only IDLE ↔ VOICE. The FSM is
+ * kept because ui_voice / ui_notes / service_dragon all call through
+ * tab5_mode_switch() from multiple tasks, and the mutex gives us a
+ * single-flight guarantee around voice_connect_async().
  */
 #pragma once
 
 #include "esp_err.h"
 
 typedef enum {
-    MODE_IDLE,       // WiFi only, no streaming, no voice
-    MODE_STREAMING,  // WiFi + MJPEG + touch WS (default when Dragon connected)
-    MODE_VOICE,      // WiFi + voice WebSocket + mic + speaker (MJPEG paused)
-    MODE_BROWSING,   // Same as STREAMING for now
+    MODE_IDLE,       // WiFi only, voice WS disconnected
+    MODE_VOICE,      // Voice WS connected, mic/speaker owned by voice pipeline
 } tab5_mode_t;
 
-/**
- * Initialize mode manager. Call once at boot.
- */
+/** Initialize mode-manager mutex. Call once at boot before any switch. */
 void tab5_mode_init(void);
 
-/**
- * Get current mode.
- */
+/** Current mode (IDLE / VOICE). Safe from any task. */
 tab5_mode_t tab5_mode_get(void);
 
-/**
- * Get current mode as string (for logging/debug).
- */
+/** Human-readable mode string for logs + debug REPL. */
 const char *tab5_mode_str(void);
 
-/**
- * Switch to a new mode. Stops services from the old mode, waits for
- * DMA to settle, then starts services for the new mode.
- *
- * Thread-safe (mutex-protected). Idempotent (switching to current mode is a no-op).
- * Returns ESP_OK on success, ESP_ERR_TIMEOUT if mutex couldn't be acquired.
- */
+/** Transition mode — single-flight via mutex; blocks up to 5s on contention. */
 esp_err_t tab5_mode_switch(tab5_mode_t new_mode);
