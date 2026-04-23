@@ -1,19 +1,22 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-23 (initial scaffold)
-> **Current phase:** Phase 0 — scaffolding, not started measuring yet
-> **Active branch (next):** `investigate/lvgl-pool-pressure`
+> **Last updated:** 2026-04-24 — Phase 3 (A) ruled out, pivoting to (B)
+> **Current phase:** Phase 3, hypothesis (B) — verify LVGL expand-on-demand actually fires
+> **Active branch:** `investigate/lvgl-pool-pressure` (5 commits ahead of main, pushed)
 > **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`
+>
+> **NEXT CONCRETE STEP when resuming:** add an `lv_mem_add_pool()` probe in `main.c` that logs `lv_mem_monitor_t.total_size` before + after a forced PSRAM-backed pool expansion at boot.  If total_size grows, expand is silently not auto-firing and we can force-add a large pool.  If it doesn't grow, `lv_mem_monitor` doesn't see expansion chunks and we need a different instrumentation path.  Full detail in the "Investigation log" section's most recent entry (Phase 3 hypothesis-A ruled out).
 
 ---
 
 ## RESUMING THIS WORK (read this first if you're picking up)
 
 1. Read the **TL;DR** below (30 seconds).
-2. Skim **Investigation log** — jump to the most recent dated entry. That tells you what was just tried and what came next.
-3. Check open GitHub issues on TinkerTab tagged `stability` + the state of the active branch. `git log investigate/lvgl-pool-pressure --oneline` if it exists.
-4. **Do NOT start one-off crash patches.** The whack-a-mole era ended with PR #178. This investigation is root-cause driven. If a new crash site surfaces during a phase, log it in the "Observed crash sites" table — don't fork a fix branch for it until Phase 3.
-5. Read the phase plan in `docs/superpowers/plans/` and execute step-by-step with the `superpowers:executing-plans` skill.
+2. Skim **Investigation log** — the bottom entry tells you what was just tried and what comes next. As of 2026-04-24 the last entry is "Phase 3 hypothesis-A ruled out" and the pivot to hypothesis (B) is concrete: add an `lv_mem_add_pool()` probe.
+3. Switch to the active branch: `cd ~/projects/TinkerTab && git checkout investigate/lvgl-pool-pressure && git pull`. Verify with `git log --oneline` — you should see the five investigation commits.
+4. Read the phase plan in `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md` — the Phase 3 section has the experiment format, even though hypothesis (A) was the specific change attempted.  For (B), write a new Phase 3 section inline before doing the change.
+5. **Do NOT start one-off crash patches.** The whack-a-mole era ended with PR #178. This investigation is root-cause driven. If a new crash site surfaces during a phase, log it in the "Observed crash sites" table — don't fork a fix branch for it until the hypothesis is validated.
+6. Execute step-by-step with the `superpowers:executing-plans` skill (or `subagent-driven-development`).
 
 ---
 
