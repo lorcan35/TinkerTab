@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "ui_core.h"
 
 static const char *TAG = "pool_probe";
 
@@ -28,7 +29,8 @@ typedef struct {
     uint32_t dma_largest_kb;
     uint32_t psram_free_kb;
     uint32_t psram_largest_kb;
-    uint32_t lvgl_used_kb;          /* from lv_mem_monitor */
+    uint32_t lvgl_total_kb;         /* from lv_mem_monitor, under tab5_ui_lock */
+    uint32_t lvgl_used_kb;
     uint32_t lvgl_free_kb;
     uint8_t  lvgl_frag_pct;
 } pool_sample_t;
@@ -79,11 +81,20 @@ static void sampler_task(void *arg)
         s.psram_free_kb       = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;
         s.psram_largest_kb    = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024;
 
+        /* Phase 3-B: take the LVGL mutex so the monitor snapshot is
+         * consistent.  Previous unlocked reads returned torn total/free
+         * pairs (Phase 1 "used stuck at 14 KB" artifact).  Use try_lock
+         * with a short timeout so a stuck UI task can't block the probe
+         * entirely; on timeout we emit zeros and continue sampling. */
         lv_mem_monitor_t mon = {0};
-        lv_mem_monitor(&mon);   /* benign if not locked — stats only */
-        s.lvgl_used_kb = (mon.total_size - mon.free_size) / 1024;
-        s.lvgl_free_kb = mon.free_size / 1024;
-        s.lvgl_frag_pct = (uint8_t)mon.frag_pct;
+        if (tab5_ui_try_lock(20)) {
+            lv_mem_monitor(&mon);
+            tab5_ui_unlock();
+            s.lvgl_total_kb = mon.total_size / 1024;
+            s.lvgl_used_kb = (mon.total_size - mon.free_size) / 1024;
+            s.lvgl_free_kb = mon.free_size / 1024;
+            s.lvgl_frag_pct = (uint8_t)mon.frag_pct;
+        }
 
         uint32_t idx = atomic_fetch_add(&s_head, 1) % SAMPLE_COUNT;
         s_ring[idx] = s;
@@ -138,22 +149,24 @@ esp_err_t tab5_pool_probe_http_handler(httpd_req_t *req)
     httpd_resp_sendstr_chunk(req,
         "# Samples\n"
         "ms,internal_free_kb,internal_largest_kb,dma_free_kb,dma_largest_kb,"
-        "psram_free_kb,psram_largest_kb,lvgl_used_kb,lvgl_free_kb,lvgl_frag_pct\n");
+        "psram_free_kb,psram_largest_kb,"
+        "lvgl_total_kb,lvgl_used_kb,lvgl_free_kb,lvgl_frag_pct\n");
 
     uint32_t count = atomic_load(&s_count);
     uint32_t head  = atomic_load(&s_head);
     /* If we've wrapped, oldest sample is at head; otherwise at 0. */
     uint32_t start = (count < SAMPLE_COUNT) ? 0 : head;
-    char line[160];
+    char line[176];
     for (uint32_t i = 0; i < count; i++) {
         const pool_sample_t *s = &s_ring[(start + i) % SAMPLE_COUNT];
         int n = snprintf(line, sizeof(line),
             "%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
-            ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%u\n",
+            ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%u\n",
             s->ms,
             s->internal_free_kb, s->internal_largest_kb,
             s->dma_free_kb, s->dma_largest_kb,
             s->psram_free_kb, s->psram_largest_kb,
+            s->lvgl_total_kb,
             s->lvgl_used_kb, s->lvgl_free_kb, s->lvgl_frag_pct);
         if (n > 0) httpd_resp_send_chunk(req, line, n);
     }
