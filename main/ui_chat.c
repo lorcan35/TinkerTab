@@ -440,6 +440,7 @@ lv_obj_t *ui_chat_create(void)
         if (!s_poll) s_poll = lv_timer_create(poll_voice, 150, NULL);
         else         lv_timer_resume(s_poll);
         ui_keyboard_set_layout_cb(keyboard_layout_cb);
+        ui_keyboard_set_trigger_visible(false);
         /* Re-sync view + suggestions against chat_store after hide.  Messages
          * pushed via /chat or voice handlers while the overlay was hidden
          * would otherwise show as empty-state until next interaction. */
@@ -511,6 +512,9 @@ lv_obj_t *ui_chat_create(void)
     s_last_state = voice_get_state();
     s_poll = lv_timer_create(poll_voice, 150, NULL);
     ui_keyboard_set_layout_cb(keyboard_layout_cb);
+    /* 2026-04-23: hide the floating keyboard trigger — the pill's kb
+     * affordance is the only entry point we want visible in chat. */
+    ui_keyboard_set_trigger_visible(false);
 
     /* Force full invalidate + synchronous refresh — PARTIAL render only
      * paints the first strip per tick; lv_refr_now cycles through every
@@ -529,6 +533,10 @@ void ui_chat_show(void)
     s_active = true;
     if (s_poll) lv_timer_resume(s_poll);
     ui_keyboard_set_layout_cb(keyboard_layout_cb);
+    /* 2026-04-23: hide the floating keyboard trigger while chat is
+     * visible — the pill has its own kb button and two entry points
+     * confused users. */
+    ui_keyboard_set_trigger_visible(false);
     /* Re-sync view + suggestions against chat_store after a hide.  Without
      * this, navigating back to chat after a mode change, + New, or a turn
      * that landed while the overlay was hidden shows a stale view — empty-
@@ -553,6 +561,7 @@ void ui_chat_hide(void)
     if (!s_overlay) return;
     ui_keyboard_set_layout_cb(NULL);
     ui_keyboard_hide();
+    ui_keyboard_set_trigger_visible(true);  /* restore for home / notes / wifi */
     if (s_poll) lv_timer_pause(s_poll);
     if (s_drawer) chat_session_drawer_hide(s_drawer);
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
