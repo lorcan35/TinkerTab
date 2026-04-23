@@ -1824,8 +1824,17 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 {
     note_entry_t n = *note;
 
+    /* #170 follow-up: under sustained rapid-nav stress the LVGL pool can
+     * transiently exhaust, making lv_*_create() return NULL.  Every
+     * subsequent set_text / align / style-set on that NULL pointer
+     * panics.  Short-circuit the card build if ANY of the essential
+     * objects fail to allocate.  Worst case we drop one or two note
+     * cards for this refresh — the next refresh will retry and usually
+     * succeed once the pool has breathed. */
+
     /* Card — compact, flex column layout. Tap for full view. */
     lv_obj_t *card = lv_obj_create(parent);
+    if (!card) return;
     lv_obj_set_width(card, lv_pct(100));
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_max_height(card, 160, 0);  /* FIX N1: cap card height */
@@ -1848,12 +1857,14 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 
     /* Row 1: timestamp + badge + action buttons (all in one line) */
     lv_obj_t *header = lv_obj_create(card);
+    if (!header) return;  /* lv_obj_del(card) not needed — lv_obj_del(parent) will cascade */
     lv_obj_remove_style_all(header);
     lv_obj_set_size(header, lv_pct(100), 44);  /* 44px matches touch target height */
     lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Timestamp — 14pt for compact display */
     lv_obj_t *ts = lv_label_create(header);
+    if (!ts) return;
     char ts_buf[32];
     static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
                                 "Jul","Aug","Sep","Oct","Nov","Dec"};
@@ -1868,6 +1879,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     /* v5: kill the colored Material pill. Use a letter-spaced caption
      * in amber (or red on failure) inline next to the timestamp. */
     lv_obj_t *badge = lv_label_create(header);
+    if (!badge) return;
     const char *badge_text;
     uint32_t badge_color;
     switch (n.state) {
@@ -1886,6 +1898,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 
     /* Delete button — 44x44 touch target, dark bg, red X */
     lv_obj_t *del = lv_button_create(header);
+    if (!del) return;
     lv_obj_set_size(del, 44, 44);
     lv_obj_align(del, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_color(del, lv_color_hex(COL_BORDER), 0);
@@ -1895,6 +1908,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED,
                        (void *)(intptr_t)note_idx);
     lv_obj_t *del_lbl = lv_label_create(del);
+    if (!del_lbl) return;
     lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(del_lbl, lv_color_hex(COL_RED), 0);
     lv_obj_set_style_text_font(del_lbl, FONT_CAPTION, 0);
@@ -1903,6 +1917,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     /* Play button — 44x44 touch target, green, next to delete, only for notes with audio */
     if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
         lv_obj_t *play = lv_button_create(header);
+        if (!play) return;
         lv_obj_set_size(play, 44, 44);
         lv_obj_align(play, LV_ALIGN_RIGHT_MID, -48, 0);
         lv_obj_set_style_bg_color(play, lv_color_hex(COL_MINT), 0);
@@ -1912,6 +1927,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
         lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
                            (void *)(intptr_t)note_idx);
         lv_obj_t *play_lbl = lv_label_create(play);
+        if (!play_lbl) return;
         lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
         lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
         lv_obj_set_style_text_font(play_lbl, FONT_CAPTION, 0);
@@ -1920,6 +1936,7 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 
     /* FIX N1+N4: Note preview — truncated to ~100 chars, smaller font */
     lv_obj_t *preview = lv_label_create(card);
+    if (!preview) return;  /* exact crash site from #170 follow-up coredump */
     /* Truncate long text for card preview — full text in edit overlay */
     char preview_text[120];
     const char *src = n.text;
