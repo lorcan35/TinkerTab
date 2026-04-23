@@ -155,6 +155,18 @@ static void cb_back_btn(lv_event_t *e)
  * ================================================================ */
 lv_obj_t *ui_camera_create(void)
 {
+    /* #172: idempotent re-entry.  Camera owns a ~1.8 MB PSRAM canvas
+     * buffer + a preview timer + a full LVGL screen tree.  If the
+     * create path is hit twice without an intervening destroy (debug
+     * /navigate racing with a tile tap, duplicate async navigation
+     * during screen churn), we'd overwrite \`scr_camera\` / \`canvas_buf\`
+     * and leak the previous instance + leave its preview timer firing
+     * on a dangling canvas.  Short-circuit when we're already live. */
+    if (scr_camera) {
+        lv_screen_load(scr_camera);
+        return scr_camera;
+    }
+
     bool cam_ok = tab5_camera_initialized();
 
     /* Find highest existing IMG_NNNN.jpg to avoid overwriting */
