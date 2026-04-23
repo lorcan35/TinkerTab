@@ -154,56 +154,12 @@ bool tab5_debug_touch_override(int32_t *x, int32_t *y, bool *pressed)
 #define FB_H       TAB5_DISPLAY_HEIGHT  /* 1280 */
 #define FB_BPP     2                    /* RGB565 = 2 bytes/pixel */
 
-/* ======================================================================== */
-/*  BMP helpers                                                              */
-/* ======================================================================== */
-
-/* BMP file header (14) + BITMAPINFOHEADER (40) + 3x DWORD color masks (12) = 66 bytes */
-#define BMP_HEADER_SIZE 66
-
-static void build_bmp_header(uint8_t *hdr, int w, int h)
-{
-    uint32_t row_bytes = w * FB_BPP;
-    /* BMP rows are padded to 4-byte boundary — 720*2=1440 is already aligned */
-    uint32_t pixel_size = row_bytes * h;
-    uint32_t file_size  = BMP_HEADER_SIZE + pixel_size;
-
-    memset(hdr, 0, BMP_HEADER_SIZE);
-
-    /* -- BMP File Header (14 bytes) -- */
-    hdr[0] = 'B'; hdr[1] = 'M';
-    memcpy(hdr + 2, &file_size, 4);
-    /* reserved = 0 (already) */
-    uint32_t offset = BMP_HEADER_SIZE;
-    memcpy(hdr + 10, &offset, 4);
-
-    /* -- DIB Header: BITMAPINFOHEADER (40 bytes) -- */
-    uint32_t dib_size = 40;
-    memcpy(hdr + 14, &dib_size, 4);
-    int32_t bmp_w = w;
-    int32_t bmp_h = h;  /* positive = bottom-up */
-    memcpy(hdr + 18, &bmp_w, 4);
-    memcpy(hdr + 22, &bmp_h, 4);
-    uint16_t planes = 1;
-    memcpy(hdr + 26, &planes, 2);
-    uint16_t bpp = 16;
-    memcpy(hdr + 28, &bpp, 2);
-    uint32_t compression = 3;  /* BI_BITFIELDS */
-    memcpy(hdr + 30, &compression, 4);
-    memcpy(hdr + 34, &pixel_size, 4);
-    /* ppm, colors, important = 0 (already) */
-
-    /* -- RGB565 color masks (12 bytes) -- */
-    uint32_t mask_r = 0x0000F800;  /* bits 15-11 */
-    uint32_t mask_g = 0x000007E0;  /* bits 10-5  */
-    uint32_t mask_b = 0x0000001F;  /* bits 4-0   */
-    memcpy(hdr + 54, &mask_r, 4);
-    memcpy(hdr + 58, &mask_g, 4);
-    memcpy(hdr + 62, &mask_b, 4);
-}
+/* #148: the build_bmp_header helper was deleted — /screenshot is JPEG-only
+ * (hardware encoder) and the /camera BMP path was retired in the same
+ * pass.  If BMP comes back, revive from git history. */
 
 /* ======================================================================== */
-/*  GET /screenshot  and  GET /screenshot.bmp                                */
+/*  GET /screenshot                                                          */
 /* ======================================================================== */
 
 /* Lazily-initialised hardware JPEG encoder. One engine is reused across
@@ -735,78 +691,13 @@ static esp_err_t index_handler(httpd_req_t *req)
 }
 
 /* ======================================================================== */
-/*  POST /open?screen=wifi  — open a screen directly for testing             */
-/* ======================================================================== */
-
-/* Deferred screen open — runs on the LVGL thread via lv_async_call */
-static volatile int s_pending_screen = -1;
-
-/* US-C19: Runs on LVGL thread via lv_async_call (not lv_timer_create).
- * httpd handlers run on Core 1 — calling lv_timer_create required LVGL lock
- * from HTTP context, risking deadlock. lv_async_call is thread-safe. */
-static void async_open_screen(void *arg)
-{
-    (void)arg;
-    int scr_id = s_pending_screen;
-    s_pending_screen = -1;
-
-    /* Dismiss any overlays (chat, voice, keyboard) before switching */
-    extern void ui_chat_hide(void);
-    if (ui_chat_is_active()) ui_chat_hide();
-    ui_keyboard_hide();
-
-    switch (scr_id) {
-    case 0: ui_wifi_create(); break;
-    case 1: ui_camera_create(); break;
-    case 2: ui_settings_create(); break;
-    case 3: ui_files_create(); break;
-    case 4: lv_screen_load(ui_home_get_screen()); break;
-    case 5: ui_chat_create(); break;
-    case 6: /* Notes page — scroll tileview to page 1 (row=1, col=0) */ {
-        lv_obj_t *tv = lv_obj_get_child(ui_home_get_screen(), 0);
-        if (tv) lv_obj_set_tile_id(tv, 0, 1, LV_ANIM_OFF);
-        break;
-    }
-    default: break;
-    }
-}
-
-static esp_err_t open_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-
-    char query[64] = {0};
-    httpd_req_get_url_query_str(req, query, sizeof(query));
-    char screen[32] = {0};
-    httpd_query_key_value(query, "screen", screen, sizeof(screen));
-    ESP_LOGI(TAG, "Open screen: %s", screen);
-
-    int scr_id = -1;
-    if (strcmp(screen, "wifi") == 0) scr_id = 0;
-    else if (strcmp(screen, "camera") == 0) scr_id = 1;
-    else if (strcmp(screen, "settings") == 0) scr_id = 2;
-    else if (strcmp(screen, "files") == 0) scr_id = 3;
-    else if (strcmp(screen, "home") == 0) scr_id = 4;
-    else if (strcmp(screen, "chat") == 0) scr_id = 5;
-    else if (strcmp(screen, "notes") == 0) scr_id = 6;
-    else {
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Unknown screen");
-        return ESP_FAIL;
-    }
-
-    /* US-C19: Schedule on LVGL thread via lv_async_call — thread-safe, no lock needed.
-     * Previously used tab5_ui_try_lock + lv_timer_create which risked deadlock. */
-    s_pending_screen = scr_id;
-    lv_async_call(async_open_screen, NULL);
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-    return ESP_OK;
-}
-
-/* ======================================================================== */
 /*  GET /crashlog — last core dump summary                                   */
 /* ======================================================================== */
+/*
+ * #148: /open was removed (merged into /navigate which already handled
+ * more screens — see async_navigate).  The only target /open covered
+ * that /navigate didn't was "wifi", which is now a case in async_navigate.
+ */
 
 static esp_err_t crashlog_handler(httpd_req_t *req)
 {
@@ -1145,30 +1036,9 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
     return ret;
 }
 
-/* ── Wake word toggle (PARKED) ───────────────────────────────────────── */
-
-static esp_err_t wake_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-
-    /* Feature parked — accept the request but do nothing. Return a clear
-     * status so external tools stop retrying. Un-park: restore the toggle
-     * body above and flip WAKE_WORD_PARKED in voice.c. */
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "afe_active", false);
-    cJSON_AddBoolToObject(root, "wake_listening", false);
-    cJSON_AddStringToObject(root, "wake_word", "parked");
-    cJSON_AddStringToObject(root, "status", "wake-word feature is parked — see voice.c WAKE_WORD_PARKED");
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
-    esp_err_t ret = httpd_resp_sendstr(req, json);
-    free(json);
-    return ret;
-}
+/* #148: /wake endpoint removed.  Wake-word feature is parked; the status
+ * is still reported via /info ("wake_word":"parked") for external
+ * monitors.  Un-park path: restore a dedicated handler at that time. */
 
 /* ── OTA debug endpoints ──────────────────────────────────────────────── */
 
@@ -1267,24 +1137,61 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
+    /* #148: full NVS key coverage — was exposing only 10 of ~25 keys.
+     * wifi_pass + auth_tok are intentionally omitted (secrets).  Runtime
+     * state (voice_connected, voice_state) stays for backward compat. */
     cJSON *root = cJSON_CreateObject();
+    char buf[96];
 
-    char buf[64];
+    /* Network */
     tab5_settings_get_wifi_ssid(buf, sizeof(buf));
     cJSON_AddStringToObject(root, "wifi_ssid", buf);
     tab5_settings_get_dragon_host(buf, sizeof(buf));
     cJSON_AddStringToObject(root, "dragon_host", buf);
     cJSON_AddNumberToObject(root, "dragon_port", tab5_settings_get_dragon_port());
+    cJSON_AddNumberToObject(root, "conn_mode", tab5_settings_get_connection_mode());
+
+    /* Hardware */
     cJSON_AddNumberToObject(root, "brightness", tab5_settings_get_brightness());
-    cJSON_AddNumberToObject(root, "volume", tab5_settings_get_volume());
+    cJSON_AddNumberToObject(root, "volume",     tab5_settings_get_volume());
+    cJSON_AddNumberToObject(root, "mic_mute",   tab5_settings_get_mic_mute());
+
+    /* Identity */
+    if (tab5_settings_get_device_id(buf, sizeof(buf)) == ESP_OK) {
+        cJSON_AddStringToObject(root, "device_id", buf);
+    }
+    if (tab5_settings_get_hardware_id(buf, sizeof(buf)) == ESP_OK) {
+        cJSON_AddStringToObject(root, "hardware_id", buf);
+    }
+    if (tab5_settings_get_session_id(buf, sizeof(buf)) == ESP_OK) {
+        cJSON_AddStringToObject(root, "session_id", buf);
+    }
+
+    /* Voice / AI */
     cJSON_AddNumberToObject(root, "voice_mode", tab5_settings_get_voice_mode());
     char model[64];
     tab5_settings_get_llm_model(model, sizeof(model));
     cJSON_AddStringToObject(root, "llm_model", model);
-    /* wake_word setting is parked — always reports 0 regardless of NVS value */
+    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
+    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
+    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
+    cJSON_AddBoolToObject(root, "onboarded", tab5_settings_is_onboarded());
+
+    /* Quiet hours */
+    cJSON_AddNumberToObject(root, "quiet_on",    tab5_settings_get_quiet_on());
+    cJSON_AddNumberToObject(root, "quiet_start", tab5_settings_get_quiet_start());
+    cJSON_AddNumberToObject(root, "quiet_end",   tab5_settings_get_quiet_end());
+
+    /* Budget */
+    cJSON_AddNumberToObject(root, "spent_mils", (double)tab5_budget_get_today_mils());
+    cJSON_AddNumberToObject(root, "cap_mils",   (double)tab5_budget_get_cap_mils());
+
+    /* Wake word (parked, reports 0 regardless of NVS) */
     cJSON_AddNumberToObject(root, "wake_word", 0);
-    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
-    cJSON_AddNumberToObject(root, "voice_state", voice_get_state());
+
+    /* Runtime state (handy for "dump everything once" callers) */
+    cJSON_AddBoolToObject(root,   "voice_connected", voice_is_connected());
+    cJSON_AddNumberToObject(root, "voice_state",     voice_get_state());
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -1305,27 +1212,38 @@ static void async_refresh_mode_badge(void *arg)
 }
 
 /* POST /settings — update NVS keys via JSON body.
- * Supports: dragon_host (str), dragon_port (int), wifi_ssid (str).
- * Body: {"dragon_host":"192.168.1.91","dragon_port":3502}
- * Returns: {"updated":["dragon_host","dragon_port"]}
+ * Accepts any combination of: wifi_ssid, wifi_pass, dragon_host, dragon_port,
+ * conn_mode, brightness, volume, mic_mute, quiet_on, quiet_start, quiet_end,
+ * voice_mode, llm_model, session_id, int_tier, voi_tier, aut_tier, cap_mils,
+ * reset_spent (bool).
+ *
+ * Returns: {"updated":[...], "skipped":[...], "resolved_voice_mode":N?, ...}
  * Note: does NOT reconnect voice WS automatically — call /voice/reconnect after.
  */
 static esp_err_t settings_set_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
+    /* #148: body cap bumped 512 → 2048 to fit a full key dump.
+     * Heap-allocated via PSRAM so the httpd task stack doesn't balloon. */
+    const size_t MAX_BODY = 2048;
     int total = req->content_len;
-    if (total <= 0 || total > 512) {
+    if (total <= 0 || total > (int)MAX_BODY) {
         httpd_resp_set_type(req, "application/json");
-        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"body 1..512 bytes required\"}");
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"body 1..2048 bytes required\"}");
         return ESP_OK;
     }
 
-    char body[520] = {0};
+    char *body = heap_caps_malloc(total + 1, MALLOC_CAP_SPIRAM);
+    if (!body) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "{\"error\":\"oom\"}");
+        return ESP_OK;
+    }
     int received = 0;
     while (received < total) {
         int r = httpd_req_recv(req, body + received, total - received);
         if (r <= 0) {
+            heap_caps_free(body);
             httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "{\"error\":\"recv failed\"}");
             return ESP_OK;
         }
@@ -1334,6 +1252,7 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     body[received] = '\0';
 
     cJSON *req_json = cJSON_Parse(body);
+    heap_caps_free(body);
     if (!req_json) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "{\"error\":\"invalid JSON\"}");
@@ -1343,6 +1262,19 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     cJSON *resp = cJSON_CreateObject();
     cJSON *updated = cJSON_CreateArray();
 
+    /* ── Network ────────────────────────────────────────────────── */
+    cJSON *ssid = cJSON_GetObjectItem(req_json, "wifi_ssid");
+    if (cJSON_IsString(ssid) && ssid->valuestring && strlen(ssid->valuestring) > 0) {
+        if (tab5_settings_set_wifi_ssid(ssid->valuestring) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("wifi_ssid"));
+        }
+    }
+    cJSON *pass = cJSON_GetObjectItem(req_json, "wifi_pass");
+    if (cJSON_IsString(pass) && pass->valuestring) {
+        if (tab5_settings_set_wifi_pass(pass->valuestring) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("wifi_pass"));
+        }
+    }
     cJSON *host = cJSON_GetObjectItem(req_json, "dragon_host");
     if (cJSON_IsString(host) && host->valuestring && strlen(host->valuestring) > 0) {
         if (tab5_settings_set_dragon_host(host->valuestring) == ESP_OK) {
@@ -1357,6 +1289,78 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
             if (tab5_settings_set_dragon_port((uint16_t)p) == ESP_OK) {
                 cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_port"));
             }
+        }
+    }
+
+    /* ── Hardware ───────────────────────────────────────────────── */
+    cJSON *br = cJSON_GetObjectItem(req_json, "brightness");
+    if (cJSON_IsNumber(br)) {
+        int v = (int)br->valuedouble;
+        if (v >= 0 && v <= 100 &&
+            tab5_settings_set_brightness((uint8_t)v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("brightness"));
+        }
+    }
+    cJSON *vol = cJSON_GetObjectItem(req_json, "volume");
+    if (cJSON_IsNumber(vol)) {
+        int v = (int)vol->valuedouble;
+        if (v >= 0 && v <= 100 &&
+            tab5_settings_set_volume((uint8_t)v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("volume"));
+        }
+    }
+    cJSON *mic = cJSON_GetObjectItem(req_json, "mic_mute");
+    if (cJSON_IsNumber(mic) || cJSON_IsBool(mic)) {
+        int v = cJSON_IsBool(mic) ? cJSON_IsTrue(mic) : (int)mic->valuedouble;
+        if (tab5_settings_set_mic_mute(v ? 1 : 0) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("mic_mute"));
+        }
+    }
+
+    /* ── Quiet hours ────────────────────────────────────────────── */
+    cJSON *qon = cJSON_GetObjectItem(req_json, "quiet_on");
+    if (cJSON_IsNumber(qon) || cJSON_IsBool(qon)) {
+        int v = cJSON_IsBool(qon) ? cJSON_IsTrue(qon) : (int)qon->valuedouble;
+        if (tab5_settings_set_quiet_on(v ? 1 : 0) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("quiet_on"));
+        }
+    }
+    cJSON *qs = cJSON_GetObjectItem(req_json, "quiet_start");
+    if (cJSON_IsNumber(qs)) {
+        int v = (int)qs->valuedouble;
+        if (v >= 0 && v <= 23 &&
+            tab5_settings_set_quiet_start((uint8_t)v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("quiet_start"));
+        }
+    }
+    cJSON *qe = cJSON_GetObjectItem(req_json, "quiet_end");
+    if (cJSON_IsNumber(qe)) {
+        int v = (int)qe->valuedouble;
+        if (v >= 0 && v <= 23 &&
+            tab5_settings_set_quiet_end((uint8_t)v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("quiet_end"));
+        }
+    }
+
+    /* ── Voice / AI ─────────────────────────────────────────────── */
+    cJSON *vm = cJSON_GetObjectItem(req_json, "voice_mode");
+    if (cJSON_IsNumber(vm)) {
+        int v = (int)vm->valuedouble;
+        if (v >= 0 && v <= 3 &&
+            tab5_settings_set_voice_mode((uint8_t)v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("voice_mode"));
+        }
+    }
+    cJSON *lm = cJSON_GetObjectItem(req_json, "llm_model");
+    if (cJSON_IsString(lm) && lm->valuestring) {
+        if (tab5_settings_set_llm_model(lm->valuestring) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("llm_model"));
+        }
+    }
+    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");
+    if (cJSON_IsString(sid) && sid->valuestring) {
+        if (tab5_settings_set_session_id(sid->valuestring) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("session_id"));
         }
     }
 
@@ -1410,18 +1414,10 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     }
     cJSON *reset = cJSON_GetObjectItem(req_json, "reset_spent");
     if (cJSON_IsBool(reset) && cJSON_IsTrue(reset)) {
-        /* Zero today's spend by resetting the day marker -- the next
-         * accumulate() will see stored_day != today and wipe. */
-        extern esp_err_t nvs_flash_init(void);
-        /* Direct-write via the bounded API by briefly reparenting into
-         * settings.c's helpers is overkill; instead we rely on the
-         * accumulate path's rollover logic: bumping cap + zero-arg
-         * accumulate(0) would no-op. The cleanest path is to call the
-         * setter that already exists.  Here we just re-apply cap which
-         * implicitly keeps spent untouched; true reset is a future
-         * helper. For now, a practical workaround: set cap to a value
-         * greater than current spent so the next receipt re-evaluates. */
-        cJSON_AddItemToArray(updated, cJSON_CreateString("reset_spent_noop"));
+        /* #148: actually zero today's spend via the new helper. */
+        if (tab5_budget_reset_spent() == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("reset_spent"));
+        }
     }
     if (any_tier) {
         /* Resolve the new tier triple and persist the derived voice_mode +
@@ -1591,6 +1587,11 @@ static void async_navigate(void *arg)
     } else if (strcmp(s_nav_target, "focus") == 0) {
         extern void ui_focus_show(void);
         ui_focus_show();
+    } else if (strcmp(s_nav_target, "wifi") == 0) {
+        /* #148: folded in from the removed /open endpoint so /navigate
+         * is the single source of truth for all screen lists. */
+        extern lv_obj_t *ui_wifi_create(void);
+        ui_wifi_create();
     }
     s_navigating = false;
 }
@@ -1771,54 +1772,9 @@ static esp_err_t navigate_handler(httpd_req_t *req)
     return ret;
 }
 
-/* POST /navtouch?screen=home|notes|chat|settings
- * Same as /navigate but also dismisses overlays and reports tap coordinates.
- * Useful for testing touch-based navigation flow. */
-static esp_err_t navtouch_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-
-    char query[64] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"error\":\"use ?screen=home|notes|chat|settings\"}");
-        return ESP_OK;
-    }
-    char screen[16] = {0};
-    httpd_query_key_value(query, "screen", screen, sizeof(screen));
-
-    int tap_x = -1;
-    if (strcmp(screen, "home") == 0)          tap_x = 90;
-    else if (strcmp(screen, "notes") == 0)    tap_x = 270;
-    else if (strcmp(screen, "chat") == 0)     tap_x = 450;
-    else if (strcmp(screen, "settings") == 0) tap_x = 630;
-
-    if (tap_x < 0) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"error\":\"unknown screen\"}");
-        return ESP_OK;
-    }
-
-    /* Schedule on LVGL thread — same path as /navigate */
-    memset(s_nav_target, 0, sizeof(s_nav_target));
-    memcpy(s_nav_target, screen, strlen(screen) < sizeof(s_nav_target) ? strlen(screen) : sizeof(s_nav_target) - 1);
-    lv_async_call(async_navigate, NULL);
-
-    ESP_LOGI("debug", "NavTouch: %s (tap equiv %d,1220)", screen, tap_x);
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "screen", screen);
-    cJSON_AddNumberToObject(root, "tap_x", tap_x);
-    cJSON_AddNumberToObject(root, "tap_y", 1220);
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
-    esp_err_t ret = httpd_resp_sendstr(req, json);
-    free(json);
-    return ret;
-}
+/* #148: /navtouch removed.  It was a thin wrapper that computed a bogus
+ * tap_x coordinate and then called the same /navigate path anyway.
+ * Callers should POST /navigate?screen=<name> directly. */
 
 /* ── Camera debug endpoint ────────────────────────────────────────────── */
 
@@ -1842,31 +1798,71 @@ static esp_err_t camera_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Return raw RGB565 as BMP */
-    uint32_t data_size = frame.width * frame.height * 2;
-    uint32_t file_size = 66 + data_size;
-    uint8_t hdr[66] = {0};
-    hdr[0] = 'B'; hdr[1] = 'M';
-    memcpy(&hdr[2], &file_size, 4);
-    uint32_t offset = 66; memcpy(&hdr[10], &offset, 4);
-    uint32_t dib = 40; memcpy(&hdr[14], &dib, 4);
-    int32_t w = frame.width, h = -(int32_t)frame.height;
-    memcpy(&hdr[18], &w, 4); memcpy(&hdr[22], &h, 4);
-    uint16_t planes = 1; memcpy(&hdr[26], &planes, 2);
-    uint16_t bpp = 16; memcpy(&hdr[28], &bpp, 2);
-    uint32_t comp = 3; memcpy(&hdr[30], &comp, 4);
-    memcpy(&hdr[34], &data_size, 4);
-    uint32_t rm = 0xF800, gm = 0x07E0, bm = 0x001F;
-    memcpy(&hdr[54], &rm, 4); memcpy(&hdr[58], &gm, 4); memcpy(&hdr[62], &bm, 4);
+    /* #148: was ~1.8 MB RGB565 BMP — now JPEG-encoded via the same
+     * hardware engine as /screenshot (~40-80 KB typical).  Only the
+     * RGB565 format path supports encoding; other formats fall back
+     * to a clear error so callers can diagnose. */
+    if (frame.format != TAB5_CAM_FMT_RGB565) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req,
+            "{\"error\":\"unsupported camera format (expected RGB565)\"}");
+        return ESP_OK;
+    }
+    if (_ensure_jpeg_encoder() != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG encoder init failed");
+        return ESP_FAIL;
+    }
 
-    httpd_resp_set_type(req, "image/bmp");
+    size_t fb_size = (size_t)frame.width * frame.height * 2;
+
+    jpeg_encode_memory_alloc_cfg_t in_alloc  = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };
+    size_t in_capacity = 0;
+    uint8_t *in_buf = jpeg_alloc_encoder_mem(fb_size, &in_alloc, &in_capacity);
+    if (!in_buf || in_capacity < fb_size) {
+        if (in_buf) free(in_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG input alloc failed");
+        return ESP_FAIL;
+    }
+    memcpy(in_buf, frame.data, fb_size);
+
+    const size_t out_cap = 256 * 1024;
+    jpeg_encode_memory_alloc_cfg_t out_alloc = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+    size_t out_capacity = 0;
+    uint8_t *out_buf = jpeg_alloc_encoder_mem(out_cap, &out_alloc, &out_capacity);
+    if (!out_buf) {
+        free(in_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG output alloc failed");
+        return ESP_FAIL;
+    }
+
+    jpeg_encode_cfg_t enc_cfg = {
+        .height        = frame.height,
+        .width         = frame.width,
+        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
+        .image_quality = 80,
+    };
+    uint32_t out_size = 0;
+    xSemaphoreTake(s_jpeg_mux, portMAX_DELAY);
+    err = jpeg_encoder_process(s_jpeg_enc, &enc_cfg, in_buf, fb_size,
+                               out_buf, out_capacity, &out_size);
+    xSemaphoreGive(s_jpeg_mux);
+    free(in_buf);
+
+    if (err != ESP_OK || out_size == 0) {
+        ESP_LOGE(TAG, "camera jpeg_encoder_process: %s out=%u",
+                 esp_err_to_name(err), (unsigned)out_size);
+        free(out_buf);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "JPEG encode failed");
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
-    httpd_resp_send_chunk(req, (const char *)hdr, 66);
-    httpd_resp_send_chunk(req, (const char *)frame.data, data_size);
-    httpd_resp_send_chunk(req, NULL, 0);
-
-    return ESP_OK;
+    err = httpd_resp_send(req, (const char *)out_buf, out_size);
+    free(out_buf);
+    return err;
 }
 
 /* ── Chat/Text input endpoint ─────────────────────────────────────────── */
@@ -1875,37 +1871,61 @@ static esp_err_t chat_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
 
-    /* POST /chat?text=hello — send text to Dragon via voice WS */
-    char query[256] = {0};
-    char text[200] = {0};
+    /* POST /chat — send text to Dragon via voice WS.
+     * #148: was capped at a 256-byte stack buffer which silently truncated
+     * anything longer than ~200 bytes of JSON after the `{"text":"..."}`
+     * overhead.  Now accepts up to 4 KB via PSRAM-backed body buffer with
+     * the text itself up to 1 KB (voice.c accepts up to 2 KB). */
+    const size_t MAX_BODY = 4096;
+    const size_t MAX_TEXT = 1024;
+    char text_buf[MAX_TEXT + 1];
+    text_buf[0] = '\0';
 
+    /* First try query string — cheap for short text, no body needed. */
+    char query[256] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "text", text, sizeof(text));
+        httpd_query_key_value(query, "text", text_buf, sizeof(text_buf));
     }
 
-    /* Also try reading from body (JSON) */
-    if (text[0] == '\0') {
-        int len = httpd_req_recv(req, query, sizeof(query) - 1);
-        if (len > 0) {
-            query[len] = '\0';
-            cJSON *root = cJSON_Parse(query);
+    /* If no query text, parse JSON body from heap. */
+    if (text_buf[0] == '\0') {
+        int total = req->content_len;
+        if (total > 0) {
+            if (total > (int)MAX_BODY) total = MAX_BODY;
+            char *body = heap_caps_malloc(total + 1, MALLOC_CAP_SPIRAM);
+            if (!body) {
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_sendstr(req, "{\"error\":\"oom\"}");
+                return ESP_OK;
+            }
+            int got = 0;
+            while (got < total) {
+                int r = httpd_req_recv(req, body + got, total - got);
+                if (r <= 0) break;
+                got += r;
+            }
+            body[got] = '\0';
+            cJSON *root = cJSON_Parse(body);
+            heap_caps_free(body);
             if (root) {
                 cJSON *t = cJSON_GetObjectItem(root, "text");
-                if (cJSON_IsString(t)) {
-                    snprintf(text, sizeof(text), "%s", t->valuestring);
+                if (cJSON_IsString(t) && t->valuestring) {
+                    snprintf(text_buf, sizeof(text_buf), "%s", t->valuestring);
                 }
                 cJSON_Delete(root);
             }
         }
     }
 
-    if (text[0] == '\0') {
+    if (text_buf[0] == '\0') {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_sendstr(req, "{\"error\":\"use ?text=hello or POST {\\\"text\\\":\\\"hello\\\"}\"}");
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Debug chat: %s", text);
+    ESP_LOGI(TAG, "Debug chat: %.80s%s (len=%u)",
+             text_buf, strlen(text_buf) > 80 ? "..." : "",
+             (unsigned)strlen(text_buf));
 
     if (!voice_is_connected()) {
         httpd_resp_set_type(req, "application/json");
@@ -1913,16 +1933,13 @@ static esp_err_t chat_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    /* Push the user's message into the chat store so the bubble appears.
-     * The normal typing path goes through chat_input_bar which calls
-     * chat_store_add + voice_send_text; /chat (debug) only called the
-     * latter, which is why debug-fired turns never showed a user bubble. */
     extern void ui_chat_push_message(const char *role, const char *text);
-    ui_chat_push_message("user", text);
-    voice_send_text(text);
+    ui_chat_push_message("user", text_buf);
+    voice_send_text(text_buf);
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "text", text);
+    cJSON_AddStringToObject(root, "text", text_buf);
+    cJSON_AddNumberToObject(root, "text_len", (double)strlen(text_buf));
     cJSON_AddBoolToObject(root, "sent", true);
     cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
     char *json = cJSON_PrintUnformatted(root);
@@ -2248,9 +2265,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_screenshot = {
         .uri = "/screenshot", .method = HTTP_GET, .handler = screenshot_handler
     };
-    const httpd_uri_t uri_screenshot_bmp = {
-        .uri = "/screenshot.bmp", .method = HTTP_GET, .handler = screenshot_handler
-    };
+    /* #148: /screenshot.bmp alias removed — the handler always returns
+     * JPEG (hardware JPEG encoder), so the .bmp URL was lying to callers.
+     * Use /screenshot or /screenshot.jpg. */
     const httpd_uri_t uri_screenshot_jpg = {
         .uri = "/screenshot.jpg", .method = HTTP_GET, .handler = screenshot_handler
     };
@@ -2267,9 +2284,8 @@ esp_err_t tab5_debug_server_init(void)
         .uri = "/log", .method = HTTP_GET, .handler = log_handler
     };
 
-    const httpd_uri_t uri_open = {
-        .uri = "/open", .method = HTTP_POST, .handler = open_handler
-    };
+    /* #148: /open merged into /navigate (single source of truth for
+     * screen list).  /navtouch dropped — same underlying dispatcher. */
     const httpd_uri_t uri_coredump = {
         .uri = "/coredump", .method = HTTP_GET, .handler = coredump_handler
     };
@@ -2287,9 +2303,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_sdcard = {
         .uri = "/sdcard", .method = HTTP_GET, .handler = sdcard_handler
     };
-    const httpd_uri_t uri_wake = {
-        .uri = "/wake", .method = HTTP_POST, .handler = wake_handler
-    };
+    /* #148: /wake removed (feature parked) — /info still reports state. */
     const httpd_uri_t uri_settings_get = {
         .uri = "/settings", .method = HTTP_GET, .handler = settings_get_handler
     };
@@ -2326,9 +2340,6 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_selftest = {
         .uri = "/selftest", .method = HTTP_GET, .handler = selftest_handler
     };
-    const httpd_uri_t uri_navtouch = {
-        .uri = "/navtouch", .method = HTTP_POST, .handler = navtouch_handler
-    };
     extern esp_err_t heap_handler(httpd_req_t *req);
     const httpd_uri_t uri_heap = {
         .uri = "/heap", .method = HTTP_GET, .handler = heap_handler
@@ -2336,19 +2347,16 @@ esp_err_t tab5_debug_server_init(void)
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
-    httpd_register_uri_handler(server, &uri_screenshot_bmp);
     httpd_register_uri_handler(server, &uri_screenshot_jpg);
     httpd_register_uri_handler(server, &uri_info);
     httpd_register_uri_handler(server, &uri_touch);
     httpd_register_uri_handler(server, &uri_reboot);
     httpd_register_uri_handler(server, &uri_log);
-    httpd_register_uri_handler(server, &uri_open);
     httpd_register_uri_handler(server, &uri_crashlog);
     httpd_register_uri_handler(server, &uri_coredump);
     httpd_register_uri_handler(server, &uri_heap_trace_start);
     httpd_register_uri_handler(server, &uri_heap_trace_dump);
     httpd_register_uri_handler(server, &uri_sdcard);
-    httpd_register_uri_handler(server, &uri_wake);
     httpd_register_uri_handler(server, &uri_settings_get);
     httpd_register_uri_handler(server, &uri_settings_set);
     httpd_register_uri_handler(server, &uri_mode_set);
@@ -2361,7 +2369,6 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_selftest);
-    httpd_register_uri_handler(server, &uri_navtouch);
     httpd_register_uri_handler(server, &uri_heap);
 
     /* Log the URL */

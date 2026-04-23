@@ -551,6 +551,16 @@ esp_err_t tab5_budget_accumulate(uint32_t mils)
     return set_u32("spent_mils", next);
 }
 
+esp_err_t tab5_budget_reset_spent(void)
+{
+    /* #148: actually zero today's spend.  The debug handler used to
+     * advertise this via reset_spent_noop but had no implementation. */
+    esp_err_t a = set_u32("spent_mils", 0);
+    uint32_t today = days_since_epoch();
+    esp_err_t b = (today != 0) ? set_u32("spent_day", today) : ESP_OK;
+    return (a == ESP_OK && b == ESP_OK) ? ESP_OK : ESP_FAIL;
+}
+
 /* ──────────────────────────────────────────────────────────────────── */
 
 uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
