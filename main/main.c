@@ -470,46 +470,49 @@ void app_main(void)
     // Start PSRAM heap fragmentation watchdog (background, Core 1, prio 1)
     heap_watchdog_start();
 
-    /* Phase 3-B probe for docs/STABILITY-INVESTIGATION.md (refs #180):
-     * sanity-check that lv_mem_add_pool() actually grows the LVGL heap
-     * as lv_mem_monitor_core sums across pools.  Source-code audit has
-     * already established that LVGL 9.2.2 has no auto-expand, so this
-     * is the only path to a larger pool.  128 KB PSRAM chunk is small
-     * enough to preserve crash-cadence signal while being large enough
-     * to show up cleanly in total_size.  Follow-up PR will size it up. */
+    /* Register a 2 MB PSRAM-backed LVGL pool via lv_mem_add_pool().
+     * LVGL 9.2.2's builtin TLSF allocator has NO auto-expand-on-demand
+     * — CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES is only a per-pool
+     * max-size ceiling, not a trigger — so the only way to grow the
+     * heap beyond the 96 KB base pool is to call this ourselves.  2 MB
+     * is ~10x the observed steady-state working set (~100 KB under
+     * stress) and fits well inside TLSF's 4192 KB per-pool cap.  See
+     * docs/STABILITY-INVESTIGATION.md Phase 3-B for the validation
+     * data that drove this fix (refs #181, closes the LVGL PANIC
+     * crash class in PRs #166–#178). */
     {
-        const size_t probe_pool_bytes = 128 * 1024;
+        const size_t heap_pool_bytes = 2 * 1024 * 1024;
         lv_mem_monitor_t mon_before = {0};
         lv_mem_monitor_t mon_after  = {0};
 
         tab5_ui_lock();
         lv_mem_monitor(&mon_before);
 
-        void *probe_chunk = heap_caps_malloc(probe_pool_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (probe_chunk != NULL) {
-            lv_mem_pool_t added = lv_mem_add_pool(probe_chunk, probe_pool_bytes);
+        void *heap_chunk = heap_caps_malloc(heap_pool_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (heap_chunk != NULL) {
+            lv_mem_pool_t added = lv_mem_add_pool(heap_chunk, heap_pool_bytes);
             lv_mem_monitor(&mon_after);
             tab5_ui_unlock();
 
-            ESP_LOGI(TAG, "pool_probe: before  total=%u free=%u used=%u KB frag=%u%%",
+            ESP_LOGI(TAG, "lvgl_heap: before  total=%u free=%u used=%u KB frag=%u%%",
                      (unsigned)(mon_before.total_size / 1024),
                      (unsigned)(mon_before.free_size / 1024),
                      (unsigned)((mon_before.total_size - mon_before.free_size) / 1024),
                      (unsigned)mon_before.frag_pct);
-            ESP_LOGI(TAG, "pool_probe: lv_mem_add_pool %u KB PSRAM @ %p -> handle=%p",
-                     (unsigned)(probe_pool_bytes / 1024), probe_chunk, (void *)added);
-            ESP_LOGI(TAG, "pool_probe: after   total=%u free=%u used=%u KB frag=%u%%",
+            ESP_LOGI(TAG, "lvgl_heap: lv_mem_add_pool %u KB PSRAM @ %p -> handle=%p",
+                     (unsigned)(heap_pool_bytes / 1024), heap_chunk, (void *)added);
+            ESP_LOGI(TAG, "lvgl_heap: after   total=%u free=%u used=%u KB frag=%u%%",
                      (unsigned)(mon_after.total_size / 1024),
                      (unsigned)(mon_after.free_size / 1024),
                      (unsigned)((mon_after.total_size - mon_after.free_size) / 1024),
                      (unsigned)mon_after.frag_pct);
-            ESP_LOGI(TAG, "pool_probe: total delta = %+d KB (expected ~+%u)",
+            ESP_LOGI(TAG, "lvgl_heap: total delta = %+d KB (expected ~+%u)",
                      (int)((int64_t)mon_after.total_size - (int64_t)mon_before.total_size) / 1024,
-                     (unsigned)(probe_pool_bytes / 1024));
+                     (unsigned)(heap_pool_bytes / 1024));
         } else {
             tab5_ui_unlock();
-            ESP_LOGE(TAG, "pool_probe: PSRAM alloc failed for %u KB — skipping probe",
-                     (unsigned)(probe_pool_bytes / 1024));
+            ESP_LOGE(TAG, "lvgl_heap: PSRAM alloc failed for %u KB — falling back to base 96 KB pool",
+                     (unsigned)(heap_pool_bytes / 1024));
         }
     }
 
