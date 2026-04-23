@@ -436,6 +436,11 @@ void app_main(void)
 
     // Start debug HTTP server (needs WiFi + display)
     if (s_wifi_ok) {
+        /* #149: init observability ring buffers before the server so the
+         * first /events / /heap/history / /logs/tail calls have data. */
+        extern esp_err_t tab5_debug_obs_init(void);
+        tab5_debug_obs_init();
+
         ret = tab5_debug_server_init();
         if (ret != ESP_OK) {
             ESP_LOGW(TAG, "Debug server init failed: %s", esp_err_to_name(ret));
