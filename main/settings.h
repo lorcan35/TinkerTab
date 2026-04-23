@@ -70,6 +70,9 @@ uint32_t  tab5_budget_get_cap_mils(void);
 esp_err_t tab5_budget_set_cap_mils(uint32_t cap_mils);
 esp_err_t tab5_budget_accumulate(uint32_t mils);
 
+/** Zero today's spend.  Dev/debug knob for the /settings POST handler. */
+esp_err_t tab5_budget_reset_spent(void);
+
 /* ── Display ──────────────────────────────────────────────────────────── */
 
 /** Returns 0-100 (default 80). */
