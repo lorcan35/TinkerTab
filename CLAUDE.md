@@ -1,5 +1,17 @@
 # TinkerTab — TinkerOS Firmware (ESP32-P4 Tab5) — THE FACE
 
+## Active Investigations — READ FIRST before related work
+
+- **LVGL pool pressure (stability)** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
+  Ongoing multi-phase investigation into the ~170 s crash cadence
+  observed under the stress orchestrator. **Do NOT start one-off crash
+  patches** if a new LVGL-internal crash surfaces — read the state doc
+  + the phase plan at
+  [`docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`](docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md)
+  first. Use the `superpowers:executing-plans` skill to resume where
+  the previous session left off. The plan is root-cause driven; the
+  whack-a-mole era ended with PR #178.
+
 ## Repo Separation — READ THIS FIRST
 - **TinkerTab** (this repo) = Tab5 firmware. C/ESP-IDF. THIN CLIENT.
   - Owns: LVGL UI, mic/speaker/camera/touch, SD card, WiFi, NVS settings
