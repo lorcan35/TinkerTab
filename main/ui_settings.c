@@ -1213,10 +1213,7 @@ lv_obj_t *ui_settings_create(void)
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
 
     /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
-     * section visually — single amber caption, rows straight below).
-     *
-     * Wake Word row intentionally OMITTED — feature parked until AEC TDM
-     * slot mapping is resolved. See cb_wake_word comment above. */
+     * section visually — single amber caption, rows straight below). */
     mk_row_label(s_scroll, "Mic mute", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
               cb_mic_mute, NULL);

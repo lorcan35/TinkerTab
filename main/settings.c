@@ -391,22 +391,6 @@ esp_err_t tab5_settings_set_llm_model(const char *model)
     return set_str("llm_mdl", model);
 }
 
-/* ── Wake word (PARKED) ─────────────────────────────────────────────────
- * Feature parked — getter always reports OFF regardless of NVS. The
- * setter still writes so an un-park is lossless, but nothing will read
- * the stored value until voice.c WAKE_WORD_PARKED is lifted. */
-
-uint8_t tab5_settings_get_wake_word(void)
-{
-    return 0;  /* Parked — never on */
-}
-
-esp_err_t tab5_settings_set_wake_word(uint8_t enabled)
-{
-    ESP_LOGW("settings", "wake_word set to %u (feature parked — no effect)", enabled);
-    return set_u8("wake", enabled ? 1 : 0);
-}
-
 /* ── Mic mute ───────────────────────────────────────────────────────── */
 
 uint8_t tab5_settings_get_mic_mute(void)
