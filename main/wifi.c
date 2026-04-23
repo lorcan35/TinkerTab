@@ -158,3 +158,41 @@ void tab5_wifi_kick(void)
         ESP_LOGW(TAG, "esp_wifi_disconnect failed: %s", esp_err_to_name(r));
     }
 }
+
+esp_err_t tab5_wifi_hard_kick(void)
+{
+    /* #146: soft kick calls esp_wifi_disconnect(), which is just a
+     * deauth frame + reconnect attempt.  When the ESP-Hosted SDIO
+     * host driver itself is wedged (seen under sustained mic-streaming
+     * load, internal SRAM fragmented, socket allocation failing), the
+     * soft kick never recovers — we loop on ESP_TLS_CONNECTION_TIMEOUT
+     * forever.  This does a full stop/start cycle instead: that tears
+     * down the LMAC/UMAC tasks, the host-driver RX/TX threads, frees
+     * the stack's internal buffers, and rebuilds everything from
+     * scratch.  Recovers from classes of failure the soft kick can't. */
+    if (!s_wifi_event_group) {
+        ESP_LOGE(TAG, "Hard kick before init — ignoring");
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGW(TAG, "HARD-kicking Wi-Fi: esp_wifi_stop() + esp_wifi_start()");
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+    esp_err_t r = esp_wifi_stop();
+    if (r != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(r));
+        /* Try to start anyway — stop can fail if we're already stopped. */
+    }
+    /* Brief pause to let LMAC/UMAC teardown settle.  ESP-Hosted host
+     * driver closes its SDIO queues during this gap. */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    r = esp_wifi_start();
+    if (r != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start after hard kick failed: %s", esp_err_to_name(r));
+        return r;
+    }
+    /* WIFI_EVENT_STA_START handler in event_handler() calls
+     * esp_wifi_connect() so association restarts automatically. */
+    ESP_LOGI(TAG, "Hard kick complete — waiting for STA_START → connect");
+    return ESP_OK;
+}

@@ -1,0 +1,51 @@
+START: {"ok":true,"action":"start","transcript":"","transcript_len":0,"state":3}
+[snap 1 @ t=30s state=LISTENING tlen=119 heap=21109KB psram=21109KB fps=4] tail: When you're in the car you're like okay man you're almost like it's okay i'm like no Well, then I got sick. And then...
+[snap 2 @ t=61s state=LISTENING tlen=297 heap=21108KB psram=21108KB fps=4] tail:  got sick. And then... I'm not going to do it. Yeah, like... From what I understand. And they'd be like, hey, you know, like, this month we did this. Thank you. I'm going to be the best. No, I'm going
+[snap 3 @ t=91s state=LISTENING tlen=458 heap=21108KB psram=21108KB fps=8] tail: I'm going to be the best. No, I'm going Everyone knows you're the best in it. Um... I'm going to go to the bath Thank you. Thank you. I don't I'm not sure, one second. Come on back. I'm right, I think
+[snap 4 @ t=121s state=LISTENING tlen=518 heap=21108KB psram=21108KB fps=4] tail: e the best in it. Um... I'm going to go to the bath Thank you. Thank you. I don't I'm not sure, one second. Come on back. I'm right, I think Normally. Hello? This I'm speaking in English. Who is this?
+[snap 5 @ t=151s state=READY tlen=518 heap=21117KB psram=21117KB fps=4] tail: e the best in it. Um... I'm going to go to the bath Thank you. Thank you. I don't I'm not sure, one second. Come on back. I'm right, I think Normally. Hello? This I'm speaking in English. Who is this?
+[snap 6 @ t=181s state=READY tlen=518 heap=21117KB psram=21117KB fps=4] tail: e the best in it. Um... I'm going to go to the bath Thank you. Thank you. I don't I'm not sure, one second. Come on back. I'm right, I think Normally. Hello? This I'm speaking in English. Who is this?
+[snap 7 @ t=211s state=READY tlen=518 heap=21117KB psram=21117KB fps=4] tail: e the best in it. Um... I'm going to go to the bath Thank you. Thank you. I don't I'm not sure, one second. Come on back. I'm right, I think Normally. Hello? This I'm speaking in English. Who is this?
+[snap 8 @ t=241s state=READY tlen=518 heap=21116KB psram=21116KB fps=4] tail: e the best in it. Um... I'm going to go to the bath Thank you. Thank you. I don't I'm not sure, one second. Come on back. I'm right, I think Normally. Hello? This I'm speaking in English. Who is this?
+[snap 9 @ t=281s state= tlen= ] tail: 
+[snap 10 @ t=318s state= tlen= ] tail: 
+[snap 11 @ t=354s state= tlen= ] tail: 
+[snap 12 @ t=390s state= tlen= ] tail: 
+[snap 13 @ t=427s state= tlen= ] tail: 
+[snap 14 @ t=463s state= tlen= ] tail: 
+[snap 15 @ t=499s state= tlen= ] tail: 
+[snap 16 @ t=535s state= tlen= ] tail: 
+[snap 17 @ t=572s state= tlen= ] tail: 
+[snap 18 @ t=608s state= tlen= ] tail: 
+STOP: 
+Waiting 30s for Dragon post-processing...
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: apps_std_imp.c:1143: Warning: apps_std_fopen_with_env failed with 0x2 for libQnnHtpV68Skel.so.2 (No such file or directory)
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: mod_table.c:909: Error 0x2: open_mod_table_handle_invoke failed for handle:0xa3618a30, sc:0x13050100
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:1729: Error 0x80000406: remote_handle_open_domain: dynamic loading failed for file:///libQnnHtpV68Skel.so.2?qnn_skel_handle_invoke&_modver=1.0&_dom=cdsp on domain 3 (dlerror _rtld_map_object_ex: cannot open libQnnHtpV68Skel.so.2, errno 0 (no error)) (errno Succ
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:1829: Error 0x80000406: remote_handle64_open failed for file:///libQnnHtpV68Skel.so.2?qnn_skel_handle_invoke&_modver=1.0&_dom=cdsp (errno Success)
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: apps_std_imp.c:1062: Successfully opened file libQnnHtpV68Skel.so
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: apps_std_imp.c:1062: Successfully opened file /usr/lib/dsp/cdsp/libc++.so.1
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: apps_std_imp.c:1062: Successfully opened file /usr/lib/dsp/cdsp/libc++abi.so.1
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:1833: remote_handle64_open: Successfully opened handle 0xaaab042483f0 (remote 0xe8f7f0) for file:///libQnnHtpV68Skel.so?qnn_skel_handle_invoke&_modver=1.0&_dom=cdsp on domain 3 (spawn time 0 us, load time 90126 us), num handles 1
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:2298: Warning: PM QoS is not supported; ignoring request and returning success for backward compatibility
+Apr 23 06:08:34 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:2322: remote_handle_control_domain: requested QOS 1, latency 100 for domain 3 handle 0xaaab042483f0
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:1954: remote_handle64_close: closed module libQnnHtpV68Skel.so with handle 0xaaab042483f0 remote handle 0xe8f7f0, num of open handles: 0
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: listener_android.c:306: Error 0x8000040d: listener response with result 0x0 for ctx 0x3588, handle 0xa3618b30, sc 0xffffffff failed : listener thread exited (errno Success)
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: listener_android.c:324: listener thread exiting
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: log_config.c:441:Warning: file_watcher_thread received exit for domain 3, file genie-t2t-run.farf
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: log_config.c:514: file_watcher_thread exiting for domain 3
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:3328: close_device_node: closed dev 5 on domain 3
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:3203: domain_deinit done for domain 3.
+Apr 23 06:08:36 radxa-dragon-q6a genie-t2t-run[2296033]: fastrpc_apps_user.c:4063: fastrpc_apps_user_deinit done
+Apr 23 06:08:36 radxa-dragon-q6a python3[1637182]: 06:08:36 [INFO] dragon_voice.notes.db: Created note 0370d96b551f: 'Untitled Note'
+Apr 23 06:08:36 radxa-dragon-q6a python3[1637182]: 06:08:36 [INFO] dragon_voice.server: Auto-created note 0370d96b551f from dictation (518 chars)
+Apr 23 06:08:39 radxa-dragon-q6a python3[1637182]: 06:08:39 [INFO] dragon_voice.notes.service: Embedded note 0370d96b551f (1024 dims)
+Apr 23 06:08:40 radxa-dragon-q6a python3[1637182]: 06:08:40 [INFO] dragon_voice.server: Memory monitor: RSS=1536 MB, temp=67.0°C, connections=1, FDs=17/1024 (2%)
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [ERROR] dragon_voice.server: WebSocket error for ws9: No PONG received after 30.0 seconds
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [INFO] tab5.surface_mgr: surface unregistered: session=2ae546b4b42d
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [INFO] dragon_voice.sessions: Session paused: 2ae546b4b42d
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [INFO] dragon_voice.pipeline: Pipeline processing cancelled
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [INFO] dragon_voice.pipeline: Voice pipeline shut down
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [INFO] dragon_voice.server: WebSocket disconnected: 192.168.1.90 (ws_id=ws9)
+Apr 23 06:12:05 radxa-dragon-q6a python3[1637182]: 06:12:05 [INFO] aiohttp.access: 192.168.1.90 [23/Apr/2026:06:05:27 +0000] "GET /ws/voice HTTP/1.1" 101 0 "-" "ESP32 Websocket Client"
+Apr 23 06:13:40 radxa-dragon-q6a python3[1637182]: 06:13:40 [INFO] dragon_voice.server: Memory monitor: RSS=1536 MB, temp=46.7°C, connections=0, FDs=14/1024 (1%)

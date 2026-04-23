@@ -1513,6 +1513,36 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
                      (unsigned long)exp_ms);
             esp_websocket_client_set_reconnect_timeout(s_ws, delay_ms);
         }
+        /* #146: WS-level escalation.  If Wi-Fi probes claim we're fine
+         * (probe task still sees lan=1/ngrok=1) but the voice WS keeps
+         * failing to connect, the Wi-Fi chip's TCP-stack state is bad.
+         * The probe is a one-shot SYN; the WS handshake needs more
+         * buffers + TLS-path + full RX pipeline.  After WS_KICK_THRESHOLD
+         * consecutive failed attempts (~2 min of retry), hard-kick the
+         * stack.  Don't do this on attempt 1-4 — those are normal
+         * transient failures (Dragon restart, brief AP hiccup). */
+        #define WS_KICK_THRESHOLD 5
+        if (s_connect_attempt == WS_KICK_THRESHOLD) {
+            ESP_LOGW(TAG, "WS: %d failed attempts — escalating to hard-kick "
+                          "(stack may be wedged despite probe success)",
+                     s_connect_attempt);
+            esp_err_t kr = tab5_wifi_hard_kick();
+            if (kr != ESP_OK) {
+                /* ESP-Hosted's Wi-Fi slave chip doesn't always recover
+                 * from stop/start without a host-side reboot (observed:
+                 * esp_wifi_start returns ESP_FAIL repeatedly).  Don't
+                 * burn another 5 attempts — reboot now. */
+                ESP_LOGE(TAG, "WS: hard-kick failed (%s) — controlled reboot",
+                         esp_err_to_name(kr));
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+                /* unreachable */
+            }
+            /* Reset the counter so we give it another 5 tries after the
+             * successful hard kick before escalating again.  If 10
+             * failures in a row, the link-probe zombie path catches it. */
+            s_connect_attempt = 0;
+        }
         /* T1.2: RECONNECTING while a backoff is queued + WiFi is up.
          * IDLE only when WiFi is genuinely down or user stopped voice. */
         {
@@ -2120,9 +2150,17 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
  * so we don't block under WiFi weather. */
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include <fcntl.h>
+#include <errno.h>
 
 static bool probe_tcp_connect(const char *host, uint16_t port)
 {
+    /* #146: SO_RCVTIMEO / SO_SNDTIMEO do NOT affect connect() on lwIP.
+     * A blocking connect to a wedged Wi-Fi stack hangs ~75 s before the
+     * TCP SYN timeout fires, which starved the probe task and prevented
+     * the zombie-kick escalation from running on schedule.  Use
+     * non-blocking connect + select() so each probe returns in ≤ 1.5 s
+     * regardless of stack state. */
     if (!host || !host[0] || port == 0) return false;
     struct addrinfo hints = { .ai_family = AF_INET,
                                .ai_socktype = SOCK_STREAM };
@@ -2135,28 +2173,49 @@ static bool probe_tcp_connect(const char *host, uint16_t port)
     }
     int s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s < 0) { freeaddrinfo(res); return false; }
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 500000 };
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    /* Non-blocking connect via fcntl + select. */
+    int flags = fcntl(s, F_GETFL, 0);
+    if (flags >= 0) fcntl(s, F_SETFL, flags | O_NONBLOCK);
+
+    bool ok = false;
     int cr = connect(s, res->ai_addr, res->ai_addrlen);
+    if (cr == 0) {
+        ok = true;
+    } else if (errno == EINPROGRESS) {
+        fd_set wfds; FD_ZERO(&wfds); FD_SET(s, &wfds);
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 500000 };
+        int n = select(s + 1, NULL, &wfds, NULL, &tv);
+        if (n > 0 && FD_ISSET(s, &wfds)) {
+            int soerr = 0; socklen_t lerr = sizeof(soerr);
+            getsockopt(s, SOL_SOCKET, SO_ERROR, &soerr, &lerr);
+            ok = (soerr == 0);
+        }
+    }
     close(s);
     freeaddrinfo(res);
-    return cr == 0;
+    return ok;
 }
 
 void voice_lan_probe_task(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "Link probe task started (both LAN + ngrok every 30 s)");
-    /* Wave 15 W15-H08: "zombie association" detector.  Counts
-     * consecutive rounds where BOTH LAN and ngrok TCP connects fail
-     * while the Wi-Fi layer still claims we're associated.  After
-     * W15_ZOMBIE_THRESHOLD consecutive fails we call tab5_wifi_kick()
-     * to force a fresh association.  Threshold is 2 → 60 s of total
-     * unreachability before we intervene (avoids kicking on a
-     * transient router blip or a brief internet outage). */
+    /* #146: progressive-escalation zombie detector.  Previously we only
+     * had one lever (soft kick = esp_wifi_disconnect+connect) which
+     * didn't recover when the ESP-Hosted SDIO driver itself was wedged.
+     * Now we escalate:
+     *   Round 2 (60 s):  soft kick — deauth + reconnect, recovers
+     *                     AP-side black-holing.
+     *   Round 4 (120 s): hard kick — esp_wifi_stop()/start(), recovers
+     *                     dead host driver + frees internal SRAM buffers.
+     *   Round 6 (180 s): controlled esp_restart() — full clean boot.
+     * The largest-free internal SRAM block is logged every probe so
+     * we can correlate Wi-Fi flap with allocator pressure. */
     int zombie_rounds = 0;
-    const int ZOMBIE_THRESHOLD = 2;
+    const int ZOMBIE_SOFT   = 2;
+    const int ZOMBIE_HARD   = 4;
+    const int ZOMBIE_REBOOT = 6;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(30000));
         if (!tab5_wifi_connected()) {
@@ -2180,22 +2239,40 @@ void voice_lan_probe_task(void *arg)
         s_lan_tcp_ok   = lan_ok;
         s_ngrok_tcp_ok = ngrok_ok;
         s_last_probe_ms = lv_tick_get();
-        ESP_LOGI(TAG, "Link probe: lan[%s]=%d ngrok=%d (current=%s) zombie_rounds=%d",
+        size_t int_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        ESP_LOGI(TAG, "Link probe: lan[%s]=%d ngrok=%d (current=%s) zombie_rounds=%d int_largest=%uB",
                  lan_host, lan_ok, ngrok_ok,
-                 s_using_ngrok ? "ngrok" : "lan", zombie_rounds);
+                 s_using_ngrok ? "ngrok" : "lan", zombie_rounds,
+                 (unsigned)int_largest);
 
-        /* W15-H08 zombie-association check: both probes failed while
-         * Wi-Fi reports associated.  That means the AP has black-holed
-         * our client (bridge flush, client isolation, deauth-without-
-         * notify).  Kick Wi-Fi after two consecutive fails. */
+        /* #146 progressive escalation: both probes failed while Wi-Fi
+         * reports associated — network stack is wedged.  Escalate
+         * based on how many consecutive rounds have failed. */
         if (!lan_ok && !ngrok_ok) {
             zombie_rounds++;
-            if (zombie_rounds >= ZOMBIE_THRESHOLD) {
+            if (zombie_rounds >= ZOMBIE_REBOOT) {
+                ESP_LOGE(TAG, "Zombie Wi-Fi: %d rounds (~%d s) failed even "
+                              "after hard kick — controlled reboot",
+                         zombie_rounds, zombie_rounds * 30);
+                /* Give the log buffer a moment to flush before reboot. */
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+                /* unreachable */
+            } else if (zombie_rounds >= ZOMBIE_HARD) {
+                ESP_LOGW(TAG, "Zombie Wi-Fi: %d rounds — escalating to HARD kick "
+                              "(esp_wifi_stop/start)", zombie_rounds);
+                esp_err_t r = tab5_wifi_hard_kick();
+                if (r != ESP_OK) {
+                    ESP_LOGE(TAG, "Hard kick returned %s — next round reboots",
+                             esp_err_to_name(r));
+                }
+                /* Keep zombie_rounds ticking so the reboot fires if
+                 * hard kick didn't recover. */
+            } else if (zombie_rounds >= ZOMBIE_SOFT) {
                 ESP_LOGW(TAG, "Zombie Wi-Fi detected: both probes failed "
-                              "%d rounds in a row — kicking association",
+                              "%d rounds in a row — soft kick (deauth+reconnect)",
                          zombie_rounds);
                 tab5_wifi_kick();
-                zombie_rounds = 0;
             }
         } else {
             zombie_rounds = 0;
