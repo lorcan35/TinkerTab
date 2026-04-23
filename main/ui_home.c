@@ -316,6 +316,18 @@ static void pos_centered(lv_obj_t *obj, int y, int w, int h)
 
 lv_obj_t *ui_home_create(void)
 {
+    /* #173: defensive idempotent check.  Today's boot path only calls
+     * ui_home_create() once, but if a future refactor ever adds a
+     * second create (theme reload, locale switch, crash recovery that
+     * re-calls boot sequence) the unguarded overwrite of s_screen
+     * would silently leak the old home tree + every static object
+     * pointer below.  Matches pattern already used by ui_notes,
+     * ui_files, ui_camera (post-#172). */
+    if (s_screen) {
+        lv_screen_load(s_screen);
+        return s_screen;
+    }
+
     s_screen = lv_obj_create(NULL);
     lv_obj_remove_style_all(s_screen);
     lv_obj_set_size(s_screen, SW, SH);
