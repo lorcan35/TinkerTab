@@ -1,11 +1,11 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-24 — Phase 3 (B) probe in flight
-> **Current phase:** Phase 3, hypothesis (B) — force `lv_mem_add_pool()` at boot + sharpen probe with `tab5_ui_lock` + `total_size`
-> **Active branch:** `investigate/lvgl-pool-pressure` (7 commits ahead of main at Phase 3-A rejection)
+> **Last updated:** 2026-04-24 — Phase 3 (B) mechanism confirmed; PANIC class eliminated by 128 KB `lv_mem_add_pool()` probe
+> **Current phase:** Phase 3 (B) validated → moving to follow-up PR that replaces the 128 KB probe with a properly-sized pool (~2 MB PSRAM) for the real fix
+> **Active branch:** `investigate/lvgl-pool-pressure` (10 commits ahead of main at Phase 3-B results)
 > **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`
 >
-> **NEXT CONCRETE STEP when resuming:** see the latest log entry "Phase 3 (B) plan".  Two files touched (`main/main.c` + `main/pool_probe.c`) for a single experiment: measurement upgrade (lock + `lvgl_total_kb` column) plus the experimental variable (128 KB PSRAM pool added at boot).  Boot-log and CSV trajectory answer the fork: force-add a large pool (monitor sees multi-pool), or pivot to hypothesis (C) transition-leak instrumentation (monitor is blind).  Decision rule is pre-registered in the plan entry.
+> **NEXT CONCRETE STEP when resuming:** open a separate follow-up PR (new tracking issue) that force-adds a generously-sized PSRAM pool at boot — replace the 128 KB probe code in `main.c` with ~2 MB and retitle the logs.  Then run the full 30-min stress orchestrator and log a Phase 4 results entry.  Two SW resets surfaced during Phase 3-B stress, both during `mode=3 chat` actions — those are a separate crash class (likely `heap_watchdog.c` frag reboot or zombie-reboot WDT in `voice.c`) and need their own investigation + issue; do NOT conflate them with the LVGL pool work.
 
 ---
 
@@ -302,6 +302,75 @@ Source-code finding already rules out "auto-expand firing invisibly".  Remaining
 - Don't wrap `tab5_ui_try_lock()` with a short timeout in the sampler — the monitor walk is fast and the 1 Hz cadence means occasional contention with the UI task is fine.  Use the recursive `tab5_ui_lock()` for measurement consistency.
 
 **Will append a results entry below after flash + 10 min stress.**
+
+### 2026-04-24 — Phase 3 (B) results: mechanism confirmed, PANIC class eliminated
+
+**Firmware:** commit bacb83a on `investigate/lvgl-pool-pressure` (probe upgrade 938f73d, boot lv_mem_add_pool probe bacb83a).
+
+**Boot-log readings (the experiment's primary output):**
+
+```
+I (11004) ui_core:    LVGL 9.2.2 initialized
+I (14306) tab5:       pool_probe: before  total=92 free=78 used=14 KB frag=1%
+I (14308) tab5:       pool_probe: lv_mem_add_pool 128 KB PSRAM @ 0x48b2e1b8 -> handle=0x48b2e1b8
+I (14310) tab5:       pool_probe: after   total=220 free=206 used=14 KB frag=38%
+I (14313) tab5:       pool_probe: total delta = +127 KB (expected ~+128)
+```
+
+**Interpretation:**
+- `lv_mem_add_pool()` returns a non-NULL pool handle.  The PSRAM-backed 128 KB chunk registers successfully.
+- `lv_mem_monitor`'s `total_size` grew from 92 KB (96 KB base pool minus ~4 KB TLSF metadata) to 220 KB.  Delta = +127 KB, matching the expected +128 KB minus ~1 KB of per-pool TLSF metadata.
+- `free_size` grew 78→206 KB (+128 KB exactly).  `used_size` stable at 14 KB, as expected — adding an empty pool adds to free, not used.
+- `frag_pct` jumped 1%→38% because the two pools are disjoint address spaces (TLSF's biggest-free-block is now 128 KB from the new pool vs total_free=206 KB), but biggest-free-block is *larger* than before.  This is harmless.
+- **Verdict: `lv_mem_add_pool()` is the correct, working mechanism for growing the LVGL heap, and `lv_mem_monitor` reports it accurately.  Pre-registered "expected outcome" row hit.**
+
+**10-min stress run (vs Phase 1 baseline):**
+
+| Metric | Phase 1 baseline (96 KB pool) | Phase 3-B (220 KB pool, 128 KB added) |
+|---|---|---|
+| Duration | 10 min (partial) | 17 min |
+| Total resets | 3 | 2 |
+| PANIC crashes | 3 | **0** |
+| SW resets (controlled reboot) | 0 | 2 |
+| First reset at | 150 s uptime | 188 s uptime |
+| Cadence between resets | ~15-25 s | **~560 s** |
+| `lvgl_free_kb` min | **2 KB** (stuck there for 21 s) | **112 KB** (stable at 112 ± 1 KB for 300+ s) |
+| `lvgl_free_kb` trajectory | 78→2 KB, never recovers | 206→112 KB, stabilises |
+| AllocFailures events | not recorded (empty because `heap_caps_malloc` failure callback doesn't fire for LVGL's TLSF) | 0 |
+| Internal SRAM largest block | 38 KB (tight) | 104-56 KB (healthier — probably noise) |
+| PSRAM free | flat ~21,133 KB | flat ~20,990 KB (~143 KB lower: the 128 KB probe pool + overhead) |
+
+**Pool trajectory under sustained stress** (sampled every 60 s from `/heap/probe-csv`):
+
+```
+t=  13s  lvgl_total=220  used= 14  free=206  frag=38%   (boot + probe)
+t=  43s  lvgl_total=217  used= 37  free=179  frag=29%   (home screen created)
+t= 103s  lvgl_total=211  used= 81  free=130  frag= 3%   (5 stress cycles)
+t= 163s  lvgl_total=209  used= 97  free=112  frag= 1%
+t= 223s  lvgl_total=209  used= 97  free=112  frag= 1%
+t= 283s  lvgl_total=210  used= 96  free=113  frag= 1%
+t= 343s  lvgl_total=209  used= 97  free=112  frag= 1%
+t= 403s  lvgl_total=209  used= 97  free=112  frag= 1%
+t= 464s  lvgl_total=210  used= 96  free=113  frag= 1%
+```
+
+From ~t=163s through t=464s (**five minutes of continuous stress**), `used_size` and `free_size` are pinned within ±1 KB of 97/112 KB.  No monotonic drift.  No transient spikes toward zero.  **The "free stays at 2 KB then crash" pattern from Phase 1 does not recur.**
+
+Also worth noting: the lock-protected `lv_mem_monitor` calls produce arithmetically consistent snapshots now.  `used + free ≈ total` everywhere (97 + 112 = 209 ≈ total=209).  The Phase 1 "used stuck at 14 KB" artefact is gone.
+
+**Remaining crashes — different class entirely:**
+
+Both resets in the Phase 3-B run had `reset_reason = SW`, not `PANIC`.  SW means a controlled software-initiated reboot (candidates: the fragmentation watchdog in `heap_watchdog.c`, the zombie-reboot WDT in `voice.c` for dead WS transports, or an explicit `esp_restart()` somewhere).  Both crashes happened during a `mode=3 chat="..."` action — the Gateway LLM round-trip is the common factor.  Hypothesis: either the internal SRAM fragmentation watchdog is reacting to some other pressure, or the voice WS is briefly dying under load and the zombie-reboot is recovering.  **This is a different investigation — outside the scope of hypothesis (B).**
+
+**Phase 3-B conclusion:**
+- The LVGL pool-exhaustion crash mechanism **is** the root cause of the `reset_reason=PANIC` class observed across PRs #166–#178.
+- `lv_mem_add_pool()` + an explicit PSRAM-backed chunk is the correct fix path (LVGL 9.2.2 does not auto-expand, so nothing except explicit calls grows the pool).
+- Even 128 KB of headroom — sized deliberately too small to be "the fix" — eliminated all PANIC crashes for 17 minutes under the stress orchestrator and stabilised the pool at free=112 KB ± 1 KB.
+- Hypothesis (B) validated.  Not yet a 30-min-zero-crash result (two SW resets remain), but those are a separate crash class and require their own investigation.
+
+**Next step (separate PR, new issue):** force-add a generously sized PSRAM pool (proposed: 2 MB, well within TLSF's 4192 KB per-pool cap) at boot.  2 MB is ~10× the observed working-set of ~100 KB, giving ample margin for transient spikes + future UI complexity, while costing nothing: PSRAM has 21 MB free.  Rename the probe logging in `main.c` accordingly — it's no longer a probe, it's the real fix.  Validate with a clean 30-min stress.
+
+**Parallel follow-up (new hypothesis):** investigate the `reset_reason=SW` class that surfaced during mode-3 chat actions.  Likely candidates: `heap_watchdog.c` fragmentation reboot, zombie-reboot WDT in voice.c, or an unrelated `esp_restart()` path.  Will open a separate tracking issue.
 
 ---
 
