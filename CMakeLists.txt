@@ -14,5 +14,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.local")
     )
 endif()
 
+# #158: apply third-party managed-component patches before the build
+# reads any of their source (bounds-check on LVGL's get_next_line, etc.).
+# Idempotent — a sentinel string in each patched file skips reapply.
+execute_process(
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tools/apply_patches.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    RESULT_VARIABLE _patch_result
+    OUTPUT_VARIABLE _patch_output
+    ERROR_VARIABLE  _patch_output
+)
+message(STATUS "${_patch_output}")
+if(NOT _patch_result EQUAL 0)
+    message(FATAL_ERROR "apply_patches.sh failed (rc=${_patch_result}) — aborting build")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(tinkertab)
