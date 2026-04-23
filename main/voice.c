@@ -24,7 +24,6 @@
 #include "voice.h"
 #include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
 #include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
-#include "afe.h"
 #include "widget.h"
 #include "ui_voice.h"
 #include "ui_notes.h"
@@ -75,9 +74,6 @@ static const char *TAG = "tab5_voice";
 #define MIC_TDM_REF_OFF        1    // AEC reference at slot 1 (near-zero RMS ~6 when speaker silent)
 #define MIC_TDM_MIC2_OFF       2    // MIC2 at slot 2 (high RMS ~200)
 
-// AFE feed: channels match the format string passed to afe_config_init().
-#define AFE_FEED_CHANNELS      2  /* "MR" mode — 1 mic + 1 ref */
-#define AFE_FEED_MAX_SAMPLES   2048
 #define MIC_TDM_SAMPLES        (MIC_48K_FRAMES * MIC_TDM_CHANNELS)
 // Downsample ratio: 48kHz -> 16kHz = 3:1
 #define DOWNSAMPLE_RATIO       (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
@@ -1677,42 +1673,6 @@ static void voice_build_local_uri(char *out, size_t out_cap,
                                    const char *host, uint16_t port)
 {
     snprintf(out, out_cap, "ws://%s:%u%s", host, (unsigned)port, TAB5_VOICE_WS_PATH);
-}
-
-// ---------------------------------------------------------------------------
-// Wake word handler — called from AFE detect task (parked)
-// ---------------------------------------------------------------------------
-void voice_on_wake(void)
-{
-    voice_state_t cur = s_state;
-
-    if (cur == VOICE_STATE_IDLE || cur == VOICE_STATE_READY) {
-        ESP_LOGI(TAG, "Wake → LISTENING");
-        voice_set_state(VOICE_STATE_LISTENING, NULL);
-
-        if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_text("{\"type\":\"start\",\"mode\":\"ask\",\"wake\":true}");
-        }
-    } else if (cur == VOICE_STATE_SPEAKING) {
-        ESP_LOGI(TAG, "Wake → BARGE-IN (interrupting TTS)");
-
-        if (s_play_mutex) {
-            xSemaphoreTake(s_play_mutex, portMAX_DELAY);
-            s_play_wr = 0;
-            s_play_rd = 0;
-            s_play_count = 0;
-            xSemaphoreGive(s_play_mutex);
-        }
-
-        if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_text("{\"type\":\"cancel\"}");
-        }
-
-        voice_set_state(VOICE_STATE_LISTENING, NULL);
-        if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_text("{\"type\":\"start\",\"mode\":\"ask\",\"wake\":true}");
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

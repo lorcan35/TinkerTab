@@ -163,7 +163,6 @@ const char *voice_get_dictation_title(void);
 const char *voice_get_dictation_summary(void);
 
 /** Handle wake word detection: starts listening from IDLE/READY, or barge-in from SPEAKING. */
-void voice_on_wake(void);
 
 /** Start the reconnect watchdog task: checks connection every 5s and auto-reconnects with backoff. */
 esp_err_t voice_start_reconnect_watchdog(void);
