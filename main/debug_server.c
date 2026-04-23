@@ -2202,6 +2202,482 @@ static esp_err_t selftest_handler(httpd_req_t *req)
     return ret;
 }
 
+/* ==================================================================== */
+/*  #149 PR β — new capability endpoints                                */
+/* ==================================================================== */
+
+#include "debug_obs.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
+#include "chat_msg_store.h"
+#include "audio.h"
+#include "battery.h"
+#include "display.h"
+
+/* Shared JSON response helper used by the new handlers.  Takes ownership
+ * of `root` (Delete'd here). */
+static esp_err_t send_json_resp(httpd_req_t *req, cJSON *root)
+{
+    char *s = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (!s) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "json print failed");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
+    esp_err_t r = httpd_resp_sendstr(req, s);
+    free(s);
+    return r;
+}
+
+/* ── GET /tasks — FreeRTOS task snapshot ────────────────────────── */
+/* Full per-task dump requires configUSE_TRACE_FACILITY + the
+ * run-time-stats infra to be enabled in sdkconfig.  Most ESP-IDF
+ * projects leave this off to save ~96 B per task; degrade gracefully. */
+static esp_err_t tasks_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    cJSON *root  = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "count", (double)uxTaskGetNumberOfTasks());
+
+#if (configUSE_TRACE_FACILITY == 1) && (configGENERATE_RUN_TIME_STATS == 1)
+    UBaseType_t n = uxTaskGetNumberOfTasks();
+    size_t slots = n + 8;
+    TaskStatus_t *status = heap_caps_malloc(slots * sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM);
+    if (status) {
+        uint32_t total_runtime = 0;
+        UBaseType_t got = uxTaskGetSystemState(status, slots, &total_runtime);
+        cJSON *arr = cJSON_AddArrayToObject(root, "tasks");
+        cJSON_AddNumberToObject(root, "total_runtime", (double)total_runtime);
+        const char *state_names[] = {"running","ready","blocked","suspended","deleted","invalid"};
+        for (UBaseType_t i = 0; i < got; i++) {
+            const TaskStatus_t *t = &status[i];
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "name",     t->pcTaskName ? t->pcTaskName : "");
+            cJSON_AddNumberToObject(o, "prio",     t->uxCurrentPriority);
+            cJSON_AddStringToObject(o, "state",
+                t->eCurrentState <= eInvalid ? state_names[t->eCurrentState] : "?");
+            cJSON_AddNumberToObject(o, "stack_free",
+                                    (double)(t->usStackHighWaterMark * sizeof(StackType_t)));
+            cJSON_AddNumberToObject(o, "runtime",  (double)t->ulRunTimeCounter);
+            cJSON_AddItemToArray(arr, o);
+        }
+        heap_caps_free(status);
+    }
+#else
+    cJSON_AddStringToObject(root, "note",
+        "per-task dump requires configUSE_TRACE_FACILITY + "
+        "configGENERATE_RUN_TIME_STATS in sdkconfig");
+#endif
+    return send_json_resp(req, root);
+}
+
+/* ── GET /logs/tail?n=100 ───────────────────────────────────────── */
+static esp_err_t logs_tail_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    int n = 100;
+    char q[64] = {0}, v[16] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK
+        && httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+        int x = atoi(v);
+        if (x > 0 && x <= 5000) n = x;
+    }
+    size_t out_len = 0;
+    char *tail = tab5_debug_obs_log_tail(n, &out_len);
+    if (!tail) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "no log buffer");
+        return ESP_FAIL;
+    }
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, tail, out_len);
+    heap_caps_free(tail);
+    return ESP_OK;
+}
+
+/* ── POST /voice/text — send Dragon text, no 200-byte limit ────── */
+static esp_err_t voice_text_handler(httpd_req_t *req)
+{
+    /* α already fixed /chat to heap-allocate — /voice/text is an
+     * explicit alias so the REST surface reads cleaner.  Forward
+     * wholesale to the same handler. */
+    return chat_handler(req);
+}
+
+/* ── POST /voice/cancel ─────────────────────────────────────────── */
+static esp_err_t voice_cancel_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    esp_err_t r = voice_cancel();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", r == ESP_OK);
+    if (r != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
+    return send_json_resp(req, root);
+}
+
+/* ── POST /voice/clear — clear Dragon conversation history ────── */
+static esp_err_t voice_clear_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    esp_err_t r = voice_clear_history();
+    /* Also wipe Tab5 side so UI matches. */
+    extern void chat_store_clear(void);
+    chat_store_clear();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", r == ESP_OK);
+    cJSON_AddBoolToObject(root, "store_cleared", true);
+    if (r != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
+    return send_json_resp(req, root);
+}
+
+/* ── GET /wifi/status ──────────────────────────────────────────── */
+static esp_err_t wifi_status_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "connected", tab5_wifi_connected());
+
+    char ip[20]; get_wifi_ip(ip, sizeof(ip));
+    cJSON_AddStringToObject(root, "ip", ip);
+
+    wifi_ap_record_t ap = {0};
+    esp_err_t r = esp_wifi_sta_get_ap_info(&ap);
+    if (r == ESP_OK) {
+        char bssid[18];
+        snprintf(bssid, sizeof(bssid), "%02x:%02x:%02x:%02x:%02x:%02x",
+                 ap.bssid[0], ap.bssid[1], ap.bssid[2],
+                 ap.bssid[3], ap.bssid[4], ap.bssid[5]);
+        cJSON_AddStringToObject(root, "ssid", (const char *)ap.ssid);
+        cJSON_AddStringToObject(root, "bssid", bssid);
+        cJSON_AddNumberToObject(root, "channel", ap.primary);
+        cJSON_AddNumberToObject(root, "rssi", ap.rssi);
+        const char *auths[] = {"open","wep","wpa_psk","wpa2_psk","wpa_wpa2_psk",
+                               "wpa2_enterprise","wpa3_psk","wpa2_wpa3_psk",
+                               "wapi_psk","owe","wpa3_enterprise","wpa3_ent_192"};
+        int am = (int)ap.authmode;
+        cJSON_AddStringToObject(root, "authmode",
+            (am >= 0 && am < (int)(sizeof(auths)/sizeof(auths[0]))) ? auths[am] : "?");
+    } else {
+        cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
+    }
+    return send_json_resp(req, root);
+}
+
+/* ── GET /battery ──────────────────────────────────────────────── */
+static esp_err_t battery_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    tab5_battery_info_t bat = {0};
+    esp_err_t r = tab5_battery_read(&bat);
+    cJSON *root = cJSON_CreateObject();
+    if (r == ESP_OK) {
+        cJSON_AddNumberToObject(root, "voltage",  (double)bat.voltage);
+        cJSON_AddNumberToObject(root, "current",  (double)bat.current);
+        cJSON_AddNumberToObject(root, "power",    (double)bat.power);
+        cJSON_AddNumberToObject(root, "percent",  (double)bat.percent);
+        cJSON_AddBoolToObject(root,   "charging", bat.charging);
+    } else {
+        cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
+    }
+    return send_json_resp(req, root);
+}
+
+/* ── POST /display/brightness?pct=0..100 ───────────────────────── */
+static esp_err_t display_brightness_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[32] = {0}, v[8] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "pct", v, sizeof(v));
+    int pct = atoi(v);
+    if (pct < 0 || pct > 100) {
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "error", "pct must be 0..100");
+        return send_json_resp(req, r);
+    }
+    esp_err_t er = tab5_settings_set_brightness((uint8_t)pct);
+    /* Apply live via display driver so the user sees the change without
+     * needing to open the Settings screen. */
+    tab5_display_set_brightness(pct);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", er == ESP_OK);
+    cJSON_AddNumberToObject(resp, "brightness", pct);
+    tab5_debug_obs_event("display.brightness", v);
+    return send_json_resp(req, resp);
+}
+
+/* ── GET/POST /audio ───────────────────────────────────────────── */
+static esp_err_t audio_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    if (req->method == HTTP_POST) {
+        char q[64] = {0}, v[16] = {0};
+        httpd_req_get_url_query_str(req, q, sizeof(q));
+
+        /* action=volume&pct=50 | action=mute&on=0|1 */
+        char action[16] = {0};
+        httpd_query_key_value(q, "action", action, sizeof(action));
+        cJSON *resp = cJSON_CreateObject();
+        if (strcmp(action, "volume") == 0) {
+            httpd_query_key_value(q, "pct", v, sizeof(v));
+            int pct = atoi(v);
+            if (pct < 0 || pct > 100) {
+                cJSON_AddStringToObject(resp, "error", "pct must be 0..100");
+            } else {
+                tab5_settings_set_volume((uint8_t)pct);
+                tab5_audio_set_volume((uint8_t)pct);
+                cJSON_AddBoolToObject(resp, "ok", true);
+                cJSON_AddNumberToObject(resp, "volume", pct);
+                tab5_debug_obs_event("audio.volume", v);
+            }
+        } else if (strcmp(action, "mute") == 0) {
+            httpd_query_key_value(q, "on", v, sizeof(v));
+            int on = atoi(v);
+            tab5_settings_set_mic_mute(on ? 1 : 0);
+            cJSON_AddBoolToObject(resp, "ok", true);
+            cJSON_AddBoolToObject(resp, "mic_mute", on != 0);
+            tab5_debug_obs_event("audio.mic_mute", v);
+        } else {
+            cJSON_AddStringToObject(resp, "error", "action must be volume|mute");
+        }
+        return send_json_resp(req, resp);
+    }
+
+    /* GET — current state. */
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "volume",   tab5_settings_get_volume());
+    cJSON_AddNumberToObject(root, "mic_mute", tab5_settings_get_mic_mute());
+    return send_json_resp(req, root);
+}
+
+/* ── GET /metrics — Prometheus text format ─────────────────────── */
+static esp_err_t metrics_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    size_t int_free   = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t int_lrg    = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t ps_free    = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t ps_lrg     = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    lv_mem_monitor_t lv_m; lv_mem_monitor(&lv_m);
+    tab5_battery_info_t bat = {0}; tab5_battery_read(&bat);
+
+    char out[1536];
+    int n = snprintf(out, sizeof(out),
+        "# HELP tab5_uptime_ms Milliseconds since boot\n"
+        "# TYPE tab5_uptime_ms counter\n"
+        "tab5_uptime_ms %llu\n"
+        "# HELP tab5_heap_free_bytes Free heap per pool\n"
+        "# TYPE tab5_heap_free_bytes gauge\n"
+        "tab5_heap_free_bytes{pool=\"internal\"} %u\n"
+        "tab5_heap_free_bytes{pool=\"psram\"} %u\n"
+        "tab5_heap_free_bytes{pool=\"lvgl\"} %u\n"
+        "tab5_heap_largest_bytes{pool=\"internal\"} %u\n"
+        "tab5_heap_largest_bytes{pool=\"psram\"} %u\n"
+        "# HELP tab5_wifi_connected 1 if STA associated\n"
+        "# TYPE tab5_wifi_connected gauge\n"
+        "tab5_wifi_connected %d\n"
+        "tab5_voice_connected %d\n"
+        "tab5_voice_mode %u\n"
+        "tab5_voice_state %u\n"
+        "tab5_fps_lvgl %lu\n"
+        "tab5_battery_percent %u\n"
+        "tab5_battery_voltage %.3f\n"
+        "tab5_battery_current %.3f\n"
+        "tab5_nvs_writes %lu\n",
+        (unsigned long long)(esp_timer_get_time() / 1000),
+        (unsigned)int_free, (unsigned)ps_free, (unsigned)lv_m.free_size,
+        (unsigned)int_lrg, (unsigned)ps_lrg,
+        tab5_wifi_connected() ? 1 : 0,
+        voice_is_connected() ? 1 : 0,
+        tab5_settings_get_voice_mode(),
+        (unsigned)voice_get_state(),
+        (unsigned long)ui_core_get_fps(),
+        bat.percent, bat.voltage, bat.current,
+        (unsigned long)tab5_settings_get_nvs_write_count());
+    (void)n;
+    httpd_resp_set_type(req, "text/plain; version=0.0.4; charset=utf-8");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, out);
+    return ESP_OK;
+}
+
+/* ── GET /events?since=<ms> ─────────────────────────────────────── */
+static esp_err_t events_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    uint64_t since = 0;
+    char q[48] = {0}, v[24] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK
+        && httpd_query_key_value(q, "since", v, sizeof(v)) == ESP_OK) {
+        since = (uint64_t)strtoull(v, NULL, 10);
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = tab5_debug_obs_events_json(since);
+    cJSON_AddItemToObject(root, "events", arr);
+    return send_json_resp(req, root);
+}
+
+/* ── GET /heap/history?n=60 ─────────────────────────────────────── */
+static esp_err_t heap_history_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    int n = 60;
+    char q[32] = {0}, v[8] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK
+        && httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+        int x = atoi(v); if (x > 0) n = x;
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddItemToObject(root, "samples", tab5_debug_obs_heap_json(n));
+    return send_json_resp(req, root);
+}
+
+/* ── GET /chat/messages?n=50 ────────────────────────────────────── */
+static esp_err_t chat_messages_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    int n = 50;
+    char q[32] = {0}, v[8] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK
+        && httpd_query_key_value(q, "n", v, sizeof(v)) == ESP_OK) {
+        int x = atoi(v); if (x > 0 && x <= 500) n = x;
+    }
+    int total = chat_store_count();
+    if (n > total) n = total;
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr  = cJSON_AddArrayToObject(root, "messages");
+    cJSON_AddNumberToObject(root, "total", total);
+    cJSON_AddNumberToObject(root, "returned", n);
+
+    /* Return the last `n` messages, oldest first. */
+    for (int i = total - n; i < total; i++) {
+        const chat_msg_t *m = chat_store_get(i);
+        if (!m) continue;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "role", m->is_user ? "user" : "assistant");
+        const char *types[] = {"text","image","card","audio","system"};
+        cJSON_AddStringToObject(o, "type",
+            (int)m->type < (int)(sizeof(types)/sizeof(types[0])) ? types[m->type] : "?");
+        cJSON_AddStringToObject(o, "text", m->text);
+        if (m->media_url[0]) cJSON_AddStringToObject(o, "media_url", m->media_url);
+        if (m->subtitle[0])  cJSON_AddStringToObject(o, "subtitle",  m->subtitle);
+        cJSON_AddNumberToObject(o, "timestamp", (double)m->timestamp);
+        if (m->receipt_mils > 0) {
+            cJSON *rcpt = cJSON_AddObjectToObject(o, "receipt");
+            cJSON_AddNumberToObject(rcpt, "mils",        m->receipt_mils);
+            cJSON_AddNumberToObject(rcpt, "prompt_tok",  m->receipt_ptok);
+            cJSON_AddNumberToObject(rcpt, "compl_tok",   m->receipt_ctok);
+            cJSON_AddStringToObject(rcpt, "model",       m->receipt_model_short);
+            cJSON_AddBoolToObject(rcpt,   "retried",     m->receipt_retried);
+        }
+        cJSON_AddItemToArray(arr, o);
+    }
+    return send_json_resp(req, root);
+}
+
+/* ── GET /net/ping?host=<>&port=<> ──────────────────────────────── */
+/* Re-implements the non-blocking probe locally so we don't leak
+ * voice.c internals.  Matches the fix from #146. */
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include <fcntl.h>
+#include <errno.h>
+static esp_err_t ping_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[128] = {0}, host[64] = {0}, port_s[8] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "host", host, sizeof(host));
+    httpd_query_key_value(q, "port", port_s, sizeof(port_s));
+    int port = atoi(port_s);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "host", host);
+    cJSON_AddNumberToObject(root, "port", port);
+    if (!host[0] || port <= 0 || port > 65535) {
+        cJSON_AddStringToObject(root, "error", "need host and port=1..65535");
+        return send_json_resp(req, root);
+    }
+
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    char ps[8]; snprintf(ps, sizeof(ps), "%d", port);
+    int gai = getaddrinfo(host, ps, &hints, &res);
+    if (gai != 0 || !res) {
+        cJSON_AddStringToObject(root, "error", "dns failed");
+        if (res) freeaddrinfo(res);
+        return send_json_resp(req, root);
+    }
+    int s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (s < 0) { freeaddrinfo(res);
+        cJSON_AddStringToObject(root, "error", "socket failed");
+        return send_json_resp(req, root);
+    }
+    int flags = fcntl(s, F_GETFL, 0);
+    if (flags >= 0) fcntl(s, F_SETFL, flags | O_NONBLOCK);
+    int64_t t0 = esp_timer_get_time();
+    bool ok = false;
+    int cr = connect(s, res->ai_addr, res->ai_addrlen);
+    if (cr == 0) {
+        ok = true;
+    } else if (errno == EINPROGRESS) {
+        fd_set wfds; FD_ZERO(&wfds); FD_SET(s, &wfds);
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        int n = select(s + 1, NULL, &wfds, NULL, &tv);
+        if (n > 0 && FD_ISSET(s, &wfds)) {
+            int soerr = 0; socklen_t le = sizeof(soerr);
+            getsockopt(s, SOL_SOCKET, SO_ERROR, &soerr, &le);
+            ok = (soerr == 0);
+        }
+    }
+    int64_t elapsed_us = esp_timer_get_time() - t0;
+    close(s);
+    freeaddrinfo(res);
+
+    cJSON_AddBoolToObject(root, "ok", ok);
+    cJSON_AddNumberToObject(root, "elapsed_ms", (double)(elapsed_us / 1000));
+    return send_json_resp(req, root);
+}
+
+/* ── POST /nvs/erase?confirm=<token> ────────────────────────────── */
+/* Factory reset path.  Requires ?confirm=<first 8 chars of auth_tok>
+ * as a guard against accidental triggering.  After erase, reboots. */
+static esp_err_t nvs_erase_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[64] = {0}, confirm[16] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "confirm", confirm, sizeof(confirm));
+
+    /* Expect first 8 chars of the auth token. */
+    char expected[9];
+    strncpy(expected, s_auth_token, 8);
+    expected[8] = '\0';
+    if (strncmp(confirm, expected, 8) != 0) {
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "error",
+            "factory reset requires ?confirm=<first-8-chars-of-auth-token>");
+        return send_json_resp(req, r);
+    }
+    ESP_LOGW(TAG, "NVS erase requested via debug — rebooting in 500 ms");
+    tab5_debug_obs_event("nvs", "erase");
+    cJSON *r = cJSON_CreateObject();
+    cJSON_AddBoolToObject(r, "ok", true);
+    cJSON_AddStringToObject(r, "note", "erasing + rebooting");
+    send_json_resp(req, r);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    nvs_flash_erase();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    esp_restart();
+    return ESP_OK;  /* unreachable */
+}
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -2225,7 +2701,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;
-    config.max_uri_handlers = 32;   /* W15: +/heap_trace_start +/heap_trace_dump */
+    config.max_uri_handlers = 56;   /* #149: +16 PR β endpoints (see below) */
     config.lru_purge_enable = true;
     config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
@@ -2345,6 +2821,24 @@ esp_err_t tab5_debug_server_init(void)
         .uri = "/heap", .method = HTTP_GET, .handler = heap_handler
     };
 
+    /* #149 PR β — new capability endpoints. */
+    const httpd_uri_t uri_tasks          = { .uri = "/tasks",          .method = HTTP_GET,  .handler = tasks_handler };
+    const httpd_uri_t uri_logs_tail      = { .uri = "/logs/tail",      .method = HTTP_GET,  .handler = logs_tail_handler };
+    const httpd_uri_t uri_voice_text     = { .uri = "/voice/text",     .method = HTTP_POST, .handler = voice_text_handler };
+    const httpd_uri_t uri_voice_cancel   = { .uri = "/voice/cancel",   .method = HTTP_POST, .handler = voice_cancel_handler };
+    const httpd_uri_t uri_voice_clear    = { .uri = "/voice/clear",    .method = HTTP_POST, .handler = voice_clear_handler };
+    const httpd_uri_t uri_wifi_status    = { .uri = "/wifi/status",    .method = HTTP_GET,  .handler = wifi_status_handler };
+    const httpd_uri_t uri_battery        = { .uri = "/battery",        .method = HTTP_GET,  .handler = battery_handler };
+    const httpd_uri_t uri_disp_bright    = { .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler };
+    const httpd_uri_t uri_audio_get      = { .uri = "/audio",          .method = HTTP_GET,  .handler = audio_handler };
+    const httpd_uri_t uri_audio_post     = { .uri = "/audio",          .method = HTTP_POST, .handler = audio_handler };
+    const httpd_uri_t uri_metrics        = { .uri = "/metrics",        .method = HTTP_GET,  .handler = metrics_handler };
+    const httpd_uri_t uri_events         = { .uri = "/events",         .method = HTTP_GET,  .handler = events_handler };
+    const httpd_uri_t uri_heap_history   = { .uri = "/heap/history",   .method = HTTP_GET,  .handler = heap_history_handler };
+    const httpd_uri_t uri_chat_msgs      = { .uri = "/chat/messages",  .method = HTTP_GET,  .handler = chat_messages_handler };
+    const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
+    const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
+
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
     httpd_register_uri_handler(server, &uri_screenshot_jpg);
@@ -2370,6 +2864,23 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_selftest);
     httpd_register_uri_handler(server, &uri_heap);
+    /* #149 PR β registrations. */
+    httpd_register_uri_handler(server, &uri_tasks);
+    httpd_register_uri_handler(server, &uri_logs_tail);
+    httpd_register_uri_handler(server, &uri_voice_text);
+    httpd_register_uri_handler(server, &uri_voice_cancel);
+    httpd_register_uri_handler(server, &uri_voice_clear);
+    httpd_register_uri_handler(server, &uri_wifi_status);
+    httpd_register_uri_handler(server, &uri_battery);
+    httpd_register_uri_handler(server, &uri_disp_bright);
+    httpd_register_uri_handler(server, &uri_audio_get);
+    httpd_register_uri_handler(server, &uri_audio_post);
+    httpd_register_uri_handler(server, &uri_metrics);
+    httpd_register_uri_handler(server, &uri_events);
+    httpd_register_uri_handler(server, &uri_heap_history);
+    httpd_register_uri_handler(server, &uri_chat_msgs);
+    httpd_register_uri_handler(server, &uri_net_ping);
+    httpd_register_uri_handler(server, &uri_nvs_erase);
 
     /* Log the URL */
     char ip[20];
