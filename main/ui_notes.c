@@ -464,6 +464,10 @@ static void notes_load(void)
 /* ── Screen state ──────────────────────────────────────── */
 static lv_obj_t *s_screen      = NULL;
 static lv_obj_t *s_list        = NULL;
+/* #170: guard all LVGL accesses from the background transcription task
+ * (and any other async-dispatched path) against a racing
+ * ui_notes_destroy.  Pattern matches ui_wifi.c / ui_settings.c. */
+static volatile bool s_destroying = false;
 static lv_obj_t *s_input_area  = NULL;
 static lv_obj_t *s_input_btn   = NULL;
 static lv_obj_t *s_search_ta   = NULL;  /* M2: search bar */
@@ -1154,7 +1158,12 @@ static void transcription_queue_task(void *arg)
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         notes_save();
-        refresh_list();
+        /* #170: refresh_list touches LVGL objects; this task runs on
+         * Core 1 outside the UI task, so direct calls race with the UI
+         * thread (including concurrent ui_notes_destroy from a nav).
+         * Route via lv_async_call so the refresh happens on the LVGL
+         * timer tick and the s_destroying guard catches it cleanly. */
+        lv_async_call((lv_async_cb_t)refresh_list, NULL);
     }
 }
 
@@ -1931,6 +1940,10 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
 /* ── Refresh list ───────────────────────────────────────── */
 static void refresh_list(void)
 {
+    /* #170: hard bail if the screen was destroyed between the call being
+     * scheduled (often via lv_async_call from the background transcription
+     * task) and execution.  All s_* pointers below may be dangling. */
+    if (s_destroying || !s_screen) return;
     /* v5 topbar meta — update count regardless of list presence. */
     if (s_topbar_meta) {
         char buf[40];
@@ -2008,6 +2021,11 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
 /* ── Screen create/destroy ─────────────────────────────── */
 lv_obj_t *ui_notes_create(void)
 {
+    /* #170: we're (re-)entering a live notes screen — clear the guard
+     * so the next refresh_list can run.  Must happen BEFORE the
+     * already-exists early-return because hide→show goes through this
+     * function too. */
+    s_destroying = false;
     if (s_screen) {
         /* Already exists — just unhide */
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
@@ -2124,6 +2142,10 @@ lv_obj_t *ui_notes_create(void)
 
 void ui_notes_destroy(void)
 {
+    /* #170: latch the destroying flag FIRST so any async refresh_list
+     * that's already scheduled on the LVGL async queue sees it and
+     * bails before it touches s_list / s_screen / s_topbar_meta. */
+    s_destroying = true;
     ui_keyboard_set_layout_cb(NULL);
     hide_recording_indicator();
     hide_input_area();
