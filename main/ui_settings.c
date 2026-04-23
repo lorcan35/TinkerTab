@@ -155,21 +155,6 @@ static lv_obj_t *s_tinkerclaw_card   = NULL;
 static lv_obj_t *s_tinkerclaw_content[4] = {NULL};
 static uint8_t   s_active_tab     = 0;
 
-/* Cloud model IDs matching dropdown order */
-static const char *s_cloud_model_ids[] = {
-    "anthropic/claude-3.5-haiku",
-    "anthropic/claude-sonnet-4-20250514",
-    "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-};
-
-/* Local model names matching dropdown order */
-static const char *s_local_model_names[] = {
-    "qwen3:1.7b",
-    "qwen3:4b",
-    "qwen3:0.6b",
-};
-
 /* ══════════════════════════════════════════════════════════════════════
  *  Material Dark Helper Functions
  * ══════════════════════════════════════════════════════════════════════ */
@@ -455,28 +440,6 @@ static void cb_tab_local(lv_event_t *e)
         return;
     }
     voice_tab_switch((uint8_t)idx);
-}
-
-static void cb_local_model(lv_event_t *e)
-{
-    lv_obj_t *dd = lv_event_get_target(e);
-    uint32_t sel = lv_dropdown_get_selected(dd);
-    if (sel < sizeof(s_local_model_names)/sizeof(s_local_model_names[0])) {
-        tab5_settings_set_llm_model(s_local_model_names[sel]);
-        ESP_LOGI(TAG, "Local LLM model: %s", s_local_model_names[sel]);
-        send_voice_config();
-    }
-}
-
-static void cb_cloud_model(lv_event_t *e)
-{
-    lv_obj_t *dd = lv_event_get_target(e);
-    uint32_t sel = lv_dropdown_get_selected(dd);
-    if (sel < sizeof(s_cloud_model_ids)/sizeof(s_cloud_model_ids[0])) {
-        tab5_settings_set_llm_model(s_cloud_model_ids[sel]);
-        ESP_LOGI(TAG, "Cloud LLM model: %s", s_cloud_model_ids[sel]);
-        send_voice_config();
-    }
 }
 
 static void cb_mic_mute(lv_event_t *e)
