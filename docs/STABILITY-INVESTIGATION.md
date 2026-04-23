@@ -231,6 +231,30 @@ Going straight to 192 (vs intermediate 128) to give the experiment more signal �
 - If no crashes in 30 min → pool size was the limit AND we have enough headroom for normal use.
 - If same cadence → return to Phase 2 with the new probe data to pick (C) directly.
 
+### 2026-04-24 — Phase 3 (A) rejected: boot abort at 192 KB
+
+**Change applied:** `CONFIG_LV_MEM_SIZE_KILOBYTES = 96 → 192` in `sdkconfig.defaults`.
+
+**Build:** clean.  No linker error despite the historical regression entry warning about 128 KB breaking the linker.  (Encouraging — the ~2.3 MB of dead code we removed today freed up BSS headroom at link time.)
+
+**Runtime:** Tab5 **crash-looped at boot**, every attempt within ~1 s of startup.
+- Serial panic: `abort() was called at PC 0x4814d395`
+- addr2line: `main_task` at `app_startup.c:179` — this is ESP-IDF's `main_task` entry point.  Abort fires before any of our code runs.  Main task asserts when the app-task TLSP or stack guard setup can't complete — a symptom that the 192 KB static BSS allocation consumed the runtime's stack-placement budget.
+- MCAUSE 0x2 = illegal instruction (abort path), MTVAL 0.
+
+**Interpretation:** the linker accepts 192 KB because BSS still fits the static SRAM map, but the *runtime* main-task initialisation then runs out of stack headroom.  96 KB is the soft ceiling for this target regardless of post-cleanup BSS pressure.
+
+**Fix:** reverted to 96 KB, Tab5 boots cleanly (`reset=USB`, full selftest pass).
+
+**Hypothesis-A ruled out.**  Cannot widen the base pool on this target without a bootloader-level memory-region remap, which is far outside the scope of a single-variable experiment.
+
+**Next step:** rotate to hypothesis (B) **verify + repair expand pool**.  Rationale:
+- Our `sdkconfig.defaults` has `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=4096` set.  Expand should kick in when the base 96 KB pool fills.
+- Phase 1 data shows `lvgl_free_kb` going to 2 KB and **staying there** for 21 s before the crash.  If expand were working, the base fills but the pool should keep growing via `lv_mem_add_pool()` expansion chunks.
+- Current hypothesis: expand is configured but not actually invoked — probably because LVGL's expand logic requires `LV_MEM_CUSTOM=0` and a hook we might not have defined, OR `lv_mem_monitor` is silently omitting expansion chunks from its `free_size` count (making our measurement misleading).
+
+**Proposed Phase 3 experiment (B):** verify whether expansion fires by adding an `lv_mem_add_pool()` call at boot with an explicit PSRAM-backed chunk, logging before/after total_size.  If total_size grows after the add, expand-on-demand isn't auto-firing and we can force-add a bigger pool at boot.  One-line addition in `main.c`, zero structural risk.  Plan revision below.
+
 ---
 
 ## Not in scope (deliberately)
