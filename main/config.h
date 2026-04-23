@@ -10,7 +10,7 @@
 #include "bsp_config.h"  /* Hardware pin definitions from BSP */
 
 // ---------------------------------------------------------------------------
-// Dragon streaming server
+// Dragon — voice WS server
 // ---------------------------------------------------------------------------
 #ifndef TAB5_DRAGON_HOST
 #define TAB5_DRAGON_HOST     CONFIG_TAB5_DRAGON_HOST
@@ -29,9 +29,6 @@
 #define TAB5_DRAGON_TOKEN    CONFIG_TAB5_DRAGON_TOKEN
 #endif
 
-#define TAB5_STREAM_PATH     "/stream"
-#define TAB5_TOUCH_WS_PATH   "/ws/touch"
-
 // ---------------------------------------------------------------------------
 // WiFi credentials
 // ---------------------------------------------------------------------------
@@ -42,23 +39,6 @@
 #ifndef TAB5_WIFI_PASS
 #define TAB5_WIFI_PASS       CONFIG_TAB5_WIFI_PASS
 #endif
-
-// ---------------------------------------------------------------------------
-// MJPEG / JPEG streaming
-// ---------------------------------------------------------------------------
-#define TAB5_JPEG_BUF_SIZE    (100 * 1024)
-#define TAB5_FRAME_TIMEOUT_MS 5000
-#define TAB5_UDP_STREAM_PORT  5000
-
-// ---------------------------------------------------------------------------
-// Dragon Link — connection lifecycle
-// ---------------------------------------------------------------------------
-#define TAB5_DRAGON_HEALTH_PATH        "/health"
-#define TAB5_DRAGON_HANDSHAKE_PATH     "/api/handshake"
-#define TAB5_DRAGON_HEARTBEAT_MS       5000
-#define TAB5_DRAGON_HEALTH_TIMEOUT_MS  3000
-#define TAB5_DRAGON_RECONNECT_BASE_MS  2000
-#define TAB5_DRAGON_RECONNECT_MAX_MS   30000
 
 // ---------------------------------------------------------------------------
 // Firmware identity

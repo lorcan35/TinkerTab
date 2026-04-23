@@ -1866,16 +1866,8 @@ static void mic_click_cb(lv_event_t *e)
         tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
         break;
     case VOICE_STATE_READY: {
-        /* Connected — start Ask mode, but stop streaming first if active */
-        tab5_mode_t cur_mode = tab5_mode_get();
-        if (cur_mode == MODE_STREAMING || cur_mode == MODE_BROWSING) {
-            ESP_LOGI(TAG, "READY but streaming active — mode switch first");
-            s_pending_ask = true;
-            tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
-        } else {
-            ESP_LOGI(TAG, "READY → Ask mode");
-            voice_start_listening();
-        }
+        ESP_LOGI(TAG, "READY → Ask mode");
+        voice_start_listening();
         break;
     }
     case VOICE_STATE_LISTENING:
@@ -1905,15 +1897,9 @@ static void mic_long_press_cb(lv_event_t *e)
     if (state == VOICE_STATE_IDLE) {
         tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
     } else if (state == VOICE_STATE_READY) {
-        tab5_mode_t cur_mode = tab5_mode_get();
-        if (cur_mode == MODE_STREAMING || cur_mode == MODE_BROWSING) {
-            ESP_LOGI(TAG, "READY but streaming — mode switch, then dictate");
-            tab5_worker_enqueue(mode_switch_voice_job, NULL, "mode_voice");
-        } else {
-            esp_err_t ret = voice_start_dictation();
-            if (ret != ESP_OK) {
-                ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(ret));
-            }
+        esp_err_t ret = voice_start_dictation();
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(ret));
         }
     }
 }

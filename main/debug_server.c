@@ -30,7 +30,6 @@
 #include "ui_keyboard.h"
 #include "wifi.h"
 #include "battery.h"
-#include "dragon_link.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -320,18 +319,19 @@ static esp_err_t info_handler(httpd_req_t *req)
     get_wifi_ip(ip, sizeof(ip));
     cJSON_AddStringToObject(root, "wifi_ip", ip);
 
-    dragon_state_t ds = tab5_dragon_get_state();
-    cJSON_AddBoolToObject(root, "dragon_connected",
-        ds == DRAGON_STATE_CONNECTED || ds == DRAGON_STATE_STREAMING);
-    /* N2: voice_connected reflects actual voice WS state (port 3502),
-     * while dragon_connected reflects CDP link state (port 3501) */
-    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
+    /* Post-streaming cleanup (#154): "Dragon connected" now means voice WS
+     * (port 3502) is up — the CDP streaming link (port 3501) is gone.
+     * We keep the `dragon_connected` field for backward compat with Dragon
+     * E2E tests (e2e_full_suite.py, test_stress_40.py, test_soak.py) that
+     * read info["dragon_connected"]. It's now an alias of voice_connected. */
+    bool voice_up = voice_is_connected();
+    cJSON_AddBoolToObject(root, "dragon_connected", voice_up);
+    cJSON_AddBoolToObject(root, "voice_connected", voice_up);
 
     char display_str[16];
     snprintf(display_str, sizeof(display_str), "%dx%d", FB_W, FB_H);
     cJSON_AddStringToObject(root, "display", display_str);
 
-    cJSON_AddNumberToObject(root, "fps", (double)tab5_dragon_get_fps());
     cJSON_AddNumberToObject(root, "lvgl_fps", (double)ui_core_get_fps());
 
     tab5_battery_info_t bat = {0};

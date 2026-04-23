@@ -31,8 +31,8 @@ else()
     idf_component_register(
         SRCS "main.c"
              "sdcard.c" "wifi.c"
-             "dragon_link.c" "mjpeg_stream.c" "udp_stream.c" "touch_ws.c" "voice.c" "mode_manager.c"
-             "mdns_discovery.c" "debug_server.c" "debug_obs.c" "afe.c" "heap_watchdog.c"
+             "voice.c" "mode_manager.c"
+             "debug_server.c" "debug_obs.c" "afe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"
              "ui_core.c" ${UI_SRCS}
@@ -44,7 +44,7 @@ else()
         REQUIRES tab5
                  esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer
                  json esp_driver_jpeg fatfs sdmmc esp_driver_i2s esp_driver_cam lvgl
-                 esp_wifi esp_netif esp_event esp_http_client esp_http_server tcp_transport mdns
+                 esp_wifi esp_netif esp_event esp_http_client esp_http_server tcp_transport
                  espcoredump esp-sr app_update esp_https_ota
                  esp_driver_isp esp_video esp_cam_sensor
     )

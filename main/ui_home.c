@@ -41,7 +41,6 @@
 #include "config.h"
 #include "tab5_rtc.h"
 #include "battery.h"
-#include "dragon_link.h"
 #include "wifi.h"
 #include "widget.h"
 #include "task_worker.h"
