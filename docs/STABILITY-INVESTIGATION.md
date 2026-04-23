@@ -1,11 +1,11 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-24 — Phase 3 (A) ruled out, pivoting to (B)
-> **Current phase:** Phase 3, hypothesis (B) — verify LVGL expand-on-demand actually fires
-> **Active branch:** `investigate/lvgl-pool-pressure` (5 commits ahead of main, pushed)
+> **Last updated:** 2026-04-24 — Phase 3 (B) probe in flight
+> **Current phase:** Phase 3, hypothesis (B) — force `lv_mem_add_pool()` at boot + sharpen probe with `tab5_ui_lock` + `total_size`
+> **Active branch:** `investigate/lvgl-pool-pressure` (7 commits ahead of main at Phase 3-A rejection)
 > **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`
 >
-> **NEXT CONCRETE STEP when resuming:** add an `lv_mem_add_pool()` probe in `main.c` that logs `lv_mem_monitor_t.total_size` before + after a forced PSRAM-backed pool expansion at boot.  If total_size grows, expand is silently not auto-firing and we can force-add a large pool.  If it doesn't grow, `lv_mem_monitor` doesn't see expansion chunks and we need a different instrumentation path.  Full detail in the "Investigation log" section's most recent entry (Phase 3 hypothesis-A ruled out).
+> **NEXT CONCRETE STEP when resuming:** see the latest log entry "Phase 3 (B) plan".  Two files touched (`main/main.c` + `main/pool_probe.c`) for a single experiment: measurement upgrade (lock + `lvgl_total_kb` column) plus the experimental variable (128 KB PSRAM pool added at boot).  Boot-log and CSV trajectory answer the fork: force-add a large pool (monitor sees multi-pool), or pivot to hypothesis (C) transition-leak instrumentation (monitor is blind).  Decision rule is pre-registered in the plan entry.
 
 ---
 
@@ -257,6 +257,51 @@ Going straight to 192 (vs intermediate 128) to give the experiment more signal �
 - Current hypothesis: expand is configured but not actually invoked — probably because LVGL's expand logic requires `LV_MEM_CUSTOM=0` and a hook we might not have defined, OR `lv_mem_monitor` is silently omitting expansion chunks from its `free_size` count (making our measurement misleading).
 
 **Proposed Phase 3 experiment (B):** verify whether expansion fires by adding an `lv_mem_add_pool()` call at boot with an explicit PSRAM-backed chunk, logging before/after total_size.  If total_size grows after the add, expand-on-demand isn't auto-firing and we can force-add a bigger pool at boot.  One-line addition in `main.c`, zero structural risk.  Plan revision below.
+
+### 2026-04-24 — Phase 3 (B) plan: force lv_mem_add_pool at boot + sharpen probe
+
+**Sharpened hypothesis from Phase 1 data re-read:** `psram_free_kb` stayed flat at ~21,133 KB through the entire crash cycle.  If the configured 4096 KB expand pool had fired even once, PSRAM would have dropped by ~4 MB at that moment.  It did not.
+
+**Pre-experiment source-code audit — CRITICAL FINDING:** grepped `managed_components/lvgl__lvgl/src/stdlib/` for any usage of `LV_MEM_POOL_EXPAND_SIZE` and any caller of `lv_mem_add_pool`.  Result:
+- `lv_mem_add_pool()` has **zero callers** anywhere in LVGL source or project code.
+- `LV_MEM_POOL_EXPAND_SIZE` is used at exactly **one** site: `lv_tlsf.c:13` — `#define TLSF_MAX_POOL_SIZE (LV_MEM_SIZE + LV_MEM_POOL_EXPAND_SIZE)`.  That's a compile-time **ceiling** for how big any single TLSF pool is allowed to grow — **not** a trigger that auto-adds a second pool.
+- `lv_mem_monitor_core()` iterates `state.pool_ll`, which only gets entries from explicit `lv_mem_add_pool()` calls.  Zero callers → only the one base pool registered at `lv_mem_init()`.
+- `lv_malloc_core()` calls `lv_tlsf_malloc` directly, returns NULL on failure.  There is no fallback path that tries to allocate a new pool on OOM.
+
+**Conclusion:** LVGL 9.2.2's builtin allocator has **no auto-expand-on-demand feature**.  The project's `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=4096` setting (and the "96 KB + 1024 KB expand = 1120 KB total capacity" language in `CLAUDE.md` and the `feedback_crash_lvmem_regression.md` memory entry) have been misinterpreting the knob.  The true LVGL heap size is **96 KB, full stop** — not 96 + 4096 KB.
+
+This collapses two of the three fork branches in the decision table below into a single predicted outcome (see revised decision rule), and it makes the real fix path clear: **this project must call `lv_mem_add_pool()` itself if it wants a larger heap**.  That is exactly what the 128 KB probe below sanity-checks.
+
+**Changes in this iteration (single experiment, two files):**
+
+1. `main/main.c` — after `heap_watchdog_start()` and before `tab5_pool_probe_init()`: allocate a **128 KB** PSRAM-backed chunk and call `lv_mem_add_pool()` on it.  Log `lv_mem_monitor` (total_size, free_size, used_size, frag_pct) before + after the add, under `tab5_ui_lock()`.  128 KB (not 4 MB) is deliberate: enough to be visible in `total_size` but too small to mask the crash cadence — we want to preserve signal, not accidentally fix the crash before we understand why.
+2. `main/pool_probe.c` — two measurement-fidelity upgrades (scaffold, not experimental variables):
+   - Wrap the 1 Hz `lv_mem_monitor` call in `tab5_ui_lock()` / `tab5_ui_unlock()`.  Phase 1's "`lvgl_used` stuck at 14 KB throughout" while `free` swung 78→2 KB is almost certainly the unlocked TLSF walk returning inconsistent used/total pairs — the two fields come from separate atomic loads over a concurrent allocator, so a snapshot can be torn.
+   - Add `lvgl_total_kb` column to CSV.  Without it we cannot observe whether `total_size` grows naturally (auto-expand firing) nor whether our manual add is visible after boot.
+
+**Boot-log predictions (what "success" looks like to proceed with this probe):**
+- `ui_core: LVGL 9.2.2 initialized`
+- `pool_probe: boot before  total=~96 free=~78 used=~14 KB`
+- `pool_probe: lv_mem_add_pool 128 KB PSRAM chunk at 0x...`
+- Either `pool_probe: boot after   total=~224 free=~206 used=~14 KB` → monitor sees multi-pool
+- Or     `pool_probe: boot after   total=~96  free=~78  used=~14 KB` → monitor is blind
+
+**Decision rule for the hypothesis fork (revised after source-code audit):**
+
+Source-code finding already rules out "auto-expand firing invisibly".  Remaining fork branches:
+
+| Observation | Interpretation | Next follow-up |
+|---|---|---|
+| `total` jumps ~96→~224 KB on boot | `lv_mem_add_pool()` works; monitor sums across pools correctly.  **Expected outcome.** | Follow-up PR: force-add a 2–4 MB PSRAM pool at boot (the real fix).  Validate with 30-min stress orchestrator |
+| `total` stays at ~96 KB on boot despite the add returning non-NULL | Monitor may be iterating only the initial pool (unlikely given source reading of `lv_mem_monitor_core`) OR the add silently failed into the `TLSF_MAX_POOL_SIZE` ceiling (96 + 4096 = 4192 KB, so 128 KB should fit) | Investigate TLSF's max-pool-size check; may need to split the PSRAM chunk into sub-4 MB pools |
+| `lv_mem_add_pool()` returns NULL | PSRAM alloc failed, or TLSF rejected the chunk | Reduce chunk size or check alignment; PSRAM has 21 MB free so alloc itself shouldn't be the issue |
+| `lvgl_total_kb` stays at ~96 KB during stress AND base `free` drops to 0 again | Confirms the 96 KB ceiling IS the crash mechanism — nothing auto-grows.  The 128 KB add may not be enough headroom to stop crashes entirely, which is fine (proves mechanism) | Follow-up PR with a larger pool |
+
+**Not in this iteration (deferred by design):**
+- Don't force a large (multi-MB) pool yet — we want the monitor-visibility answer first.  If we force 4 MB now and crashes stop, we still won't know if the fix was "monitor now reports it correctly" or "pool ceiling was the real limit".
+- Don't wrap `tab5_ui_try_lock()` with a short timeout in the sampler — the monitor walk is fast and the 1 Hz cadence means occasional contention with the UI task is fine.  Use the recursive `tab5_ui_lock()` for measurement consistency.
+
+**Will append a results entry below after flash + 10 min stress.**
 
 ---
 
