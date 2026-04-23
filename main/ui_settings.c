@@ -462,12 +462,6 @@ static void cb_quiet_on(lv_event_t *e)
     ui_home_refresh_sys_label();
 }
 
-/* Wake-word callback removed — feature parked. AFE + WakeNet remain wired in
- * firmware (afe.c, voice_{start,stop}_always_listening) but hidden from the
- * UI because TDM slot mapping for the AEC reference channel is still broken.
- * When un-parked, restore the Wake Word row + this callback. See CLAUDE.md
- * "Phase 2" and Espressif issue #TBD. */
-
 /* ── WiFi picker ────────────────────────────────────────────────────── */
 
 static void cb_wifi_setup(lv_event_t *e)

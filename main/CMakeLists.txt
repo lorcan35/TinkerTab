@@ -32,7 +32,7 @@ else()
         SRCS "main.c"
              "sdcard.c" "wifi.c"
              "voice.c" "mode_manager.c"
-             "debug_server.c" "debug_obs.c" "afe.c" "heap_watchdog.c"
+             "debug_server.c" "debug_obs.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"
              "ui_core.c" ${UI_SRCS}
@@ -45,7 +45,7 @@ else()
                  esp_lcd esp_psram driver nvs_flash esp_system heap esp_mm esp_timer
                  json esp_driver_jpeg fatfs sdmmc esp_driver_i2s esp_driver_cam lvgl
                  esp_wifi esp_netif esp_event esp_http_client esp_http_server tcp_transport
-                 espcoredump esp-sr app_update esp_https_ota
+                 espcoredump app_update esp_https_ota
                  esp_driver_isp esp_video esp_cam_sensor
     )
 endif()

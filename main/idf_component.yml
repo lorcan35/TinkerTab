@@ -9,7 +9,6 @@ dependencies:
     version: 0.8.5
   espressif/mdns: '*'
   espressif/esp_codec_dev: '*'
-  espressif/esp-sr: '>=2.4.0'
   # esp_websocket_client replaces our hand-rolled esp_transport_ws state
   # machine — see issue #76. Event-driven with built-in auto-reconnect,
   # ping/pong, and TLS. Eliminates the register-before-receive-task race.
