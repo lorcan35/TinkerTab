@@ -1,0 +1,19 @@
+--- a/src/draw/sw/lv_draw_sw_mask.c
++++ b/src/draw/sw/lv_draw_sw_mask.c
+@@ -1235,6 +1235,16 @@ static void circ_calc_aa4(lv_draw_sw_mask_radius_circle_dsc_t * c, int32_t radiu
+ static lv_opa_t * get_next_line(lv_draw_sw_mask_radius_circle_dsc_t * c, int32_t y, int32_t * len,
+                                 int32_t * x_start)
+ {
++    /* TinkerTab #158 defensive bounds check.  LVGL 9.2.2's upstream
++     * version indexes opa_start_on_y[y+1] without verifying y <= radius,
++     * so callers that pass a y larger than the cached circle's radius
++     * read past the end of the array and crash.  Seen on-device when a
++     * rounded border (LV_RADIUS_CIRCLE + border_width>0) renders under
++     * a clip rectangle whose height collapses to less than the radius
++     * during a screen transition.  Return a degraded result (empty
++     * line) rather than panicking the UI task. */
++    if (y < 0 || y > c->radius) { *len = 0; *x_start = 0; return c->cir_opa; }
++
+     *len = c->opa_start_on_y[y + 1] - c->opa_start_on_y[y];
+     *x_start = c->x_start_on_y[y];
+     return &c->cir_opa[c->opa_start_on_y[y]];
