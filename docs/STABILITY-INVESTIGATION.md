@@ -155,6 +155,82 @@ Dated entries of every experiment. Append-only — never edit past entries.
 ### 2026-04-23 — Scaffolding (Phase 0, no experiment yet)
 Scaffold doc committed on `docs/stability-investigation-scaffold` branch. No firmware change yet. Next action: cut `investigate/lvgl-pool-pressure` from main (after this doc lands) and start Phase 1 instrumentation per the writing-plans plan in `docs/superpowers/plans/`.
 
+### 2026-04-24 — Phase 1: instrumentation + data
+
+**Firmware:** commit 23b1def on `investigate/lvgl-pool-pressure` (pool_probe header + impl + wired to boot + `/heap/probe-csv`).
+
+**Run:** 10 min of stress orchestrator (sleep was interrupted at 10 min, not the full 12; captured what we had).
+- Cycles completed: 20
+- Crashes observed: **3** (cadence unchanged from baseline)
+  - uptime 150 s → 28 s
+  - uptime 178 s → 28 s
+  - uptime 188 s → 28 s
+
+**Probe data:** 145 lines captured (samples since latest reboot, ~140 s worth).
+
+**AllocFailures section:** empty.
+- Interpretation: LVGL allocates from its internal TLSF pool via `lv_malloc`, NOT via `heap_caps_malloc`.  Our `heap_caps_register_failed_alloc_callback` can't see those failures.  That's consistent with all the crash MEPCs being inside LVGL's allocator chain rather than callers of `heap_caps_*`.
+
+**Sample data — the smoking gun is in `lvgl_free_kb`:**
+
+```
+  14s (boot)    lvgl_free = 78 kB   pool fresh
+ 123s           lvgl_free = 51 kB   after ~1.5 min stress (5 cycles)
+ 125s           lvgl_free = 21 kB   -30 kB in 2 s (single screen transition)
+ 131s           lvgl_free =  2 kB   -19 kB more (another transition)
+ 131s → 152s    lvgl_free =  2 kB   *holds* at 2 kB for 21 s
+ 152s           CRASH
+```
+
+Other metrics during the slide to 2 kB free:
+- `internal_free_kb`: flat at 40-41 kB
+- `internal_largest_kb`: flat at 38 kB
+- `psram_free_kb`: flat at 21,133 kB
+- `lvgl_used_kb`: stuck at 14 kB throughout (suspect `lv_mem_monitor` call without UI lock returns partial view — see Q4 in Phase 2)
+
+**Interpretation:** LVGL pool is the bottleneck, and it's decreasing **in sudden ~20-30 kB drops aligned with screen transitions**, not monotonically eroding.  It also does NOT recover — sits at 2 kB until the next crash-triggering allocation.
+
+**Phase 1 exit criteria met.** Advancing to Phase 2.
+
+### 2026-04-24 — Phase 2: hypothesis
+
+From Phase 1 data, answering the plan's four concrete questions:
+
+- **Q1** (internal_largest monotonic within cycle): **no**.  Internal-SRAM largest stays flat at 38 kB; it is NOT the bottleneck. Fragmentation watchdog was a red herring.
+- **Q2** (lvgl_free drops to ~0): **yes**, and decisively.  78 kB → 2 kB across ~5 screen cycles, in discrete ~20-30 kB drops aligned with transitions.  Stays at 2 kB until crash.
+- **Q3** (MALLOC_CAP_INTERNAL allocs fail before crash): **not detectable by our callback** — LVGL's internal TLSF allocator doesn't route through `heap_caps_*`.  Absence is consistent with the pool-exhaustion hypothesis, not evidence against it.
+- **Q4** (PSRAM decreases): **no**.  PSRAM flat across the whole run.  So whatever is consuming LVGL's pool isn't backed by PSRAM.
+
+**Hypothesis (a+c combined):** the **LVGL base pool (`CONFIG_LV_MEM_SIZE_KILOBYTES=96`) is getting exhausted by a ~20-30 kB-per-transition "leak"** — allocations made during `ui_*_create()` that don't get fully released when the old screen is torn down / hidden.  The configured `LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=4096` expand pool is either:
+- not firing (LVGL's expand requires `LV_MEM_CUSTOM=0` + certain timing),
+- or firing but into a region that our `lv_mem_monitor` reads don't see (making the total_size number we're logging unreliable).
+
+Regardless of which, the **observable pool headroom goes to 2 kB** before every crash.  That's the fix surface.
+
+**Candidate Phase 3 change:** there are three mutually exclusive options; plan discipline says pick ONE.
+
+- **(A) Bump the base pool:** `CONFIG_LV_MEM_SIZE_KILOBYTES=96 → 128` (or larger).  Note: `feedback_crash_lvmem_regression.md` memory entry says 128 KB has historically caused a linker error on this target.  If that still holds, this is not a viable single-variable experiment.
+- **(B) Verify + repair expand:** check the LVGL build is actually compiled with custom-expand support (`LV_MEM_ADR=0` + `LV_MEM_CUSTOM=0` + relevant alloc hooks).  If expand is silently disabled, re-enable.  One-line config change if that's the issue.
+- **(C) Chase the transition leak:** instrument `ui_*_create/destroy/hide` pairs to log `lv_mem_monitor` deltas, identify which transition leaks, patch the leak at source.  Larger investigation but attacks the root cause rather than raising the ceiling.
+
+**Chosen:** (A).  Rationale:
+1. **Highest signal for lowest risk.**  If the pool bump doubles the crash cadence (from ~170 s to ~340 s), we've confirmed pool exhaustion is the root cause *without* needing to pinpoint which code path leaks.  If cadence doesn't double, it rules out the pool-size hypothesis and directs us to (C).
+2. **The memory entry about 128 KB linker error is from April 14 and was about a prior firmware layout.**  We've removed ~2.3 MB of dead code today + reclaimed the 3 MB model SPIFFS partition; BSS pressure is likely much lower now.  A rebuild will tell us in <3 min.
+3. **If 128 KB fails to link**, we have instant data: pool bump not available without BSS surgery — pivot to (B) or (C).
+
+**Proposed change:** `sdkconfig.defaults`:
+```diff
+-CONFIG_LV_MEM_SIZE_KILOBYTES=96
++CONFIG_LV_MEM_SIZE_KILOBYTES=192
+```
+
+Going straight to 192 (vs intermediate 128) to give the experiment more signal — if 170 s → ~340 s, confirmed; if 170 s → ~680 s, the curve is linear in pool size; if 170 s stays 170 s, rules out pool size entirely.  The extra 96 kB comes from internal BSS.
+
+**Expected effect in Phase 4 validation:**
+- Crash cadence should extend proportional to the pool bump if hypothesis holds.
+- If no crashes in 30 min → pool size was the limit AND we have enough headroom for normal use.
+- If same cadence → return to Phase 2 with the new probe data to pick (C) directly.
+
 ---
 
 ## Not in scope (deliberately)
