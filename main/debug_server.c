@@ -1429,7 +1429,6 @@ static void async_navigate(void *arg)
      * For secondary screens (camera, files) create them separately.
      * This avoids the bug where ui_settings_create() replaces the
      * tileview screen entirely, breaking subsequent navigation. */
-    lv_obj_t *tv = ui_home_get_tileview();
 
     /* Always dismiss ALL overlays before any navigation — HIDE not destroy.
      * Destroy+recreate corrupts LVGL timer linked list (lv_ll_remove crash). */
