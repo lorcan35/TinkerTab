@@ -14,7 +14,6 @@
 #include "esp_random.h"
 #include "display.h"
 #include "sdcard.h"
-#include "afe.h"
 #include "voice.h"
 #include "ota.h"
 #include "camera.h"
@@ -340,12 +339,6 @@ static esp_err_t info_handler(httpd_req_t *req)
 
     UBaseType_t task_count = uxTaskGetNumberOfTasks();
     cJSON_AddNumberToObject(root, "tasks", (double)task_count);
-
-    /* AFE / wake word — parked. Kept in /info so external monitors can
-     * detect the parked state, but the fields always read false/empty. */
-    cJSON_AddBoolToObject(root, "afe_active", false);
-    cJSON_AddBoolToObject(root, "wake_listening", false);
-    cJSON_AddStringToObject(root, "wake_word", "parked");
 
     /* SD card */
     cJSON_AddBoolToObject(root, "sd_mounted", tab5_sdcard_mounted());
@@ -936,10 +929,6 @@ static esp_err_t sdcard_handler(httpd_req_t *req)
     return ret;
 }
 
-/* #148: /wake endpoint removed.  Wake-word feature is parked; the status
- * is still reported via /info ("wake_word":"parked") for external
- * monitors.  Un-park path: restore a dedicated handler at that time. */
-
 /* ── OTA debug endpoints ──────────────────────────────────────────────── */
 
 static esp_err_t ota_check_handler(httpd_req_t *req)
@@ -1085,9 +1074,6 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     /* Budget */
     cJSON_AddNumberToObject(root, "spent_mils", (double)tab5_budget_get_today_mils());
     cJSON_AddNumberToObject(root, "cap_mils",   (double)tab5_budget_get_cap_mils());
-
-    /* Wake word (parked, reports 0 regardless of NVS) */
-    cJSON_AddNumberToObject(root, "wake_word", 0);
 
     /* Runtime state (handy for "dump everything once" callers) */
     cJSON_AddBoolToObject(root,   "voice_connected", voice_is_connected());
