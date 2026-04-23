@@ -243,15 +243,6 @@ static const char *trail_for_hour(int hour)
     return "Tonight, Emile -- quiet thoughts?";
 }
 
-static const char *greeting_for_hour(int hour)
-{
-    if (hour < 5)  return "late night, emile";
-    if (hour < 12) return "morning, emile";
-    if (hour < 17) return "afternoon, emile";
-    if (hour < 21) return "evening, emile";
-    return "tonight, emile";
-}
-
 /* "Thursday · 9:42" — bullet is U+2022, which IS in the Montserrat subset. */
 static void format_right_time(char *buf, size_t n, const struct tm *tm)
 {
@@ -791,9 +782,7 @@ void ui_home_update_status(void)
     localtime_r(&now, &tm_local);
 
     /* Trail line (shifts with hour) — v4·D Sovereign Halo editorial
-     * subtitle.  Previously used greeting_for_hour() which returned
-     * tiny all-caps labels; now uses trail_for_hour() which returns
-     * full serif italic sentences per the d-sovereign-halo mockup. */
+     * subtitle.  Full serif italic sentences per d-sovereign-halo mockup. */
     if (s_greet_line) {
         const char *g = trail_for_hour(tm_local.tm_hour);
         const char *cur = lv_label_get_text(s_greet_line);

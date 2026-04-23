@@ -33,7 +33,9 @@ Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side 
 4. On-device skills/app store + offline knowledge + multi-modal vision
 
 ### Key Decisions
-- **STOP investing in Dragon Mode streaming.** The product is the voice assistant.
+- **Voice-first, not a remote display.** The CDP browser-streaming path that
+  Tab5 shipped with (MJPEG + touch relay over port 3501) was retired in
+  #155 — the product is the voice assistant.
 - **Double down on voice** — that's what differentiates from every IoT display.
 - Memory/RAG via Qwen3-Embedding 0.6B on Dragon. AI that remembers you.
 - Skill store is the growth flywheel. Tinkerers publish, normies install.
@@ -44,10 +46,10 @@ Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side 
 - Toast notification pattern, spring animation concept (write our own spring_anim.c)
 
 ### What NOT to Do
-- Don't adopt Mooncake (our service_registry + mode_manager is better for embedded)
+- Don't adopt Mooncake (our service_registry is better for embedded)
 - Don't rewrite to C++
 - Don't build a full browser on Tab5
-- Don't over-optimize Dragon Mode streaming
+- Don't reintroduce CDP browser streaming — it's gone; voice-first is the product
 
 ### Our Unique Advantage
 - Dragon Q6A: 12GB RAM, 12 TOPS NPU vs M5Stack AX630C (4GB, 3.2 TOPS)
@@ -350,7 +352,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Keyboard text visible while typing:** Text input field stays visible above the keyboard during typing (was previously hidden behind the keyboard).
 - **Done key auto-submits:** Done/Enter key on the keyboard dispatches `LV_EVENT_READY` instead of inserting a newline, triggering form submission.
 - **Internal SRAM fragmentation monitoring:** Periodic heap check monitors largest free internal SRAM block (not just total free). If largest block stays below threshold for 3 minutes sustained, triggers a controlled reboot to defragment.
-- **FPS counter:** LVGL flush rate counter for monitoring UI rendering performance.
+- **LVGL FPS counter:** LVGL flush rate, surfaced as `lvgl_fps` in `GET /info`, for monitoring UI rendering performance.
 - **Rich Media Chat:** Chat screen renders inline rich media — syntax-highlighted code blocks, cards, and audio clips as JPEG images. Dragon renders content server-side (Pygments for code, Pillow for tables), Tab5 downloads and displays via LVGL's TJPGD decoder. 5-slot PSRAM LRU cache (~2.9MB) with zero alloc/free fragmentation. Max 3 media items per LLM response. Downloads yield every 2ms to not stall voice WS.
 
 ### Heap Fragmentation Fix (Hide/Show Pattern)
@@ -447,17 +449,20 @@ main/wifi.{c,h}           — Wi-Fi stack wrapper (STA/AP, reconnect, country co
 main/settings.{c,h}       — NVS-backed settings (see "NVS Settings Keys" table for full list)
 ```
 
-### Dragon link
+### Dragon voice link
 ```
-main/voice.{c,h}          — Voice WS client, mic capture, TTS playback, dictation,
-                             reconnect watchdog, three-tier mode, tool events, rich-media handlers
-main/dragon_link.{c,h}    — Dragon mDNS + CDP connection state machine
-main/mdns_discovery.{c,h} — _tinkerclaw._tcp discovery
-main/touch_ws.{c,h}       — Touch-relay WS client to Dragon CDP (port 3501)
-main/udp_stream.{c,h}     — UDP JPEG streamer for CDP low-latency mode
-main/mjpeg_stream.{c,h}   — Alternate MJPEG-over-HTTP fallback for browsing mode
-main/mode_manager.{c,h}   — Mode FSM (IDLE / STREAMING / VOICE / BROWSING)
+main/voice.{c,h}          — Voice WS client (port 3502), mic capture, TTS playback,
+                             dictation, reconnect watchdog, three-tier mode, tool events,
+                             rich-media handlers. Tab5 talks to Dragon only via this path.
+main/mode_manager.{c,h}   — Voice-pipeline coordinator (IDLE ↔ VOICE). Thin mutex
+                             wrapper around voice_connect/disconnect kept because
+                             ui_voice / ui_notes / service_dragon switch from
+                             multiple tasks.
 ```
+
+The old CDP browser-streaming stack (dragon_link, mdns_discovery, touch_ws,
+udp_stream, mjpeg_stream) was deleted in #155 — see that PR for removal
+rationale. Tab5 now reaches Dragon only via the voice WS.
 
 ### UI framework
 ```

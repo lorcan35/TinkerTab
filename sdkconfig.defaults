@@ -149,12 +149,6 @@ CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=n
 
 # ---------------------------------------------------------------------------
-# lwIP — IP reassembly for UDP JPEG streaming (large datagrams)
-# ---------------------------------------------------------------------------
-CONFIG_LWIP_IP_REASSEMBLY=y
-CONFIG_LWIP_IP_REASS_MAX_PBUFS=64
-
-# ---------------------------------------------------------------------------
 # Memory — reserve internal RAM for DMA (SDIO WiFi + TCP buffers + OTA TLS)
 # Wave 10 #77 fix: bumped 64 KB -> 128 KB so the esp_https_ota flow has
 # headroom for its internal TLS/HTTP buffers even after 5+ minutes of
