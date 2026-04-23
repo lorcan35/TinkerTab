@@ -84,6 +84,15 @@ static void tile_click_cb(lv_event_t *e)
      * they're navigating to. */
     extern void ui_voice_dismiss_if_idle(void);
     ui_voice_dismiss_if_idle();
+    /* #167: same reason as debug_server.c async_navigate — camera and
+     * files own PSRAM canvas buffers and full LVGL screen trees; if the
+     * user leaves them by tapping any OTHER tile, we have to destroy
+     * explicitly or ~1.8 MB / screen tree / preview timer leak per
+     * round-trip.  Both functions are NULL-guarded. */
+    extern void ui_camera_destroy(void);
+    extern void ui_files_destroy(void);
+    ui_camera_destroy();
+    ui_files_destroy();
     if (s_tiles[idx].action) s_tiles[idx].action();
 }
 
