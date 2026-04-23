@@ -2144,8 +2144,24 @@ void voice_lan_probe_task(void *arg)
 
         /* #146 progressive escalation: both probes failed while Wi-Fi
          * reports associated — network stack is wedged.  Escalate
-         * based on how many consecutive rounds have failed. */
-        if (!lan_ok && !ngrok_ok) {
+         * based on how many consecutive rounds have failed.
+         *
+         * #159: BUT — if the voice WebSocket is currently connected, the
+         * WiFi stack is provably alive: Tab5 is actively exchanging
+         * frames with Dragon on port 3502.  A TCP-probe timeout under
+         * that condition is almost always transient back-pressure (LVGL
+         * render storm starving the probe task, SDIO queue full from a
+         * screenshot, debug-server httpd handler hogging the stack)
+         * rather than genuine WiFi failure.  Rebooting the device at
+         * that point is a false positive and destroys the user's
+         * session for no reason.  Reset the counter instead and let the
+         * next round re-probe with clean state.
+         *
+         * This fix is specifically for the "every ~3 min under stress"
+         * reboot cluster we saw in the 30-min stability test — 9 SW
+         * resets, each at zombie_rounds=6, while the WS stayed
+         * connected throughout. */
+        if (!lan_ok && !ngrok_ok && !voice_is_connected()) {
             zombie_rounds++;
             if (zombie_rounds >= ZOMBIE_REBOOT) {
                 ESP_LOGE(TAG, "Zombie Wi-Fi: %d rounds (~%d s) failed even "
@@ -2164,7 +2180,9 @@ void voice_lan_probe_task(void *arg)
                              esp_err_to_name(r));
                 }
                 /* Keep zombie_rounds ticking so the reboot fires if
-                 * hard kick didn't recover. */
+                 * the hard kick didn't recover.  Not reached when the
+                 * voice WS is alive — the outer check short-circuited
+                 * at the top of this block (see #159). */
             } else if (zombie_rounds >= ZOMBIE_SOFT) {
                 ESP_LOGW(TAG, "Zombie Wi-Fi detected: both probes failed "
                               "%d rounds in a row — soft kick (deauth+reconnect)",

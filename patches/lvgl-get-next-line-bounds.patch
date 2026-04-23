@@ -1,19 +1,67 @@
 --- a/src/draw/sw/lv_draw_sw_mask.c
 +++ b/src/draw/sw/lv_draw_sw_mask.c
-@@ -1235,6 +1235,16 @@ static void circ_calc_aa4(lv_draw_sw_mask_radius_circle_dsc_t * c, int32_t radiu
- static lv_opa_t * get_next_line(lv_draw_sw_mask_radius_circle_dsc_t * c, int32_t y, int32_t * len,
-                                 int32_t * x_start)
+@@ -1078,6 +1078,16 @@
+ 
+     c->buf = lv_malloc(radius * 6 + 6);  /*Use uint16_t for opa_start_on_y and x_start_on_y*/
+     LV_ASSERT_MALLOC(c->buf);
++    if(c->buf == NULL) {  /* TinkerTab #158: LVGL pool exhausted under stress.
++                             Leaving buf/arrays NULL is picked up by the
++                             NULL-guard in get_next_line below so the caller
++                             gracefully skips one scanline of rounded border
++                             instead of crashing with a Store access fault. */
++        c->cir_opa = NULL;
++        c->opa_start_on_y = NULL;
++        c->x_start_on_y = NULL;
++        return;
++    }
+     c->cir_opa = c->buf;
+     c->opa_start_on_y = (uint16_t *)(c->buf + 2 * radius + 2);
+     c->x_start_on_y = (uint16_t *)(c->buf + 4 * radius + 4);
+@@ -1093,6 +1103,17 @@
+ 
+     const size_t cir_xy_size = (radius + 1) * 2 * 2 * sizeof(int32_t);
+     int32_t * cir_x = lv_malloc_zeroed(cir_xy_size);
++    if(cir_x == NULL) {  /* TinkerTab #158: same fault family as the buf
++                            alloc above.  Clear arrays + return; the
++                            get_next_line guard drops the affected
++                            scanline instead of crashing. */
++        lv_free(c->buf);
++        c->buf = NULL;
++        c->cir_opa = NULL;
++        c->opa_start_on_y = NULL;
++        c->x_start_on_y = NULL;
++        return;
++    }
+     int32_t * cir_y = &cir_x[(radius + 1) * 2];
+ 
+     uint32_t y_8th_cnt = 0;
+@@ -1217,9 +1238,27 @@
+     lv_free(cir_x);
+ }
+ 
+-static lv_opa_t * get_next_line(lv_draw_sw_mask_radius_circle_dsc_t * c, int32_t y, int32_t * len,
+-                                int32_t * x_start)
++static __attribute__((noinline, noclone)) lv_opa_t *
++get_next_line(lv_draw_sw_mask_radius_circle_dsc_t * c, int32_t y, int32_t * len,
++              int32_t * x_start)
  {
-+    /* TinkerTab #158 defensive bounds check.  LVGL 9.2.2's upstream
-+     * version indexes opa_start_on_y[y+1] without verifying y <= radius,
-+     * so callers that pass a y larger than the cached circle's radius
-+     * read past the end of the array and crash.  Seen on-device when a
-+     * rounded border (LV_RADIUS_CIRCLE + border_width>0) renders under
-+     * a clip rectangle whose height collapses to less than the radius
-+     * during a screen transition.  Return a degraded result (empty
-+     * line) rather than panicking the UI task. */
-+    if (y < 0 || y > c->radius) { *len = 0; *x_start = 0; return c->cir_opa; }
-+
++    /* TinkerTab #158 defensive bounds + NULL checks.  Upstream LVGL
++     * 9.2.2 indexes opa_start_on_y[y+1] and x_start_on_y[y] without
++     * verifying y <= radius or that the arrays are populated.  Under
++     * specific render conditions (LV_RADIUS_CIRCLE borders rendered
++     * while a clip rect's height collapses below the radius, or a
++     * partially-initialised cache entry being returned) we crash with
++     * an OOB read.  Forced noinline/noclone because the inlined version
++     * had its early-return optimised away in LVGL 9.2.2 GCC builds.
++     * Returning NULL with *len=0 is safe: callers of this function
++     * iterate `for (i = 0; i < aa_len; i++)` and never dereference the
++     * returned pointer when aa_len is zero. */
++    if (!c || !c->opa_start_on_y || !c->x_start_on_y || !c->cir_opa ||
++        y < 0 || y > c->radius) {
++        *len = 0;
++        *x_start = 0;
++        return NULL;
++    }
      *len = c->opa_start_on_y[y + 1] - c->opa_start_on_y[y];
      *x_start = c->x_start_on_y[y];
      return &c->cir_opa[c->opa_start_on_y[y]];

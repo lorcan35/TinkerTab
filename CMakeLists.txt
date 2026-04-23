@@ -14,9 +14,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.local")
     )
 endif()
 
-# #158: apply third-party managed-component patches before the build
-# reads any of their source (bounds-check on LVGL's get_next_line, etc.).
-# Idempotent — a sentinel string in each patched file skips reapply.
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(tinkertab)
+
+# #158: apply managed-component patches (LVGL bounds/NULL guards, etc.).
+# Runs AFTER project(tinkertab) so the component manager has finished
+# fetching managed_components/ — otherwise on a fresh clone the target
+# files don't exist yet and the script skips.  We run at configure time
+# AND as a PRE_BUILD custom command so any edits land before compilation
+# even if someone just ran `idf.py build` without a reconfigure.
+# Idempotent — sentinel string "TinkerTab #<issue>" in each patched
+# file makes reapply a no-op.
 execute_process(
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tools/apply_patches.sh"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -29,5 +37,11 @@ if(NOT _patch_result EQUAL 0)
     message(FATAL_ERROR "apply_patches.sh failed (rc=${_patch_result}) — aborting build")
 endif()
 
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(tinkertab)
+# Belt-and-suspenders: run the script once more as a pre-build step so
+# a post-fetch `idf.py build` (without `reconfigure`) still gets the patch.
+add_custom_target(apply_managed_patches ALL
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tools/apply_patches.sh"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Applying managed-component patches (#158)"
+    VERBATIM
+)
