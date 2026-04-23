@@ -50,6 +50,7 @@
 #include "mode_manager.h"
 #include "service_registry.h"
 #include "heap_watchdog.h"
+#include "pool_probe.h"
 #include "task_worker.h"
 
 static const char *TAG = "tab5";
@@ -467,6 +468,10 @@ void app_main(void)
 
     // Start PSRAM heap fragmentation watchdog (background, Core 1, prio 1)
     heap_watchdog_start();
+
+    /* Phase 1 instrumentation for docs/STABILITY-INVESTIGATION.md.
+     * Removed after root cause is identified + fixed in Phase 3. */
+    tab5_pool_probe_init();
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
              s_wifi_ok ? "Y" : "N", s_touch_ok ? "Y" : "N",
