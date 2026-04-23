@@ -1441,6 +1441,17 @@ static void async_navigate(void *arg)
     extern void ui_voice_dismiss_if_idle(void);
     ui_voice_dismiss_if_idle();
 
+    /* #167: camera + files use destroy/create semantics (they own big
+     * PSRAM canvas buffers + LVGL screen trees, not hide/show overlays).
+     * If the user navigates away from them without hitting the back
+     * chevron (e.g. /navigate or nav-sheet), we must tear them down here
+     * or we leak ~1.8 MB + a zombie preview timer per camera cycle.
+     * Both functions are NULL-guarded internally. */
+    extern void ui_camera_destroy(void);
+    extern void ui_files_destroy(void);
+    ui_camera_destroy();
+    ui_files_destroy();
+
     if (strcmp(s_nav_target, "home") == 0) {
         ui_home_go_home();
     } else if (strcmp(s_nav_target, "notes") == 0) {
