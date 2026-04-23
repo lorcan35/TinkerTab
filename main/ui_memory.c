@@ -151,7 +151,14 @@ static void build_hit(lv_obj_t *parent,
 static void render_hits_cb(void *arg)
 {
     (void)arg;
-    if (!s_hits_root) return;
+    /* #171: the fetch_task on Core 1 queues this callback via
+     * lv_async_call after the HTTP response arrives.  Between queuing
+     * and execution the user may have hidden the overlay, so there's
+     * no visual reason to rebuild the list — and a future refactor
+     * that migrates this overlay to a destroy/create lifecycle would
+     * see s_hits_root / s_stats_lbl dangling.  Cheap guard: just bail
+     * if we're not currently visible. */
+    if (!s_visible || !s_hits_root) return;
     lv_obj_clean(s_hits_root);
 
     if (s_loading) {
