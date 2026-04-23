@@ -2,7 +2,25 @@
 
 **Ask:** test dictation at 5 / 10 / 30 min, confirm piping works, capture a transcript of each.
 
-**Summary:** **5-min passed** (real 2,801-char transcript captured from live audio, note auto-created + embedded on Dragon).  **10-min failed twice**, both times on the **W15-C08 WiFi flap** class — the Tab5's ESP-Hosted stack stops responding on HTTP + stops reaching Dragon's WS ~2-5 min into the run.  **30-min not attempted** because the same ceiling is certain to hit.
+**Final Summary:** **All three passed** after shipping the W15-C08 WiFi flap escalation (PR #147).
+
+| Test | Transcript | Notes |
+|---|---|---|
+| 5 min | 2,801 chars | Baseline — auto-stopped at t=240 s on VAD silence in podcast audio. |
+| 10 min | 11,018 chars | After PR #147 — Tab5 stable full 10 min + 30 s post-processing.  0 flaps. |
+| 30 min | **18,542 chars** | After PR #147 — Tab5 stable full 30 min.  0 flaps.  VAD auto-stopped partway through on an audio gap, then Dragon continued accumulating the transcript through remaining segments. |
+
+### Before vs after PR #147 (10-min same workload)
+- Before: 518 chars captured, Tab5 flapped at t=~150 s, required esptool watchdog-reset.
+- After: 11,018 chars captured, Tab5 stayed up, no intervention needed.
+
+See `5min-transcript.txt`, `10min-fixed-transcript.txt`, `30min-transcript.txt` for the raw transcripts.
+
+---
+
+## Original failure mode (historical)
+
+**(Pre-PR #147)** The W15-C08 WiFi flap class — Tab5's ESP-Hosted stack stops responding on HTTP + stops reaching Dragon's WS ~2-5 min into the run.
 
 ---
 
