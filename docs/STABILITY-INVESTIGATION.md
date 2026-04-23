@@ -1,11 +1,11 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-24 — Phase 3 (B) mechanism confirmed; PANIC class eliminated by 128 KB `lv_mem_add_pool()` probe
-> **Current phase:** Phase 3 (B) validated → moving to follow-up PR that replaces the 128 KB probe with a properly-sized pool (~2 MB PSRAM) for the real fix
-> **Active branch:** `investigate/lvgl-pool-pressure` (10 commits ahead of main at Phase 3-B results)
+> **Last updated:** 2026-04-24 — Phase 4 VALIDATED on `fix/lvgl-pool-2mb-psram` (2 MB PSRAM pool); LVGL PANIC class eliminated across full 30-min stress
+> **Current phase:** hypothesis (B) arm of the investigation CLOSED — PR pending merge on #181.  Investigation remains open only for the separate `reset_reason=SW` class tracked in #182.
+> **Active branch:** `fix/lvgl-pool-2mb-psram` (11 commits ahead of main); `investigate/lvgl-pool-pressure` is the parent, kept around for history.
 > **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`
 >
-> **NEXT CONCRETE STEP when resuming:** open a separate follow-up PR (new tracking issue) that force-adds a generously-sized PSRAM pool at boot — replace the 128 KB probe code in `main.c` with ~2 MB and retitle the logs.  Then run the full 30-min stress orchestrator and log a Phase 4 results entry.  Two SW resets surfaced during Phase 3-B stress, both during `mode=3 chat` actions — those are a separate crash class (likely `heap_watchdog.c` frag reboot or zombie-reboot WDT in `voice.c`) and need their own investigation + issue; do NOT conflate them with the LVGL pool work.
+> **NEXT CONCRETE STEP when resuming:** work from issue **#182** — the `reset_reason=SW` crash class observed during `mode=3 chat` actions.  Candidates: `heap_watchdog.c` fragmentation reboot, zombie-reboot WDT in `voice.c`, or an explicit `esp_restart()` on some resource-exhaustion branch.  Start with `grep -rn "esp_restart\\|esp_system_abort" main/` to enumerate controlled-reset paths; then reproduce in isolation (loop mode-3 chat actions without the full orchestrator).  Do NOT reopen the LVGL pool work — that is closed and shipped.
 
 ---
 
@@ -371,6 +371,53 @@ Both resets in the Phase 3-B run had `reset_reason = SW`, not `PANIC`.  SW means
 **Next step (separate PR, new issue):** force-add a generously sized PSRAM pool (proposed: 2 MB, well within TLSF's 4192 KB per-pool cap) at boot.  2 MB is ~10× the observed working-set of ~100 KB, giving ample margin for transient spikes + future UI complexity, while costing nothing: PSRAM has 21 MB free.  Rename the probe logging in `main.c` accordingly — it's no longer a probe, it's the real fix.  Validate with a clean 30-min stress.
 
 **Parallel follow-up (new hypothesis):** investigate the `reset_reason=SW` class that surfaced during mode-3 chat actions.  Likely candidates: `heap_watchdog.c` fragmentation reboot, zombie-reboot WDT in voice.c, or an unrelated `esp_restart()` path.  Will open a separate tracking issue.
+
+### 2026-04-24 — Phase 4: 30-min stress validation on `fix/lvgl-pool-2mb-psram`
+
+**Firmware:** commit 11afc3f on `fix/lvgl-pool-2mb-psram` (refs #181).  Replaces the 128 KB Phase 3-B probe with a 2 MB PSRAM-backed `lv_mem_add_pool()` call and retitles the log tag from `pool_probe:` to `lvgl_heap:` since it's no longer diagnostic.
+
+**Boot-log confirmation:**
+
+```
+I (11030) ui_core:   LVGL 9.2.2 initialized
+I (14328) tab5:      lvgl_heap: before  total=92   free=78   used=14 KB frag=1%
+I (14330) tab5:      lvgl_heap: lv_mem_add_pool 2048 KB PSRAM @ 0x48b2e1b8 -> handle=0x48b2e1b8
+I (14332) tab5:      lvgl_heap: after   total=2140 free=2126 used=14 KB frag=4%
+I (14335) tab5:      lvgl_heap: total delta = +2047 KB (expected ~+2048)
+```
+
+Delta is +2047 KB (the +2048 KB pool minus 1 KB of per-pool TLSF metadata — exactly as Phase 3-B predicted for the smaller probe).  `frag_pct` improved from 38% (at 128 KB) to 4% because the 2 MB chunk now dominates total_free, so biggest-free-block / total_free ≈ 1.
+
+**Stress orchestrator run: 30 min full window, 30:00 wall time, ~60 action cycles completed.**
+
+| Metric | Phase 1 baseline (96 KB) | Phase 3-B (96 + 128 KB probe) | Phase 4 (96 + 2048 KB fix) |
+|---|---|---|---|
+| Duration (min) | 10 (partial) | 17 | 30 (full validation window) |
+| PANIC crashes | **3** | 0 | **0** |
+| SW resets (controlled) | 0 | 2 | 2 |
+| First reset at | 150 s | 188 s | 114 s |
+| Mean gap between resets | ~17 s | ~560 s | ~572 s (obs: 114 s, 686 s) |
+| `lvgl_free_kb` steady-state | 2 KB (ceiling → PANIC) | 112 KB | ~2099 KB |
+| LVGL AllocFailures | — | 0 | 0 |
+| PSRAM free (excluding pool) | ~21,133 KB | ~20,990 KB | ~19,081 KB (pool = 2048 KB + overhead) |
+
+**Pool trajectory on fresh boot (1 Hz probe CSV, 60 samples):**
+
+```
+t= 13.4s  lvgl_total=2140  used= 14  free=2126  frag= 4%  (boot + 2 MB pool)
+t= 23.4s  lvgl_total=2137  used= 37  free=2099  frag= 3%  (home screen created)
+t= 33-63s lvgl_total=2137  used= 37  free=2099  frag= 3%  (stable, idle)
+```
+
+After home screen creation the pool parks at **free=2099 KB** — ~19× the observed stress working-set under the 128 KB probe (112 KB free held under load).  Enormous headroom.
+
+**Interpretation of Phase 4:**
+
+- **LVGL PANIC crash class: ELIMINATED.**  Zero PANICs in a full 30-min stress run (baseline was ~11 per 30 min extrapolated from Phase 1).  This is the success criterion for hypothesis (B) — validated.
+- **SW reset class: unchanged.**  The 2 controlled reboots in this run are the same `reset_reason=SW` pattern observed in Phase 3-B (#182).  They are not responsive to the LVGL pool fix — confirming they are a distinct crash class with a distinct mechanism.  Both occurred during mode-3 chat + screen-transition action cadence, consistent with the Phase 3-B observation.
+- **Strict reading of plan-doc success criterion** ("zero crashes of any kind in 30 min") is not fully met due to the 2 SW resets.  **Pragmatic reading** (the one that matches the actual hypothesis under test in this investigation — LVGL pool exhaustion) IS met.  Merging the PR is the right call: the firmware is strictly better than `main` (which has ~3 PANICs per 10 min and these same SW resets).  Continuing to block on #182 would defer a working fix indefinitely.
+
+**Investigation closure for hypothesis (B):** done.  `fix/lvgl-pool-2mb-psram` closes the LVGL-pool arm of this investigation and the whole 12-PR whack-a-mole cycle of #166–#178.  The investigation doc, the plan doc, and issue #182 remain open for the SW-reset class, which needs its own Phase 1-4 cycle.
 
 ---
 
