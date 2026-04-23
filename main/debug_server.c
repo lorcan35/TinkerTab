@@ -569,125 +569,25 @@ static esp_err_t log_handler(httpd_req_t *req)
 }
 
 /* ======================================================================== */
-/*  GET /  — Interactive HTML page                                           */
+/*  GET /  — Interactive multi-tab SPA (#150 PR γ)                           */
 /* ======================================================================== */
-
-static const char INDEX_HTML[] =
-"<!DOCTYPE html><html><head>"
-"<meta charset='utf-8'>"
-"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>TinkerTab Debug</title>"
-"<style>"
-"*{margin:0;padding:0;box-sizing:border-box}"
-"body{background:#1a1a2e;color:#e0e0e0;font-family:monospace;padding:16px}"
-"h1{color:#ffb800;font-size:1.4em;margin-bottom:12px}"
-".row{display:flex;gap:16px;flex-wrap:wrap}"
-".col{flex:1;min-width:300px}"
-"#screen-wrap{position:relative;display:inline-block;cursor:crosshair;border:2px solid #333}"
-"#screen{max-width:100%;height:auto}"
-"#info-panel{background:#16213e;padding:12px;border-radius:8px;margin-top:12px;"
-"  font-size:0.85em;white-space:pre-wrap}"
-".btn{background:#ffb800;color:#000;border:none;padding:8px 16px;border-radius:4px;"
-"  cursor:pointer;font-weight:bold;margin:4px}"
-".btn:hover{background:#ffd060}"
-".btn-danger{background:#e74c3c;color:#fff}"
-".btn-danger:hover{background:#ff6b6b}"
-"#coords{color:#aaa;font-size:0.8em;margin-top:4px}"
-"#status{color:#0f0;font-size:0.8em;margin-top:4px}"
-"</style></head><body>"
-"<h1>TinkerTab Debug Server</h1>"
-"<div class='row'>"
-"<div class='col'>"
-"  <div id='screen-wrap'>"
-"    <img id='screen' src='/screenshot.jpg' alt='screenshot' draggable='false'>"
-"  </div>"
-"  <div id='coords'>&nbsp;</div>"
-"  <div id='status'>Ready</div>"
-"  <div style='margin-top:8px'>"
-"    <button class='btn' onclick='refresh()'>Refresh</button>"
-"    <button class='btn' id='auto-btn' onclick='toggleAuto()'>Auto: OFF</button>"
-"    <button class='btn btn-danger' onclick='reboot()'>Reboot</button>"
-"  </div>"
-"</div>"
-"<div class='col'>"
-"  <div id='info-panel'>Loading...</div>"
-"</div>"
-"</div>"
-"<script>"
-"const img=document.getElementById('screen');"
-"const coordsEl=document.getElementById('coords');"
-"const statusEl=document.getElementById('status');"
-"const infoEl=document.getElementById('info-panel');"
-"let autoMode=false,autoTimer=null;"
-"\n"
-"function refresh(){"
-"  img.src='/screenshot.jpg?t='+Date.now();"
-"  statusEl.textContent='Refreshed '+new Date().toLocaleTimeString();"
-"}"
-"\n"
-"function toggleAuto(){"
-"  autoMode=!autoMode;"
-"  document.getElementById('auto-btn').textContent='Auto: '+(autoMode?'ON':'OFF');"
-"  if(autoMode){autoTimer=setInterval(refresh,2000)}"
-"  else{clearInterval(autoTimer)}"
-"}"
-"\n"
-"img.addEventListener('click',function(e){"
-"  const r=img.getBoundingClientRect();"
-"  const sx=img.naturalWidth/r.width;"
-"  const sy=img.naturalHeight/r.height;"
-"  const x=Math.round((e.clientX-r.left)*sx);"
-"  const y=Math.round((e.clientY-r.top)*sy);"
-"  coordsEl.textContent='Tap: '+x+', '+y;"
-"  fetch('/touch',{method:'POST',headers:{'Content-Type':'application/json'},"
-"    body:JSON.stringify({x:x,y:y,action:'tap'})})"
-"  .then(()=>{statusEl.textContent='Tapped '+x+','+y;setTimeout(refresh,300)})"
-"  .catch(e=>statusEl.textContent='Error: '+e);"
-"});"
-"\n"
-"img.addEventListener('mousemove',function(e){"
-"  const r=img.getBoundingClientRect();"
-"  const sx=img.naturalWidth/r.width;"
-"  const sy=img.naturalHeight/r.height;"
-"  const x=Math.round((e.clientX-r.left)*sx);"
-"  const y=Math.round((e.clientY-r.top)*sy);"
-"  coordsEl.textContent='Cursor: '+x+', '+y;"
-"});"
-"\n"
-"function fetchInfo(){"
-"  fetch('/info').then(r=>r.json()).then(d=>{"
-"    let s='Heap free:  '+fmt(d.heap_free)+'\\n';"
-"    s+='Heap min:   '+fmt(d.heap_min)+'\\n';"
-"    s+='PSRAM free: '+fmt(d.psram_free)+'\\n';"
-"    s+='Uptime:     '+Math.round(d.uptime_ms/1000)+'s\\n';"
-"    s+='WiFi:       '+(d.wifi_connected?d.wifi_ip:'disconnected')+'\\n';"
-"    s+='Dragon:     '+(d.dragon_connected?'connected':'offline')+'\\n';"
-"    s+='Display:    '+d.display+'\\n';"
-"    s+='FPS:        '+d.fps.toFixed(1)+'\\n';"
-"    s+='LVGL FPS:   '+d.lvgl_fps+'\\n';"
-"    s+='Battery:    '+d.battery_pct+'%\\n';"
-"    s+='Tasks:      '+d.tasks;"
-"    infoEl.textContent=s;"
-"  }).catch(e=>infoEl.textContent='Error: '+e);"
-"}"
-"\n"
-"function fmt(n){if(n>1e6)return (n/1e6).toFixed(1)+'M';if(n>1e3)return (n/1e3).toFixed(0)+'K';return n;}"
-"\n"
-"function reboot(){"
-"  if(confirm('Reboot TinkerTab?')){"
-"    fetch('/reboot',{method:'POST'}).then(()=>statusEl.textContent='Rebooting...');"
-"  }"
-"}"
-"\n"
-"fetchInfo();setInterval(fetchInfo,5000);"
-"</script></body></html>";
+/*
+ * The HTML + CSS + JS lives in main/debug_ui.html and is embedded into
+ * flash via EMBED_TXTFILES in CMakeLists.txt.  This keeps the ~22 KB
+ * SPA editable without the C string-literal horrors.
+ *
+ * NOTE: index is NOT auth-gated — the page itself has no secrets and
+ * prompts for the Bearer token in the UI (stored in localStorage).
+ * Every endpoint the SPA calls IS auth-gated.
+ */
+extern const char debug_ui_html_start[] asm("_binary_debug_ui_html_start");
+extern const char debug_ui_html_end[]   asm("_binary_debug_ui_html_end");
 
 static esp_err_t index_handler(httpd_req_t *req)
 {
-    if (!check_auth(req)) return ESP_OK;
-
-    httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
+    const size_t len = debug_ui_html_end - debug_ui_html_start;
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    return httpd_resp_send(req, debug_ui_html_start, len);
 }
 
 /* ======================================================================== */
