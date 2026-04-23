@@ -462,12 +462,6 @@ static void cb_quiet_on(lv_event_t *e)
     ui_home_refresh_sys_label();
 }
 
-/* Wake-word callback removed — feature parked. AFE + WakeNet remain wired in
- * firmware (afe.c, voice_{start,stop}_always_listening) but hidden from the
- * UI because TDM slot mapping for the AEC reference channel is still broken.
- * When un-parked, restore the Wake Word row + this callback. See CLAUDE.md
- * "Phase 2" and Espressif issue #TBD. */
-
 /* ── WiFi picker ────────────────────────────────────────────────────── */
 
 static void cb_wifi_setup(lv_event_t *e)
@@ -1213,10 +1207,7 @@ lv_obj_t *ui_settings_create(void)
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
 
     /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
-     * section visually — single amber caption, rows straight below).
-     *
-     * Wake Word row intentionally OMITTED — feature parked until AEC TDM
-     * slot mapping is resolved. See cb_wake_word comment above. */
+     * section visually — single amber caption, rows straight below). */
     mk_row_label(s_scroll, "Mic mute", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
               cb_mic_mute, NULL);

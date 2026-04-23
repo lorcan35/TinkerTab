@@ -184,9 +184,6 @@ curl -s -H "Authorization: Bearer $TOKEN" -o frame.bmp http://192.168.1.90:8080/
 curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/ota/check | python3 -m json.tool
 curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/ota/apply
 
-# Wake word (toggle AFE always-listening)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/wake
-
 # Chat (send text to Dragon via voice WS)
 curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/chat -d '{"text":"What time is it?"}'
 
@@ -278,7 +275,12 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 - **Compact tool format:** `format_for_llm(compact=True)` for local models — 5 priority tools, ~150 tokens vs ~500 for full format.
 
 ### Remaining Gaps
-- **AEC + Wake Word:** ESP-SR integrated, AFE runs, but wake word detection not triggering (TDM slot mapping issue). Parked.
+- **AEC + Wake Word:** Removed in #162 after the TDM-slot-mapping blocker
+  proved intractable without a custom WakeNet model.  The AFE/ESP-SR
+  scaffolding is gone; the 3 MB `model` SPIFFS partition at 0x660000 is
+  orphan but retained until a future PR repacks the partition table.
+  Revival path: restore from git history + procure a custom "Hey Tinker"
+  model from Espressif + re-do the TDM slot audit.
 - **OPUS encoding:** 16kHz PCM = 256kbps. OPUS would cut to ~16kbps. Future optimization.
 
 ## Key Technical Notes
@@ -305,7 +307,6 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `session_id` | str | `""` (empty) | — | Dragon conversation session ID for resume |
 | `vmode` | u8 | 0 | 0-3 | Voice mode: 0=local, 1=hybrid, 2=cloud, 3=TinkerClaw |
 | `llm_mdl` | str | `anthropic/claude-3.5-haiku` | — | LLM model identifier for cloud mode |
-| `wake` | u8 | 0 | 0-1 | Wake word detection: 0=off, 1=on |
 | `conn_m` | u8 | 0 | 0-2 | Connection mode: 0=auto (ngrok first then LAN), 1=local only, 2=remote only (Tab5-internal; never crosses the wire — see `voice_ws_start_client`) |
 | `auth_tok` | str | auto-generated (32 hex chars) | — | Debug server bearer auth token, generated on first boot |
 | `mic_mute` | u8 | 0 | 0-1 | Master mic mute — voice_start_listening refuses with a toast if set |
@@ -441,7 +442,6 @@ main/debug_server.{c,h}   — HTTP debug server (bearer-auth except /info /selft
 ```
 main/audio.c              — ES8388 DAC via esp_codec_dev + STD TX / TDM RX I2S
 main/mic.c                — ES7210 quad-mic via esp_codec_dev
-main/afe.c                — ESP-SR AFE wrapper (AEC + WakeNet9, parked)
 main/camera.{c,h}         — esp_video V4L2 stack, SC202CS sensor, MMAP capture
 main/imu.c                — BMI270 IMU via I2C
 main/sdcard.{c,h}         — SDMMC 4-bit, FAT32, coexists with Wi-Fi SDIO
@@ -556,20 +556,22 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 - 7 UI screens + keyboard overlay + voice overlay — all functional
 - NVS settings persistence (WiFi, Dragon, volume, brightness, cloud mode, session) — working
 
-**Phase 2 — AEC + Wake Word (IN PROGRESS):**
-- ESP-SR v2.4.0 integrated, compiles and links on ESP32-P4
-- AFE pipeline: AEC + NS + VAD + WakeNet9 — runs stable (1-mic "MR" mode, LOW_COST)
-- afe.c/afe.h wrapper, Settings toggle, /wake debug endpoint — all wired
-- 3MB model partition with wn9_hiesp + wn9_hilexin WakeNet models flashed
-- **BLOCKER:** Wake word detection not triggering — likely TDM slot mapping issue (AEC ref on wrong channel cancels real voice). Needs physical slot verification test + possibly custom "Hey Tinker" model from Espressif.
-- PTT mode still works as before when wake word is OFF (default).
+**Phase 2 — AEC + Wake Word (RETIRED in #162):**
+- ESP-SR v2.4.0, AFE pipeline, `/wake` debug endpoint, Settings toggle,
+  and the 3 MB model partition were all wired up, but the TDM slot
+  mapping for the AEC reference channel never produced usable wake-word
+  detection. The feature was parked for months and then removed in #162
+  so the ~450 LoC + `esp-sr` component + partition weren't a permanent
+  maintenance drag.
+- Revival path: restore the `afe.{c,h}` + voice.c/voice.h wake-word stubs
+  from git history (pre-#162), re-add `esp-sr` to `CMakeLists.txt` +
+  `idf_component.yml`, and procure a custom "Hey Tinker" WakeNet model
+  + tone-test the TDM slots to resolve the original blocker.
 
 **Phase 2 — Remaining priorities:**
-1. Fix wake word TDM slot mapping (tone test to identify AEC ref channel)
-2. Custom "Hey Tinker" WakeNet model (contact Espressif sales@espressif.com)
-3. Desktop SDL2 simulator for fast dev loop
-4. OPUS audio encoding (16kbps vs 256kbps PCM)
-5. OTA firmware updates
+1. Desktop SDL2 simulator for fast dev loop
+2. OPUS audio encoding (16kbps vs 256kbps PCM)
+3. OTA firmware updates
 
 ## Recovery & Rollback
 

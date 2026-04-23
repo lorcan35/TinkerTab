@@ -163,7 +163,6 @@ const char *voice_get_dictation_title(void);
 const char *voice_get_dictation_summary(void);
 
 /** Handle wake word detection: starts listening from IDLE/READY, or barge-in from SPEAKING. */
-void voice_on_wake(void);
 
 /** Start the reconnect watchdog task: checks connection every 5s and auto-reconnects with backoff. */
 esp_err_t voice_start_reconnect_watchdog(void);
@@ -173,15 +172,6 @@ void voice_stop_reconnect_watchdog(void);
 
 /** Return true if the voice WebSocket is connected and the receive task is running. */
 bool voice_is_connected(void);
-
-/** Start always-listening mode: initializes AFE pipeline (AEC + WakeNet) and spawns mic/detect tasks. */
-esp_err_t voice_start_always_listening(void);
-
-/** Stop always-listening mode: tears down AFE pipeline and stops continuous mic capture. */
-esp_err_t voice_stop_always_listening(void);
-
-/** Return true if always-listening mode (AFE + wake word) is currently active. */
-bool voice_is_always_listening(void);
 
 /** Force an immediate reconnect attempt, resetting the exponential backoff.
  *  Call when the user actively interacts (e.g., taps the orb) while disconnected.

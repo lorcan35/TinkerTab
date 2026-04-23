@@ -24,7 +24,6 @@
 #include "voice.h"
 #include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
 #include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
-#include "afe.h"
 #include "widget.h"
 #include "ui_voice.h"
 #include "ui_notes.h"
@@ -75,9 +74,6 @@ static const char *TAG = "tab5_voice";
 #define MIC_TDM_REF_OFF        1    // AEC reference at slot 1 (near-zero RMS ~6 when speaker silent)
 #define MIC_TDM_MIC2_OFF       2    // MIC2 at slot 2 (high RMS ~200)
 
-// AFE feed: channels match the format string passed to afe_config_init().
-#define AFE_FEED_CHANNELS      2  /* "MR" mode — 1 mic + 1 ref */
-#define AFE_FEED_MAX_SAMPLES   2048
 #define MIC_TDM_SAMPLES        (MIC_48K_FRAMES * MIC_TDM_CHANNELS)
 // Downsample ratio: 48kHz -> 16kHz = 3:1
 #define DOWNSAMPLE_RATIO       (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
@@ -246,12 +242,6 @@ static char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION
 static volatile float s_current_rms       = 0.0f;
 static char           s_dictation_title[128]   = {0};
 static char           s_dictation_summary[512] = {0};
-
-// AFE (always-listening) mode — PARKED, but `s_afe_enabled` is referenced
-// by mic_capture_task (always compiled) via its non-parked code path, so
-// it must exist even when WAKE_WORD_PARKED is defined. The detect-task
-// handle and its live flag are only used inside the parked impl.
-static volatile bool s_afe_enabled      = false;
 
 // Drop counter for audio frames lost under back-pressure (US-C04)
 static int s_audio_drop_count = 0;
@@ -1686,42 +1676,6 @@ static void voice_build_local_uri(char *out, size_t out_cap,
 }
 
 // ---------------------------------------------------------------------------
-// Wake word handler — called from AFE detect task (parked)
-// ---------------------------------------------------------------------------
-void voice_on_wake(void)
-{
-    voice_state_t cur = s_state;
-
-    if (cur == VOICE_STATE_IDLE || cur == VOICE_STATE_READY) {
-        ESP_LOGI(TAG, "Wake → LISTENING");
-        voice_set_state(VOICE_STATE_LISTENING, NULL);
-
-        if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_text("{\"type\":\"start\",\"mode\":\"ask\",\"wake\":true}");
-        }
-    } else if (cur == VOICE_STATE_SPEAKING) {
-        ESP_LOGI(TAG, "Wake → BARGE-IN (interrupting TTS)");
-
-        if (s_play_mutex) {
-            xSemaphoreTake(s_play_mutex, portMAX_DELAY);
-            s_play_wr = 0;
-            s_play_rd = 0;
-            s_play_count = 0;
-            xSemaphoreGive(s_play_mutex);
-        }
-
-        if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_text("{\"type\":\"cancel\"}");
-        }
-
-        voice_set_state(VOICE_STATE_LISTENING, NULL);
-        if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_text("{\"type\":\"start\",\"mode\":\"ask\",\"wake\":true}");
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Mic capture task — reads 4-ch TDM at 48kHz, extracts MIC1, downsamples
 // to 16kHz mono, sends via WS to Dragon.
 // ---------------------------------------------------------------------------
@@ -1733,29 +1687,10 @@ static void mic_capture_task(void *arg)
         MIC_TDM_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int16_t *mono_buf = (int16_t *)heap_caps_malloc(
         VOICE_CHUNK_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int16_t *afe_buf = NULL;
-    int afe_chunksize = 0;
-    int afe_buf_pos = 0;
-    if (s_afe_enabled) {
-        afe_chunksize = tab5_afe_get_feed_chunksize();
-        if (afe_chunksize <= 0) afe_chunksize = 512;
-        size_t alloc_size = ((afe_chunksize * sizeof(int16_t) + 63) / 64) * 64;
-        afe_buf = (int16_t *)heap_caps_aligned_alloc(64, alloc_size,
-                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        ESP_LOGI(TAG, "AFE feed buffer: %d samples (%zu bytes), buf=%p",
-                 afe_chunksize, alloc_size, afe_buf);
-    }
-    int16_t *afe_tmp = NULL;
-    if (s_afe_enabled) {
-        afe_tmp = (int16_t *)heap_caps_malloc(
-            VOICE_CHUNK_SAMPLES * AFE_FEED_CHANNELS * sizeof(int16_t),
-            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
-    if (!tdm_buf || !mono_buf || (s_afe_enabled && !afe_buf)) {
+    if (!tdm_buf || !mono_buf) {
         ESP_LOGE(TAG, "Failed to allocate mic buffers");
         heap_caps_free(tdm_buf);
         heap_caps_free(mono_buf);
-        heap_caps_free(afe_buf);
         s_mic_task = NULL;
         vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
         return;
@@ -1776,7 +1711,7 @@ static void mic_capture_task(void *arg)
 
     bool ws_live = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
 
-    while (s_mic_running && (ws_live || s_voice_mode == VOICE_MODE_DICTATE || s_afe_enabled)) {
+    while (s_mic_running && (ws_live || s_voice_mode == VOICE_MODE_DICTATE)) {
         esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
@@ -1805,46 +1740,12 @@ static void mic_capture_task(void *arg)
 
         int out_idx = 0;
 
-        if (s_afe_enabled && afe_buf) {
-            for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
-                int32_t m1 = 0, ref = 0;
-                for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
-                    int base = (i + j) * MIC_TDM_CHANNELS;
-                    m1  += tdm_buf[base + MIC_TDM_MIC1_OFF];
-                    ref += tdm_buf[base + MIC_TDM_REF_OFF];
-                }
-                afe_tmp[out_idx * AFE_FEED_CHANNELS + 0] = (int16_t)(m1 / DOWNSAMPLE_RATIO);
-                afe_tmp[out_idx * AFE_FEED_CHANNELS + 1] = (int16_t)(ref / DOWNSAMPLE_RATIO);
-                mono_buf[out_idx] = (int16_t)(m1 / DOWNSAMPLE_RATIO);
-                out_idx++;
+        for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
+            int32_t sum = 0;
+            for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
+                sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + MIC_TDM_MIC1_OFF];
             }
-            int produced = out_idx * AFE_FEED_CHANNELS;
-            int src_pos = 0;
-            while (src_pos < produced) {
-                int space = afe_chunksize - afe_buf_pos;
-                int avail = produced - src_pos;
-                int to_copy = (avail < space) ? avail : space;
-                memcpy(&afe_buf[afe_buf_pos], &afe_tmp[src_pos], to_copy * sizeof(int16_t));
-                afe_buf_pos += to_copy;
-                src_pos += to_copy;
-
-                if (afe_buf_pos >= afe_chunksize) {
-                    tab5_afe_feed(afe_buf, afe_chunksize);
-                    afe_buf_pos = 0;
-                    static int feed_count = 0;
-                    if (++feed_count % 100 == 0) {
-                        ESP_LOGI(TAG, "AFE fed %d chunks", feed_count);
-                    }
-                }
-            }
-        } else {
-            for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
-                int32_t sum = 0;
-                for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
-                    sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + MIC_TDM_MIC1_OFF];
-                }
-                mono_buf[out_idx++] = (int16_t)(sum / DOWNSAMPLE_RATIO);
-            }
+            mono_buf[out_idx++] = (int16_t)(sum / DOWNSAMPLE_RATIO);
         }
 
         if (frames_sent % 50 == 0) {
@@ -1865,21 +1766,19 @@ static void mic_capture_task(void *arg)
          * have reconnected (or gone away) in the background. */
         ws_live = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
 
-        if (!s_afe_enabled) {
-            ui_notes_write_audio(mono_buf, out_idx);
+        ui_notes_write_audio(mono_buf, out_idx);
 
-            size_t send_bytes = out_idx * sizeof(int16_t);
-            if (ws_live) {
-                err = voice_ws_send_binary(mono_buf, send_bytes);
-                if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "WS send failed — continuing SD recording");
-                    if (s_voice_mode == VOICE_MODE_ASK) break;
-                }
+        size_t send_bytes = out_idx * sizeof(int16_t);
+        if (ws_live) {
+            err = voice_ws_send_binary(mono_buf, send_bytes);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "WS send failed — continuing SD recording");
+                if (s_voice_mode == VOICE_MODE_ASK) break;
             }
         }
         frames_sent++;
 
-        if (s_voice_mode == VOICE_MODE_ASK && !s_afe_enabled && frames_sent >= MAX_RECORD_FRAMES_ASK) {
+        if (s_voice_mode == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
             ESP_LOGI(TAG, "Max recording duration reached (%ds)",
                      MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
             voice_set_state(VOICE_STATE_LISTENING, "max_duration");
@@ -1893,7 +1792,7 @@ static void mic_capture_task(void *arg)
          * normal Ask turns, which made the overlay feel unresponsive.
          * The expensive VAD-driven auto-stop logic below is still
          * scoped to DICTATE (the only mode that uses it). */
-        if (!s_afe_enabled && out_idx > 0) {
+        if (out_idx > 0) {
             int64_t sqsum = 0;
             for (int k = 0; k < out_idx; k++) {
                 sqsum += (int64_t)mono_buf[k] * mono_buf[k];
@@ -1902,7 +1801,7 @@ static void mic_capture_task(void *arg)
             s_current_rms = rms;
         }
 
-        if (s_voice_mode == VOICE_MODE_DICTATE && !s_afe_enabled) {
+        if (s_voice_mode == VOICE_MODE_DICTATE) {
             /* Re-read the just-computed RMS rather than recomputing. */
             float rms = s_current_rms;
 
@@ -1955,8 +1854,6 @@ static void mic_capture_task(void *arg)
     s_current_rms = 0;
     heap_caps_free(tdm_buf);
     heap_caps_free(mono_buf);
-    heap_caps_free(afe_buf);
-    heap_caps_free(afe_tmp);
 
     if (s_voice_mode == VOICE_MODE_DICTATE && had_speech
         && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES
@@ -3088,141 +2985,3 @@ bool voice_is_connected(void)
 {
     return s_ws && esp_websocket_client_is_connected(s_ws);
 }
-
-// ---------------------------------------------------------------------------
-// Always-listening mode (AFE + wake word) — PARKED.
-//
-// Wake-word always-listening is parked because the AEC reference channel
-// lands on the wrong TDM slot and cancels the real voice. To un-park:
-//   1. Remove #define WAKE_WORD_PARKED below and the #ifndef/#endif gate
-//      around _voice_start_always_listening_impl.
-//   2. Restore the Wake Word row + cb_wake_word in ui_settings.c.
-//   3. Unhide wake_listening / wake_word fields in debug_server.c /info.
-// ---------------------------------------------------------------------------
-#define WAKE_WORD_PARKED 1
-
-esp_err_t voice_start_always_listening(void)
-{
-    ESP_LOGW(TAG, "Wake-word mode is parked — start request ignored");
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
-esp_err_t voice_stop_always_listening(void)
-{
-    return ESP_OK;
-}
-
-bool voice_is_always_listening(void)
-{
-    return false;
-}
-
-#ifndef WAKE_WORD_PARKED
-/* Original implementation preserved verbatim for easy revival. The AFE feed
- * audio (clean_audio) is streamed to Dragon via voice_ws_send_binary() now. */
-static volatile bool s_afe_listening   = false;
-static TaskHandle_t  s_afe_detect_task = NULL;
-
-static void afe_detect_task(void *arg)
-{
-    ESP_LOGI(TAG, "AFE detect task started (core %d), afe_listening=%d",
-             xPortGetCoreID(), s_afe_listening);
-    int fetch_count = 0;
-
-    while (s_afe_listening) {
-        int16_t *clean_audio = NULL;
-        int clean_samples = 0;
-        bool wake_detected = false;
-        bool vad_speech = false;
-
-        if (fetch_count == 0) {
-            ESP_LOGI(TAG, "AFE detect: calling first fetch()...");
-        }
-        esp_err_t err = tab5_afe_fetch(&clean_audio, &clean_samples, &wake_detected, &vad_speech);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "AFE fetch failed: %s", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-
-        fetch_count++;
-        if (fetch_count % 100 == 0 || fetch_count <= 3) {
-            ESP_LOGI(TAG, "AFE fetch #%d: wake=%d vad=%d samples=%d",
-                     fetch_count, wake_detected, vad_speech, clean_samples);
-        }
-
-        if (wake_detected) {
-            ESP_LOGI(TAG, "*** WAKE WORD DETECTED ***");
-            voice_on_wake();
-        }
-
-        if (s_state == VOICE_STATE_LISTENING && clean_audio && clean_samples > 0
-            && s_ws && esp_websocket_client_is_connected(s_ws)) {
-            voice_ws_send_binary(clean_audio, clean_samples * sizeof(int16_t));
-            ui_notes_write_audio(clean_audio, clean_samples);
-        }
-    }
-
-    ESP_LOGI(TAG, "AFE detect task exiting");
-    s_afe_detect_task = NULL;
-    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
-}
-
-esp_err_t _voice_start_always_listening_impl(void)
-{
-    if (s_afe_enabled) {
-        ESP_LOGW(TAG, "AFE already running");
-        return ESP_OK;
-    }
-
-    esp_err_t ret = tab5_afe_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "AFE init failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    s_afe_enabled = true;
-    s_afe_listening = true;
-
-    s_mic_running = true;
-    s_mic_task = NULL;
-    BaseType_t mic_ret = xTaskCreatePinnedToCoreWithCaps(
-        mic_capture_task, "afe_mic", MIC_TASK_STACK_SIZE,
-        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
-        MALLOC_CAP_SPIRAM);
-    if (mic_ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create AFE mic task (ret=%d)", mic_ret);
-        tab5_afe_deinit();
-        s_afe_enabled = false;
-        s_afe_listening = false;
-        s_mic_running = false;
-        return ESP_ERR_NO_MEM;
-    }
-    ESP_LOGI(TAG, "AFE mic task created on core %d", MIC_TASK_CORE);
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    BaseType_t det_ret = xTaskCreatePinnedToCoreWithCaps(
-        afe_detect_task, "afe_detect", 8192, NULL,
-        MIC_TASK_PRIORITY, &s_afe_detect_task, MIC_TASK_CORE,
-        MALLOC_CAP_SPIRAM);
-    if (det_ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create AFE detect task");
-    }
-
-    ESP_LOGI(TAG, "Always-listening mode started (wake word: %s)",
-             tab5_afe_wake_word_name());
-    return ESP_OK;
-}
-
-esp_err_t _voice_stop_always_listening_impl(void)
-{
-    if (!s_afe_enabled) return ESP_OK;
-    s_afe_listening = false;
-    s_afe_enabled = false;
-    vTaskDelay(pdMS_TO_TICKS(100));
-    tab5_afe_deinit();
-    ESP_LOGI(TAG, "Always-listening mode stopped");
-    return ESP_OK;
-}
-#endif  /* WAKE_WORD_PARKED */

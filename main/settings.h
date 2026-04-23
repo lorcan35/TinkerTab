@@ -124,12 +124,6 @@ esp_err_t tab5_settings_set_llm_model(const char *model);
 uint8_t   tab5_settings_get_connection_mode(void);
 esp_err_t tab5_settings_set_connection_mode(uint8_t mode);
 
-/* ── Wake word ──────────────────────────────────────────────────────── */
-
-/** 0 = PTT only (default), 1 = always-listening with wake word */
-uint8_t   tab5_settings_get_wake_word(void);
-esp_err_t tab5_settings_set_wake_word(uint8_t enabled);
-
 /* ── Mic mute ───────────────────────────────────────────────────────── */
 
 /** 0 = mic hot (default), 1 = silenced.  When set, voice_start_listening()
