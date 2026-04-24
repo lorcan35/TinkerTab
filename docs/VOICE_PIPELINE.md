@@ -155,7 +155,7 @@ tts:
 llm:
   backend: "ollama"         # Options: ollama, openrouter, lmstudio
   ollama_url: "http://localhost:11434"
-  ollama_model: "gemma3:4b"
+  ollama_model: "ministral-3:3b"  # Dragon's current local default — see TinkerBox CLAUDE.md "Local LLM Benchmarks"
   openrouter_api_key: ""    # Required if backend=openrouter
   openrouter_model: "google/gemma-3-4b-it"
   openrouter_url: "https://openrouter.ai/api/v1"

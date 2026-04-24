@@ -238,7 +238,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 
 | Mode | STT | LLM | TTS | Latency | Cost |
 |------|-----|-----|-----|---------|------|
-| Local (0) | Moonshine | NPU/Ollama (default: qwen3:1.7b, 7.1 tok/s) | Piper | 2-5s | Free |
+| Local (0) | Moonshine | NPU/Ollama (default: ministral-3:3b, ~67s/turn median) | Piper | 60-90s | Free |
 | Hybrid (1) | OpenRouter gpt-audio-mini | Local (unchanged) | OpenRouter gpt-audio-mini | 4-8s | ~$0.02/req |
 | Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
 | TinkerClaw (3) | Moonshine (or OpenRouter) | TinkerClaw Gateway | Piper (or OpenRouter) | varies | varies |
@@ -341,7 +341,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Circle cache crash fixed:** 4 cache entries overflowed with 7+ rounded cards → `circ_calc_aa4` NULL dereference. Fix: `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32` in `sdkconfig.defaults`.
 - **Settings WDT crash fixed:** `f_getfree()` on a 128GB SD card blocks the LVGL thread for ~30s, triggering the watchdog. Fix: cache the `f_getfree` result from boot, feed `esp_task_wdt_reset()` between settings UI sections during creation.
 - **Response timeout (mode-aware):** Local mode = 5 min timeout for tool-calling chains (small models are slow). Cloud mode = 1 min timeout. Timeout is mode-aware, set per voice mode.
-- **Tool parser tolerant of small model quirks:** qwen3:1.7b adds stray `>` after `</args>`, sometimes omits closing tags. Parser uses tolerant regex with fallback patterns to handle these gracefully.
+- **Tool parser tolerant of small model quirks:** qwen3:1.7b adds stray `>` after `</args>`, sometimes omits closing tags. Parser uses tolerant regex with fallback patterns to handle these gracefully.  **2026-04-24 update:** Default Local model swapped to `ministral-3:3b` after an 11-model gauntlet — 0.6b's malformed-XML leaks and silent fails beat the tolerant parser; 4b-class models blew past Tab5's ~30s WS keepalive and got P13-evicted mid-stream.  See TinkerBox `CLAUDE.md` "Local LLM Benchmarks" + `docs/AUDIT.md` "Local-mode model gauntlet 2026-04-24".
 - **Speaker buzzing fixed:** IO expander P1 (SPK_EN) now initialized LOW at boot to prevent speaker buzzing on startup.
 - **Settings rewrite:** Replaced with fullscreen overlay using manual Y positioning. No flex layout, no separate screen. Eliminates WDT crash + draw buffer exhaustion.
 - **Settings two-pass creation:** Settings overlay uses a two-pass pattern — first pass creates the container, second pass populates sections with `esp_task_wdt_reset()` fed between each. Touch input blocked during creation to prevent partial-UI taps.
