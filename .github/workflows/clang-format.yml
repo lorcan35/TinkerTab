@@ -22,12 +22,12 @@ jobs:
         run: |
           if [ ! -f .clang-format ]; then
             cat > .clang-format << 'EOF'
-BasedOnStyle: Google
-IndentWidth: 3
-UseTab: Never
-ColumnLimit: 120
-AccessModifierOffset: -3
-EOF
+          BasedOnStyle: Google
+          IndentWidth: 3
+          UseTab: Never
+          ColumnLimit: 120
+          AccessModifierOffset: -3
+          EOF
           fi
 
       - name: Check formatting
