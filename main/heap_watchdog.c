@@ -72,6 +72,24 @@ static const char *TAG = "heap_wd";
 #define HEAP_WD_INT_FRAG_TOTAL_MIN     (16 * 1024)  /* 16KB — must have enough free for it to be fragmentation, not exhaustion */
 #define HEAP_WD_INT_FRAG_REBOOT_COUNT  3        /* 3 consecutive checks (3 minutes) */
 
+/* #182 Phase 3-d: internal SRAM EXHAUSTION detector (not fragmentation).
+ * The frag check above only fires when `free > 16 KB` — it's designed for
+ * the case "lots of free but small largest block".  That deliberately
+ * excludes the case we observed in #182: `free` and `largest` both shrink
+ * together until largest drops below the ESP-Hosted SDIO driver's per-
+ * packet DMA-alloc demand (~14 KB).  When that happens, SDIO silently
+ * drops RX packets, WS starves, and we get the voice.c:1528 hard-kick
+ * reboot (reset_reason=SW, no coredump).
+ *
+ * This detector fires when `internal_largest < 20 KB` sustained for
+ * 2 consecutive checks (2 min).  20 KB gives ~6 KB of margin above the
+ * observed 14 KB SDIO demand.  2-min sustained avoids false positives
+ * from transient dips during a single screen transition.  The abort
+ * path saves a coredump so future regressions are diagnosable; the
+ * current silent cascade just leaves the user with a reboot. */
+#define HEAP_WD_INT_EXHAUST_BLOCK_MIN    (20 * 1024)  /* 20KB largest block */
+#define HEAP_WD_INT_EXHAUST_REBOOT_COUNT 2             /* 2 consecutive = 2 min */
+
 /* DMA pool exhaustion thresholds (audit #80):
  * WiFi driver + TLS need DMA-capable buffers for RX/TX descriptors. When
  * free DMA pool drops too low the driver silently fails — packets never
@@ -111,6 +129,7 @@ static void heap_watchdog_task(void *arg)
     int frag_count = 0;
     int internal_frag_count = 0;
     int dma_critical_count = 0;
+    int internal_exhaust_count = 0;  /* #182 Phase 3-d: SRAM exhaustion (largest block too small for SDIO) */
 
     ESP_LOGI(TAG, "Heap watchdog started (check every %ds, reboot after %d consecutive fragmentation events)",
              HEAP_WD_CHECK_INTERVAL_MS / 1000, HEAP_WD_FRAG_REBOOT_COUNT);
@@ -177,6 +196,58 @@ static void heap_watchdog_task(void *arg)
                          internal_frag_count, HEAP_WD_INT_FRAG_REBOOT_COUNT);
             }
             internal_frag_count = 0;
+        }
+
+        /* #182 Phase 3-d: SRAM EXHAUSTION detector.  Fires when the
+         * largest free internal-SRAM block shrinks below the ESP-Hosted
+         * SDIO driver's per-packet DMA-alloc peak demand, sustained for
+         * 2 consecutive minutes.  This is the observed failure mode of
+         * the SW-reset cascade in #182: largest drops to ~11 KB, SDIO
+         * tries a 14 KB heap_caps_aligned_alloc, fails silently, packets
+         * drop, WS starves, and we get the voice.c:1528 hard-kick reboot
+         * with no coredump.
+         *
+         * Triggering here converts the silent cascade into a clean
+         * esp_system_abort with "sram_exhausted" reason, which saves a
+         * coredump to the 0x620000 partition.  The fix is strictly
+         * observability — the user still loses the session, but future
+         * regressions are diagnosable.
+         *
+         * Excluded from triggering here (to avoid double-counting with
+         * the fragmentation check above): cases where free > 16 KB and
+         * largest < 4 KB — that's a genuine fragmentation pattern and
+         * the existing check handles it. */
+        if (internal_largest < HEAP_WD_INT_EXHAUST_BLOCK_MIN
+            && !(internal_largest < HEAP_WD_INT_FRAG_BLOCK_MIN
+                 && internal_free > HEAP_WD_INT_FRAG_TOTAL_MIN)) {
+            internal_exhaust_count++;
+            ESP_LOGE(TAG, "Internal SRAM exhausted: largest=%uKB below %uKB threshold (count=%d/%d)",
+                     (unsigned)(internal_largest / 1024),
+                     (unsigned)(HEAP_WD_INT_EXHAUST_BLOCK_MIN / 1024),
+                     internal_exhaust_count, HEAP_WD_INT_EXHAUST_REBOOT_COUNT);
+
+            if (internal_exhaust_count >= HEAP_WD_INT_EXHAUST_REBOOT_COUNT) {
+                extern voice_state_t voice_get_state(void);
+                voice_state_t vs = voice_get_state();
+                if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING
+                    || vs == VOICE_STATE_PROCESSING) {
+                    ESP_LOGW(TAG, "Heap watchdog: deferring exhaustion reboot, voice active (state=%d)", vs);
+                } else {
+                    ESP_LOGE(TAG, "Heap watchdog: SRAM exhausted %d min; internal free=%uKB largest=%uKB DMA free=%uKB PSRAM free=%uKB",
+                             HEAP_WD_INT_EXHAUST_REBOOT_COUNT,
+                             (unsigned)(internal_free / 1024),
+                             (unsigned)(internal_largest / 1024),
+                             (unsigned)(dma_free / 1024),
+                             (unsigned)(psram_free / 1024));
+                    hw_restart_with_coredump("sram_exhausted");
+                }
+            }
+        } else {
+            if (internal_exhaust_count > 0) {
+                ESP_LOGI(TAG, "Internal SRAM headroom recovered (was %d/%d)",
+                         internal_exhaust_count, HEAP_WD_INT_EXHAUST_REBOOT_COUNT);
+            }
+            internal_exhaust_count = 0;
         }
 
         /* Audit #80 + W15-C05: DMA exhaustion reboot path.  Soft warn at
