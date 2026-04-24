@@ -32,7 +32,7 @@ else()
         SRCS "main.c"
              "sdcard.c" "wifi.c"
              "voice.c" "mode_manager.c"
-             "debug_server.c" "debug_obs.c" "heap_watchdog.c"
+             "debug_server.c" "debug_obs.c" "pool_probe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"
              "ui_core.c" ${UI_SRCS}

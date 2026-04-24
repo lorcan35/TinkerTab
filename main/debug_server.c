@@ -12,6 +12,7 @@
 #include "debug_server.h"
 #include "config.h"
 #include "esp_random.h"
+#include "pool_probe.h"
 #include "display.h"
 #include "sdcard.h"
 #include "voice.h"
@@ -2833,6 +2834,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_metrics        = { .uri = "/metrics",        .method = HTTP_GET,  .handler = metrics_handler };
     const httpd_uri_t uri_events         = { .uri = "/events",         .method = HTTP_GET,  .handler = events_handler };
     const httpd_uri_t uri_heap_history   = { .uri = "/heap/history",   .method = HTTP_GET,  .handler = heap_history_handler };
+    const httpd_uri_t uri_heap_probe     = { .uri = "/heap/probe-csv", .method = HTTP_GET,  .handler = tab5_pool_probe_http_handler };
     const httpd_uri_t uri_chat_msgs      = { .uri = "/chat/messages",  .method = HTTP_GET,  .handler = chat_messages_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
@@ -2879,6 +2881,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_metrics);
     httpd_register_uri_handler(server, &uri_events);
     httpd_register_uri_handler(server, &uri_heap_history);
+    httpd_register_uri_handler(server, &uri_heap_probe);
     httpd_register_uri_handler(server, &uri_chat_msgs);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
