@@ -209,12 +209,14 @@ void ui_keyboard_hide(void)
 
     s_visible = false;
 
-    /* Notify the active screen to restore layout, then clear the callback.
-     * Clearing here prevents a stale callback from firing if the owning
-     * screen is hidden/destroyed before a subsequent keyboard operation. */
+    /* Notify the active screen to restore layout.  Do NOT clear s_layout_cb
+     * here — the owning screen (ui_chat / ui_voice / ui_notes) installs and
+     * clears its own cb via ui_keyboard_set_layout_cb(NULL) on hide/destroy.
+     * Nulling here was breaking #190's pill-raise on the SECOND keyboard
+     * open: first hide cleared the cb, next show had no cb to fire, so the
+     * pill stayed at its default y and the keyboard covered it again. */
     if (s_layout_cb) {
         s_layout_cb(false, KB_HEIGHT);
-        s_layout_cb = NULL;
     }
 
     /* Animate slide-down */
