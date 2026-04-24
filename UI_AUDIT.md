@@ -1,5 +1,11 @@
 # TinkerTab UI Audit — Glyph OS (ESP32-P4, 720x1280, LVGL v9)
 
+> **HISTORICAL SNAPSHOT (2026-03-27).**  Predates the v4·C Ambient Canvas home screen,
+> the chat overlay rich-media work, the widget platform, and the LVGL pool fixes (#183/#184/#185).
+> The UI structure described below has been substantially rewritten.  Use this only as
+> a snapshot of the early Glyph-OS layout; for current UI architecture see `CLAUDE.md`
+> "UI screens + overlays" file map and the per-screen source under `main/ui_*.c`.
+
 **Date:** 2026-03-27
 **Firmware:** TinkerTab v1.0.0
 **Files audited:** 9 ui_*.c + 9 ui_*.h + main.c + config.h

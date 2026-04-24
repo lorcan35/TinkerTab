@@ -1,8 +1,13 @@
-# TinkerTab Streaming Architecture — Research & Recommendations
+# TinkerTab Streaming Architecture — ARCHIVED (feature retired)
 
-## Current Setup
-- Dragon (Radxa Q6A) captures Chromium via CDP screencast → MJPEG multipart HTTP
-- Tab5 (ESP32-P4) receives MJPEG, decodes with HW JPEG, renders to DPI framebuffer
+> **The CDP browser-streaming feature documented below was REMOVED in PR #155**
+> (2026-04-22).  Voice-first is now the product (per `CLAUDE.md` "TinkerClaw Vision").
+> This file is kept only for historical reference / future browser-on-Tab5 designs
+> that might want to re-read the protocol research.  It does not describe live behavior.
+
+## (Original) Setup
+- Dragon (Radxa Q6A) captured Chromium via CDP screencast → MJPEG multipart HTTP
+- Tab5 (ESP32-P4) received MJPEG, decoded with HW JPEG, rendered to DPI framebuffer
 - Touch events sent back via WebSocket
 
 ## Key Findings

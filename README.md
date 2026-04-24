@@ -188,7 +188,7 @@ Services: `STORAGE`, `DISPLAY`, `AUDIO`, `NETWORK`, `DRAGON`
 
 | Requirement               | Version          | Notes                                       |
 |---------------------------|------------------|---------------------------------------------|
-| ESP-IDF                   | v5.4.3           | Must match `dependencies.lock`              |
+| ESP-IDF                   | v5.5.2           | Must match `dependencies.lock`              |
 | Python                    | 3.12+            | For esptool, serial monitor                 |
 | M5Stack Tab5              | --               | ESP32-P4 hardware                           |
 | Dragon Q6A server         | --               | Running [TinkerBox](https://github.com/lorcan35/TinkerBox) |
@@ -196,12 +196,12 @@ Services: `STORAGE`, `DISPLAY`, `AUDIO`, `NETWORK`, `DRAGON`
 
 ### Install ESP-IDF
 
-Follow the [ESP-IDF Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/v5.4.3/esp32p4/get-started/index.html)
+Follow the [ESP-IDF Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/v5.5.2/esp32p4/get-started/index.html)
 or use the one-liner:
 
 ```bash
 mkdir -p ~/esp && cd ~/esp
-git clone -b v5.4.3 --recursive https://github.com/espressif/esp-idf.git
+git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git
 cd esp-idf && ./install.sh esp32p4
 ```
 
@@ -478,8 +478,8 @@ The server specification lives in TinkerBox at `docs/protocol.md`.
 | `{"type":"ping"}`                      | JSON    | Keepalive heartbeat (every 15s)      |
 | `{"type":"text","content":"..."}`      | JSON    | Text input (skips STT, goes to LLM) |
 | `{"type":"register",...}`              | JSON    | Device registration on connect       |
-| `{"type":"cloud_mode","enabled":bool}` | JSON    | Toggle cloud/local processing        |
-| `{"type":"clear_history"}`             | JSON    | Clear conversation context           |
+| `{"type":"config_update","voice_mode":0\|1\|2\|3,"llm_model":"..."}` | JSON | Voice mode + LLM picker (modes: 0=Local 1=Hybrid 2=Cloud 3=TinkerClaw). Old `cloud_mode` boolean still accepted for backward compat |
+| `{"type":"clear"}`                     | JSON    | Clear conversation context           |
 
 ### Dragon to Tab5
 

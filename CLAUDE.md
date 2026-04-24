@@ -2,15 +2,8 @@
 
 ## Active Investigations — READ FIRST before related work
 
-- **LVGL pool pressure (stability)** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
-  Ongoing multi-phase investigation into the ~170 s crash cadence
-  observed under the stress orchestrator. **Do NOT start one-off crash
-  patches** if a new LVGL-internal crash surfaces — read the state doc
-  + the phase plan at
-  [`docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`](docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md)
-  first. Use the `superpowers:executing-plans` skill to resume where
-  the previous session left off. The plan is root-cause driven; the
-  whack-a-mole era ended with PR #178.
+- **Stability — LVGL pool pressure CLOSED, SW-reset class still open** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
+  As of 2026-04-24, three PRs shipped on main: #183 (2 MB PSRAM LVGL pool via `lv_mem_add_pool()`), #184 (heap_watchdog SRAM exhaustion detector → `sram_exhausted` PANIC + coredump), #185 (LV_MEM 96→64 KB to free 32 KB BSS).  Combined effect: zero LVGL PANIC crashes, ~2× cadence under stress, silent SW cascade replaced with diagnosable PANIC.  Issue **#182 remains open** for the residual slow internal-SRAM drift (~5 KB/min under sustained stress) — runs into a RISC-V architectural limit (heap_trace caller PCs need frame pointer, which overflows the bootloader partition at 24 KB).  **Do NOT start one-off LVGL-NULL-deref patches** if a new crash surfaces — read the state doc first.  The whack-a-mole era ended with PR #178; the root-cause arm ended with #185.
 
 ## Repo Separation — READ THIS FIRST
 - **TinkerTab** (this repo) = Tab5 firmware. C/ESP-IDF. THIN CLIENT.
@@ -344,7 +337,7 @@ Current LVGL settings in `sdkconfig.defaults`:
 - **Render mode:** `LV_DISPLAY_RENDER_MODE_PARTIAL` with two 144KB draw buffers in PSRAM. Do NOT use DIRECT mode (causes tearing on DPI).
 
 ### Key Fixes (April 2026)
-- **LVGL pool OOM crash fixed:** Notes edit overlay exhausted the 96 KB base pool → `lv_malloc` NULL → NULL-deref inside LVGL draw pipeline → PANIC reboot (cadence ~170 s under stress). Full root-cause investigation in `docs/STABILITY-INVESTIGATION.md` across 12 whack-a-mole symptom PRs + Phase 1-3. Real fix: call `lv_mem_add_pool()` at boot with a 2 MB PSRAM chunk (`main.c`), because LVGL 9.2.2 has no auto-expand despite the misleading `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES` name. 96 KB base is a soft ceiling at link time — don't bump it above 96.
+- **LVGL pool OOM crash fixed:** Notes edit overlay exhausted the (then-96 KB) base pool → `lv_malloc` NULL → NULL-deref inside LVGL draw pipeline → PANIC reboot (cadence ~170 s under stress). Full root-cause investigation in `docs/STABILITY-INVESTIGATION.md` across 12 whack-a-mole symptom PRs + Phase 1-3. Real fix shipped in three PRs (2026-04-24): #183 calls `lv_mem_add_pool()` at boot with a 2 MB PSRAM chunk in `main.c` (LVGL 9.2.2 has no auto-expand — `CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES` is only a TLSF per-pool max-size ceiling); #184 adds an SRAM exhaustion detector to `heap_watchdog.c` so any future drift produces a clean PANIC + coredump rather than a silent SW reset; #185 drops the BSS base pool from 96→64 KB to free internal-SRAM headroom (96 was the soft link-time ceiling, 64 is well below it and the 2 MB PSRAM pool carries the real load).
 - **Circle cache crash fixed:** 4 cache entries overflowed with 7+ rounded cards → `circ_calc_aa4` NULL dereference. Fix: `CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32` in `sdkconfig.defaults`.
 - **Settings WDT crash fixed:** `f_getfree()` on a 128GB SD card blocks the LVGL thread for ~30s, triggering the watchdog. Fix: cache the `f_getfree` result from boot, feed `esp_task_wdt_reset()` between settings UI sections during creation.
 - **Response timeout (mode-aware):** Local mode = 5 min timeout for tool-calling chains (small models are slow). Cloud mode = 1 min timeout. Timeout is mode-aware, set per voice mode.
