@@ -1,11 +1,11 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-24 — Phase 4 VALIDATED on `fix/lvgl-pool-2mb-psram` (2 MB PSRAM pool); LVGL PANIC class eliminated across full 30-min stress
-> **Current phase:** hypothesis (B) arm of the investigation CLOSED — PR pending merge on #181.  Investigation remains open only for the separate `reset_reason=SW` class tracked in #182.
-> **Active branch:** `fix/lvgl-pool-2mb-psram` (11 commits ahead of main); `investigate/lvgl-pool-pressure` is the parent, kept around for history.
-> **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`
+> **Last updated:** 2026-04-24 — #182 Phase 1 ROOT CAUSE identified: internal-SRAM leak (~6 KB/min) breaks SDIO → WS → reboot cascade.  Reboot site is voice.c:1528, but the SYMPTOM, not the cause.
+> **Current phase:** #182 Phase 2 — identify what's leaking internal SRAM.  Hypothesis candidates + experiment plan pre-registered in the latest log entry.
+> **Active branch:** `investigate/sw-reset-mode3` (off `fix/lvgl-pool-2mb-psram`, off `investigate/lvgl-pool-pressure`).  Phase 1 findings committed; Phase 2 instrumentation not yet cut.
+> **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md` (original LVGL pool plan — still the template for Phase 2+ of #182).
 >
-> **NEXT CONCRETE STEP when resuming:** work from issue **#182** — the `reset_reason=SW` crash class observed during `mode=3 chat` actions.  Candidates: `heap_watchdog.c` fragmentation reboot, zombie-reboot WDT in `voice.c`, or an explicit `esp_restart()` on some resource-exhaustion branch.  Start with `grep -rn "esp_restart\\|esp_system_abort" main/` to enumerate controlled-reset paths; then reproduce in isolation (loop mode-3 chat actions without the full orchestrator).  Do NOT reopen the LVGL pool work — that is closed and shipped.
+> **NEXT CONCRETE STEP when resuming:** Phase 2 instrumentation per the #182 log entry — (1) extend `heap_watchdog.c` to log task-count + per-task stack HWM every 60 s, (2) add a `/heap/internal-breakdown` debug endpoint that dumps `heap_caps_print_heap_info(MALLOC_CAP_INTERNAL)`.  Reproduce via stress orchestrator, read back, identify the leaking component.  Then Phase 3 fixes: an immediate heap_wd mitigation (exhaustion detector at `internal_free < 24 KB`) plus the root-cause leak patch.
 
 ---
 
@@ -418,6 +418,74 @@ After home screen creation the pool parks at **free=2099 KB** — ~19× the obse
 - **Strict reading of plan-doc success criterion** ("zero crashes of any kind in 30 min") is not fully met due to the 2 SW resets.  **Pragmatic reading** (the one that matches the actual hypothesis under test in this investigation — LVGL pool exhaustion) IS met.  Merging the PR is the right call: the firmware is strictly better than `main` (which has ~3 PANICs per 10 min and these same SW resets).  Continuing to block on #182 would defer a working fix indefinitely.
 
 **Investigation closure for hypothesis (B):** done.  `fix/lvgl-pool-2mb-psram` closes the LVGL-pool arm of this investigation and the whole 12-PR whack-a-mole cycle of #166–#178.  The investigation doc, the plan doc, and issue #182 remain open for the SW-reset class, which needs its own Phase 1-4 cycle.
+
+### 2026-04-24 — #182 Phase 1: root cause of `reset_reason=SW` class — internal SRAM exhaustion, not WiFi/WS
+
+**Method:** Captured timestamped serial output to `/tmp/serial-sw-reset.log` across a 10-min stress run on `investigate/sw-reset-mode3` (off `fix/lvgl-pool-2mb-psram`).  Reproduced a single SW reset at uptime 428 s — sufficient for root-cause identification.
+
+**Cascade leading to the reset (reconstructed from serial):**
+
+```
+t=435s  heap_wd: Internal: free=13KB blk=11KB frag=16%     (trajectory dropping)
+t=449s  E dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+t=449s  W H_SDIO_DRV: SDIO RX alloc failed (7680), using existing 4608 buf
+t=449s  E H_SDIO_DRV: packet size too big for remaining stream data
+t=449s  E H_SDIO_DRV: Failed to push data to rx queue
+t=452s  ui_core: UI task alive ... (stress continues, WS slowly starves)
+t=473s  E transport_base: tcp_read error (sock abort)
+t=473s  W tab5_voice: WS: DISCONNECTED
+t=474-508s  WS reconnect attempts 1-4 fail (TLS handshake needs internal SRAM too)
+t=499s  heap_wd: Internal: free=10KB blk=4KB frag=58%       (frag threshold finally visible, but...)
+t=512s  W Zombie Wi-Fi: 2 rounds — soft kick (deauth+reconnect)
+t=522s  W WS: 5 failed attempts — escalating to hard-kick
+t=533s  E WS: hard-kick failed (ESP_FAIL) — controlled reboot
+        rst:0xc (SW_CPU_RESET)
+```
+
+**The `esp_restart()` at `voice.c:1528` is the SYMPTOM, not the cause.**  The true cause is internal-SRAM exhaustion starving the SDIO driver's DMA-capable buffer allocations, which breaks the Wi-Fi transport layer from under voice.c.
+
+**Internal-SRAM trajectory (heap_wd logs, 60 s cadence):**
+
+| t (uptime) | internal_free | internal_largest | frag_pct |
+|---|---|---|---|
+| 79 s | **52 KB** | 52 KB | 1% |
+| 139 s | 48 KB | 44 KB | 9% |
+| 199 s | 48 KB | 44 KB | 9% |
+| 259 s | 31 KB | 30 KB | 6% |
+| 319 s | 31 KB | 30 KB | 6% |
+| 379 s | 30 KB | 26 KB | 15% |
+| 439 s | **13 KB** | 11 KB | 16% |
+| 499 s | **10 KB** | 4 KB | 58% |
+
+**This is a monotonic leak, not fragmentation.**  Internal free drops 52→10 KB over 7 minutes (~6 KB/min growth in consumed SRAM).  `frag_pct` stays below 16% almost the entire way — fragmentation theory wouldn't produce this trajectory.  Only at the very end does free fall below largest-block ratio enough to register as "fragmented", by which point SDIO has already broken.
+
+**Why heap_watchdog didn't catch it:**
+- Its internal-SRAM threshold (`heap_watchdog.c:71-73`) is `(internal_largest < 4 KB) AND (internal_free > 16 KB)` sustained for 3 min.
+- The second term — `free > 16 KB` — was written to distinguish fragmentation (lots of free, small largest) from exhaustion (low free).  The comment says exhaustion is intentionally excluded.
+- But we're in exhaustion mode for essentially the entire run; `free` never exceeds 16 KB once largest dips below 16 KB.  The watchdog deliberately abstains from the condition that is killing us.
+- Additionally the 4 KB largest-block floor is BELOW the SDIO driver's 7.5 KB allocation demand.  By the time the watchdog would be interested, SDIO has been dropping packets for minutes.
+
+**Why voice.c:2172 (zombie reboot) didn't fire first:**
+- zombie_reboot requires 6 rounds × 30 s = 180 s of failed probes + `!voice_is_connected()`.
+- That path fires only if the reboot cascade is SLOWER than 3 minutes.  In this run the cascade from WS disconnect to hard-kick was ~60 s, fast enough that voice.c:1528 (hard-kick-fail reboot) fired first.
+
+**Phase 2 hypothesis (pre-registered):**
+
+Something in the project is allocating internal SRAM at a rate of ~6 KB/min under the stress orchestrator and not freeing it.  Candidates, in rough order of likelihood:
+
+1. **Task creation without cleanup.**  Stress log showed `tasks=25` at start, `tasks=28` by mid-run.  Task stacks live in internal SRAM (~4-8 KB each).  +3 tasks = 12-24 KB, accounts for roughly half the drift.  What's spawning them?  Candidates: httpd per-request tasks not recycled, voice-side work tasks that don't `vTaskDelete`, screenshot tasks.
+2. **TLS session context / WiFi RX buffers growing.**  Each chat action opens a TinkerClaw gateway call; if TLS contexts accumulate, that's internal SRAM.
+3. **esp_http_server chunk state** leaking on long-polling endpoints like `/voice` or `/heap/probe-csv`.
+4. **Debug server screenshot handler** allocating intermediate internal-SRAM buffers before writing to PSRAM output.
+
+Phase 2's first experiment: add a task-count + per-task stack-HWM logger to `heap_watchdog` so we can observe task churn.  Then: add a `heap_caps_print_heap_info(MALLOC_CAP_INTERNAL)` dump on a new debug endpoint `/heap/internal-breakdown` so we can see allocation distribution at any moment.  Once we know WHICH component is growing, we target the leak.
+
+**Phase 3 candidate fixes (choose after Phase 2 data):**
+
+1. **Mitigation, to land immediately:** tighten heap_watchdog to catch exhaustion.  Replace the `free > 16 KB` requirement with a separate exhaustion check: if `internal_free < 24 KB` sustained for 60 s, reboot with coredump.  24 KB is above SDIO's 7.5 KB demand + TLS handshake working set (~8 KB) with margin.  Converts the silent cascade reboot into a clean PANIC with coredump + named reason.  Does NOT fix the leak; makes future leak-hunts cheaper.
+2. **Root fix:** based on Phase 2 data, patch the leaking component.  Could be as small as adding a `vTaskDelete(NULL)` somewhere, or as large as restructuring a task-per-request pattern into a worker pool.
+
+**Not in scope of Phase 1:** the fix itself.  This entry documents the cascade + the leak.
 
 ---
 
