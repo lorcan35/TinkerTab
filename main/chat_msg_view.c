@@ -517,15 +517,17 @@ static void ev_scroll(lv_event_t *e)
 {
     chat_msg_view_t *v = lv_event_get_user_data(e);
     if (!v || !v->scroll) return;
-    /* #142: decide whether the user is trying to read history or is
-     * pinned at the bottom.  `content_height - visible_h - scroll_y`
-     * is the distance from the current top-of-viewport to the last
-     * bubble; > AUTOPIN_PX means they've dragged up and we should
-     * stop auto-jumping to the tail on subsequent refreshes. */
-    int32_t scroll_y  = lv_obj_get_scroll_y(v->scroll);
-    int32_t content_h = lv_obj_get_content_height(v->scroll);
-    int32_t visible_h = lv_obj_get_height(v->scroll);
-    int32_t distance_from_bottom = content_h - visible_h - scroll_y;
+    /* #142 + #187: decide whether the user is reading history or pinned
+     * at the bottom.  `lv_obj_get_scroll_bottom` returns the *remaining
+     * scroll distance below the viewport* — 0 when pinned, >0 when the
+     * user has dragged up.  Previously we derived this from
+     * `get_content_height - visible_h - scroll_y`, but get_content_height
+     * is (outer - padding - border*2), not the scrollable extent — so
+     * after #187's fix dropped the manual set_content_height override it
+     * silently returned 918 and stranded user_scrolled_up at false,
+     * which made the refresh snap the view straight back to the tail on
+     * every swipe. */
+    int32_t distance_from_bottom = lv_obj_get_scroll_bottom(v->scroll);
     if (distance_from_bottom < 0) distance_from_bottom = 0;
     v->user_scrolled_up = (distance_from_bottom > AUTOPIN_PX);
     chat_msg_view_refresh(v);
@@ -607,7 +609,6 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
     int total = chat_store_count();
     if (total == 0) {
         hide_all_slots(v);
-        lv_obj_set_content_height(v->scroll, 0);
         return;
     }
 
@@ -622,7 +623,18 @@ void chat_msg_view_refresh(chat_msg_view_t *v)
          * current bubble's ts has room to render. */
         running += estimate_height(m) + BUBBLE_TS_H + BUBBLE_GAP;
     }
-    lv_obj_set_content_height(v->scroll, running);
+    /* closes #187: DO NOT call lv_obj_set_content_height here.  In
+     * LVGL 9 that function is shorthand for
+     *   lv_obj_set_height(obj, h + pad_top + pad_bottom + 2*border_width)
+     * — i.e., it resizes the OUTER height of v->scroll, not a reported
+     * content size.  With pad=0/border=0 the scroll container grew to
+     * `running` pixels every refresh, which pushed child bubbles past
+     * the intended viewport (bleed past the input pill) and collapsed
+     * autopin math: `target_y = running - lv_obj_get_height(v->scroll)
+     * = running - running = 0`, so scroll_to_y never left the top.
+     * LVGL's scroll container auto-computes scrollable extent from the
+     * children we position via lv_obj_set_pos, so no manual set is
+     * needed — v->scroll stays at (w × h) set in chat_msg_view_create. */
 
     /* #142: only force-jump to bottom when the user is pinned there
      * (new session, or they've already scrolled all the way down).
