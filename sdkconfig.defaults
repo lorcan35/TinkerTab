@@ -108,12 +108,16 @@ CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
 CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
-# LVGL memory — 64KB base + 1024KB expand = 1088KB total capacity.
-# 2026-04-17: tuned from the historical 96KB down to 64KB to leave headroom for
-# FreeRTOS idle+timer static stacks in internal SRAM on fresh toolchain builds
-# (xPortcheckValidStackMem assert at 96KB, keyboard-init store fault at 32KB).
-# Expand uses system heap (PSRAM) on demand.
-CONFIG_LV_MEM_SIZE_KILOBYTES=96
+# LVGL memory.  Base pool is 64 KB statically in BSS; the real working
+# heap comes from a 2 MB PSRAM-backed lv_mem_add_pool() at boot in main.c
+# (see #183 + docs/STABILITY-INVESTIGATION.md).  History: 2026-04-17 had
+# 64 KB (xPortcheckValidStackMem assert at 96 KB on some builds), later
+# bumped to 96 in a prior cycle when the PSRAM pool wasn't yet in place;
+# now that main.c adds 2 MB from PSRAM at boot the 64 KB base is plenty
+# and restoring 64 KB here frees 32 KB of BSS for internal-SRAM pressure
+# relief (#182).  The POOL_EXPAND_SIZE number below is only a TLSF
+# per-pool max-size ceiling, not an auto-expand trigger — see CLAUDE.md.
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
 CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=4096
 # Disable LVGL assert on malloc failure — default while(1) hangs 60s then WDT kills device
 CONFIG_LV_USE_ASSERT_NULL=n
