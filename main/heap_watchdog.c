@@ -297,11 +297,16 @@ static void heap_watchdog_task(void *arg)
             }
         }
 
-        /* #182 Phase 2: enumerate ALL tasks so we can spot the SRAM leaker.
-         * Every new task costs ~4-8 KB of internal SRAM for its stack +
-         * TCB.  If tasks are created faster than they're destroyed, that's
-         * a plausible SRAM-leak vector.  Log the full list at each 60 s
-         * heap_wd tick so a diff across the run identifies newcomers. */
+#if CONFIG_FREERTOS_USE_TRACE_FACILITY
+        /* #182 Phase 2: enumerate ALL tasks so we can spot a leaker that
+         * spawns tasks without destroying them.  Guarded on
+         * CONFIG_FREERTOS_USE_TRACE_FACILITY because that's what supplies
+         * uxTaskGetSystemState + the name field in TaskStatus_t.  Off by
+         * default — enable manually for a debug build when investigating
+         * a task-churn hypothesis.  The setting itself costs ~8 KB of
+         * internal SRAM headroom, which proved to matter on this target
+         * (SDIO RX path allocates >13 KB DMA buffers and becomes flaky
+         * when internal-largest-block falls below that). */
         {
             UBaseType_t task_count = uxTaskGetNumberOfTasks();
             TaskStatus_t *task_array = heap_caps_calloc(task_count, sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM);
@@ -309,10 +314,6 @@ static void heap_watchdog_task(void *arg)
                 UBaseType_t actual = uxTaskGetSystemState(task_array, task_count, NULL);
                 ESP_LOGI(TAG, "Task census (n=%u):", (unsigned)actual);
                 for (UBaseType_t i = 0; i < actual; i++) {
-                    /* uxTaskGetStackHighWaterMark reports "lowest free
-                     * stack observed" in bytes on the ESP-IDF FreeRTOS
-                     * port (matches the "Task '%s' stack low" warning
-                     * above, which uses the same units). */
                     ESP_LOGI(TAG, "  %-20s prio=%-3u state=%u hwm=%u B",
                              task_array[i].pcTaskName,
                              (unsigned)task_array[i].uxCurrentPriority,
@@ -324,6 +325,7 @@ static void heap_watchdog_task(void *arg)
                 ESP_LOGW(TAG, "Task census: calloc failed for %u entries", (unsigned)task_count);
             }
         }
+#endif
 
         /* US-HW17: Log NVS write count for flash wear monitoring */
         ESP_LOGI(TAG, "NVS writes this session: %lu",

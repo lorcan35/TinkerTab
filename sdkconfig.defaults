@@ -147,11 +147,13 @@ CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 # Disable TLSP deletion callbacks — esp_ptr_executable() false positive on P4
 # with PSRAM XIP (.text at 0x4800xxxx not recognized as executable) (#18)
 CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=n
-# #182 Phase 2 instrumentation: enable uxTaskGetSystemState for per-task
-# stack-HWM + task-count logging in heap_watchdog.  Adds ~16 bytes per
-# TCB — negligible.  Cost is worth it for the SRAM-leak investigation;
-# may be flipped back off once the leak is diagnosed and patched.
-CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+# #182 NOTE: if you need per-task stack-HWM instrumentation, turn on
+# CONFIG_FREERTOS_USE_TRACE_FACILITY=y here and rebuild.  heap_watchdog.c
+# guards the census with #ifdef, so the task enumeration only runs when
+# trace facility is enabled.  We leave it OFF by default because the
+# overhead itself (~8 KB internal SRAM) pushes SDIO DMA allocation
+# failures above the idle baseline, which muddies the very measurement
+# the trace was meant to help with.
 
 # ---------------------------------------------------------------------------
 # Memory — reserve internal RAM for DMA (SDIO WiFi + TCP buffers + OTA TLS)

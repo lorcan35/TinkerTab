@@ -1,11 +1,11 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-24 — #182 Phase 1 ROOT CAUSE identified: internal-SRAM leak (~6 KB/min) breaks SDIO → WS → reboot cascade.  Reboot site is voice.c:1528, but the SYMPTOM, not the cause.
-> **Current phase:** #182 Phase 2 — identify what's leaking internal SRAM.  Hypothesis candidates + experiment plan pre-registered in the latest log entry.
-> **Active branch:** `investigate/sw-reset-mode3` (off `fix/lvgl-pool-2mb-psram`, off `investigate/lvgl-pool-pressure`).  Phase 1 findings committed; Phase 2 instrumentation not yet cut.
+> **Last updated:** 2026-04-24 — #182 Phase 2 pivoted: it's NOT a task-churn leak.  Real cause is the ESP-Hosted SDIO driver failing a 13,824-byte `heap_caps_aligned_alloc` for a variable-size RX frame when internal-SRAM largest-free-block < 14 KB.  Cascade then proceeds through WS reconnect to reboot.
+> **Current phase:** #182 Phase 3 — candidate fix P3-a (bump `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` 128→192 KB) recommended first; P3-d (heap_wd exhaustion detector) recommended second as defensive instrumentation.  Not yet implemented.
+> **Active branch:** `investigate/182-sram-leak` (off `main` after #183 merged).  Phase 1 + Phase 2 findings committed; task-census code parked behind `#if CONFIG_FREERTOS_USE_TRACE_FACILITY` for future debug builds.
 > **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md` (original LVGL pool plan — still the template for Phase 2+ of #182).
 >
-> **NEXT CONCRETE STEP when resuming:** Phase 2 instrumentation per the #182 log entry — (1) extend `heap_watchdog.c` to log task-count + per-task stack HWM every 60 s, (2) add a `/heap/internal-breakdown` debug endpoint that dumps `heap_caps_print_heap_info(MALLOC_CAP_INTERNAL)`.  Reproduce via stress orchestrator, read back, identify the leaking component.  Then Phase 3 fixes: an immediate heap_wd mitigation (exhaustion detector at `internal_free < 24 KB`) plus the root-cause leak patch.
+> **NEXT CONCRETE STEP when resuming:** implement P3-a as its own atomic commit + a clean re-run of the 10 min stress (both idle + loaded) to confirm `heap_caps_aligned_alloc` no longer fires from `pool_probe`'s alloc-fail callback.  If clean, ship as a fix PR referencing #182.  If still firing, iterate with P3-d first (instrumented + coredump on detection).
 
 ---
 
@@ -486,6 +486,43 @@ Phase 2's first experiment: add a task-count + per-task stack-HWM logger to `hea
 2. **Root fix:** based on Phase 2 data, patch the leaking component.  Could be as small as adding a `vTaskDelete(NULL)` somewhere, or as large as restructuring a task-per-request pattern into a worker pool.
 
 **Not in scope of Phase 1:** the fix itself.  This entry documents the cascade + the leak.
+
+### 2026-04-24 — #182 Phase 2: pivoted hypothesis — it's the SDIO DMA-alloc size, not task churn
+
+**What I tried:** added task enumeration (`uxTaskGetSystemState`) to `heap_watchdog.c` behind `CONFIG_FREERTOS_USE_TRACE_FACILITY=y`, expecting to spot a task-churn leak.
+
+**What happened:** enabling the trace facility raised baseline internal-SRAM usage by ~8 KB.  **That alone pushed the cascade above the IDLE baseline** — the SW reset now fires with no stress orchestrator running at all, at uptime 164 s on a fresh boot.  The task-count diff across censuses did NOT reveal a smoking-gun new task (the list was stable at 18 tasks both before and after the failure window).  The additional SRAM pressure from the instrumentation itself was the variable that changed.
+
+**Pivoted evidence (from the already-existing `pool_probe` alloc-fail callback, no new instrumentation needed):**
+
+```
+I (74340) tab5_voice: Link probe ... zombie_rounds=0 int_largest=55296B   [55 KB]
+I (74356) tab5_voice: WS recv text (16 bytes): {"type": "pong"}
+E (75075) pool_probe: alloc FAIL 13824 B caps=0x00000008 (DMA) from heap_caps_aligned_alloc (internal_largest=13KB)
+E (75075) dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+W (75095) H_SDIO_DRV: SDIO RX alloc failed (13824), using existing 12288 buf
+```
+
+Between t=74340 and t=75075 (~735 ms) `internal_largest` dropped 55 KB → 13 KB — a burst of allocations.  Immediately, a **13,824-byte DMA-capable** allocation is requested via `heap_caps_aligned_alloc`.  At 13 KB largest it can't fit → SDIO driver falls back to its existing 12,288 byte buffer → incoming packet doesn't fit → dropped → WS starves → cascade to reboot.
+
+**What the 13,824 number means:** `13824 / 512 = 27 ESP_BLOCK_SIZE units` (`ESP_BLOCK_SIZE=512` per `espressif__esp_hosted/host/drivers/transport/sdio/sdio_reg.h:53`).  The ESP-Hosted SDIO driver sizes its per-packet RX buffer alloc to the incoming frame (rounded up to ESP_BLOCK_SIZE multiples).  Sometimes the incoming packet is 27 blocks; if the pre-sized buffer is only 24 blocks, the driver tries to grow and fails.
+
+**Revised hypothesis (now Phase 2-B):**
+
+This isn't a classic "task leak" or "unfreed buffer leak".  It's a **steady-state peak-DMA-demand problem**: the SDIO driver intermittently needs ≥14 KB DMA-capable contiguous SRAM for a variable-size RX frame, and internal-SRAM `largest_free_block` doesn't reliably stay above 14 KB once other code has carved the region.  The bigger the pre-existing pressure on internal SRAM, the likelier a single outsize RX packet trips the failure.
+
+**Phase 3 candidate fixes (choose one per experiment):**
+
+- **(P3-a) Increase `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` from 128 KB → 192 KB** (`sdkconfig.defaults:165`).  Reserves more of internal SRAM for `MALLOC_CAP_INTERNAL + DMA` allocations by preventing it from being used for PSRAM-preferred allocations.  Cheap one-line config tweak; minimal blast radius.  The wave-10 comment on that line already records a 64→128 bump for the same reason class; this is the next step in the same series.
+- **(P3-b) Lower internal-SRAM consumers.**  Move anything in internal SRAM that doesn't need to be (large task stacks, buffers) to PSRAM.  Larger surface, more risk of regression.
+- **(P3-c) Patch ESP-Hosted SDIO driver** to pre-size its RX buffer pool to `MAX(ESP_BLOCK_SIZE_MULTI)` at init instead of growing reactively.  Touches vendored/managed component.  Not great long-term.
+- **(P3-d) Catch the failing alloc sooner** — extend `heap_watchdog` with `internal_largest < 16 KB` as an exhaustion detector (not just the fragmentation trigger at `largest<4KB && free>16KB`).  Converts the silent cascade reboot into a clean PANIC + coredump with named reason.  Doesn't fix the alloc failure but makes future regressions loud.
+
+**Recommended order:** (P3-a) first — cheapest, addresses symptom directly — then (P3-d) as defensive instrumentation so future drift is caught earlier.  Leave (P3-b) and (P3-c) for when the shipping user-facing need escalates.
+
+**Why the task-enumeration instrumentation is parked (not removed):**
+
+`heap_watchdog.c`'s task census is kept but guarded behind `#if CONFIG_FREERTOS_USE_TRACE_FACILITY`.  When a future "task churn" hypothesis surfaces we can flip the knob on a debug build and reuse the code.  The default-off config means the ~8 KB SRAM overhead isn't paid in production and won't distort the DMA-alloc experiments in Phase 3.
 
 ---
 
