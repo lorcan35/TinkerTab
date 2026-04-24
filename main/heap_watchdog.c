@@ -297,6 +297,34 @@ static void heap_watchdog_task(void *arg)
             }
         }
 
+        /* #182 Phase 2: enumerate ALL tasks so we can spot the SRAM leaker.
+         * Every new task costs ~4-8 KB of internal SRAM for its stack +
+         * TCB.  If tasks are created faster than they're destroyed, that's
+         * a plausible SRAM-leak vector.  Log the full list at each 60 s
+         * heap_wd tick so a diff across the run identifies newcomers. */
+        {
+            UBaseType_t task_count = uxTaskGetNumberOfTasks();
+            TaskStatus_t *task_array = heap_caps_calloc(task_count, sizeof(TaskStatus_t), MALLOC_CAP_SPIRAM);
+            if (task_array != NULL) {
+                UBaseType_t actual = uxTaskGetSystemState(task_array, task_count, NULL);
+                ESP_LOGI(TAG, "Task census (n=%u):", (unsigned)actual);
+                for (UBaseType_t i = 0; i < actual; i++) {
+                    /* uxTaskGetStackHighWaterMark reports "lowest free
+                     * stack observed" in bytes on the ESP-IDF FreeRTOS
+                     * port (matches the "Task '%s' stack low" warning
+                     * above, which uses the same units). */
+                    ESP_LOGI(TAG, "  %-20s prio=%-3u state=%u hwm=%u B",
+                             task_array[i].pcTaskName,
+                             (unsigned)task_array[i].uxCurrentPriority,
+                             (unsigned)task_array[i].eCurrentState,
+                             (unsigned)task_array[i].usStackHighWaterMark);
+                }
+                heap_caps_free(task_array);
+            } else {
+                ESP_LOGW(TAG, "Task census: calloc failed for %u entries", (unsigned)task_count);
+            }
+        }
+
         /* US-HW17: Log NVS write count for flash wear monitoring */
         ESP_LOGI(TAG, "NVS writes this session: %lu",
                  (unsigned long)tab5_settings_get_nvs_write_count());
