@@ -41,6 +41,16 @@ void chat_input_bar_show_partial(chat_input_bar_t *b, const char *partial);
 /** The hidden textarea backing the input (for ui_keyboard_show). */
 lv_obj_t *chat_input_bar_get_textarea(chat_input_bar_t *b);
 
+/** Move the pill (and its partial-caption label) to a given absolute Y.
+ *  Used by ui_chat's keyboard_layout_cb to raise the pill above the
+ *  on-screen keyboard so the textarea stays visible while typing.
+ *  Pass any sensible Y; chat_input_bar_restore_pill_y puts it back. */
+void chat_input_bar_set_pill_y(chat_input_bar_t *b, int y);
+
+/** Restore the pill to its create-time Y (the one computed from
+ *  parent_h - PILL_BOT_PAD - PILL_H at chat_input_bar_create time). */
+void chat_input_bar_restore_pill_y(chat_input_bar_t *b);
+
 /** Read + clear helpers. */
 const char *chat_input_bar_get_text(chat_input_bar_t *b);
 void chat_input_bar_clear(chat_input_bar_t *b);

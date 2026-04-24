@@ -41,6 +41,10 @@ struct chat_input_bar {
     lv_anim_t breath_anim;
     bool breathing;
 
+    /* #190: create-time Y of the pill, saved so keyboard-raise can restore
+     * it after the keyboard hides. */
+    int default_pill_y;
+
     chat_input_evt_cb_t   ball_cb;     void *ball_ud;
     chat_input_evt_cb_t   kb_cb;       void *kb_ud;
     chat_input_submit_cb_t submit_cb;   void *submit_ud;
@@ -173,6 +177,7 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, int parent_h)
     chat_input_bar_t *b = calloc(1, sizeof(*b));
     if (!b) { ESP_LOGE(TAG, "OOM"); return NULL; }
     int pill_y = parent_h - PILL_BOT_PAD - PILL_H;
+    b->default_pill_y = pill_y;
 
     /* Pill container — TH_CARD fill, 1 px border, radius 54. */
     b->pill = lv_obj_create(parent);
@@ -324,6 +329,22 @@ void chat_input_bar_show_partial(chat_input_bar_t *b, const char *partial)
 
 lv_obj_t *chat_input_bar_get_textarea(chat_input_bar_t *b)
 { return b ? b->textarea : NULL; }
+
+/* #190: move the pill (and its partial-caption label) to a given Y.
+ * The partial sits 24 px above the pill (see create path) — keep that
+ * offset so the STT caption doesn't collide with the pill when raised. */
+void chat_input_bar_set_pill_y(chat_input_bar_t *b, int y)
+{
+    if (!b || !b->pill) return;
+    lv_obj_set_y(b->pill, y);
+    if (b->partial) lv_obj_set_y(b->partial, y - 24);
+}
+
+void chat_input_bar_restore_pill_y(chat_input_bar_t *b)
+{
+    if (!b) return;
+    chat_input_bar_set_pill_y(b, b->default_pill_y);
+}
 
 const char *chat_input_bar_get_text(chat_input_bar_t *b)
 {

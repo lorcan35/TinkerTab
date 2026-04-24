@@ -329,16 +329,29 @@ static void on_drawer_dismiss(void *ud)
 
 /* ── Keyboard layout callback ─────────────────────────────────── */
 
+/* closes #190: gap between raised pill and keyboard top edge. */
+#define PILL_KB_GAP      16
+
 static void keyboard_layout_cb(bool visible, int kb_h)
 {
     if (!s_view) return;
     if (visible) {
-        int avail = CHAT_H - kb_h - CHAT_VIEW_Y - CHAT_PILL_H - 40;
+        /* #190: the pill is created at y = CHAT_H - NAV_H - PILL_BOT_PAD -
+         * PILL_H = 1060.  The keyboard panel slides to y = CHAT_H - kb_h
+         * = 900 — which completely covers the pill and its textarea, so
+         * anything the user types is invisible.  Raise the pill so its
+         * bottom sits PILL_KB_GAP above the keyboard top, and shrink the
+         * message view to end just above the raised pill. */
+        int pill_top  = (CHAT_H - kb_h) - PILL_KB_GAP - CHAT_PILL_H;
+        int view_top  = CHAT_VIEW_Y;
+        int avail     = pill_top - view_top - 20;   /* 20 px gap above pill */
         if (avail < 240) avail = 240;
         chat_msg_view_set_size(s_view, CHAT_W, avail);
+        if (s_input) chat_input_bar_set_pill_y(s_input, pill_top);
         chat_msg_view_scroll_to_bottom(s_view);
     } else {
         chat_msg_view_set_size(s_view, CHAT_W, CHAT_VIEW_H);
+        if (s_input) chat_input_bar_restore_pill_y(s_input);
     }
 }
 
