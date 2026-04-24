@@ -228,6 +228,10 @@ static void slot_ensure_breakout(msg_slot_t *slot, lv_obj_t *parent, uint32_t ac
     lv_obj_set_style_pad_hor(slot->breakout, SIDE_PAD, 0);
     lv_obj_set_style_pad_ver(slot->breakout, 20, 0);
     lv_obj_clear_flag(slot->breakout, LV_OBJ_FLAG_SCROLLABLE);
+    /* #187: breakouts must be NON-CLICKABLE so a press on one doesn't
+     * capture the touch stream; otherwise the swipe-to-scroll gesture
+     * on the parent scroll container never fires. */
+    lv_obj_clear_flag(slot->breakout, LV_OBJ_FLAG_CLICKABLE);
 
     slot->brk_accent = lv_obj_create(slot->breakout);
     lv_obj_remove_style_all(slot->brk_accent);
@@ -553,6 +557,11 @@ chat_msg_view_t *chat_msg_view_create(lv_obj_t *parent, int x, int y, int w, int
         lv_obj_remove_style_all(slot->bubble);
         lv_obj_set_size(slot->bubble, BUBBLE_MAX_W, LV_SIZE_CONTENT);
         lv_obj_clear_flag(slot->bubble, LV_OBJ_FLAG_SCROLLABLE);
+        /* #187: bubbles must be NON-CLICKABLE so a press on a message
+         * doesn't capture the touch stream and starve the parent
+         * scroll container of its drag gesture.  Without this,
+         * swipe-up/down on the chat area silently no-ops. */
+        lv_obj_clear_flag(slot->bubble, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_add_flag(slot->bubble, LV_OBJ_FLAG_HIDDEN);
 
         slot->body = lv_label_create(slot->bubble);
