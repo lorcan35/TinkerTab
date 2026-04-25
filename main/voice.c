@@ -735,6 +735,29 @@ static void handle_text_message(const char *data, int len)
         s_tts_done = true;
         if (s_play_sem) xSemaphoreGive(s_play_sem);
     } else if (strcmp(type_str, "llm") == 0) {
+        /* TinkerBox #91 follow-up (#193): ignore late llm tokens that
+         * arrive after a cancel.  Tab5 transitions to READY locally on
+         * cancel-send (see voice_cancel below); Dragon now actually
+         * interrupts the LLM stream within ~1 ms (was ~65 s pre-#91),
+         * but tokens already in TCP flight at cancel-time still arrive
+         * a few hundred ms later.  Without this guard, the unconditional
+         * voice_set_state below pulls the orb back into PROCESSING with
+         * the partial cancelled response text — the cancel APPEARS to
+         * not have worked from the user's perspective.
+         *
+         * Honor llm tokens only when the user is actively waiting for a
+         * turn (PROCESSING or SPEAKING).  All other states (READY after
+         * cancel, IDLE on disconnect, LISTENING when a new mic recording
+         * already started) mean the previous turn is no longer the user's
+         * focus and any late tokens belong to a turn they cancelled.
+         */
+        voice_state_t cur_for_llm = voice_get_state();
+        if (cur_for_llm != VOICE_STATE_PROCESSING && cur_for_llm != VOICE_STATE_SPEAKING) {
+            ESP_LOGD(TAG, "llm token ignored — state=%d (post-cancel late arrival)",
+                     cur_for_llm);
+            cJSON_Delete(root);
+            return;
+        }
         cJSON *text = cJSON_GetObjectItem(root, "text");
         if (cJSON_IsString(text) && text->valuestring) {
             if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
@@ -751,6 +774,16 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGD(TAG, "LLM token: \"%s\"", text->valuestring);
             voice_set_state(VOICE_STATE_PROCESSING, s_llm_text);
         }
+    } else if (strcmp(type_str, "cancel_ack") == 0) {
+        /* TinkerBox #91: server-side confirmation that cancel landed.
+         * Today we just log it — the state machine already transitioned
+         * to READY when voice_cancel was called, and the llm-token
+         * guard above handles the late-arrival grace window.
+         * If we ever add a "definitely no more late tokens, safe to
+         * resume" semantic, this is where it would slot in. */
+        cJSON *cancelled = cJSON_GetObjectItem(root, "cancelled");
+        int n = cJSON_IsArray(cancelled) ? cJSON_GetArraySize(cancelled) : 0;
+        ESP_LOGI(TAG, "cancel_ack: cancelled=%d slot(s)", n);
     } else if (strcmp(type_str, "error") == 0) {
         cJSON *msg = cJSON_GetObjectItem(root, "message");
         const char *err_src = cJSON_IsString(msg) ? msg->valuestring : "unknown";
