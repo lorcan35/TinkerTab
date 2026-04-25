@@ -845,6 +845,34 @@ static void handle_text_message(const char *data, int len)
                 ui_chat_push_message(role, content);
             }
         }
+    } else if (strcmp(type_str, "dictation_postprocessing") == 0) {
+        /* TinkerBox#94 H4: Dragon spawned the title+summary LLM call after
+         * `stt`.  Pre-fix the user stared at the bare transcript for
+         * 10-20 s with no signal that more was coming.  Show a status
+         * caption so the wait feels intentional. */
+        ESP_LOGI(TAG, "Dictation post-process started");
+        voice_set_state(VOICE_STATE_PROCESSING, "Generating summary...");
+    } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
+        /* TinkerBox#94 H4: LLM failed or wasn't available.  Note already
+         * saved (the transcript landed via the prior `stt` event); user
+         * just doesn't get an auto-generated title/summary.  Clear the
+         * "Generating summary..." caption and toast the friendly
+         * message. */
+        cJSON *msg = cJSON_GetObjectItem(root, "message");
+        const char *m = cJSON_IsString(msg) ? msg->valuestring
+                                            : "Note saved — summary unavailable";
+        ESP_LOGW(TAG, "Dictation post-process error: %s", m);
+        char buf[160];
+        strncpy(buf, m, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        voice_async_toast(strdup(buf));
+        voice_set_state(VOICE_STATE_READY, "dictation_done");
+    } else if (strcmp(type_str, "dictation_postprocessing_cancelled") == 0) {
+        /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
+         * post-process.  The new dictation will emit its own
+         * `dictation_postprocessing` event a few ms later — silently log
+         * here so we don't fight the new caption. */
+        ESP_LOGI(TAG, "Dictation post-process cancelled (superseded by new dictation)");
     } else if (strcmp(type_str, "dictation_summary") == 0) {
         cJSON *title = cJSON_GetObjectItem(root, "title");
         cJSON *summary = cJSON_GetObjectItem(root, "summary");
