@@ -592,6 +592,26 @@ typedef struct {
     uint32_t gen;
 } voice_async_badge_t;
 
+/* γ2-H8 (issue #196): worker to stop the WS client off the WS task.
+ * esp_websocket_client_stop() rejects calls from inside the WS task
+ * itself (logs "Client cannot be stopped from websocket task" and
+ * no-ops).  This worker runs on the shared task_worker queue, so
+ * the stop happens on a different task and actually takes effect.
+ *
+ * Triggered when Tab5 receives a `device_evicted` error frame —
+ * another device claimed our slot, and auto-reconnect would just
+ * trigger another eviction.  s_disconnecting was already set in
+ * the WS handler so the WEBSOCKET_EVENT_DISCONNECTED branch won't
+ * try to reconnect when the stop completes. */
+static void _voice_stop_ws_worker_fn(void *arg)
+{
+    (void)arg;
+    if (s_ws) {
+        ESP_LOGW(TAG, "device_evicted worker: stopping WS client now");
+        esp_websocket_client_stop(s_ws);
+    }
+}
+
 static void async_show_toast_cb(void *arg)
 {
     voice_async_toast_t *t = (voice_async_toast_t *)arg;
@@ -785,16 +805,81 @@ static void handle_text_message(const char *data, int len)
         int n = cJSON_IsArray(cancelled) ? cJSON_GetArraySize(cancelled) : 0;
         ESP_LOGI(TAG, "cancel_ack: cancelled=%d slot(s)", n);
     } else if (strcmp(type_str, "error") == 0) {
-        cJSON *msg = cJSON_GetObjectItem(root, "message");
-        const char *err_src = cJSON_IsString(msg) ? msg->valuestring : "unknown";
-        ESP_LOGE(TAG, "Dragon error: %s", err_src);
+        /* γ2-H8 (issue #196): route Dragon error frames by severity.
+         *
+         * Pre-fix every {"type":"error"} frame landed in the voice-
+         * overlay caption regardless of what went wrong — a recoverable
+         * STT-empty toast and an unrecoverable session-invalid banner
+         * both ended up in the same place.  Dragon's γ1 taxonomy
+         * (TinkerBox PR #102) added structured `severity` ("transient"
+         * vs "fatal") and `scope` fields; this handler honours them:
+         *
+         *   - TRANSIENT → non-blocking ui_home_show_toast(), stay in
+         *     READY.  User can keep talking.
+         *   - FATAL → existing voice-state caption path (more
+         *     permanent surface).  Reset playback + speaker since a
+         *     fatal error means we shouldn't keep half-playing TTS.
+         *
+         * Special case: code="device_evicted" (TinkerBox γ2-M5, PR
+         * #109) means another device claimed our slot.  Auto-reconnect
+         * would just trigger an eviction loop, so we set the
+         * disconnect guard + stop the WS client.  User must
+         * power-cycle or re-launch via the debug endpoint.
+         */
+        cJSON *msg       = cJSON_GetObjectItem(root, "message");
+        cJSON *severity  = cJSON_GetObjectItem(root, "severity");
+        cJSON *code      = cJSON_GetObjectItem(root, "code");
+        const char *err_src  = cJSON_IsString(msg) ? msg->valuestring : "unknown";
+        /* Default to "fatal" for unknown / pre-γ1 frames — safer to
+         * surface in caption (more visible) than to silently toast.
+         * Tab5 is forward-compatible with future severity values too:
+         * anything not "transient" routes to caption. */
+        const char *sev_src  = cJSON_IsString(severity) ? severity->valuestring : "fatal";
+        const char *code_src = cJSON_IsString(code) ? code->valuestring : "";
+        ESP_LOGE(TAG, "Dragon error [%s/%s]: %s", sev_src, code_src, err_src);
+
         char err_buf[128];
         strncpy(err_buf, err_src, sizeof(err_buf) - 1);
         err_buf[sizeof(err_buf) - 1] = '\0';
-        playback_buf_reset();
-        tab5_audio_speaker_enable(false);
-        bool connected = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
-        voice_set_state(connected ? VOICE_STATE_READY : VOICE_STATE_IDLE, err_buf);
+
+        bool is_transient = (strcmp(sev_src, "transient") == 0);
+
+        if (is_transient) {
+            /* TRANSIENT → toast via the existing voice_async_toast()
+             * helper.  This handler runs on the WS task, NOT the LVGL
+             * task — voice_async_toast() takes ownership of a strdup'd
+             * buffer, queues it via lv_async_call, and stamps the
+             * session_gen so a stale toast from a prior connection
+             * doesn't surface after a reconnect. */
+            char *toast_copy = strdup(err_buf);
+            if (toast_copy) {
+                voice_async_toast(toast_copy);
+            }
+        } else {
+            /* FATAL → existing caption path. */
+            playback_buf_reset();
+            tab5_audio_speaker_enable(false);
+            bool connected = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
+            voice_set_state(connected ? VOICE_STATE_READY : VOICE_STATE_IDLE, err_buf);
+
+            /* device_evicted: don't loop the eviction.  Stop the WS
+             * client + set the disconnect guard so the
+             * WEBSOCKET_EVENT_DISCONNECTED handler doesn't try to
+             * reconnect.  User regains connectivity via power-cycle
+             * or the /voice/reconnect debug endpoint.
+             *
+             * IMPORTANT: esp_websocket_client_stop() rejects calls
+             * from the WS task itself (logs "Client cannot be
+             * stopped from websocket task" and no-ops).  Hop to the
+             * shared worker queue (task_worker.{c,h}) so the stop
+             * runs on a non-WS task. */
+            if (strcmp(code_src, "device_evicted") == 0 && s_ws) {
+                ESP_LOGW(TAG, "device_evicted: scheduling WS stop to prevent reconnect loop");
+                s_disconnecting = true;
+                tab5_worker_enqueue(_voice_stop_ws_worker_fn, NULL,
+                                    "device_evicted_stop");
+            }
+        }
     } else if (strcmp(type_str, "session_start") == 0) {
         cJSON *sid = cJSON_GetObjectItem(root, "session_id");
         if (cJSON_IsString(sid) && sid->valuestring) {
