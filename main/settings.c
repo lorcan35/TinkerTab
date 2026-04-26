@@ -421,6 +421,10 @@ esp_err_t tab5_settings_set_quiet_end(uint8_t h)
     return set_u8("quiet_end", h);
 }
 
+/* ── Auto-rotate (audit U2 / TinkerTab #206) ─────────────────────────── */
+uint8_t tab5_settings_get_auto_rotate(void) { return get_u8("auto_rot", 0); }
+esp_err_t tab5_settings_set_auto_rotate(uint8_t on) { return set_u8("auto_rot", on ? 1 : 0); }
+
 bool tab5_settings_quiet_active(int hour_local)
 {
     if (!tab5_settings_get_quiet_on()) return false;

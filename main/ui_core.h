@@ -39,3 +39,20 @@ void tab5_ui_unlock(void);
 
 /** Get LVGL rendering FPS (flush callbacks per second). Updated every 1s. */
 uint32_t ui_core_get_fps(void);
+
+/* Audit U2 (TinkerTab #206): auto-rotate plumbing.
+ *
+ *   ui_core_apply_auto_rotation(true) — start the IMU poll timer (1 Hz) +
+ *      apply current orientation immediately.  Persisted toggle state
+ *      lives in NVS key "auto_rot" (settings.h).
+ *   ui_core_apply_auto_rotation(false) — snap back to portrait + leave
+ *      the timer running idle (cheap; checks NVS each tick).
+ *   ui_core_init_auto_rotation_from_nvs() — call once after the display
+ *      is alive so the persisted preference takes effect at boot.
+ *
+ * Touch coordinates are flipped automatically inside touch_read_cb when
+ * the display rotation is 180°; debug-server /touch injection is in
+ * display-space (post-rotation) and is NOT flipped.
+ */
+void ui_core_apply_auto_rotation(bool enabled);
+void ui_core_init_auto_rotation_from_nvs(void);

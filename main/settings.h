@@ -150,6 +150,14 @@ esp_err_t tab5_settings_set_quiet_end(uint8_t hour);
  *  Convenience — does the wrap-past-midnight math for you. */
 bool      tab5_settings_quiet_active(int hour_local);
 
+/* ── Auto-rotate (audit U2 / TinkerTab #206) ─────────────────────────── */
+
+/** Auto-rotate the display 180° when held upside-down (USB up).  IMU
+ *  polled at ~1 Hz from the LVGL thread; toggling persists to NVS so
+ *  the preference survives reboot.  0 = disabled (default), 1 = enabled. */
+uint8_t   tab5_settings_get_auto_rotate(void);
+esp_err_t tab5_settings_set_auto_rotate(uint8_t on);
+
 /* ── Auth token (debug server bearer auth) ───────────────────────────── */
 
 /** Read auth token from NVS. Returns ESP_OK if found and non-empty. */

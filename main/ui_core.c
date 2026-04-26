@@ -17,6 +17,8 @@
 #include "config.h"
 #include "touch.h"
 #include "debug_server.h"
+#include "imu.h"
+#include "settings.h"
 
 #include <string.h>
 #include "esp_log.h"
@@ -127,6 +129,19 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 /* ========================================================================= */
 static uint32_t s_touch_debug_counter = 0;
 
+/* Audit U2 (#206): touch coords need to flip when display is rotated 180°.
+ * /touch debug injection is in display-space (the user thinks of the
+ * panel as rotated) so it does NOT flip. */
+static void touch_apply_rotation(int32_t *x, int32_t *y)
+{
+    if (!s_display) return;
+    lv_display_rotation_t rot = lv_display_get_rotation(s_display);
+    if (rot == LV_DISPLAY_ROTATION_180) {
+        *x = TAB5_DISPLAY_WIDTH  - 1 - *x;
+        *y = TAB5_DISPLAY_HEIGHT - 1 - *y;
+    }
+}
+
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
@@ -146,8 +161,11 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 
     bool touched = tab5_touch_read(points, &count);
     if (touched && count > 0) {
-        data->point.x = points[0].x;
-        data->point.y = points[0].y;
+        int32_t x = points[0].x;
+        int32_t y = points[0].y;
+        touch_apply_rotation(&x, &y);
+        data->point.x = x;
+        data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
         /* Log first 20 touches for debug */
         if (s_touch_debug_counter < 20) {
@@ -157,6 +175,66 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
+}
+
+/* ========================================================================= */
+/*  Auto-rotate (audit U2 / #206)                                            */
+/* ========================================================================= */
+static lv_timer_t *s_autorot_timer = NULL;
+static lv_display_rotation_t s_last_applied_rot = LV_DISPLAY_ROTATION_0;
+
+static lv_display_rotation_t orient_to_rotation(tab5_orientation_t o)
+{
+    /* Tab5's UI is portrait-first; we only flip 180° for upside-down.
+     * Landscape orientations are reported by the IMU but we keep the
+     * UI in portrait — flipping to landscape here would break every
+     * absolute-positioned overlay (Settings, Voice, Mode sheet, ...). */
+    return (o == TAB5_ORIENT_PORTRAIT_INV)
+           ? LV_DISPLAY_ROTATION_180
+           : LV_DISPLAY_ROTATION_0;
+}
+
+static void autorot_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_display) return;
+    if (!tab5_settings_get_auto_rotate()) return;
+    tab5_orientation_t o = tab5_imu_get_orientation();
+    lv_display_rotation_t want = orient_to_rotation(o);
+    if (want == s_last_applied_rot) return;
+    ESP_LOGI(TAG, "Auto-rotate: orientation=%d → applying rotation=%d",
+             (int)o, (int)want);
+    lv_display_set_rotation(s_display, want);
+    s_last_applied_rot = want;
+    lv_obj_invalidate(lv_screen_active());
+}
+
+void ui_core_apply_auto_rotation(bool enabled)
+{
+    if (enabled) {
+        if (!s_autorot_timer) {
+            /* 1 Hz poll — IMU read is cheap (~1 ms) and orientation
+             * doesn't change faster than that in normal use. */
+            s_autorot_timer = lv_timer_create(autorot_timer_cb, 1000, NULL);
+        }
+        /* Apply current orientation immediately so the user sees the
+         * effect of toggling the switch. */
+        autorot_timer_cb(NULL);
+    } else if (s_display) {
+        /* Switch off: snap back to portrait so the UI is always
+         * usable when re-entering Settings. */
+        lv_display_set_rotation(s_display, LV_DISPLAY_ROTATION_0);
+        s_last_applied_rot = LV_DISPLAY_ROTATION_0;
+        lv_obj_invalidate(lv_screen_active());
+    }
+}
+
+void ui_core_init_auto_rotation_from_nvs(void)
+{
+    /* Called once after the display is alive so the persisted toggle
+     * state takes effect at boot. */
+    bool on = tab5_settings_get_auto_rotate() != 0;
+    ui_core_apply_auto_rotation(on);
 }
 
 /* ========================================================================= */

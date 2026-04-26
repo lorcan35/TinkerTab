@@ -417,6 +417,10 @@ void app_main(void)
         // (258) so every widget_media / chat image decode fell through
         // to the caption fallback path.  Audit B5 root cause (2026-04-20).
         ui_home_create();
+        /* Audit U2 (TinkerTab #206): if auto-rotate was persisted on,
+         * start the IMU poll timer + apply current orientation now so
+         * the user doesn't have to re-toggle after every reboot. */
+        ui_core_init_auto_rotation_from_nvs();
         /* Audit G (2026-04-20): first-boot onboarding carousel. Gated on
          * NVS onboard=0; once finished, subsequent boots skip. */
         extern void ui_onboarding_show_if_needed(void);

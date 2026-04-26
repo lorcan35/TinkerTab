@@ -347,6 +347,14 @@ static void cb_autorotate(lv_event_t *e)
     lv_obj_t *sw = lv_event_get_target(e);
     bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
     ESP_LOGI(TAG, "Auto-rotate %s", on ? "enabled" : "disabled");
+
+    /* Audit U2 (#206): persist the toggle to NVS + immediately apply
+     * the current IMU-detected orientation.  ui_core's poll timer
+     * picks up the new setting and starts/stops applying rotation. */
+    tab5_settings_set_auto_rotate(on ? 1 : 0);
+    extern void ui_core_apply_auto_rotation(bool enabled);
+    ui_core_apply_auto_rotation(on);
+
     if (s_lbl_orient) {
         if (on) {
             tab5_orientation_t o = tab5_imu_get_orientation();
@@ -1295,7 +1303,11 @@ lv_obj_t *ui_settings_create(void)
     /* Auto-rotate */
     mk_row_label(s_scroll, "Auto-rotate", y);
     s_lbl_orient = mk_row_value(s_scroll, "Off", lv_color_hex(TEXT_DIM), y);
-    s_sw_autorot = mk_switch(s_scroll, acc_display, 660, y, false, cb_autorotate, NULL);
+    /* Audit U2 (#206): switch initial state mirrors NVS so the toggle
+     * survives reboot. */
+    s_sw_autorot = mk_switch(s_scroll, acc_display, 660, y,
+                             tab5_settings_get_auto_rotate() != 0,
+                             cb_autorotate, NULL);
     y += ROW_H + 16;
 
     /* ════════════════════════════════════════════════════════════════
