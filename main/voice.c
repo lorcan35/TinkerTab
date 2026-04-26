@@ -23,6 +23,7 @@
 
 #include "voice.h"
 #include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
+#include "tool_log.h"      /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
 #include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
 #include "widget.h"
 #include "ui_voice.h"
@@ -1232,6 +1233,9 @@ static void handle_text_message(const char *data, int len)
          * CLAUDE.md's "thinking + tool indicator bubbles" claim was wired
          * only to the overlay-state string previously. */
         ui_chat_push_system(status_text);
+        /* U7+U8 (#206): record activity so the agents/focus surfaces
+         * can render real history instead of the v5 demo rows. */
+        tool_log_push_call(tool_name, status_text);
     } else if (strcmp(type_str, "tool_result") == 0) {
         cJSON *tool = cJSON_GetObjectItem(root, "tool");
         cJSON *exec_ms = cJSON_GetObjectItem(root, "execution_ms");
@@ -1245,6 +1249,9 @@ static void handle_text_message(const char *data, int len)
         snprintf(done_buf, sizeof(done_buf), "%s done (%.0fms)",
                  tool_name, ms);
         ui_chat_push_system(done_buf);
+        /* U7+U8 (#206): mark the tool_log entry done so the
+         * agents/focus surfaces can show "DONE  •  234 ms". */
+        tool_log_push_result(tool_name, (uint32_t)ms);
     } else if (strcmp(type_str, "media") == 0) {
         const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
         const char *mtype = cJSON_GetStringValue(cJSON_GetObjectItem(root, "media_type"));

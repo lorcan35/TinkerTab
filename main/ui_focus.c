@@ -18,7 +18,10 @@
 #include "ui_home.h"
 #include "ui_core.h"
 #include "config.h"
+#include "tool_log.h"
 #include "esp_log.h"
+#include <stdio.h>
+#include <time.h>
 
 static const char *TAG = "ui_focus";
 
@@ -29,9 +32,13 @@ static const char *TAG = "ui_focus";
 #define ORB_CORNER_X   (SW - ORB_CORNER_SZ - 56)
 #define ORB_CORNER_Y   64
 
-static lv_obj_t *s_overlay  = NULL;
-static lv_obj_t *s_back_btn = NULL;
-static bool      s_visible  = false;
+static lv_obj_t *s_overlay   = NULL;
+static lv_obj_t *s_back_btn  = NULL;
+static lv_obj_t *s_narrative = NULL;     /* U8 (#206): refreshed on each show */
+static lv_obj_t *s_tasks     = NULL;
+static bool      s_visible   = false;
+
+static void render_live_focus(void);
 
 static void back_click_cb(lv_event_t *e)
 {
@@ -134,6 +141,7 @@ void ui_focus_show(void)
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
         s_visible = true;
+        render_live_focus();
         return;
     }
 
@@ -193,30 +201,23 @@ void ui_focus_show(void)
     lv_obj_set_style_text_color(h, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(h, 3, 0);
 
-    lv_obj_t *narrative = lv_label_create(sec1);
-    lv_label_set_long_mode(narrative, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(narrative,
-        "I scanned your inbox -- three replies were waiting. "
-        "Drafting one to Aisha now; the digest is queued.");
-    lv_obj_set_style_text_font(narrative, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(narrative, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_line_space(narrative, 4, 0);
+    s_narrative = lv_label_create(sec1);
+    lv_label_set_long_mode(s_narrative, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_narrative, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_narrative, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_line_space(s_narrative, 4, 0);
     /* Reserve the top-right corner for the orb (140 px) so the narrative
      * can't collide with it. Spec shot-01 right pane. */
-    lv_obj_set_width(narrative, SW - 2 * SIDE_PAD - 160);
+    lv_obj_set_width(s_narrative, SW - 2 * SIDE_PAD - 160);
 
-    /* Task stream below the narrative */
-    lv_obj_t *tasks = lv_obj_create(s_overlay);
-    lv_obj_remove_style_all(tasks);
-    lv_obj_set_size(tasks, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
-    lv_obj_set_pos(tasks, SIDE_PAD, 480);
-    lv_obj_set_flex_flow(tasks, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(tasks, 2, 0);
-    lv_obj_clear_flag(tasks, LV_OBJ_FLAG_SCROLLABLE);
-
-    build_task_row(tasks, "Inbox scanned",            "3 FOUND  •  234MS",   TH_STATUS_GREEN);
-    build_task_row(tasks, "Drafting reply to Aisha",  "70%  •  1.2KB",       TH_AMBER);
-    build_task_row(tasks, "News digest",              "QUEUED  •  ETA 60S",  0x2D2D35);
+    /* Task stream below the narrative — populated by render_live_focus. */
+    s_tasks = lv_obj_create(s_overlay);
+    lv_obj_remove_style_all(s_tasks);
+    lv_obj_set_size(s_tasks, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
+    lv_obj_set_pos(s_tasks, SIDE_PAD, 480);
+    lv_obj_set_flex_flow(s_tasks, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_tasks, 2, 0);
+    lv_obj_clear_flag(s_tasks, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Section 2 — EARLIER TODAY */
     lv_obj_t *sec2h = lv_label_create(s_overlay);
@@ -251,7 +252,65 @@ void ui_focus_show(void)
     lv_obj_set_pos(ask_lbl, SIDE_PAD + 14, SH - 114);
 
     s_visible = true;
+    render_live_focus();
     ESP_LOGI(TAG, "focus overlay shown");
+}
+
+/* U8 (#206): rebuild narrative + task rows from the live tool_log
+ * snapshot.  Idempotent on re-show; preserves the hide/show pattern by
+ * recycling s_narrative (text update) and s_tasks (clean + rebuild). */
+static void render_live_focus(void)
+{
+    if (!s_overlay || !s_narrative || !s_tasks) return;
+
+    int total = tool_log_count();
+    int running = 0, done = 0;
+    for (int i = 0; i < total; i++) {
+        tool_log_event_t e;
+        if (tool_log_get(i, &e)) {
+            if (e.status == TOOL_LOG_RUNNING) running++;
+            else                              done++;
+        }
+    }
+
+    if (total == 0) {
+        lv_label_set_text(s_narrative,
+            "Nothing running. Talk to TinkerClaw and your live "
+            "activity will land here.");
+    } else {
+        tool_log_event_t newest;
+        tool_log_get(0, &newest);
+        char narr[200];
+        if (running > 0) {
+            snprintf(narr, sizeof(narr),
+                "Running %s now. %d completed in this session.",
+                newest.detail[0] ? newest.detail : newest.name, done);
+        } else {
+            snprintf(narr, sizeof(narr),
+                "Last action: %s. %d completed in this session.",
+                newest.detail[0] ? newest.detail : newest.name, done);
+        }
+        lv_label_set_text(s_narrative, narr);
+    }
+
+    /* Wipe + repopulate the task rows. */
+    lv_obj_clean(s_tasks);
+    int n_show = total > 6 ? 6 : total;
+    for (int i = 0; i < n_show; i++) {
+        tool_log_event_t e;
+        if (!tool_log_get(i, &e)) continue;
+        char meta[48];
+        if (e.status == TOOL_LOG_DONE) {
+            snprintf(meta, sizeof(meta), "DONE  \xe2\x80\xa2  %u MS",
+                     (unsigned)e.exec_ms);
+        } else {
+            snprintf(meta, sizeof(meta), "RUNNING");
+        }
+        uint32_t color = (e.status == TOOL_LOG_DONE) ? TH_STATUS_GREEN : TH_AMBER;
+        build_task_row(s_tasks,
+                       e.detail[0] ? e.detail : e.name,
+                       meta, color);
+    }
 }
 
 void ui_focus_hide(void)

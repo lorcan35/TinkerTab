@@ -11,8 +11,11 @@
 #include "ui_home.h"
 #include "ui_core.h"
 #include "config.h"
+#include "tool_log.h"
 #include "esp_log.h"
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static const char *TAG = "ui_agents";
 
@@ -22,7 +25,11 @@ static const char *TAG = "ui_agents";
 
 static lv_obj_t *s_overlay       = NULL;
 static lv_obj_t *s_back_btn      = NULL;
+static lv_obj_t *s_count_lbl     = NULL;   /* U7 (#206): refreshed on each show */
+static lv_obj_t *s_entry_root    = NULL;   /* container for the live activity entry */
 static bool      s_visible       = false;
+
+static void render_live_content(void);
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -144,6 +151,10 @@ void ui_agents_show(void)
         lv_obj_remove_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
         s_visible = true;
+        /* U7 (#206): live content was built from a snapshot of
+         * tool_log on first show — refresh on every re-show so new
+         * tool activity appears. */
+        render_live_content();
         return;
     }
 
@@ -187,40 +198,116 @@ void ui_agents_show(void)
     lv_obj_set_style_text_color(head, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_pos(head, SIDE_PAD, 110);
 
-    lv_obj_t *count = lv_label_create(s_overlay);
-    lv_label_set_text(count, "1 LIVE  •  1 DONE");
-    lv_obj_set_style_text_font(count, FONT_CAPTION, 0);
-    lv_obj_set_style_text_color(count, lv_color_hex(TH_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_letter_space(count, 3, 0);
-    lv_obj_set_pos(count, SIDE_PAD, 190);
-
-    /* Two hand-curated entries so the surface is demonstrable. */
-    const char *heartbeat_tasks[] = {
-        "Inbox scanned  •  3 found  •  234 ms",
-        "Drafting reply to Aisha  •  70%  •  1.2 KB",
-        "News digest  •  queued  •  ETA 60 s",
-    };
-    build_agent_entry(s_overlay, 250,
-                      "HEARTBEAT",
-                      "2 MIN LIVE",
-                      TH_MODE_CLAW,
-                      "I scanned your inbox -- three replies were waiting. "
-                      "Drafting one to Aisha now; the digest is queued.",
-                      heartbeat_tasks, 3);
-
-    const char *browser_tasks[] = {
-        "Fetched Hacker News  •  240 ms",
-        "Summarised 4 articles  •  2.1 s",
-    };
-    build_agent_entry(s_overlay, 560,
-                      "BROWSER",
-                      "YESTERDAY",
-                      TH_STATUS_GREEN,
-                      "Pulled Hacker News and saved four articles for you.",
-                      browser_tasks, 2);
-
+    render_live_content();
     s_visible = true;
     ESP_LOGI(TAG, "agents overlay shown");
+}
+
+/* U7+U8 (#206): rebuild the count label + entry container from the
+ * current tool_log ring snapshot.  Idempotent — called on every show
+ * (first or re-show).  Hide/show pattern is preserved (we don't
+ * destroy s_overlay), so the LV pool isn't churned. */
+static void render_live_content(void)
+{
+    if (!s_overlay) return;
+
+    int total = tool_log_count();
+    int running = 0, done = 0;
+    for (int i = 0; i < total; i++) {
+        tool_log_event_t e;
+        if (tool_log_get(i, &e)) {
+            if (e.status == TOOL_LOG_RUNNING) running++;
+            else                              done++;
+        }
+    }
+
+    /* Count label — create-once, update text in place on re-renders. */
+    if (!s_count_lbl) {
+        s_count_lbl = lv_label_create(s_overlay);
+        lv_obj_set_style_text_font(s_count_lbl, FONT_CAPTION, 0);
+        lv_obj_set_style_text_color(s_count_lbl,
+            lv_color_hex(TH_TEXT_SECONDARY), 0);
+        lv_obj_set_style_text_letter_space(s_count_lbl, 3, 0);
+        lv_obj_set_pos(s_count_lbl, SIDE_PAD, 190);
+    }
+    char count_buf[40];
+    snprintf(count_buf, sizeof(count_buf), "%d LIVE  \xe2\x80\xa2  %d DONE",
+             running, done);
+    lv_label_set_text(s_count_lbl, count_buf);
+
+    /* Entry container — wipe + rebuild children on each render.  The
+     * container itself persists across re-shows so the LV pool isn't
+     * thrashed; only the cheap label/dot widgets are recycled. */
+    if (!s_entry_root) {
+        s_entry_root = lv_obj_create(s_overlay);
+        lv_obj_remove_style_all(s_entry_root);
+        lv_obj_set_size(s_entry_root, SW, LV_SIZE_CONTENT);
+        lv_obj_set_pos(s_entry_root, 0, 250);
+        lv_obj_clear_flag(s_entry_root, LV_OBJ_FLAG_SCROLLABLE);
+    } else {
+        lv_obj_clean(s_entry_root);
+    }
+
+    if (total == 0) {
+        lv_obj_t *empty = lv_label_create(s_entry_root);
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(empty,
+            "No tool activity yet.\n\n"
+            "Talk to TinkerClaw -- when it searches the web, recalls a "
+            "memory, or runs any other tool, it'll show up here.");
+        lv_obj_set_width(empty, SW - 2 * SIDE_PAD);
+        lv_obj_set_style_text_font(empty, FONT_BODY, 0);
+        lv_obj_set_style_text_color(empty, lv_color_hex(TH_TEXT_DIM), 0);
+        lv_obj_set_style_text_line_space(empty, 4, 0);
+        lv_obj_set_pos(empty, SIDE_PAD, 0);
+        return;
+    }
+
+    int n_show = total > 6 ? 6 : total;
+    const char *task_lines[6] = {0};
+    static char  task_storage[6][96];
+
+    tool_log_event_t newest;
+    tool_log_get(0, &newest);
+
+    char narrative[160];
+    if (running > 0) {
+        snprintf(narrative, sizeof(narrative),
+            "Running %s now. %d completed in this session.",
+            newest.detail[0] ? newest.detail : newest.name, done);
+    } else {
+        snprintf(narrative, sizeof(narrative),
+            "Last action: %s. %d completed in this session.",
+            newest.detail[0] ? newest.detail : newest.name, done);
+    }
+
+    for (int i = 0; i < n_show; i++) {
+        tool_log_event_t e;
+        if (!tool_log_get(i, &e)) continue;
+        if (e.status == TOOL_LOG_DONE) {
+            snprintf(task_storage[i], sizeof(task_storage[0]),
+                     "%s  \xe2\x80\xa2  done  \xe2\x80\xa2  %u ms",
+                     e.name, (unsigned)e.exec_ms);
+        } else {
+            snprintf(task_storage[i], sizeof(task_storage[0]),
+                     "%s  \xe2\x80\xa2  running",
+                     e.name);
+        }
+        task_lines[i] = task_storage[i];
+    }
+
+    char ts_label[24] = "JUST NOW";
+    time_t now = time(NULL);
+    long secs = (long)(now - newest.started_at);
+    if      (secs < 60)    snprintf(ts_label, sizeof(ts_label), "JUST NOW");
+    else if (secs < 3600)  snprintf(ts_label, sizeof(ts_label), "%ld MIN AGO", secs / 60);
+    else if (secs < 86400) snprintf(ts_label, sizeof(ts_label), "%ld H AGO",   secs / 3600);
+    else                   snprintf(ts_label, sizeof(ts_label), "%ld D AGO",   secs / 86400);
+
+    build_agent_entry(s_entry_root, 0,
+                      "AGENT ACTIVITY", ts_label,
+                      running > 0 ? TH_MODE_CLAW : TH_STATUS_GREEN,
+                      narrative, task_lines, n_show);
 }
 
 void ui_agents_hide(void)

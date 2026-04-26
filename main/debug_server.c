@@ -2601,6 +2601,52 @@ static esp_err_t chat_messages_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* ── POST /tool_log/push?name=&detail=&ms= ──────────────────────
+ * U7+U8 (#206) verification helper: forge a tool_log event so the
+ * agents/focus surfaces can be exercised without a live Dragon LLM
+ * tool_call producer.  When `ms` is provided, push a "done" entry;
+ * otherwise push a "running" entry.  Also accepts mode=both to push
+ * a paired call+result. */
+extern void tool_log_push_call(const char *name, const char *detail);
+extern void tool_log_push_result(const char *name, uint32_t exec_ms);
+static void url_pct_decode_inplace(char *s);   /* defined just below */
+
+static esp_err_t tool_log_push_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[256] = {0}, name[32] = {0}, detail[96] = {0}, ms_s[12] = {0}, mode[12] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "name",   name,   sizeof(name));
+    httpd_query_key_value(q, "detail", detail, sizeof(detail));
+    httpd_query_key_value(q, "ms",     ms_s,   sizeof(ms_s));
+    httpd_query_key_value(q, "mode",   mode,   sizeof(mode));
+    url_pct_decode_inplace(name);
+    url_pct_decode_inplace(detail);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!name[0]) {
+        cJSON_AddStringToObject(root, "error", "need ?name=<tool>");
+        return send_json_resp(req, root);
+    }
+    uint32_t ms = (uint32_t)atoi(ms_s);
+    bool both = (strcmp(mode, "both") == 0);
+
+    if (both) {
+        tool_log_push_call(name, detail);
+        tool_log_push_result(name, ms);
+    } else if (ms_s[0]) {
+        tool_log_push_result(name, ms);
+    } else {
+        tool_log_push_call(name, detail);
+    }
+
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "name", name);
+    cJSON_AddStringToObject(root, "mode", both ? "both" : (ms_s[0] ? "result" : "call"));
+    cJSON_AddNumberToObject(root, "ms", ms);
+    return send_json_resp(req, root);
+}
+
 /* ── POST /chat/audio_clip?url=<>&label=<> ─────────────────────────
  * U5 (#206) verification helper: pushes an audio_clip into the chat
  * store so the tap-to-play path can be exercised without a live Dragon
@@ -2920,6 +2966,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_heap_probe     = { .uri = "/heap/probe-csv", .method = HTTP_GET,  .handler = tab5_pool_probe_http_handler };
     const httpd_uri_t uri_chat_msgs      = { .uri = "/chat/messages",  .method = HTTP_GET,  .handler = chat_messages_handler };
     const httpd_uri_t uri_chat_audio     = { .uri = "/chat/audio_clip",.method = HTTP_POST, .handler = chat_audio_clip_handler };
+    const httpd_uri_t uri_tool_push      = { .uri = "/tool_log/push",  .method = HTTP_POST, .handler = tool_log_push_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
 
@@ -2968,6 +3015,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_heap_probe);
     httpd_register_uri_handler(server, &uri_chat_msgs);
     httpd_register_uri_handler(server, &uri_chat_audio);
+    httpd_register_uri_handler(server, &uri_tool_push);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
 
