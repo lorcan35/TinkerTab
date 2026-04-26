@@ -18,6 +18,7 @@
 #include "ui_memory.h"
 #include "ui_focus.h"
 #include "ui_agents.h"
+#include "ui_sessions.h"
 #include "config.h"
 #include "esp_log.h"
 #include <string.h>
@@ -56,7 +57,13 @@ static void go_notes(void)    { extern lv_obj_t *ui_notes_create(void); ui_notes
 static void go_settings(void) { extern lv_obj_t *ui_settings_create(void); ui_settings_create(); }
 static void go_camera(void)   { extern lv_obj_t *ui_camera_create(void); ui_camera_create(); }
 static void go_files(void)    { extern lv_obj_t *ui_files_create(void);  ui_files_create();  }
-static void go_memory(void)   { extern void ui_memory_show(void);        ui_memory_show();   }
+static void go_memory(void)   { ui_memory_show();   }
+/* U1 (#206): Sessions / Agents / Focus were reachable only via the
+ * /navigate debug endpoint — no on-device entry point.  Wire them into
+ * the nav sheet's tile grid so users can actually open them. */
+static void go_sessions(void) { ui_sessions_show(); }
+static void go_agents(void)   { ui_agents_show();   }
+static void go_focus(void)    { ui_focus_show();    }
 
 static const nav_tile_t s_tiles[] = {
     { "Chat",     "Threads \xE2\x80\xA2 history",  go_chat     },
@@ -65,6 +72,9 @@ static const nav_tile_t s_tiles[] = {
     { "Camera",   "Viewfinder",                    go_camera   },
     { "Files",    "SD card",                       go_files    },
     { "Memory",   "Facts \xE2\x80\xA2 recall",      go_memory   },
+    { "Sessions", "Past conversations",            go_sessions },
+    { "Agents",   "TinkerClaw status",             go_agents   },
+    { "Focus",    "Pomodoro \xE2\x80\xA2 timers",   go_focus    },
 };
 #define NAV_TILE_COUNT (sizeof(s_tiles) / sizeof(s_tiles[0]))
 
@@ -173,13 +183,15 @@ static void build_sheet(void)
     lv_obj_set_style_text_color(xl, lv_color_hex(SHEET_TEXT2), 0);
     lv_obj_center(xl);
 
-    /* 2x3 grid of tiles.  Tile = 304 x 184, gap = 16.
-     * Grid starts at x=40, y=168. */
-    const int TW = 304, TH = 184, GAP = 16;
-    const int GRID_X = 40, GRID_Y = 170;
+    /* U1 (#206): 3x3 grid (was 2x3).  Tile = 218 x 184, gap = 16,
+     * starts at x=24, y=170 — fits 720 wide and 820 tall sheet:
+     *   3 cols * 218 + 2 * 16 = 686 + 24 px side margins.
+     *   3 rows * 184 + 2 * 16 + 170 = 754 < 820. */
+    const int TW = 218, TH = 184, GAP = 16;
+    const int GRID_X = 24, GRID_Y = 170;
     for (int i = 0; i < (int)NAV_TILE_COUNT; i++) {
-        int col = i % 2;
-        int row = i / 2;
+        int col = i % 3;
+        int row = i / 3;
         lv_obj_t *tile = lv_obj_create(s_sheet);
         lv_obj_remove_style_all(tile);
         lv_obj_set_size(tile, TW, TH);
