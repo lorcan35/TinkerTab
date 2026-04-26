@@ -478,7 +478,12 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_border_color(s_mode_chip, lv_color_hex(0x1E1E2A), 0);
     lv_obj_clear_flag(s_mode_chip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_mode_chip, LV_OBJ_FLAG_CLICKABLE);
+    /* Audit U10 (UI-completeness): both short-tap and long-press open
+     * the triple-dial sheet.  Pre-fix only long-press was wired, so
+     * short-tap (the obvious affordance) silently did nothing and the
+     * chip looked broken to new users. */
     lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_CLICKED, NULL);
 
     s_mode_dot = lv_obj_create(s_mode_chip);
     lv_obj_remove_style_all(s_mode_dot);
