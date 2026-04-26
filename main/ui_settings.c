@@ -470,6 +470,39 @@ static void cb_quiet_on(lv_event_t *e)
     ui_home_refresh_sys_label();
 }
 
+/* Audit U3 (#206): start/end-hour sliders.  Both fire on
+ * LV_EVENT_VALUE_CHANGED while dragging, so we update the label live
+ * AND persist to NVS on every step.  ui_home re-reads on next sys-label
+ * refresh, so no extra notification needed. */
+static lv_obj_t *s_lbl_quiet_start_val = NULL;
+static lv_obj_t *s_lbl_quiet_end_val   = NULL;
+
+static void cb_quiet_start(lv_event_t *e)
+{
+    lv_obj_t *s = lv_event_get_target(e);
+    int v = lv_slider_get_value(s);
+    if (v < 0 || v > 23) return;
+    tab5_settings_set_quiet_start((uint8_t)v);
+    if (s_lbl_quiet_start_val) {
+        lv_label_set_text_fmt(s_lbl_quiet_start_val, "%02d:00", v);
+    }
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
+}
+
+static void cb_quiet_end(lv_event_t *e)
+{
+    lv_obj_t *s = lv_event_get_target(e);
+    int v = lv_slider_get_value(s);
+    if (v < 0 || v > 23) return;
+    tab5_settings_set_quiet_end((uint8_t)v);
+    if (s_lbl_quiet_end_val) {
+        lv_label_set_text_fmt(s_lbl_quiet_end_val, "%02d:00", v);
+    }
+    extern void ui_home_refresh_sys_label(void);
+    ui_home_refresh_sys_label();
+}
+
 /* ── WiFi picker ────────────────────────────────────────────────────── */
 
 static void cb_wifi_setup(lv_event_t *e)
@@ -1223,6 +1256,43 @@ lv_obj_t *ui_settings_create(void)
     mk_row_label(s_scroll, "Quiet hours", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
               cb_quiet_on, NULL);
+    y += ROW_H + 8;
+
+    /* Audit U3 (#206): start + end hour sliders that were missing pre-fix.
+     * Range 0-23, default values from NVS, label shows current value.
+     * Editable regardless of master switch state — preferences are
+     * decoupled from the on/off, matching CLAUDE.md NVS table semantics. */
+    mk_row_label(s_scroll, "  Start", y);
+    {
+        lv_obj_t *sl = mk_slider(s_scroll, acc_voice, RIGHT_X, y,
+                                 0, 23, tab5_settings_get_quiet_start(),
+                                 cb_quiet_start);
+        (void)sl;
+        s_lbl_quiet_start_val = lv_label_create(s_scroll);
+        if (s_lbl_quiet_start_val) {
+            lv_obj_set_pos(s_lbl_quiet_start_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+            lv_obj_set_style_text_color(s_lbl_quiet_start_val, lv_color_hex(0xF59E0B), 0);
+            lv_obj_set_style_text_font(s_lbl_quiet_start_val, FONT_SECONDARY, 0);
+            lv_label_set_text_fmt(s_lbl_quiet_start_val, "%02d:00",
+                                  tab5_settings_get_quiet_start());
+        }
+    }
+    y += ROW_H + 4;
+    mk_row_label(s_scroll, "  End", y);
+    {
+        lv_obj_t *sl = mk_slider(s_scroll, acc_voice, RIGHT_X, y,
+                                 0, 23, tab5_settings_get_quiet_end(),
+                                 cb_quiet_end);
+        (void)sl;
+        s_lbl_quiet_end_val = lv_label_create(s_scroll);
+        if (s_lbl_quiet_end_val) {
+            lv_obj_set_pos(s_lbl_quiet_end_val, RIGHT_X + 208, y + (ROW_H - 14) / 2);
+            lv_obj_set_style_text_color(s_lbl_quiet_end_val, lv_color_hex(0xF59E0B), 0);
+            lv_obj_set_style_text_font(s_lbl_quiet_end_val, FONT_SECONDARY, 0);
+            lv_label_set_text_fmt(s_lbl_quiet_end_val, "%02d:00",
+                                  tab5_settings_get_quiet_end());
+        }
+    }
     y += ROW_H + 16;
 
     /* v4·D Phase 4e: daily budget cap editor.  Slider range 0-50, each
@@ -1591,6 +1661,8 @@ void ui_settings_destroy(void)
     s_lbl_sd_info   = NULL;
     s_lbl_heap      = NULL;
     s_lbl_orient    = NULL;
+    s_lbl_quiet_start_val = NULL;
+    s_lbl_quiet_end_val   = NULL;
     s_ntp_spinner   = NULL;
     s_ntp_btn_label = NULL;
     s_slider_bright = NULL;
