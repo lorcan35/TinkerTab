@@ -550,7 +550,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         } else {
             const char *llm_txt2 = voice_get_llm_text();
             if (llm_txt2 && llm_txt2[0] && s_ai_label) {
-                { char _m[1024]; md_strip_inline(llm_txt2, _m, sizeof(_m));
+                { char _m[256]; md_strip_inline_with_ellipsis(llm_txt2, _m, sizeof(_m));
                   lv_label_set_text(s_ai_label, _m); }
                 if (s_ai_bubble) lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
             }
@@ -566,7 +566,7 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
             /* #115: drive the fixed-position response label. */
             if (llm_txt2 && llm_txt2[0] && s_response_label) {
-                { char _m[1024]; md_strip_inline(llm_txt2, _m, sizeof(_m));
+                { char _m[256]; md_strip_inline_with_ellipsis(llm_txt2, _m, sizeof(_m));
                   lv_label_set_text(s_response_label, _m); }
                 lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_move_foreground(s_response_label);
@@ -1295,7 +1295,7 @@ static void show_state_processing(const char *detail)
             lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
         }
 
-        { char _m[1024]; md_strip_inline(llm, _m, sizeof(_m));
+        { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
           lv_label_set_text(s_ai_label, _m); }
         lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
         /* closes #115: lift above orb z-order, same as SPEAKING. */
@@ -1306,7 +1306,7 @@ static void show_state_processing(const char *detail)
 
         /* #115: drive the fixed-position response label too. */
         if (s_response_label) {
-            { char _m[1024]; md_strip_inline(llm, _m, sizeof(_m));
+            { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
               lv_label_set_text(s_response_label, _m); }
             lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(s_response_label);
@@ -1375,7 +1375,7 @@ static void show_state_speaking(void)
         lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
     }
     if (llm && llm[0]) {
-        { char _m[1024]; md_strip_inline(llm, _m, sizeof(_m));
+        { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
           lv_label_set_text(s_ai_label, _m); }
         lv_obj_set_width(s_ai_label, CHAT_BUBBLE_MAX_W - 2 * CHAT_BUBBLE_PAD);
         lv_label_set_long_mode(s_ai_label, LV_LABEL_LONG_WRAP);
@@ -1385,7 +1385,7 @@ static void show_state_speaking(void)
         /* #115: drive the fixed-position response label — this is the
          * reliable path when the flex chat_cont doesn't render. */
         if (s_response_label) {
-            { char _m[1024]; md_strip_inline(llm, _m, sizeof(_m));
+            { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
               lv_label_set_text(s_response_label, _m); }
             lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(s_response_label);

@@ -59,3 +59,39 @@ void md_strip_inline(const char *in, char *out, size_t out_cap)
     }
     out[oi] = 0;
 }
+
+/* Audit C10 (TinkerBox #137 / TinkerTab #200): same as md_strip_inline
+ * but appends a UTF-8 ellipsis ("…", 3 bytes) when the source was
+ * truncated by `out_cap`.  Reserves 4 trailing bytes for the
+ * ellipsis + NUL on the truncation path.  Falls through to the
+ * vanilla strip when the source fits comfortably. */
+void md_strip_inline_with_ellipsis(const char *in, char *out, size_t out_cap)
+{
+    if (!out || out_cap == 0) return;
+    if (!in) { out[0] = 0; return; }
+
+    /* Reserve room for "…" (3 bytes) + NUL.  If out_cap is too small
+     * for the marker, fall back to the unmarked strip — better to
+     * lose the ellipsis than to refuse a render. */
+    if (out_cap < 8) {
+        md_strip_inline(in, out, out_cap);
+        return;
+    }
+    size_t reserved = 3;  /* UTF-8 ellipsis */
+    md_strip_inline(in, out, out_cap - reserved);
+    /* Detect truncation: source had more bytes than we wrote (and we
+     * filled to capacity).  md_strip_inline NUL-terminates at the
+     * stopping point regardless. */
+    size_t written = 0;
+    while (written < out_cap - reserved && out[written]) written++;
+    /* Use input length as a lower bound — markdown stripping shrinks
+     * the input, so source-len > written-cap implies truncation. */
+    size_t in_len = 0;
+    while (in[in_len]) in_len++;
+    if (in_len > written) {
+        out[written++] = (char)0xE2;
+        out[written++] = (char)0x80;
+        out[written++] = (char)0xA6;
+        out[written]   = 0;
+    }
+}
