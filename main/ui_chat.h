@@ -27,6 +27,16 @@ void ui_chat_push_card(const char *title, const char *subtitle,
 void ui_chat_push_audio_clip(const char *url, float duration_s, const char *label);
 
 /**
+ * Audit U5 (#206): tap-to-play handler for inline audio_clip rows.
+ * Downloads the URL (Dragon-relative or absolute) to a tmp WAV on the
+ * SD card and hands the path to ui_audio_create() so the user gets the
+ * standard audio-player overlay (play/pause/stop, volume).  Safe from
+ * any task — internally enqueues to the shared task_worker so the
+ * download doesn't block voice WS or LVGL.
+ */
+void ui_chat_play_audio_clip(const char *url);
+
+/**
  * Thread-safe: push a system/status bubble (e.g. "Searching the web…",
  * "Memory saved"). Renders centered + dim per chat_msg_view MSG_SYSTEM
  * treatment. Safe from any task; uses lv_async_call internally.

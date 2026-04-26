@@ -20,22 +20,28 @@
 #include "chat_suggestions.h"
 #include "chat_session_drawer.h"
 
+#include "ui_audio.h"
 #include "ui_theme.h"
 #include "ui_keyboard.h"
 #include "config.h"
 #include "settings.h"
+#include "task_worker.h"
 #include "voice.h"
 #include "tab5_rtc.h"
 
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 
+#include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <strings.h>
 
 extern lv_obj_t *ui_home_get_screen(void);
 extern void      ui_home_show_toast(const char *text);
@@ -840,6 +846,145 @@ void ui_chat_push_audio_clip(const char *url, float duration_s, const char *labe
     safe_copy(a->label, sizeof(a->label), label);
     a->dur = duration_s;
     lv_async_call(async_push_audio_cb, a);
+}
+
+/* Audit U5 (#206): tap-to-play for inline audio_clip rows.
+ *
+ * Flow:
+ *   tap on chat row → ui_chat_play_audio_clip(url) (LVGL/voice thread)
+ *      → tab5_worker_enqueue(audio_clip_dl_job)
+ *         → HTTP GET into /sdcard/.audio_clip.wav (chunked, max 4 MB)
+ *         → lv_async_call(async_open_audio_player_cb, path)
+ *            → ui_audio_create("/sdcard/.audio_clip.wav") on UI thread.
+ *
+ * Cap chosen to bound SD-card writes — typical TTS clips are 30-300 KB.
+ * If the URL is relative ("/api/media/..."), the configured Dragon
+ * host:port is prepended (mirrors media_cache_fetch). */
+#define AUDIO_CLIP_MAX_BYTES   (4 * 1024 * 1024)
+/* Tab5's FATFS is built with CONFIG_FATFS_LFN_NONE — only 8.3 names are
+ * accepted (longer basenames trip EINVAL inside f_open).  "ACLIP.WAV"
+ * is 5+3 chars which is well within limits. */
+#define AUDIO_CLIP_TMP_PATH    "/sdcard/ACLIP.WAV"
+
+static void async_open_audio_player_cb(void *arg)
+{
+    char *path = (char *)arg;
+    if (!path) return;
+    /* ui_audio_create takes the WAV path and overlays the player on the
+     * current screen.  It internally calls ui_audio_destroy() if a
+     * previous player is open, so back-to-back taps Just Work. */
+    ui_audio_create(path);
+    free(path);
+}
+
+typedef struct {
+    char url[384];
+} audio_clip_job_t;
+
+static void audio_clip_dl_job(void *arg)
+{
+    audio_clip_job_t *j = (audio_clip_job_t *)arg;
+    if (!j) return;
+
+    /* Resolve relative URLs against the configured Dragon host. */
+    char full_url[512];
+    if (strncasecmp(j->url, "http://", 7) == 0 ||
+        strncasecmp(j->url, "https://", 8) == 0) {
+        snprintf(full_url, sizeof(full_url), "%s", j->url);
+    } else {
+        char host[64];
+        tab5_settings_get_dragon_host(host, sizeof(host));
+        uint16_t port = tab5_settings_get_dragon_port();
+        snprintf(full_url, sizeof(full_url), "http://%s:%u%s",
+                 host, port, j->url[0] == '/' ? j->url : "/");
+        if (j->url[0] != '/') {
+            /* unusual — fall back to verbatim */
+            snprintf(full_url, sizeof(full_url), "%s", j->url);
+        }
+    }
+    free(j);
+    j = NULL;
+
+    ESP_LOGI(TAG, "audio_clip: GET %s", full_url);
+
+    esp_http_client_config_t cfg = {
+        .url        = full_url,
+        .method     = HTTP_METHOD_GET,
+        .timeout_ms = 10000,
+        .buffer_size = 2048,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGW(TAG, "audio_clip: http_client_init OOM");
+        return;
+    }
+
+    bool ok = false;
+    FILE *fp = NULL;
+    do {
+        if (esp_http_client_open(client, 0) != ESP_OK) {
+            ESP_LOGW(TAG, "audio_clip: http_client_open failed");
+            break;
+        }
+        int cl = (int)esp_http_client_fetch_headers(client);
+        if (cl > AUDIO_CLIP_MAX_BYTES) {
+            ESP_LOGW(TAG, "audio_clip: too large (%d bytes)", cl);
+            break;
+        }
+        fp = fopen(AUDIO_CLIP_TMP_PATH, "wb");
+        if (!fp) {
+            ESP_LOGW(TAG, "audio_clip: fopen %s failed errno=%d (%s)",
+                     AUDIO_CLIP_TMP_PATH, errno, strerror(errno));
+            break;
+        }
+        char chunk[2048];
+        int total = 0;
+        while (total < AUDIO_CLIP_MAX_BYTES) {
+            int r = esp_http_client_read(client, chunk, sizeof(chunk));
+            if (r <= 0) break;
+            if (fwrite(chunk, 1, (size_t)r, fp) != (size_t)r) {
+                ESP_LOGW(TAG, "audio_clip: short fwrite");
+                break;
+            }
+            total += r;
+            /* Yield so voice WS / LVGL keep ticking on long downloads. */
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        int status = esp_http_client_get_status_code(client);
+        if (status == 200 && total > 64) {
+            ESP_LOGI(TAG, "audio_clip: saved %d bytes to %s",
+                     total, AUDIO_CLIP_TMP_PATH);
+            ok = true;
+        } else {
+            ESP_LOGW(TAG, "audio_clip: status=%d total=%d", status, total);
+        }
+    } while (0);
+
+    if (fp) fclose(fp);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (ok) {
+        char *path = strdup(AUDIO_CLIP_TMP_PATH);
+        if (path) lv_async_call(async_open_audio_player_cb, path);
+    } else {
+        /* Soft-fail: a single toast is friendlier than silently doing
+         * nothing.  ui_home_show_toast is the global toast surface. */
+        extern void ui_home_show_toast(const char *text);
+        ui_home_show_toast("Couldn't fetch audio");
+    }
+}
+
+void ui_chat_play_audio_clip(const char *url)
+{
+    if (!url || !url[0]) return;
+    audio_clip_job_t *j = calloc(1, sizeof(*j));
+    if (!j) return;
+    snprintf(j->url, sizeof(j->url), "%s", url);
+    if (tab5_worker_enqueue(audio_clip_dl_job, j, "audio_clip_dl") != ESP_OK) {
+        ESP_LOGW(TAG, "audio_clip: worker queue full, dropping");
+        free(j);
+    }
 }
 
 static void async_update_last_cb(void *arg)

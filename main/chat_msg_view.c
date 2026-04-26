@@ -15,6 +15,7 @@
  */
 #include "chat_msg_view.h"
 #include "chat_msg_store.h"
+#include "ui_chat.h"                  /* U5: ui_chat_play_audio_clip */
 #include "ui_theme.h"
 #include "config.h"
 #include "bsp_config.h"
@@ -211,6 +212,9 @@ static void slot_reset(msg_slot_t *slot)
     if (slot->breakout)  lv_obj_add_flag(slot->breakout, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* U5 (#206): forward decl — defined below with the AUDIO_CLIP wiring. */
+static void brk_body_clicked_cb(lv_event_t *e);
+
 static void slot_ensure_breakout(msg_slot_t *slot, lv_obj_t *parent, uint32_t accent)
 {
     if (!slot) return;
@@ -253,6 +257,14 @@ static void slot_ensure_breakout(msg_slot_t *slot, lv_obj_t *parent, uint32_t ac
     lv_obj_set_style_text_font(slot->brk_body, FONT_CHAT_MONO, 0);
     lv_obj_set_style_text_line_space(slot->brk_body, 4, 0);
     lv_label_set_text(slot->brk_body, "");
+
+    /* Audit U5 (#206): brk_body is the tap target for AUDIO_CLIP rows
+     * (the breakout itself stays non-clickable to preserve scroll —
+     * see #187).  Clickable flag is added on bind only when the slot
+     * holds an audio clip; the event_cb is registered once here and
+     * dispatches by reading the slot's currently-bound message. */
+    lv_obj_add_event_cb(slot->brk_body, brk_body_clicked_cb,
+                        LV_EVENT_CLICKED, slot);
 }
 
 /* ── Bind slot to a message ────────────────────────────────────── */
@@ -289,6 +301,11 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
             lv_obj_set_style_bg_color(slot->brk_accent, lv_color_hex(v->mode_color), 0);
         if (slot->brk_kicker)
             lv_obj_set_style_text_color(slot->brk_kicker, lv_color_hex(v->mode_color), 0);
+        /* U5 (#206): clear clickable-on-rebind so a slot recycled from
+         * AUDIO_CLIP -> IMAGE/CARD doesn't keep its tap target.  The
+         * AUDIO_CLIP branch below re-adds the flag. */
+        if (slot->brk_body)
+            lv_obj_clear_flag(slot->brk_body, LV_OBJ_FLAG_CLICKABLE);
 
         char kicker[64];
         switch (msg->type) {
@@ -380,6 +397,10 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
             lv_label_set_text(slot->brk_body, body);
             lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
             lv_obj_set_size(slot->breakout, 720, 96);
+            /* U5 (#206): make this row tappable. brk_body_clicked_cb
+             * dispatches by reading the slot's currently-bound message
+             * (data_idx -> chat_store_get -> media_url). */
+            lv_obj_add_flag(slot->brk_body, LV_OBJ_FLAG_CLICKABLE);
         }
 
         /* Measure + cache. */
@@ -792,4 +813,21 @@ bool chat_msg_view_is_streaming(chat_msg_view_t *v)
 lv_obj_t *chat_msg_view_get_scroll(chat_msg_view_t *v)
 {
     return v ? v->scroll : NULL;
+}
+
+/* U5 (#206): brk_body tap dispatcher.  Reads the slot's currently-bound
+ * message from the store and, if it's an audio clip with a URL, hands
+ * it off to ui_chat_play_audio_clip (which downloads + opens the audio
+ * player overlay on the UI thread).  No-ops for IMAGE / CARD even
+ * though they share the same label widget — those rows aren't marked
+ * clickable so the cb doesn't fire there in practice; the type check
+ * is belt-and-braces for slot recycle races. */
+static void brk_body_clicked_cb(lv_event_t *e)
+{
+    msg_slot_t *slot = (msg_slot_t *)lv_event_get_user_data(e);
+    if (!slot || slot->data_idx < 0) return;
+    const chat_msg_t *msg = chat_store_get(slot->data_idx);
+    if (!msg || msg->type != MSG_AUDIO_CLIP) return;
+    if (!msg->media_url[0]) return;
+    ui_chat_play_audio_clip(msg->media_url);
 }
