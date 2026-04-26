@@ -1086,6 +1086,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "quiet_start", tab5_settings_get_quiet_start());
     cJSON_AddNumberToObject(root, "quiet_end",   tab5_settings_get_quiet_end());
 
+    /* Audit U2 (#206): auto-rotate persisted preference. */
+    cJSON_AddNumberToObject(root, "auto_rot",    tab5_settings_get_auto_rotate());
+
     /* Budget */
     cJSON_AddNumberToObject(root, "spent_mils", (double)tab5_budget_get_today_mils());
     cJSON_AddNumberToObject(root, "cap_mils",   (double)tab5_budget_get_cap_mils());
@@ -1240,6 +1243,19 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
         if (v >= 0 && v <= 23 &&
             tab5_settings_set_quiet_end((uint8_t)v) == ESP_OK) {
             cJSON_AddItemToArray(updated, cJSON_CreateString("quiet_end"));
+        }
+    }
+
+    /* Audit U2 (#206): auto-rotate POST setter for testability — also
+     * triggers ui_core_apply_auto_rotation so the new value takes
+     * effect immediately. */
+    cJSON *ar = cJSON_GetObjectItem(req_json, "auto_rot");
+    if (cJSON_IsNumber(ar) || cJSON_IsBool(ar)) {
+        int v = cJSON_IsBool(ar) ? cJSON_IsTrue(ar) : (int)ar->valuedouble;
+        if (tab5_settings_set_auto_rotate(v ? 1 : 0) == ESP_OK) {
+            extern void ui_core_apply_auto_rotation(bool enabled);
+            ui_core_apply_auto_rotation(v != 0);
+            cJSON_AddItemToArray(updated, cJSON_CreateString("auto_rot"));
         }
     }
 
