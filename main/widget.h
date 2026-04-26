@@ -172,3 +172,13 @@ widget_tone_t widget_tone_from_str(const char *s);
 
 /** Convert a type string like "live" to the enum. Returns NONE on unknown. */
 widget_type_t widget_type_from_str(const char *s);
+
+/* Audit C4 (TinkerBox #137 / TinkerTab #202): pre-fix the priority-
+ * weighted eviction at slot_for_new() was a silent ESP_LOGW —
+ * operators couldn't tell from /info whether a skill storm was
+ * thrashing the store.  These accessors expose total-evictions +
+ * the most recently evicted card_id so the debug server can surface
+ * the metric and the dashboard can chart it.
+ */
+uint32_t    widget_store_evictions_total(void);
+const char *widget_store_last_evicted_id(void);

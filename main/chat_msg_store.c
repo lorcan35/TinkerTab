@@ -19,6 +19,8 @@ static chat_session_t s_active   = { .valid = false };
 static chat_msg_t    *s_msgs     = NULL;   /* PSRAM-backed */
 static int            s_count    = 0;
 static int            s_write_idx = 0;
+/* Audit B2 (#202): ring-buffer eviction counter for /info exposure. */
+static uint32_t       s_evictions_total = 0;
 static bool           s_inited   = false;
 
 static void copy_str(char *dst, size_t dst_sz, const char *src)
@@ -111,14 +113,27 @@ int chat_store_add(const chat_msg_t *msg)
         s_write_idx = (s_write_idx + 1) % BSP_CHAT_MAX_MESSAGES;
         s_count++;
     } else {
-        /* Ring is full — overwrite oldest (which is at s_write_idx). */
+        /* Ring is full — overwrite oldest (which is at s_write_idx).
+         * Audit B2 (TinkerBox #137 / TinkerTab #202): pre-fix the
+         * eviction was completely silent — no log, no metric.  A
+         * skill emitting >BSP_CHAT_MAX_MESSAGES bubbles per turn
+         * (or any session that scrolled past the ring cap) silently
+         * lost the oldest messages with no operator visibility.
+         * Counter exposed via chat_store_evictions_total(). */
         real = s_write_idx;
         s_write_idx = (s_write_idx + 1) % BSP_CHAT_MAX_MESSAGES;
+        s_evictions_total++;
     }
     s_msgs[real] = *msg;
     s_msgs[real].active = true;
     if (s_msgs[real].height_px == 0) s_msgs[real].height_px = -1;
     return s_count - 1;
+}
+
+/* Audit B2 (#202): observability accessor for ring-buffer evictions. */
+uint32_t chat_store_evictions_total(void)
+{
+    return s_evictions_total;
 }
 
 int chat_store_count(void) { return s_count; }

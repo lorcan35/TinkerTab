@@ -28,6 +28,8 @@
 #include "ui_home.h"
 #include "ui_chat.h"
 #include "ui_keyboard.h"
+#include "widget.h"           /* Audit C4 (#202): widget_store_evictions_total */
+#include "chat_msg_store.h"   /* Audit B2 (#202): chat_store_evictions_total */
 #include "wifi.h"
 #include "battery.h"
 
@@ -353,6 +355,18 @@ static esp_err_t info_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "reset_reason", reason < sizeof(reset_reasons)/sizeof(reset_reasons[0]) ? reset_reasons[reason] : "UNKNOWN");
 
     cJSON_AddBoolToObject(root, "auth_required", true);
+
+    /* Audit B2 + C4 (#202): expose ring/store eviction counters so the
+     * dashboard can spot a skill storm or chat-burst overflow without
+     * grep'ing serial logs.  Both are monotonic counters since boot. */
+    cJSON_AddNumberToObject(root, "chat_evictions_total",
+                            (double)chat_store_evictions_total());
+    cJSON_AddNumberToObject(root, "widget_evictions_total",
+                            (double)widget_store_evictions_total());
+    const char *last_evicted = widget_store_last_evicted_id();
+    if (last_evicted && last_evicted[0]) {
+        cJSON_AddStringToObject(root, "widget_last_evicted_id", last_evicted);
+    }
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
