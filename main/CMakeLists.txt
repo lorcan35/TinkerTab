@@ -39,6 +39,7 @@ else()
              "settings.c" "ota.c" "media_cache.c"
              "widget_store.c"
              "task_worker.c"
+             "tool_log.c"
         EMBED_TXTFILES "debug_ui.html"
         INCLUDE_DIRS "."
         REQUIRES tab5
