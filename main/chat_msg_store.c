@@ -194,12 +194,23 @@ int chat_store_attach_receipt_ex(uint32_t mils,
                                  const char *model_short,
                                  bool retried)
 {
-    /* Scan newest -> oldest looking for the first assistant-role bubble. */
+    /* Scan newest -> oldest looking for the first assistant-role TEXT
+     * bubble.  Audit B2 second-half (TinkerBox #137 / TinkerTab #204):
+     * the previous version skipped only `is_user` and `MSG_SYSTEM`, so
+     * a `widget_card` (MSG_CARD), inline rich-media (MSG_IMAGE), or
+     * audio clip (MSG_AUDIO_CLIP) that arrived between `llm_done` and
+     * the `receipt` frame would become the newest non-skipped bubble
+     * and steal the receipt stamp.  This was visible during widget
+     * storms (rapid scheduler fires + media-rich replies): the cost +
+     * model name landed under a card or image, not the LLM reply.
+     *
+     * Only MSG_TEXT bubbles represent actual LLM replies — those are
+     * the only valid receipt targets. */
     for (int i = s_count - 1; i >= 0; i--) {
         chat_msg_t *m = chat_store_get_mut(i);
         if (!m || !m->active) continue;
-        if (m->is_user) continue;   /* skip user bubbles */
-        if (m->type == MSG_SYSTEM) continue;  /* skip system messages */
+        if (m->is_user) continue;            /* skip user bubbles */
+        if (m->type != MSG_TEXT) continue;   /* skip cards/images/audio/system */
         m->receipt_mils = mils;
         m->receipt_ptok = prompt_tok;
         m->receipt_ctok = completion_tok;
