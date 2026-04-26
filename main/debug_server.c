@@ -2601,6 +2601,59 @@ static esp_err_t chat_messages_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* ── POST /chat/audio_clip?url=<>&label=<> ─────────────────────────
+ * U5 (#206) verification helper: pushes an audio_clip into the chat
+ * store so the tap-to-play path can be exercised without a live Dragon
+ * audio_clip producer.  url= is required and is passed verbatim to
+ * ui_chat_push_audio_clip (relative paths are resolved against the
+ * configured Dragon host on tap).  Note: the chat overlay must be open
+ * for the row to render — POST /navigate?screen=chat first. */
+static void url_pct_decode_inplace(char *s)
+{
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '%' && r[1] && r[2]) {
+            char hi = r[1], lo = r[2];
+            int hv = (hi >= '0' && hi <= '9') ? hi - '0'
+                   : (hi >= 'a' && hi <= 'f') ? hi - 'a' + 10
+                   : (hi >= 'A' && hi <= 'F') ? hi - 'A' + 10 : -1;
+            int lv = (lo >= '0' && lo <= '9') ? lo - '0'
+                   : (lo >= 'a' && lo <= 'f') ? lo - 'a' + 10
+                   : (lo >= 'A' && lo <= 'F') ? lo - 'A' + 10 : -1;
+            if (hv >= 0 && lv >= 0) {
+                *w++ = (char)((hv << 4) | lv);
+                r += 3;
+                continue;
+            }
+        }
+        if (*r == '+') { *w++ = ' '; r++; continue; }
+        *w++ = *r++;
+    }
+    *w = 0;
+}
+
+static esp_err_t chat_audio_clip_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[512] = {0}, url[256] = {0}, label[96] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "url",   url,   sizeof(url));
+    httpd_query_key_value(q, "label", label, sizeof(label));
+    url_pct_decode_inplace(url);
+    url_pct_decode_inplace(label);
+
+    cJSON *root = cJSON_CreateObject();
+    if (!url[0]) {
+        cJSON_AddStringToObject(root, "error", "need ?url=<dragon-relative or absolute>");
+        return send_json_resp(req, root);
+    }
+    ui_chat_push_audio_clip(url, 0.0f, label[0] ? label : "test clip");
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "url", url);
+    cJSON_AddStringToObject(root, "label", label[0] ? label : "test clip");
+    return send_json_resp(req, root);
+}
+
 /* ── GET /net/ping?host=<>&port=<> ──────────────────────────────── */
 /* Re-implements the non-blocking probe locally so we don't leak
  * voice.c internals.  Matches the fix from #146. */
@@ -2866,6 +2919,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_heap_history   = { .uri = "/heap/history",   .method = HTTP_GET,  .handler = heap_history_handler };
     const httpd_uri_t uri_heap_probe     = { .uri = "/heap/probe-csv", .method = HTTP_GET,  .handler = tab5_pool_probe_http_handler };
     const httpd_uri_t uri_chat_msgs      = { .uri = "/chat/messages",  .method = HTTP_GET,  .handler = chat_messages_handler };
+    const httpd_uri_t uri_chat_audio     = { .uri = "/chat/audio_clip",.method = HTTP_POST, .handler = chat_audio_clip_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
 
@@ -2913,6 +2967,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_heap_history);
     httpd_register_uri_handler(server, &uri_heap_probe);
     httpd_register_uri_handler(server, &uri_chat_msgs);
+    httpd_register_uri_handler(server, &uri_chat_audio);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
 
