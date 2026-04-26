@@ -129,6 +129,15 @@ static lv_timer_t *s_refresh_timer = NULL;
 
 /* Two-pass creation: Phase 2 deferred via lv_timer_create */
 static volatile bool s_phase2_pending = false;
+/* U13 (#206): explicit "phase 2 finished cleanly" sentinel.  Replaces
+ * the previous `!s_lbl_heap` heuristic on the re-show path, which was
+ * fragile for two reasons: (1) phase 2 could fail BEFORE creating
+ * s_lbl_heap, leaving s_phase2_done correct but the heuristic still
+ * reading "needs Phase 2"; (2) phase 2 could fail AFTER creating
+ * s_lbl_heap, leaving the heuristic falsely reporting "Phase 2 done".
+ * The flag is set only at the end of phase2_timer_cb on success, and
+ * cleared on every Phase-1 entry + destroy. */
+static volatile bool s_phase2_done    = false;
 static lv_timer_t   *s_phase2_timer  = NULL;
 static int            s_phase2_y     = 0;       /* Y position carried from Phase 1 */
 
@@ -1027,6 +1036,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     y += 40;
 
     s_phase2_pending = false;
+    s_phase2_done    = true;     /* U13 (#206): authoritative sentinel */
     ESP_LOGI(TAG, "Phase 2 complete (%lu objects total)", (unsigned long)lv_obj_get_child_count(s_scroll));
 
     /* Trigger immediate data refresh for the newly created labels */
@@ -1081,9 +1091,13 @@ lv_obj_t *ui_settings_create(void)
         ui_settings_update();
         ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
 
-        /* If Phase 2 was cancelled (hidden before it fired), re-schedule it */
-        if (!s_lbl_heap && s_scroll && !s_phase2_pending) {
-            ESP_LOGI(TAG, "Phase 2 missing — re-scheduling");
+        /* U13 (#206): re-schedule Phase 2 if it didn't complete cleanly.
+         * Use the explicit s_phase2_done sentinel rather than the old
+         * !s_lbl_heap heuristic, which was both false-positive (heap
+         * label exists but other rows didn't make it) and false-negative
+         * (phase failed before reaching the heap label). */
+        if (!s_phase2_done && s_scroll && !s_phase2_pending) {
+            ESP_LOGI(TAG, "Phase 2 incomplete — re-scheduling");
             s_creating = true;
             s_phase2_pending = true;
             s_phase2_timer = lv_timer_create(phase2_timer_cb, 50, NULL);
@@ -1486,6 +1500,7 @@ lv_obj_t *ui_settings_create(void)
 
     s_phase2_y = y;
     s_phase2_pending = true;
+    s_phase2_done    = false;   /* U13 (#206): clear before scheduling */
     s_phase2_timer = lv_timer_create(phase2_timer_cb, 50, NULL);
     lv_timer_set_repeat_count(s_phase2_timer, 1);
 
@@ -1633,6 +1648,7 @@ void ui_settings_destroy(void)
     s_destroying = true;
     s_creating = false;
     s_phase2_pending = false;  /* Cancel Phase 2 if it hasn't fired yet */
+    s_phase2_done    = false;  /* U13 (#206): clear sentinel on destroy */
 
     if (s_phase2_timer) { lv_timer_delete(s_phase2_timer); s_phase2_timer = NULL; }
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
