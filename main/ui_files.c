@@ -168,6 +168,23 @@ static void cb_retry_sd(lv_event_t *e)
     }
 }
 
+/* Audit U4 (#206): image-preview JPEG buffer + descriptor.  Held in
+ * static state so the preview widget can outlive the show call and the
+ * close callback can free the buffer.  Only one preview is open at a
+ * time (img_preview is a singleton). */
+static uint8_t        *s_preview_jpeg_buf = NULL;
+static lv_image_dsc_t  s_preview_dsc      = {0};
+
+static void preview_release_buf(void)
+{
+    if (s_preview_jpeg_buf) {
+        heap_caps_free(s_preview_jpeg_buf);
+        s_preview_jpeg_buf = NULL;
+    }
+    s_preview_dsc.data      = NULL;
+    s_preview_dsc.data_size = 0;
+}
+
 static void cb_close_preview(lv_event_t *e)
 {
     (void)e;
@@ -175,6 +192,7 @@ static void cb_close_preview(lv_event_t *e)
         lv_obj_delete(img_preview);
         img_preview = NULL;
     }
+    preview_release_buf();
 }
 
 static void cb_close_info(lv_event_t *e)
@@ -464,33 +482,175 @@ static void show_no_sd(void)
 
 /* ── Image preview overlay ───────────────────────────────────── */
 
+/* Audit U4 (#206): full image load-and-decode for the file preview.
+ * Pre-fix this just rendered the filename centered on a dim backdrop.
+ *
+ * Two formats are supported, dispatched by magic bytes:
+ *   - JPEG (FF D8): hand to LVGL's RAW path so TJPGD (CONFIG_LV_USE_TJPGD=y)
+ *     decodes on demand using the SOF0/SOF2 dimensions.
+ *   - BMP  (BM): the Tab5 camera writes RGB565 frames as raw BMP with a
+ *     misleading .jpg extension (bsp/tab5/camera.c tab5_camera_save_jpeg).
+ *     Parse the 14-byte file header + DIB header and bind the pixel-data
+ *     region directly as LV_COLOR_FORMAT_RGB565 — LVGL renders it natively
+ *     without any decoder.
+ *
+ * Buffer freed by cb_close_preview. */
+static bool load_jpeg_into_preview_dsc(const char *filepath)
+{
+    preview_release_buf();
+    FILE *f = fopen(filepath, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "preview: open failed: %s", filepath);
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 64 || sz > 6 * 1024 * 1024) {
+        ESP_LOGW(TAG, "preview: bad size %ld for %s", sz, filepath);
+        fclose(f);
+        return false;
+    }
+    /* PSRAM only — frames can be 1.8 MB (RGB565 1280x720) or 1-6 MB JPEG. */
+    s_preview_jpeg_buf = heap_caps_malloc((size_t)sz,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_preview_jpeg_buf) {
+        ESP_LOGW(TAG, "preview: PSRAM alloc failed (%ld bytes)", sz);
+        fclose(f);
+        return false;
+    }
+    size_t got = fread(s_preview_jpeg_buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) {
+        ESP_LOGW(TAG, "preview: short read %zu/%ld", got, sz);
+        preview_release_buf();
+        return false;
+    }
+
+    const uint8_t *b = s_preview_jpeg_buf;
+
+    /* BMP path — the camera's pseudo-JPEG. */
+    if (b[0] == 'B' && b[1] == 'M') {
+        uint32_t pix_off = (uint32_t)b[10] | ((uint32_t)b[11] << 8) |
+                           ((uint32_t)b[12] << 16) | ((uint32_t)b[13] << 24);
+        int32_t bw  = (int32_t)((uint32_t)b[18] | ((uint32_t)b[19] << 8) |
+                                ((uint32_t)b[20] << 16) | ((uint32_t)b[21] << 24));
+        int32_t bh  = (int32_t)((uint32_t)b[22] | ((uint32_t)b[23] << 8) |
+                                ((uint32_t)b[24] << 16) | ((uint32_t)b[25] << 24));
+        uint16_t bpp = (uint16_t)b[28] | ((uint16_t)b[29] << 8);
+        uint32_t abs_h = (bh < 0) ? (uint32_t)(-bh) : (uint32_t)bh;
+        if (bpp != 16 || bw <= 0 || abs_h == 0 ||
+            pix_off >= (uint32_t)sz ||
+            (uint32_t)sz - pix_off < (uint32_t)bw * abs_h * 2) {
+            ESP_LOGW(TAG, "preview: BMP unsupported (bpp=%u w=%ld h=%ld off=%lu sz=%ld)",
+                     bpp, (long)bw, (long)abs_h, (unsigned long)pix_off, sz);
+            preview_release_buf();
+            return false;
+        }
+        s_preview_dsc.header.cf  = LV_COLOR_FORMAT_RGB565;
+        s_preview_dsc.header.w   = (uint32_t)bw;
+        s_preview_dsc.header.h   = abs_h;
+        s_preview_dsc.data       = s_preview_jpeg_buf + pix_off;
+        s_preview_dsc.data_size  = (uint32_t)bw * abs_h * 2;
+        ESP_LOGI(TAG, "preview: loaded %s (BMP RGB565 %ldx%lu)",
+                 filepath, (long)bw, (unsigned long)abs_h);
+        return true;
+    }
+
+    /* JPEG path — hand off to TJPGD via RAW cf.  Parse SOF0/SOF2 for w/h. */
+    if (b[0] == 0xFF && b[1] == 0xD8) {
+        uint16_t jpg_w = 0, jpg_h = 0;
+        for (size_t i = 0; i + 8 < (size_t)sz; i++) {
+            if (b[i] == 0xFF && (b[i + 1] == 0xC0 || b[i + 1] == 0xC2)) {
+                jpg_h = (b[i + 5] << 8) | b[i + 6];
+                jpg_w = (b[i + 7] << 8) | b[i + 8];
+                break;
+            }
+        }
+        if (!jpg_w || !jpg_h) {
+            ESP_LOGW(TAG, "preview: JPEG SOF not found in %s", filepath);
+            preview_release_buf();
+            return false;
+        }
+        s_preview_dsc.header.cf  = LV_COLOR_FORMAT_RAW;
+        s_preview_dsc.header.w   = jpg_w;
+        s_preview_dsc.header.h   = jpg_h;
+        s_preview_dsc.data       = s_preview_jpeg_buf;
+        s_preview_dsc.data_size  = (uint32_t)sz;
+        ESP_LOGI(TAG, "preview: loaded %s (JPEG %ux%u)", filepath, jpg_w, jpg_h);
+        return true;
+    }
+
+    ESP_LOGW(TAG, "preview: unknown format 0x%02x 0x%02x in %s", b[0], b[1], filepath);
+    preview_release_buf();
+    return false;
+}
+
 static void show_image_preview(const char *filepath)
 {
     if (img_preview) {
         lv_obj_delete(img_preview);
         img_preview = NULL;
     }
+    preview_release_buf();
 
     img_preview = lv_obj_create(scr_files);
     lv_obj_set_size(img_preview, SCREEN_W, SCREEN_H);
     lv_obj_align(img_preview, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_set_style_bg_color(img_preview, lv_color_hex(0x08080E), 0);
-    lv_obj_set_style_bg_opa(img_preview, LV_OPA_90, 0);
+    lv_obj_set_style_bg_opa(img_preview, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(img_preview, 0, 0);
     lv_obj_clear_flag(img_preview, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Filename label */
-    const char *basename = strrchr(filepath, '/');
-    basename = basename ? basename + 1 : filepath;
-
-    char display_text[160];
-    snprintf(display_text, sizeof(display_text), "%s  %s", LV_SYMBOL_IMAGE, basename);
-
-    lv_obj_t *lbl = lv_label_create(img_preview);
-    lv_label_set_text(lbl, display_text);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
-    lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
+    bool decoded = load_jpeg_into_preview_dsc(filepath);
+    if (decoded) {
+        /* Audit U4 (#206): centered image, scaled to fit while preserving
+         * aspect ratio.  LVGL 9.2.2 has no LV_IMAGE_ALIGN_CONTAIN, so we
+         * compute a uniform fit-scale (256 = 1.0x) from the source
+         * dimensions and apply it via lv_image_set_scale().  The widget
+         * bounding box must be sized to the SCALED output — without this,
+         * lv_image draws to an oversized box (native dims) anchored at the
+         * widget origin and the visible region ends up empty.  Touch on
+         * the image dismisses the preview in addition to the close
+         * button. */
+        lv_obj_t *img = lv_image_create(img_preview);
+        lv_image_set_src(img, &s_preview_dsc);
+        uint32_t w = s_preview_dsc.header.w;
+        uint32_t h = s_preview_dsc.header.h;
+        uint32_t scaled_w = w;
+        uint32_t scaled_h = h;
+        if (w && h) {
+            uint32_t sx = (SCREEN_W * 256u) / w;
+            uint32_t sy = (SCREEN_H * 256u) / h;
+            uint32_t s  = sx < sy ? sx : sy;
+            if (s == 0) s = 1;
+            if (s > 4096) s = 4096;
+            lv_image_set_scale(img, (uint16_t)s);
+            scaled_w = (w * s) / 256u;
+            scaled_h = (h * s) / 256u;
+        }
+        lv_obj_set_size(img, scaled_w, scaled_h);
+        lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_add_flag(img, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(img, cb_close_preview, LV_EVENT_CLICKED, NULL);
+    } else {
+        /* Decode failed — fall back to the filename text so the user at
+         * least sees what they tapped.  Same shape as the pre-fix
+         * placeholder, with an explicit "couldn't decode" note. */
+        const char *basename = strrchr(filepath, '/');
+        basename = basename ? basename + 1 : filepath;
+        char text[200];
+        snprintf(text, sizeof(text), "%s  %s\n\n(couldn't decode image)",
+                 LV_SYMBOL_IMAGE, basename);
+        lv_obj_t *lbl = lv_label_create(img_preview);
+        lv_label_set_text(lbl, text);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(lbl, SCREEN_W - 80);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(COL_WHITE), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 0);
+    }
 
     /* Close button */
     lv_obj_t *btn_close = lv_button_create(img_preview);
