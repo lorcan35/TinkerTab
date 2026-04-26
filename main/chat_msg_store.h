@@ -82,6 +82,12 @@ int chat_store_add(const chat_msg_t *msg);
 /** Current message count (0..BSP_CHAT_MAX_MESSAGES). */
 int chat_store_count(void);
 
+/** Audit B2 (TinkerBox #137 / TinkerTab #202): how many oldest-message
+ *  evictions have happened since boot.  Pre-fix the ring overwrote
+ *  silently; this counter lets the debug server / dashboard surface
+ *  whether a session ever scrolled past BSP_CHAT_MAX_MESSAGES. */
+uint32_t chat_store_evictions_total(void);
+
 /** Get message by logical index (0 = oldest, count-1 = newest). */
 const chat_msg_t *chat_store_get(int index);
 

@@ -23,6 +23,9 @@ static const char *TAG = "widget_store";
 /* PSRAM-backed store. One static pointer; allocated once at init. */
 static widget_t *s_widgets = NULL;
 static int       s_capacity = 0;
+/* Audit C4 (#202): observability for priority-weighted eviction. */
+static uint32_t  s_evictions_total = 0;
+static char      s_last_evicted_id[WIDGET_ID_LEN] = {0};
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -78,11 +81,21 @@ static widget_t *slot_for_new(void)
     }
 
     if (best_inactive) return best_inactive;
+    /* Audit C4 (#202): record the eviction for /info exposure so a
+     * skill-storm causing churn can be diagnosed without grep'ing
+     * serial logs. */
+    s_evictions_total++;
+    if (best_active) {
+        size_t n = sizeof(s_last_evicted_id) - 1;
+        strncpy(s_last_evicted_id, best_active->card_id, n);
+        s_last_evicted_id[n] = '\0';
+    }
     ESP_LOGW(TAG,
-             "store full -- evicting id=%s (priority=%u, score=%lu)",
+             "store full -- evicting id=%s (priority=%u, score=%lu, total_evictions=%lu)",
              best_active ? best_active->card_id : "?",
              best_active ? best_active->priority : 0,
-             (unsigned long)best_active_score);
+             (unsigned long)best_active_score,
+             (unsigned long)s_evictions_total);
     return best_active;
 }
 
@@ -290,4 +303,15 @@ widget_type_t widget_type_from_str(const char *s)
     if (!strcmp(s, "media"))  return WIDGET_TYPE_MEDIA;
     if (!strcmp(s, "prompt")) return WIDGET_TYPE_PROMPT;
     return WIDGET_TYPE_NONE;
+}
+
+/* Audit C4 (#202): observability accessors. */
+uint32_t widget_store_evictions_total(void)
+{
+    return s_evictions_total;
+}
+
+const char *widget_store_last_evicted_id(void)
+{
+    return s_last_evicted_id;
 }
