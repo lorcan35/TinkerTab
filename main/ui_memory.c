@@ -11,6 +11,7 @@
  */
 
 #include "ui_memory.h"
+#include "ui_keyboard.h"
 #include "ui_theme.h"
 #include "ui_home.h"
 #include "ui_core.h"
@@ -38,6 +39,13 @@ static lv_obj_t *s_back_btn   = NULL;
 static lv_obj_t *s_stats_lbl  = NULL;
 static lv_obj_t *s_hits_root  = NULL;   /* container that holds all hit rows */
 static lv_obj_t *s_loading    = NULL;   /* "Loading..." label while fetching */
+/* U6 (#206): live query plumbing.  s_pill_ta holds the typed query;
+ * s_pill_ghost is the placeholder shown only when the query is empty;
+ * s_query is the source-of-truth for the next /api/v1/memory call
+ * (read by fetch_task).  Empty s_query → list-all (the v4·D default). */
+static lv_obj_t *s_pill_ta    = NULL;
+static lv_obj_t *s_pill_ghost = NULL;
+static char      s_query[128] = "";
 static bool      s_visible    = false;
 static volatile bool s_fetch_inflight = false;
 
@@ -57,6 +65,11 @@ typedef struct {
 
 /* Shared buffer the fetch task hands off to the LVGL async callback. */
 static mem_fetch_result_t s_last_fetch;
+
+/* U6 (#206) — forward decls for the query-pill callbacks (defined below). */
+static void pill_clicked_cb(lv_event_t *e);
+static void pill_ta_ready_cb(lv_event_t *e);
+static void pill_ta_changed_cb(lv_event_t *e);
 
 /* ── UI helpers ─────────────────────────────────────────────────── */
 
@@ -209,6 +222,32 @@ static void render_hits_cb(void *arg)
 
 /* ── Fetch task (background FreeRTOS) ───────────────────────────── */
 
+/* U6 (#206): minimal query escape — just enough so a typed query like
+ * "tea time" or "alex's birthday" survives the URL.  Allowed alnum,
+ * dash, underscore, dot; everything else gets %HH-encoded.  Output
+ * truncated to fit dst (always NUL-terminated). */
+static void url_encode_q(char *dst, size_t dstn, const char *src)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t w = 0;
+    if (dstn == 0) return;
+    while (src && *src && w + 4 < dstn) {
+        unsigned char c = (unsigned char)*src++;
+        bool safe = (c >= '0' && c <= '9') ||
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= 'a' && c <= 'z') ||
+                    c == '-' || c == '_' || c == '.';
+        if (safe) {
+            dst[w++] = (char)c;
+        } else {
+            dst[w++] = '%';
+            dst[w++] = hex[(c >> 4) & 0xF];
+            dst[w++] = hex[c & 0xF];
+        }
+    }
+    dst[w] = 0;
+}
+
 static void fetch_task(void *pv)
 {
     (void)pv;
@@ -218,9 +257,21 @@ static void fetch_task(void *pv)
     uint16_t port = tab5_settings_get_dragon_port();
     if (port == 0) port = 3502;
 
-    char url[128];
-    snprintf(url, sizeof(url),
-             "http://%s:%u/api/v1/memory?limit=%d", host, port, MAX_HITS);
+    char url[256];
+    /* Snapshot the query so a re-tap during this fetch doesn't change
+     * the in-flight URL halfway through. */
+    char q_snapshot[128];
+    snprintf(q_snapshot, sizeof(q_snapshot), "%s", s_query);
+    if (q_snapshot[0]) {
+        char qenc[160];
+        url_encode_q(qenc, sizeof(qenc), q_snapshot);
+        snprintf(url, sizeof(url),
+                 "http://%s:%u/api/v1/memory?q=%s&limit=%d",
+                 host, port, qenc, MAX_HITS);
+    } else {
+        snprintf(url, sizeof(url),
+                 "http://%s:%u/api/v1/memory?limit=%d", host, port, MAX_HITS);
+    }
 
     esp_http_client_config_t cfg = {
         .url = url,
@@ -327,6 +378,38 @@ static void kick_fetch(void)
     }
 }
 
+/* ── U6 (#206): query pill click + textarea callbacks ──────────── */
+
+static void pill_clicked_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_pill_ta) ui_keyboard_show(s_pill_ta);
+}
+
+static void pill_ta_changed_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_pill_ta || !s_pill_ghost) return;
+    const char *txt = lv_textarea_get_text(s_pill_ta);
+    if (txt && txt[0]) lv_obj_add_flag(s_pill_ghost, LV_OBJ_FLAG_HIDDEN);
+    else               lv_obj_remove_flag(s_pill_ghost, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void pill_ta_ready_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_pill_ta) return;
+    const char *txt = lv_textarea_get_text(s_pill_ta);
+    snprintf(s_query, sizeof(s_query), "%s", txt ? txt : "");
+    /* Hide keyboard on submit so the user sees the hits land. */
+    ui_keyboard_hide();
+    if (s_loading) {
+        lv_label_set_text(s_loading, s_query[0] ? "Searching..." : "Loading facts...");
+        lv_obj_remove_flag(s_loading, LV_OBJ_FLAG_HIDDEN);
+    }
+    kick_fetch();
+}
+
 /* ── Public API ──────────────────────────────────────────────────── */
 
 void ui_memory_show(void)
@@ -389,7 +472,11 @@ void ui_memory_show(void)
     lv_obj_set_style_text_letter_space(s_stats_lbl, 3, 0);
     lv_obj_set_pos(s_stats_lbl, SIDE_PAD, 190);
 
-    /* Query pill (placeholder, not yet wired to a keyboard) */
+    /* Query pill — U6 (#206): real textarea wired to ui_keyboard.
+     *   tap pill → ui_keyboard_show(textarea) → user types
+     *   Done/Enter → LV_EVENT_READY → snapshot text into s_query +
+     *   kick a fresh /api/v1/memory?q=... fetch.
+     * Empty textarea shows the ghost "find anything..." placeholder. */
     lv_obj_t *pill = lv_obj_create(s_overlay);
     lv_obj_remove_style_all(pill);
     lv_obj_set_size(pill, SW - 2 * SIDE_PAD, 72);
@@ -400,17 +487,30 @@ void ui_memory_show(void)
     lv_obj_set_style_border_width(pill, 1, 0);
     lv_obj_set_style_border_color(pill, lv_color_hex(TH_CARD_BORDER), 0);
     lv_obj_clear_flag(pill, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *cur = lv_obj_create(pill);
-    lv_obj_remove_style_all(cur);
-    lv_obj_set_size(cur, 2, 36);
-    lv_obj_set_pos(cur, 18, 18);
-    lv_obj_set_style_bg_color(cur, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(cur, LV_OPA_COVER, 0);
-    lv_obj_t *q = lv_label_create(pill);
-    lv_label_set_text(q, "find anything you said to me...");
-    lv_obj_set_style_text_font(q, FONT_BODY, 0);
-    lv_obj_set_style_text_color(q, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_pos(q, 34, 26);
+    lv_obj_add_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(pill, pill_clicked_cb, LV_EVENT_CLICKED, NULL);
+
+    s_pill_ta = lv_textarea_create(pill);
+    lv_obj_remove_style_all(s_pill_ta);
+    lv_obj_set_size(s_pill_ta, SW - 2 * SIDE_PAD - 36, 48);
+    lv_obj_set_pos(s_pill_ta, 18, 12);
+    lv_textarea_set_one_line(s_pill_ta, true);
+    lv_textarea_set_text(s_pill_ta, s_query);
+    lv_obj_set_style_bg_opa(s_pill_ta, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_pill_ta, 0, 0);
+    lv_obj_set_style_text_font(s_pill_ta, FONT_BODY, 0);
+    lv_obj_set_style_text_color(s_pill_ta, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_pad_all(s_pill_ta, 0, 0);
+    lv_obj_add_event_cb(s_pill_ta, pill_ta_ready_cb,   LV_EVENT_READY,         NULL);
+    lv_obj_add_event_cb(s_pill_ta, pill_ta_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    s_pill_ghost = lv_label_create(pill);
+    lv_label_set_text(s_pill_ghost, "find anything you said to me...");
+    lv_obj_set_style_text_font(s_pill_ghost, FONT_BODY, 0);
+    lv_obj_set_style_text_color(s_pill_ghost, lv_color_hex(TH_TEXT_DIM), 0);
+    lv_obj_set_pos(s_pill_ghost, 18, 26);
+    if (s_query[0])
+        lv_obj_add_flag(s_pill_ghost, LV_OBJ_FLAG_HIDDEN);
 
     /* Hits container -- filled on async */
     s_hits_root = lv_obj_create(s_overlay);
@@ -435,6 +535,9 @@ void ui_memory_show(void)
 void ui_memory_hide(void)
 {
     if (!s_visible) return;
+    /* U6 (#206): if the keyboard is up for our pill, dismiss it so it
+     * doesn't linger over Home or whatever the next screen is. */
+    if (ui_keyboard_is_visible()) ui_keyboard_hide();
     if (s_overlay) lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     s_visible = false;
     ESP_LOGI(TAG, "memory overlay hidden");
