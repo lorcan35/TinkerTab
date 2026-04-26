@@ -58,6 +58,9 @@ void chat_input_bar_clear(chat_input_bar_t *b);
 /* Event wiring */
 void chat_input_bar_on_ball_tap(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud);
 void chat_input_bar_on_keyboard(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud);
+/** U11 (#206): tap on the camera affordance in the pill.  Caller
+ *  decides what to do (typically open the camera screen). */
+void chat_input_bar_on_camera(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud);
 /** Fires on keyboard "Done" or equivalent. Text pointer is LVGL-owned;
  *  callback must copy if it needs it beyond the call. */
 void chat_input_bar_on_text_submit(chat_input_bar_t *b, chat_input_submit_cb_t cb, void *ud);

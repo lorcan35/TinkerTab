@@ -60,3 +60,10 @@ void ui_chat_update_last_message(const char *text);
  * if the view is not mounted.
  */
 void ui_chat_refresh_receipts(void);
+
+/**
+ * U12 (#206): show/hide the live STT partial caption above the input
+ * pill.  Pass NULL or "" to hide.  Thread-safe (lv_async_call hop) so
+ * voice.c can call it from the WS task on every stt_partial frame.
+ */
+void ui_chat_show_partial(const char *partial);

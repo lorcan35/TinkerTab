@@ -33,6 +33,7 @@ struct chat_input_bar {
     lv_obj_t *ghost;          /* placeholder text */
     lv_obj_t *cursor;          /* blinking caret */
     lv_obj_t *kb_btn;          /* 56×56 keyboard affordance */
+    lv_obj_t *cam_btn;         /* U11 (#206): 56×56 camera affordance */
     lv_obj_t *textarea;        /* hidden textarea used by ui_keyboard_show */
     lv_obj_t *partial;         /* optional STT partial line above the pill */
     lv_timer_t *cursor_blink;
@@ -47,6 +48,7 @@ struct chat_input_bar {
 
     chat_input_evt_cb_t   ball_cb;     void *ball_ud;
     chat_input_evt_cb_t   kb_cb;       void *kb_ud;
+    chat_input_evt_cb_t   cam_cb;      void *cam_ud;     /* U11 (#206) */
     chat_input_submit_cb_t submit_cb;   void *submit_ud;
     chat_input_evt_cb_t   pill_cb;     void *pill_ud;
 };
@@ -140,6 +142,11 @@ static void ev_kb_tap(lv_event_t *e)
     chat_input_bar_t *b = lv_event_get_user_data(e);
     if (b && b->kb_cb) b->kb_cb(b->kb_ud);
 }
+static void ev_cam_tap(lv_event_t *e)
+{
+    chat_input_bar_t *b = lv_event_get_user_data(e);
+    if (b && b->cam_cb) b->cam_cb(b->cam_ud);
+}
 static void ev_pill_tap(lv_event_t *e)
 {
     chat_input_bar_t *b = lv_event_get_user_data(e);
@@ -218,7 +225,10 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, int parent_h)
      * the ghost label + blinking cursor. */
     b->textarea = lv_textarea_create(b->pill);
     lv_obj_remove_style_all(b->textarea);
-    lv_obj_set_size(b->textarea, PILL_W - PILL_TEXT_X - PILL_KB_SZ - 20, 48);
+    /* U11 (#206): textarea shrinks by another (PILL_KB_SZ + 12) to make
+     * room for the camera button next to the keyboard button. */
+    lv_obj_set_size(b->textarea,
+        PILL_W - PILL_TEXT_X - 2 * PILL_KB_SZ - 32, 48);
     lv_obj_set_pos(b->textarea, PILL_TEXT_X, (PILL_H - 48) / 2);
     lv_textarea_set_one_line(b->textarea, true);
     lv_textarea_set_placeholder_text(b->textarea, "");
@@ -264,6 +274,29 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, int parent_h)
     lv_obj_set_style_text_font(kb_lbl, FONT_BODY, 0);
     lv_obj_set_style_text_color(kb_lbl, lv_color_hex(TH_TEXT_BODY), 0);
     lv_obj_center(kb_lbl);
+
+    /* U11 (#206): camera affordance — 56x56 elevated card just left of
+     * the keyboard button.  Tap routes to the cam_cb (typically opens
+     * the camera screen). */
+    b->cam_btn = lv_obj_create(b->pill);
+    lv_obj_remove_style_all(b->cam_btn);
+    lv_obj_set_size(b->cam_btn, PILL_KB_SZ, PILL_KB_SZ);
+    lv_obj_set_pos(b->cam_btn,
+                   PILL_W - 2 * PILL_KB_SZ - 12 - 12,
+                   (PILL_H - PILL_KB_SZ) / 2);
+    lv_obj_set_style_bg_color(b->cam_btn, lv_color_hex(TH_CARD_ELEVATED), 0);
+    lv_obj_set_style_bg_opa(b->cam_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(b->cam_btn, 18, 0);
+    lv_obj_set_style_border_width(b->cam_btn, 1, 0);
+    lv_obj_set_style_border_color(b->cam_btn, lv_color_hex(0x1E1E2A), 0);
+    lv_obj_add_flag(b->cam_btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(b->cam_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(b->cam_btn, ev_cam_tap, LV_EVENT_CLICKED, b);
+    lv_obj_t *cam_lbl = lv_label_create(b->cam_btn);
+    lv_label_set_text(cam_lbl, LV_SYMBOL_IMAGE);
+    lv_obj_set_style_text_font(cam_lbl, FONT_BODY, 0);
+    lv_obj_set_style_text_color(cam_lbl, lv_color_hex(TH_TEXT_BODY), 0);
+    lv_obj_center(cam_lbl);
 
     /* Partial-caption label above the pill, hidden by default. */
     b->partial = lv_label_create(parent);
@@ -368,6 +401,8 @@ void chat_input_bar_on_keyboard(chat_input_bar_t *b, chat_input_evt_cb_t cb, voi
 
 void chat_input_bar_on_text_submit(chat_input_bar_t *b, chat_input_submit_cb_t cb, void *ud)
 { if (b) { b->submit_cb = cb; b->submit_ud = ud; } }
+void chat_input_bar_on_camera(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud)
+{ if (b) { b->cam_cb = cb; b->cam_ud = ud; } }
 
 void chat_input_bar_on_pill_tap(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud)
 { if (b) { b->pill_cb = cb; b->pill_ud = ud; } }

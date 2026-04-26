@@ -252,6 +252,21 @@ static void on_pill_tap(void *ud)
     if (s_input) ui_keyboard_show(chat_input_bar_get_textarea(s_input));
 }
 
+/* U11 (#206): camera affordance in the chat composer.  No
+ * photo-upload protocol exists yet, so the simplest useful
+ * behaviour is to navigate to the camera screen — capture there
+ * already saves to /sdcard/IMG_NNNN.jpg, and the file browser
+ * preview (U4) lets the user open the result.  When the upload
+ * protocol lands this stays the entry point. */
+static void on_camera_tap(void *ud)
+{
+    (void)ud;
+    extern lv_obj_t *ui_camera_create(void);
+    /* Hide chat first so the camera viewfinder owns the screen. */
+    ui_chat_hide();
+    ui_camera_create();
+}
+
 static void on_text_submit(const char *text, void *ud)
 {
     (void)ud;
@@ -503,6 +518,7 @@ lv_obj_t *ui_chat_create(void)
     chat_input_bar_on_keyboard(s_input, on_keyboard, NULL);
     chat_input_bar_on_pill_tap(s_input, on_pill_tap, NULL);
     chat_input_bar_on_text_submit(s_input, on_text_submit, NULL);
+    chat_input_bar_on_camera(s_input, on_camera_tap, NULL);
 
     s_sugg = chat_suggestions_create(s_overlay);
     chat_suggestions_on_pick(s_sugg, on_sugg_pick, NULL);
@@ -973,6 +989,29 @@ static void audio_clip_dl_job(void *arg)
         extern void ui_home_show_toast(const char *text);
         ui_home_show_toast("Couldn't fetch audio");
     }
+}
+
+/* U12 (#206): live STT-partial caption above the chat pill.
+ * Thread-safe — voice.c calls it from the WS task on every stt_partial
+ * frame.  We strdup so the WS buffer is free to be reused, then
+ * lv_async_call hops to the LVGL thread for the actual label update. */
+static void async_set_partial_cb(void *arg)
+{
+    char *txt = (char *)arg;
+    if (s_input) chat_input_bar_show_partial(s_input, txt);
+    free(txt);
+}
+
+void ui_chat_show_partial(const char *partial)
+{
+    /* NULL/empty → hide.  Skip the strdup hop — pass NULL through. */
+    if (!partial || !*partial) {
+        lv_async_call(async_set_partial_cb, NULL);
+        return;
+    }
+    char *copy = strdup(partial);
+    if (!copy) return;
+    lv_async_call(async_set_partial_cb, copy);
 }
 
 void ui_chat_play_audio_clip(const char *url)
