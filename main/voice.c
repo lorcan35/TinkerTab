@@ -111,6 +111,13 @@ static const char *TAG = "tab5_voice";
 // immediately pinning to ngrok on a simple server restart.
 #define NGROK_FALLBACK_THRESHOLD 4
 
+/* γ3-Tab5 (issue #198): stop retrying after this many consecutive
+ * 401 handshake failures.  3 is tight enough that a misconfigured
+ * device doesn't burn battery / log noise / ngrok bandwidth, but
+ * loose enough to absorb a transient 401 during a token-rotation
+ * race on Dragon restart. */
+#define WS_AUTH_FAIL_THRESHOLD 3
+
 // Mic capture task — needs room for AFE feed buffer (960 int16 = 1.9KB) + TDM diagnostics
 #define MIC_TASK_STACK_SIZE    8192
 #define MIC_TASK_PRIORITY      5
@@ -173,6 +180,7 @@ static volatile bool s_initialized        = false;
 static volatile bool s_started            = false;  /* esp_websocket_client_start() has been called */
 static volatile bool s_disconnecting      = false;  /* US-C21: guard against connect-during-disconnect race */
 static volatile int  s_handshake_fail_cnt = 0;      /* consecutive handshake failures — trigger ngrok fallback in auto mode */
+static volatile int  s_auth_fail_cnt      = 0;      /* γ3-Tab5 (issue #198): consecutive 401s — trigger stop-retry after WS_AUTH_FAIL_THRESHOLD */
 /* v4·D connectivity audit T1.1: reconnect backoff state.  Counts
  * attempts since the last successful CONNECTED event.  Applied via
  * esp_websocket_client_set_reconnect_timeout inside the ERROR /
@@ -608,6 +616,23 @@ static void _voice_stop_ws_worker_fn(void *arg)
     (void)arg;
     if (s_ws) {
         ESP_LOGW(TAG, "device_evicted worker: stopping WS client now");
+        esp_websocket_client_stop(s_ws);
+    }
+}
+
+/* γ3-Tab5 (issue #198): worker for the auth-failed stop path.
+ * Same task-hop pattern as _voice_stop_ws_worker_fn — must run
+ * off the WS task or esp_websocket_client_stop() no-ops.
+ * Separate function (not shared with the eviction worker) so the
+ * ESP_LOG line clearly identifies WHICH path triggered the stop —
+ * makes ops triage on a misconfigured-token device much easier
+ * than a generic "stop_ws" trace. */
+static void _voice_auth_fail_stop_worker_fn(void *arg)
+{
+    (void)arg;
+    if (s_ws) {
+        ESP_LOGW(TAG, "auth_failed worker: stopping WS after %d consecutive 401s",
+                 s_auth_fail_cnt);
         esp_websocket_client_stop(s_ws);
     }
 }
@@ -1583,6 +1608,12 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         /* US-C02: bump session gen on every successful connect. */
         s_session_gen++;
         s_handshake_fail_cnt = 0;
+        /* γ3-Tab5 (issue #198): clear the auth-fail counter on a
+         * successful connect so a transient 401 (e.g. a token-rotation
+         * race during Dragon restart) doesn't get sticky after Dragon
+         * recovers.  Only a sustained run of 401s should trip the
+         * stop-retry — recovery must self-heal. */
+        s_auth_fail_cnt = 0;
         /* T1.1: reset backoff state on every successful connect so a
          * long-running healthy session doesn't get hit with a 30 s
          * delay on its first blip. */
@@ -1776,6 +1807,48 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
             uint32_t half = exp_ms / 2;
             uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
             esp_websocket_client_set_reconnect_timeout(s_ws, half + jitter);
+        }
+
+        /* γ3-Tab5 (issue #198): 401 specifically means auth failed —
+         * burning the auth-fail counter every retry will pin the
+         * device against ngrok forever (wrong-token devices used to
+         * loop 401s on both LAN and ngrok endpoints, eating battery
+         * + ngrok bandwidth + log storage).  After WS_AUTH_FAIL_THRESHOLD
+         * consecutive 401s, stop the WS client + show a toast pointing
+         * at Settings.  s_auth_fail_cnt resets on a successful CONNECT
+         * so a transient 401 (token-rotation race during Dragon
+         * restart) doesn't get sticky after recovery.
+         *
+         * Filter on status alone — NOT on
+         * `et == WEBSOCKET_ERROR_TYPE_HANDSHAKE`.  Empirically (live
+         * test on real device against PROD :3502 with rotated token)
+         * a clean 401 from Dragon arrives as `et=1`
+         * (WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT) because the underlying
+         * TCP transport completed successfully — the 401 happens at
+         * the application layer.  Gating on HANDSHAKE here meant the
+         * counter never incremented and the loop ran forever. */
+        if (status == 401) {
+            s_auth_fail_cnt++;
+            ESP_LOGW(TAG, "WS: 401 auth_failed (count=%d/%d)",
+                     s_auth_fail_cnt, WS_AUTH_FAIL_THRESHOLD);
+            if (s_auth_fail_cnt >= WS_AUTH_FAIL_THRESHOLD && !s_disconnecting) {
+                ESP_LOGE(TAG, "WS: %d consecutive 401s — stopping retry loop",
+                         s_auth_fail_cnt);
+                s_disconnecting = true;
+                /* Hop to worker task — esp_websocket_client_stop()
+                 * rejects calls from the WS task itself.  Same pattern
+                 * as the γ2-H8 device_evicted handler. */
+                tab5_worker_enqueue(_voice_auth_fail_stop_worker_fn, NULL,
+                                    "auth_failed_stop");
+                /* Toast routes to LVGL via voice_async_toast (existing
+                 * helper used elsewhere in the file).  strdup so the
+                 * buffer outlives this stack frame. */
+                char *toast = strdup("Invalid Dragon token — check Settings");
+                if (toast) {
+                    voice_async_toast(toast);
+                }
+                break;
+            }
         }
 
         /* Handshake failure → try ngrok fallback (only in conn_mode=auto,
