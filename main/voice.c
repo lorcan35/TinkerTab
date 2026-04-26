@@ -717,6 +717,12 @@ static void handle_text_message(const char *data, int len)
 
     if (strcmp(type_str, "stt_partial") == 0) {
         cJSON *text = cJSON_GetObjectItem(root, "text");
+        /* U12 (#206): regardless of dictation mode, surface the partial
+         * as a live caption above the chat input pill.  No-op when chat
+         * is closed (s_input is NULL inside ui_chat). */
+        if (cJSON_IsString(text) && text->valuestring) {
+            ui_chat_show_partial(text->valuestring);
+        }
         if (cJSON_IsString(text) && text->valuestring && s_voice_mode == VOICE_MODE_DICTATE
             && s_dictation_text) {
             /* v4·D audit P1 fix: use bounded copy instead of unchecked
@@ -741,6 +747,9 @@ static void handle_text_message(const char *data, int len)
         }
     } else if (strcmp(type_str, "stt") == 0) {
         cJSON *text = cJSON_GetObjectItem(root, "text");
+        /* U12 (#206): final STT result lands as a real chat bubble — clear
+         * the live partial caption so it doesn't linger above the pill. */
+        ui_chat_show_partial(NULL);
         if (cJSON_IsString(text) && text->valuestring) {
             if (s_voice_mode == VOICE_MODE_DICTATE) {
                 if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);

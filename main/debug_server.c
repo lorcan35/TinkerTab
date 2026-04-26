@@ -2601,6 +2601,25 @@ static esp_err_t chat_messages_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* ── POST /chat/partial?text=<> ─────────────────────────────────
+ * U12 (#206) verification helper: shove a string into the live
+ * STT-partial caption above the chat input pill.  Empty text hides. */
+extern void ui_chat_show_partial(const char *partial);
+static void url_pct_decode_inplace(char *s);   /* defined further below */
+static esp_err_t chat_partial_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[256] = {0}, text[160] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "text", text, sizeof(text));
+    url_pct_decode_inplace(text);
+    ui_chat_show_partial(text[0] ? text : NULL);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "text", text);
+    return send_json_resp(req, root);
+}
+
 /* ── POST /tool_log/push?name=&detail=&ms= ──────────────────────
  * U7+U8 (#206) verification helper: forge a tool_log event so the
  * agents/focus surfaces can be exercised without a live Dragon LLM
@@ -2609,7 +2628,6 @@ static esp_err_t chat_messages_handler(httpd_req_t *req)
  * a paired call+result. */
 extern void tool_log_push_call(const char *name, const char *detail);
 extern void tool_log_push_result(const char *name, uint32_t exec_ms);
-static void url_pct_decode_inplace(char *s);   /* defined just below */
 
 static esp_err_t tool_log_push_handler(httpd_req_t *req)
 {
@@ -2967,6 +2985,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_chat_msgs      = { .uri = "/chat/messages",  .method = HTTP_GET,  .handler = chat_messages_handler };
     const httpd_uri_t uri_chat_audio     = { .uri = "/chat/audio_clip",.method = HTTP_POST, .handler = chat_audio_clip_handler };
     const httpd_uri_t uri_tool_push      = { .uri = "/tool_log/push",  .method = HTTP_POST, .handler = tool_log_push_handler };
+    const httpd_uri_t uri_chat_partial   = { .uri = "/chat/partial",   .method = HTTP_POST, .handler = chat_partial_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
 
@@ -3016,6 +3035,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_chat_msgs);
     httpd_register_uri_handler(server, &uri_chat_audio);
     httpd_register_uri_handler(server, &uri_tool_push);
+    httpd_register_uri_handler(server, &uri_chat_partial);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
 
