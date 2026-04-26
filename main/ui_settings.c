@@ -531,6 +531,11 @@ static void cb_conn_mode(lv_event_t *e)
     tab5_settings_set_connection_mode((uint8_t)sel);
     ESP_LOGI(TAG, "Connection mode: %d (%s)",
              (int)sel, sel == 0 ? "auto" : sel == 1 ? "local" : "remote");
+    /* U21 (#206): re-target the live WS URI so the new mode (esp.
+     * "Internet Only") takes effect immediately.  Without this, the
+     * existing WS stays on whatever URI was picked at boot and the
+     * dropdown change is purely cosmetic until next power-cycle. */
+    voice_reapply_connection_mode();
 }
 
 /* ── Dragon host ────────────────────────────────────────────────────── */

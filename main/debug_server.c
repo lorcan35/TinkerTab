@@ -1287,6 +1287,11 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
         if (m >= 0 && m <= 2) {
             if (tab5_settings_set_connection_mode((uint8_t)m) == ESP_OK) {
                 cJSON_AddItemToArray(updated, cJSON_CreateString("conn_mode"));
+                /* U21 (#206): re-target the live WS URI so a remote
+                 * change to "Internet Only"/"Local Only" lands without
+                 * waiting for the user to power-cycle. */
+                extern void voice_reapply_connection_mode(void);
+                voice_reapply_connection_mode();
             }
         }
     }

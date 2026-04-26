@@ -177,3 +177,9 @@ bool voice_is_connected(void);
  *  Call when the user actively interacts (e.g., taps the orb) while disconnected.
  *  This bypasses the watchdog delay so the user doesn't wait up to 60s. */
 void voice_force_reconnect(void);
+
+/** U21 (#206): re-evaluate the NVS conn_m setting and re-target the
+ *  WebSocket URI accordingly.  Call after \c tab5_settings_set_connection_mode()
+ *  so an Internet-Only / LAN-Only switch takes effect immediately
+ *  instead of waiting for the user to power-cycle. */
+void voice_reapply_connection_mode(void);

@@ -3234,6 +3234,31 @@ void voice_force_reconnect(void)
     s_started = true;
 }
 
+/* U21 (#206): re-pick the WebSocket URI from the current conn_m
+ * setting.  Without this, switching "Internet Only" in Settings only
+ * lands on the next manual power-cycle -- the live WS stays on whatever
+ * URI it was started with (LAN if conn_m used to be 0/1).
+ *
+ * voice_ws_start_client reads conn_m fresh and picks ngrok vs LAN, so
+ * we just hand it the configured Dragon host/port and let it do the
+ * stop-set_uri-start dance. */
+void voice_reapply_connection_mode(void)
+{
+    if (!s_initialized || !s_ws) {
+        ESP_LOGW(TAG, "reapply_connection_mode: client not ready");
+        return;
+    }
+    char host[64] = {0};
+    tab5_settings_get_dragon_host(host, sizeof(host));
+    if (!host[0]) {
+        snprintf(host, sizeof(host), "%s", TAB5_DRAGON_HOST);
+    }
+    uint16_t port = tab5_settings_get_dragon_port();
+    if (port == 0) port = TAB5_DRAGON_PORT;
+    ESP_LOGI(TAG, "Re-applying connection mode (LAN target=%s:%u)", host, port);
+    voice_ws_start_client(host, port);
+}
+
 bool voice_is_connected(void)
 {
     return s_ws && esp_websocket_client_is_connected(s_ws);
