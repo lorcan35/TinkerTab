@@ -1999,6 +1999,154 @@ static esp_err_t chat_handler(httpd_req_t *req)
     return ret;
 }
 
+/* Forward decl — definition is further down the file. */
+static esp_err_t send_json_resp(httpd_req_t *req, cJSON *root);
+
+/* ── POST /input/text — type into the focused LVGL textarea (#296) ────
+ *
+ * Body: {"text": "string", "submit": true|false}
+ * (Also accepts ?text= and ?submit= query params for short payloads.)
+ *
+ * Walks lv_screen_active() + lv_layer_top() looking for textareas; if
+ * one has LV_STATE_FOCUSED that wins, otherwise picks the first
+ * textarea found (deepest-first via recursion).  When `submit` is
+ * true, dispatches LV_EVENT_READY after the write — same path the
+ * keyboard's Done key takes for form submission.
+ *
+ * Returns:
+ *   {"ok": true,  "accepted": N, "submitted": bool, "widget": "0x…"}
+ *   {"ok": false, "error": "no_textarea"}
+ */
+typedef struct {
+    lv_obj_t *focused;
+    lv_obj_t *fallback;
+} find_ta_ctx_t;
+
+static void find_ta_walk(lv_obj_t *node, find_ta_ctx_t *ctx)
+{
+    if (!node) return;
+    /* lv_obj_check_type uses class pointer comparison; the
+     * lv_textarea_class symbol is exported by the LVGL textarea unit. */
+    extern const lv_obj_class_t lv_textarea_class;
+    if (lv_obj_check_type(node, &lv_textarea_class)) {
+        if (!ctx->fallback) ctx->fallback = node;
+        if (lv_obj_has_state(node, LV_STATE_FOCUSED)) ctx->focused = node;
+    }
+    uint32_t n = lv_obj_get_child_count(node);
+    for (uint32_t i = 0; i < n && !ctx->focused; i++) {
+        find_ta_walk(lv_obj_get_child(node, i), ctx);
+    }
+}
+
+typedef struct {
+    char text[1024];
+    bool submit;
+    /* Reply slot — written by the LVGL-thread executor. */
+    bool ok;
+    int  accepted;
+    bool submitted;
+    void *widget;
+    char  err[40];
+    SemaphoreHandle_t done;
+} input_text_args_t;
+
+static void input_text_apply_lvgl(void *arg)
+{
+    input_text_args_t *a = (input_text_args_t *)arg;
+    find_ta_ctx_t ctx = {0};
+    /* Walk active screen + lv_layer_top so overlays count. */
+    find_ta_walk(lv_screen_active(), &ctx);
+    if (!ctx.focused) find_ta_walk(lv_layer_top(), &ctx);
+    lv_obj_t *ta = ctx.focused ? ctx.focused : ctx.fallback;
+    if (!ta) {
+        a->ok = false;
+        snprintf(a->err, sizeof(a->err), "no_textarea");
+    } else {
+        lv_textarea_set_text(ta, a->text);
+        a->ok = true;
+        a->accepted = (int)strlen(a->text);
+        a->widget = ta;
+        if (a->submit) {
+            lv_obj_send_event(ta, LV_EVENT_READY, NULL);
+            a->submitted = true;
+        }
+    }
+    xSemaphoreGive(a->done);
+}
+
+static esp_err_t input_text_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    input_text_args_t a = {0};
+    a.done = xSemaphoreCreateBinary();
+    if (!a.done) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"oom\"}");
+        return ESP_OK;
+    }
+
+    /* Query string first (small payloads). */
+    char query[1280] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        httpd_query_key_value(query, "text", a.text, sizeof(a.text));
+        char sv[8] = {0};
+        if (httpd_query_key_value(query, "submit", sv, sizeof(sv)) == ESP_OK) {
+            a.submit = (sv[0] == '1' || sv[0] == 't');
+        }
+    }
+
+    /* Body fallback (JSON). */
+    if (a.text[0] == '\0') {
+        int total = req->content_len;
+        if (total > 0 && total < 4096) {
+            char *body = heap_caps_malloc(total + 1, MALLOC_CAP_SPIRAM);
+            if (body) {
+                int got = 0;
+                while (got < total) {
+                    int r = httpd_req_recv(req, body + got, total - got);
+                    if (r <= 0) break;
+                    got += r;
+                }
+                body[got] = '\0';
+                cJSON *root = cJSON_Parse(body);
+                heap_caps_free(body);
+                if (root) {
+                    cJSON *t = cJSON_GetObjectItem(root, "text");
+                    cJSON *s = cJSON_GetObjectItem(root, "submit");
+                    if (cJSON_IsString(t) && t->valuestring) {
+                        snprintf(a.text, sizeof(a.text), "%s", t->valuestring);
+                    }
+                    if (cJSON_IsBool(s)) a.submit = cJSON_IsTrue(s);
+                    cJSON_Delete(root);
+                }
+            }
+        }
+    }
+
+    /* Even an empty string is a valid clear-the-field operation, so
+     * we don't reject; just dispatch. */
+    tab5_lv_async_call(input_text_apply_lvgl, &a);
+    /* Wait for the LVGL-thread to fill the reply (cap at 2 s — should
+     * be sub-millisecond in practice). */
+    xSemaphoreTake(a.done, pdMS_TO_TICKS(2000));
+    vSemaphoreDelete(a.done);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", a.ok);
+    if (a.ok) {
+        cJSON_AddNumberToObject(root, "accepted", a.accepted);
+        cJSON_AddBoolToObject(root, "submitted", a.submitted);
+        char wbuf[20];
+        snprintf(wbuf, sizeof(wbuf), "%p", a.widget);
+        cJSON_AddStringToObject(root, "widget", wbuf);
+    } else {
+        cJSON_AddStringToObject(root, "error",
+                                a.err[0] ? a.err : "unknown");
+    }
+    return send_json_resp(req, root);
+}
+
 /* ── Wi-Fi kick endpoint (test harness) ──────────────────────────────── */
 /* POST /wifi/kick?mode=soft|hard|reboot — force the escalation tiers
  * from #146.  Used by the test harness to verify recovery paths without
@@ -2906,6 +3054,14 @@ static esp_err_t events_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* #296 follow-up: a `block_until=<kind>&timeout_ms=N` long-poll
+ * variant of /events was experimentally added and reverted.  ESP-IDF
+ * httpd is single-task — the long-poll vTaskDelay blocked all other
+ * debug-server requests for the wait duration, and a multi-minute
+ * test run accumulated enough heap churn from the per-iteration
+ * cJSON alloc/free to crash the device with a PANIC reset.  Polling
+ * /events at 250-500 ms from the harness side is the safe pattern. */
+
 /* ── GET /heap/history?n=60 ─────────────────────────────────────── */
 static esp_err_t heap_history_handler(httpd_req_t *req)
 {
@@ -3384,6 +3540,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_chat = {
         .uri = "/chat", .method = HTTP_POST, .handler = chat_handler
     };
+    const httpd_uri_t uri_input_text = {
+        .uri = "/input/text", .method = HTTP_POST, .handler = input_text_handler
+    };
     const httpd_uri_t uri_screen = {
         .uri = "/screen", .method = HTTP_GET, .handler = screen_state_handler
     };
@@ -3492,6 +3651,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);
     httpd_register_uri_handler(server, &uri_chat);
+    httpd_register_uri_handler(server, &uri_input_text);
     httpd_register_uri_handler(server, &uri_screen);
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
