@@ -121,6 +121,14 @@ esp_err_t voice_ws_send_binary_public(const void *data, size_t len);
 esp_err_t voice_call_audio_start(void);
 esp_err_t voice_call_audio_stop(void);
 
+/** #280: in-call mute toggle.  When muted, the mic loop still runs
+ *  (counters tick, RMS keeps updating) but PCM chunks are dropped
+ *  instead of being wrapped + sent — peer hears silence, our mic
+ *  state is preserved.  Idempotent.  No-op when not in
+ *  VOICE_MODE_CALL.  Returns the new muted state. */
+bool voice_call_audio_set_muted(bool muted);
+bool voice_call_audio_is_muted(void);
+
 /** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 

@@ -261,6 +261,9 @@ static char s_vision_model[64] = {0};
 
 // Dictation mode
 static voice_mode_t   s_voice_mode        = VOICE_MODE_ASK;
+/* #280: in-call mute flag (definition near other state; the body
+ * lives next to voice_call_audio_set_muted/_is_muted further down). */
+static volatile bool s_call_muted = false;
 static char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
 static volatile float s_current_rms       = 0.0f;
 static char           s_dictation_title[128]   = {0};
@@ -2175,17 +2178,25 @@ static void mic_capture_task(void *arg)
                                                        &send_bytes);
             if (cerr == ESP_OK && send_bytes > 0) {
                 if (s_voice_mode == VOICE_MODE_CALL) {
-                    /* #272: wrap with AUD0 magic so Dragon broadcasts
-                     * to the call peer instead of feeding STT.  Stack-
-                     * allocated — mic task has 16 KB stack, plenty of
-                     * headroom for a 648 B packet. */
-                    uint8_t call_pkt[VOICE_CHUNK_BYTES + VOICE_CALL_AUDIO_HEADER_LEN];
-                    size_t wire_len = voice_codec_pack_call_audio(
-                        call_pkt, sizeof(call_pkt), enc_buf, send_bytes);
-                    if (wire_len > 0) {
-                        err = voice_ws_send_binary(call_pkt, wire_len);
+                    /* #280: drop the chunk silently when muted.  Mic
+                     * loop continues running so RMS / counters stay
+                     * fresh — only the WS send is suppressed.  Peer
+                     * hears silence; our state is preserved. */
+                    if (s_call_muted) {
+                        err = ESP_OK;
                     } else {
-                        err = ESP_ERR_NO_MEM;
+                        /* #272: wrap with AUD0 magic so Dragon broadcasts
+                         * to the call peer instead of feeding STT.  Stack-
+                         * allocated — mic task has 16 KB stack, plenty of
+                         * headroom for a 648 B packet. */
+                        uint8_t call_pkt[VOICE_CHUNK_BYTES + VOICE_CALL_AUDIO_HEADER_LEN];
+                        size_t wire_len = voice_codec_pack_call_audio(
+                            call_pkt, sizeof(call_pkt), enc_buf, send_bytes);
+                        if (wire_len > 0) {
+                            err = voice_ws_send_binary(call_pkt, wire_len);
+                        } else {
+                            err = ESP_ERR_NO_MEM;
+                        }
                     }
                 } else {
                     err = voice_ws_send_binary(enc_buf, send_bytes);
@@ -3034,6 +3045,26 @@ esp_err_t voice_call_audio_start(void)
     return ESP_OK;
 }
 
+/* #280: muted-but-running flag for the call audio uplink.  Read by
+ * mic_capture_task in the VOICE_MODE_CALL branch — when set, the
+ * encoded chunk is dropped instead of being wrapped + sent.  Storage
+ * lives with the other static state near the top of this file. */
+
+bool voice_call_audio_set_muted(bool muted)
+{
+    if (s_voice_mode != VOICE_MODE_CALL) {
+        return false;     /* no-op outside a call */
+    }
+    s_call_muted = muted;
+    ESP_LOGI(TAG, "Call audio %s", muted ? "MUTED" : "UNMUTED");
+    return s_call_muted;
+}
+
+bool voice_call_audio_is_muted(void)
+{
+    return s_call_muted;
+}
+
 esp_err_t voice_call_audio_stop(void)
 {
     if (s_voice_mode != VOICE_MODE_CALL || !s_mic_running) {
@@ -3041,6 +3072,9 @@ esp_err_t voice_call_audio_stop(void)
     }
     ESP_LOGI(TAG, "Stopping call audio");
     s_mic_running = false;
+    /* Leaving call mode resets mute state so the next call starts
+     * unmuted (sane default). */
+    s_call_muted = false;
 
     /* Same drain pattern as voice_stop_listening — wait for the mic
      * task to exit cleanly, then re-enable I2S RX so a follow-up

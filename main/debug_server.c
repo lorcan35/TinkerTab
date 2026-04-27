@@ -2210,6 +2210,7 @@ static esp_err_t call_status_handler(httpd_req_t *req)
     cJSON_AddStringToObject(aud, "voice_mode_name",
         (vmode < (sizeof(mode_names)/sizeof(mode_names[0]))) ? mode_names[vmode] : "?");
     cJSON_AddBoolToObject(aud, "call_audio_active", vmode == VOICE_MODE_CALL);
+    cJSON_AddBoolToObject(aud, "call_audio_muted",  voice_call_audio_is_muted());
 
     /* Heap snapshot — the heap_wd reset after start_call exhausted
      * SRAM, so always show internal-largest here for context. */
@@ -2254,6 +2255,27 @@ static esp_err_t video_call_end_handler(httpd_req_t *req)
     voice_video_end_call();
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", true);
+    return send_json_resp(req, root);
+}
+
+/* #280: in-call mute toggle.  POST /call/mute or POST /call/unmute. */
+static esp_err_t call_mute_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    bool muted = voice_call_audio_set_muted(true);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddBoolToObject(root, "muted", muted);
+    return send_json_resp(req, root);
+}
+
+static esp_err_t call_unmute_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    bool muted = voice_call_audio_set_muted(false);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddBoolToObject(root, "muted", muted);
     return send_json_resp(req, root);
 }
 
@@ -3327,6 +3349,12 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_call_status = {
         .uri = "/call/status",      .method = HTTP_GET,  .handler = call_status_handler
     };
+    const httpd_uri_t uri_call_mute = {
+        .uri = "/call/mute",        .method = HTTP_POST, .handler = call_mute_handler
+    };
+    const httpd_uri_t uri_call_unmute = {
+        .uri = "/call/unmute",      .method = HTTP_POST, .handler = call_unmute_handler
+    };
     const httpd_uri_t uri_dictation_post = {
         .uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler
     };
@@ -3399,6 +3427,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_video_call_start);
     httpd_register_uri_handler(server, &uri_video_call_end);
     httpd_register_uri_handler(server, &uri_call_status);
+    httpd_register_uri_handler(server, &uri_call_mute);
+    httpd_register_uri_handler(server, &uri_call_unmute);
     httpd_register_uri_handler(server, &uri_dictation_post);
     httpd_register_uri_handler(server, &uri_dictation_get);
     httpd_register_uri_handler(server, &uri_wifi_kick);

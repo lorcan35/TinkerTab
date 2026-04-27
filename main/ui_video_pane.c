@@ -18,10 +18,13 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 
 #include "ui_home.h"
 #include "camera.h"
 #include "settings.h"
+#include "voice.h"          /* #280: mute toggle */
+#include "voice_video.h"    /* #280: downlink frame stats for status */
 
 static const char *TAG = "ui_video_pane";
 
@@ -40,6 +43,12 @@ static const char *TAG = "ui_video_pane";
 
 #define PIP_FPS_MS 200   /* 5 fps */
 
+/* #280: mute pill top-right + status badge top-center. */
+#define MUTE_W      96
+#define MUTE_H      48
+#define MUTE_PAD    16
+#define STATUS_FPS_MS  1000  /* 1 Hz status refresh */
+
 static lv_obj_t *s_root      = NULL;
 static lv_obj_t *s_image     = NULL;
 static lv_obj_t *s_pip_canvas = NULL;
@@ -48,6 +57,13 @@ static lv_obj_t *s_end_btn   = NULL;
 static lv_obj_t *s_accept_btn  = NULL;
 static lv_obj_t *s_decline_btn = NULL;
 static lv_obj_t *s_incoming_lbl = NULL;
+/* #280 in-call chrome */
+static lv_obj_t *s_mute_btn   = NULL;
+static lv_obj_t *s_mute_lbl   = NULL;
+static lv_obj_t *s_status_lbl = NULL;
+static lv_timer_t *s_status_timer = NULL;
+static uint32_t s_last_recv_count_seen = 0;
+static int64_t  s_last_recv_change_us  = 0;
 
 static uint8_t *s_pip_buf = NULL;   /* RGB565 PIP_W*PIP_H*2 bytes in PSRAM */
 
@@ -96,6 +112,67 @@ static void on_decline_btn(lv_event_t *e)
     ui_video_pane_decline_cb_t cb = s_decline_cb;
     ui_video_pane_hide();
     if (cb) cb();
+}
+
+/* #280 mute toggle.  Flips voice's call-mute flag and updates the
+ * pill's label so the user gets immediate visual feedback. */
+static void on_mute_btn(lv_event_t *e)
+{
+    (void)e;
+    bool now = !voice_call_audio_is_muted();
+    voice_call_audio_set_muted(now);
+    if (s_mute_lbl) {
+        lv_label_set_text(s_mute_lbl, now ? "Unmute" : "Mute");
+    }
+    if (s_mute_btn) {
+        lv_obj_set_style_bg_color(s_mute_btn,
+            now ? lv_color_hex(0xEF4444) : lv_color_hex(0x1F2937), 0);
+    }
+}
+
+/* #280 status timer.  Picks one of CALLING / CONNECTED / PEER LEFT
+ * based on whether downlink frames are arriving, then appends MUTED
+ * if the local mic is suppressed.  Runs at 1 Hz. */
+static void status_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_status_lbl) return;
+
+    voice_video_stats_t v;
+    voice_video_get_stats(&v);
+
+    if (v.frames_recv != s_last_recv_count_seen) {
+        s_last_recv_count_seen = v.frames_recv;
+        s_last_recv_change_us  = esp_timer_get_time();
+    }
+
+    int64_t now = esp_timer_get_time();
+    bool peer_active = v.frames_recv > 0 &&
+                       (now - s_last_recv_change_us) < (5LL * 1000 * 1000);
+
+    const char *label;
+    uint32_t    color;
+    if (peer_active) {
+        label = "CONNECTED";
+        color = 0x22C55E;          /* green */
+    } else if (v.frames_recv > 0) {
+        label = "PEER LEFT";
+        color = 0xF59E0B;          /* amber */
+    } else {
+        label = "CALLING...";   /* "CALLING…" */
+        color = 0xF59E0B;
+    }
+
+    /* Append MUTED when the local mic is suppressed. */
+    if (voice_call_audio_is_muted()) {
+        char buf[48];
+        snprintf(buf, sizeof(buf), "%s  \xE2\x80\xA2  MUTED", label);
+        lv_label_set_text(s_status_lbl, buf);
+        lv_obj_set_style_text_color(s_status_lbl, lv_color_hex(0xEF4444), 0);
+    } else {
+        lv_label_set_text(s_status_lbl, label);
+        lv_obj_set_style_text_color(s_status_lbl, lv_color_hex(color), 0);
+    }
 }
 
 /* Naive RGB565 nearest-neighbour downscale src(sw x sh) -> dst(dw x dh).
@@ -180,6 +257,38 @@ static void build_call_chrome(void)
 
     if (!s_pip_timer) {
         s_pip_timer = lv_timer_create(pip_timer_cb, PIP_FPS_MS, NULL);
+    }
+
+    /* #280: Mute pill (top-right) — toggles voice_call_audio_set_muted. */
+    if (!s_mute_btn) {
+        s_mute_btn = lv_button_create(s_root);
+        lv_obj_remove_style_all(s_mute_btn);
+        lv_obj_set_size(s_mute_btn, MUTE_W, MUTE_H);
+        lv_obj_set_pos(s_mute_btn, VP_W - MUTE_W - MUTE_PAD, MUTE_PAD);
+        lv_obj_set_style_radius(s_mute_btn, MUTE_H / 2, 0);
+        lv_obj_set_style_bg_color(s_mute_btn,
+            voice_call_audio_is_muted() ? lv_color_hex(0xEF4444) : lv_color_hex(0x1F2937), 0);
+        lv_obj_set_style_bg_opa(s_mute_btn, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(s_mute_btn, on_mute_btn, LV_EVENT_CLICKED, NULL);
+        s_mute_lbl = lv_label_create(s_mute_btn);
+        lv_label_set_text(s_mute_lbl, voice_call_audio_is_muted() ? "Unmute" : "Mute");
+        lv_obj_set_style_text_color(s_mute_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(s_mute_lbl);
+    }
+
+    /* #280: status badge (top-center) — flips between CALLING…/CONNECTED/PEER LEFT
+     * driven by a 1 Hz lv_timer that polls voice_video_get_stats. */
+    if (!s_status_lbl) {
+        s_status_lbl = lv_label_create(s_root);
+        lv_label_set_text(s_status_lbl, "CALLING...");
+        lv_obj_set_style_text_color(s_status_lbl, lv_color_hex(0xF59E0B), 0);
+        lv_obj_align(s_status_lbl, LV_ALIGN_TOP_MID, 0, 32);
+    }
+    s_last_recv_count_seen = 0;
+    s_last_recv_change_us  = esp_timer_get_time();
+    if (!s_status_timer) {
+        s_status_timer = lv_timer_create(status_timer_cb, STATUS_FPS_MS, NULL);
+        status_timer_cb(NULL);   /* immediate first paint */
     }
 }
 
@@ -307,6 +416,10 @@ void ui_video_pane_hide(void)
         lv_timer_delete(s_pip_timer);
         s_pip_timer = NULL;
     }
+    if (s_status_timer) {
+        lv_timer_delete(s_status_timer);
+        s_status_timer = NULL;
+    }
     if (s_root) {
         /* lv_obj_delete recurses to children — no need to delete each
          * child first.  Just NULL the static handles so we don't keep
@@ -319,6 +432,9 @@ void ui_video_pane_hide(void)
         s_accept_btn    = NULL;
         s_decline_btn   = NULL;
         s_incoming_lbl  = NULL;
+        s_mute_btn      = NULL;
+        s_mute_lbl      = NULL;
+        s_status_lbl    = NULL;
     }
     if (s_pip_buf) {
         heap_caps_free(s_pip_buf);
