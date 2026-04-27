@@ -2606,6 +2606,43 @@ static esp_err_t chat_messages_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* ── GET /keyboard/layout ───────────────────────────────────────
+ * Issue #161: returns the live keyboard key positions so tests can
+ * derive tap coords instead of hardcoding them in a memory file that
+ * rots on layout drift.  Empty array when keyboard isn't built yet. */
+#include "ui_keyboard.h"
+static esp_err_t keyboard_layout_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    cJSON *root = cJSON_CreateObject();
+    cJSON *keys = cJSON_AddArrayToObject(root, "keys");
+    cJSON_AddBoolToObject(root, "visible", ui_keyboard_is_visible());
+    /* Cap matches the busiest layer (letters has ~33 keys). */
+    enum { CAP = 48 };
+    static ui_keyboard_key_info_t buf[CAP];
+    int n = ui_keyboard_dump_layout(buf, CAP);
+    cJSON_AddNumberToObject(root, "count", n);
+    static const char *kTypeName[] = {
+        "char", "backspace", "shift", "enter", "space", "layer",
+    };
+    for (int i = 0; i < n && i < CAP; i++) {
+        cJSON *k = cJSON_CreateObject();
+        cJSON_AddStringToObject(k, "label", buf[i].label);
+        cJSON_AddNumberToObject(k, "x",  buf[i].x);
+        cJSON_AddNumberToObject(k, "y",  buf[i].y);
+        cJSON_AddNumberToObject(k, "w",  buf[i].w);
+        cJSON_AddNumberToObject(k, "h",  buf[i].h);
+        /* center-of-key tap targets — most useful for scripts */
+        cJSON_AddNumberToObject(k, "cx", buf[i].x + buf[i].w / 2);
+        cJSON_AddNumberToObject(k, "cy", buf[i].y + buf[i].h / 2);
+        const char *tn = (buf[i].type < (sizeof(kTypeName) / sizeof(*kTypeName)))
+                       ? kTypeName[buf[i].type] : "unknown";
+        cJSON_AddStringToObject(k, "type", tn);
+        cJSON_AddItemToArray(keys, k);
+    }
+    return send_json_resp(req, root);
+}
+
 /* ── POST /chat/llm_done?text=<> ────────────────────────────────
  * #78 + #160 verification: feed `text` through the same
  * md_strip_tool_markers + ui_chat_push_message path voice.c's
@@ -3022,6 +3059,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_tool_push      = { .uri = "/tool_log/push",  .method = HTTP_POST, .handler = tool_log_push_handler };
     const httpd_uri_t uri_chat_partial   = { .uri = "/chat/partial",   .method = HTTP_POST, .handler = chat_partial_handler };
     const httpd_uri_t uri_chat_llm_done  = { .uri = "/chat/llm_done",  .method = HTTP_POST, .handler = chat_llm_done_handler };
+    const httpd_uri_t uri_kb_layout      = { .uri = "/keyboard/layout",.method = HTTP_GET,  .handler = keyboard_layout_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
 
@@ -3073,6 +3111,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_tool_push);
     httpd_register_uri_handler(server, &uri_chat_partial);
     httpd_register_uri_handler(server, &uri_chat_llm_done);
+    httpd_register_uri_handler(server, &uri_kb_layout);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
 

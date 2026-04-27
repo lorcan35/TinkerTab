@@ -57,3 +57,24 @@ void ui_keyboard_set_trigger_visible(bool visible);
 // Only one callback active at a time (last registration wins).
 // Pass NULL to unregister.
 void ui_keyboard_set_layout_cb(ui_keyboard_cb_t cb);
+
+/* Issue #161: programmatic layout dump for tests.
+ *
+ * Returns the live (label, x, y, w, h, type) of every key currently
+ * built in the active keyboard layer, so automated tests can derive
+ * tap coordinates instead of hardcoding them in a memory file that
+ * silently rots whenever the layout changes (the original concrete
+ * pain — touch-map memory said y=1078 for the Send/Done row but the
+ * actual key sat at y=1204, so test taps landed in empty space).
+ *
+ * Call after ui_keyboard_show() or while is_visible(); returns 0 if
+ * the panel isn't built yet.  out_keys may be NULL; pass cap=0 to
+ * just query the count. */
+typedef struct {
+    char     label[16];
+    int16_t  x, y;
+    int16_t  w, h;
+    uint8_t  type;       /* key_type_t cast — char/space/back/shift/layer/enter */
+} ui_keyboard_key_info_t;
+
+int ui_keyboard_dump_layout(ui_keyboard_key_info_t *out_keys, int cap);

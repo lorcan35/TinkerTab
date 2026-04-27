@@ -280,6 +280,49 @@ void ui_keyboard_set_trigger_visible(bool visible)
     else         lv_obj_add_flag(s_trigger_btn, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* Issue #161: walk the active row tree and dump live key geometry +
+ * label so automated tests can derive tap coords instead of hardcoding
+ * them in a memory file that rots whenever the layout changes. */
+int ui_keyboard_dump_layout(ui_keyboard_key_info_t *out_keys, int cap)
+{
+    if (!s_kb_panel) return 0;
+
+    /* Force a layout refresh so reported coords match the rendered
+     * frame (LVGL otherwise lazily computes them on the next draw). */
+    lv_obj_update_layout(s_kb_panel);
+
+    lv_obj_t **rows = s_num_layer ? s_num_rows : s_letter_rows;
+    int found = 0;
+    for (int r = 0; r < 4; r++) {
+        lv_obj_t *row = rows[r];
+        if (!row) continue;
+        uint32_t n = lv_obj_get_child_count(row);
+        for (uint32_t i = 0; i < n; i++) {
+            lv_obj_t *key = lv_obj_get_child(row, i);
+            if (!key) continue;
+            if (out_keys && found < cap) {
+                ui_keyboard_key_info_t *e = &out_keys[found];
+                memset(e, 0, sizeof(*e));
+                /* Absolute screen coords via lv_area_t. */
+                lv_area_t a; lv_obj_get_coords(key, &a);
+                e->x = a.x1;
+                e->y = a.y1;
+                e->w = a.x2 - a.x1 + 1;
+                e->h = a.y2 - a.y1 + 1;
+                e->type = (uint8_t)(uintptr_t)lv_obj_get_user_data(key);
+                /* Label is the first child created via lv_label_create. */
+                if (lv_obj_get_child_count(key) > 0) {
+                    lv_obj_t *lbl = lv_obj_get_child(key, 0);
+                    const char *txt = lv_label_get_text(lbl);
+                    if (txt) snprintf(e->label, sizeof(e->label), "%s", txt);
+                }
+            }
+            found++;
+        }
+    }
+    return found;
+}
+
 /* ========================================================================= */
 /*  Build keyboard panel                                                      */
 /* ========================================================================= */
