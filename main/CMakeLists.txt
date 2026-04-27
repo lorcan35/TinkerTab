@@ -31,7 +31,7 @@ else()
     idf_component_register(
         SRCS "main.c"
              "sdcard.c" "wifi.c"
-             "voice.c" "voice_codec.c" "mode_manager.c"
+             "voice.c" "voice_codec.c" "voice_video.c" "mode_manager.c"
              "debug_server.c" "debug_obs.c" "pool_probe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"

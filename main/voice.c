@@ -23,6 +23,7 @@
 
 #include "voice.h"
 #include "voice_codec.h"   /* #262: OPUS encode/decode wrapper */
+#include "voice_video.h"   /* #266: live JPEG streaming */
 #include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
 #include "tool_log.h"      /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
 #include "md_strip.h"     /* #78 + #160: scrub <tool>...</tool> markers from streamed LLM text */
@@ -86,7 +87,14 @@ static const char *TAG = "tab5_voice";
 
 // esp_websocket_client tuning
 #define WS_CLIENT_TASK_STACK   10240   /* client event/receive task stack */
-#define WS_CLIENT_BUFFER_SIZE  4096    /* per-frame buffer; binary TTS comes in 640–1024 B chunks, headroom for text+media */
+/* per-frame buffer; binary TTS comes in 640–1024 B chunks, audio mic
+ * uplink is 640 B/PCM chunk.  #266: bumped from 4 KB to 32 KB so
+ * voice_video JPEG frames (paired with a low quality target) fit in
+ * a single WS binary frame.  TX + RX bufs ≈ 64 KB internal SRAM —
+ * acceptable since we have one WS client.  Larger values trade
+ * internal SRAM headroom for bigger JPEG frames; if 720p video gets
+ * blocky, raise this in tandem with VV_JPEG_QUALITY in voice_video.c. */
+#define WS_CLIENT_BUFFER_SIZE  (32 * 1024)
 #define WS_CLIENT_RECONNECT_MS 1000    /* base reconnect delay -- exponential ramp takes over from here */
 #define WS_CLIENT_NETWORK_MS   10000   /* blocking send deadline */
 #define WS_CLIENT_PING_SEC     15      /* built-in WS-level ping */
@@ -521,6 +529,14 @@ static esp_err_t voice_ws_send_binary(const void *data, size_t len)
     return ESP_OK;
 }
 
+/* #266: thin public wrapper for voice_video.c (and any future binary
+ * sender).  Behavior is identical to voice_ws_send_binary — same
+ * 100 ms send timeout, same drop accounting. */
+esp_err_t voice_ws_send_binary_public(const void *data, size_t len)
+{
+    return voice_ws_send_binary(data, len);
+}
+
 // ---------------------------------------------------------------------------
 // Device registration — sent as FIRST text frame from the CONNECTED handler.
 // This is the #76 fix: register is sent from inside the event handler, AFTER
@@ -562,6 +578,12 @@ static esp_err_t voice_ws_send_register(void)
     cJSON_AddBoolToObject(caps, "camera", true);
     cJSON_AddBoolToObject(caps, "sd_card", true);
     cJSON_AddBoolToObject(caps, "touch", true);
+    /* #266: live JPEG video uplink.  Tab5 sends per-frame binary WS
+     * frames prefixed with the "VID0" 4-byte magic + 4-byte length.
+     * Dragon detects the magic to route video vs audio. */
+    cJSON_AddBoolToObject(caps, "video_send", true);
+    cJSON_AddNumberToObject(caps, "video_max_fps", 10);
+    cJSON_AddNumberToObject(caps, "video_format", 0);  /* 0 = JPEG */
     /* #262: advertise audio codec support.  Dragon picks one and replies
      * via config_update.audio_codec.  Tab5 stays on PCM (current behavior)
      * until Dragon switches it.  Per-direction so the broken uplink
@@ -2249,6 +2271,8 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
 
     /* #262: codec module is independent of WS lifecycle — init once. */
     voice_codec_init();
+    /* #266: video streaming module.  Just allocates the JPEG engine. */
+    voice_video_init();
 
     s_state_mutex = xSemaphoreCreateMutex();
     if (!s_state_mutex) {
@@ -2988,6 +3012,10 @@ esp_err_t voice_disconnect(void)
      * the reconnect.  Dragon will re-negotiate on the new register. */
     voice_codec_set_uplink(VOICE_CODEC_PCM);
     voice_codec_set_downlink(VOICE_CODEC_PCM);
+
+    /* #266: stop any in-flight video stream — sending to a closing WS
+     * would just bleed dropped-frame log spam. */
+    voice_video_stop_streaming();
 
     tab5_audio_speaker_enable(false);
 

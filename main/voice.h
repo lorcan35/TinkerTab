@@ -101,6 +101,13 @@ esp_err_t voice_clear_history(void);
 /** Send a text message to Dragon, bypassing STT (goes straight to LLM). */
 esp_err_t voice_send_text(const char *text);
 
+/** Send a raw binary frame on the voice WS (#266: video frames + any
+ *  future non-audio binary payload).  Internally calls the same
+ *  esp_websocket_client_send_bin path as the mic uplink, with the same
+ *  send_lock + 1 s timeout.  Caller is responsible for any framing
+ *  (e.g. voice_video.c prefixes a 4-byte type magic). */
+esp_err_t voice_ws_send_binary_public(const void *data, size_t len);
+
 /** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
 
