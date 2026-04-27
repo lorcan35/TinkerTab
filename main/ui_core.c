@@ -49,14 +49,18 @@ static const char *TAG = "ui_core";
  *      Uses portMAX_DELAY but never acquires s_lvgl_mutex while held.
  *
  * ABBA deadlock analysis:
- *   - Voice tasks NEVER call tab5_ui_lock(). They use lv_async_call()
- *     (which is thread-safe without mutex) to schedule LVGL work.
  *   - Debug server (httpd, Core 1) uses tab5_ui_try_lock(2000) with
  *     bounded timeout for screenshots only. Never holds s_ws_mutex.
  *   - No code path holds both s_lvgl_mutex and s_ws_mutex simultaneously.
  *
- * Rule: voice/network code must use lv_async_call() for LVGL updates,
- *       NEVER acquire s_lvgl_mutex directly. This eliminates ABBA risk. */
+ * Rule: voice/network/worker code must use lv_async_call() to hop work
+ *       to the LVGL thread.  IMPORTANT (#256): lv_async_call is NOT
+ *       thread-safe in LVGL 9.x — it calls lv_malloc + lv_timer_create
+ *       on the unprotected TLSF heap.  Callers from a non-LVGL thread
+ *       MUST take tab5_ui_lock around the lv_async_call.  Without it,
+ *       a worker enqueueing while ui_task is allocating draw tasks will
+ *       eventually corrupt a TLSF free-list pointer and TWDT in
+ *       search_suitable_block. */
 static esp_lcd_panel_handle_t s_panel = NULL;
 static lv_display_t          *s_display = NULL;
 static lv_indev_t            *s_indev = NULL;
