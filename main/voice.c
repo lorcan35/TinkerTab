@@ -50,6 +50,7 @@
 #include "esp_heap_caps.h"
 #include "esp_cache.h"
 #include "esp_crt_bundle.h"
+#include "esp_http_client.h"
 #include "esp_websocket_client.h"
 #include "cJSON.h"
 #include "wifi.h"
@@ -3232,6 +3233,169 @@ void voice_force_reconnect(void)
     esp_websocket_client_stop(s_ws);
     esp_websocket_client_start(s_ws);
     s_started = true;
+}
+
+/* Photo-share follow-up to U11: ship a captured image file from SD to
+ * Dragon's /api/media/upload, then tell the WS to broadcast back a
+ * signed `media` event so chat renders it as an inline image bubble.
+ *
+ * Flow:
+ *   ui_camera capture -> voice_upload_chat_image(filepath)
+ *     -> tab5_worker_enqueue(upload_chat_image_job)
+ *        -> read file from SD into PSRAM
+ *        -> POST /api/media/upload (X-Session-Id from NVS)
+ *        -> parse {"media_id": "..."}
+ *        -> ws_send {"type":"user_image","media_id":"..."}
+ *           Dragon replies with {"type":"media",...,"sender":"user"}
+ *           which the existing chat media renderer (chat_msg_view)
+ *           displays as a user image bubble. */
+typedef struct {
+    char filepath[80];
+} upload_image_job_t;
+
+#define UPLOAD_IMAGE_MAX_BYTES   (6 * 1024 * 1024)
+
+static void upload_chat_image_job(void *arg)
+{
+    upload_image_job_t *j = (upload_image_job_t *)arg;
+    if (!j) return;
+
+    /* Read the BMP/JPEG bytes into PSRAM. */
+    FILE *f = fopen(j->filepath, "rb");
+    if (!f) {
+        ESP_LOGW(TAG, "user_image: open failed: %s", j->filepath);
+        free(j); return;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > UPLOAD_IMAGE_MAX_BYTES) {
+        ESP_LOGW(TAG, "user_image: bad size %ld", sz);
+        fclose(f); free(j); return;
+    }
+    uint8_t *buf = heap_caps_malloc((size_t)sz,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        ESP_LOGW(TAG, "user_image: PSRAM alloc %ld B failed", sz);
+        fclose(f); free(j); return;
+    }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) {
+        ESP_LOGW(TAG, "user_image: short read %zu/%ld", got, sz);
+        heap_caps_free(buf); free(j); return;
+    }
+
+    /* Build the upload URL from current Dragon settings. */
+    char host[64] = {0};
+    tab5_settings_get_dragon_host(host, sizeof(host));
+    if (!host[0]) snprintf(host, sizeof(host), "%s", TAB5_DRAGON_HOST);
+    uint16_t port = tab5_settings_get_dragon_port();
+    if (port == 0) port = TAB5_DRAGON_PORT;
+    char url[160];
+    snprintf(url, sizeof(url),
+             "http://%s:%u/api/media/upload", host, port);
+
+    char sid[64] = {0};
+    tab5_settings_get_session_id(sid, sizeof(sid));
+    ESP_LOGI(TAG, "user_image: POST %s session=%s (%ld B)",
+             url, sid[0] ? sid : "(none)", sz);
+
+    esp_http_client_config_t cfg = {
+        .url        = url,
+        .method     = HTTP_METHOD_POST,
+        .timeout_ms = 15000,
+    };
+    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+    if (!cli) {
+        ESP_LOGW(TAG, "user_image: http_client_init OOM");
+        heap_caps_free(buf); free(j); return;
+    }
+
+    if (TAB5_DRAGON_TOKEN && TAB5_DRAGON_TOKEN[0] &&
+        strcmp(TAB5_DRAGON_TOKEN, "CHANGEME_SET_IN_SDKCONFIG_LOCAL") != 0) {
+        char auth[96];
+        snprintf(auth, sizeof(auth), "Bearer %s", TAB5_DRAGON_TOKEN);
+        esp_http_client_set_header(cli, "Authorization", auth);
+    }
+    if (sid[0]) {
+        esp_http_client_set_header(cli, "X-Session-Id", sid);
+    }
+    esp_http_client_set_header(cli, "Content-Type", "application/octet-stream");
+
+    char media_id[64] = {0};
+    do {
+        if (esp_http_client_open(cli, (int)sz) != ESP_OK) {
+            ESP_LOGW(TAG, "user_image: http_client_open failed");
+            break;
+        }
+        int wrote = esp_http_client_write(cli, (const char *)buf, (int)sz);
+        if (wrote != (int)sz) {
+            ESP_LOGW(TAG, "user_image: short write %d/%ld", wrote, sz);
+            break;
+        }
+        int cl = esp_http_client_fetch_headers(cli);
+        if (cl <= 0) cl = 256;
+        if (cl > 4096) cl = 4096;
+        char resp[512] = {0};
+        int rd = esp_http_client_read(cli, resp,
+                                      cl < (int)sizeof(resp) - 1
+                                      ? cl : (int)sizeof(resp) - 1);
+        if (rd > 0) resp[rd] = 0;
+        int status = esp_http_client_get_status_code(cli);
+        ESP_LOGI(TAG, "user_image: status=%d body=%s", status, resp);
+        if (status != 200) break;
+
+        cJSON *root = cJSON_Parse(resp);
+        if (root) {
+            const char *id = cJSON_GetStringValue(
+                cJSON_GetObjectItem(root, "media_id"));
+            if (id && id[0]) {
+                snprintf(media_id, sizeof(media_id), "%s", id);
+            }
+            cJSON_Delete(root);
+        }
+    } while (0);
+
+    esp_http_client_close(cli);
+    esp_http_client_cleanup(cli);
+    heap_caps_free(buf);
+    free(j);
+
+    if (!media_id[0]) {
+        ESP_LOGW(TAG, "user_image: upload yielded no media_id");
+        return;
+    }
+
+    /* Tell Dragon to broadcast the signed-URL media event back. */
+    cJSON *frame = cJSON_CreateObject();
+    if (!frame) return;
+    cJSON_AddStringToObject(frame, "type", "user_image");
+    cJSON_AddStringToObject(frame, "media_id", media_id);
+    char *txt = cJSON_PrintUnformatted(frame);
+    cJSON_Delete(frame);
+    if (!txt) return;
+    if (s_ws && esp_websocket_client_is_connected(s_ws)) {
+        size_t txtlen = strlen(txt);
+        esp_websocket_client_send_text(s_ws, txt, (int)txtlen,
+                                       portMAX_DELAY);
+        ESP_LOGI(TAG, "user_image: announced media_id=%s", media_id);
+    } else {
+        ESP_LOGW(TAG, "user_image: WS not connected, skipping announce");
+    }
+    free(txt);
+}
+
+void voice_upload_chat_image(const char *filepath)
+{
+    if (!filepath || !filepath[0]) return;
+    upload_image_job_t *j = calloc(1, sizeof(*j));
+    if (!j) return;
+    snprintf(j->filepath, sizeof(j->filepath), "%s", filepath);
+    if (tab5_worker_enqueue(upload_chat_image_job, j, "user_image") != ESP_OK) {
+        ESP_LOGW(TAG, "user_image: worker queue full");
+        free(j);
+    }
 }
 
 /* U21 (#206): re-pick the WebSocket URI from the current conn_m

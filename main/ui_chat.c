@@ -252,16 +252,17 @@ static void on_pill_tap(void *ud)
     if (s_input) ui_keyboard_show(chat_input_bar_get_textarea(s_input));
 }
 
-/* U11 (#206): camera affordance in the chat composer.  No
- * photo-upload protocol exists yet, so the simplest useful
- * behaviour is to navigate to the camera screen — capture there
- * already saves to /sdcard/IMG_NNNN.jpg, and the file browser
- * preview (U4) lets the user open the result.  When the upload
- * protocol lands this stays the entry point. */
+/* U11 (#206): camera affordance in the chat composer.  Arms the
+ * one-shot "share next capture" flag so ui_camera's capture handler
+ * knows to upload the resulting frame to Dragon (which then echoes a
+ * signed `media` event back over the WS — the existing chat media
+ * renderer picks that up and draws an inline image bubble). */
 static void on_camera_tap(void *ud)
 {
     (void)ud;
     extern lv_obj_t *ui_camera_create(void);
+    extern void      ui_camera_arm_chat_share(void);
+    ui_camera_arm_chat_share();
     /* Hide chat first so the camera viewfinder owns the screen. */
     ui_chat_hide();
     ui_camera_create();
@@ -782,7 +783,14 @@ static void async_push_media_cb(void *arg)
     safe_copy(msg.media_url, sizeof(msg.media_url), m->url);
     chat_store_add(&msg);
     suggestions_sync_visibility();
-    if (s_view) {
+    /* Only kick the view refresh when chat is currently visible.  If
+     * the user is on Camera/Home/etc., the view-refresh-while-hidden
+     * tries to lay out + decode the image into widgets that aren't on
+     * screen, which combined with the fragmented LV pool after camera
+     * use is a known PANIC trigger.  ui_chat_show()'s render path
+     * already calls chat_msg_view_refresh, so the bubble will surface
+     * the next time chat opens. */
+    if (s_view && s_active) {
         chat_msg_view_refresh(s_view);
         chat_msg_view_scroll_to_bottom(s_view);
     }
