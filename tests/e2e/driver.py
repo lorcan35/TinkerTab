@@ -222,7 +222,13 @@ class Tab5Driver:
                     detail_match: Callable[[str], bool] | None = None,
                     poll_ms: int = 250) -> Event | None:
         """Block until an event of `kind` appears, or timeout.  Optional
-        `detail_match` filter on the detail string."""
+        `detail_match` filter on the detail string.
+
+        Uses simple polling.  An experimental server-side long-poll
+        was reverted (see debug_server.c #296 follow-up note) — ESP-IDF
+        httpd is single-task and held all other debug requests for
+        the wait duration.
+        """
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             try:
@@ -236,21 +242,33 @@ class Tab5Driver:
             time.sleep(poll_ms / 1000.0)
         return None
 
-    def await_voice_state(self, state: str, timeout_s: float = 30) -> bool:
-        """Wait for voice state == `state`. Checks current state first
-        (in case the transition fired before this call), then polls
-        future events."""
-        try:
-            cur = self.voice_state().get("state_name", "")
-            if cur == state:
+    def input_text(self, text: str, submit: bool = False) -> dict:
+        """Type `text` into the currently-focused LVGL textarea.
+        Optional `submit=True` dispatches LV_EVENT_READY (form submit)."""
+        return self._post("/input/text",
+                          json={"text": text, "submit": submit}).json()
+
+    def await_voice_state(self, state: str, timeout_s: float = 60) -> bool:
+        """Wait for voice state == `state` — re-checks /voice every
+        ~1s in addition to watching voice.state events, so a transition
+        that fired before our cursor still gets picked up."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            try:
+                cur = self.voice_state().get("state_name", "")
+                if cur == state:
+                    return True
+            except Exception:
+                pass
+            # Watch the event ring for up to ~1s, then re-check current state
+            evt = self.await_event(
+                "voice.state",
+                timeout_s=min(1.0, max(0.1, deadline - time.time())),
+                detail_match=lambda d: d == state,
+            )
+            if evt is not None:
                 return True
-        except Exception:
-            pass
-        evt = self.await_event(
-            "voice.state", timeout_s=timeout_s,
-            detail_match=lambda d: d == state,
-        )
-        return evt is not None
+        return False
 
     def await_screen(self, screen: str, timeout_s: float = 5) -> bool:
         try:
