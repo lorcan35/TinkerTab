@@ -257,6 +257,12 @@ static void downscale_rgb565(const uint16_t *src, int sw, int sh,
     }
 }
 
+/* PIP rotation scratch — sized for the largest possible source frame
+ * (1280x720 RGB565 = 1.8 MB).  Allocated lazily on first rotated
+ * frame so PIP-disabled flow pays nothing.  Lives across pane
+ * sessions; freed in ui_video_pane_hide alongside the rest. */
+static uint16_t *s_pip_rot_scratch = NULL;
+
 static void pip_timer_cb(lv_timer_t *t)
 {
     (void)t;
@@ -267,11 +273,54 @@ static void pip_timer_cb(lv_timer_t *t)
     if (tab5_camera_capture(&frame) != ESP_OK) return;
     if (frame.format != TAB5_CAM_FMT_RGB565) return;
 
-    /* Downscale (no rotation in the PIP — keep it simple, the user
-     * already sees their feed.  cam_rot only matters for the remote
-     * who'll see Tab5's outbound stream rotated by voice_video). */
-    downscale_rgb565((const uint16_t *)frame.data, frame.width, frame.height,
-                     (uint16_t *)s_pip_buf, PIP_W, PIP_H);
+    /* #286 follow-up: apply cam_rot to the PIP source so the user's
+     * own preview matches the viewfinder + the outbound stream.
+     * Previously the PIP always showed the raw landscape sensor frame
+     * even after the user fixed cam_rot in Settings — confusing. */
+    const uint16_t *src = (const uint16_t *)frame.data;
+    int sw = frame.width;
+    int sh = frame.height;
+    uint8_t rot = tab5_settings_get_cam_rotation() & 0x03;
+    if (rot != 0) {
+        if (!s_pip_rot_scratch) {
+            s_pip_rot_scratch = (uint16_t *)heap_caps_malloc(
+                1280 * 720 * 2, MALLOC_CAP_SPIRAM);
+            if (!s_pip_rot_scratch) return;  /* OOM — skip frame */
+        }
+        switch (rot) {
+        case 1:
+            /* 90 CW: dst is sh x sw */
+            for (int y = 0; y < sh; y++) {
+                const uint16_t *row = src + y * sw;
+                for (int x = 0; x < sw; x++) {
+                    s_pip_rot_scratch[(sh - 1 - y) + x * sh] = row[x];
+                }
+            }
+            sw = frame.height;
+            sh = frame.width;
+            break;
+        case 2:
+            /* 180: same dims */
+            for (int i = 0, n = sw * sh; i < n; i++) {
+                s_pip_rot_scratch[n - 1 - i] = src[i];
+            }
+            break;
+        case 3:
+            /* 270 CW (= 90 CCW): dst is sh x sw */
+            for (int y = 0; y < sh; y++) {
+                const uint16_t *row = src + y * sw;
+                for (int x = 0; x < sw; x++) {
+                    s_pip_rot_scratch[y + (sw - 1 - x) * sh] = row[x];
+                }
+            }
+            sw = frame.height;
+            sh = frame.width;
+            break;
+        }
+        src = s_pip_rot_scratch;
+    }
+
+    downscale_rgb565(src, sw, sh, (uint16_t *)s_pip_buf, PIP_W, PIP_H);
     lv_obj_invalidate(s_pip_canvas);
 }
 
@@ -537,6 +586,10 @@ void ui_video_pane_hide(void)
     if (s_pip_buf) {
         heap_caps_free(s_pip_buf);
         s_pip_buf = NULL;
+    }
+    if (s_pip_rot_scratch) {
+        heap_caps_free(s_pip_rot_scratch);
+        s_pip_rot_scratch = NULL;
     }
     s_in_call  = false;
     s_incoming = false;
