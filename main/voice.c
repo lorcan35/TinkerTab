@@ -22,6 +22,7 @@
  */
 
 #include "voice.h"
+#include "voice_codec.h"   /* #262: OPUS encode/decode wrapper */
 #include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
 #include "tool_log.h"      /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
 #include "md_strip.h"     /* #78 + #160: scrub <tool>...</tool> markers from streamed LLM text */
@@ -558,6 +559,12 @@ static esp_err_t voice_ws_send_register(void)
     cJSON_AddBoolToObject(caps, "camera", true);
     cJSON_AddBoolToObject(caps, "sd_card", true);
     cJSON_AddBoolToObject(caps, "touch", true);
+    /* #262: advertise audio codec support.  Dragon picks one and replies
+     * via config_update.audio_codec.  Tab5 stays on PCM (current behavior)
+     * until Dragon switches it. */
+    cJSON *acodecs = cJSON_AddArrayToObject(caps, "audio_codec");
+    cJSON_AddItemToArray(acodecs, cJSON_CreateString("pcm"));
+    cJSON_AddItemToArray(acodecs, cJSON_CreateString("opus"));
     /* v4·D audit P0 fix: widget_capability was spec-only -- now wired.
      * Skills can downgrade widget content for low-end clients (smaller
      * list, lower image res).  Match the actual Tab5 limits we've
@@ -1222,6 +1229,27 @@ static void handle_text_message(const char *data, int len)
                 }
             }
         }
+        /* #262: codec negotiation reply.  Dragon picks one of the
+         * codecs Tab5 advertised in `register` and tells us via
+         * config_update.audio_codec.  Two flavours so it can choose
+         * uplink (mic) and downlink (TTS) independently:
+         *   - audio_codec        : applies to both (legacy / shorthand)
+         *   - audio_uplink_codec : mic only
+         *   - audio_downlink_codec: TTS only
+         * Unrecognized strings fall back to PCM. */
+        cJSON *acu = cJSON_GetObjectItem(root, "audio_uplink_codec");
+        cJSON *acd = cJSON_GetObjectItem(root, "audio_downlink_codec");
+        cJSON *ac  = cJSON_GetObjectItem(root, "audio_codec");
+        if (cJSON_IsString(acu)) {
+            voice_codec_set_uplink(voice_codec_from_name(acu->valuestring));
+        } else if (cJSON_IsString(ac)) {
+            voice_codec_set_uplink(voice_codec_from_name(ac->valuestring));
+        }
+        if (cJSON_IsString(acd)) {
+            voice_codec_set_downlink(voice_codec_from_name(acd->valuestring));
+        } else if (cJSON_IsString(ac)) {
+            voice_codec_set_downlink(voice_codec_from_name(ac->valuestring));
+        }
         /* Wave 14 W14-L03: if neither voice_mode nor cloud_mode was
          * present, the handler used to exit silently and Tab5 would
          * disagree with Dragon about the active mode with no trace.
@@ -1595,27 +1623,36 @@ static void handle_binary_message(const char *data, int len)
         voice_set_state(VOICE_STATE_SPEAKING, NULL);
     }
 
-    /* Upsample into a stack-adjacent but reasonably-sized temp buffer. A single
-     * Dragon TTS chunk is typically 640–1024 B (320–512 samples), so
-     * worst-case output is 512 × 3 = 1536 samples = 3072 B. Cap at 2048
-     * input samples to stay well under the managed-client buffer. */
-    const size_t in_samples   = len / sizeof(int16_t);
-    if (in_samples == 0) return;
-    size_t max_out = in_samples * UPSAMPLE_RATIO;
-    /* Wave 9 audit #80 + stability P0: use the pre-allocated upsample
-     * buffer from voice_init instead of malloc/free on every chunk. */
+    /* #262: decode through voice_codec.  PCM is a memcpy-shaped passthrough
+     * (out_samples == in_samples), keeping the existing upsample 16k->48k
+     * path unchanged.  OPUS produces variable-length PCM (typ 320 samples
+     * per 20 ms packet) which then upsamples the same way. */
     if (!s_upsample_buf) {
         ESP_LOGW(TAG, "handle_binary: upsample_buf not initialized");
         return;
     }
-    if (max_out > UPSAMPLE_BUF_CAPACITY) {
-        ESP_LOGW(TAG, "handle_binary: chunk too large (in=%zu out=%zu cap=%d) — truncating",
-                 in_samples, max_out, UPSAMPLE_BUF_CAPACITY);
-        max_out = UPSAMPLE_BUF_CAPACITY;
+
+    /* Decode straight into a temp area in s_upsample_buf, low half;
+     * upsample reads from there and writes to the high half.
+     * Splitting avoids an extra malloc per chunk. */
+    int16_t *dec_pcm = s_upsample_buf;                          /* low half */
+    int16_t *up_out  = s_upsample_buf + (UPSAMPLE_BUF_CAPACITY / 2);  /* high half */
+    size_t dec_cap   = UPSAMPLE_BUF_CAPACITY / 2;
+    size_t in_samples = 0;
+    if (voice_codec_decode_downlink((const uint8_t *)data, (size_t)len,
+                                    dec_pcm, dec_cap, &in_samples) != ESP_OK ||
+        in_samples == 0) {
+        ESP_LOGW(TAG, "handle_binary: codec decode failed (len=%d)", len);
+        return;
     }
-    size_t out_samples = upsample_16k_to_48k((const int16_t *)data, in_samples,
-                                              s_upsample_buf, max_out);
-    playback_buf_write(s_upsample_buf, out_samples);
+    size_t max_out = in_samples * UPSAMPLE_RATIO;
+    if (max_out > dec_cap) {
+        ESP_LOGW(TAG, "handle_binary: upsample would exceed half-buf — truncating");
+        max_out = dec_cap;
+    }
+    size_t out_samples = upsample_16k_to_48k(dec_pcm, in_samples,
+                                              up_out, max_out);
+    playback_buf_write(up_out, out_samples);
 }
 
 // ---------------------------------------------------------------------------
@@ -1936,10 +1973,17 @@ static void mic_capture_task(void *arg)
         MIC_TDM_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int16_t *mono_buf = (int16_t *)heap_caps_malloc(
         VOICE_CHUNK_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!tdm_buf || !mono_buf) {
+    /* #262: encoded uplink buffer.  640 B is enough for either raw PCM
+     * (320 samples * 2 B) or an OPUS frame at the 24 kbps target — a
+     * 20 ms OPUS packet is ~60 B but the API recommends much more
+     * headroom; 640 B comfortably fits the worst-case bitrate ceiling. */
+    uint8_t  *enc_buf  = (uint8_t  *)heap_caps_malloc(
+        VOICE_CHUNK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tdm_buf || !mono_buf || !enc_buf) {
         ESP_LOGE(TAG, "Failed to allocate mic buffers");
         heap_caps_free(tdm_buf);
         heap_caps_free(mono_buf);
+        heap_caps_free(enc_buf);
         s_mic_task = NULL;
         vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
         return;
@@ -2017,12 +2061,23 @@ static void mic_capture_task(void *arg)
 
         ui_notes_write_audio(mono_buf, out_idx);
 
-        size_t send_bytes = out_idx * sizeof(int16_t);
         if (ws_live) {
-            err = voice_ws_send_binary(mono_buf, send_bytes);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "WS send failed — continuing SD recording");
-                if (s_voice_mode == VOICE_MODE_ASK) break;
+            /* #262: encode through voice_codec (PCM = memcpy passthrough,
+             * OPUS = ~60 B variable-length packet).  Dragon decodes per
+             * the active uplink codec it picked in config_update. */
+            size_t send_bytes = 0;
+            esp_err_t cerr = voice_codec_encode_uplink(mono_buf, out_idx,
+                                                       enc_buf, VOICE_CHUNK_BYTES,
+                                                       &send_bytes);
+            if (cerr == ESP_OK && send_bytes > 0) {
+                err = voice_ws_send_binary(enc_buf, send_bytes);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "WS send failed — continuing SD recording");
+                    if (s_voice_mode == VOICE_MODE_ASK) break;
+                }
+            } else {
+                ESP_LOGW(TAG, "voice_codec_encode_uplink failed (%d) — dropping chunk",
+                         (int)cerr);
             }
         }
         frames_sent++;
@@ -2103,6 +2158,7 @@ static void mic_capture_task(void *arg)
     s_current_rms = 0;
     heap_caps_free(tdm_buf);
     heap_caps_free(mono_buf);
+    heap_caps_free(enc_buf);
 
     if (s_voice_mode == VOICE_MODE_DICTATE && had_speech
         && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES
@@ -2179,6 +2235,9 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
     s_using_ngrok = false;
 
     s_state_cb = state_cb;
+
+    /* #262: codec module is independent of WS lifecycle — init once. */
+    voice_codec_init();
 
     s_state_mutex = xSemaphoreCreateMutex();
     if (!s_state_mutex) {
@@ -2907,6 +2966,11 @@ esp_err_t voice_disconnect(void)
     s_session_gen++;
 
     s_disconnecting = true;
+
+    /* #262: reset codec to PCM so a stale OPUS state doesn't outlive
+     * the reconnect.  Dragon will re-negotiate on the new register. */
+    voice_codec_set_uplink(VOICE_CODEC_PCM);
+    voice_codec_set_downlink(VOICE_CODEC_PCM);
 
     tab5_audio_speaker_enable(false);
 

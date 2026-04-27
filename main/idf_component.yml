@@ -13,3 +13,7 @@ dependencies:
   # machine — see issue #76. Event-driven with built-in auto-reconnect,
   # ping/pong, and TLS. Eliminates the register-before-receive-task race.
   espressif/esp_websocket_client: ^1.6.1
+  # esp_audio_codec (#262): OPUS encoder/decoder for the voice WS path.
+  # 16 kHz mono PCM <-> ~24 kbps OPUS = ~10x bandwidth cut on the mic
+  # uplink and TTS downlink.
+  espressif/esp_audio_codec: ^2.4.1
