@@ -48,9 +48,13 @@
 #include "esp_core_dump.h"
 #include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/atomic.h"
 #include "freertos/task.h"
 #include "cJSON.h"
 #include "driver/jpeg_encode.h"
+#include "lwip/sockets.h"
+#include "lwip/tcp.h"
+#include <netinet/tcp.h>
 
 static const char *TAG = "debug_srv";
 
@@ -61,6 +65,22 @@ static const char *TAG = "debug_srv";
  * handle in a function-local and leaked it — making the server a one-shot
  * with no recovery path. */
 static httpd_handle_t s_httpd = NULL;
+
+/* #74: TCP_NODELAY on every accepted socket.  Default Nagle batches
+ * sub-MSS sends until either the buffer fills or the 200 ms tail
+ * timer fires; for small JSON responses (/info / /touch / /heap)
+ * that interacts badly with a chunked stream from another in-flight
+ * handler and adds visible latency.  Run at accept time so all
+ * subsequent send()s on the socket flush immediately. */
+esp_err_t debug_open_fn(httpd_handle_t hd, int sockfd)
+{
+    (void)hd;
+    int yes = 1;
+    if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) < 0) {
+        ESP_LOGW(TAG, "TCP_NODELAY set failed on fd=%d", sockfd);
+    }
+    return ESP_OK;
+}
 
 /* ======================================================================== */
 /*  Bearer token authentication                                              */
@@ -189,10 +209,81 @@ static esp_err_t _ensure_jpeg_encoder(void)
     return ret;
 }
 
+/* #74: atomic busy-guard + async dispatch.
+ *
+ * Two layers of protection so /screenshot can't wedge the debug
+ * server while it encodes + sends:
+ *
+ *   1. CAS busy flag: a second concurrent /screenshot request returns
+ *      429 immediately instead of queueing.  Cheap, race-free.
+ *
+ *   2. Async handler: the entire encode + send happens on a spawned
+ *      task via httpd_req_async_handler_begin, so the dispatch worker
+ *      is freed within microseconds.  Other requests (/info /touch
+ *      /heap /navigate) keep flowing even while a screenshot is mid-
+ *      send over a slow WiFi link.  Dedicated task is fine because
+ *      the busy-guard ensures at most one screenshot task ever exists.
+ *
+ *   3. send_wait_timeout dropped 90→15 s in tab5_debug_server_start.
+ *      So a stuck client gets dropped fast, not in 90 s.
+ */
+static volatile uint32_t s_screenshot_busy = 0;
+static esp_err_t screenshot_handler_inner(httpd_req_t *req);
+
+static void screenshot_async_task(void *arg)
+{
+    httpd_req_t *async_req = (httpd_req_t *)arg;
+    if (async_req) {
+        screenshot_handler_inner(async_req);
+        httpd_req_async_handler_complete(async_req);
+    }
+    /* Release the busy flag here, AFTER complete, so a follow-up
+     * client can't squeeze in while the previous send is still
+     * draining the kernel buffer. */
+    Atomic_Decrement_u32(&s_screenshot_busy);
+    /* P4 TLSP cleanup crash (#20): vTaskSuspend(NULL) instead of
+     * vTaskDelete(NULL). */
+    vTaskSuspend(NULL);
+}
+
 static esp_err_t screenshot_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
+    if (Atomic_CompareAndSwap_u32(&s_screenshot_busy, 1, 0) != ATOMIC_COMPARE_AND_SWAP_SUCCESS) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "{\"error\":\"screenshot_in_flight\","
+                                 "\"hint\":\"retry after current encode completes (~200-500ms)\"}");
+        return ESP_OK;
+    }
+    /* Detach the request from the dispatch worker.  The kernel-side
+     * socket is "checked out" to us; the worker returns to picking up
+     * the next request immediately. */
+    httpd_req_t *async_req = NULL;
+    esp_err_t err = httpd_req_async_handler_begin(req, &async_req);
+    if (err != ESP_OK) {
+        Atomic_Decrement_u32(&s_screenshot_busy);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "async handler begin failed");
+        return ESP_FAIL;
+    }
+    /* Run the heavy work on a dedicated task so the worker is free.
+     * Stack 6K covers JPEG-encode locals + httpd send chunks; pinned
+     * to Core 1 (away from LVGL on Core 0) for a snappier UI. */
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        screenshot_async_task, "screenshot_async",
+        6144, async_req, tskIDLE_PRIORITY + 4, NULL, 1);
+    if (ok != pdPASS) {
+        ESP_LOGW(TAG, "screenshot_async task spawn failed; running inline");
+        screenshot_handler_inner(async_req);
+        httpd_req_async_handler_complete(async_req);
+        Atomic_Decrement_u32(&s_screenshot_busy);
+    }
+    return ESP_OK;
+}
 
+static esp_err_t screenshot_handler_inner(httpd_req_t *req)
+{
     esp_lcd_panel_handle_t panel = tab5_display_get_panel();
     if (!panel) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Display not initialized");
@@ -2914,11 +3005,20 @@ esp_err_t tab5_debug_server_init(void)
     config.lru_purge_enable = true;
     config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
-    /* A full 1.8 MB screenshot over 2.4 GHz WiFi with 400-500 ms RTT and
-     * the small default LWIP TCP send window needs ~30-60s of blocked
-     * send() calls. Default 5s kills the connection after one window-full.
-     * Bump to 90s so /screenshot can actually complete. */
-    config.send_wait_timeout = 90;
+    /* #74: was 90 s — a single stalled /screenshot held the dispatch
+     * worker for the full timeout, blocking /info / /touch / /navigate
+     * for minutes when WiFi RTT spiked.  Now that /screenshot is JPEG
+     * (~30 KB, not 1.8 MB BMP) the original "needs 30-60 s of blocked
+     * send()" reasoning no longer applies — 15 s is a comfortable
+     * upper bound that drops a wedged client fast and frees the
+     * worker for everything else. */
+    config.send_wait_timeout = 15;
+    /* #74: TCP_NODELAY on accepted sockets — disables Nagle so small
+     * JSON responses (/info / /touch / /heap) don't sit in the kernel
+     * waiting on the 200 ms tail when paired with a chunked response
+     * stream from another in-flight handler. */
+    extern esp_err_t debug_open_fn(httpd_handle_t hd, int sockfd);
+    config.open_fn  = debug_open_fn;
     config.close_fn = NULL;               /* Use default close */
     /* Run httpd on Core 1 so it doesn't starve when LVGL is busy on Core 0.
      * Settings screen creates 55 objects (~500ms) which blocks Core 0 entirely.
