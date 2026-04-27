@@ -269,10 +269,19 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
     }
     /* Run the heavy work on a dedicated task so the worker is free.
      * Stack 6K covers JPEG-encode locals + httpd send chunks; pinned
-     * to Core 1 (away from LVGL on Core 0) for a snappier UI. */
-    BaseType_t ok = xTaskCreatePinnedToCore(
+     * to Core 1 (away from LVGL on Core 0) for a snappier UI.
+     *
+     * #247 fix: WithCaps(MALLOC_CAP_SPIRAM) puts the TCB+stack in
+     * PSRAM.  The async task ends with vTaskSuspend(NULL) (P4 TLSP
+     * cleanup crash #20 forbids vTaskDelete), so the TCB+stack are
+     * never reclaimed.  Without WithCaps, every screenshot would
+     * leak ~6 KB of internal SRAM; over 50 cycles that's the 300 KB
+     * leak that pushed the SRAM-exhaustion watchdog to fire under
+     * mixed-screen stress. */
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
         screenshot_async_task, "screenshot_async",
-        6144, async_req, tskIDLE_PRIORITY + 4, NULL, 1);
+        6144, async_req, tskIDLE_PRIORITY + 4, NULL, 1,
+        MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
         ESP_LOGW(TAG, "screenshot_async task spawn failed; running inline");
         screenshot_handler_inner(async_req);
