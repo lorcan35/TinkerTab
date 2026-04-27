@@ -2038,6 +2038,21 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
 /* ── Screen create/destroy ─────────────────────────────── */
 lv_obj_t *ui_notes_create(void)
 {
+    /* #250 fix: notes is an overlay parented to home, not a separate
+     * lv_screen.  When /navigate goes camera→notes, async_navigate calls
+     * ui_camera_destroy() (lv_obj_delete on the active screen) before
+     * us; if we don't reload home, disp->act_scr stays dangling and the
+     * next render fires lv_obj_update_layout(NULL) at lv_obj_pos.c:304.
+     * Same guard ui_chat / ui_memory / ui_agents / ui_focus / ui_sessions
+     * already have. */
+    {
+        extern lv_obj_t *ui_home_get_screen(void);
+        lv_obj_t *home = ui_home_get_screen();
+        if (home && lv_screen_active() != home) {
+            lv_screen_load(home);
+        }
+    }
+
     /* #170: we're (re-)entering a live notes screen — clear the guard
      * so the next refresh_list can run.  Must happen BEFORE the
      * already-exists early-return because hide→show goes through this
