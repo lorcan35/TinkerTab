@@ -791,6 +791,10 @@ void chat_msg_view_append_stream(chat_msg_view_t *v, const char *text)
 
     /* Push into the store so the view refresh picks it up. */
     chat_store_update_last_text(v->stream_buf);
+    /* Streaming mutates the last message's text in place; invalidate
+     * the bound slot so refresh runs slot_bind again instead of
+     * skipping with the "already bound" optimisation. */
+    chat_msg_view_invalidate_index(v, chat_store_count() - 1);
     chat_msg_view_refresh(v);
     chat_msg_view_scroll_to_bottom(v);
 }
@@ -813,6 +817,25 @@ bool chat_msg_view_is_streaming(chat_msg_view_t *v)
 lv_obj_t *chat_msg_view_get_scroll(chat_msg_view_t *v)
 {
     return v ? v->scroll : NULL;
+}
+
+void chat_msg_view_invalidate_index(chat_msg_view_t *v, int idx)
+{
+    /* Walk the pool and unbind any slot that was bound to `idx`.  The
+     * next refresh will treat the slot as free, find idx unbound, and
+     * call slot_bind — which is what re-renders msg->text into the
+     * label.  Without this, refresh's "already bound, skip" pass at
+     * line ~702 leaves the label stale after an in-place edit
+     * (chat_store_update_last_text or the assistant-bubble dedup
+     * path in async_push_msg_cb).
+     *
+     * No-op when the index isn't currently bound to any slot. */
+    if (!v || idx < 0) return;
+    for (int s = 0; s < BSP_CHAT_POOL_SIZE; s++) {
+        if (v->pool[s].data_idx == idx) {
+            slot_reset(&v->pool[s]);
+        }
+    }
 }
 
 /* U5 (#206): brk_body tap dispatcher.  Reads the slot's currently-bound
