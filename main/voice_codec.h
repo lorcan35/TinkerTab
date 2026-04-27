@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "esp_err.h"
 
 /* Compile-time gate for the OPUS uplink (mic) path.  The
@@ -97,3 +98,35 @@ esp_err_t voice_codec_decode_downlink(const uint8_t *data, size_t len,
 /* Convenience: name → enum + enum → name. */
 voice_codec_t voice_codec_from_name(const char *name);
 const char *voice_codec_to_name(voice_codec_t c);
+
+/* #272 Phase 3E: call-audio framing.  When Tab5 is in a video call
+ * (voice_video_is_in_call() == true), mic uplink frames are tagged
+ * with the "AUD0" magic + 4-byte BE length so Dragon broadcasts them
+ * to the call peer instead of feeding STT.  Symmetric on the
+ * downlink — any AUD0-tagged frame from a peer plays through the
+ * existing TTS playback ring buffer.
+ *
+ * Wire format (one binary WS frame per audio chunk):
+ *   bytes 0..3 : magic "AUD0" (0x41 0x55 0x44 0x30)
+ *   bytes 4..7 : payload length (uint32_t big-endian)
+ *   bytes 8..  : raw int16 LE PCM @ 16 kHz mono (or OPUS — when uplink
+ *                codec is OPUS the payload is the encoded packet)
+ *
+ * No magic on regular voice-mode mic frames; existing STT path
+ * unaffected.
+ */
+#define VOICE_CALL_AUDIO_MAGIC      0x41554430u   /* "AUD0" big-endian */
+#define VOICE_CALL_AUDIO_HEADER_LEN 8
+
+/* Pack one audio chunk for call uplink: writes magic + length + body
+ * into out, returns the wire length.  out_cap must be >= body_len + 8. */
+size_t voice_codec_pack_call_audio(uint8_t *out, size_t out_cap,
+                                   const void *body, size_t body_len);
+
+/* True iff `data`'s first 4 bytes are the AUD0 magic. */
+bool voice_codec_peek_call_audio_magic(const void *data, size_t len);
+
+/* Strip the AUD0 magic + length header.  Returns the body pointer + len
+ * via out_body / out_body_len.  Returns false on malformed input. */
+bool voice_codec_unpack_call_audio(const uint8_t *wire, size_t wire_len,
+                                   const uint8_t **out_body, size_t *out_body_len);

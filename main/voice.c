@@ -1648,6 +1648,28 @@ static void handle_binary_message(const char *data, int len)
         return;
     }
 
+    /* #272 Phase 3E: call-audio frames carry the 4-byte "AUD0" magic.
+     * Strip the header + write the int16 PCM body straight to the
+     * playback buffer with the same upsample 16k->48k as TTS.  No
+     * state guards — call audio plays even when voice is READY. */
+    if (voice_codec_peek_call_audio_magic(data, (size_t)len)) {
+        const uint8_t *body = NULL;
+        size_t body_len = 0;
+        if (voice_codec_unpack_call_audio((const uint8_t *)data, (size_t)len,
+                                          &body, &body_len) && body_len >= 2 &&
+            s_upsample_buf) {
+            tab5_audio_speaker_enable(true);
+            const size_t in_samples = body_len / sizeof(int16_t);
+            const size_t max_out    = in_samples * UPSAMPLE_RATIO;
+            if (max_out <= UPSAMPLE_BUF_CAPACITY) {
+                size_t out_n = upsample_16k_to_48k((const int16_t *)body, in_samples,
+                                                    s_upsample_buf, max_out);
+                playback_buf_write(s_upsample_buf, out_n);
+            }
+        }
+        return;
+    }
+
     /* v4·D audit P0 fix: snapshot s_state under the mutex so we never
      * race with voice_set_state on another task.  The checks below
      * formerly read s_state twice without locking -- second read could
@@ -2086,7 +2108,7 @@ static void mic_capture_task(void *arg)
 
     bool ws_live = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
 
-    while (s_mic_running && (ws_live || s_voice_mode == VOICE_MODE_DICTATE)) {
+    while (s_mic_running && (ws_live || s_voice_mode == VOICE_MODE_DICTATE || s_voice_mode == VOICE_MODE_CALL)) {
         esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
@@ -2152,7 +2174,22 @@ static void mic_capture_task(void *arg)
                                                        enc_buf, VOICE_CHUNK_BYTES,
                                                        &send_bytes);
             if (cerr == ESP_OK && send_bytes > 0) {
-                err = voice_ws_send_binary(enc_buf, send_bytes);
+                if (s_voice_mode == VOICE_MODE_CALL) {
+                    /* #272: wrap with AUD0 magic so Dragon broadcasts
+                     * to the call peer instead of feeding STT.  Stack-
+                     * allocated — mic task has 16 KB stack, plenty of
+                     * headroom for a 648 B packet. */
+                    uint8_t call_pkt[VOICE_CHUNK_BYTES + VOICE_CALL_AUDIO_HEADER_LEN];
+                    size_t wire_len = voice_codec_pack_call_audio(
+                        call_pkt, sizeof(call_pkt), enc_buf, send_bytes);
+                    if (wire_len > 0) {
+                        err = voice_ws_send_binary(call_pkt, wire_len);
+                    } else {
+                        err = ESP_ERR_NO_MEM;
+                    }
+                } else {
+                    err = voice_ws_send_binary(enc_buf, send_bytes);
+                }
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "WS send failed — continuing SD recording");
                     if (s_voice_mode == VOICE_MODE_ASK) break;
@@ -2956,6 +2993,67 @@ esp_err_t voice_start_dictation(void)
 voice_mode_t voice_get_mode(void)
 {
     return s_voice_mode;
+}
+
+/* #272 Phase 3E: in-call audio.  Spawns the existing mic capture task
+ * in VOICE_MODE_CALL — the loop wraps each chunk with the AUD0 magic
+ * before voice_ws_send_binary so Dragon broadcasts to peers instead of
+ * feeding STT.  No start/stop messages, no state transitions — pure
+ * relay alongside whatever voice mode happens to be active.  In
+ * practice the user enters this from the nav-sheet "Call" tile via
+ * voice_video_start_call which calls us here. */
+esp_err_t voice_call_audio_start(void)
+{
+    bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
+    if (!s_initialized || !ws_live) {
+        ESP_LOGE(TAG, "voice_call_audio_start: not connected");
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_mic_running || s_mic_task != NULL) {
+        ESP_LOGW(TAG, "voice_call_audio_start: mic already running (mode=%d)",
+                 s_voice_mode);
+        return ESP_OK;
+    }
+    if (tab5_settings_get_mic_mute()) {
+        ESP_LOGW(TAG, "voice_call_audio_start: mic muted — refusing");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_LOGI(TAG, "Starting call audio (VOICE_MODE_CALL)");
+    s_voice_mode = VOICE_MODE_CALL;
+    s_mic_running = true;
+    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
+        mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
+        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
+        MALLOC_CAP_SPIRAM);
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to spawn call-audio mic task");
+        s_mic_running = false;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+esp_err_t voice_call_audio_stop(void)
+{
+    if (s_voice_mode != VOICE_MODE_CALL || !s_mic_running) {
+        return ESP_OK;
+    }
+    ESP_LOGI(TAG, "Stopping call audio");
+    s_mic_running = false;
+
+    /* Same drain pattern as voice_stop_listening — wait for the mic
+     * task to exit cleanly, then re-enable I2S RX so a follow-up
+     * voice_start_listening / voice_start_dictation works. */
+    i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
+    if (rx_h) i2s_channel_disable(rx_h);
+    for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (rx_h) i2s_channel_enable(rx_h);
+
+    s_voice_mode = VOICE_MODE_ASK;   /* return to default for next listen */
+    return ESP_OK;
 }
 
 const char *voice_get_dictation_text(void)
