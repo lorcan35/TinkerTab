@@ -10,6 +10,7 @@
  * aren't touched from Core 1.
  */
 #include "chat_session_drawer.h"
+#include "ui_core.h"
 #include "task_worker.h"
 #include "ui_theme.h"
 #include "config.h"
@@ -399,7 +400,7 @@ static void drawer_fetch_task(void *arg)
         esp_http_client_cleanup(client);
     }
 
-    lv_async_call(on_result_async, res);
+    tab5_lv_async_call(on_result_async, res);
     free(ctx);
 }
 

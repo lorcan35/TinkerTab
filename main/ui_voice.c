@@ -14,6 +14,7 @@
  */
 
 #include "ui_voice.h"
+#include "ui_core.h"       /* tab5_lv_async_call (#258) */
 #include "md_strip.h"      /* #116: inline markdown cleanup */
 #include "ui_notes.h"
 #include "mode_manager.h"
@@ -1852,5 +1853,5 @@ static void async_auto_stop_warning(void *arg)
 void ui_voice_show_auto_stop_warning(int seconds_remaining)
 {
     /* Thread-safe: schedules LVGL update on Core 0 via async call */
-    lv_async_call(async_auto_stop_warning, (void *)(intptr_t)seconds_remaining);
+    tab5_lv_async_call(async_auto_stop_warning, (void *)(intptr_t)seconds_remaining);
 }

@@ -1503,7 +1503,7 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
     }
 
     /* Refresh home screen mode badge (runs on LVGL thread) */
-    lv_async_call(async_refresh_mode_badge, NULL);
+    tab5_lv_async_call(async_refresh_mode_badge, NULL);
 
     /* Return current state */
     cJSON *root = cJSON_CreateObject();
@@ -1665,7 +1665,7 @@ static esp_err_t widget_handler(httpd_req_t *req)
         const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
         if (cid) widget_store_dismiss(cid);
         cJSON_Delete(root);
-        lv_async_call(async_widget_refresh, NULL);
+        tab5_lv_async_call(async_widget_refresh, NULL);
         httpd_resp_sendstr(req, "{\"ok\":true}");
         return ESP_OK;
     }
@@ -1751,7 +1751,7 @@ static esp_err_t widget_handler(httpd_req_t *req)
     }
     widget_store_upsert(&w);
     cJSON_Delete(root);
-    lv_async_call(async_widget_refresh, NULL);
+    tab5_lv_async_call(async_widget_refresh, NULL);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true}");
@@ -1783,8 +1783,9 @@ static esp_err_t navigate_handler(httpd_req_t *req)
 
     httpd_query_key_value(query, "screen", s_nav_target, sizeof(s_nav_target));
 
-    /* Schedule on LVGL thread — lv_async_call is thread-safe, no lock needed */
-    lv_async_call(async_navigate, NULL);
+    /* Schedule on LVGL thread (#258 helper takes the recursive LVGL
+     * mutex internally — lv_async_call itself is NOT thread-safe). */
+    tab5_lv_async_call(async_navigate, NULL);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "navigated", s_nav_target);

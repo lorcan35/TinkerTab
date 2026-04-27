@@ -16,6 +16,7 @@
 #include "chat_msg_view.h"
 #include "chat_msg_store.h"
 #include "ui_chat.h"                  /* U5: ui_chat_play_audio_clip */
+#include "ui_core.h"                  /* tab5_lv_async_call (#258) */
 #include "ui_theme.h"
 #include "config.h"
 #include "bsp_config.h"
@@ -173,7 +174,7 @@ static void chat_media_fetch_task(void *pv)
     if (!c) { vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */; return; }
     esp_err_t err = media_cache_fetch(c->url, &c->dsc);
     c->ok = (err == ESP_OK && c->dsc.data && c->dsc.header.w > 0);
-    lv_async_call(chat_media_bind_cb, c);
+    tab5_lv_async_call(chat_media_bind_cb, c);
     vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
 }
 

@@ -322,7 +322,7 @@ void voice_defer_receipt_attach(uint32_t mils,
     if (model_short) {
         snprintf(r->model_short, sizeof(r->model_short), "%s", model_short);
     }
-    lv_async_call(receipt_attach_async_cb, r);
+    tab5_lv_async_call(receipt_attach_async_cb, r);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +352,7 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
             }
         }
         /* Always poke the home screen — ui_home_refresh_sys_label() uses
-         * lv_async_call(), lock-free and thread-safe. */
+         * tab5_lv_async_call(), lock-free and thread-safe. */
         extern void ui_home_refresh_sys_label(void);
         ui_home_refresh_sys_label();
     }
@@ -683,7 +683,7 @@ static void voice_async_toast(char *text)
     }
     t->gen = s_session_gen;
     t->text = text;
-    lv_async_call(async_show_toast_cb, t);
+    tab5_lv_async_call(async_show_toast_cb, t);
 }
 
 static void voice_async_refresh_badge(void)
@@ -694,7 +694,7 @@ static void voice_async_refresh_badge(void)
         return;
     }
     b->gen = s_session_gen;
-    lv_async_call(async_refresh_badge_cb, b);
+    tab5_lv_async_call(async_refresh_badge_cb, b);
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,7 +1083,7 @@ static void handle_text_message(const char *data, int len)
                      (unsigned long)spent, (unsigned long)cap);
             /* Nudge home to redraw its live-line spend readout. */
             extern void ui_home_update_status(void);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
 
             /* Phase 3e auto-downgrade: once spent >= cap AND we're in a
              * cloud-cost-bearing mode (1=Hybrid or 2=Full Cloud), flip
@@ -1110,7 +1110,7 @@ static void handle_text_message(const char *data, int len)
                     tab5_settings_set_int_tier(0);
                     tab5_settings_set_voi_tier(0);
                     extern void ui_home_show_toast(const char *text);
-                    lv_async_call((lv_async_cb_t)ui_home_show_toast,
+                    tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast,
                                   (void *)"Budget cap hit — Local mode");
                 }
             }
@@ -1346,7 +1346,7 @@ static void handle_text_message(const char *data, int len)
             widget_store_update(cid, body,
                                 tone_s ? widget_tone_from_str(tone_s) : WIDGET_TONE_CALM,
                                 progress, al, ae);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
         } else {
             widget_t w = {0};
             strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
@@ -1373,7 +1373,7 @@ static void handle_text_message(const char *data, int len)
             }
             w.type = WIDGET_TYPE_LIVE;
             widget_store_upsert(&w);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
             ESP_LOGI(TAG, "widget_live upsert: %s/%s tone=%s", w.skill_id, cid,
                      tone_s ? tone_s : "calm");
         }
@@ -1418,7 +1418,7 @@ static void handle_text_message(const char *data, int len)
             }
             w.type = WIDGET_TYPE_LIST;
             widget_store_upsert(&w);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
             ESP_LOGI(TAG, "widget_list upsert: %s/%s items=%u",
                      w.skill_id, cid, w.items_count);
         }
@@ -1461,7 +1461,7 @@ static void handle_text_message(const char *data, int len)
             }
             w.type = WIDGET_TYPE_CHART;
             widget_store_upsert(&w);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
             ESP_LOGI(TAG, "widget_chart upsert: %s/%s pts=%u max=%.2f",
                      w.skill_id, cid, w.chart_count, w.chart_max);
         }
@@ -1492,7 +1492,7 @@ static void handle_text_message(const char *data, int len)
             w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
             w.type = WIDGET_TYPE_MEDIA;
             widget_store_upsert(&w);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
             ESP_LOGI(TAG, "widget_media upsert: %s/%s alt=%s",
                      w.skill_id, cid, w.media_alt);
         }
@@ -1534,7 +1534,7 @@ static void handle_text_message(const char *data, int len)
             }
             w.type = WIDGET_TYPE_PROMPT;
             widget_store_upsert(&w);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
             ESP_LOGI(TAG, "widget_prompt upsert: %s/%s choices=%u",
                      w.skill_id, cid, w.choices_count);
         }
@@ -1545,7 +1545,7 @@ static void handle_text_message(const char *data, int len)
         const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
         if (cid) {
             widget_store_dismiss(cid);
-            lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
             ESP_LOGI(TAG, "widget_live_dismiss: %s", cid);
         }
     } else {
@@ -1686,9 +1686,9 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
                 && !s_disconnecting) {
                 extern void ui_home_show_toast(const char *text);
                 extern void ui_home_pulse_orb_alert(void);
-                lv_async_call((lv_async_cb_t)ui_home_show_toast,
+                tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast,
                               (void *)"Dragon dropped mid-turn - reconnecting");
-                lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
+                tab5_lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
             }
         }
         /* T1.1: bump attempt counter + apply exponential-with-full-jitter

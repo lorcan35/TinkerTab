@@ -1413,10 +1413,10 @@ static void media_fetch_task(void *pv)
     esp_err_t err = media_cache_fetch(url, &dsc);
     if (err == ESP_OK && dsc.data && dsc.header.w > 0) {
         s_media_dsc = dsc;
-        lv_async_call((lv_async_cb_t)media_image_bind_cb, NULL);
+        tab5_lv_async_call((lv_async_cb_t)media_image_bind_cb, NULL);
     } else {
         ESP_LOGW(TAG, "widget_media fetch failed (%d) for %s", err, url);
-        lv_async_call((lv_async_cb_t)media_image_clear_cb, NULL);
+        tab5_lv_async_call((lv_async_cb_t)media_image_clear_cb, NULL);
     }
     free(url);
     s_media_fetch_inflight = false;
@@ -1427,7 +1427,7 @@ static void refresh_media_image(const widget_t *w)
     if (!w || w->type != WIDGET_TYPE_MEDIA || !w->media_url[0]) {
         /* Non-media -- hide the image widget and reset tracking. */
         s_media_cur_url[0] = '\0';
-        lv_async_call((lv_async_cb_t)media_image_clear_cb, NULL);
+        tab5_lv_async_call((lv_async_cb_t)media_image_clear_cb, NULL);
         return;
     }
     ensure_media_image_widget();
@@ -1542,9 +1542,9 @@ static void screen_gesture_cb(lv_event_t *e)
     if (any_overlay_visible()) return;
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     switch (dir) {
-        case LV_DIR_TOP:    lv_async_call(async_open_focus,    NULL); break;
-        case LV_DIR_RIGHT:  lv_async_call(async_open_notes,    NULL); break;
-        case LV_DIR_LEFT:   lv_async_call(async_open_settings, NULL); break;
+        case LV_DIR_TOP:    tab5_lv_async_call(async_open_focus,    NULL); break;
+        case LV_DIR_RIGHT:  tab5_lv_async_call(async_open_notes,    NULL); break;
+        case LV_DIR_LEFT:   tab5_lv_async_call(async_open_settings, NULL); break;
         default: break;
     }
 }
@@ -1696,5 +1696,5 @@ static void sys_label_refresh_async_cb(void *arg)
 
 void ui_home_refresh_sys_label(void)
 {
-    lv_async_call(sys_label_refresh_async_cb, NULL);
+    tab5_lv_async_call(sys_label_refresh_async_cb, NULL);
 }
