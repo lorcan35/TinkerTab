@@ -158,6 +158,15 @@ bool      tab5_settings_quiet_active(int hour_local);
 uint8_t   tab5_settings_get_auto_rotate(void);
 esp_err_t tab5_settings_set_auto_rotate(uint8_t on);
 
+/** Camera frame rotation, applied to the preview + saved photo. The
+ *  SC2336 sensor is fixed-orientation 1280x720 landscape; this knob
+ *  rotates the captured frame in software so the user can hold the
+ *  device portrait, upside-down, or either landscape and see a
+ *  natural viewfinder.  0 = 0deg (no rotation, default), 1 = 90 CW,
+ *  2 = 180, 3 = 270 CW (= 90 CCW).  See issue #260. */
+uint8_t   tab5_settings_get_cam_rotation(void);
+esp_err_t tab5_settings_set_cam_rotation(uint8_t rot);
+
 /* ── Auth token (debug server bearer auth) ───────────────────────────── */
 
 /** Read auth token from NVS. Returns ESP_OK if found and non-empty. */

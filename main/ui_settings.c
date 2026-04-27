@@ -351,6 +351,19 @@ static void cb_volume_released(lv_event_t *e)
     tab5_audio_test_tone(440, 200);  /* 440Hz A4 for 200ms */
 }
 
+/* #260: camera rotation dropdown — persists to NVS.  ui_camera reads
+ * the value at screen-create time, so the new setting applies the next
+ * time the user opens the camera (or right away if they're not on it). */
+static void cb_cam_rotation(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint16_t sel = lv_dropdown_get_selected(dd);
+    if (sel > 3) sel = 0;
+    ESP_LOGI(TAG, "Camera rotation -> %u (%u deg)",
+             (unsigned)sel, (unsigned)(sel * 90));
+    tab5_settings_set_cam_rotation((uint8_t)sel);
+}
+
 static void cb_autorotate(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -1402,6 +1415,30 @@ lv_obj_t *ui_settings_create(void)
     s_sw_autorot = mk_switch(s_scroll, acc_display, 660, y,
                              tab5_settings_get_auto_rotate() != 0,
                              cb_autorotate, NULL);
+    y += ROW_H + 4;
+
+    /* #260: Camera rotation dropdown.  Sensor is fixed-orientation
+     * landscape; this rotates the captured frame in software. */
+    mk_row_label(s_scroll, "Camera rotation", y);
+    {
+        lv_obj_t *dd = lv_dropdown_create(s_scroll);
+        lv_dropdown_set_options(dd, "0\xc2\xb0\n90\xc2\xb0 CW\n180\xc2\xb0\n270\xc2\xb0 CW");
+        uint8_t cur = tab5_settings_get_cam_rotation();
+        if (cur > 3) cur = 0;
+        lv_dropdown_set_selected(dd, cur);
+        lv_obj_set_pos(dd, 340, y);
+        lv_obj_set_size(dd, 340, 36);
+        lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
+        lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
+        lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
+        lv_obj_set_style_border_width(dd, 1, 0);
+        lv_obj_set_style_border_color(dd, lv_color_hex(0x1A1A24), 0);
+        lv_obj_set_style_radius(dd, 6, 0);
+        lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
+        lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
+        lv_obj_add_event_cb(dd, cb_cam_rotation, LV_EVENT_VALUE_CHANGED, NULL);
+    }
     y += ROW_H + 16;
 
     /* ════════════════════════════════════════════════════════════════

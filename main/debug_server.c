@@ -1182,6 +1182,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
 
     /* Audit U2 (#206): auto-rotate persisted preference. */
     cJSON_AddNumberToObject(root, "auto_rot",    tab5_settings_get_auto_rotate());
+    /* #260: camera rotation persisted preference. */
+    cJSON_AddNumberToObject(root, "cam_rot",     tab5_settings_get_cam_rotation());
 
     /* Budget */
     cJSON_AddNumberToObject(root, "spent_mils", (double)tab5_budget_get_today_mils());
@@ -1350,6 +1352,16 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
             extern void ui_core_apply_auto_rotation(bool enabled);
             ui_core_apply_auto_rotation(v != 0);
             cJSON_AddItemToArray(updated, cJSON_CreateString("auto_rot"));
+        }
+    }
+
+    /* #260: camera rotation POST setter for testability. */
+    cJSON *cr = cJSON_GetObjectItem(req_json, "cam_rot");
+    if (cJSON_IsNumber(cr)) {
+        int v = (int)cr->valuedouble;
+        if (v >= 0 && v <= 3 &&
+            tab5_settings_set_cam_rotation((uint8_t)v) == ESP_OK) {
+            cJSON_AddItemToArray(updated, cJSON_CreateString("cam_rot"));
         }
     }
 

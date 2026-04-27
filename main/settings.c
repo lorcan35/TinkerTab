@@ -425,6 +425,10 @@ esp_err_t tab5_settings_set_quiet_end(uint8_t h)
 uint8_t tab5_settings_get_auto_rotate(void) { return get_u8("auto_rot", 0); }
 esp_err_t tab5_settings_set_auto_rotate(uint8_t on) { return set_u8("auto_rot", on ? 1 : 0); }
 
+/* ── Camera rotation (#260) ───────────────────────────────────────────── */
+uint8_t tab5_settings_get_cam_rotation(void) { return get_u8("cam_rot", 0); }
+esp_err_t tab5_settings_set_cam_rotation(uint8_t rot) { return set_u8("cam_rot", rot & 0x03); }
+
 bool tab5_settings_quiet_active(int hour_local)
 {
     if (!tab5_settings_get_quiet_on()) return false;
