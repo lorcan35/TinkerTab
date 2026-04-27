@@ -1042,3 +1042,65 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Root Cause:** `fflush()` pushes libc's buffer into the kernel; the ESP-IDF FATFS VFS still holds dirty sectors in its own cache until an `f_sync()` lands. The atomic-rename pattern doesn't help if the "new" file is itself half-written.
 - **Fix:** Added `fsync(fileno(f))` between `fflush` and `fclose`. ESP-IDF VFS routes `fsync()` to FATFS's `f_sync()` which pushes dirty sectors to the SD card before we even try the rename.
 - **Prevention:** Atomic-write-via-rename is only atomic if you `fsync` the temp file before renaming. The pattern is: write → fflush → fsync → fclose → rename. Skip any of those steps and the atomicity is theatrical.
+
+---
+
+## Multimodal + Camera
+
+### MJPEG file extension forced to .MJP because LFN is disabled
+- **Date:** 2026-04-27
+- **Symptom:** First end-to-end test of video recording (#291) — REC button tapped, `cb_record_btn` fired, but `fopen("/sdcard/VID_0000.mjpeg", "wb")` returned NULL.  Toast read "Open file failed" and obs ring showed `rec: fopen ... failed`.
+- **Root Cause:** `CONFIG_FATFS_LFN_NONE=1` in sdkconfig.defaults — FATFS only allows 8.3 short filenames.  `.mjpeg` is 5 characters, which doesn't fit the 3-char extension limit.  Other code in the firmware uses 3-char extensions (`.jpg`, `.bmp`, `.wav`, `.txt`) and never tripped this — recording was the first time anything tried `.mjpeg`.
+- **Fix:** Renamed extension to `.MJP` (3 chars).  ffmpeg + VLC sniff the magic bytes and play these natively regardless of extension; `.MJP` is just a cosmetic affordance.  Documented in `ui_camera.c` so the next person doesn't try `.mjpeg` again.
+- **Prevention:**
+  1. **8.3-only is one `grep CONFIG_FATFS_LFN sdkconfig.h` away** — when a new file extension is being introduced, check the LFN config first.
+  2. **Enabling LFN costs RAM** (`LFN_BUF_SIZE` per open file) so the tradeoff is real.  Stay 8.3 unless a feature genuinely requires it.
+
+### ESP32-P4 has only one HW JPEG encoder engine (`jpeg_new_encoder_engine` fails on second alloc)
+- **Date:** 2026-04-27
+- **Symptom:** `ui_camera.c` recording feature initially tried `jpeg_new_encoder_engine()` to get its own encoder.  Always failed with `E (xxx) jpeg.encoder: jpeg_new_encoder_engine(93): no memory for jpeg encoder rxlink` because `voice_video.c` (the call-streaming module) had already allocated the only one at boot.
+- **Root Cause:** The ESP32-P4 SoC has a single hardware JPEG engine (named "rxlink" in IDF).  `jpeg_new_encoder_engine()` claims it; a second call fails.  IDF doesn't expose this as a documented limit but the error message + Espressif HW docs confirm it.
+- **Fix:** Exposed `voice_video_encode_rgb565()` as a public function in `voice_video.{c,h}`.  The recording timer in `ui_camera.c` calls it instead of allocating its own encoder.  The mutex inside `voice_video.c` serialises concurrent uplink-stream + record-to-SD encodes.
+- **Prevention:**
+  1. **For singleton hardware resources, expose a shared accessor + mutex from the module that owns it.**  Don't let multiple modules try to claim the same HW.
+  2. **Check `idf.py -c menuconfig | grep -i jpeg`** at design time — the encoder is a single resource, the decoder ring is also limited.
+
+### Camera recording needs DMA-aligned buffers (`heap_caps_malloc` isn't enough)
+- **Date:** 2026-04-27
+- **Symptom:** First version of the `.MJP` recorder allocated the JPEG output buffer with `heap_caps_malloc(96 KB, MALLOC_CAP_SPIRAM)`.  Encoder returned `ESP_ERR_INVALID_ARG: bit stream is not aligned`.
+- **Root Cause:** The ESP32-P4 JPEG engine reads/writes via DMA and requires its buffers to be aligned to (at minimum) the SoC's cache-line + DMA descriptor size.  Plain PSRAM allocations don't guarantee this alignment.  IDF provides `jpeg_alloc_encoder_mem(size, &cfg, &actual)` which understands the engine's alignment requirements and returns a properly-positioned buffer.
+- **Fix:** Replaced both the JPEG output buffer and the rotation scratch buffer with `jpeg_alloc_encoder_mem()` calls.  The lazy-allocated buffers persist for the lifetime of the camera screen and free in `ui_camera_destroy()`.
+- **Prevention:**
+  1. **For any HW peripheral with DMA, use the IDF-provided allocator helpers** — `jpeg_alloc_encoder_mem`, `dma_alloc_aligned`, etc.  Plain `heap_caps_malloc(MALLOC_CAP_DMA)` only ensures DMA-capable memory; it doesn't guarantee the alignment a specific peripheral requires.
+  2. **Free symmetrically** — the IDF docs aren't always clear which `free` to use.  For `jpeg_alloc_encoder_mem`-returned buffers, plain `free()` is correct (verified via `voice_video.c` precedent).
+
+---
+
+## Debug + Test Harness
+
+### `obs_event_t.kind` 16-char buffer truncated `camera.record_start` to `camera.record_s`
+- **Date:** 2026-04-27
+- **Symptom:** E2E harness's `await_event("camera.record_start", timeout_s=8)` failed every time, even though /events showed an event named `camera.record_s` was firing on REC tap.
+- **Root Cause:** `obs_event_t.kind` was a `char[16]` buffer in `debug_obs.c`.  PR #294 added new event names like `camera.record_start` (19 chars) and `camera.record_stop` (18 chars) — both silently truncated by the `snprintf` write into the fixed buffer.
+- **Fix:** Bumped buffer to `char[32]` in PR #295 (firmware fix included alongside the harness commit).  Existing 16-char names like `voice.state` still fit; new names have 50% headroom.
+- **Prevention:**
+  1. **Whenever you add a new event-name string, check it fits the buffer** — better, use a compile-time `_Static_assert(sizeof("camera.record_start") <= sizeof(((obs_event_t*)0)->kind))` in `debug_obs.c`.  TBD as a follow-up; not blocking.
+  2. **Truncation in observability layers is silent by definition** — the event still gets written, just with the wrong name.  Test harnesses doing exact-string matching will fail without a clear error.
+
+### ESP-IDF httpd is single-task — long-poll handlers freeze the entire debug server
+- **Date:** 2026-04-27
+- **Symptom:** Experimental `?block_until=&timeout_ms=` long-poll variant of `GET /events` worked correctly when the matching event was already in the ring (21 ms first-call latency) but blocked all other requests for the wait duration.  After a multi-minute test run, Tab5 hit a PANIC reset.
+- **Root Cause:** ESP-IDF's `esp_http_server` uses one `httpd_task` to service all connections via `select()`.  When a handler `vTaskDelay`s, every other in-flight or pending request waits.  My implementation also re-allocated the cJSON events array on every 200 ms iteration — across ~minute-long waits, the per-iteration alloc/free churn accumulated heap fragmentation that eventually pushed the device over.
+- **Fix:** Reverted the long-poll feature.  `GET /events?since=N` stays instant-return only.  Note left in `debug_server.c` so the next person who reaches for "but long-poll would be nice" sees the prior art and doesn't try the same approach.  Harness in `tests/e2e/driver.py` uses 250 ms polling instead.
+- **Prevention:**
+  1. **Single-thread http servers cannot host long-poll handlers** — a `vTaskDelay` inside the request handler is equivalent to taking the whole server offline for the wait duration.  If you need push-style notification, either (a) use a different transport (a dedicated WebSocket on a separate task), (b) spawn a per-request background task via `httpd_queue_work`, or (c) just tell the client to poll faster.
+  2. **Per-iteration heap allocation in tight loops on ESP32 is suspicious** — even if balanced (alloc + free), the TLSF heap fragments.  Allocate-once + reuse, or batch the work outside the loop.
+
+### Diagnostic event-snapshots advance the cursor that subsequent waiters need
+- **Date:** 2026-04-27
+- **Symptom:** Harness's `await_event("camera.capture", timeout_s=10)` failed after a `tap(360,1100)` even though `/screenshot` clearly showed "Photo saved!" toast and direct `/events?since=0` confirmed `camera.capture` was in the ring.
+- **Root Cause:** `Tab5Driver.events()` advances `_last_event_ms` to the latest event's timestamp on every call.  The scenario runner's per-step diagnostic block called `events(since_ms=events_before)` to capture what fired during the step — and inadvertently advanced the cursor *past* the events it captured.  The next step's `await_event` started polling from a cursor that was already in the future relative to the events it was looking for.
+- **Fix:** Added `peek=True` parameter to `events()`.  When `peek=True`, the cursor doesn't advance.  The scenario runner's diagnostic snapshot uses `peek=True`; explicit `await_event` still advances the cursor.
+- **Prevention:**
+  1. **Stateful side effects in "read" methods are easy to write and hard to debug.**  Whenever a read advances a cursor, give callers an opt-out for the side effect.
+  2. **Diagnostic plumbing should never compete with primary control plumbing.**  Capturing "what happened" for a report is observation; consuming events for routing is action.  Separate the two.

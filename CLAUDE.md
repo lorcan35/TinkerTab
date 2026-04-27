@@ -200,7 +200,108 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/voice
 
 # Self-test (no auth needed)
 curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
+
+# ── Harness-friendly endpoints (#293/#294/#296/#297, April 2026) ──
+# Current screen + overlay visibility (chat/voice/settings)
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/screen | python3 -m json.tool
+# → {"current":"home","overlays":{"chat":false,"voice":false,"settings":false}}
+
+# Type into the focused LVGL textarea — also accepts ?text=&submit=1 query.
+# submit=true dispatches LV_EVENT_READY (same event the Done key fires).
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/input/text \
+     -d '{"text":"hello world","submit":true}'
+
+# Long-press at a coordinate (450ms default; 500-5000ms range via duration_ms)
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch \
+     -d '{"x":360,"y":640,"action":"long_press","duration_ms":1200}'
+
+# Swipe between tile pages (20ms step cadence; 50-3000ms total via duration_ms)
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch \
+     -d '{"action":"swipe","x1":600,"y1":640,"x2":120,"y2":640,"duration_ms":300}'
+
+# Observability events ring — read everything since uptime_ms=N.
+# Kinds: obs, screen.navigate, voice.state, ws.connect, ws.disconnect,
+#        chat.llm_done, camera.capture, camera.record_start, camera.record_stop,
+#        display.brightness, audio.volume, audio.mic_mute, nvs.
+# Polling-only (long-poll was tried + reverted: PANIC under load on
+# single-threaded httpd — see LEARNINGS).
+curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.1.90:8080/events?since=0" | python3 -m json.tool
 ```
+
+### Observability events
+`tab5_debug_obs_event(kind, detail)` (in `main/debug_obs.{c,h}`) writes to a 32-slot
+ring; `GET /events?since=N` returns everything with `ms >= N`.  Each entry has
+`{"ms": uptime_ms, "kind": "category.subkind", "detail": "..."}`.
+
+| Kind | Where it fires | Detail |
+|------|----------------|--------|
+| `obs` | Boot | `"init"` once |
+| `screen.navigate` | `POST /navigate` handler | target screen name |
+| `voice.state` | `voice_set_state()` on every state transition | `IDLE`/`CONNECTING`/`READY`/`LISTENING`/`PROCESSING`/`SPEAKING`/`RECONNECTING` |
+| `ws.connect` / `ws.disconnect` | WS event handler | empty |
+| `chat.llm_done` | WS llm_done JSON handler | `llm_ms` value as string |
+| `camera.capture` | `capture_btn_cb` after photo saved | absolute SD path |
+| `camera.record_start` / `camera.record_stop` | `cb_record_btn` toggle | path + frame/byte counts on stop |
+| `display.brightness` | `POST /display/brightness` handler | percentage |
+| `audio.volume` / `audio.mic_mute` | `POST /audio` handler | new value |
+| `nvs` | `POST /nvs/erase` | `"erase"` |
+
+The `kind` buffer is 32 chars; `detail` is 48 chars (silently truncated past those).
+Ring is 256 entries, FIFO eviction.
+
+## End-to-End Test Harness
+
+Python-driven scenario runner in [`tests/e2e/`](./tests/e2e/) that drives Tab5
+through long user-story flows via the debug HTTP server above.  See
+[`tests/e2e/README.md`](./tests/e2e/README.md) for the authoring guide.
+
+```bash
+cd ~/projects/TinkerTab
+export TAB5_TOKEN=05eed3b13bf62d92cfd8ac424438b9f2
+
+python3 tests/e2e/runner.py story_smoke    # ~2 min  — nav + voice + camera basics
+python3 tests/e2e/runner.py story_full     # ~2 min  — all 4 voice modes + photo + REC + cloud chat
+python3 tests/e2e/runner.py story_stress   # ~10 min — 6 cycles of mode×screen×chat with heap watchdog
+python3 tests/e2e/runner.py all --reboot   # all 3 with a clean reboot first
+```
+
+Each run produces a per-run directory under `tests/e2e/runs/` (gitignored)
+with:
+- `report.json` — machine-readable pass/fail per step + events captured
+- `report.md`   — human-readable table with inline screenshots
+- `NN_<step>.jpg` — per-step JPEG screenshot
+
+Last validated 2026-04-27: **smoke 14/14, full 24/24, stress 76/77 (single
+LLM-timeout flake — Q6A latency, not a regression)**.
+
+### Driver primitives
+`Tab5Driver` in [`tests/e2e/driver.py`](./tests/e2e/driver.py) wraps the debug
+HTTP API.  Key building blocks:
+- `tab5.tap(x, y)` / `long_press(x, y, ms)` / `swipe(x1, y1, x2, y2)`
+- `tab5.navigate("camera")` (auto-debounced — 600 ms minimum gap)
+- `tab5.screen()` / `tab5.voice_state()` / `tab5.heap()`
+- `tab5.chat(text)` / `tab5.input_text(text, submit=False)`
+- `tab5.mode(0|1|2|3, model="...")`
+- `tab5.camera_frame(save_path)` / `tab5.video_call_start(fps)` / `tab5.call_status()`
+- `tab5.screenshot("/path.jpg")`
+- `tab5.await_event(kind, timeout_s, detail_match=...)` — polls `/events`
+- `tab5.await_voice_state("READY", 60)` — polls `/voice` AND watches events
+- `tab5.await_screen("camera", 5)` / `tab5.await_llm_done(180)`
+
+### Bugs the harness has caught
+Listed in chronological order from real runs:
+1. **Cursor-stealing in events polling** — diagnostic per-step snapshot was
+   advancing `_last_event_ms`, so subsequent `await_event` missed events fired
+   during prior steps.  Fixed via `events(peek=True)`.  See LEARNINGS in
+   TinkerBox repo (#92).
+2. **`obs_event_t.kind` 16-char buffer too small** — `camera.record_start`
+   silently truncated to `camera.record_s`.  Bumped to 32 (#294 / `debug_obs.c`).
+3. **Boot `READY` race** — `await_voice_state` only polled future events;
+   boot's `voice.state READY` fires before harness reset its cursor.  Fixed
+   to also poll `/voice` current state every ~1 s.
+4. **`/events` long-poll attempt → PANIC** — ESP-IDF httpd is single-task,
+   `vTaskDelay` blocked all other requests + accumulated heap fragmentation.
+   Reverted; harness uses 250 ms polling.
 
 ## ESP32-P4 Memory Rules
 - **PSRAM for large buffers (>4KB):** Use `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)`. Static BSS arrays eat limited internal SRAM (~512KB shared with FreeRTOS).
@@ -271,9 +372,43 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 - **Driver:** Uses `esp_video` + `esp_cam_sensor` stack from M5Stack (NOT raw CSI API)
 - **Resolution:** 1280×720 @ 30fps RGB565
 - **Exposure:** Tuned for indoor lighting (SCCB register writes post-init)
-- **Debug:** `GET /camera` returns live frame as BMP
+- **Debug:** `GET /camera` returns live frame as JPEG
 - **CONFIG_CAMERA_SC202CS=y** must be set in sdkconfig (sensor won't compile without it!)
-- **Software rotation:** NVS `cam_rot` (0/1/2/3 = 0/90/180/270° CW) is applied to each captured frame before display/upload. Settings dropdown writes the key. Added in #261.
+- **Software rotation:** NVS `cam_rot` (0/1/2/3 = 0/90/180/270° CW) is applied to each captured frame before display/upload. Settings dropdown + an in-viewfinder "Rot" button writes the key. Added in #261; live cycle button + PIP rotation in #290.
+
+### Photo capture
+Tap the white circular shutter button (center of the bottom control bar). Saved
+as `/sdcard/IMG_NNNN.jpg` (4-digit counter resumed from existing files on boot).
+Emits `camera.capture` obs event with the saved path. When the camera screen was
+launched from the chat overlay (via "Send photo" button), the capture also
+auto-uploads to Dragon's `/api/media/upload` and announces a `user_image` WS
+event so the chat threads it inline.
+
+### Video recording (#291)
+Tap the red-bordered REC pill button (right of the shutter, before Gallery).
+Records concatenated motion-JPEG to `/sdcard/VID_NNNN.MJP` at 5 fps,
+quality 60, with the same `cam_rot` applied so the recording matches the
+viewfinder.  Tap REC again to stop.
+
+- **File format:** `.MJP` (3-char extension because `CONFIG_FATFS_LFN_NONE=1`
+  forces 8.3 short names — `.mjpeg` would fail). ffmpeg + VLC sniff the magic
+  bytes and play these natively: `ffplay -f mjpeg VID_NNNN.MJP`.
+- **Encoder:** Shared with `voice_video.c` (the call-streaming module) via
+  `voice_video_encode_rgb565()`.  ESP32-P4 has only one HW JPEG engine —
+  attempting to allocate a second crashes with "no memory for jpeg encoder
+  rxlink".  Mutex-guarded inside `voice_video.c`.
+- **Hard cap:** 1500 frames (5 min × 60 s × 5 fps).  Exceeding the cap auto-
+  stops the recording.
+- **DMA buffers:** Allocated lazily on first record start via
+  `jpeg_alloc_encoder_mem()` (DMA-aligned PSRAM); freed when the camera
+  screen is destroyed.  Plain `heap_caps_malloc` doesn't satisfy the JPEG
+  engine's bit-stream alignment requirement.
+- **Auto-upload to Dragon:** On stop, `voice_upload_chat_image(s_rec_path)`
+  POSTs the file to `/api/media/upload`.  The response `media_id` is then
+  announced as a `user_image` WS event so it appears in the chat thread.
+- **Obs events:** `camera.record_start` (path) and `camera.record_stop`
+  (`path frames=N bytes=N`).  The e2e harness (`story_full`) exercises the
+  full start → 6 s record → stop cycle.
 
 ## Two-way Video Calling (April 2026)
 
