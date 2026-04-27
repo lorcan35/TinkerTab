@@ -2,7 +2,10 @@
 #include "md_strip.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
+#include <strings.h>
+#include <stdint.h>
 #include <ctype.h>
 
 static bool is_line_start(const char *buf, const char *p)
@@ -94,4 +97,99 @@ void md_strip_inline_with_ellipsis(const char *in, char *out, size_t out_cap)
         out[written++] = (char)0xA6;
         out[written]   = 0;
     }
+}
+
+/* Issues #78 + #160 — see md_strip.h.
+ *
+ * State-machine scrub of `<tag>...</tag>` regions for the well-known
+ * Dragon tool-call markers.  We deliberately only strip these two tags
+ * — a generic "remove all XML" would mangle legitimate prose like
+ * "<3" or "x<5".  Case-insensitive on the tag name, content between
+ * tags is dropped, surrounding whitespace is collapsed.
+ */
+
+static bool tag_match_at(const char *s, size_t n, size_t at,
+                         const char *tag, size_t tag_len)
+{
+    if (at + tag_len + 2 > n) return false;
+    if (s[at] != '<') return false;
+    if (strncasecmp(s + at + 1, tag, tag_len) != 0) return false;
+    char terminator = s[at + 1 + tag_len];
+    /* Accept "<tool>" or "<tool ".  Reject "<tools" / "<tooling". */
+    return terminator == '>' || terminator == ' ' || terminator == '\t';
+}
+
+static bool close_tag_match_at(const char *s, size_t n, size_t at,
+                               const char *tag, size_t tag_len)
+{
+    if (at + tag_len + 3 > n) return false;
+    if (s[at] != '<' || s[at + 1] != '/') return false;
+    if (strncasecmp(s + at + 2, tag, tag_len) != 0) return false;
+    return s[at + 2 + tag_len] == '>';
+}
+
+static size_t skip_to_close(const char *s, size_t n, size_t from,
+                            const char *tag, size_t tag_len)
+{
+    /* Walk forward past the open tag's '>' first. */
+    size_t i = from;
+    while (i < n && s[i] != '>') i++;
+    if (i < n) i++;  /* past '>' */
+    /* Scan for </tag>.  If unbalanced, give up at end of string. */
+    while (i < n) {
+        if (close_tag_match_at(s, n, i, tag, tag_len)) {
+            return i + tag_len + 3;  /* past </tag> */
+        }
+        i++;
+    }
+    return n;
+}
+
+void md_strip_tool_markers(const char *in, char *out, size_t out_cap)
+{
+    if (!out || out_cap == 0) return;
+    if (!in) { out[0] = 0; return; }
+
+    static const char *kTags[] = { "tool", "args" };
+    static const size_t kTagLens[] = { 4, 4 };
+    const size_t kNumTags = sizeof(kTags) / sizeof(kTags[0]);
+
+    size_t n = strlen(in);
+    size_t oi = 0;
+    size_t i = 0;
+    while (i < n && oi + 1 < out_cap) {
+        bool stripped = false;
+        for (size_t t = 0; t < kNumTags; t++) {
+            if (tag_match_at(in, n, i, kTags[t], kTagLens[t])) {
+                i = skip_to_close(in, n, i, kTags[t], kTagLens[t]);
+                /* Emit a sentinel space so "Sure.<tool>...</args>Here"
+                 * collapses to "Sure. Here" instead of "Sure.Here".
+                 * The whitespace-collapse pass below normalises adjacent
+                 * spaces, so we don't have to worry about doubles. */
+                if (oi + 1 < out_cap) out[oi++] = ' ';
+                stripped = true;
+                break;
+            }
+        }
+        if (stripped) continue;
+        out[oi++] = in[i++];
+    }
+    out[oi] = 0;
+
+    /* Collapse runs of whitespace introduced by the strip + trim leading/
+     * trailing space.  In-place compaction. */
+    size_t r = 0, w = 0;
+    bool in_ws = true;  /* start in trim-leading mode */
+    while (r < oi) {
+        unsigned char c = (unsigned char)out[r++];
+        bool ws = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+        if (ws) {
+            if (!in_ws) { out[w++] = ' '; in_ws = true; }
+        } else {
+            out[w++] = (char)c;
+            in_ws = false;
+        }
+    }
+    while (w > 0 && out[w - 1] == ' ') w--;
+    out[w] = 0;
 }

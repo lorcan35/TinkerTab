@@ -2606,6 +2606,36 @@ static esp_err_t chat_messages_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* ── POST /chat/llm_done?text=<> ────────────────────────────────
+ * #78 + #160 verification: feed `text` through the same
+ * md_strip_tool_markers + ui_chat_push_message path voice.c's
+ * llm_done handler runs.  Verifies the Tab5-side defensive scrub
+ * without needing Dragon to actually emit a tool-call. */
+extern void md_strip_tool_markers(const char *in, char *out, size_t out_cap);
+static void url_pct_decode_inplace(char *s);   /* defined further below */
+static esp_err_t chat_llm_done_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    char q[1024] = {0}, text[800] = {0};
+    httpd_req_get_url_query_str(req, q, sizeof(q));
+    httpd_query_key_value(q, "text", text, sizeof(text));
+    url_pct_decode_inplace(text);
+    cJSON *root = cJSON_CreateObject();
+    if (!text[0]) {
+        cJSON_AddStringToObject(root, "error", "need ?text=<llm response>");
+        return send_json_resp(req, root);
+    }
+    char clean[800];
+    md_strip_tool_markers(text, clean, sizeof(clean));
+    if (clean[0]) {
+        ui_chat_push_message("assistant", clean);
+    }
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "raw", text);
+    cJSON_AddStringToObject(root, "after_strip", clean);
+    return send_json_resp(req, root);
+}
+
 /* ── POST /chat/partial?text=<> ─────────────────────────────────
  * U12 (#206) verification helper: shove a string into the live
  * STT-partial caption above the chat input pill.  Empty text hides. */
@@ -2991,6 +3021,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_chat_audio     = { .uri = "/chat/audio_clip",.method = HTTP_POST, .handler = chat_audio_clip_handler };
     const httpd_uri_t uri_tool_push      = { .uri = "/tool_log/push",  .method = HTTP_POST, .handler = tool_log_push_handler };
     const httpd_uri_t uri_chat_partial   = { .uri = "/chat/partial",   .method = HTTP_POST, .handler = chat_partial_handler };
+    const httpd_uri_t uri_chat_llm_done  = { .uri = "/chat/llm_done",  .method = HTTP_POST, .handler = chat_llm_done_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
 
@@ -3041,6 +3072,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_chat_audio);
     httpd_register_uri_handler(server, &uri_tool_push);
     httpd_register_uri_handler(server, &uri_chat_partial);
+    httpd_register_uri_handler(server, &uri_chat_llm_done);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
 
