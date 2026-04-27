@@ -13,6 +13,7 @@
 #include "ui_feedback.h"
 #include "camera.h"
 #include "sdcard.h"
+#include "voice.h"      /* U11 follow-up: voice_upload_chat_image() */
 #include "config.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -40,6 +41,16 @@ static const char *TAG = "ui_camera";
 
 /* ── Preview timer ───────────────────────────────────────────── */
 #define PREVIEW_FPS_MS  100   /* ~10 fps */
+
+/* U11 photo-share follow-up: armed by ui_chat's camera button before
+ * launching the camera screen.  capture_btn_cb consumes + clears it on
+ * the next save so a regular Camera-from-nav capture isn't auto-shared. */
+static bool s_chat_share_armed = false;
+
+void ui_camera_arm_chat_share(void)
+{
+    s_chat_share_armed = true;
+}
 
 /* ── Toast duration ──────────────────────────────────────────── */
 #define TOAST_DURATION_MS  2000
@@ -495,7 +506,17 @@ static void capture_btn_cb(lv_event_t *e)
         lv_label_set_text(lbl_gallery, buf);
     }
 
-    toast_show("Photo saved!");
+    /* U11 photo-share follow-up: if the camera was launched from chat
+     * (s_chat_share_armed is set in ui_chat::on_camera_tap), upload the
+     * fresh BMP to Dragon and let the WS broadcast back the signed
+     * `media` event so the chat overlay shows it as an image bubble. */
+    if (s_chat_share_armed) {
+        s_chat_share_armed = false;
+        voice_upload_chat_image(path);
+        toast_show("Sending to chat...");
+    } else {
+        toast_show("Photo saved!");
+    }
 }
 
 /* ================================================================

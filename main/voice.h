@@ -183,3 +183,11 @@ void voice_force_reconnect(void);
  *  so an Internet-Only / LAN-Only switch takes effect immediately
  *  instead of waiting for the user to power-cycle. */
 void voice_reapply_connection_mode(void);
+
+/** Photo-share follow-up to U11: read \p filepath from the SD card,
+ *  POST it to Dragon's \c /api/media/upload, then send the resulting
+ *  \c media_id over the voice WS so Dragon broadcasts back a signed
+ *  \c media event the chat overlay can render as an inline image
+ *  bubble.  Async + soft-failing — the call returns immediately and
+ *  the upload runs on the shared task_worker. */
+void voice_upload_chat_image(const char *filepath);
