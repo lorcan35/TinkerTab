@@ -214,6 +214,24 @@ static void cb_back_btn(lv_event_t *e)
     lv_screen_load(ui_home_get_screen());
 }
 
+/* #286: live rotation cycle — 0→1→2→3→0.  Persists to NVS + tears
+ * down + recreates the camera screen so the new canvas dimensions
+ * are picked up.  Defined non-static so the topbar builder can
+ * forward-declare via extern. */
+void cb_rotate_btn(lv_event_t *e)
+{
+    (void)e;
+    uint8_t cur = tab5_settings_get_cam_rotation();
+    uint8_t nxt = (uint8_t)((cur + 1) & 0x03);
+    tab5_settings_set_cam_rotation(nxt);
+    ESP_LOGI(TAG, "cam_rot live cycle %u -> %u", cur, nxt);
+    /* Recreate the screen so alloc_canvas_buffer picks up the new
+     * dimensions.  Cheap — destroy+create round trip is ~50 ms. */
+    ui_camera_destroy();
+    extern lv_obj_t *ui_camera_create(void);
+    ui_camera_create();
+}
+
 /* ================================================================
  * ui_camera_create
  * ================================================================ */
@@ -319,6 +337,33 @@ lv_obj_t *ui_camera_create(void)
         lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
         lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
         lv_obj_center(arrow);
+
+        /* #286: live rotate button — cycles cam_rot 0→1→2→3→0 in one
+         * tap and recreates the camera screen so the new rotation
+         * applies immediately.  Saves the user a trip to Settings. */
+        {
+            extern void cb_rotate_btn(lv_event_t *e);
+            lv_obj_t *btn_rot = lv_button_create(topbar);
+            lv_obj_remove_style_all(btn_rot);
+            lv_obj_set_size(btn_rot, 100, 48);
+            lv_obj_set_style_bg_color(btn_rot, lv_color_hex(0x1A1A24), 0);
+            lv_obj_set_style_bg_opa(btn_rot, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(btn_rot, 12, 0);
+            lv_obj_align(btn_rot, LV_ALIGN_LEFT_MID, 96, 0);
+            lv_obj_add_event_cb(btn_rot, cb_rotate_btn, LV_EVENT_CLICKED, NULL);
+            ui_fb_button(btn_rot);
+            lv_obj_t *rot_lbl = lv_label_create(btn_rot);
+            char buf[16];
+            /* Read NVS directly — s_cam_rot is snapshotted later in
+             * ui_camera_create's alloc_canvas_buffer step, so it's
+             * still stale at this point. */
+            snprintf(buf, sizeof(buf), "Rot %u",
+                     (unsigned)(tab5_settings_get_cam_rotation() & 0x03));
+            lv_label_set_text(rot_lbl, buf);
+            lv_obj_set_style_text_color(rot_lbl, lv_color_hex(COL_WHITE), 0);
+            lv_obj_set_style_text_font(rot_lbl, FONT_BODY, 0);
+            lv_obj_center(rot_lbl);
+        }
 
         /* v4·D Phase 4b vision chip — right-aligned violet pill that reads
          * "VISION · <MODEL>  READY" when Dragon has advertised a
