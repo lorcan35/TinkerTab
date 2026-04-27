@@ -49,6 +49,13 @@ static const char *TAG = "ui_video_pane";
 #define MUTE_PAD    16
 #define STATUS_FPS_MS  1000  /* 1 Hz status refresh */
 
+/* #282: minimize pill top-left + floating "On call" chip on lv_layer_top */
+#define MIN_W       96
+#define MIN_H       48
+#define CHIP_W      136
+#define CHIP_H      40
+#define CHIP_PAD    16
+
 static lv_obj_t *s_root      = NULL;
 static lv_obj_t *s_image     = NULL;
 static lv_obj_t *s_pip_canvas = NULL;
@@ -64,6 +71,12 @@ static lv_obj_t *s_status_lbl = NULL;
 static lv_timer_t *s_status_timer = NULL;
 static uint32_t s_last_recv_count_seen = 0;
 static int64_t  s_last_recv_change_us  = 0;
+/* #282 minimize chrome + floating "On call" chip on lv_layer_top */
+static lv_obj_t *s_min_btn       = NULL;
+static lv_obj_t *s_chip          = NULL;
+static lv_obj_t *s_chip_lbl      = NULL;
+static lv_timer_t *s_chip_timer  = NULL;
+static bool s_minimized = false;
 
 static uint8_t *s_pip_buf = NULL;   /* RGB565 PIP_W*PIP_H*2 bytes in PSRAM */
 
@@ -128,6 +141,55 @@ static void on_mute_btn(lv_event_t *e)
         lv_obj_set_style_bg_color(s_mute_btn,
             now ? lv_color_hex(0xEF4444) : lv_color_hex(0x1F2937), 0);
     }
+}
+
+/* #282: minimize handler — hide the pane (LV_OBJ_FLAG_HIDDEN) so the
+ * floating chip on lv_layer_top can show through.  Call keeps running. */
+static void on_min_btn(lv_event_t *e)
+{
+    (void)e;
+    ui_video_pane_minimize();
+}
+
+/* Tap the floating chip → restore the pane. */
+static void on_chip_click(lv_event_t *e)
+{
+    (void)e;
+    ui_video_pane_restore();
+}
+
+/* #282 chip timer.  1 Hz: show chip iff (in_call OR incoming) AND
+ * pane is currently hidden (minimized).  Lazy-creates the chip the
+ * first time it's needed, hides it via flag the rest of the time. */
+static void chip_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    bool want_chip = (s_in_call || s_incoming) && s_minimized;
+    if (!want_chip) {
+        if (s_chip) lv_obj_add_flag(s_chip, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    if (!s_chip) {
+        lv_obj_t *layer = lv_layer_top();
+        if (!layer) return;
+        s_chip = lv_button_create(layer);
+        lv_obj_remove_style_all(s_chip);
+        lv_obj_set_size(s_chip, CHIP_W, CHIP_H);
+        /* Top-right corner of the screen, just below the status strip. */
+        lv_obj_set_pos(s_chip, VP_W - CHIP_W - CHIP_PAD, CHIP_PAD);
+        lv_obj_set_style_radius(s_chip, CHIP_H / 2, 0);
+        lv_obj_set_style_bg_color(s_chip, lv_color_hex(0xEF4444), 0);
+        lv_obj_set_style_bg_opa(s_chip, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(s_chip, on_chip_click, LV_EVENT_CLICKED, NULL);
+
+        s_chip_lbl = lv_label_create(s_chip);
+        lv_label_set_text(s_chip_lbl, "On call");
+        lv_obj_set_style_text_color(s_chip_lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(s_chip_lbl);
+    }
+    lv_obj_remove_flag(s_chip, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_chip);
 }
 
 /* #280 status timer.  Picks one of CALLING / CONNECTED / PEER LEFT
@@ -290,6 +352,29 @@ static void build_call_chrome(void)
         s_status_timer = lv_timer_create(status_timer_cb, STATUS_FPS_MS, NULL);
         status_timer_cb(NULL);   /* immediate first paint */
     }
+
+    /* #282: minimize pill (top-left) — hides the pane so the floating
+     * "On call" chip on lv_layer_top takes over.  Call keeps running. */
+    if (!s_min_btn) {
+        s_min_btn = lv_button_create(s_root);
+        lv_obj_remove_style_all(s_min_btn);
+        lv_obj_set_size(s_min_btn, MIN_W, MIN_H);
+        lv_obj_set_pos(s_min_btn, MUTE_PAD, MUTE_PAD);
+        lv_obj_set_style_radius(s_min_btn, MIN_H / 2, 0);
+        lv_obj_set_style_bg_color(s_min_btn, lv_color_hex(0x1F2937), 0);
+        lv_obj_set_style_bg_opa(s_min_btn, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(s_min_btn, on_min_btn, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(s_min_btn);
+        lv_label_set_text(lbl, "Hide");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(lbl);
+    }
+    if (!s_chip_timer) {
+        /* Long-lived timer — checks once a second whether to show the
+         * floating chip.  Killed in ui_video_pane_hide alongside the
+         * other timers. */
+        s_chip_timer = lv_timer_create(chip_timer_cb, 1000, NULL);
+    }
 }
 
 void ui_video_pane_show(void)
@@ -420,6 +505,18 @@ void ui_video_pane_hide(void)
         lv_timer_delete(s_status_timer);
         s_status_timer = NULL;
     }
+    if (s_chip_timer) {
+        lv_timer_delete(s_chip_timer);
+        s_chip_timer = NULL;
+    }
+    /* Floating chip lives on lv_layer_top, not s_root — delete it
+     * explicitly so it doesn't survive a hide(). */
+    if (s_chip) {
+        lv_obj_delete(s_chip);
+        s_chip = NULL;
+        s_chip_lbl = NULL;
+    }
+    s_minimized = false;
     if (s_root) {
         /* lv_obj_delete recurses to children — no need to delete each
          * child first.  Just NULL the static handles so we don't keep
@@ -435,6 +532,7 @@ void ui_video_pane_hide(void)
         s_mute_btn      = NULL;
         s_mute_lbl      = NULL;
         s_status_lbl    = NULL;
+        s_min_btn       = NULL;
     }
     if (s_pip_buf) {
         heap_caps_free(s_pip_buf);
@@ -446,7 +544,31 @@ void ui_video_pane_hide(void)
 
 bool ui_video_pane_is_visible(void)
 {
-    return s_root != NULL;
+    return s_root != NULL && !s_minimized;
+}
+
+void ui_video_pane_minimize(void)
+{
+    if (!s_root || s_minimized) return;
+    lv_obj_add_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+    s_minimized = true;
+    /* Force chip timer to paint immediately so the chip pops without
+     * waiting for the next 1 s tick. */
+    if (s_chip_timer) chip_timer_cb(NULL);
+}
+
+void ui_video_pane_restore(void)
+{
+    if (!s_root || !s_minimized) return;
+    lv_obj_remove_flag(s_root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_root);
+    s_minimized = false;
+    if (s_chip) lv_obj_add_flag(s_chip, LV_OBJ_FLAG_HIDDEN);
+}
+
+bool ui_video_pane_is_minimized(void)
+{
+    return s_minimized;
 }
 
 bool ui_video_pane_is_in_call(void)
