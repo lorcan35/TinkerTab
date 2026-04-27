@@ -2144,6 +2144,55 @@ static esp_err_t voice_reconnect_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ── #266: live video streaming control (POST /video/start, /video/stop,
+ *           GET /video) ─────────────────────────────────────────────── */
+#include "voice_video.h"
+static esp_err_t send_json_resp(httpd_req_t *req, cJSON *root);
+static esp_err_t video_start_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    int fps = VOICE_VIDEO_DEFAULT_FPS;
+    char q[64] = {0}, v[16] = {0};
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "fps", v, sizeof(v)) == ESP_OK) {
+        int n = atoi(v);
+        if (n > 0 && n <= VOICE_VIDEO_MAX_FPS) fps = n;
+    }
+    esp_err_t err = voice_video_start_streaming(fps);
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", err == ESP_OK);
+    cJSON_AddNumberToObject(root, "fps", fps);
+    if (err != ESP_OK) {
+        cJSON_AddStringToObject(root, "error", esp_err_to_name(err));
+    }
+    return send_json_resp(req, root);
+}
+
+static esp_err_t video_stop_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    voice_video_stop_streaming();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    return send_json_resp(req, root);
+}
+
+static esp_err_t video_state_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    voice_video_stats_t s;
+    voice_video_get_stats(&s);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "active",          s.active);
+    cJSON_AddNumberToObject(root, "fps",           s.fps);
+    cJSON_AddNumberToObject(root, "frames_sent",   (double)s.frames_sent);
+    cJSON_AddNumberToObject(root, "frames_dropped",(double)s.frames_dropped);
+    cJSON_AddNumberToObject(root, "bytes_sent",    (double)s.bytes_sent);
+    cJSON_AddNumberToObject(root, "last_jpeg_bytes",(double)s.last_jpeg_bytes);
+    return send_json_resp(req, root);
+}
+
 /* ── Wave 12 observability: /heap endpoint ─────────────────────────────
  *
  * Exposes the per-pool heap state + last reboot reason in one call so
@@ -3138,6 +3187,16 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_voice_reconnect = {
         .uri = "/voice/reconnect", .method = HTTP_POST, .handler = voice_reconnect_handler
     };
+    /* #266: live video streaming control. */
+    const httpd_uri_t uri_video_start = {
+        .uri = "/video/start", .method = HTTP_POST, .handler = video_start_handler
+    };
+    const httpd_uri_t uri_video_stop = {
+        .uri = "/video/stop",  .method = HTTP_POST, .handler = video_stop_handler
+    };
+    const httpd_uri_t uri_video_state = {
+        .uri = "/video",       .method = HTTP_GET,  .handler = video_state_handler
+    };
     const httpd_uri_t uri_dictation_post = {
         .uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler
     };
@@ -3202,6 +3261,9 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_chat);
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
+    httpd_register_uri_handler(server, &uri_video_start);
+    httpd_register_uri_handler(server, &uri_video_stop);
+    httpd_register_uri_handler(server, &uri_video_state);
     httpd_register_uri_handler(server, &uri_dictation_post);
     httpd_register_uri_handler(server, &uri_dictation_get);
     httpd_register_uri_handler(server, &uri_wifi_kick);
