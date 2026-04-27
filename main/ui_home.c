@@ -89,7 +89,8 @@ static const char *TAG = "ui_home";
  * Nav rail hidden (Sovereign spec: navigation lives behind the menu chip).
  * Total chrome: 40 pad + 104 strip = 144 px (was ~218 px with rail). */
 #define STRIP_BOT_PAD     40
-#define RAIL_H            0       /* rail hidden */
+/* RAIL_H removed (U19 #206): the v4·D nav-rail was hidden then deleted;
+ * its layout placeholder was already 0 px so removing it is a no-op. */
 #define SAY_H             104
 #define SAY_GAP           0
 
@@ -139,8 +140,7 @@ static lv_obj_t *s_say_pill        = NULL;
 static lv_obj_t *s_say_mic         = NULL;
 static lv_obj_t *s_say_label_main  = NULL;
 static lv_obj_t *s_say_label_sub   = NULL;
-static lv_obj_t *s_rail            = NULL;
-static lv_obj_t *s_rail_btn[4]     = {NULL, NULL, NULL, NULL};
+/* U19 (#206): the rail was already hidden post-create; deleted entirely. */
 
 /* Toast + timer */
 static lv_obj_t   *s_toast         = NULL;
@@ -187,10 +187,7 @@ static void screen_gesture_cb(lv_event_t *e);
 static void now_card_click_cb(lv_event_t *e);
 static void sys_click_cb(lv_event_t *e);
 static void mode_chip_long_press_cb(lv_event_t *e);
-static void rail_home_cb(lv_event_t *e);
-static void rail_threads_cb(lv_event_t *e);
-static void rail_notes_cb(lv_event_t *e);
-static void rail_settings_cb(lv_event_t *e);
+/* U19 (#206): rail callbacks removed with the rail itself. */
 static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
 static void orb_paint_for_mode(uint8_t mode);
@@ -568,7 +565,7 @@ lv_obj_t *ui_home_create(void)
     }
 
     /* ── Say pill (108 px) ─────────────────────────────────── */
-    const int strip_y = SH - STRIP_BOT_PAD - RAIL_H - SAY_GAP - SAY_H;
+    const int strip_y = SH - STRIP_BOT_PAD - SAY_GAP - SAY_H;
     s_say_pill = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_say_pill);
     lv_obj_set_pos(s_say_pill, SIDE_PAD, strip_y);
@@ -657,45 +654,14 @@ lv_obj_t *ui_home_create(void)
         }
     }
 
-    /* ── Rail (4 chips) ─ HIDDEN in v4·D Sovereign Halo ───────
-     * Still created so rail_*_cb callbacks stay connected, but hidden
-     * immediately after. The menu chip above fronts navigation now. */
-    const int rail_y = SH; /* offscreen -- rail is hidden in v4·D Sovereign Halo */
-    s_rail = lv_obj_create(s_screen);
-    lv_obj_add_flag(s_rail, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_style_all(s_rail);
-    lv_obj_set_pos(s_rail, SIDE_PAD, rail_y);
-    lv_obj_set_size(s_rail, CARD_W, RAIL_H);
-    lv_obj_clear_flag(s_rail, LV_OBJ_FLAG_SCROLLABLE);
-
-    const int rail_gap = 10;
-    const int chip_w = (CARD_W - rail_gap * 3) / 4;
-    const char *rail_names[4] = { "home", "chat", "notes", "settings" };
-    lv_event_cb_t rail_cbs[4] = { rail_home_cb, rail_threads_cb, rail_notes_cb, rail_settings_cb };
-
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *b = lv_obj_create(s_rail);
-        lv_obj_remove_style_all(b);
-        lv_obj_set_size(b, chip_w, RAIL_H);
-        lv_obj_set_pos(b, i * (chip_w + rail_gap), 0);
-        bool is_home = (i == 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(is_home ? TH_CARD_ELEVATED : TH_CARD), 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(b, 16, 0);
-        lv_obj_set_style_border_width(b, 1, 0);
-        lv_obj_set_style_border_color(b, lv_color_hex(is_home ? 0x24243a : 0x1E1E2A), 0);
-        lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(b, rail_cbs[i], LV_EVENT_CLICKED, NULL);
-
-        lv_obj_t *lbl = lv_label_create(b);
-        lv_label_set_text(lbl, rail_names[i]);
-        lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(is_home ? TH_TEXT_PRIMARY : TH_TEXT_SECONDARY), 0);
-        lv_obj_center(lbl);
-
-        s_rail_btn[i] = b;
-    }
+    /* U19 (#206): rail removed.  v4·D Sovereign Halo replaced it with
+     * the bottom-right menu chip → ui_nav_sheet, so the rail container
+     * + 4 chip widgets + 4 labels (~80 LV objects) were just sitting
+     * hidden, eating internal-SRAM headroom and flex-layout cycles
+     * during ui_home_create.  The rail's per-chip callbacks
+     * (rail_home_cb / rail_threads_cb / rail_notes_cb / rail_settings_cb
+     * + their two async trampolines) had no other callers and went
+     * with it. */
 
     /* Initial fill */
     ui_home_update_status();
@@ -1527,23 +1493,10 @@ static void sys_click_cb(lv_event_t *e)
     ui_memory_show();
 }
 
-/* Rail handlers */
-static void rail_home_cb(lv_event_t *e)     { (void)e; /* already home */ }
-static void async_open_chat(void *arg)
-{
-    (void)arg;
-    extern lv_obj_t *ui_chat_create(void);
-    ui_chat_create();
-}
-static void rail_threads_cb(lv_event_t *e)  { (void)e; if (!any_overlay_visible()) lv_async_call(async_open_chat, NULL); }
-static void async_open_notes_rail(void *arg)
-{
-    (void)arg;
-    extern lv_obj_t *ui_notes_create(void);
-    ui_notes_create();
-}
-static void rail_notes_cb(lv_event_t *e)    { (void)e; if (!any_overlay_visible()) lv_async_call(async_open_notes_rail, NULL); }
-static void rail_settings_cb(lv_event_t *e) { (void)e; if (!any_overlay_visible()) ui_settings_create(); }
+/* U19 (#206): rail callbacks (rail_home_cb / rail_threads_cb /
+ * rail_notes_cb / rail_settings_cb) and their two async trampolines
+ * (async_open_chat / async_open_notes_rail) were exclusive to the
+ * deleted rail and had no other callers — removed with the rail. */
 
 static bool any_overlay_visible(void)
 {
@@ -1653,8 +1606,6 @@ void ui_home_destroy(void)
     s_now_card = s_now_accent = s_now_kicker = s_now_lede = NULL;
     for (int i = 0; i < 3; i++) s_stat_k[i] = s_stat_v[i] = NULL;
     s_say_pill = s_say_mic = s_say_label_main = s_say_label_sub = NULL;
-    s_rail = NULL;
-    for (int i = 0; i < 4; i++) s_rail_btn[i] = NULL;
     s_toast = NULL;
 }
 
