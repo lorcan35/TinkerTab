@@ -47,8 +47,16 @@ bool ui_video_pane_is_incoming(void);
  * — that's the caller's job (voice_video_end_call wraps both). */
 void ui_video_pane_hide(void);
 
-/* True iff the pane is currently visible. */
+/* True iff the pane is currently visible (not hidden via minimize). */
 bool ui_video_pane_is_visible(void);
+
+/* #282: minimize / restore.  Hides the pane (LV_OBJ_FLAG_HIDDEN)
+ * without tearing it down — call keeps running, child timers keep
+ * ticking, just not painted.  Restore re-shows + brings to front.
+ * Idempotent.  No-op if pane isn't open. */
+void ui_video_pane_minimize(void);
+void ui_video_pane_restore(void);
+bool ui_video_pane_is_minimized(void);
 
 /* True iff the pane is open in call mode (PIP + end-call button). */
 bool ui_video_pane_is_in_call(void);

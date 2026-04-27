@@ -2186,6 +2186,7 @@ static esp_err_t call_status_handler(httpd_req_t *req)
     /* Top-level call state */
     cJSON_AddBoolToObject(root, "in_call", voice_video_is_in_call());
     cJSON_AddBoolToObject(root, "pane_visible", ui_video_pane_is_visible());
+    cJSON_AddBoolToObject(root, "pane_minimized", ui_video_pane_is_minimized());
 
     /* Video subsection (uplink + downlink stats) */
     voice_video_stats_t v;
@@ -2276,6 +2277,30 @@ static esp_err_t call_unmute_handler(httpd_req_t *req)
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", true);
     cJSON_AddBoolToObject(root, "muted", muted);
+    return send_json_resp(req, root);
+}
+
+/* #282 minimize / restore: the call pane gets hidden but the call
+ * continues + a small "On call" chip on lv_layer_top lets the user
+ * re-show.  Both endpoints hop to the LVGL thread. */
+static void minimize_pane_async(void *arg) { (void)arg; ui_video_pane_minimize(); }
+static void restore_pane_async(void *arg)  { (void)arg; ui_video_pane_restore(); }
+
+static esp_err_t call_minimize_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    tab5_lv_async_call(minimize_pane_async, NULL);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    return send_json_resp(req, root);
+}
+
+static esp_err_t call_restore_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    tab5_lv_async_call(restore_pane_async, NULL);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
     return send_json_resp(req, root);
 }
 
@@ -3355,6 +3380,12 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_call_unmute = {
         .uri = "/call/unmute",      .method = HTTP_POST, .handler = call_unmute_handler
     };
+    const httpd_uri_t uri_call_minimize = {
+        .uri = "/call/minimize",    .method = HTTP_POST, .handler = call_minimize_handler
+    };
+    const httpd_uri_t uri_call_restore = {
+        .uri = "/call/restore",     .method = HTTP_POST, .handler = call_restore_handler
+    };
     const httpd_uri_t uri_dictation_post = {
         .uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler
     };
@@ -3429,6 +3460,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_call_status);
     httpd_register_uri_handler(server, &uri_call_mute);
     httpd_register_uri_handler(server, &uri_call_unmute);
+    httpd_register_uri_handler(server, &uri_call_minimize);
+    httpd_register_uri_handler(server, &uri_call_restore);
     httpd_register_uri_handler(server, &uri_dictation_post);
     httpd_register_uri_handler(server, &uri_dictation_get);
     httpd_register_uri_handler(server, &uri_wifi_kick);
