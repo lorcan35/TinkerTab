@@ -468,6 +468,22 @@ static void poll_voice(lv_timer_t *t)
 
 lv_obj_t *ui_chat_create(void)
 {
+    /* #229 fix: when the user navigates "camera -> chat", the
+     * navigate handler tears down the camera screen (lv_obj_delete on
+     * the active screen) before calling us.  If we don't ensure home
+     * is loaded as the active screen, our overlay (parented to home)
+     * hangs in a tree whose root isn't on any display.  LVGL's render
+     * timer then walks a stale screen list and calls
+     * lv_obj_update_layout(NULL), exploding inside lv_obj_pos.c:304.
+     * Mirrors the guard ui_memory / ui_focus / ui_agents / ui_sessions
+     * already have. */
+    {
+        lv_obj_t *home = ui_home_get_screen();
+        if (home && lv_screen_active() != home) {
+            lv_screen_load(home);
+        }
+    }
+
     if (s_overlay) {
         lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_overlay);
