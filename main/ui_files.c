@@ -163,6 +163,11 @@ static void cb_retry_sd(lv_event_t *e)
     }
     if (tab5_sdcard_mounted()) {
         rebuild_list();
+        /* U15 (#206): show_no_sd hid the bottombar (the "X GB free of Y"
+         * row) while the panel was up.  rebuild_list re-populates the
+         * file list but used to leave the bottom row hidden, so the
+         * surface looked stripped after a successful retry. */
+        if (bottombar) lv_obj_remove_flag(bottombar, LV_OBJ_FLAG_HIDDEN);
     } else {
         show_no_sd();
     }

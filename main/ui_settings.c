@@ -1015,14 +1015,19 @@ static void phase2_timer_cb(lv_timer_t *t)
     }
     y += ROW_H + 8;
 
-    /* Wave 4: "Show intro again" row — re-triggers the onboarding
-     * carousel without requiring an NVS erase.  Useful after a factory
-     * reset-like setup or when demoing the product. */
+    /* "Show intro again" row — re-triggers the onboarding carousel
+     * without requiring an NVS erase.  Useful after a factory-reset-
+     * like setup or when demoing the product.
+     *
+     * U17 (#206): was rendered in dim grey on dim grey ("buried"
+     * per the audit).  Promoted to the section-accent color (amber)
+     * so users can find it without scanning every row in About. */
     {
         extern void cb_replay_intro(lv_event_t *e);
-        lv_obj_t *intro_btn = mk_pill_btn(s_scroll, "Show intro again",
-                                          lv_color_hex(0x2A2A3A),
-                                          lv_color_hex(TEXT_DIM),
+        lv_obj_t *intro_btn = mk_pill_btn(s_scroll,
+                                          LV_SYMBOL_REFRESH " Show intro again",
+                                          acc_about,
+                                          lv_color_hex(TEXT_PRIMARY),
                                           SIDE_PAD, y + 3, CONTENT_W, 42, 8,
                                           cb_replay_intro);
         (void)intro_btn;
