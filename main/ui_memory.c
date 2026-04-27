@@ -172,11 +172,18 @@ static void render_hits_cb(void *arg)
      * see s_hits_root / s_stats_lbl dangling.  Cheap guard: just bail
      * if we're not currently visible. */
     if (!s_visible || !s_hits_root) return;
+    /* lv_obj_clean frees ALL children of s_hits_root, including
+     * s_loading (which was created as a child).  After this, s_loading
+     * is a freed pointer — the original code then called
+     * lv_obj_add_flag(s_loading, …) on freed memory, and under stress
+     * the LV pool reuses that slot for some other widget, corrupting
+     * its state until a later lv_obj_invalidate finds a NULL parent
+     * and crashes ui_task.  Caught via stress repro of #80; same
+     * class as the Wave 2 #229 chat-render bug.  NULL the pointer
+     * before the clean call so the (now-redundant) guard below stays
+     * truthful. */
+    s_loading = NULL;
     lv_obj_clean(s_hits_root);
-
-    if (s_loading) {
-        lv_obj_add_flag(s_loading, LV_OBJ_FLAG_HIDDEN);
-    }
 
     if (!s_last_fetch.ok) {
         lv_obj_t *err = lv_label_create(s_hits_root);
