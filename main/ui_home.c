@@ -694,6 +694,12 @@ lv_obj_t *ui_home_create(void)
      * content in subsequent strips is visible via /screenshot. */
     lv_refr_now(lv_display_get_default());
 
+    /* U16 (#206): boot-time hide of the floating keyboard trigger so
+     * its (640, 1136) hitbox doesn't shadow the home menu chip at
+     * (612..668, 1160..1216).  See ui_home_go_home for the rationale. */
+    extern void ui_keyboard_set_trigger_visible(bool);
+    ui_keyboard_set_trigger_visible(false);
+
     ESP_LOGI(TAG, "v4 Ambient Canvas home created (orb %dpx, mode %d)",
              ORB_SIZE, s_badge_mode);
     return s_screen;
@@ -1625,6 +1631,15 @@ void ui_home_go_home(void)
     /* Wave 4 UX: drop a stale idle voice overlay so the user sees home. */
     extern void ui_voice_dismiss_if_idle(void);
     ui_voice_dismiss_if_idle();
+    /* U16 (#206): the floating keyboard trigger sits on lv_layer_top()
+     * at (640, 1136) — directly on top of home's menu chip
+     * (612..668, 1160..1216).  Home has no text-input use case (the
+     * menu chip + orb-mic are the only affordances), so the trigger
+     * eats taps that should open the nav sheet.  Hide it on home;
+     * other screens (notes, wifi, settings textareas, etc.) restore
+     * it via ui_keyboard_set_trigger_visible(true). */
+    extern void ui_keyboard_set_trigger_visible(bool);
+    ui_keyboard_set_trigger_visible(false);
 }
 
 lv_obj_t *ui_home_get_tileview(void) { return NULL; }
