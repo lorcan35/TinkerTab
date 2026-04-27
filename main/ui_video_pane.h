@@ -31,6 +31,17 @@ void ui_video_pane_show(void);
  * mode upgrades in place. */
 void ui_video_pane_show_call(void);
 
+/* #278 Incoming-call mode: full-screen remote feed + Accept/Decline
+ * buttons.  No local camera, no mic — those start only on Accept.
+ * Used by voice_video when downlink frames arrive while no call is
+ * active (peer-initiated). */
+void ui_video_pane_show_incoming(void);
+
+/* Whether the pane is currently in incoming-call mode (Accept/Decline
+ * buttons visible, no PIP).  False when in basic playback or active
+ * call mode. */
+bool ui_video_pane_is_incoming(void);
+
 /* Hide + free the pane.  Safe even if not open.  When in call mode
  * also kills the local-PIP timer.  Does NOT call voice_video_stop_*
  * — that's the caller's job (voice_video_end_call wraps both). */
@@ -51,3 +62,12 @@ void ui_video_pane_set_dsc(const lv_image_dsc_t *dsc);
  * Set NULL to clear.  Last registration wins. */
 typedef void (*ui_video_pane_end_call_cb_t)(void);
 void ui_video_pane_set_end_call_cb(ui_video_pane_end_call_cb_t cb);
+
+/* #278 Accept / Decline callbacks for the incoming-call mode.  Last
+ * registration wins; pass NULL to clear.  Tapping Accept calls
+ * accept_cb (caller upgrades to a full call).  Tapping Decline calls
+ * decline_cb + hides the pane. */
+typedef void (*ui_video_pane_accept_cb_t)(void);
+typedef void (*ui_video_pane_decline_cb_t)(void);
+void ui_video_pane_set_accept_cb (ui_video_pane_accept_cb_t cb);
+void ui_video_pane_set_decline_cb(ui_video_pane_decline_cb_t cb);
