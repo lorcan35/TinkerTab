@@ -466,6 +466,16 @@ void tab5_ui_unlock(void)
     }
 }
 
+/* #258: see header — wraps lv_async_call with the recursive LVGL mutex
+ * to close the TLSF race documented in #256/#257. */
+lv_result_t tab5_lv_async_call(lv_async_cb_t cb, void *user_data)
+{
+    tab5_ui_lock();
+    lv_result_t r = lv_async_call(cb, user_data);
+    tab5_ui_unlock();
+    return r;
+}
+
 uint32_t ui_core_get_fps(void)
 {
     return s_fps;

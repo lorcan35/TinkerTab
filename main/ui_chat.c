@@ -12,6 +12,7 @@
  * Spec: docs/superpowers/specs/2026-04-19-chat-v4c-design.md §7.
  */
 #include "ui_chat.h"
+#include "ui_core.h"                /* tab5_lv_async_call (#258) */
 
 #include "chat_msg_store.h"
 #include "chat_msg_view.h"
@@ -661,7 +662,7 @@ void ui_chat_refresh_receipts(void)
     /* Safe to queue even if the chat view is hidden -- refresh is a no-op
      * when s_view is NULL and will simply repaint the existing bubbles
      * when it's mounted. */
-    lv_async_call(async_refresh_receipts_cb, NULL);
+    tab5_lv_async_call(async_refresh_receipts_cb, NULL);
 }
 
 /* Optional helper — legacy API kept for voice.c compatibility. */
@@ -763,7 +764,7 @@ void ui_chat_push_message(const char *role, const char *text)
     p->role = strdup(role ? role : "assistant");
     p->text = strdup(text);
     if (!p->role || !p->text) { free(p->role); free(p->text); free(p); return; }
-    lv_async_call(async_push_msg_cb, p);
+    tab5_lv_async_call(async_push_msg_cb, p);
 }
 
 /* System / status bubble (tool-call activity, session notices). */
@@ -791,7 +792,7 @@ void ui_chat_push_system(const char *text)
     if (!text || !*text) return;
     char *copy = strdup(text);
     if (!copy) return;
-    lv_async_call(async_push_system_cb, copy);
+    tab5_lv_async_call(async_push_system_cb, copy);
 }
 
 static void async_push_media_cb(void *arg)
@@ -830,7 +831,7 @@ void ui_chat_push_media(const char *url, const char *media_type,
     safe_copy(m->url, sizeof(m->url), url);
     safe_copy(m->alt, sizeof(m->alt), alt);
     m->w = width; m->h = height;
-    lv_async_call(async_push_media_cb, m);
+    tab5_lv_async_call(async_push_media_cb, m);
 }
 
 static void async_push_card_cb(void *arg)
@@ -863,7 +864,7 @@ void ui_chat_push_card(const char *title, const char *subtitle,
     safe_copy(c->subtitle, sizeof(c->subtitle), subtitle);
     safe_copy(c->img,      sizeof(c->img),      image_url);
     safe_copy(c->desc,     sizeof(c->desc),     description);
-    lv_async_call(async_push_card_cb, c);
+    tab5_lv_async_call(async_push_card_cb, c);
 }
 
 static void async_push_audio_cb(void *arg)
@@ -893,7 +894,7 @@ void ui_chat_push_audio_clip(const char *url, float duration_s, const char *labe
     safe_copy(a->url,   sizeof(a->url),   url);
     safe_copy(a->label, sizeof(a->label), label);
     a->dur = duration_s;
-    lv_async_call(async_push_audio_cb, a);
+    tab5_lv_async_call(async_push_audio_cb, a);
 }
 
 /* Audit U5 (#206): tap-to-play for inline audio_clip rows.
@@ -902,7 +903,7 @@ void ui_chat_push_audio_clip(const char *url, float duration_s, const char *labe
  *   tap on chat row → ui_chat_play_audio_clip(url) (LVGL/voice thread)
  *      → tab5_worker_enqueue(audio_clip_dl_job)
  *         → HTTP GET into /sdcard/.audio_clip.wav (chunked, max 4 MB)
- *         → lv_async_call(async_open_audio_player_cb, path)
+ *         → tab5_lv_async_call(async_open_audio_player_cb, path)
  *            → ui_audio_create("/sdcard/.audio_clip.wav") on UI thread.
  *
  * Cap chosen to bound SD-card writes — typical TTS clips are 30-300 KB.
@@ -1014,7 +1015,7 @@ static void audio_clip_dl_job(void *arg)
 
     if (ok) {
         char *path = strdup(AUDIO_CLIP_TMP_PATH);
-        if (path) lv_async_call(async_open_audio_player_cb, path);
+        if (path) tab5_lv_async_call(async_open_audio_player_cb, path);
     } else {
         /* Soft-fail: a single toast is friendlier than silently doing
          * nothing.  ui_home_show_toast is the global toast surface. */
@@ -1038,12 +1039,12 @@ void ui_chat_show_partial(const char *partial)
 {
     /* NULL/empty → hide.  Skip the strdup hop — pass NULL through. */
     if (!partial || !*partial) {
-        lv_async_call(async_set_partial_cb, NULL);
+        tab5_lv_async_call(async_set_partial_cb, NULL);
         return;
     }
     char *copy = strdup(partial);
     if (!copy) return;
-    lv_async_call(async_set_partial_cb, copy);
+    tab5_lv_async_call(async_set_partial_cb, copy);
 }
 
 void ui_chat_play_audio_clip(const char *url)
@@ -1088,5 +1089,5 @@ void ui_chat_update_last_message(const char *text)
     /* strdup("") is legal; async callback distinguishes empty → remove. */
     u->text = strdup(text);
     if (!u->text) { free(u); return; }
-    lv_async_call(async_update_last_cb, u);
+    tab5_lv_async_call(async_update_last_cb, u);
 }

@@ -385,7 +385,7 @@ cleanup:
     esp_http_client_cleanup(cli);
 done:
     s_fetch_inflight = false;
-    lv_async_call(render_rows_cb, NULL);
+    tab5_lv_async_call(render_rows_cb, NULL);
 }
 
 static void kick_sessions_fetch(void)

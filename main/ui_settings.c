@@ -660,7 +660,7 @@ static void ota_progress_cb(int percent, const char *phase)
     msg->percent = percent;
     strncpy(msg->phase, phase, sizeof(msg->phase) - 1);
     msg->phase[sizeof(msg->phase) - 1] = '\0';
-    lv_async_call(ota_progress_async_cb, msg);
+    tab5_lv_async_call(ota_progress_async_cb, msg);
 }
 
 static void ota_apply_task(void *arg)
@@ -1082,7 +1082,7 @@ lv_obj_t *ui_settings_create(void)
             ESP_LOGW(TAG, "Settings: deferring create — internal heap too low (%u bytes free)",
                      (unsigned)internal_free);
             extern void ui_home_show_toast(const char *text);
-            lv_async_call((lv_async_cb_t)ui_home_show_toast,
+            tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast,
                           (void *)"Low memory — reboot Tab5 to open Settings");
             return NULL;
         }

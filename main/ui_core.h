@@ -37,6 +37,21 @@ bool tab5_ui_try_lock(uint32_t timeout_ms);
 /** Unlock the LVGL mutex. */
 void tab5_ui_unlock(void);
 
+/**
+ * Thread-safe wrapper around lv_async_call (#256/#258).
+ *
+ * LVGL 9.x's lv_async_call internally calls lv_malloc + lv_timer_create
+ * against the unprotected TLSF heap.  Calling it from a non-LVGL thread
+ * (worker task, voice WS handler, HTTP callback, etc.) races ui_task's
+ * draw-task allocations and eventually corrupts a free-list pointer →
+ * search_suitable_block infinite loop → TASK_WDT.
+ *
+ * This wrapper takes the recursive LVGL mutex around the call.  Callers
+ * already holding the mutex (typical for LVGL event handlers) re-enter
+ * harmlessly.  Use this in place of lv_async_call everywhere.
+ */
+lv_result_t tab5_lv_async_call(lv_async_cb_t cb, void *user_data);
+
 /** Get LVGL rendering FPS (flush callbacks per second). Updated every 1s. */
 uint32_t ui_core_get_fps(void);
 

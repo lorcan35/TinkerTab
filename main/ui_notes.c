@@ -1163,7 +1163,7 @@ static void transcription_queue_task(void *arg)
          * thread (including concurrent ui_notes_destroy from a nav).
          * Route via lv_async_call so the refresh happens on the LVGL
          * timer tick and the s_destroying guard catches it cleanly. */
-        lv_async_call((lv_async_cb_t)refresh_list, NULL);
+        tab5_lv_async_call((lv_async_cb_t)refresh_list, NULL);
     }
 }
 
@@ -1425,7 +1425,7 @@ static void cb_new_voice(lv_event_t *e)
         s_voice_recording = false;
         /* Give mic task time to exit before finalizing WAV.
          * Use lv_async_call to run on next LVGL cycle. */
-        lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
+        tab5_lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
         ESP_LOGI(TAG, "Recording stopping...");
         return;
     }

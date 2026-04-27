@@ -269,7 +269,7 @@ static void scan_done_handler(void *arg, esp_event_base_t event_base,
         tab5_ui_unlock();
     } else {
         ESP_LOGW(TAG, "LVGL lock busy in scan_done — deferring to LVGL task");
-        lv_async_call(scan_done_update_ui, NULL);
+        tab5_lv_async_call(scan_done_update_ui, NULL);
     }
 }
 
