@@ -774,6 +774,10 @@ void cb_record_btn(lv_event_t *e)
         }
         if (!s_rec_timer) s_rec_timer = lv_timer_create(rec_timer_cb, REC_FPS_MS, NULL);
         ESP_LOGI(TAG, "rec: start -> %s", s_rec_path);
+        {
+            extern void tab5_debug_obs_event(const char *kind, const char *detail);
+            tab5_debug_obs_event("camera.record_start", s_rec_path);
+        }
         return;
     }
 
@@ -791,6 +795,14 @@ void cb_record_btn(lv_event_t *e)
     toast_show(msg);
     ESP_LOGI(TAG, "rec: stop %s frames=%u bytes=%u",
              s_rec_path, s_rec_frame_count, s_rec_bytes_total);
+    {
+        extern void tab5_debug_obs_event(const char *kind, const char *detail);
+        char detail[160];
+        snprintf(detail, sizeof(detail), "%s frames=%u bytes=%u",
+                 s_rec_path, (unsigned)s_rec_frame_count,
+                 (unsigned)s_rec_bytes_total);
+        tab5_debug_obs_event("camera.record_stop", detail);
+    }
     /* Send-to-Dragon — fire-and-forget HTTP upload via voice's existing
      * /api/media/upload helper. */
     extern void voice_upload_chat_image(const char *filepath);
@@ -917,6 +929,10 @@ static void capture_btn_cb(lv_event_t *e)
 
     capture_counter++;
     ESP_LOGI(TAG, "Photo saved: %s", path);
+    {
+        extern void tab5_debug_obs_event(const char *kind, const char *detail);
+        tab5_debug_obs_event("camera.capture", path);
+    }
 
     /* Update gallery button text */
     if (lbl_gallery) {

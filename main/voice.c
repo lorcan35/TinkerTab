@@ -379,6 +379,20 @@ static void voice_set_state(voice_state_t new_state, const char *detail)
          * tab5_lv_async_call(), lock-free and thread-safe. */
         extern void ui_home_refresh_sys_label(void);
         ui_home_refresh_sys_label();
+
+        /* #293: emit a debug obs event on every state transition so the
+         * e2e harness can subscribe to /events instead of polling
+         * /voice every 200ms. */
+        if (old != new_state) {
+            extern void tab5_debug_obs_event(const char *kind, const char *detail);
+            const char *names[] = {
+                "IDLE", "CONNECTING", "READY",
+                "LISTENING", "PROCESSING", "SPEAKING", "RECONNECTING",
+            };
+            const char *name = (new_state >= 0 && new_state < (int)(sizeof(names)/sizeof(names[0])))
+                ? names[new_state] : "UNKNOWN";
+            tab5_debug_obs_event("voice.state", name);
+        }
     }
 
     /* v4·D Gauntlet G1: drain the queued turn on transition to READY.
@@ -1073,6 +1087,14 @@ static void handle_text_message(const char *data, int len)
                  cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        /* #293: emit obs event for e2e harness. */
+        {
+            extern void tab5_debug_obs_event(const char *kind, const char *detail);
+            char latency_str[24];
+            snprintf(latency_str, sizeof(latency_str), "%.0f",
+                     cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
+            tab5_debug_obs_event("chat.llm_done", latency_str);
+        }
         /* Prefer the full text field in llm_done (TC bypass uses it)
          * falling back to the accumulated streamed tokens. */
         cJSON *full = cJSON_GetObjectItem(root, "text");
@@ -1749,6 +1771,9 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_CONNECTED: {
         ESP_LOGI(TAG, "WS: CONNECTED — sending register frame");
+        /* #293: emit obs event for e2e harness. */
+        extern void tab5_debug_obs_event(const char *kind, const char *detail);
+        tab5_debug_obs_event("ws.connect", "");
         /* US-C02: bump session gen on every successful connect. */
         s_session_gen++;
         s_handshake_fail_cnt = 0;
@@ -1777,6 +1802,10 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WS: DISCONNECTED");
+        {
+            extern void tab5_debug_obs_event(const char *kind, const char *detail);
+            tab5_debug_obs_event("ws.disconnect", "");
+        }
         /* Flush playback so we don't keep speaking into a dead pipe. */
         playback_buf_reset();
         tab5_audio_speaker_enable(false);

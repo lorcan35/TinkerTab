@@ -1795,6 +1795,14 @@ static esp_err_t navigate_handler(httpd_req_t *req)
 
     httpd_query_key_value(query, "screen", s_nav_target, sizeof(s_nav_target));
 
+    /* #293: emit obs event for e2e harness BEFORE the async dispatch so
+     * the harness sees the navigation intent even if the dispatch is
+     * queued.  s_current_screen also gets updated on the LVGL side via
+     * async_navigate completion.  Forward-declared because debug_obs.h
+     * is included further down the file (after this handler). */
+    extern void tab5_debug_obs_event(const char *kind, const char *detail);
+    tab5_debug_obs_event("screen.navigate", s_nav_target);
+
     /* Schedule on LVGL thread (#258 helper takes the recursive LVGL
      * mutex internally — lv_async_call itself is NOT thread-safe). */
     tab5_lv_async_call(async_navigate, NULL);
@@ -2082,6 +2090,39 @@ static esp_err_t dictation_handler(httpd_req_t *req)
 }
 
 /* ── Voice state endpoint ─────────────────────────────────────────────── */
+
+/* #293: GET /screen — current screen + overlay visibility for the e2e
+ * harness.  s_nav_target is the last-requested screen via /navigate;
+ * overlay state comes from the per-module ui_*_is_visible() / is_active()
+ * helpers. */
+static esp_err_t screen_state_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+
+    extern bool ui_chat_is_active(void);
+    extern bool ui_voice_is_visible(void);
+    extern bool ui_settings_is_visible(void);
+
+    cJSON *root = cJSON_CreateObject();
+    /* Last-requested screen via /navigate.  Defaults to "home" until
+     * the first navigate fires (Tab5 boots into home). */
+    cJSON_AddStringToObject(root, "current",
+        s_nav_target[0] ? s_nav_target : "home");
+    cJSON *overlays = cJSON_CreateObject();
+    cJSON_AddBoolToObject(overlays, "chat",     ui_chat_is_active());
+    cJSON_AddBoolToObject(overlays, "voice",    ui_voice_is_visible());
+    cJSON_AddBoolToObject(overlays, "settings", ui_settings_is_visible());
+    cJSON_AddItemToObject(root, "overlays", overlays);
+
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
+    esp_err_t ret = httpd_resp_sendstr(req, json);
+    free(json);
+    return ret;
+}
 
 static esp_err_t voice_state_handler(httpd_req_t *req)
 {
@@ -3343,6 +3384,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_chat = {
         .uri = "/chat", .method = HTTP_POST, .handler = chat_handler
     };
+    const httpd_uri_t uri_screen = {
+        .uri = "/screen", .method = HTTP_GET, .handler = screen_state_handler
+    };
     const httpd_uri_t uri_voice_state = {
         .uri = "/voice", .method = HTTP_GET, .handler = voice_state_handler
     };
@@ -3448,6 +3492,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_ota_check);
     httpd_register_uri_handler(server, &uri_ota_apply);
     httpd_register_uri_handler(server, &uri_chat);
+    httpd_register_uri_handler(server, &uri_screen);
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_video_start);
