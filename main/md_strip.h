@@ -30,3 +30,17 @@ void md_strip_inline(const char *in, char *out, size_t out_cap);
  * Always NUL-terminated.  Safe for empty / NULL input.
  */
 void md_strip_inline_with_ellipsis(const char *in, char *out, size_t out_cap);
+
+/* Issues #78 + #160: strip Dragon's tool-call XML markers from a
+ * streamed LLM response so the user doesn't see raw
+ *   <tool>recall</tool><args>{"query":"..."}</args>
+ * land as a chat bubble.  Tab5-side defensive scrub — Dragon may also
+ * strip server-side, but a token-stream timing race can still leak the
+ * markers (the audit issue caught this in a real screenshot).
+ *
+ * Removes any well-formed `<tool>...</tool>` and `<args>...</args>`
+ * sub-strings (case-insensitive, span newlines), collapses the
+ * resulting double-spaces, and trims leading/trailing whitespace.
+ * Works in-place when out == in.  Always NUL-terminated.
+ */
+void md_strip_tool_markers(const char *in, char *out, size_t out_cap);

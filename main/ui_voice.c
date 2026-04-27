@@ -545,7 +545,11 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         if (has_conversation) {
             const char *llm_txt2 = voice_get_llm_text();
             if (llm_txt2 && llm_txt2[0] && s_response_label) {
-                { char _m[256]; md_strip_inline_with_ellipsis(llm_txt2, _m, sizeof(_m));
+                /* #78 + #160: tool-marker scrub before the markdown
+                 * pass so raw <tool>...</tool> never flashes in the
+                 * voice overlay caption either. */
+                { char _m[256]; md_strip_tool_markers(llm_txt2, _m, sizeof(_m));
+                  md_strip_inline_with_ellipsis(_m, _m, sizeof(_m));
                   lv_label_set_text(s_response_label, _m); }
                 lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_move_foreground(s_response_label);
@@ -1190,9 +1194,12 @@ static void show_state_processing(const char *detail)
             lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
         }
 
-        /* #115: drive the fixed-position response label. */
+        /* #115: drive the fixed-position response label.
+         * #78 + #160: scrub tool markers first so streamed <tool>...
+         * never flashes in the caption. */
         if (s_response_label) {
-            { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
+            { char _m[256]; md_strip_tool_markers(llm, _m, sizeof(_m));
+              md_strip_inline_with_ellipsis(_m, _m, sizeof(_m));
               lv_label_set_text(s_response_label, _m); }
             lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(s_response_label);
@@ -1253,10 +1260,12 @@ static void show_state_speaking(void)
     /* Keep chat area visible with both bubbles */
     const char *llm = voice_get_llm_text();
     /* U20 (#206): bubble paths removed.  STT is reflected by the
-     * status string from voice.c; LLM tokens drive s_response_label. */
+     * status string from voice.c; LLM tokens drive s_response_label.
+     * #78 + #160: scrub tool markers before the markdown pass. */
     if (llm && llm[0] && s_response_label) {
         char _m[256];
-        md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
+        md_strip_tool_markers(llm, _m, sizeof(_m));
+        md_strip_inline_with_ellipsis(_m, _m, sizeof(_m));
         lv_label_set_text(s_response_label, _m);
         lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(s_response_label);

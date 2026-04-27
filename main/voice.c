@@ -24,6 +24,7 @@
 #include "voice.h"
 #include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
 #include "tool_log.h"      /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
+#include "md_strip.h"     /* #78 + #160: scrub <tool>...</tool> markers from streamed LLM text */
 #include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
 #include "widget.h"
 #include "ui_voice.h"
@@ -1027,7 +1028,19 @@ static void handle_text_message(const char *data, int len)
             bubble_text = full->valuestring;
         }
         if (bubble_text && bubble_text[0]) {
-            ui_chat_push_message("assistant", bubble_text);
+            /* #78 + #160: defensive Tab5-side scrub of any <tool>...</tool>
+             * + <args>...</args> markers that survived Dragon's
+             * server-side stripper.  Without this the user sometimes
+             * sees raw "<tool>recall</tool><args>{\"query\":...}</args>"
+             * land as a chat bubble (caught by the audit screenshot in
+             * #160).  The strip handles the bubble destined for chat;
+             * s_llm_text continues to hold the raw text in case other
+             * paths need it. */
+            char clean[MAX_TRANSCRIPT_LEN];
+            md_strip_tool_markers(bubble_text, clean, sizeof(clean));
+            if (clean[0]) {
+                ui_chat_push_message("assistant", clean);
+            }
         }
         /* v4·D TC polish: if no TTS is coming (TC bypass never sends
          * tts_start -- gateway is text-only), transition to READY
