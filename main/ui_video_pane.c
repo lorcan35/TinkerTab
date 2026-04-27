@@ -162,7 +162,12 @@ void ui_video_pane_show(void)
         return;
     }
 
-    lv_obj_t *parent = ui_home_get_screen();
+    /* #276: parent to lv_layer_top() instead of the home screen so the
+     * pane stays on top when the user navigates to Settings / Chat /
+     * Notes / etc.  Without this, the call keeps running while a new
+     * overlay covers the pane — privacy bug + UX confusion (user
+     * thinks they ended the call). */
+    lv_obj_t *parent = lv_layer_top();
     if (!parent) parent = lv_screen_active();
     if (!parent) return;
 
