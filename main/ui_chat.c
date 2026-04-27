@@ -613,7 +613,10 @@ void ui_chat_hide(void)
     if (!s_overlay) return;
     ui_keyboard_set_layout_cb(NULL);
     ui_keyboard_hide();
-    ui_keyboard_set_trigger_visible(true);  /* restore for home / notes / wifi */
+    /* U16 (#206): don't auto-restore the floating keyboard trigger on
+     * chat hide.  Home explicitly hides it (its menu chip lives in the
+     * trigger's hitbox).  Other screens that actually want it (notes /
+     * wifi text fields) call set_trigger_visible(true) themselves. */
     if (s_poll) lv_timer_pause(s_poll);
     if (s_drawer) chat_session_drawer_hide(s_drawer);
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
