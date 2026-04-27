@@ -210,6 +210,15 @@ static volatile bool s_using_ngrok        = false;  /* true once we've switched 
 // Mic capture task
 static TaskHandle_t  s_mic_task    = NULL;
 static volatile bool s_mic_running = false;
+/* #284: persistent mic task — created once at voice_init, idles on
+ * this binary semaphore between sessions instead of being spawned +
+ * suspended per-call.  Each start_listening / start_dictation /
+ * call_audio_start gives the semaphore; the task wakes, runs the
+ * capture loop until s_mic_running clears, then blocks again.
+ *
+ * Eliminates the +1-task-per-call zombie leak that #282/#284 audit
+ * flagged as the eventual heap_wd reset trigger. */
+static SemaphoreHandle_t s_mic_event_sem = NULL;
 
 // Playback drain task — pulls from ring buffer, blocks on i2s_channel_write
 static TaskHandle_t      s_play_task    = NULL;
@@ -2074,8 +2083,14 @@ static void voice_build_local_uri(char *out, size_t out_cap,
 // ---------------------------------------------------------------------------
 static void mic_capture_task(void *arg)
 {
-    ESP_LOGI(TAG, "Mic capture task started (core %d)", xPortGetCoreID());
+    ESP_LOGI(TAG, "Mic capture task started (core %d) — persistent",
+             xPortGetCoreID());
 
+    /* #284: buffers allocated once at task start, NEVER freed.  The
+     * persistent task pattern reuses them across every session
+     * (start_listening / start_dictation / call_audio_start).  640 B
+     * (enc_buf) + ~3.8 KB (mono_buf) + ~30 KB (tdm_buf) total — all
+     * in PSRAM. */
     int16_t *tdm_buf = (int16_t *)heap_caps_malloc(
         MIC_TDM_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     int16_t *mono_buf = (int16_t *)heap_caps_malloc(
@@ -2087,16 +2102,24 @@ static void mic_capture_task(void *arg)
     uint8_t  *enc_buf  = (uint8_t  *)heap_caps_malloc(
         VOICE_CHUNK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!tdm_buf || !mono_buf || !enc_buf) {
-        ESP_LOGE(TAG, "Failed to allocate mic buffers");
+        ESP_LOGE(TAG, "Failed to allocate mic buffers — task idling forever");
         heap_caps_free(tdm_buf);
         heap_caps_free(mono_buf);
         heap_caps_free(enc_buf);
-        s_mic_task = NULL;
-        vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
-        return;
+        /* No buffers means we can't ever do useful work — block
+         * indefinitely on the never-given semaphore.  Don't suspend
+         * (P4 TLSP rule) and don't loop+spin. */
+        for (;;) vTaskDelay(portMAX_DELAY);
     }
 
-    s_mic_running = true;
+    /* #284: outer loop — block on the event semaphore between sessions. */
+    while (1) {
+        xSemaphoreTake(s_mic_event_sem, portMAX_DELAY);
+        if (!s_mic_running) {
+            /* Spurious wakeup — go back to sleep. */
+            continue;
+        }
+        ESP_LOGI(TAG, "Mic session start (mode=%d)", s_voice_mode);
     int frames_sent = 0;
 
     int silence_frames = 0;
@@ -2286,9 +2309,9 @@ static void mic_capture_task(void *arg)
 
     s_mic_running = false;
     s_current_rms = 0;
-    heap_caps_free(tdm_buf);
-    heap_caps_free(mono_buf);
-    heap_caps_free(enc_buf);
+    /* #284: do NOT free tdm_buf / mono_buf / enc_buf — persistent task
+     * reuses them across sessions.  They're freed only at process
+     * shutdown (which never happens on the firmware side). */
 
     if (s_voice_mode == VOICE_MODE_DICTATE && had_speech
         && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES
@@ -2297,9 +2320,11 @@ static void mic_capture_task(void *arg)
         voice_set_state(VOICE_STATE_PROCESSING, NULL);
     }
 
-    ESP_LOGI(TAG, "Mic capture task exiting");
-    s_mic_task = NULL;
-    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
+    ESP_LOGI(TAG, "Mic session end (frames=%d) — back to idle",
+             frames_sent);
+    /* #284: drop back to outer while(1) and wait for the next
+     * xSemaphoreGive in voice_*_start.  No vTaskSuspend, no leak. */
+    }   /* outer while(1) */
 }
 
 // ---------------------------------------------------------------------------
@@ -2370,6 +2395,25 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
     voice_codec_init();
     /* #266: video streaming module.  Just allocates the JPEG engine. */
     voice_video_init();
+
+    /* #284: persistent mic capture task — spawned once, idles on
+     * s_mic_event_sem between sessions.  Replaces the per-call
+     * xTaskCreate + vTaskSuspend zombie-leak pattern. */
+    s_mic_event_sem = xSemaphoreCreateBinary();
+    if (!s_mic_event_sem) {
+        ESP_LOGE(TAG, "Failed to create mic event semaphore");
+        return ESP_ERR_NO_MEM;
+    }
+    {
+        BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
+            mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
+            NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
+            MALLOC_CAP_SPIRAM);
+        if (ok != pdPASS) {
+            ESP_LOGE(TAG, "Failed to spawn persistent mic task");
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     s_state_mutex = xSemaphoreCreateMutex();
     if (!s_state_mutex) {
@@ -2932,18 +2976,9 @@ esp_err_t voice_start_listening(void)
     s_llm_text[0] = '\0';
 
     s_mic_running = true;
-    /* #262 follow-up: 16 KB stack (was 8) for OPUS silk_Encode locals.
-     * WithCaps(SPIRAM) keeps the bump out of internal SRAM. */
-    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
-        mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
-        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
-        MALLOC_CAP_SPIRAM);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create mic capture task");
-        voice_ws_send_text("{\"type\":\"stop\"}");
-        s_mic_running = false;
-        return ESP_ERR_NO_MEM;
-    }
+    /* #284: signal the persistent mic task to start a session.  No
+     * per-call task spawn — task was created once at voice_init. */
+    if (s_mic_event_sem) xSemaphoreGive(s_mic_event_sem);
 
     voice_set_state(VOICE_STATE_LISTENING, NULL);
     return ESP_OK;
@@ -2984,18 +3019,8 @@ esp_err_t voice_start_dictation(void)
     s_llm_text[0] = '\0';
 
     s_mic_running = true;
-    /* #262 follow-up: 16 KB stack (was 8) for OPUS silk_Encode locals.
-     * WithCaps(SPIRAM) keeps the bump out of internal SRAM. */
-    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
-        mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
-        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
-        MALLOC_CAP_SPIRAM);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create mic capture task");
-        voice_ws_send_text("{\"type\":\"stop\"}");
-        s_mic_running = false;
-        return ESP_ERR_NO_MEM;
-    }
+    /* #284: signal persistent mic task. */
+    if (s_mic_event_sem) xSemaphoreGive(s_mic_event_sem);
 
     voice_set_state(VOICE_STATE_LISTENING, NULL);
     return ESP_OK;
@@ -3020,7 +3045,10 @@ esp_err_t voice_call_audio_start(void)
         ESP_LOGE(TAG, "voice_call_audio_start: not connected");
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_mic_running || s_mic_task != NULL) {
+    /* #284: persistent task pattern — `s_mic_task != NULL` is now
+     * always true after voice_init (one task lives forever), so the
+     * old guard would always block.  Gate on s_mic_running only. */
+    if (s_mic_running) {
         ESP_LOGW(TAG, "voice_call_audio_start: mic already running (mode=%d)",
                  s_voice_mode);
         return ESP_OK;
@@ -3033,15 +3061,7 @@ esp_err_t voice_call_audio_start(void)
     ESP_LOGI(TAG, "Starting call audio (VOICE_MODE_CALL)");
     s_voice_mode = VOICE_MODE_CALL;
     s_mic_running = true;
-    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
-        mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
-        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
-        MALLOC_CAP_SPIRAM);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to spawn call-audio mic task");
-        s_mic_running = false;
-        return ESP_ERR_NO_MEM;
-    }
+    if (s_mic_event_sem) xSemaphoreGive(s_mic_event_sem);
     return ESP_OK;
 }
 
@@ -3081,7 +3101,7 @@ esp_err_t voice_call_audio_stop(void)
      * voice_start_listening / voice_start_dictation works. */
     i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
     if (rx_h) i2s_channel_disable(rx_h);
-    for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
+    for (int i = 0; i < 120 && s_mic_running; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     if (rx_h) i2s_channel_enable(rx_h);
@@ -3118,7 +3138,7 @@ esp_err_t voice_stop_listening(void)
         i2s_channel_disable(rx_h);
     }
 
-    for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
+    for (int i = 0; i < 120 && s_mic_running; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
@@ -3154,7 +3174,7 @@ esp_err_t voice_cancel(void)
         if (rx_h) {
             i2s_channel_disable(rx_h);
         }
-        for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
+        for (int i = 0; i < 120 && s_mic_running; i++) {
             vTaskDelay(pdMS_TO_TICKS(10));
         }
         if (rx_h) {
@@ -3208,13 +3228,15 @@ esp_err_t voice_disconnect(void)
         i2s_channel_disable(rx_h);
     }
 
-    for (int i = 0; i < 120 && s_mic_task != NULL; i++) {
+    for (int i = 0; i < 120 && s_mic_running; i++) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    if (s_mic_task != NULL) {
-        ESP_LOGW(TAG, "Mic task did not exit in 1200ms — forcing handle NULL");
+    if (s_mic_running) {
+        ESP_LOGW(TAG, "Mic session did not stop in 1200ms — forcing flag");
+        s_mic_running = false;
     }
-    s_mic_task = NULL;
+    /* #284: don't NULL s_mic_task — the persistent task is still alive
+     * and waiting on its event semaphore for the next session. */
 
     if (rx_h) {
         i2s_channel_enable(rx_h);
