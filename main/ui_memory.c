@@ -19,6 +19,7 @@
 #include "settings.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "task_worker.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
@@ -371,29 +372,18 @@ done:
     /* Hop to LVGL thread to rebuild the UI. */
     lv_async_call(render_hits_cb, NULL);
     s_fetch_inflight = false;
-    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
+    /* #252: was xTaskCreate + vTaskSuspend(NULL) — accumulated one
+     * suspended TCB+bookkeeping (~870 B internal SRAM each) per
+     * /navigate?screen=memory.  Now runs on the shared tab5_worker
+     * queue so the worker stays the same task forever. */
 }
 
 static void kick_fetch(void)
 {
     if (s_fetch_inflight) return;
     s_fetch_inflight = true;
-    /* Allocate the task's TCB + stack from PSRAM (via WithCaps) so that
-     * a fragmented internal-SRAM heap doesn't block the memory overlay
-     * from ever fetching facts.  Without this, /navigate?screen=memory
-     * after several overlay cycles would log "failed to spawn fetch
-     * task" and the UI would sit stuck on "Loading facts..." forever.
-     * Fallback to regular xTaskCreatePinnedToCore if WithCaps fails
-     * (belt + braces). */
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
-        fetch_task, "mem_fetch", 6144, NULL, 3, NULL, 1,
-        MALLOC_CAP_SPIRAM);
-    if (ok != pdPASS) {
-        ok = xTaskCreatePinnedToCore(
-            fetch_task, "mem_fetch", 6144, NULL, 3, NULL, 1);
-    }
-    if (ok != pdPASS) {
-        ESP_LOGW(TAG, "failed to spawn fetch task");
+    if (tab5_worker_enqueue(fetch_task, NULL, "mem_fetch") != ESP_OK) {
+        ESP_LOGW(TAG, "mem_fetch enqueue failed (queue full)");
         s_fetch_inflight = false;
     }
 }
