@@ -21,6 +21,19 @@
 #include <stddef.h>
 #include "esp_err.h"
 
+/* Compile-time gate for the OPUS uplink (mic) path.  The
+ * espressif/esp_audio_codec OPUS encoder crashes reproducibly inside
+ * silk_NSQ_c / silk_NSQ_del_dec_c on this build (PSRAM-backed PCM
+ * input + complexity 0 or 5 both reproduce; suspect a SIMD alignment
+ * or working-buffer issue specific to the ESP32-P4 port).  Until that
+ * is root-caused we keep the encoder turned off — Tab5 only advertises
+ * PCM uplink in capabilities, the encode helper short-circuits to PCM
+ * even if voice_codec_set_uplink(OPUS) is called.
+ *
+ * Decoder is unaffected (different SILK / CELT code paths) so the
+ * downlink path is left enabled — Phase 2B will exercise it. */
+#define VOICE_CODEC_OPUS_UPLINK_ENABLED 0
+
 typedef enum {
     VOICE_CODEC_PCM  = 0,   /* raw int16_t LE @ 16 kHz mono — default */
     VOICE_CODEC_OPUS = 1,

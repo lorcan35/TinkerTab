@@ -58,7 +58,11 @@ static esp_err_t ensure_encoder(void)
     cfg.bitrate          = VC_OPUS_BITRATE;
     cfg.frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_20_MS;
     cfg.application_mode = ESP_OPUS_ENC_APPLICATION_VOIP;
-    cfg.complexity       = 5;     /* mid — keeps CPU below ~10% on a P4 core */
+    /* complexity=0 picks the simplest SILK code paths; higher levels
+     * crashed in silk_NSQ_del_dec_c on this build (likely a SIMD or
+     * working-buffer alignment issue in the esp_audio_codec port).
+     * Quality at 0 + 24 kbps is still good for VOIP. */
+    cfg.complexity       = 0;
     cfg.enable_fec       = false;
     cfg.enable_dtx       = false;
     cfg.enable_vbr       = true;
@@ -108,6 +112,13 @@ void voice_codec_deinit(void)
 void voice_codec_set_uplink(voice_codec_t c)
 {
     if (c == s_uplink) return;
+#if !VOICE_CODEC_OPUS_UPLINK_ENABLED
+    if (c == VOICE_CODEC_OPUS) {
+        ESP_LOGW(TAG, "uplink OPUS request ignored — encoder disabled at compile-time "
+                      "(VOICE_CODEC_OPUS_UPLINK_ENABLED=0); staying PCM");
+        return;
+    }
+#endif
     ESP_LOGI(TAG, "uplink: %s -> %s", voice_codec_to_name(s_uplink), voice_codec_to_name(c));
     s_uplink = c;
     if (c == VOICE_CODEC_OPUS) {

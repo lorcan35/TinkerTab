@@ -122,8 +122,11 @@ static const char *TAG = "tab5_voice";
  * race on Dragon restart. */
 #define WS_AUTH_FAIL_THRESHOLD 3
 
-// Mic capture task — needs room for AFE feed buffer (960 int16 = 1.9KB) + TDM diagnostics
-#define MIC_TASK_STACK_SIZE    8192
+// Mic capture task — needs room for AFE feed buffer (960 int16 = 1.9KB)
+// + TDM diagnostics + OPUS encoder (silk_Encode is the heavy consumer,
+// ~4 KB of locals — 8 KB was insufficient and panicked in
+// silk_encode_frame_FIX, see #262 follow-up).
+#define MIC_TASK_STACK_SIZE    16384
 #define MIC_TASK_PRIORITY      5
 #define MIC_TASK_CORE          1
 
@@ -561,10 +564,18 @@ static esp_err_t voice_ws_send_register(void)
     cJSON_AddBoolToObject(caps, "touch", true);
     /* #262: advertise audio codec support.  Dragon picks one and replies
      * via config_update.audio_codec.  Tab5 stays on PCM (current behavior)
-     * until Dragon switches it. */
+     * until Dragon switches it.  Per-direction so the broken uplink
+     * encoder (#262 follow-up: silk_NSQ_c crashes on this build) doesn't
+     * starve the working downlink decoder; until the encoder ships,
+     * advertise opus only on the downlink. */
     cJSON *acodecs = cJSON_AddArrayToObject(caps, "audio_codec");
     cJSON_AddItemToArray(acodecs, cJSON_CreateString("pcm"));
+#if VOICE_CODEC_OPUS_UPLINK_ENABLED
     cJSON_AddItemToArray(acodecs, cJSON_CreateString("opus"));
+#endif
+    cJSON *acodecs_dl = cJSON_AddArrayToObject(caps, "audio_downlink_codec");
+    cJSON_AddItemToArray(acodecs_dl, cJSON_CreateString("pcm"));
+    cJSON_AddItemToArray(acodecs_dl, cJSON_CreateString("opus"));
     /* v4·D audit P0 fix: widget_capability was spec-only -- now wired.
      * Skills can downgrade widget content for low-end clients (smaller
      * list, lower image res).  Match the actual Tab5 limits we've
@@ -2800,9 +2811,12 @@ esp_err_t voice_start_listening(void)
     s_llm_text[0] = '\0';
 
     s_mic_running = true;
-    BaseType_t ret = xTaskCreatePinnedToCore(
+    /* #262 follow-up: 16 KB stack (was 8) for OPUS silk_Encode locals.
+     * WithCaps(SPIRAM) keeps the bump out of internal SRAM. */
+    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
         mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
-        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE);
+        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
+        MALLOC_CAP_SPIRAM);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create mic capture task");
         voice_ws_send_text("{\"type\":\"stop\"}");
@@ -2849,9 +2863,12 @@ esp_err_t voice_start_dictation(void)
     s_llm_text[0] = '\0';
 
     s_mic_running = true;
-    BaseType_t ret = xTaskCreatePinnedToCore(
+    /* #262 follow-up: 16 KB stack (was 8) for OPUS silk_Encode locals.
+     * WithCaps(SPIRAM) keeps the bump out of internal SRAM. */
+    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
         mic_capture_task, "voice_mic", MIC_TASK_STACK_SIZE,
-        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE);
+        NULL, MIC_TASK_PRIORITY, &s_mic_task, MIC_TASK_CORE,
+        MALLOC_CAP_SPIRAM);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create mic capture task");
         voice_ws_send_text("{\"type\":\"stop\"}");
