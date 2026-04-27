@@ -2174,6 +2174,61 @@ static esp_err_t video_hide_handler(httpd_req_t *req)
     return send_json_resp(req, root);
 }
 
+/* #274: consolidated call status — one-shot view of every surface
+ * involved in a video call so the user / dashboards / E2E tests can
+ * see what the device is actually doing without grepping /info,
+ * /video, /voice, /heap individually. */
+static esp_err_t call_status_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    cJSON *root = cJSON_CreateObject();
+
+    /* Top-level call state */
+    cJSON_AddBoolToObject(root, "in_call", voice_video_is_in_call());
+    cJSON_AddBoolToObject(root, "pane_visible", ui_video_pane_is_visible());
+
+    /* Video subsection (uplink + downlink stats) */
+    voice_video_stats_t v;
+    voice_video_get_stats(&v);
+    cJSON *vid = cJSON_AddObjectToObject(root, "video");
+    cJSON_AddBoolToObject(vid,   "uplink_active", v.active);
+    cJSON_AddNumberToObject(vid, "uplink_fps",    v.fps);
+    cJSON_AddNumberToObject(vid, "uplink_frames", (double)v.frames_sent);
+    cJSON_AddNumberToObject(vid, "uplink_dropped",(double)v.frames_dropped);
+    cJSON_AddNumberToObject(vid, "uplink_bytes",  (double)v.bytes_sent);
+    cJSON_AddNumberToObject(vid, "uplink_last_jpeg",(double)v.last_jpeg_bytes);
+    cJSON_AddNumberToObject(vid, "downlink_frames",(double)v.frames_recv);
+    cJSON_AddNumberToObject(vid, "downlink_dropped",(double)v.frames_recv_dropped);
+    cJSON_AddNumberToObject(vid, "downlink_bytes",(double)v.bytes_recv);
+    cJSON_AddNumberToObject(vid, "downlink_last_jpeg",(double)v.last_recv_jpeg_bytes);
+
+    /* Audio subsection — mode is the proxy for "call audio active". */
+    cJSON *aud = cJSON_AddObjectToObject(root, "audio");
+    voice_mode_t vmode = voice_get_mode();
+    cJSON_AddNumberToObject(aud, "voice_mode_enum", (double)vmode);
+    const char *mode_names[] = {"ASK","DICTATE","CALL"};
+    cJSON_AddStringToObject(aud, "voice_mode_name",
+        (vmode < (sizeof(mode_names)/sizeof(mode_names[0]))) ? mode_names[vmode] : "?");
+    cJSON_AddBoolToObject(aud, "call_audio_active", vmode == VOICE_MODE_CALL);
+
+    /* Heap snapshot — the heap_wd reset after start_call exhausted
+     * SRAM, so always show internal-largest here for context. */
+    cJSON *hp = cJSON_AddObjectToObject(root, "heap");
+    cJSON_AddNumberToObject(hp, "internal_largest_kb",
+        (double)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
+    cJSON_AddNumberToObject(hp, "internal_free_kb",
+        (double)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024));
+    cJSON_AddNumberToObject(hp, "psram_largest_kb",
+        (double)(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) / 1024));
+    cJSON_AddNumberToObject(hp, "dma_largest_kb",
+        (double)(heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) / 1024));
+
+    cJSON_AddNumberToObject(root, "tasks", (double)uxTaskGetNumberOfTasks());
+    cJSON_AddNumberToObject(root, "uptime_ms", (double)(esp_timer_get_time() / 1000));
+
+    return send_json_resp(req, root);
+}
+
 /* #270 Phase 3D: one-shot call control. */
 static esp_err_t video_call_start_handler(httpd_req_t *req)
 {
@@ -3269,6 +3324,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_video_call_end = {
         .uri = "/video/call/end",   .method = HTTP_POST, .handler = video_call_end_handler
     };
+    const httpd_uri_t uri_call_status = {
+        .uri = "/call/status",      .method = HTTP_GET,  .handler = call_status_handler
+    };
     const httpd_uri_t uri_dictation_post = {
         .uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler
     };
@@ -3340,6 +3398,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_video_hide);
     httpd_register_uri_handler(server, &uri_video_call_start);
     httpd_register_uri_handler(server, &uri_video_call_end);
+    httpd_register_uri_handler(server, &uri_call_status);
     httpd_register_uri_handler(server, &uri_dictation_post);
     httpd_register_uri_handler(server, &uri_dictation_get);
     httpd_register_uri_handler(server, &uri_wifi_kick);
