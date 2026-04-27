@@ -36,7 +36,9 @@ static const char *TAG = "debug_obs";
 /* ── Event ring ─────────────────────────────────────────────────── */
 typedef struct {
     uint64_t ms;
-    char     kind[16];
+    /* #293: bumped from 16→32 because PR #294 added 19-char names
+     * (camera.record_start) that were truncating to "camera.record_s". */
+    char     kind[32];
     char     detail[48];
 } obs_event_t;
 
