@@ -81,3 +81,12 @@ esp_err_t voice_video_on_downlink_frame(const uint8_t *wire_bytes, size_t len);
  * magic.  Used by voice.c::handle_binary_message before deciding to
  * route to the audio decode path or here. */
 bool voice_video_peek_downlink_magic(const void *data, size_t len);
+
+/* #270 Phase 3D: convenience entry points that wrap the streaming
+ * task + the in-call UI in one atomic toggle.  start_call begins
+ * outbound camera streaming AND opens the in-call pane (remote feed
+ * + local PIP + End Call button).  end_call reverses both.  Either
+ * is a no-op if already in the requested state. */
+esp_err_t voice_video_start_call(int fps);
+esp_err_t voice_video_end_call(void);
+bool      voice_video_is_in_call(void);
