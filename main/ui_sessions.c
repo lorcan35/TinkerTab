@@ -311,7 +311,12 @@ static void fetch_sessions_job(void *arg)
     content_len = esp_http_client_fetch_headers(cli);
     if (content_len <= 0)        content_len = 16384;
     if (content_len > 32 * 1024) content_len = 32 * 1024;
-    body = malloc(content_len + 1);
+    /* PSRAM-backed: prevents internal-SRAM fragmentation on every
+     * fetch (#182 follow-up — the REST body could be 6-32 KB and was
+     * carving the tight internal heap in plain malloc, contributing
+     * to the slow drift the SRAM-exhaustion watchdog catches). */
+    body = heap_caps_malloc((size_t)content_len + 1,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body) goto cleanup;
     while (total < content_len) {
         int r = esp_http_client_read(cli, body + total, content_len - total);
@@ -375,7 +380,7 @@ static void fetch_sessions_job(void *arg)
     cJSON_Delete(root);
 
 cleanup:
-    if (body) free(body);
+    if (body) heap_caps_free(body);
     esp_http_client_close(cli);
     esp_http_client_cleanup(cli);
 done:

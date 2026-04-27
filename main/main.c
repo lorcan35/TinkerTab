@@ -21,6 +21,7 @@
 #include "esp_task_wdt.h"
 #include "nvs_flash.h"
 #include "esp_heap_caps.h"
+#include "cJSON.h"   /* #182 follow-up: route cJSON allocs to PSRAM */
 #include "esp_timer.h"
 #include "driver/i2c_master.h"
 
@@ -194,8 +195,42 @@ done:
     vTaskSuspend(NULL);  /* P4 TLSP workaround (#20) */
 }
 
+/* #182 follow-up: every cJSON_Parse/AddString/etc allocates per-node
+ * objects via the default malloc, which on ESP-IDF lands in internal
+ * SRAM.  voice.c hits cJSON dozens of times per minute (every WS frame
+ * — llm token, tool_call, ping, config_update, …) plus REST handlers
+ * fire it on every fetch.  At ~50 B/node × hundreds of allocs/min the
+ * tight 512 KB internal heap fragments slowly until heap_watchdog's
+ * SRAM-exhaustion detector trips a controlled reboot.
+ *
+ * Routing cJSON's allocator to PSRAM (via cJSON_InitHooks) makes ALL
+ * cJSON node allocations land in the spacious 32 MB PSRAM heap
+ * instead.  PSRAM is ~3-5× slower per access than internal SRAM, but
+ * cJSON nodes are touched once at parse + once at delete; the marginal
+ * latency is invisible against 60-90 s LLM turns and 250 ms REST
+ * round-trips.  In return we eliminate the steady internal-SRAM drift
+ * that was the proximate cause of the periodic safety reboots. */
+static void *cjson_psram_malloc(size_t sz) {
+    return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+static void cjson_psram_free(void *p) {
+    heap_caps_free(p);
+}
+static void install_cjson_psram_hooks(void) {
+    cJSON_Hooks hooks = {
+        .malloc_fn = cjson_psram_malloc,
+        .free_fn   = cjson_psram_free,
+    };
+    cJSON_InitHooks(&hooks);
+}
+
 void app_main(void)
 {
+    /* Install cJSON PSRAM hooks IMMEDIATELY — before any subsystem
+     * gets a chance to call cJSON_Parse and cache nodes via the
+     * default malloc.  PSRAM is already up at this point (the bootloader
+     * brought it up before app_main). */
+    install_cjson_psram_hooks();
     printf("\n\n");
     printf("========================================\n");
     printf("  TinkerTab v1.0.0 — Full Hardware\n");

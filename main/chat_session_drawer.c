@@ -376,7 +376,11 @@ static void drawer_fetch_task(void *arg)
             int cl = (int)esp_http_client_fetch_headers(client);
             if (cl <= 0) cl = 16384;                         /* safety */
             if (cl > 32 * 1024) cl = 32 * 1024;              /* upper bound */
-            char *buf = malloc(cl + 1);
+            /* PSRAM-backed: see ui_sessions.c for the rationale (up
+             * to 32 KB body was carving the tight internal heap on
+             * every drawer open). */
+            char *buf = heap_caps_malloc((size_t)cl + 1,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (buf) {
                 int total = 0;
                 while (total < cl) {
@@ -388,7 +392,7 @@ static void drawer_fetch_task(void *arg)
                 if (total > 0) {
                     parse_sessions_json(buf, total, res->sessions, &res->count);
                 }
-                free(buf);
+                heap_caps_free(buf);
             }
         }
         esp_http_client_close(client);
