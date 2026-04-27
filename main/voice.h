@@ -36,6 +36,10 @@ typedef enum {
 typedef enum {
     VOICE_MODE_ASK,      // Short-form: STT -> LLM -> TTS (30s max)
     VOICE_MODE_DICTATE,  // Long-form: STT only, unlimited, no LLM/TTS
+    VOICE_MODE_CALL,     // #272 Phase 3E: in-call audio.  Mic frames are
+                         // tagged with AUD0 magic so Dragon broadcasts to
+                         // the call peer instead of feeding STT.  No
+                         // start/stop messages, no LLM/TTS — pure relay.
 } voice_mode_t;
 
 // Callback for state changes (for UI updates)
@@ -107,6 +111,15 @@ esp_err_t voice_send_text(const char *text);
  *  send_lock + 1 s timeout.  Caller is responsible for any framing
  *  (e.g. voice_video.c prefixes a 4-byte type magic). */
 esp_err_t voice_ws_send_binary_public(const void *data, size_t len);
+
+/** #272 Phase 3E: start / stop in-call audio.  Spawns the mic capture
+ *  task in VOICE_MODE_CALL — chunks are wrapped with the AUD0 magic
+ *  prefix so Dragon broadcasts them to the call peer instead of
+ *  feeding STT.  No start/stop messages, no LLM/TTS — pure relay.
+ *  Called by voice_video_start_call / end_call alongside the video
+ *  streamer toggle.  Idempotent. */
+esp_err_t voice_call_audio_start(void);
+esp_err_t voice_call_audio_stop(void);
 
 /** Send voice_mode (0-3) and LLM model string to Dragon as a config_update JSON frame. */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);

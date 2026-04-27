@@ -455,6 +455,11 @@ esp_err_t voice_video_start_call(int fps)
      * already streaming — that's fine, treat as success. */
     esp_err_t er = voice_video_start_streaming(fps);
     if (er != ESP_OK && er != ESP_ERR_INVALID_STATE) return er;
+    /* #272: in-call audio uplink.  Spawns the mic task in VOICE_MODE_CALL
+     * — chunks are wrapped with the AUD0 magic so Dragon broadcasts.
+     * Soft-fails (mic muted, already listening, etc.) — video still
+     * works without audio in that case. */
+    voice_call_audio_start();
     tab5_lv_async_call(open_call_pane_async, NULL);
     ESP_LOGI(TAG, "call start (fps=%d)", fps);
     return ESP_OK;
@@ -463,6 +468,7 @@ esp_err_t voice_video_start_call(int fps)
 esp_err_t voice_video_end_call(void)
 {
     voice_video_stop_streaming();
+    voice_call_audio_stop();
     tab5_lv_async_call(close_call_pane_async, NULL);
     ESP_LOGI(TAG, "call end");
     return ESP_OK;

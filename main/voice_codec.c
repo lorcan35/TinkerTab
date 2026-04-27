@@ -257,3 +257,42 @@ const char *voice_codec_to_name(voice_codec_t c)
     default:               return "pcm";
     }
 }
+
+/* #272 Phase 3E: call-audio framing helpers. */
+
+bool voice_codec_peek_call_audio_magic(const void *data, size_t len)
+{
+    if (!data || len < 4) return false;
+    const uint8_t *b = (const uint8_t *)data;
+    return b[0] == 'A' && b[1] == 'U' && b[2] == 'D' && b[3] == '0';
+}
+
+size_t voice_codec_pack_call_audio(uint8_t *out, size_t out_cap,
+                                   const void *body, size_t body_len)
+{
+    if (!out || !body) return 0;
+    if (out_cap < body_len + VOICE_CALL_AUDIO_HEADER_LEN) return 0;
+    out[0] = 'A'; out[1] = 'U'; out[2] = 'D'; out[3] = '0';
+    out[4] = (uint8_t)((body_len >> 24) & 0xff);
+    out[5] = (uint8_t)((body_len >> 16) & 0xff);
+    out[6] = (uint8_t)((body_len >>  8) & 0xff);
+    out[7] = (uint8_t)( body_len        & 0xff);
+    memcpy(out + VOICE_CALL_AUDIO_HEADER_LEN, body, body_len);
+    return body_len + VOICE_CALL_AUDIO_HEADER_LEN;
+}
+
+bool voice_codec_unpack_call_audio(const uint8_t *wire, size_t wire_len,
+                                   const uint8_t **out_body, size_t *out_body_len)
+{
+    if (!wire || !out_body || !out_body_len) return false;
+    if (wire_len < VOICE_CALL_AUDIO_HEADER_LEN) return false;
+    if (!voice_codec_peek_call_audio_magic(wire, wire_len)) return false;
+    uint32_t body_len = ((uint32_t)wire[4] << 24)
+                      | ((uint32_t)wire[5] << 16)
+                      | ((uint32_t)wire[6] <<  8)
+                      | ((uint32_t)wire[7]);
+    if (body_len + VOICE_CALL_AUDIO_HEADER_LEN != wire_len) return false;
+    *out_body     = wire + VOICE_CALL_AUDIO_HEADER_LEN;
+    *out_body_len = body_len;
+    return true;
+}
