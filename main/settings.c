@@ -426,14 +426,14 @@ uint8_t tab5_settings_get_auto_rotate(void) { return get_u8("auto_rot", 0); }
 esp_err_t tab5_settings_set_auto_rotate(uint8_t on) { return set_u8("auto_rot", on ? 1 : 0); }
 
 /* ── Camera rotation (#260) ───────────────────────────────────────────── */
-/* #286: default 3 (270 CW = 90 CCW).  The sensor is mounted such that
- * the natural-portrait orientation of the user (held with USB at the
- * bottom, looking at the screen) requires a 270 CW rotation of the
- * raw 1280x720 landscape frame to appear right-side-up in the
- * viewfinder.  Empirically verified via screenshot: rot=1 puts the
- * user upside-down, rot=3 puts head at top.  Users who want a
- * different orientation flip it via Settings → Camera rotation. */
-uint8_t tab5_settings_get_cam_rotation(void) { return get_u8("cam_rot", 3); }
+/* #286: default 1 (90 CW).  Empirically: the SC2336 sensor is mounted
+ * such that holding Tab5 in its natural USB-down portrait orientation,
+ * the raw 1280x720 frame needs 90 CW to appear right-side-up.  My
+ * first guess of 3 looked plausible from a static screenshot but
+ * actually showed the scene upside-down (user feedback while wearing
+ * the device).  Users who want a different orientation flip it via
+ * Settings → Camera rotation. */
+uint8_t tab5_settings_get_cam_rotation(void) { return get_u8("cam_rot", 1); }
 esp_err_t tab5_settings_set_cam_rotation(uint8_t rot) { return set_u8("cam_rot", rot & 0x03); }
 
 bool tab5_settings_quiet_active(int hour_local)
