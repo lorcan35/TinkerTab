@@ -10,6 +10,7 @@
  */
 
 #include "debug_server.h"
+#include "task_worker.h"
 #include "config.h"
 #include "esp_random.h"
 #include "pool_probe.h"
@@ -241,9 +242,9 @@ static void screenshot_async_task(void *arg)
      * client can't squeeze in while the previous send is still
      * draining the kernel buffer. */
     Atomic_Decrement_u32(&s_screenshot_busy);
-    /* P4 TLSP cleanup crash (#20): vTaskSuspend(NULL) instead of
-     * vTaskDelete(NULL). */
-    vTaskSuspend(NULL);
+    /* #254: returns instead of vTaskSuspend(NULL).  This runs on the
+     * shared tab5_worker now (see screenshot_handler), so the worker
+     * task picks up the next job. */
 }
 
 static esp_err_t screenshot_handler(httpd_req_t *req)
@@ -267,23 +268,16 @@ static esp_err_t screenshot_handler(httpd_req_t *req)
                             "async handler begin failed");
         return ESP_FAIL;
     }
-    /* Run the heavy work on a dedicated task so the worker is free.
-     * Stack 6K covers JPEG-encode locals + httpd send chunks; pinned
-     * to Core 1 (away from LVGL on Core 0) for a snappier UI.
-     *
-     * #247 fix: WithCaps(MALLOC_CAP_SPIRAM) puts the TCB+stack in
-     * PSRAM.  The async task ends with vTaskSuspend(NULL) (P4 TLSP
-     * cleanup crash #20 forbids vTaskDelete), so the TCB+stack are
-     * never reclaimed.  Without WithCaps, every screenshot would
-     * leak ~6 KB of internal SRAM; over 50 cycles that's the 300 KB
-     * leak that pushed the SRAM-exhaustion watchdog to fire under
-     * mixed-screen stress. */
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
-        screenshot_async_task, "screenshot_async",
-        6144, async_req, tskIDLE_PRIORITY + 4, NULL, 1,
-        MALLOC_CAP_SPIRAM);
-    if (ok != pdPASS) {
-        ESP_LOGW(TAG, "screenshot_async task spawn failed; running inline");
+    /* #254: hand the JPEG encode + send to the shared tab5_worker.
+     * Was a per-call xTaskCreate + vTaskSuspend(NULL) — even with
+     * #247's WithCaps(SPIRAM) it accumulated ~870 B of internal-SRAM
+     * task-list bookkeeping per call (+1 task per /screenshot).  The
+     * busy-CAS above guarantees only one screenshot job is ever
+     * queued, so we don't need a dedicated screenshot task.  Inline
+     * fallback if the worker queue is full. */
+    if (tab5_worker_enqueue(screenshot_async_task, async_req,
+                            "screenshot_async") != ESP_OK) {
+        ESP_LOGW(TAG, "screenshot worker enqueue failed; running inline");
         screenshot_handler_inner(async_req);
         httpd_req_async_handler_complete(async_req);
         Atomic_Decrement_u32(&s_screenshot_busy);
