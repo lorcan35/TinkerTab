@@ -14,9 +14,12 @@
 #include "camera.h"
 #include "sdcard.h"
 #include "voice.h"      /* U11 follow-up: voice_upload_chat_image() */
+#include "voice_video.h"/* #291: shared HW JPEG encoder (voice_video_encode_rgb565) */
 #include "settings.h"   /* #260: cam_rot NVS key */
 #include "config.h"
 #include "esp_log.h"
+#include "esp_timer.h"  /* #291: recording duration */
+#include "driver/jpeg_encode.h"   /* #291: jpeg_alloc_encoder_mem for DMA buffers */
 #include "esp_heap_caps.h"
 #include "esp_task_wdt.h"
 #include <stdio.h>
@@ -83,6 +86,32 @@ static uint16_t    canvas_h        = 0;
  * consistent for the lifetime of the canvas widget. */
 static uint8_t     s_cam_rot       = 0;
 
+/* #291: video recording state.  REC button toggles between idle and
+ * recording-to-SD.  Output is concatenated JPEG (.MJP, motion JPEG)
+ * — no container, no audio.  ffmpeg + VLC handle these natively. */
+static bool        s_rec_active    = false;
+static FILE       *s_rec_file      = NULL;
+static lv_timer_t *s_rec_timer     = NULL;
+static lv_obj_t   *s_rec_btn       = NULL;
+static lv_obj_t   *s_rec_btn_lbl   = NULL;
+static lv_obj_t   *s_rec_overlay   = NULL;   /* "REC ●  MM:SS" top overlay */
+static lv_obj_t   *s_rec_overlay_lbl = NULL;
+static int64_t     s_rec_start_us  = 0;
+static uint32_t    s_rec_frame_count = 0;
+static uint32_t    s_rec_bytes_total = 0;
+static char        s_rec_path[80]  = {0};
+static uint32_t    s_rec_counter   = 0;       /* VID_NNNN.mjpeg next index */
+/* DMA-aligned scratch buffers — encoder itself is the shared one
+ * owned by voice_video.  Just need an output buf and a rotation buf. */
+static uint8_t    *s_rec_jpeg_buf = NULL;
+static size_t      s_rec_jpeg_cap = 0;
+static uint16_t   *s_rec_rot_buf  = NULL;     /* DMA-aligned rotation scratch */
+
+#define REC_FPS_MS         200      /* 5 fps */
+#define REC_JPEG_QUALITY   60
+#define REC_JPEG_MAX       (96 * 1024)
+#define REC_MAX_FRAMES     (5 * 60 * 5)   /* 5 min × 60 s × 5 fps = 1500 frames */
+
 static uint32_t    capture_counter = 0;
 static bool        capture_counter_init = false;
 
@@ -99,6 +128,9 @@ static void toast_timer_cb(lv_timer_t *t);
 static void update_sd_state(void);
 static void alloc_canvas_buffer(uint16_t w, uint16_t h);
 static void free_canvas_buffer(void);
+/* #291: non-static so the auto-stop path inside rec_timer_cb can
+ * call it via the existing extern forward-decl pattern. */
+void cb_record_btn(lv_event_t *e);
 
 /* ================================================================
  * Resolution helpers
@@ -499,6 +531,26 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_add_event_cb(btn_capture, capture_btn_cb, LV_EVENT_CLICKED, NULL);
     ui_fb_button_colored(btn_capture, 0xCCCCCC);  /* Darken white on press */
 
+    /* ── REC button (#291): tap to start/stop video recording to SD ── */
+    s_rec_btn = lv_button_create(bar);
+    lv_obj_remove_style_all(s_rec_btn);
+    lv_obj_set_size(s_rec_btn, 96, 60);
+    lv_obj_align(s_rec_btn, LV_ALIGN_CENTER, 110, -20);
+    lv_obj_set_style_bg_color(s_rec_btn, lv_color_hex(0x1A1A24), 0);
+    lv_obj_set_style_bg_opa(s_rec_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_rec_btn, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_border_width(s_rec_btn, 2, 0);
+    lv_obj_set_style_radius(s_rec_btn, 30, 0);
+    lv_obj_clear_flag(s_rec_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_rec_btn, cb_record_btn, LV_EVENT_CLICKED, NULL);
+    ui_fb_button(s_rec_btn);
+
+    s_rec_btn_lbl = lv_label_create(s_rec_btn);
+    lv_label_set_text(s_rec_btn_lbl, "REC");
+    lv_obj_set_style_text_color(s_rec_btn_lbl, lv_color_hex(COL_WHITE), 0);
+    lv_obj_set_style_text_font(s_rec_btn_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(s_rec_btn_lbl);
+
     /* ── "No SD" label below capture button (hidden by default) ── */
     lbl_no_sd = lv_label_create(bar);
     lv_label_set_text(lbl_no_sd, "No SD");
@@ -572,6 +624,177 @@ lv_obj_t *ui_camera_create(void)
     ESP_LOGI(TAG, "Camera screen created");
 
     return scr_camera;
+}
+
+/* ================================================================
+ * #291: video recording — concatenated JPEGs (.MJP, motion JPEG) at 5 fps to SD.
+ *
+ * Reuses the same hw JPEG encoder allocator as voice_video.c.  Each
+ * frame: capture from camera, apply cam_rot to a DMA-aligned scratch,
+ * jpeg_encoder_process into a DMA-aligned output buffer, fwrite to
+ * the open mjpeg file.  Tap REC again to stop.
+ *
+ * Allocations are persistent across recordings — alloc on first
+ * record_start, free on ui_camera_destroy.  Keeps repeat-record
+ * cycles cheap.
+ * ================================================================ */
+
+static bool ensure_rec_resources(void)
+{
+    if (!s_rec_jpeg_buf) {
+        jpeg_encode_memory_alloc_cfg_t out = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+        s_rec_jpeg_buf = jpeg_alloc_encoder_mem(REC_JPEG_MAX, &out, &s_rec_jpeg_cap);
+        if (!s_rec_jpeg_buf) { ESP_LOGE(TAG, "rec: jpeg out alloc fail"); return false; }
+    }
+    if (!s_rec_rot_buf) {
+        jpeg_encode_memory_alloc_cfg_t in  = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };
+        size_t cap = 0;
+        s_rec_rot_buf = (uint16_t *)jpeg_alloc_encoder_mem(1280 * 720 * 2, &in, &cap);
+        if (!s_rec_rot_buf) { ESP_LOGE(TAG, "rec: rot scratch alloc fail"); return false; }
+    }
+    return true;
+}
+
+static void rec_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_rec_active || !s_rec_file) return;
+
+    /* Hard cap to avoid SD-fill surprises. */
+    if (s_rec_frame_count >= REC_MAX_FRAMES) {
+        ESP_LOGW(TAG, "rec: max-duration reached, auto-stop");
+        extern void cb_record_btn(lv_event_t *e);
+        cb_record_btn(NULL);
+        return;
+    }
+
+    if (!tab5_camera_initialized()) return;
+    tab5_cam_frame_t frame;
+    if (tab5_camera_capture(&frame) != ESP_OK || frame.format != TAB5_CAM_FMT_RGB565) {
+        return;
+    }
+
+    /* Apply cam_rot to match the viewfinder.  Encode into the persistent
+     * jpeg_buf, then fwrite to disk. */
+    const uint8_t *src = frame.data;
+    int sw = frame.width, sh = frame.height;
+    uint8_t rot = tab5_settings_get_cam_rotation() & 0x03;
+    if (rot != 0) {
+        const uint16_t *s = (const uint16_t *)frame.data;
+        switch (rot) {
+        case 1:
+            for (int y = 0; y < sh; y++)
+                for (int x = 0; x < sw; x++)
+                    s_rec_rot_buf[(sh - 1 - y) + x * sh] = s[y*sw + x];
+            sw = frame.height; sh = frame.width;
+            break;
+        case 2:
+            for (int i = 0, n = sw*sh; i < n; i++) s_rec_rot_buf[n-1-i] = s[i];
+            break;
+        case 3:
+            for (int y = 0; y < sh; y++)
+                for (int x = 0; x < sw; x++)
+                    s_rec_rot_buf[y + (sw-1-x) * sh] = s[y*sw + x];
+            sw = frame.height; sh = frame.width;
+            break;
+        }
+        src = (const uint8_t *)s_rec_rot_buf;
+    }
+
+    uint32_t out_size = 0;
+    if (voice_video_encode_rgb565(src, sw, sh, REC_JPEG_QUALITY,
+                                  s_rec_jpeg_buf, s_rec_jpeg_cap,
+                                  &out_size) != ESP_OK || out_size == 0) {
+        return;
+    }
+
+    if (fwrite(s_rec_jpeg_buf, 1, out_size, s_rec_file) != out_size) {
+        ESP_LOGE(TAG, "rec: fwrite failed (SD full?)");
+        extern void cb_record_btn(lv_event_t *e);
+        cb_record_btn(NULL);
+        return;
+    }
+    s_rec_frame_count++;
+    s_rec_bytes_total += out_size;
+
+    /* Update overlay every ~1s (5 frames) */
+    if (s_rec_overlay_lbl && (s_rec_frame_count % 5 == 0)) {
+        int sec = (int)((esp_timer_get_time() - s_rec_start_us) / 1000000);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "REC " LV_SYMBOL_PLAY "  %02d:%02d  %u KB",
+                 sec / 60, sec % 60, (unsigned)(s_rec_bytes_total / 1024));
+        lv_label_set_text(s_rec_overlay_lbl, buf);
+    }
+}
+
+void cb_record_btn(lv_event_t *e)
+{
+    (void)e;
+    if (!s_rec_active) {
+        /* Start recording */
+        if (!tab5_sdcard_mounted()) { toast_show("No SD card"); return; }
+        if (!tab5_camera_initialized()) { toast_show("Camera not ready"); return; }
+        if (!ensure_rec_resources()) { toast_show("Recorder init failed"); return; }
+
+        /* FATFS LFN is disabled (CONFIG_FATFS_LFN_NONE=1), so we're
+         * stuck with 8.3 short names.  Use .MJP — players detect the
+         * MJPEG format from the magic bytes, the extension is cosmetic.
+         * ffmpeg + VLC handle this fine: `ffplay -f mjpeg VID_NNNN.MJP`. */
+        snprintf(s_rec_path, sizeof(s_rec_path),
+                 "/sdcard/VID_%04u.MJP", (unsigned)s_rec_counter);
+        s_rec_file = fopen(s_rec_path, "wb");
+        if (!s_rec_file) {
+            ESP_LOGE(TAG, "rec: fopen %s failed", s_rec_path);
+            toast_show("Open file failed");
+            return;
+        }
+        s_rec_counter++;
+        s_rec_active        = true;
+        s_rec_start_us      = esp_timer_get_time();
+        s_rec_frame_count   = 0;
+        s_rec_bytes_total   = 0;
+
+        if (s_rec_btn_lbl) lv_label_set_text(s_rec_btn_lbl, "STOP");
+        if (s_rec_btn) lv_obj_set_style_bg_color(s_rec_btn, lv_color_hex(0xEF4444), 0);
+        if (!s_rec_overlay) {
+            s_rec_overlay = lv_obj_create(scr_camera);
+            lv_obj_remove_style_all(s_rec_overlay);
+            lv_obj_set_size(s_rec_overlay, 360, 36);
+            lv_obj_align(s_rec_overlay, LV_ALIGN_TOP_MID, 0, 12);
+            lv_obj_set_style_bg_color(s_rec_overlay, lv_color_hex(0x000000), 0);
+            lv_obj_set_style_bg_opa(s_rec_overlay, LV_OPA_70, 0);
+            lv_obj_set_style_radius(s_rec_overlay, 18, 0);
+            lv_obj_clear_flag(s_rec_overlay, LV_OBJ_FLAG_SCROLLABLE);
+            s_rec_overlay_lbl = lv_label_create(s_rec_overlay);
+            lv_label_set_text(s_rec_overlay_lbl, "REC " LV_SYMBOL_PLAY "  00:00");
+            lv_obj_set_style_text_color(s_rec_overlay_lbl, lv_color_hex(0xEF4444), 0);
+            lv_obj_center(s_rec_overlay_lbl);
+        } else {
+            lv_obj_remove_flag(s_rec_overlay, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (!s_rec_timer) s_rec_timer = lv_timer_create(rec_timer_cb, REC_FPS_MS, NULL);
+        ESP_LOGI(TAG, "rec: start -> %s", s_rec_path);
+        return;
+    }
+
+    /* Stop recording */
+    s_rec_active = false;
+    if (s_rec_timer) { lv_timer_delete(s_rec_timer); s_rec_timer = NULL; }
+    if (s_rec_file)  { fclose(s_rec_file); s_rec_file = NULL; }
+    if (s_rec_btn_lbl) lv_label_set_text(s_rec_btn_lbl, "REC");
+    if (s_rec_btn) lv_obj_set_style_bg_color(s_rec_btn, lv_color_hex(0x1A1A24), 0);
+    if (s_rec_overlay) lv_obj_add_flag(s_rec_overlay, LV_OBJ_FLAG_HIDDEN);
+    char msg[80];
+    int sec = (int)((esp_timer_get_time() - s_rec_start_us) / 1000000);
+    snprintf(msg, sizeof(msg), "Saved %s (%us, %u KB)",
+             strrchr(s_rec_path, '/') + 1, sec, (unsigned)(s_rec_bytes_total / 1024));
+    toast_show(msg);
+    ESP_LOGI(TAG, "rec: stop %s frames=%u bytes=%u",
+             s_rec_path, s_rec_frame_count, s_rec_bytes_total);
+    /* Send-to-Dragon — fire-and-forget HTTP upload via voice's existing
+     * /api/media/upload helper. */
+    extern void voice_upload_chat_image(const char *filepath);
+    voice_upload_chat_image(s_rec_path);
 }
 
 /* ================================================================
@@ -851,6 +1074,16 @@ void ui_camera_destroy(void)
         preview_timer = NULL;
     }
 
+    /* #291: tear down any in-flight recording before deleting the
+     * screen — rec_timer_cb references widgets we're about to free. */
+    if (s_rec_active) {
+        s_rec_active = false;
+        if (s_rec_timer) { lv_timer_delete(s_rec_timer); s_rec_timer = NULL; }
+        if (s_rec_file)  { fclose(s_rec_file); s_rec_file = NULL; }
+        ESP_LOGI(TAG, "rec: aborted by screen destroy %s frames=%u",
+                 s_rec_path, (unsigned)s_rec_frame_count);
+    }
+
     /* Stop toast timer */
     if (toast_timer) {
         lv_timer_delete(toast_timer);
@@ -869,9 +1102,25 @@ void ui_camera_destroy(void)
         btn_gallery    = NULL;
         lbl_gallery    = NULL;
         toast_obj      = NULL;
+        s_rec_btn      = NULL;
+        s_rec_btn_lbl  = NULL;
+        s_rec_overlay  = NULL;
+        s_rec_overlay_lbl = NULL;
         ESP_LOGI(TAG, "Camera screen destroyed");
     }
 
     /* Free PSRAM canvas buffer */
     free_canvas_buffer();
+
+    /* #291: release DMA-aligned scratch buffers.  The HW JPEG encoder
+     * itself stays alive — it's owned by voice_video and shared. */
+    if (s_rec_jpeg_buf) {
+        free(s_rec_jpeg_buf);
+        s_rec_jpeg_buf = NULL;
+        s_rec_jpeg_cap = 0;
+    }
+    if (s_rec_rot_buf) {
+        free(s_rec_rot_buf);
+        s_rec_rot_buf = NULL;
+    }
 }
