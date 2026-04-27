@@ -2,8 +2,8 @@
 
 ## Active Investigations — READ FIRST before related work
 
-- **Stability — LVGL pool pressure CLOSED, SW-reset class still open** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
-  As of 2026-04-24, three PRs shipped on main: #183 (2 MB PSRAM LVGL pool via `lv_mem_add_pool()`), #184 (heap_watchdog SRAM exhaustion detector → `sram_exhausted` PANIC + coredump), #185 (LV_MEM 96→64 KB to free 32 KB BSS).  Combined effect: zero LVGL PANIC crashes, ~2× cadence under stress, silent SW cascade replaced with diagnosable PANIC.  Issue **#182 remains open** for the residual slow internal-SRAM drift (~5 KB/min under sustained stress) — runs into a RISC-V architectural limit (heap_trace caller PCs need frame pointer, which overflows the bootloader partition at 24 KB).  **Do NOT start one-off LVGL-NULL-deref patches** if a new crash surfaces — read the state doc first.  The whack-a-mole era ended with PR #178; the root-cause arm ended with #185.
+- **Stability — CLOSED** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
+  As of 2026-04-27 the investigation is fundamentally done. Real root cause of the long-residual crash class: **LVGL 9.x `lv_async_call` is NOT thread-safe** (does `lv_malloc` + `lv_timer_create` against unprotected TLSF) — the codebase had been treating it as thread-safe for years per a wrong comment in `ui_core.c`. PR #257 hand-wrapped the empirical site (mem_fetch); PR #259 added a `tab5_lv_async_call(cb, arg)` helper in `ui_core.{h,c}` and replaced all 49 sites uniformly. Today's stress benchmark progression: 50 % uptime → 92.4 % (#246) → 96 % (#249) → 97.6 % (#251+#253+#255) → **100 %, zero reboots in 5-min mixed nav+screenshot stress** (#257+#259). **Rule for any new lv_async_call use: ALWAYS call `tab5_lv_async_call`, never the LVGL primitive directly.** If a new stability symptom surfaces, do a fresh systematic-debugging pass — the historic "whack-a-mole" + LVGL pool + SDIO RX classes are all closed, so a new crash is a new mechanism.
 
 ## Repo Separation — READ THIS FIRST
 - **TinkerTab** (this repo) = Tab5 firmware. C/ESP-IDF. THIN CLIENT.

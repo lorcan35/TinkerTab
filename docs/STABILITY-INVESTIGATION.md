@@ -1,11 +1,18 @@
 # TinkerTab Stability Investigation
 
-> **Last updated:** 2026-04-24 — Phase 4 VALIDATED on `fix/lvgl-pool-2mb-psram` (2 MB PSRAM pool); LVGL PANIC class eliminated across full 30-min stress
-> **Current phase:** hypothesis (B) arm of the investigation CLOSED — PR pending merge on #181.  Investigation remains open only for the separate `reset_reason=SW` class tracked in #182.
-> **Active branch:** `fix/lvgl-pool-2mb-psram` (11 commits ahead of main); `investigate/lvgl-pool-pressure` is the parent, kept around for history.
-> **Companion plan:** `docs/superpowers/plans/2026-04-23-lvgl-pool-investigation.md`
+> **Last updated:** 2026-04-27 — All known crash classes eliminated. 5-min mixed stress passes at **100 % ping uptime, 0 reboots**. 30-min validation in progress.
+> **Current status:** The long-standing investigation that started with #166-#178 (LVGL whack-a-mole), continued through #180-#185 (LVGL pool pressure → 2 MB PSRAM pool), and #182 (SDIO RX cascade from internal-SRAM exhaustion) is **closed across all known mechanisms** as of PR #259.
 >
-> **NEXT CONCRETE STEP when resuming:** work from issue **#182** — the `reset_reason=SW` crash class observed during `mode=3 chat` actions.  Candidates: `heap_watchdog.c` fragmentation reboot, zombie-reboot WDT in `voice.c`, or an explicit `esp_restart()` on some resource-exhaustion branch.  Start with `grep -rn "esp_restart\\|esp_system_abort" main/` to enumerate controlled-reset paths; then reproduce in isolation (loop mode-3 chat actions without the full orchestrator).  Do NOT reopen the LVGL pool work — that is closed and shipped.
+> **What was hit on 2026-04-27:**
+> - PR #246: `lv_obj_clean` use-after-free in ui_memory rendering (pre-existing UAF surfaced under stress)
+> - PR #249: screenshot async task TCB+stack moved to PSRAM (-6 KB internal SRAM per call)
+> - PR #251: `ui_notes_create` missing screen-load guard (camera→notes nav PANIC, same NULL-screen-ancestor class as #229)
+> - PR #253: `mem_fetch` converted to `tab5_worker` (-1 task per /memory navigate, killed kernel-bookkeeping leak)
+> - PR #255: `screenshot` encode/send moved to `tab5_worker` (-1 task per /screenshot)
+> - PR #257: **The big one.** Discovered LVGL 9.x `lv_async_call` is NOT thread-safe (does `lv_malloc` + `lv_timer_create` against unprotected TLSF). Worker thread allocator races with `ui_task` corrupted free lists → search_suitable_block infinite loop → TASK_WDT. Wrapping the mem_fetch call site closed the residual TWDT class in #182 entirely.
+> - PR #259: Systematic wrap of all 49 `lv_async_call` sites via `tab5_lv_async_call` helper. Future-proofs against the same race anywhere else.
+>
+> **NEXT CONCRETE STEP when resuming:** stability is fundamentally solved. The investigation arm is closed. If a new crash surfaces, start a fresh systematic-debugging pass — do NOT reopen this doc unless the new symptom matches a class documented here.
 
 ---
 
@@ -418,6 +425,40 @@ After home screen creation the pool parks at **free=2099 KB** — ~19× the obse
 - **Strict reading of plan-doc success criterion** ("zero crashes of any kind in 30 min") is not fully met due to the 2 SW resets.  **Pragmatic reading** (the one that matches the actual hypothesis under test in this investigation — LVGL pool exhaustion) IS met.  Merging the PR is the right call: the firmware is strictly better than `main` (which has ~3 PANICs per 10 min and these same SW resets).  Continuing to block on #182 would defer a working fix indefinitely.
 
 **Investigation closure for hypothesis (B):** done.  `fix/lvgl-pool-2mb-psram` closes the LVGL-pool arm of this investigation and the whole 12-PR whack-a-mole cycle of #166–#178.  The investigation doc, the plan doc, and issue #182 remain open for the SW-reset class, which needs its own Phase 1-4 cycle.
+
+---
+
+### 2026-04-27 — Investigation closed: lv_async_call race was the residual
+
+After PR #185 closed the LVGL PANIC class via the 2 MB PSRAM pool, #182 documented two persistent residual mechanisms: an SDIO RX cascade rooted in internal-SRAM exhaustion, and an SW-reset class during mode-3 chat actions. Today's session worked through both.
+
+**Sub-fixes (each reduced reboot rate but didn't fully close):**
+
+1. **PR #246** — `ui_memory.c::render_hits_cb` UAF: `lv_obj_clean(s_hits_root)` freed `s_loading` (a child) but the next line dereferenced it. Under stress the LV pool reused the slot and a random widget got `lv_obj_add_flag` called on it. 50 % → 92 % uptime in 5-min stress.
+2. **PR #249** — `screenshot_async_task` TCB+stack moved to PSRAM via `xTaskCreatePinnedToCoreWithCaps`. Each /screenshot leaked ~6 KB internal SRAM (vTaskSuspend on internal-RAM TCB). 92 % → 96 %.
+3. **PR #251** — `ui_notes_create` missing the `lv_screen_load(home)` guard that ui_chat / ui_memory / ui_focus / ui_agents / ui_sessions all have. After camera→notes nav, `ui_camera_destroy()` left `disp->act_scr` dangling. Same NULL screen-ancestor class as #229.
+4. **PR #253** — `mem_fetch` converted from per-call `xTaskCreate` + `vTaskSuspend(NULL)` to a `tab5_worker` job. Eliminated +1 suspended task per /memory navigate (~870 B internal SRAM bookkeeping each).
+5. **PR #255** — Same conversion for `screenshot_async_task`. Eliminated +1 suspended task per /screenshot.
+
+After steps 1-5: 97.6 % uptime in 5-min stress, with 1 PANIC + 1 TASK_WDT residual.
+
+**The actual root cause of the residual class:**
+
+A `tab5_worker` TWDT coredump showed the worker stuck in `lv_tlsf.c:774 block_locate_free`, called from `lv_async_call -> lv_malloc(8)` inside `mem_fetch`. The LVGL 9.x source proves `lv_async_call` does `lv_malloc` + `lv_timer_create` against the **unprotected** TLSF heap. Worker thread on Core 1 allocating from TLSF concurrently with `ui_task` allocating draw tasks on Core 0 eventually corrupted a free-list pointer; `search_suitable_block` then walked a bad chain and TWDT fired on whichever task was unlucky enough to call `lv_malloc` next.
+
+The codebase comment in `ui_core.c` explicitly claimed `lv_async_call` was "thread-safe without mutex". This was wrong, and the bug had been latent for the entire lifetime of every `lv_async_call` site that ran on a non-LVGL thread (worker tasks, voice WS handlers, HTTP callbacks). The race was rare under normal use but reproducible under sustained mixed nav+screenshot stress.
+
+**The fix:**
+
+- **PR #257** — Hand-wrap the empirical site (`fetch_task` → `lv_async_call(render_hits_cb)`) with `tab5_ui_lock` / `tab5_ui_unlock`. 5-min mixed stress: 92 iterations, **0 reboots, 100 % ping uptime**. Validated the diagnosis.
+- **PR #259** — Add `tab5_lv_async_call(cb, arg)` helper in `ui_core.{h,c}`. Replace all 48 remaining `lv_async_call` call sites in `main/*.c` with the helper. ABBA-audit the codebase first to confirm no path holds a non-LVGL mutex while calling something that would now take the LVGL mutex (clean — voice.c mutex regions only do string ops, mode_manager only reads voice state). Functional smoke (chat send, mode switch, memory load, every nav target) all OK; visual confirmation via screenshots. 5-min regression: 97 iterations, 0 reboots, 100 %.
+
+**Status:** all known crash classes from #166-#185 + #182 closed. 30-min stress validation in progress.
+
+**Lessons learned:**
+- "Thread-safe folklore" comments in code are evidence — not conclusions. Always check the actual implementation.
+- Symptom (TWDT on `ui_task` in TLSF) pointed at LVGL render slowness; the real culprit was concurrent allocator from any thread. Instrumentation that proved render was NOT slow is what redirected the investigation.
+- 5+ small symptom-fixing PRs (the #246-#255 sequence) were necessary to get the noise floor low enough that the real signal (worker TWDT) could be isolated. None were wasted — each removed a confounding variable.
 
 ---
 
