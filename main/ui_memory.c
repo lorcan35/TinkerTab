@@ -369,8 +369,17 @@ cleanup:
     esp_http_client_close(cli);
     esp_http_client_cleanup(cli);
 done:
-    /* Hop to LVGL thread to rebuild the UI. */
+    /* Hop to LVGL thread to rebuild the UI.
+     *
+     * #256: lv_async_call internally calls lv_malloc + lv_timer_create
+     * — both unprotected TLSF allocator operations.  Calling it from
+     * tab5_worker (Core 1) while ui_task is allocating draw tasks on
+     * Core 0 races the LVGL TLSF heap, eventually corrupting a free
+     * block-list pointer → search_suitable_block infinite loop →
+     * TASK_WDT.  Take the LVGL mutex around it. */
+    tab5_ui_lock();
     lv_async_call(render_hits_cb, NULL);
+    tab5_ui_unlock();
     s_fetch_inflight = false;
     /* #252: was xTaskCreate + vTaskSuspend(NULL) — accumulated one
      * suspended TCB+bookkeeping (~870 B internal SRAM each) per
