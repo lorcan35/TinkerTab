@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
 static const char *TAG = "ui_camera";
 
@@ -180,19 +181,54 @@ lv_obj_t *ui_camera_create(void)
 
     bool cam_ok = tab5_camera_initialized();
 
-    /* Find highest existing IMG_NNNN.jpg to avoid overwriting */
-    if (!capture_counter_init && tab5_sdcard_mounted()) {
-        char path[32];
-        for (uint32_t i = 9999; i > 0; i--) {
-            snprintf(path, sizeof(path), "/sdcard/IMG_%04"PRIu32".jpg", i);
-            struct stat st;
-            if (stat(path, &st) == 0) {
-                capture_counter = i + 1;
-                ESP_LOGI(TAG, "Resuming capture counter at %"PRIu32, capture_counter);
-                break;
+    /* U18 (#206): resume the capture counter from existing IMG_NNNN.jpg
+     * filenames on the SD card.
+     *
+     * Pre-fix: 9999 stat() calls in a loop, run once on first camera
+     * open.  Two failure modes:
+     *   - Slow SD or large card → 9999 stats can take seconds and
+     *     trip the LVGL/IDLE WDT before the screen is even built.
+     *   - SD inserted AFTER first camera open → the init flag was
+     *     set permanently when the previous open ran with no SD,
+     *     so the counter stayed at 0 and the next capture overwrote
+     *     IMG_0000.jpg (or worse, clobbered an existing photo).
+     *
+     * Post-fix: single opendir+readdir scan (one pass over directory
+     * entries, not a 0..9999 brute force), and gate on actual SD mount
+     * state so a late insert re-scans on the next ui_camera_create. */
+    if (tab5_sdcard_mounted()) {
+        if (!capture_counter_init) {
+            DIR *d = opendir("/sdcard");
+            uint32_t highest = 0;
+            if (d) {
+                struct dirent *de;
+                while ((de = readdir(d)) != NULL) {
+                    /* Match IMG_NNNN.jpg / IMG_NNNN.JPG (case-insensitive
+                     * because FATFS short-name mode upcases everything). */
+                    if (strncasecmp(de->d_name, "IMG_", 4) != 0) continue;
+                    const char *dot = strrchr(de->d_name, '.');
+                    if (!dot || strcasecmp(dot, ".jpg") != 0) continue;
+                    /* Parse the 4-digit number between IMG_ and .jpg. */
+                    char num_buf[8] = {0};
+                    size_t num_len = (size_t)(dot - (de->d_name + 4));
+                    if (num_len == 0 || num_len >= sizeof(num_buf)) continue;
+                    memcpy(num_buf, de->d_name + 4, num_len);
+                    char *end = NULL;
+                    unsigned long n = strtoul(num_buf, &end, 10);
+                    if (end != num_buf + num_len) continue;
+                    if (n > highest) highest = (uint32_t)n;
+                }
+                closedir(d);
             }
+            capture_counter = highest + 1;
+            capture_counter_init = true;
+            ESP_LOGI(TAG, "Capture counter resumed at %"PRIu32 " (scanned existing IMG_*.jpg)",
+                     capture_counter);
         }
-        capture_counter_init = true;
+    } else {
+        /* SD not mounted (yet).  Don't latch capture_counter_init —
+         * next open after the user inserts the card will re-scan. */
+        capture_counter_init = false;
     }
 
     /* ── Screen ──────────────────────────────────────────────── */
