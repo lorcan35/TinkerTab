@@ -31,7 +31,7 @@ else()
     idf_component_register(
         SRCS "main.c"
              "sdcard.c" "wifi.c"
-             "voice.c" "mode_manager.c"
+             "voice.c" "voice_codec.c" "mode_manager.c"
              "debug_server.c" "debug_obs.c" "pool_probe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"
@@ -48,5 +48,6 @@ else()
                  esp_wifi esp_netif esp_event esp_http_client esp_http_server tcp_transport
                  espcoredump app_update esp_https_ota
                  esp_driver_isp esp_video esp_cam_sensor
+                 espressif__esp_audio_codec
     )
 endif()
