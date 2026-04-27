@@ -301,7 +301,11 @@ static void fetch_task(void *pv)
     }
     int content_len = esp_http_client_fetch_headers(cli);
     if (content_len < 0) content_len = 8192;
-    char *body = malloc(content_len + 1);
+    /* PSRAM-backed: see ui_sessions.c for the rationale (REST body
+     * up to 32 KB was malloc'd to internal SRAM and slowly fragmented
+     * the tight internal heap on every fetch). */
+    char *body = heap_caps_malloc((size_t)content_len + 1,
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!body) goto cleanup;
     int got = 0;
     while (got < content_len) {
@@ -314,12 +318,12 @@ static void fetch_task(void *pv)
     int status = esp_http_client_get_status_code(cli);
     ESP_LOGI(TAG, "GET %s -> %d (%d bytes)", url, status, got);
     if (status != 200) {
-        free(body);
+        heap_caps_free(body);
         goto cleanup;
     }
 
     cJSON *root = cJSON_Parse(body);
-    free(body);
+    heap_caps_free(body);
     if (!root) {
         ESP_LOGW(TAG, "cJSON parse failed");
         goto cleanup;
