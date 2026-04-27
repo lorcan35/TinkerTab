@@ -14,6 +14,7 @@
 #include "camera.h"
 #include "sdcard.h"
 #include "voice.h"      /* U11 follow-up: voice_upload_chat_image() */
+#include "settings.h"   /* #260: cam_rot NVS key */
 #include "config.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -75,6 +76,12 @@ static uint32_t    canvas_buf_size = 0;
 
 static uint16_t    canvas_w        = 0;
 static uint16_t    canvas_h        = 0;
+
+/* #260: snapshot of NVS cam_rot at screen-create time.
+ * 0 = 0deg (raw memcpy, fastest path), 1 = 90 CW, 2 = 180, 3 = 270 CW.
+ * Snapshotted (not re-read each frame) so the buffer dimensions stay
+ * consistent for the lifetime of the canvas widget. */
+static uint8_t     s_cam_rot       = 0;
 
 static uint32_t    capture_counter = 0;
 static bool        capture_counter_init = false;
@@ -142,6 +149,51 @@ static void free_canvas_buffer(void)
         canvas_buf_size = 0;
         canvas_w = 0;
         canvas_h = 0;
+    }
+}
+
+/* ================================================================
+ * #260: RGB565 in-place rotation helpers.
+ *
+ * Source frame is sw x sh.  Destination is the canvas buffer,
+ * sized appropriately by the caller (90/270 = sh x sw, 180 = sw x sh).
+ *
+ * Naive transpose loops; ~30-40 ms per 1280x720 frame on PSRAM.
+ * Acceptable for the 10 FPS preview (100 ms budget).  If we ever
+ * raise preview FPS, swap in tile-based rotation (32x32 cache lines)
+ * or the ESP32-P4 PPA hardware path.
+ * ================================================================ */
+static void rotate_rgb565_180(const uint16_t *src, uint16_t *dst,
+                              int sw, int sh)
+{
+    /* dst[(sh-1-y), (sw-1-x)] = src[y, x] */
+    int npix = sw * sh;
+    for (int i = 0; i < npix; i++) {
+        dst[npix - 1 - i] = src[i];
+    }
+}
+
+static void rotate_rgb565_90cw(const uint16_t *src, uint16_t *dst,
+                               int sw, int sh)
+{
+    /* dst is sh wide, sw tall.  dst[(sh-1-y) + x*sh] = src[x + y*sw] */
+    for (int y = 0; y < sh; y++) {
+        const uint16_t *srow = src + y * sw;
+        for (int x = 0; x < sw; x++) {
+            dst[(sh - 1 - y) + x * sh] = srow[x];
+        }
+    }
+}
+
+static void rotate_rgb565_270cw(const uint16_t *src, uint16_t *dst,
+                                int sw, int sh)
+{
+    /* dst is sh wide, sw tall.  dst[y + (sw-1-x)*sh] = src[x + y*sw] */
+    for (int y = 0; y < sh; y++) {
+        const uint16_t *srow = src + y * sw;
+        for (int x = 0; x < sw; x++) {
+            dst[y + (sw - 1 - x) * sh] = srow[x];
+        }
     }
 }
 
@@ -331,7 +383,14 @@ lv_obj_t *ui_camera_create(void)
         uint16_t w, h;
         res_to_dimensions(current_res, &w, &h);
         esp_task_wdt_reset();
-        alloc_canvas_buffer(w, h);
+        /* #260: snapshot rotation pref + allocate canvas with the post-
+         * rotation dimensions so 90/270 give a portrait-fit viewfinder. */
+        s_cam_rot = tab5_settings_get_cam_rotation() & 0x03;
+        if (s_cam_rot == 1 || s_cam_rot == 3) {
+            alloc_canvas_buffer(h, w);  /* dimensions swapped */
+        } else {
+            alloc_canvas_buffer(w, h);
+        }
 
         if (canvas_buf) {
             canvas_preview = lv_canvas_create(vf_area);
@@ -483,14 +542,38 @@ static void preview_timer_cb(lv_timer_t *t)
     esp_err_t err = tab5_camera_capture(&frame);
     if (err != ESP_OK) return;
 
-    /* Only blit if the frame matches our canvas dimensions and is RGB565 */
     if (frame.format != TAB5_CAM_FMT_RGB565) return;
-    if (frame.width != canvas_w || frame.height != canvas_h) return;
 
-    /* Copy frame data into the canvas buffer */
-    uint32_t copy_size = (uint32_t)frame.width * frame.height * 2;
-    if (copy_size > canvas_buf_size) copy_size = canvas_buf_size;
-    memcpy(canvas_buf, frame.data, copy_size);
+    /* #260: rotate the captured frame into the canvas buffer.
+     * For rotation 0/180 the frame and canvas share dimensions
+     * (sw x sh).  For 90/270 the canvas is allocated swapped
+     * (sh x sw) — see alloc_canvas_buffer in ui_camera_create. */
+    const uint16_t *src = (const uint16_t *)frame.data;
+    uint16_t *dst = (uint16_t *)canvas_buf;
+    int sw = frame.width;
+    int sh = frame.height;
+    uint32_t expected = (uint32_t)sw * sh * 2;
+    if (expected > canvas_buf_size) return;
+
+    switch (s_cam_rot) {
+    case 1:  /* 90 CW: source w/h swapped on output */
+        if (canvas_w != sh || canvas_h != sw) return;
+        rotate_rgb565_90cw(src, dst, sw, sh);
+        break;
+    case 2:  /* 180: same dimensions */
+        if (canvas_w != sw || canvas_h != sh) return;
+        rotate_rgb565_180(src, dst, sw, sh);
+        break;
+    case 3:  /* 270 CW (= 90 CCW): swapped */
+        if (canvas_w != sh || canvas_h != sw) return;
+        rotate_rgb565_270cw(src, dst, sw, sh);
+        break;
+    case 0:
+    default:
+        if (canvas_w != sw || canvas_h != sh) return;
+        memcpy(dst, src, expected);
+        break;
+    }
 
     /* Tell LVGL the canvas content changed */
     lv_obj_invalidate(canvas_preview);
@@ -520,12 +603,44 @@ static void capture_btn_cb(lv_event_t *e)
         return;
     }
 
+    /* #260: rotate the saved photo to match what the user saw on the
+     * viewfinder.  Allocate a temp PSRAM buffer; for 0deg we just save
+     * the frame as-is (skip the alloc). */
+    tab5_cam_frame_t saved = frame;
+    uint8_t *rot_buf = NULL;
+    if (s_cam_rot != 0 && frame.format == TAB5_CAM_FMT_RGB565) {
+        size_t bytes = (size_t)frame.width * frame.height * 2;
+        rot_buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+        if (rot_buf) {
+            const uint16_t *src = (const uint16_t *)frame.data;
+            uint16_t *dst = (uint16_t *)rot_buf;
+            switch (s_cam_rot) {
+            case 1:
+                rotate_rgb565_90cw(src, dst, frame.width, frame.height);
+                saved.width  = frame.height;
+                saved.height = frame.width;
+                break;
+            case 2:
+                rotate_rgb565_180(src, dst, frame.width, frame.height);
+                break;
+            case 3:
+                rotate_rgb565_270cw(src, dst, frame.width, frame.height);
+                saved.width  = frame.height;
+                saved.height = frame.width;
+                break;
+            }
+            saved.data = rot_buf;
+            saved.size = bytes;
+        }
+    }
+
     /* Build filename with incrementing counter */
     char path[64];
     snprintf(path, sizeof(path), "/sdcard/IMG_%04"PRIu32".jpg",
              capture_counter);
 
-    err = tab5_camera_save_jpeg(&frame, path);
+    err = tab5_camera_save_jpeg(&saved, path);
+    if (rot_buf) heap_caps_free(rot_buf);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Save failed: %s", esp_err_to_name(err));
         toast_show("Save failed");
