@@ -733,6 +733,11 @@ static void async_push_msg_cb(void *arg)
                 m->height_px = -1;
             }
             if (s_view) {
+                /* Invalidate the existing slot so refresh re-runs
+                 * slot_bind and picks up the new text — without this,
+                 * refresh sees data_idx==merge_idx already bound and
+                 * skips, leaving the visible label stale. */
+                chat_msg_view_invalidate_index(s_view, merge_idx);
                 chat_msg_view_refresh(s_view);
                 chat_msg_view_scroll_to_bottom(s_view);   /* closes #107 */
             }

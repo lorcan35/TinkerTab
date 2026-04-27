@@ -28,6 +28,14 @@ void chat_msg_view_set_mode_color(chat_msg_view_t *v, uint32_t hex);
 void chat_msg_view_refresh(chat_msg_view_t *v);
 void chat_msg_view_scroll_to_bottom(chat_msg_view_t *v);
 
+/** Invalidate any pool slot currently bound to message `idx` so the
+ *  next refresh re-binds (re-runs slot_bind, picking up the latest
+ *  msg->text and styles).  Used by in-place edits — the
+ *  chat_store_update_last_text path and the assistant-bubble dedup
+ *  path mutate a message's text in place; without this kick, refresh's
+ *  "already bound, skip" optimisation leaves the visible label stale. */
+void chat_msg_view_invalidate_index(chat_msg_view_t *v, int idx);
+
 /** Begin a streaming AI message: pin the last slot, buffer tokens. */
 void chat_msg_view_begin_streaming(chat_msg_view_t *v);
 void chat_msg_view_append_stream(chat_msg_view_t *v, const char *text);
