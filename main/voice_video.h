@@ -90,3 +90,18 @@ bool voice_video_peek_downlink_magic(const void *data, size_t len);
 esp_err_t voice_video_start_call(int fps);
 esp_err_t voice_video_end_call(void);
 bool      voice_video_is_in_call(void);
+
+/* #291: shared JPEG encoder access for other camera consumers (video
+ * recorder).  ESP32-P4 only has one HW JPEG encoder engine, and
+ * voice_video already owns it via voice_video_init.  This wrapper
+ * takes the same mutex so concurrent uplink-stream + record-to-SD
+ * encodes serialise instead of failing the second alloc.
+ *
+ * Returns ESP_ERR_INVALID_STATE if voice_video_init has not run yet,
+ * ESP_ERR_TIMEOUT if it can't grab the encoder mutex within 2 s, or
+ * whatever jpeg_encoder_process returns. */
+esp_err_t voice_video_encode_rgb565(const uint8_t *rgb565,
+                                    int width, int height,
+                                    uint8_t quality,
+                                    uint8_t *out_buf, size_t out_cap,
+                                    uint32_t *out_size);

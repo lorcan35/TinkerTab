@@ -158,6 +158,35 @@ static esp_err_t encode_jpeg(const uint8_t *rgb565, int w, int h,
     return r;
 }
 
+/* #291: public encode helper — used by ui_camera's video recorder so
+ * it can share the single HW JPEG encoder engine with the streaming
+ * task.  Same mutex, configurable quality. */
+esp_err_t voice_video_encode_rgb565(const uint8_t *rgb565,
+                                    int width, int height,
+                                    uint8_t quality,
+                                    uint8_t *out_buf, size_t out_cap,
+                                    uint32_t *out_size)
+{
+    if (!s_enc || !s_enc_mux) return ESP_ERR_INVALID_STATE;
+    if (!rgb565 || !out_buf || !out_size) return ESP_ERR_INVALID_ARG;
+    jpeg_encode_cfg_t cfg = {
+        .height        = height,
+        .width         = width,
+        .src_type      = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample    = JPEG_DOWN_SAMPLING_YUV420,
+        .image_quality = quality,
+    };
+    if (xSemaphoreTake(s_enc_mux, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t r = jpeg_encoder_process(s_enc, &cfg,
+                                       (uint8_t *)rgb565,
+                                       (size_t)width * height * 2,
+                                       out_buf, out_cap, out_size);
+    xSemaphoreGive(s_enc_mux);
+    return r;
+}
+
 /* Build the on-wire frame: 4-byte magic + 4-byte length + JPEG bytes.
  * Caller-supplied wire_buf must be at least jpeg_len + 8 bytes. */
 static size_t pack_wire_frame(uint8_t *wire_buf,
