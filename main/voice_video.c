@@ -38,6 +38,10 @@ static const char *TAG = "voice_video";
 static jpeg_encoder_handle_t s_enc      = NULL;
 static SemaphoreHandle_t     s_enc_mux  = NULL;
 static TaskHandle_t          s_task     = NULL;
+/* #284: persistent streaming task — created once at voice_video_init,
+ * idles on this binary semaphore between sessions instead of being
+ * spawned + suspended per-call.  Same shape as voice.c's mic task. */
+static SemaphoreHandle_t     s_event_sem = NULL;
 
 static volatile bool s_running    = false;
 static volatile int  s_target_fps = VOICE_VIDEO_DEFAULT_FPS;
@@ -74,6 +78,9 @@ static void rot270(const uint16_t *src, uint16_t *dst, int sw, int sh)
     }
 }
 
+/* Forward declaration so voice_video_init can spawn it. */
+static void streaming_task(void *arg);
+
 esp_err_t voice_video_init(void)
 {
     if (!s_enc_mux) {
@@ -92,7 +99,27 @@ esp_err_t voice_video_init(void)
             return r;
         }
     }
-    ESP_LOGI(TAG, "init OK (jpeg engine ready)");
+    /* #284: spawn persistent streaming task ONCE.  Idles on
+     * s_event_sem; callers signal start_streaming -> sem give. */
+    if (!s_event_sem) {
+        s_event_sem = xSemaphoreCreateBinary();
+        if (!s_event_sem) {
+            ESP_LOGE(TAG, "Failed to create video event semaphore");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+    if (!s_task) {
+        BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
+            streaming_task, "voice_video", VV_TASK_STACK,
+            NULL, VV_TASK_PRIO, &s_task, VV_TASK_CORE,
+            MALLOC_CAP_SPIRAM);
+        if (ok != pdPASS) {
+            ESP_LOGE(TAG, "Failed to spawn persistent streaming task");
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    ESP_LOGI(TAG, "init OK (jpeg engine + persistent task ready)");
     return ESP_OK;
 }
 
@@ -149,10 +176,12 @@ static size_t pack_wire_frame(uint8_t *wire_buf,
 static void streaming_task(void *arg)
 {
     (void)arg;
-    ESP_LOGI(TAG, "streaming task started fps=%d core=%d",
-             s_target_fps, xPortGetCoreID());
+    ESP_LOGI(TAG, "streaming task started core=%d — persistent",
+             xPortGetCoreID());
 
-    /* HW JPEG encoder requires DMA-aligned buffers (the engine writes
+    /* #284: buffers allocated once, never freed — persistent task
+     * reuses them across every streaming session.
+     * HW JPEG encoder requires DMA-aligned buffers (the engine writes
      * the bitstream via DMA).  Plain heap_caps_malloc fails with
      * "bit stream is not aligned" — must use jpeg_alloc_encoder_mem
      * with the OUTPUT direction for the destination buffer. */
@@ -173,16 +202,21 @@ static void streaming_task(void *arg)
         1280 * 720 * 2, &in_alloc, &rot_cap);
     uint8_t  *wire_buf = heap_caps_malloc(VV_OUT_BUF_BYTES + 8, MALLOC_CAP_SPIRAM);
     if (!jpeg_buf || !rot_buf || !wire_buf) {
-        ESP_LOGE(TAG, "streaming alloc failed (jpeg=%p rot=%p wire=%p)",
+        ESP_LOGE(TAG, "streaming alloc failed (jpeg=%p rot=%p wire=%p) — task idling",
                  jpeg_buf, rot_buf, wire_buf);
         if (jpeg_buf) free(jpeg_buf);    /* jpeg_alloc_encoder_mem path */
         if (rot_buf)  free(rot_buf);
         heap_caps_free(wire_buf);
-        s_running = false;
-        s_task    = NULL;
-        vTaskSuspend(NULL);
-        return;
+        /* No buffers means we can never do useful work — block
+         * indefinitely.  Don't suspend (P4 TLSP rule), don't spin. */
+        for (;;) vTaskDelay(portMAX_DELAY);
     }
+
+    /* #284: outer loop — block on event semaphore between sessions. */
+    while (1) {
+        xSemaphoreTake(s_event_sem, portMAX_DELAY);
+        if (!s_running) continue;
+        ESP_LOGI(TAG, "streaming session start fps=%d", s_target_fps);
 
     int last_fps = s_target_fps;
     TickType_t period = pdMS_TO_TICKS(1000 / last_fps);
@@ -257,22 +291,20 @@ wait:
         }
     }
 
-    free(jpeg_buf);                       /* jpeg_alloc_encoder_mem path */
-    free(rot_buf);                        /* same */
-    heap_caps_free(wire_buf);
-
-    ESP_LOGI(TAG, "streaming task exiting cleanly");
+    /* #284: don't free buffers, don't NULL s_task — persistent task
+     * keeps them across sessions and drops back to the outer loop. */
     s_stats.active = false;
-    s_task = NULL;
-    /* P4 TLSP rule (#20): suspend, don't delete.  Worker stack lives
-     * in PSRAM (#262 follow-up) so the leak per stream is bounded
-     * PSRAM, not internal SRAM. */
-    vTaskSuspend(NULL);
+    ESP_LOGI(TAG, "streaming session end (frames_sent=%" PRIu32 ") — back to idle",
+             s_stats.frames_sent);
+    }   /* outer while(1) */
 }
 
 esp_err_t voice_video_start_streaming(int fps)
 {
-    if (s_running || s_task) {
+    /* #284: persistent task pattern — s_task is non-NULL after init,
+     * so the old `s_running || s_task` guard would always block.
+     * Gate on s_running only. */
+    if (s_running) {
         ESP_LOGW(TAG, "already streaming");
         return ESP_ERR_INVALID_STATE;
     }
@@ -285,17 +317,8 @@ esp_err_t voice_video_start_streaming(int fps)
     s_stats.fps     = fps;
     s_running       = true;
 
-    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(
-        streaming_task, "voice_video", VV_TASK_STACK,
-        NULL, VV_TASK_PRIO, &s_task, VV_TASK_CORE,
-        MALLOC_CAP_SPIRAM);
-    if (ok != pdPASS) {
-        ESP_LOGE(TAG, "task spawn failed");
-        s_running      = false;
-        s_stats.active = false;
-        s_task         = NULL;
-        return ESP_ERR_NO_MEM;
-    }
+    /* Signal the persistent task to enter its inner loop. */
+    if (s_event_sem) xSemaphoreGive(s_event_sem);
     ESP_LOGI(TAG, "streaming started fps=%d", fps);
     return ESP_OK;
 }
@@ -305,10 +328,13 @@ esp_err_t voice_video_stop_streaming(void)
     if (!s_running) return ESP_OK;
     s_running = false;
     /* Wait up to ~1.2 s for the task to drain its current frame and
-     * exit on its own.  We don't vTaskDelete (P4 TLSP rule). */
-    for (int i = 0; i < 60 && s_task != NULL; i++) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
+     * exit on its own.  We don't vTaskDelete (P4 TLSP rule).
+     * #284: persistent task — short fixed wait for the current
+     * inner-loop frame to finish (the longest possible frame is
+     * ~250 ms at 4 fps + JPEG encode + WS send).  No tight handle
+     * to wait on; the task just drops back to the outer semaphore
+     * wait once s_running clears. */
+    vTaskDelay(pdMS_TO_TICKS(300));
     s_stats.active = false;
     s_stats.fps    = 0;
     ESP_LOGI(TAG, "streaming stopped (frames_sent=%" PRIu32
