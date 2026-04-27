@@ -135,7 +135,9 @@ static void build_orb(lv_obj_t *parent);
 static void build_wave_bars(lv_obj_t *parent);
 static void build_close_button(lv_obj_t *parent);
 static void build_send_button(lv_obj_t *parent);
-static void build_chat_area(lv_obj_t *parent);
+/* U20 (#206): build_chat_area + bubble pointers removed.  The voice
+ * overlay now relies entirely on s_response_label for visible text;
+ * the offscreen flex chat container was dead since v5. */
 
 static void mic_click_cb(lv_event_t *e);
 static void mic_long_press_cb(lv_event_t *e);
@@ -211,11 +213,9 @@ static lv_obj_t  *s_close_btn     = NULL;
 static lv_obj_t  *s_send_btn      = NULL;
 
 /* Chat area — scrollable container with user/AI bubbles */
-static lv_obj_t  *s_chat_cont     = NULL;   /* scrollable chat container */
-static lv_obj_t  *s_user_bubble   = NULL;   /* user's STT text (right-aligned) */
-static lv_obj_t  *s_user_label    = NULL;   /* label inside user bubble */
-static lv_obj_t  *s_ai_bubble     = NULL;   /* Tinker's response (left-aligned) */
-static lv_obj_t  *s_ai_label      = NULL;   /* label inside AI bubble */
+/* U20 (#206): chat container + bubble statics removed.  s_response_label
+ * is the actually-visible text path; the offscreen scroll/flex tree
+ * never rendered to the user since v5. */
 /* closes #115: simple fixed-position response label below the orb.
  * The chat_cont/ai_bubble path (flex layout, scrollable) was not
  * rendering reliably during SPEAKING — bubble was hidden behind the
@@ -539,32 +539,11 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
-        /* Keep chat bubbles visible if there's conversation context.
-         * closes #115: also re-apply the last LLM text to s_ai_label and
-         * unhide s_ai_bubble + chat_cont so the user actually SEES the
-         * response in the overlay during the auto-hide window.  Before
-         * this fix the response was TTS'd and the overlay dismissed
-         * with no visible record — user had to open chat to find it.  */
-        if (!has_conversation) {
-            lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-        } else {
+        /* U20 (#206): drive the visible response label only — the
+         * offscreen chat_cont/user_bubble/ai_bubble tree was deleted
+         * since it never rendered to the user. closes #115. */
+        if (has_conversation) {
             const char *llm_txt2 = voice_get_llm_text();
-            if (llm_txt2 && llm_txt2[0] && s_ai_label) {
-                { char _m[256]; md_strip_inline_with_ellipsis(llm_txt2, _m, sizeof(_m));
-                  lv_label_set_text(s_ai_label, _m); }
-                if (s_ai_bubble) lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
-            }
-            const char *stt_txt = voice_get_stt_text();
-            if (stt_txt && stt_txt[0] && s_user_label) {
-                lv_label_set_text(s_user_label, stt_txt);
-                if (s_user_bubble) lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
-            }
-            lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-            /* Bring chat above the orb z-order so the bubbles render on
-             * top of the orb's halo rings rather than being occluded. */
-            lv_obj_move_foreground(s_chat_cont);
-            lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
-            /* #115: drive the fixed-position response label. */
             if (llm_txt2 && llm_txt2[0] && s_response_label) {
                 { char _m[256]; md_strip_inline_with_ellipsis(llm_txt2, _m, sizeof(_m));
                   lv_label_set_text(s_response_label, _m); }
@@ -603,11 +582,10 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
             lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
                          ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
             lv_obj_clear_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
-            /* Show partial transcript in user bubble */
-            lv_label_set_text(s_user_label, detail);
-            lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
+            /* U20 (#206): partial-transcript bubble removed.  The
+             * dictation status text in s_lbl_status above already
+             * shows "Dictating..."; the partial preview lives in
+             * the chat composer caption (#222 / U12). */
         } else {
             show_state_listening();
             /* Override status text for dictation mode */
@@ -781,8 +759,7 @@ static void build_overlay(void)
     if (!s_close_btn) { ESP_LOGE(TAG, "OOM creating voice close btn"); return; }
     build_send_button(s_overlay);
     if (!s_send_btn) { ESP_LOGE(TAG, "OOM creating voice send btn"); return; }
-    build_chat_area(s_overlay);
-    if (!s_chat_cont) { ESP_LOGE(TAG, "OOM creating voice chat area"); return; }
+    /* U20 (#206): build_chat_area() removed — see header note. */
 
     /* Status label — below orb (position adjusts per state) */
     s_lbl_status = lv_label_create(s_overlay);
@@ -1061,90 +1038,11 @@ static void build_send_button(lv_obj_t *parent)
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* ── Chat area — user + AI bubbles ───────────────────────────────── */
-
-static lv_obj_t *create_bubble(lv_obj_t *parent, uint32_t bg_hex, uint32_t border_hex,
-                                lv_align_t align, lv_obj_t **lbl_out)
-{
-    lv_obj_t *bubble = lv_obj_create(parent);
-    if (!bubble) { ESP_LOGE(TAG, "OOM creating chat bubble"); *lbl_out = NULL; return NULL; }
-    lv_obj_set_width(bubble, CHAT_BUBBLE_MAX_W);
-    lv_obj_set_style_radius(bubble, CHAT_BUBBLE_RAD, 0);
-    lv_obj_set_style_bg_color(bubble, lv_color_hex(bg_hex), 0);
-    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(bubble, 1, 0);
-    lv_obj_set_style_border_color(bubble, lv_color_hex(border_hex), 0);
-    lv_obj_set_style_border_opa(bubble, LV_OPA_40, 0);
-    lv_obj_set_style_pad_all(bubble, CHAT_BUBBLE_PAD, 0);
-    lv_obj_clear_flag(bubble, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_height(bubble, LV_SIZE_CONTENT);
-
-    /* Alignment: right for user, left for AI */
-    if (align == LV_ALIGN_RIGHT_MID) {
-        lv_obj_set_style_pad_left(bubble, 0, LV_PART_MAIN);
-        lv_obj_align(bubble, LV_ALIGN_TOP_RIGHT, -CHAT_PAD_X, 0);
-    } else {
-        lv_obj_set_style_pad_right(bubble, 0, LV_PART_MAIN);
-        lv_obj_align(bubble, LV_ALIGN_TOP_LEFT, CHAT_PAD_X, 0);
-    }
-
-    /* Text label inside bubble */
-    lv_obj_t *lbl = lv_label_create(bubble);
-    if (!lbl) { ESP_LOGE(TAG, "OOM creating bubble label"); *lbl_out = NULL; return bubble; }
-    lv_label_set_text(lbl, "");
-    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(VO_TEXT_BRIGHT), 0);
-    lv_obj_set_width(lbl, CHAT_BUBBLE_MAX_W - 2 * CHAT_BUBBLE_PAD - 2);
-    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
-
-    *lbl_out = lbl;
-    return bubble;
-}
-
-static void build_chat_area(lv_obj_t *parent)
-{
-    /* Scrollable chat container */
-    s_chat_cont = lv_obj_create(parent);
-    if (!s_chat_cont) { ESP_LOGE(TAG, "OOM creating chat container"); return; }
-    lv_obj_set_pos(s_chat_cont, 0, CHAT_TOP);
-    lv_obj_set_size(s_chat_cont, SW, CHAT_BOTTOM - CHAT_TOP);
-    lv_obj_set_style_bg_opa(s_chat_cont, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_chat_cont, 0, 0);
-    lv_obj_set_style_pad_all(s_chat_cont, 0, 0);
-    lv_obj_set_style_pad_row(s_chat_cont, CHAT_GAP, 0);
-    lv_obj_set_style_layout(s_chat_cont, LV_LAYOUT_FLEX, 0);
-    lv_obj_set_style_flex_flow(s_chat_cont, LV_FLEX_FLOW_COLUMN, 0);
-    lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_CLICKABLE);
-    /* Scroll snap to bottom (follow new content) */
-    lv_obj_set_scroll_snap_y(s_chat_cont, LV_SCROLL_SNAP_END);
-
-    /* User bubble — right-aligned via translate_x (flex ignores lv_obj_align) */
-    s_user_bubble = create_bubble(s_chat_cont, VO_USER_BG, VO_USER_BORDER,
-                                   LV_ALIGN_RIGHT_MID, &s_user_label);
-    lv_obj_set_style_text_color(s_user_label, lv_color_hex(VO_CYAN), 0);
-    lv_obj_set_style_text_align(s_user_label, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_translate_x(s_user_bubble, SW - CHAT_BUBBLE_MAX_W - 2 * CHAT_PAD_X, 0);
-    lv_obj_add_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
-
-    /* AI bubble — left-aligned, green tint */
-    s_ai_bubble = create_bubble(s_chat_cont, VO_AI_BG, VO_AI_BORDER,
-                                 LV_ALIGN_LEFT_MID, &s_ai_label);
-    lv_obj_set_style_text_color(s_ai_label, lv_color_hex(VO_GREEN), 0);
-    lv_obj_set_style_text_align(s_ai_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_add_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
-
-    /* Start hidden */
-    lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-
-    /* v5: voice overlay should stay pure (orb + state + waveform + cancel
-       hint) — conversation lives in Chat.  Move the chat area WAY off
-       screen so even if later code clears LV_OBJ_FLAG_HIDDEN the user
-       never sees the old-style bubbles inline during voice.  Keeps the
-       object tree intact (so all pointers stay valid, no NULL-guards
-       needed throughout the file) but invisible. */
-    lv_obj_set_pos(s_chat_cont, -5000, -5000);
-}
+/* U20 (#206): create_bubble + build_chat_area removed.  v5 routed all
+ * conversation to Chat (ui_chat); the voice overlay's offscreen flex
+ * tree (~30 LV objects) was kept "in case" and was never reactivated.
+ * Visible response text comes from s_response_label, set by the
+ * READY-state handler from voice_get_llm_text(). */
 
 /* ================================================================
  *  State visuals
@@ -1188,11 +1086,10 @@ static void show_state_listening(void)
     lv_obj_set_style_text_letter_space(s_lbl_status, 4, 0);
     lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 30);
 
-    /* Hide transcript, dots, wave, chat */
+    /* Hide transcript, dots, wave (chat tree removed in U20). */
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
     s_has_llm_text = false;
 
     /* Show send/stop button so user knows how to stop recording */
@@ -1267,14 +1164,12 @@ static void show_state_processing(const char *detail)
         start_pulse_anim();
     }
 
-    /* Show chat area with user bubble (STT text) */
-    if (stt && stt[0]) {
-        lv_label_set_text(s_user_label, stt);
-        lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-    }
+    /* U20 (#206): user/AI bubble setting removed (offscreen tree was
+     * dead).  STT text just stays in voice's status string; LLM tokens
+     * drive the visible s_response_label. */
+    (void)stt;
 
-    /* If LLM tokens are streaming, show AI bubble */
+    /* If LLM tokens are streaming, show response */
     if (llm && llm[0]) {
         if (!s_has_llm_text) {
             /* First LLM token — switch orb to green, hide dots */
@@ -1295,16 +1190,7 @@ static void show_state_processing(const char *detail)
             lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
         }
 
-        { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
-          lv_label_set_text(s_ai_label, _m); }
-        lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
-        /* closes #115: lift above orb z-order, same as SPEAKING. */
-        lv_obj_move_foreground(s_chat_cont);
-
-        /* Auto-scroll to bottom */
-        lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
-
-        /* #115: drive the fixed-position response label too. */
+        /* #115: drive the fixed-position response label. */
         if (s_response_label) {
             { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
               lv_label_set_text(s_response_label, _m); }
@@ -1333,9 +1219,6 @@ static void show_state_processing(const char *detail)
             lv_obj_clear_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
             s_dot_timer = lv_timer_create(dot_timer_cb, ANIM_DOT_MS, NULL);
         }
-
-        /* Hide AI bubble */
-        lv_obj_add_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* Hide wave */
@@ -1369,33 +1252,15 @@ static void show_state_speaking(void)
 
     /* Keep chat area visible with both bubbles */
     const char *llm = voice_get_llm_text();
-    const char *stt = voice_get_stt_text();
-    if (stt && stt[0] && s_user_label) {
-        lv_label_set_text(s_user_label, stt);
-        lv_obj_clear_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
+    /* U20 (#206): bubble paths removed.  STT is reflected by the
+     * status string from voice.c; LLM tokens drive s_response_label. */
+    if (llm && llm[0] && s_response_label) {
+        char _m[256];
+        md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
+        lv_label_set_text(s_response_label, _m);
+        lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_response_label);
     }
-    if (llm && llm[0]) {
-        { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
-          lv_label_set_text(s_ai_label, _m); }
-        lv_obj_set_width(s_ai_label, CHAT_BUBBLE_MAX_W - 2 * CHAT_BUBBLE_PAD);
-        lv_label_set_long_mode(s_ai_label, LV_LABEL_LONG_WRAP);
-        lv_obj_clear_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_update_layout(s_ai_bubble);
-        lv_obj_scroll_to_y(s_chat_cont, LV_COORD_MAX, LV_ANIM_OFF);
-        /* #115: drive the fixed-position response label — this is the
-         * reliable path when the flex chat_cont doesn't render. */
-        if (s_response_label) {
-            { char _m[256]; md_strip_inline_with_ellipsis(llm, _m, sizeof(_m));
-              lv_label_set_text(s_response_label, _m); }
-            lv_obj_clear_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(s_response_label);
-        }
-    }
-    lv_obj_clear_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-    /* closes #115: lift chat above the orb z-order so bubbles aren't
-     * occluded by the halo rings during SPEAKING.  Without this the
-     * overlay rendered with the orb on top and the AI text invisible. */
-    lv_obj_move_foreground(s_chat_cont);
 
     /* Show wave bars below orb */
     lv_obj_align(s_wave_cont, LV_ALIGN_CENTER, 0, ORB_SZ_SPEAK / 2 + ORB_Y_OFFSET + 20);
@@ -1409,12 +1274,9 @@ static void show_state_idle(void)
 {
     stop_all_anims();
 
-    /* Clean up listening/speaking/ready elements */
+    /* Clean up listening/speaking/ready elements (chat tree removed in U20). */
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_chat_cont, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_user_bubble, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_ai_bubble, LV_OBJ_FLAG_HIDDEN);
     s_has_llm_text = false;
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_event_cb(s_orb_container, orb_speak_click_cb);
