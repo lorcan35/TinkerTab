@@ -285,6 +285,15 @@ static void fetch_task(void *pv)
     s_last_fetch.ok    = false;
     if (!cli) goto done;
 
+    /* Dragon's /api/v1 routes require Authorization: Bearer <token>.
+     * Token is the same one voice.c sends on the WS upgrade. */
+    if (TAB5_DRAGON_TOKEN && TAB5_DRAGON_TOKEN[0] &&
+        strcmp(TAB5_DRAGON_TOKEN, "CHANGEME_SET_IN_SDKCONFIG_LOCAL") != 0) {
+        char auth[96];
+        snprintf(auth, sizeof(auth), "Bearer %s", TAB5_DRAGON_TOKEN);
+        esp_http_client_set_header(cli, "Authorization", auth);
+    }
+
     esp_err_t err = esp_http_client_open(cli, 0);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "http_client_open failed: %s", esp_err_to_name(err));

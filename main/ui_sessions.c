@@ -292,6 +292,15 @@ static void fetch_sessions_job(void *arg)
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     if (!cli) goto done;
 
+    /* Dragon's /api/v1 routes need Authorization: Bearer <token>
+     * (same one voice.c uses on the WS upgrade). */
+    if (TAB5_DRAGON_TOKEN && TAB5_DRAGON_TOKEN[0] &&
+        strcmp(TAB5_DRAGON_TOKEN, "CHANGEME_SET_IN_SDKCONFIG_LOCAL") != 0) {
+        char auth[96];
+        snprintf(auth, sizeof(auth), "Bearer %s", TAB5_DRAGON_TOKEN);
+        esp_http_client_set_header(cli, "Authorization", auth);
+    }
+
     esp_err_t err = esp_http_client_open(cli, 0);
     int status = 0, content_len = 0, total = 0;
     char *body = NULL;
@@ -316,7 +325,10 @@ static void fetch_sessions_job(void *arg)
 
     cJSON *root = cJSON_ParseWithLength(body, total);
     if (!root) goto cleanup;
-    cJSON *arr = cJSON_GetObjectItem(root, "sessions");
+    /* Dragon ships {"items":[...]} on /api/v1/sessions; older mocks
+     * shipped {"sessions":[...]} or a raw array.  Accept all three. */
+    cJSON *arr = cJSON_GetObjectItem(root, "items");
+    if (!cJSON_IsArray(arr)) arr = cJSON_GetObjectItem(root, "sessions");
     if (!cJSON_IsArray(arr)) arr = root;
     if (!cJSON_IsArray(arr)) { cJSON_Delete(root); goto cleanup; }
 
@@ -341,19 +353,19 @@ static void fetch_sessions_job(void *arg)
         uint8_t v = cJSON_IsNumber(vm) ? (uint8_t)vm->valueint : 0;
         mode_to_tag(v, r->mode_tag, sizeof(r->mode_tag), &r->mode_color);
 
-        /* Dragon's /api/v1/sessions doesn't include msg counts in the
-         * default index payload — flag as unknown so build_session_row
-         * skips the count line cleanly. */
+        /* Dragon ships message_count on /api/v1/sessions; -1 means
+         * "not present" so build_session_row hides the count line. */
         cJSON *mc = cJSON_GetObjectItem(o, "message_count");
         r->msg_count = cJSON_IsNumber(mc) ? mc->valueint : -1;
 
+        /* Recency timestamp — Dragon uses "last_active_at" (touched on
+         * every turn).  Fall back to updated_at then created_at for
+         * older payloads / stripped responses. */
         uint32_t ts = 0;
-        cJSON *u = cJSON_GetObjectItem(o, "updated_at");
+        cJSON *u = cJSON_GetObjectItem(o, "last_active_at");
+        if (!cJSON_IsNumber(u)) u = cJSON_GetObjectItem(o, "updated_at");
+        if (!cJSON_IsNumber(u)) u = cJSON_GetObjectItem(o, "created_at");
         if (cJSON_IsNumber(u)) ts = (uint32_t)u->valuedouble;
-        else {
-            u = cJSON_GetObjectItem(o, "created_at");
-            if (cJSON_IsNumber(u)) ts = (uint32_t)u->valuedouble;
-        }
         format_when(ts, r->time_top, sizeof(r->time_top),
                        r->time_bot, sizeof(r->time_bot));
 

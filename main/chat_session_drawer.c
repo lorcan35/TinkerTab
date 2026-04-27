@@ -307,8 +307,10 @@ static void parse_sessions_json(const char *json_txt, size_t len,
     if (!json_txt || len == 0) return;
     cJSON *root = cJSON_ParseWithLength(json_txt, len);
     if (!root) return;
-    /* Accept either {"sessions":[...]} or raw array. */
-    cJSON *arr = cJSON_GetObjectItem(root, "sessions");
+    /* Dragon ships {"items":[...]}; older mocks shipped {"sessions":[...]}
+     * or a raw array.  Accept all three. */
+    cJSON *arr = cJSON_GetObjectItem(root, "items");
+    if (!cJSON_IsArray(arr)) arr = cJSON_GetObjectItem(root, "sessions");
     if (!cJSON_IsArray(arr)) arr = root;
     if (!cJSON_IsArray(arr)) { cJSON_Delete(root); return; }
 
@@ -362,6 +364,13 @@ static void drawer_fetch_task(void *arg)
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client) {
+        /* Dragon's /api/v1 routes require Authorization: Bearer <token>. */
+        if (TAB5_DRAGON_TOKEN && TAB5_DRAGON_TOKEN[0] &&
+            strcmp(TAB5_DRAGON_TOKEN, "CHANGEME_SET_IN_SDKCONFIG_LOCAL") != 0) {
+            char auth[96];
+            snprintf(auth, sizeof(auth), "Bearer %s", TAB5_DRAGON_TOKEN);
+            esp_http_client_set_header(client, "Authorization", auth);
+        }
         esp_err_t err = esp_http_client_open(client, 0);
         if (err == ESP_OK) {
             int cl = (int)esp_http_client_fetch_headers(client);
