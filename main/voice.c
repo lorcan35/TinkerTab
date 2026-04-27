@@ -582,6 +582,7 @@ static esp_err_t voice_ws_send_register(void)
      * frames prefixed with the "VID0" 4-byte magic + 4-byte length.
      * Dragon detects the magic to route video vs audio. */
     cJSON_AddBoolToObject(caps, "video_send", true);
+    cJSON_AddBoolToObject(caps, "video_recv", true);   /* #268 Phase 3B */
     cJSON_AddNumberToObject(caps, "video_max_fps", 10);
     cJSON_AddNumberToObject(caps, "video_format", 0);  /* 0 = JPEG */
     /* #262: advertise audio codec support.  Dragon picks one and replies
@@ -1638,6 +1639,15 @@ static size_t upsample_16k_to_48k(const int16_t *in, size_t in_samples,
 
 static void handle_binary_message(const char *data, int len)
 {
+    /* #268: video frames carry the 4-byte "VID0" magic.  Route them
+     * to voice_video before any audio-state checks — video plays
+     * regardless of voice state (unlike TTS, which only plays in
+     * SPEAKING/PROCESSING).  Audio frames (no magic) fall through. */
+    if (voice_video_peek_downlink_magic(data, (size_t)len)) {
+        voice_video_on_downlink_frame((const uint8_t *)data, (size_t)len);
+        return;
+    }
+
     /* v4·D audit P0 fix: snapshot s_state under the mutex so we never
      * race with voice_set_state on another task.  The checks below
      * formerly read s_state twice without locking -- second read could
@@ -1880,7 +1890,46 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
                      data->data_len > 200 ? 200 : data->data_len, data->data_ptr);
             handle_text_message(data->data_ptr, data->data_len);
         } else if (data->op_code == WS_TRANSPORT_OPCODES_BINARY && data->data_len > 0) {
-            handle_binary_message(data->data_ptr, data->data_len);
+            /* #268: large binary frames (e.g. Phase 3B video JPEGs >32 KB)
+             * arrive in fragments — esp_websocket_client splits them at
+             * WS_CLIENT_BUFFER_SIZE.  Reassemble using payload_len +
+             * payload_offset before dispatching to handle_binary_message
+             * so the magic-byte sniff sees the whole frame.  Audio
+             * (PCM/OPUS) is single-fragment so the fast path skips
+             * reassembly. */
+            const int frag_total = data->payload_len;
+            const int frag_off   = data->payload_offset;
+            const int frag_len   = data->data_len;
+            if (frag_total <= 0 || frag_total == frag_len) {
+                /* Single-fragment frame — current behavior. */
+                handle_binary_message(data->data_ptr, frag_len);
+            } else {
+                /* Multi-fragment frame.  Lazy-init reassembly buffer
+                 * in PSRAM, sized to the same ceiling voice_video uses. */
+                static uint8_t *s_rx_reasm_buf = NULL;
+                static int      s_rx_reasm_cap = 96 * 1024;
+                if (!s_rx_reasm_buf) {
+                    s_rx_reasm_buf = heap_caps_malloc(
+                        s_rx_reasm_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                }
+                if (!s_rx_reasm_buf) {
+                    ESP_LOGW(TAG, "rx-reasm OOM (%d B); dropping frag", s_rx_reasm_cap);
+                    break;
+                }
+                if (frag_total > s_rx_reasm_cap) {
+                    ESP_LOGW(TAG, "rx-reasm: payload %d > cap %d; dropping", frag_total, s_rx_reasm_cap);
+                    break;
+                }
+                if (frag_off + frag_len > frag_total) {
+                    ESP_LOGW(TAG, "rx-reasm: bad frag off=%d len=%d total=%d",
+                             frag_off, frag_len, frag_total);
+                    break;
+                }
+                memcpy(s_rx_reasm_buf + frag_off, data->data_ptr, frag_len);
+                if (frag_off + frag_len == frag_total) {
+                    handle_binary_message((const char *)s_rx_reasm_buf, frag_total);
+                }
+            }
         } else if (data->op_code == WS_TRANSPORT_OPCODES_PING) {
             ESP_LOGD(TAG, "WS recv PING — client auto-pongs");
         } else if (data->op_code == WS_TRANSPORT_OPCODES_PONG) {

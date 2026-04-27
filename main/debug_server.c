@@ -2145,9 +2145,35 @@ static esp_err_t voice_reconnect_handler(httpd_req_t *req)
 }
 
 /* ── #266: live video streaming control (POST /video/start, /video/stop,
- *           GET /video) ─────────────────────────────────────────────── */
+ *           GET /video).  #268 adds /video/show + /video/hide for the
+ *           downlink pane. ──────────────────────────────────────────── */
 #include "voice_video.h"
+#include "ui_video_pane.h"
+#include "ui_core.h"   /* tab5_lv_async_call (#258) */
 static esp_err_t send_json_resp(httpd_req_t *req, cJSON *root);
+
+/* The pane is an LVGL widget — must be opened on the LVGL thread. */
+static void show_pane_async(void *arg) { (void)arg; ui_video_pane_show(); }
+static void hide_pane_async(void *arg) { (void)arg; ui_video_pane_hide(); }
+
+static esp_err_t video_show_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    tab5_lv_async_call(show_pane_async, NULL);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    return send_json_resp(req, root);
+}
+
+static esp_err_t video_hide_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) return ESP_OK;
+    tab5_lv_async_call(hide_pane_async, NULL);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    return send_json_resp(req, root);
+}
+
 static esp_err_t video_start_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) return ESP_OK;
@@ -2190,6 +2216,12 @@ static esp_err_t video_state_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "frames_dropped",(double)s.frames_dropped);
     cJSON_AddNumberToObject(root, "bytes_sent",    (double)s.bytes_sent);
     cJSON_AddNumberToObject(root, "last_jpeg_bytes",(double)s.last_jpeg_bytes);
+    /* #268 downlink stats. */
+    cJSON_AddBoolToObject(root, "pane_visible",      ui_video_pane_is_visible());
+    cJSON_AddNumberToObject(root, "frames_recv",     (double)s.frames_recv);
+    cJSON_AddNumberToObject(root, "frames_recv_dropped", (double)s.frames_recv_dropped);
+    cJSON_AddNumberToObject(root, "bytes_recv",      (double)s.bytes_recv);
+    cJSON_AddNumberToObject(root, "last_recv_jpeg_bytes",(double)s.last_recv_jpeg_bytes);
     return send_json_resp(req, root);
 }
 
@@ -3187,7 +3219,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_voice_reconnect = {
         .uri = "/voice/reconnect", .method = HTTP_POST, .handler = voice_reconnect_handler
     };
-    /* #266: live video streaming control. */
+    /* #266: live video streaming control.  #268 adds /video/show + hide. */
     const httpd_uri_t uri_video_start = {
         .uri = "/video/start", .method = HTTP_POST, .handler = video_start_handler
     };
@@ -3196,6 +3228,12 @@ esp_err_t tab5_debug_server_init(void)
     };
     const httpd_uri_t uri_video_state = {
         .uri = "/video",       .method = HTTP_GET,  .handler = video_state_handler
+    };
+    const httpd_uri_t uri_video_show = {
+        .uri = "/video/show",  .method = HTTP_POST, .handler = video_show_handler
+    };
+    const httpd_uri_t uri_video_hide = {
+        .uri = "/video/hide",  .method = HTTP_POST, .handler = video_hide_handler
     };
     const httpd_uri_t uri_dictation_post = {
         .uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler
@@ -3264,6 +3302,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_video_start);
     httpd_register_uri_handler(server, &uri_video_stop);
     httpd_register_uri_handler(server, &uri_video_state);
+    httpd_register_uri_handler(server, &uri_video_show);
+    httpd_register_uri_handler(server, &uri_video_hide);
     httpd_register_uri_handler(server, &uri_dictation_post);
     httpd_register_uri_handler(server, &uri_dictation_get);
     httpd_register_uri_handler(server, &uri_wifi_kick);

@@ -17,6 +17,9 @@
 #include "camera.h"
 #include "settings.h"
 #include "voice.h"
+#include "ui_video_pane.h"
+#include "ui_core.h"          /* tab5_lv_async_call (#258) */
+#include "lvgl.h"
 
 static const char *TAG = "voice_video";
 
@@ -310,5 +313,111 @@ esp_err_t voice_video_stop_streaming(void)
     ESP_LOGI(TAG, "streaming stopped (frames_sent=%" PRIu32
                   " bytes=%" PRIu32 " dropped=%" PRIu32 ")",
              s_stats.frames_sent, s_stats.bytes_sent, s_stats.frames_dropped);
+    return ESP_OK;
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ *  #268 Phase 3B: downlink — receive video frames from Dragon, decode
+ *  via LVGL TJPGD, render via ui_video_pane.
+ *
+ *  Single PSRAM slot: voice.c hands us the wire bytes from inside the
+ *  WS event handler (binary RX path).  We copy the JPEG payload into
+ *  the slot, then hop to the LVGL thread to update the renderer's
+ *  image source.  The renderer holds onto the bytes via lv_image_dsc_t
+ *  with cf=LV_COLOR_FORMAT_RAW so TJPGD lazily decodes on draw.
+ * ──────────────────────────────────────────────────────────────────── */
+
+#define VV_RECV_SLOT_BYTES   (96 * 1024)   /* matches encoder ceiling */
+
+static uint8_t        *s_recv_slot       = NULL;
+static SemaphoreHandle_t s_recv_mux      = NULL;
+static lv_image_dsc_t   s_recv_dsc       = {0};
+
+bool voice_video_peek_downlink_magic(const void *data, size_t len)
+{
+    if (!data || len < 4) return false;
+    const uint8_t *b = (const uint8_t *)data;
+    return b[0] == 'V' && b[1] == 'I' && b[2] == 'D' && b[3] == '0';
+}
+
+/* JPEG SOF marker scan to extract w/h.  Same recipe as media_cache.c. */
+static void jpeg_dims(const uint8_t *jpeg, size_t len, uint16_t *w, uint16_t *h)
+{
+    *w = *h = 0;
+    for (size_t i = 0; i + 8 < len; i++) {
+        if (jpeg[i] == 0xFF && (jpeg[i+1] == 0xC0 || jpeg[i+1] == 0xC2)) {
+            *h = (jpeg[i+5] << 8) | jpeg[i+6];
+            *w = (jpeg[i+7] << 8) | jpeg[i+8];
+            return;
+        }
+    }
+}
+
+/* Runs on the LVGL thread (via tab5_lv_async_call). */
+static void downlink_render_async(void *arg)
+{
+    (void)arg;
+    /* The renderer is allowed to ignore the call (pane not open),
+     * which is fine — voice_video_on_downlink_frame already
+     * incremented frames_recv. */
+    ui_video_pane_set_dsc(&s_recv_dsc);
+}
+
+esp_err_t voice_video_on_downlink_frame(const uint8_t *wire_bytes, size_t len)
+{
+    if (!wire_bytes || len < 8 + 2) return ESP_ERR_INVALID_ARG;
+    if (!voice_video_peek_downlink_magic(wire_bytes, len)) return ESP_ERR_INVALID_ARG;
+
+    /* Lazy-init the slot + mutex on first frame so a connection that
+     * never receives video pays no PSRAM. */
+    if (!s_recv_mux) {
+        s_recv_mux = xSemaphoreCreateMutex();
+        if (!s_recv_mux) return ESP_ERR_NO_MEM;
+    }
+    if (!s_recv_slot) {
+        s_recv_slot = heap_caps_malloc(VV_RECV_SLOT_BYTES, MALLOC_CAP_SPIRAM);
+        if (!s_recv_slot) return ESP_ERR_NO_MEM;
+    }
+
+    /* Length sanity from the wire header. */
+    uint32_t payload_len = ((uint32_t)wire_bytes[4] << 24)
+                         | ((uint32_t)wire_bytes[5] << 16)
+                         | ((uint32_t)wire_bytes[6] <<  8)
+                         | ((uint32_t)wire_bytes[7]);
+    if (payload_len + 8 != len) {
+        ESP_LOGW(TAG, "downlink len mismatch hdr=%" PRIu32 " wire=%zu", payload_len, len);
+        s_stats.frames_recv_dropped++;
+        return ESP_ERR_INVALID_SIZE;
+    }
+    if (payload_len > VV_RECV_SLOT_BYTES) {
+        ESP_LOGW(TAG, "downlink frame %" PRIu32 " B exceeds slot %d B — dropping",
+                 payload_len, VV_RECV_SLOT_BYTES);
+        s_stats.frames_recv_dropped++;
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Copy JPEG payload into the slot under the mutex.  The renderer's
+     * dsc still references the slot bytes; LVGL TJPGD only touches
+     * them during draw on the LVGL thread, which we serialize via
+     * tab5_lv_async_call below. */
+    xSemaphoreTake(s_recv_mux, portMAX_DELAY);
+    memcpy(s_recv_slot, wire_bytes + 8, payload_len);
+    uint16_t jw = 0, jh = 0;
+    jpeg_dims(s_recv_slot, payload_len, &jw, &jh);
+    if (jw == 0 || jh == 0) {
+        /* Sensible default — keeps LVGL happy even if SOF parse missed. */
+        jw = 1280; jh = 720;
+    }
+    s_recv_dsc.header.w   = jw;
+    s_recv_dsc.header.h   = jh;
+    s_recv_dsc.header.cf  = LV_COLOR_FORMAT_RAW;
+    s_recv_dsc.data_size  = payload_len;
+    s_recv_dsc.data       = s_recv_slot;
+    s_stats.frames_recv++;
+    s_stats.bytes_recv          += len;
+    s_stats.last_recv_jpeg_bytes = payload_len;
+    xSemaphoreGive(s_recv_mux);
+
+    tab5_lv_async_call(downlink_render_async, NULL);
     return ESP_OK;
 }
