@@ -273,6 +273,22 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 - **Exposure:** Tuned for indoor lighting (SCCB register writes post-init)
 - **Debug:** `GET /camera` returns live frame as BMP
 - **CONFIG_CAMERA_SC202CS=y** must be set in sdkconfig (sensor won't compile without it!)
+- **Software rotation:** NVS `cam_rot` (0/1/2/3 = 0/90/180/270° CW) is applied to each captured frame before display/upload. Settings dropdown writes the key. Added in #261.
+
+## Two-way Video Calling (April 2026)
+
+End-to-end Tab5 ↔ Dragon ↔ (Tab5 or web client) video + audio calls. Built across PRs #267 / #269 / #271 / #273 (Tab5 side) and #176 / #178 / #180 / #181 (Dragon side).
+
+- **Module:** `main/voice_video.{c,h}` — uplink encode (HW JPEG via `esp_video`) and downlink decode (TJPGD into LVGL canvas).
+- **Wire format:** Both directions use `"VID0"` magic + 4-byte BE length + JPEG bytes (see WebSocket Protocol section). Audio in calls uses `"AUD0"` + 4-byte BE length + raw 16 kHz mono int16 PCM.
+- **Atomic helpers:** `voice_video_start_call()` / `voice_video_end_call()` wrap mode flip + camera open/close + UI show/hide so no caller has to coordinate the three subsystems.
+- **VOICE_MODE_CALL:** New voice mode that spawns a mic task wrapping frames as AUD0 (NOT untagged PCM into STT). When the call ends, the mode reverts to whatever `vmode` was before.
+- **UI:** `main/ui_video_pane.{c,h}` is the full-screen video overlay. In-call it adds a 240×135 local-camera PIP in the corner + a red "End Call" pill. The nav sheet has a "Call" tile that triggers `voice_video_start_call()`.
+- **Debug endpoints** (all bearer-auth except where noted):
+  - `POST /video/start` / `POST /video/stop` — start/stop uplink JPEG stream to Dragon
+  - `POST /video/show` / `POST /video/hide` — toggle the downlink video pane (without starting a call)
+  - `POST /call/start` / `POST /call/end` — atomic call begin/end (uses voice_video_start_call/end_call)
+  - `GET /video` — video stats (frames sent/received, last frame size, pane state)
 
 ### Dragon Server Intelligence
 - **Mode-aware system prompts:** Local=concise (128 tokens), Hybrid=medium (256 tokens), Cloud=rich (512 tokens). Prompt matches model capability.
@@ -286,7 +302,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
   orphan but retained until a future PR repacks the partition table.
   Revival path: restore from git history + procure a custom "Hey Tinker"
   model from Espressif + re-do the TDM slot audit.
-- **OPUS encoding:** 16kHz PCM = 256kbps. OPUS would cut to ~16kbps. Future optimization.
+- **OPUS encoding:** Capability-negotiation infrastructure shipped in #263/#265 (Tab5) + TinkerBox #174. **Encoder is gated OFF in `voice_codec.h` pending issue #264** — SILK NSQ crashes on ESP32-P4 mid-encode; root-cause TBD. Decoder is ready for Phase 2B Dragon→Tab5 OPUS TTS.
 
 ## Key Technical Notes
 - ESP-IDF WS transport masks frames in-place — NEVER pass string literals to `esp_transport_ws_send_raw()`, always copy to mutable buffer first
@@ -325,6 +341,7 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `spent_mils` | u32 | 0 | 0-UINT32_MAX | Today's cumulative LLM spend, in mils (1/1000 ¢). Resets when `spent_day` rolls to a new day. u32 with daily writes — wear bounded to ~one commit per LLM turn. |
 | `spent_day` | u32 | 0 | 0-UINT32_MAX | Days-since-epoch of the last `spent_mils` write — the dayroll guard. |
 | `cap_mils` | u32 | 100000 | 0-UINT32_MAX | Per-day spend cap in mils (default $1.00/day). Exceeding it triggers cap_downgrade in voice_send_config_update_ex. |
+| `cam_rot` | u8 | 0 | 0-3 | Camera frame rotation in 90° steps applied in software after capture (0=none, 1=90° CW, 2=180°, 3=270° CW). Settings dropdown. Added in #261. |
 
 ### ⚠️ LVGL Configuration — CRITICAL
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
@@ -391,8 +408,18 @@ All UI files use these defines instead of raw `lv_font_montserrat_XX` references
 ## WebSocket Protocol (Tab5 = Client Side)
 See TinkerBox `docs/protocol.md` for the full spec. Tab5 responsibilities:
 
+### Binary frame magic tags (added April 2026)
+Tab5↔Dragon binary frames are now disambiguated by an 8-byte prefix on non-audio payloads. **Untagged binary frames remain raw 16 kHz PCM and are routed straight into the STT pipeline** — that's the legacy mic path and it MUST stay magic-less for backward compat. Tagged frames carry one of:
+
+| Magic | Direction | Length field | Payload | Module |
+|-------|-----------|--------------|---------|--------|
+| `VID0` | both | 4 bytes BE u32 | JPEG frame | `voice_video.{c,h}` — Tab5 camera → Dragon (uplink) and Dragon → Tab5 (downlink playback) |
+| `AUD0` | both | 4 bytes BE u32 | raw 16 kHz mono int16 PCM | `voice.c` call mode — VOICE_MODE_CALL bypasses STT, mic frames are wrapped with AUD0 instead of being sent untagged |
+
+Wire layout: `"VID0"` (4 bytes) + `len_be` (4 bytes) + `payload[len]`. Same shape for `"AUD0"`. Frames without the 4-byte magic are still treated as raw PCM going to STT.
+
 ### Tab5 → Dragon (sending)
-1. **Voice Input:** `{"type":"start"}` (with optional `"mode":"dictate"`) -> binary PCM frames -> `{"type":"stop"}`
+1. **Voice Input:** `{"type":"start"}` (with optional `"mode":"dictate"`) -> binary PCM frames (no magic) -> `{"type":"stop"}`
 2. **Voice Cancel:** `{"type":"cancel"}` — abort current processing
 3. **Keepalive:** `{"type":"ping"}` — JSON heartbeat every 15s during processing
 4. **Text Input:** `{"type":"text","content":"..."}` — skips STT, goes straight to LLM
@@ -458,7 +485,12 @@ main/settings.{c,h}       — NVS-backed settings (see "NVS Settings Keys" table
 ```
 main/voice.{c,h}          — Voice WS client (port 3502), mic capture, TTS playback,
                              dictation, reconnect watchdog, three-tier mode, tool events,
-                             rich-media handlers. Tab5 talks to Dragon only via this path.
+                             rich-media handlers, VOICE_MODE_CALL (AUD0-tagged mic).
+                             Tab5 talks to Dragon only via this path.
+main/voice_video.{c,h}    — Two-way video call module: HW JPEG uplink + TJPGD downlink
+                             decode, VID0 framing, voice_video_start_call/end_call atomics.
+main/voice_codec.{c,h}    — OPUS capability negotiation (decoder ready, encoder gated off
+                             pending #264 SILK NSQ crash on ESP32-P4).
 main/mode_manager.{c,h}   — Voice-pipeline coordinator (IDLE ↔ VOICE). Thin mutex
                              wrapper around voice_connect/disconnect kept because
                              ui_voice / ui_notes / service_dragon switch from
@@ -496,6 +528,8 @@ main/ui_settings.{c,h}    — Settings fullscreen overlay (Display, Network, Voi
 main/ui_wifi.{c,h}        — Wi-Fi setup (scan, select, password entry)
 main/ui_keyboard.{c,h}    — On-screen keyboard (shared)
 main/ui_camera.{c,h}      — Camera viewfinder (1280x720, capture to SD, gallery)
+main/ui_video_pane.{c,h}  — Full-screen downlink-video overlay; in-call adds a 240×135
+                             local-camera PIP + red End-Call pill.
 main/ui_files.{c,h}       — SD file browser (directories, WAV playback, image preview)
 main/ui_notes.{c,h}       — Notes screen (search, compact cards, edit overlay, dragon sync)
 main/ui_sessions.{c,h}    — Session browser (cross-session history)
