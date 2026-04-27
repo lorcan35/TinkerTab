@@ -12,6 +12,7 @@
 
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"     /* #278: cool-down clock for declined calls */
 #include "driver/jpeg_encode.h"
 
 #include "camera.h"
@@ -353,13 +354,55 @@ static void jpeg_dims(const uint8_t *jpeg, size_t len, uint16_t *w, uint16_t *h)
     }
 }
 
+/* #278: 30 s cool-down after Decline so a still-streaming peer
+ * doesn't immediately re-open the incoming-call modal.  Set by the
+ * decline cb; checked before auto-show. */
+static int64_t s_decline_cooldown_until_us = 0;
+#define VV_DECLINE_COOLDOWN_US (30LL * 1000LL * 1000LL)   /* 30 s */
+
+/* Decline callback: hide the pane (already done by the pane itself
+ * before this fires) + arm the cooldown.  Static so we can pass it
+ * directly via ui_video_pane_set_decline_cb. */
+static void downlink_decline_cb(void)
+{
+    s_decline_cooldown_until_us = esp_timer_get_time() + VV_DECLINE_COOLDOWN_US;
+    ESP_LOGI(TAG, "incoming declined, %d s cool-down armed",
+             (int)(VV_DECLINE_COOLDOWN_US / 1000000));
+}
+
+/* Accept callback: upgrade an incoming-call pane to a full active
+ * call (start outbound mic + camera).  The pane stays open and is
+ * upgraded to call mode by start_call's open_call_pane_async hop. */
+static void downlink_accept_cb(void)
+{
+    ESP_LOGI(TAG, "incoming accepted -> upgrading to active call");
+    voice_video_start_call(VOICE_VIDEO_DEFAULT_FPS);
+}
+
 /* Runs on the LVGL thread (via tab5_lv_async_call). */
 static void downlink_render_async(void *arg)
 {
     (void)arg;
-    /* The renderer is allowed to ignore the call (pane not open),
-     * which is fine — voice_video_on_downlink_frame already
-     * incremented frames_recv. */
+    /* If a call is already active, just paint the new frame and we're
+     * done — pane is up, image dsc binds straight in. */
+    if (ui_video_pane_is_visible()) {
+        ui_video_pane_set_dsc(&s_recv_dsc);
+        return;
+    }
+
+    /* No pane open + we got a frame from a peer.  Auto-show in
+     * incoming-call mode unless we're inside the post-decline cool-
+     * down — that way a peer who keeps streaming after the user
+     * declined doesn't immediately re-pop the modal. */
+    int64_t now = esp_timer_get_time();
+    if (now < s_decline_cooldown_until_us) {
+        return;
+    }
+    ui_video_pane_set_accept_cb(downlink_accept_cb);
+    ui_video_pane_set_decline_cb(downlink_decline_cb);
+    ui_video_pane_show_incoming();
+    /* Now bind the frame so the user sees the caller's preview behind
+     * the Accept/Decline buttons. */
     ui_video_pane_set_dsc(&s_recv_dsc);
 }
 

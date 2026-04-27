@@ -44,13 +44,20 @@ static lv_obj_t *s_root      = NULL;
 static lv_obj_t *s_image     = NULL;
 static lv_obj_t *s_pip_canvas = NULL;
 static lv_obj_t *s_end_btn   = NULL;
+/* #278 incoming-call chrome */
+static lv_obj_t *s_accept_btn  = NULL;
+static lv_obj_t *s_decline_btn = NULL;
+static lv_obj_t *s_incoming_lbl = NULL;
 
 static uint8_t *s_pip_buf = NULL;   /* RGB565 PIP_W*PIP_H*2 bytes in PSRAM */
 
 static lv_timer_t *s_pip_timer = NULL;
-static bool s_in_call = false;
+static bool s_in_call    = false;
+static bool s_incoming   = false;     /* #278: ringing / awaiting accept */
 
-static ui_video_pane_end_call_cb_t s_end_cb = NULL;
+static ui_video_pane_end_call_cb_t s_end_cb     = NULL;
+static ui_video_pane_accept_cb_t   s_accept_cb  = NULL;
+static ui_video_pane_decline_cb_t  s_decline_cb = NULL;
 
 static void on_tap(lv_event_t *e)
 {
@@ -65,6 +72,28 @@ static void on_end_btn(lv_event_t *e)
     ui_video_pane_end_call_cb_t cb = s_end_cb;
     /* Hide first so the End Call cb can spawn another pane without
      * racing with our own teardown. */
+    ui_video_pane_hide();
+    if (cb) cb();
+}
+
+/* #278 incoming-call: tear down the incoming chrome and call the
+ * caller's accept hook (which typically upgrades to full call). */
+static void on_accept_btn(lv_event_t *e)
+{
+    (void)e;
+    ui_video_pane_accept_cb_t cb = s_accept_cb;
+    /* Don't hide — caller will upgrade us to call mode in place. */
+    s_incoming = false;
+    if (s_accept_btn)   { lv_obj_delete(s_accept_btn);   s_accept_btn   = NULL; }
+    if (s_decline_btn)  { lv_obj_delete(s_decline_btn);  s_decline_btn  = NULL; }
+    if (s_incoming_lbl) { lv_obj_delete(s_incoming_lbl); s_incoming_lbl = NULL; }
+    if (cb) cb();
+}
+
+static void on_decline_btn(lv_event_t *e)
+{
+    (void)e;
+    ui_video_pane_decline_cb_t cb = s_decline_cb;
     ui_video_pane_hide();
     if (cb) cb();
 }
@@ -194,7 +223,82 @@ void ui_video_pane_show_call(void)
 {
     if (!s_root) ui_video_pane_show();
     if (!s_root) return;
+    /* Coming from incoming-call mode? Tear that chrome down — the
+     * call-mode chrome (PIP + End Call) replaces it.  No-op if we
+     * weren't in incoming mode. */
+    if (s_incoming) {
+        s_incoming = false;
+        if (s_accept_btn)   { lv_obj_delete(s_accept_btn);   s_accept_btn   = NULL; }
+        if (s_decline_btn)  { lv_obj_delete(s_decline_btn);  s_decline_btn  = NULL; }
+        if (s_incoming_lbl) { lv_obj_delete(s_incoming_lbl); s_incoming_lbl = NULL; }
+    }
     build_call_chrome();
+}
+
+/* #278: build the incoming-call chrome (Accept + Decline buttons +
+ * "Incoming call" badge).  Idempotent. */
+static void build_incoming_chrome(void)
+{
+    if (s_incoming && s_accept_btn && s_decline_btn) return;
+    s_incoming = true;
+
+    /* "Incoming call" badge top-center */
+    if (!s_incoming_lbl) {
+        s_incoming_lbl = lv_label_create(s_root);
+        lv_label_set_text(s_incoming_lbl, "Incoming call");
+        lv_obj_set_style_text_color(s_incoming_lbl, lv_color_hex(0xF59E0B), 0);
+        lv_obj_align(s_incoming_lbl, LV_ALIGN_TOP_MID, 0, 32);
+    }
+
+    /* Accept (green) bottom-right where End Call would be in call mode. */
+    if (!s_accept_btn) {
+        s_accept_btn = lv_button_create(s_root);
+        lv_obj_remove_style_all(s_accept_btn);
+        lv_obj_set_size(s_accept_btn, END_W, END_H);
+        lv_obj_set_pos(s_accept_btn,
+                       VP_W - END_W - END_PAD,
+                       VP_H - END_H - END_PAD);
+        lv_obj_set_style_radius(s_accept_btn, END_H / 2, 0);
+        lv_obj_set_style_bg_color(s_accept_btn, lv_color_hex(0x22C55E), 0);
+        lv_obj_set_style_bg_opa(s_accept_btn, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(s_accept_btn, on_accept_btn, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(s_accept_btn);
+        lv_label_set_text(lbl, "Accept");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(lbl);
+    }
+
+    /* Decline (red) bottom-left */
+    if (!s_decline_btn) {
+        s_decline_btn = lv_button_create(s_root);
+        lv_obj_remove_style_all(s_decline_btn);
+        lv_obj_set_size(s_decline_btn, END_W, END_H);
+        lv_obj_set_pos(s_decline_btn, END_PAD, VP_H - END_H - END_PAD);
+        lv_obj_set_style_radius(s_decline_btn, END_H / 2, 0);
+        lv_obj_set_style_bg_color(s_decline_btn, lv_color_hex(0xEF4444), 0);
+        lv_obj_set_style_bg_opa(s_decline_btn, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(s_decline_btn, on_decline_btn, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(s_decline_btn);
+        lv_label_set_text(lbl, "Decline");
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(lbl);
+    }
+}
+
+void ui_video_pane_show_incoming(void)
+{
+    if (!s_root) ui_video_pane_show();
+    if (!s_root) return;
+    /* If we're already in active-call mode, don't downgrade — the
+     * peer who triggered this is just streaming to an established
+     * call. */
+    if (s_in_call) return;
+    build_incoming_chrome();
+}
+
+bool ui_video_pane_is_incoming(void)
+{
+    return s_incoming;
 }
 
 void ui_video_pane_hide(void)
@@ -204,17 +308,24 @@ void ui_video_pane_hide(void)
         s_pip_timer = NULL;
     }
     if (s_root) {
+        /* lv_obj_delete recurses to children — no need to delete each
+         * child first.  Just NULL the static handles so we don't keep
+         * stale pointers. */
         lv_obj_delete(s_root);
-        s_root = NULL;
-        s_image = NULL;
-        s_pip_canvas = NULL;
-        s_end_btn = NULL;
+        s_root          = NULL;
+        s_image         = NULL;
+        s_pip_canvas    = NULL;
+        s_end_btn       = NULL;
+        s_accept_btn    = NULL;
+        s_decline_btn   = NULL;
+        s_incoming_lbl  = NULL;
     }
     if (s_pip_buf) {
         heap_caps_free(s_pip_buf);
         s_pip_buf = NULL;
     }
-    s_in_call = false;
+    s_in_call  = false;
+    s_incoming = false;
 }
 
 bool ui_video_pane_is_visible(void)
@@ -237,4 +348,14 @@ void ui_video_pane_set_dsc(const lv_image_dsc_t *dsc)
 void ui_video_pane_set_end_call_cb(ui_video_pane_end_call_cb_t cb)
 {
     s_end_cb = cb;
+}
+
+void ui_video_pane_set_accept_cb(ui_video_pane_accept_cb_t cb)
+{
+    s_accept_cb = cb;
+}
+
+void ui_video_pane_set_decline_cb(ui_video_pane_decline_cb_t cb)
+{
+    s_decline_cb = cb;
 }
