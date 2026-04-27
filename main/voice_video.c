@@ -421,3 +421,54 @@ esp_err_t voice_video_on_downlink_frame(const uint8_t *wire_bytes, size_t len)
     tab5_lv_async_call(downlink_render_async, NULL);
     return ESP_OK;
 }
+
+/* ────────────────────────────────────────────────────────────────────
+ *  #270 Phase 3D: start_call / end_call helpers.
+ *
+ *  Both are LVGL-thread-safe via tab5_lv_async_call wrappers around
+ *  the pane open/close — the streaming task itself is fine to spawn
+ *  from any context.
+ * ──────────────────────────────────────────────────────────────────── */
+
+static void open_call_pane_async(void *arg)
+{
+    (void)arg;
+    ui_video_pane_show_call();
+    /* Wire the End Call button so the user can tear the call down
+     * from the pane without going back to the nav sheet. */
+    ui_video_pane_set_end_call_cb(NULL);
+    ui_video_pane_set_end_call_cb((ui_video_pane_end_call_cb_t)voice_video_end_call);
+}
+
+static void close_call_pane_async(void *arg)
+{
+    (void)arg;
+    ui_video_pane_set_end_call_cb(NULL);
+    ui_video_pane_hide();
+}
+
+esp_err_t voice_video_start_call(int fps)
+{
+    if (voice_video_is_in_call()) return ESP_OK;
+    /* Streamer first so the remote starts seeing us as soon as the
+     * pane animates in.  start_streaming returns INVALID_STATE if
+     * already streaming — that's fine, treat as success. */
+    esp_err_t er = voice_video_start_streaming(fps);
+    if (er != ESP_OK && er != ESP_ERR_INVALID_STATE) return er;
+    tab5_lv_async_call(open_call_pane_async, NULL);
+    ESP_LOGI(TAG, "call start (fps=%d)", fps);
+    return ESP_OK;
+}
+
+esp_err_t voice_video_end_call(void)
+{
+    voice_video_stop_streaming();
+    tab5_lv_async_call(close_call_pane_async, NULL);
+    ESP_LOGI(TAG, "call end");
+    return ESP_OK;
+}
+
+bool voice_video_is_in_call(void)
+{
+    return ui_video_pane_is_in_call();
+}

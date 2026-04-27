@@ -19,6 +19,7 @@
 #include "ui_focus.h"
 #include "ui_agents.h"
 #include "ui_sessions.h"
+#include "voice_video.h"   /* #270 Phase 3D: Call tile */
 #include "config.h"
 #include "esp_log.h"
 #include <string.h>
@@ -64,10 +65,17 @@ static void go_memory(void)   { ui_memory_show();   }
 static void go_sessions(void) { ui_sessions_show(); }
 static void go_agents(void)   { ui_agents_show();   }
 static void go_focus(void)    { ui_focus_show();    }
+/* #270 Phase 3D: opens an in-call pane (remote video full-screen +
+ * local-camera PIP + End Call button) and starts outbound JPEG
+ * streaming at 5 fps.  Pairs with the Dragon-side broadcast relay
+ * (TinkerBox #180) so any other connected client (Tab5 or web) sees
+ * the local feed and vice versa. */
+static void go_call(void)     { voice_video_start_call(5); }
 
 static const nav_tile_t s_tiles[] = {
     { "Chat",     "Threads \xE2\x80\xA2 history",  go_chat     },
     { "Notes",    "Voice & text",                  go_notes    },
+    { "Call",     "Live video",                    go_call     },
     { "Settings", "Mode \xE2\x80\xA2 cap \xE2\x80\xA2 WiFi",  go_settings },
     { "Camera",   "Viewfinder",                    go_camera   },
     { "Files",    "SD card",                       go_files    },
