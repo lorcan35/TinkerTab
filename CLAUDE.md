@@ -7,6 +7,53 @@
 - **Stability — CLOSED** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
   As of 2026-04-27 the investigation is fundamentally done. Real root cause of the long-residual crash class: **LVGL 9.x `lv_async_call` is NOT thread-safe** (does `lv_malloc` + `lv_timer_create` against unprotected TLSF) — the codebase had been treating it as thread-safe for years per a wrong comment in `ui_core.c`. PR #257 hand-wrapped the empirical site (mem_fetch); PR #259 added a `tab5_lv_async_call(cb, arg)` helper in `ui_core.{h,c}` and replaced all 49 sites uniformly. Today's stress benchmark progression: 50 % uptime → 92.4 % (#246) → 96 % (#249) → 97.6 % (#251+#253+#255) → **100 %, zero reboots in 5-min mixed nav+screenshot stress** (#257+#259). **Rule for any new lv_async_call use: ALWAYS call `tab5_lv_async_call`, never the LVGL primitive directly.** If a new stability symptom surfaces, do a fresh systematic-debugging pass — the historic "whack-a-mole" + LVGL pool + SDIO RX classes are all closed, so a new crash is a new mechanism.
 
+## External Hardware Modules — READ FIRST when extending the device
+
+Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scope what hooks them up; both ship as **modular addons** — Tab5 must NEVER depend on either being present.  Six modularity rules locked in each plan doc (boot-path-agnostic, no-feature-regress-when-absent, capability-detection gates everything, UI surfaces gray-out when absent, hot-unplug graceful, no `#ifdef`).
+
+### Grove sensor support (Port A I2C — HY2.0-4P)
+- Plan: [`docs/PLAN-grove.md`](docs/PLAN-grove.md) · Tracking: [#316](https://github.com/lorcan35/TinkerTab/issues/316)
+- Status: parked, hardware on order.  Phase 1 = Port A I2C bring-up + EXT5V_EN pin discovery on the IO expanders.
+
+### M5Stack LLM Module Kit (K144) — M5-Bus rear stack
+- Plan: [`docs/PLAN-m5-llm-module.md`](docs/PLAN-m5-llm-module.md) · Tracking: [#317](https://github.com/lorcan35/TinkerTab/issues/317)
+- **Phase 0 — DONE 2026-04-28.**  Module mechanically + electrically validated stacked on Tab5's M5-Bus rear connector.  Boots cleanly on Tab5 5 V alone (no external USB-C needed).  All 9 StackFlow services running on Ubuntu 22.04 aarch64.  Real LLM inference round-trip via TCP 10001 JSON: **~600 ms TTFT, ~15 tok/s** for `qwen2.5-0.5B-prefill-20e`.
+- Strategic choice locked: **Option A** (failover sidecar over UART) is the recommended Phase 1-4 path.  Option B (`voice_mode = LOCAL_ONBOARD`) deferred.  Option C (replace Dragon entirely) ruled out.
+- Phases 1-4 not started: Port C UART bring-up → StackFlow JSON marshalling → `voice_m5_llm.{c,h}` sidecar → failover wiring (Option A).  ~3.5 days estimated.
+
+### Talking to a stacked K144 from the dev host (debugging)
+
+When the K144 is stacked on Tab5's M5-Bus AND its **top USB-C** (M140 module port) is plugged into the dev host, the AX630C exposes itself over Axera ADB.  The carrier-board USB-C exposes USB-Ethernet (cdc_ncm) instead — power + RJ45-bridge, **not** the AX630C console.
+
+```bash
+# Module enumerates as Axera ADB (vendor 32c9, product 2003)
+lsusb | grep -i axera
+# → Bus 001 Device 003: ID 32c9:2003 axera ax620e-adb
+
+# udev rules aren't installed — restart adb as root to claim the device
+sudo adb kill-server && sudo adb start-server && sudo adb devices
+# → axera-ax620e device
+
+# Open a shell on the AX630C Linux (root, no password)
+sudo adb shell
+# Useful commands once in:
+#   systemctl is-active llm-llm        # confirm StackFlow up
+#   uptime                              # confirm cold-boot timestamp
+#   apt list --installed | grep llm-    # see installed models / units
+#   ss -tln | grep 10001                # confirm StackFlow TCP listener
+
+# Forward the StackFlow JSON service to the host for direct testing
+sudo adb forward tcp:10001 tcp:10001
+# Then send newline-delimited JSON via nc/python — see PLAN-m5-llm-module.md
+# Phase 0 results section for the full request shapes + bench harness.
+```
+
+**Wire protocol gotchas (captured in plan doc):**
+- Setup returns non-streaming ack with `data:"None"` first; the `work_id` (e.g. `llm.1000`) is the resource id for inference.
+- Inference streams shape: `{"object":"llm.utf-8.stream", "data":{"delta":..., "index":N, "finish":bool}}`.
+- Both `data:object` and `data:string` accepted on the inference REQUEST.
+- Newline-delimited JSON, single TCP socket survives multiple inference calls — no length-prefix framing.
+
 ## Repo Separation — READ THIS FIRST
 - **TinkerTab** (this repo) = Tab5 firmware. C/ESP-IDF. THIN CLIENT.
   - Owns: LVGL UI, mic/speaker/camera/touch, SD card, WiFi, NVS settings
@@ -69,6 +116,27 @@ Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side 
 2. **Branch** — Create a feature/fix branch from main
 3. **Commit with issue ref** — Every commit must reference an issue (`refs #N` or `closes #N`)
 4. **Push and merge** — Push to origin, merge to main
+
+### Pre-push format check (CI gates on this)
+
+CI runs `git-clang-format --diff origin/main` against your changed C/H lines (PR #309 / #318).  Pre-existing format violations elsewhere in `main/` are intentionally ignored, but **your diff must be clean**.  Reproduce locally:
+
+```bash
+git fetch origin main:refs/remotes/origin/main
+git-clang-format --binary clang-format-18 --diff origin/main main/*.c main/*.h
+# Empty diff or "clang-format did not modify any files" → green CI
+# Any output → run without --diff to autofix:
+git-clang-format --binary clang-format-18 origin/main
+git add -u && git commit --amend --no-edit && git push -f
+```
+
+CI build pins **ESP-IDF v5.5.2** (matches `dependencies.lock`).  Local builds must use the same version (`. /home/rebelforce/esp/esp-idf/export.sh`).
+
+### Wave-style closures + plan docs (workflow patterns from prior sessions)
+
+When the issue tracker accumulates >10 open items, work in **waves**: one wave audits + closes stale issues; the next ships 1-3 PRs.  Audit before scoping — many "open Critical" items in tracker docs turn out to be silently shipped via PRs that referenced the audit ID without ticking the master issue.  `git log --grep "audit X"` is the reliable signal.  Pattern caught us in TB #137 / TB #126 / TT #305 / TT #206 (each had 60-95 % stale findings).
+
+For multi-week features (Grove, K144, widget platform), **write a plan doc first** (`docs/PLAN-*.md`) with: hardware reality, code architecture, phased breakdown with file:line refs, honest unknowns, code anchors.  File a tracking issue that links to the doc as source-of-truth.  Branches die; docs + issues persist.
 
 ### Issue Format
 ```
@@ -745,9 +813,20 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
   + tone-test the TDM slots to resolve the original blocker.
 
 **Phase 2 — Remaining priorities:**
-1. Desktop SDL2 simulator for fast dev loop
-2. OPUS audio encoding (16kbps vs 256kbps PCM)
-3. OTA firmware updates
+1. Desktop SDL2 simulator for fast dev loop (TT #38)
+2. OPUS audio encoding (TT #262 — encoder gated off; SILK NSQ crash on ESP32-P4 → TT #264)
+3. ~~OTA firmware updates~~ — DONE; production has SHA256-verified OTA + auto-rollback (see "OTA Firmware Updates" section)
+
+**Late-April 2026 sprint — shipped during waves 1-11:**
+- Spring animation engine + 3 wirings (toast slide-in / orb size transitions / mode-dot pulse) — `main/spring_anim.{c,h}` (closes #42)
+- Audio playback at 1.5× speed bug — `UPSAMPLE_BUF_CAPACITY` was halving the upsample buffer's high-half capacity, dropping 33 % of every TTS chunk.  Fix: bumped from 8192 → 16384 samples (LEARNINGS entry covers the symptom-class)
+- UX honesty audit — killed hardcoded "EARLIER TODAY" demo strings in `ui_focus.c`, gated now-card → Agents nav on `tool_log_count() > 0` (closes 23/24 of #206 audit)
+- mypy strict on a curated clean list — `dragon_voice/api/{__init__,utils,system}.py` (TinkerBox PR #199)
+- Multi-model router + 35 OpenRouter models (TinkerBox #185-#188)
+
+**External-hardware push parked for next sprint:**
+- Grove sensor support (TT #316 / `docs/PLAN-grove.md`)
+- M5 LLM Module integration (TT #317 / `docs/PLAN-m5-llm-module.md`) — Phase 0 done; phases 1-4 ready
 
 ## Recovery & Rollback
 
