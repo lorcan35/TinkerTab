@@ -2,6 +2,10 @@
 
 **ESP32-P4 firmware for the M5Stack Tab5 -- the face of the TinkerClaw voice assistant platform.**
 
+📚 **Docs:** [Hardware](docs/HARDWARE.md) · [Voice pipeline](docs/VOICE_PIPELINE.md) · [Widget platform](docs/WIDGETS.md) · [E2E harness](tests/e2e/README.md) · [Glossary](GLOSSARY.md) · [Lessons](LEARNINGS.md) · [CLAUDE.md](CLAUDE.md) (runbook)
+
+> **First time here?** Tab5 is the *face*; the brain lives in [TinkerBox](https://github.com/lorcan35/TinkerBox).  Start with [TinkerBox's `docs/ARCHITECTURE.md`](https://github.com/lorcan35/TinkerBox/blob/main/docs/ARCHITECTURE.md) to see how the two halves fit together — then come back here for hardware, the LVGL UI, and the firmware-side runbook.
+
 ```
  +-----------+         WebSocket          +-------------+
  |  Tab5     | ---- voice/text/config --> |  Dragon Q6A |
