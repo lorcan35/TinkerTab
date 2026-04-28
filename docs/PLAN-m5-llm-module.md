@@ -1,10 +1,61 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** parked, not started.
+**Status:** Phase 0 complete (live bench done 2026-04-28).  Phases 1-4 not started.
 **Owner:** unassigned.
-**Tracking issue:** TBD (filed alongside this doc).
+**Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
 **Related:** TinkerTab #67 (widget platform), TinkerBox `docs/ARCHITECTURE.md` (router design).
+
+---
+
+## Phase 0 results — live bench on the K144 (2026-04-28)
+
+**Module reachable, protocol confirmed, real numbers captured.**
+
+Setup:
+- Tab5 dev host (DGX) ↔ K144's top USB-C (M140 module port) via Axera ADB
+- `adb forward tcp:10001 tcp:10001` to reach the on-module `llm_sys` listener
+- Newline-delimited JSON over TCP (same shape as planned over UART)
+
+What's installed on this K144:
+- Ubuntu 22.04 LTS, kernel 4.19.125 aarch64
+- All StackFlow services running: `llm-llm`, `llm-asr`, `llm-tts`, `llm-melotts`, `llm-kws`, `llm-audio`, `llm-camera`, `llm-skel`, `llm-sys`
+- LLM model: `qwen2.5-0.5B-prefill-20e` (M5 package v0.2)
+- ASR: sherpa-ncnn streaming Zipformer (en + zh-CN)
+- TTS: single-speaker English fast + MeloTTS Chinese
+- KWS: sherpa-onnx Zipformer wake-word (en + zh-CN)
+
+**Real measurements (3 multi-sentence prompts, 60s wallclock):**
+
+| Prompt | TTFT | tok/s during stream | Output tokens |
+|---|---|---|---|
+| 3-sentence robot story | **632 ms** | 14.5 | ~75 |
+| 2-sentence photosynthesis | **557 ms** | 13.7 | ~58 |
+| 3 sleep benefits | **611 ms** | 16.7 | ~28 |
+| **Average** | **~600 ms** | **~15 tok/s** | — |
+
+Refines the estimates this doc previously had ("TTFT inferred <1s", "12.88 tok/s from M5 spec"):
+- TTFT confirmed ~600 ms — **better than the < 1 s upper bound**
+- tok/s ~15 — slightly above M5's published 12.88 (different model/quant)
+- End-to-end short reply: **1-2 s** (e.g. "capital of France?" → 1.25 s)
+- End-to-end multi-sentence: **~5 s** (75 tok @ 14.5 tok/s + 600 ms TTFT)
+
+**Quality spot-check:** coherent replies, correct facts (Paris, oxygen+glucose, sleep-benefit triplet), reasonable creativity ("Max the painter robot"). Slightly verbose despite a "be concise" system prompt. Acceptable for a fallback / onboard mode; clearly worse than ministral-3B for instruction following.
+
+**Wire-protocol gotchas captured:**
+- Setup returns **non-streaming** ack with `data:"None"` first; the `work_id` (e.g. `llm.1000`) is the new resource ID for subsequent inference calls.
+- Inference streaming chunks use shape: `{"object":"llm.utf-8.stream", "data":{"delta":"...", "index":N, "finish":bool}, "request_id":..., "work_id":...}`.
+- Both `data: object` and `data: string` accepted on the inference REQUEST (the response always has `data: object`).
+- No length-prefix framing; newline-delimited JSON, single TCP socket survives multiple inference calls.
+- TTFT measured from request send → first `delta` chunk is **consistently ~600 ms** (cold or warm — no measurable cold-start penalty between consecutive prompts).
+
+**Implications for the firmware integration:**
+- Wire shape exactly matches what `m5_stackflow.{c,h}` will need (Phase 2). Plan unchanged.
+- Latency math holds — Option A (failover sidecar) is feasible UX-wise with sub-2s short-reply turnaround.
+- The module's local TCP listener on port 10001 means an alternative integration shape would be: Tab5 SSH-tunnels into the K144 via the carrier's USB-Ethernet bridge and talks JSON-over-TCP. **More complex than UART**, defer unless UART proves problematic.
+- The `m5stack-LLM` hostname + ADB interface means we have a fully-bench-able Linux box with apt + dpkg for installing extra models / debugging.
+
+---
 
 ---
 
