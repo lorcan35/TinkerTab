@@ -1580,6 +1580,20 @@ static void now_card_click_cb(lv_event_t *e)
         return;
     }
     if (any_overlay_visible()) return;
+
+    /* When there's no agent activity to show, the navigation to the
+     * Agents overlay just lands the user on the empty-state which
+     * reads as "dummy page" — they expect substantive content from
+     * tapping the now-card.  Surface a hint via toast instead so the
+     * tap isn't silent and the surface stays honest about what's
+     * available.  Once any tool fires the count flips and the tap
+     * navigates as before. */
+    extern int tool_log_count(void);
+    if (tool_log_count() == 0) {
+       ESP_LOGI(TAG, "now-card tapped — no agent activity yet, showing toast");
+       show_toast_internal("Nothing running yet. Try voice.");
+       return;
+    }
     ESP_LOGI(TAG, "now-card tapped -> Agents");
     ui_agents_show();
 }

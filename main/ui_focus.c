@@ -36,6 +36,12 @@ static lv_obj_t *s_overlay   = NULL;
 static lv_obj_t *s_back_btn  = NULL;
 static lv_obj_t *s_narrative = NULL;     /* U8 (#206): refreshed on each show */
 static lv_obj_t *s_tasks     = NULL;
+/* Phase-follow-up to U8: the EARLIER TODAY header + feed are now
+ * rebuilt on each show from tool_log instead of hardcoded demo
+ * strings.  Hide the entire section when tool_log has nothing past
+ * the newest event. */
+static lv_obj_t *s_history_header = NULL;
+static lv_obj_t *s_history_feed = NULL;
 static bool      s_visible   = false;
 
 static void render_live_focus(void);
@@ -196,7 +202,10 @@ void ui_focus_show(void)
     lv_obj_clear_flag(sec1, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *h = lv_label_create(sec1);
-    lv_label_set_text(h, "HEARTBEAT  •  2 MIN LIVE");
+    /* Pre-fix said "HEARTBEAT  •  2 MIN LIVE" hardcoded — looked like
+     * filler.  Keep just "HEARTBEAT" since the narrative line already
+     * conveys whether anything is live. */
+    lv_label_set_text(h, "HEARTBEAT");
     lv_obj_set_style_text_font(h, FONT_CAPTION, 0);
     lv_obj_set_style_text_color(h, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(h, 3, 0);
@@ -219,23 +228,29 @@ void ui_focus_show(void)
     lv_obj_set_style_pad_row(s_tasks, 2, 0);
     lv_obj_clear_flag(s_tasks, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Section 2 — EARLIER TODAY */
-    lv_obj_t *sec2h = lv_label_create(s_overlay);
-    lv_label_set_text(sec2h, "EARLIER TODAY");
-    lv_obj_set_style_text_font(sec2h, FONT_CAPTION, 0);
-    lv_obj_set_style_text_color(sec2h, lv_color_hex(TH_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_letter_space(sec2h, 4, 0);
-    lv_obj_set_pos(sec2h, SIDE_PAD, 680);
+    /* Section 2 — EARLIER TODAY (live tool_log entries past the
+     * newest, mirroring the agents overlay's history list).  Pre-fix
+     * this section had two hardcoded demo strings ("AirPods vs Sony
+     * XM5" / "TinkerClaw roadmap -- Phase 2 outline") that always
+     * appeared regardless of what the user actually did.  Looked like
+     * filler.  Now the rows come from the same tool_log ring the
+     * Agents overlay uses; if there's no history we hide the section
+     * entirely instead of fabricating activity. */
+    s_history_header = lv_label_create(s_overlay);
+    lv_label_set_text(s_history_header, "EARLIER TODAY");
+    lv_obj_set_style_text_font(s_history_header, FONT_CAPTION, 0);
+    lv_obj_set_style_text_color(s_history_header, lv_color_hex(TH_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_letter_space(s_history_header, 4, 0);
+    lv_obj_set_pos(s_history_header, SIDE_PAD, 680);
+    lv_obj_add_flag(s_history_header, LV_OBJ_FLAG_HIDDEN); /* show iff history exists */
 
-    lv_obj_t *feed = lv_obj_create(s_overlay);
-    lv_obj_remove_style_all(feed);
-    lv_obj_set_size(feed, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
-    lv_obj_set_pos(feed, SIDE_PAD, 720);
-    lv_obj_set_flex_flow(feed, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(feed, LV_OBJ_FLAG_SCROLLABLE);
-
-    build_feed_row(feed, "11:42", "NOTE",  TH_AMBER,  "TinkerClaw roadmap -- Phase 2 outline");
-    build_feed_row(feed, "10:15", "CHAT",  0x9EB8FF,  "AirPods vs Sony XM5 -- Sonnet");
+    s_history_feed = lv_obj_create(s_overlay);
+    lv_obj_remove_style_all(s_history_feed);
+    lv_obj_set_size(s_history_feed, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
+    lv_obj_set_pos(s_history_feed, SIDE_PAD, 720);
+    lv_obj_set_flex_flow(s_history_feed, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(s_history_feed, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_history_feed, LV_OBJ_FLAG_HIDDEN); /* render_live_focus reveals iff have_history */
 
     /* Ask prompt at bottom */
     lv_obj_t *ask_cursor = lv_obj_create(s_overlay);
@@ -310,6 +325,35 @@ static void render_live_focus(void)
         build_task_row(s_tasks,
                        e.detail[0] ? e.detail : e.name,
                        meta, color);
+    }
+
+    /* EARLIER TODAY: tool_log entries past the first n_show, shown as
+     * a compact "time / kind / detail" feed.  When tool_log has at
+     * most n_show entries (i.e. nothing older to show), hide the
+     * entire section instead of fabricating demo rows. */
+    bool have_history = (total > n_show);
+    if (s_history_header) {
+       if (have_history)
+          lv_obj_remove_flag(s_history_header, LV_OBJ_FLAG_HIDDEN);
+       else
+          lv_obj_add_flag(s_history_header, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_history_feed) {
+       lv_obj_clean(s_history_feed);
+       if (have_history) {
+          lv_obj_remove_flag(s_history_feed, LV_OBJ_FLAG_HIDDEN);
+          for (int i = n_show; i < total && i < n_show + 4; i++) {
+             tool_log_event_t e;
+             if (!tool_log_get(i, &e)) continue;
+             struct tm tm_l;
+             localtime_r(&e.started_at, &tm_l);
+             char tbuf[8];
+             snprintf(tbuf, sizeof(tbuf), "%02d:%02d", tm_l.tm_hour, tm_l.tm_min);
+             build_feed_row(s_history_feed, tbuf, "TOOL", TH_AMBER, e.detail[0] ? e.detail : e.name);
+          }
+       } else {
+          lv_obj_add_flag(s_history_feed, LV_OBJ_FLAG_HIDDEN);
+       }
     }
 }
 
