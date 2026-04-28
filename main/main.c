@@ -35,6 +35,7 @@
 #include "imu.h"
 #include "io_expander.h"
 #include "lvgl.h"
+#include "m5_stackflow.h"
 #include "mode_manager.h"
 #include "nvs_flash.h"
 #include "ota.h"
@@ -223,6 +224,66 @@ static void install_cjson_psram_hooks(void) {
         .free_fn   = cjson_psram_free,
     };
     cJSON_InitHooks(&hooks);
+}
+
+/* ---------------------------------------------------------------------- */
+/*  K144 LLM Module bench helpers (TT #317 Phase 2 — StackFlow JSON)      */
+/*                                                                        */
+/*  Used by the `m5ping` and `m5lscmd` serial REPL commands at the bottom */
+/*  of app_main().  They drive the stacked K144 over Port C UART through  */
+/*  the marshalling layer in main/m5_stackflow.{c,h}, exercising the same */
+/*  build/parse path that voice_m5_llm.c will lean on in Phase 3.         */
+/* ---------------------------------------------------------------------- */
+
+/* Bench round-trip — build a request, send it, read response within
+ * `timeout_ms`, parse, print a one-line summary plus raw JSON.  Returns
+ * ESP_OK on a clean parse (regardless of error_code), ESP_FAIL otherwise. */
+static esp_err_t m5_bench_round_trip(const m5_stackflow_request_t *req, uint32_t timeout_ms) {
+   esp_err_t ie = tab5_port_c_uart_init();
+   if (ie != ESP_OK) {
+      printf("port_c init failed: %s\n", esp_err_to_name(ie));
+      return ie;
+   }
+
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(req, tx, sizeof(tx));
+   if (tx_len < 0) {
+      printf("build_request failed (check fields / buf size)\n");
+      return ESP_ERR_INVALID_ARG;
+   }
+
+   tab5_port_c_flush();
+   int wrote = tab5_port_c_send(tx, (size_t)tx_len);
+
+   char rx[1024] = {0};
+   int total = 0;
+   int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+   while (esp_timer_get_time() < deadline && total < (int)sizeof(rx) - 1) {
+      int got = tab5_port_c_recv(rx + total, sizeof(rx) - 1 - total, 100);
+      if (got > 0) total += got;
+   }
+   rx[total] = 0;
+   printf("[%s] tx=%d rx=%d\n", req->action, wrote, total);
+   if (total <= 0) {
+      printf("(no response — check stacking + EXT5V or top USB-C)\n");
+      return ESP_FAIL;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   esp_err_t pe = m5_stackflow_parse_response(rx, (size_t)total, &resp);
+   if (pe != ESP_OK) {
+      printf("parse failed: %s\n", esp_err_to_name(pe));
+      printf("--- raw rx ---\n%s\n--- /raw rx ---\n", rx);
+      return pe;
+   }
+
+   bool match = m5_stackflow_response_matches(&resp, req->request_id);
+   printf("  match=%s err=%d (%s) work=%s object=%s\n", match ? "yes" : "NO", resp.error_code,
+          resp.error_message ? resp.error_message : "", resp.work_id ? resp.work_id : "(null)",
+          resp.object ? resp.object : "(null)");
+   printf("--- raw rx ---\n%s\n--- /raw rx ---\n", rx);
+   m5_stackflow_response_free(&resp);
+   return ESP_OK;
 }
 
 void app_main(void)
@@ -871,27 +932,19 @@ void app_main(void)
                         vTaskDelay(pdMS_TO_TICKS(100));
                         esp_restart();
                     } else if (strcmp(cmd_buf, "m5ping") == 0) {
-                       esp_err_t ie = tab5_port_c_uart_init();
-                       if (ie != ESP_OK) {
-                          printf("port_c init failed: %s\n", esp_err_to_name(ie));
-                       } else {
-                          const char *tx = "{\"request_id\":\"p1\",\"work_id\":\"sys\",\"action\":\"ping\"}\n";
-                          tab5_port_c_flush();
-                          int w = tab5_port_c_send(tx, strlen(tx));
-                          uint8_t rx[256] = {0};
-                          int total = 0;
-                          int64_t deadline = esp_timer_get_time() + 800 * 1000;
-                          while (esp_timer_get_time() < deadline && total < (int)sizeof(rx) - 1) {
-                             int got = tab5_port_c_recv(rx + total, sizeof(rx) - 1 - total, 100);
-                             if (got > 0) total += got;
-                          }
-                          rx[total] = 0;
-                          printf("m5ping tx=%d rx=%d\n", w, total);
-                          if (total > 0)
-                             printf("--- raw rx ---\n%s\n--- /raw rx ---\n", (char *)rx);
-                          else
-                             printf("(no response — check stacking + EXT5V or top USB-C)\n");
-                       }
+                       const m5_stackflow_request_t req = {
+                           .request_id = "p1",
+                           .work_id = "sys",
+                           .action = "ping",
+                       };
+                       m5_bench_round_trip(&req, 800);
+                    } else if (strcmp(cmd_buf, "m5lscmd") == 0) {
+                       const m5_stackflow_request_t req = {
+                           .request_id = "ls1",
+                           .work_id = "sys",
+                           .action = "lscmd",
+                       };
+                       m5_bench_round_trip(&req, 800);
                     } else {
                        printf("Unknown: %s\n", cmd_buf);
                        printf(
@@ -899,7 +952,7 @@ void app_main(void)
                            "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
                            "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
                            "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot,\n"
-                           "  m5ping\n");
+                           "  m5ping, m5lscmd\n");
                     }
                 }
                 pos = 0;

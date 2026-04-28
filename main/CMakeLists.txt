@@ -42,6 +42,7 @@ else()
              "spring_anim.c"
              "task_worker.c"
              "tool_log.c"
+             "m5_stackflow.c"
         EMBED_TXTFILES "debug_ui.html"
         INCLUDE_DIRS "."
         REQUIRES tab5
