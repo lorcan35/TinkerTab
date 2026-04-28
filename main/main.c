@@ -55,6 +55,7 @@
 #include "ui_theme.h"
 #include "ui_voice.h"
 #include "voice.h"
+#include "voice_m5_llm.h"
 #include "wifi.h"
 
 static const char *TAG = "tab5";
@@ -945,6 +946,27 @@ void app_main(void)
                            .action = "lscmd",
                        };
                        m5_bench_round_trip(&req, 800);
+                    } else if (strncmp(cmd_buf, "m5infer ", 8) == 0) {
+                       const char *prompt = cmd_buf + 8;
+                       if (prompt[0] == '\0') {
+                          printf("usage: m5infer <prompt>\n");
+                       } else {
+                          char *out = heap_caps_malloc(1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                          if (out == NULL) {
+                             printf("alloc failed\n");
+                          } else {
+                             int64_t t0 = esp_timer_get_time();
+                             esp_err_t ie = voice_m5_llm_infer(prompt, out, 1024, 30);
+                             int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+                             printf("[infer] %s in %lldms (%u bytes)\n", esp_err_to_name(ie), dt_ms,
+                                    (unsigned)strlen(out));
+                             printf("--- reply ---\n%s\n--- /reply ---\n", out);
+                             heap_caps_free(out);
+                          }
+                       }
+                    } else if (strcmp(cmd_buf, "m5release") == 0) {
+                       voice_m5_llm_release();
+                       printf("released\n");
                     } else {
                        printf("Unknown: %s\n", cmd_buf);
                        printf(
@@ -952,7 +974,7 @@ void app_main(void)
                            "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
                            "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
                            "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot,\n"
-                           "  m5ping, m5lscmd\n");
+                           "  m5ping, m5lscmd, m5infer <prompt>, m5release\n");
                     }
                 }
                 pos = 0;

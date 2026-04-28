@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–2 complete (Phase 2 verified live via `m5ping` + `m5lscmd` serial commands going through `main/m5_stackflow.{c,h}` marshalling, 2026-04-28).  Phases 3-4 not started.
+**Status:** Phase 0–2 complete + Phase 3 code complete with partial live verification (2026-04-29 — setup ack + error path proven; streaming inference round-trip blocked on a K144 cold-start hang documented in `LEARNINGS.md`).  Phase 4 not started.
 **Owner:** unassigned.
 **Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
@@ -291,14 +291,29 @@ The `voice_m5_llm.c` sidecar (Phase 3) and any future Tab5↔K144 transport laye
 
 The error-path test is the more valuable one — it confirms `error_code` / `error_message` propagate through the parser, which Phase 3's `voice_m5_llm_infer` will lean on for setup-failure / timeout handling.
 
-### Phase 3 — `voice_m5_llm.c` sidecar service (1 day)
+### Phase 3 — `voice_m5_llm.c` sidecar service — CODE COMPLETE 2026-04-29
 
-**Files:** `main/voice_m5_llm.{c,h}` (new), `main/service_registry.c` (add).
+**Files landed:** `main/voice_m5_llm.{c,h}` (new) — composes `bsp/tab5/uart_port_c.h` (Phase 1) + `main/m5_stackflow.h` (Phase 2) into a synchronous LLM API.
 
-**Acceptance:**
-- On boot, attempt `sys.reset` to the module; success means module is alive.
-- Service exposes a synchronous `voice_m5_llm_infer(prompt, output, output_cap, timeout_s)` API.
-- Bench: `voice_m5_llm_infer("Hello, how are you?", buf, 256, 30)` returns a sensible response in ≤8 s.
+Public surface (DIP-clean — no UART/JSON internals leak through):
+- `voice_m5_llm_probe()` — `sys.ping` round-trip; cheap liveness check.
+- `voice_m5_llm_infer(prompt, output, output_cap, timeout_s)` — full setup → inference → stream-collect.  Lazy `llm.setup` on first call, cached `work_id` reused thereafter.
+- `voice_m5_llm_release()` — `llm.exit` + clear cached work_id.
+- `voice_m5_llm_is_ready()` — local cache check (does NOT contact module).
+
+Implementation notes:
+- 4 KB PSRAM-allocated rx buffer; sliding-window framing on `\n` so multiple stream chunks in one read are split correctly.
+- Stale frames (request_id mismatch) are dropped; useful for recovering from a half-completed prior call.
+- Streaming chunk extraction reuses Phase 2's `m5_stackflow_extract_stream_chunk` (OCP — same path will work for asr / kws / yolo when those land).
+- `m5infer <prompt>` and `m5release` serial REPL commands provide a bench harness via the existing `cmd_buf` loop.
+
+**Acceptance — partial:**
+- ✅ Sets up cleanly: `llm.setup ok — work_id=llm.NNNN model=qwen2.5-0.5B-prefill-20e` logs immediately on first call.
+- ✅ Error path verified: stale work_id (from a prior K144 service restart) produces `K144 returned error -4 (inference data push false)` → `ESP_ERR_INVALID_RESPONSE` cleanly through the parser.
+- ✅ Round-trip frame parsing exercised end-to-end (Phase 2's `m5lscmd` proved the negative path; Phase 3 reuses the same machinery).
+- ⚠ **`voice_m5_llm_infer("Hello", buf, 1024, 30)` round-trip NOT verified live this session** — the K144's cold-start model load hung past 18 min without completing during our bench window, and no streaming chunks reached Tab5.  Documented in `LEARNINGS.md` "K144 cold-start model load can hang for 5+ min".  The Tab5 streaming-collect loop is structurally correct; warm-K144 verification is a follow-up Phase 3.5 bench task.
+
+**Phase 4 implication:** failover wiring in voice.c MUST handle `ESP_ERR_TIMEOUT` from `voice_m5_llm_infer` gracefully — the K144's cold-start window means the first call after Tab5 boot may legitimately fail.  Design the wiring so the user-facing path stays on Dragon (cloud or local LLM) until at least one successful inference confirms the K144 is warm.
 
 ### Phase 4 — Failover wiring (Option A) (half day)
 
