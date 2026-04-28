@@ -603,10 +603,9 @@ TinkerTab/
 |-- components/                 Local ESP-IDF components
 |-- managed_components/         Auto-downloaded dependencies (lvgl, esp_hosted, etc.)
 |-- sim/                        Desktop SDL2 simulator (WIP)
-|-- test/                       Test code
-|-- docs/                       Additional documentation
-|-- stitch-designs/             UI design assets
-|-- dragon_voice/               Dragon voice server reference (Python)
+|-- tests/e2e/                  Python e2e harness (driver.py + scenario runner, PR #295)
+|-- docs/                       Active reference docs (VOICE_PIPELINE, WIDGETS, ...)
+|   +-- historical/             Archived superseded docs (BUILD_PLAN, STREAMING, etc.)
 |-- bin/                        Utility scripts
 |
 |-- CMakeLists.txt              Top-level CMake project file
@@ -617,8 +616,7 @@ TinkerTab/
 |-- dependencies.lock           Locked component versions
 |-- CLAUDE.md                   Developer instructions and institutional knowledge
 |-- LEARNINGS.md                30+ entries of hard-won debugging knowledge
-|-- LICENSE                     MIT License
-+-- CHANGELOG.md                Release history
++-- LICENSE                     MIT License
 ```
 
 ---

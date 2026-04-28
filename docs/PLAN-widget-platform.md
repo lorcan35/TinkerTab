@@ -1,5 +1,12 @@
 # Widget Platform — Implementation Plan
 
+> **Status: living plan; will be archived after Phase 1 ships.** This
+> is the step-by-step build order — exact files, exact commit
+> boundaries. Will move to `docs/historical/` once Phase 1
+> (`widget_live` slot) lands and remaining phases transition to
+> tracking-in-GitHub-issues. The companion spec [`WIDGETS.md`](WIDGETS.md)
+> (the design lock) stays as a living reference.
+
 **Branch:** `feat/widget-platform`
 **Spec:** [`docs/WIDGETS.md`](./WIDGETS.md)
 **Mockups:** [`.superpowers/brainstorm/widget-platform/`](../.superpowers/brainstorm/widget-platform/)
