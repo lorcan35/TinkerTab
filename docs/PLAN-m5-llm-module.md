@@ -6,6 +6,8 @@
 **Last updated:** 2026-04-28.
 **Related:** TinkerTab #67 (widget platform), TinkerBox `docs/ARCHITECTURE.md` (router design).
 
+**Hardware path locked (2026-04-28):** K144 stays **stacked on Tab5's M5-Bus rear connector** for both bench AND production. Both USB-Cs (Tab5's bottom + K144's top) plugged in for power/debug while Phase 1-4 are written; once stable, only Tab5's USB-C is needed (K144 draws 5V from M5-Bus). Side Port C 4-pin header path is discarded but the same UART (G6/G7) is shared between rear M5-Bus pins 15/16 and the side connector, so the firmware is identical regardless.
+
 ---
 
 ## Phase 0 results — live bench on the K144 (2026-04-28)
@@ -109,18 +111,28 @@ The module is a Linux box that speaks **JSON-over-UART** to the host. Each inter
 
 **Authoritative source for the JSON schema:** the M5Module-LLM Arduino library at https://github.com/m5stack/M5Module-LLM (v1.7.0 / 2025-09-05, MIT). M5's docs don't publish the full grammar in one place — the C++ source is the de-facto spec.
 
-### Physical connection on Tab5
+### Physical connection on Tab5 — stacked M5-Bus rear
 
-K144 ships with a **carrier board** (Module13.2 LLM Mate) exposing USB-C + RJ45 + a 4-pin TX/RX/GND/5V header. On Tab5 we'd connect via **Port C** (4-pin UART side connector).
+The K144 ships with the **Module13.2 LLM Mate** carrier (USB-C + RJ45 + a side 4-pin header) and a 30-pin M5-Bus connector on the rear. We stack it on Tab5's M5-Bus rear pinheaders. The K144's UART solder pads ship configured for the M5Stack standard "Port C" position (M5-Bus pins 15/16) — the same position M5Unified exposes via `m5::pin_name_t::port_c_rxd / port_c_txd` in the official Arduino TextAssistant example.
 
-| Tab5 Port C pin | K144 |
-|---|---|
-| GND | GND |
-| 5V (gated by EXT5V_EN) | 5V in |
-| TX (Tab5) | RX (module) |
-| RX (Tab5) | TX (module) |
+**Tab5 M5-Bus rear pinout — UART block** (full table now lives in [`docs/HARDWARE.md`](HARDWARE.md#m5-bus-rear-connector)):
 
-We don't currently initialize Port C in firmware. **First firmware step:** stand up a UART driver on Port C, do a loopback test, then a "send `sys.reset`, expect ACK" test before plugging the actual module.
+| M5-Bus pin | Tab5 signal | ESP32-P4 GPIO | K144 side | Notes |
+|---|---|---|---|---|
+| 15 | PC_RX | **GPIO 7** | K144 TX out | Reads K144 → Tab5 |
+| 16 | PC_TX | **GPIO 6** | K144 RX in | Drives Tab5 → K144 |
+| 5 | GND | — | GND | |
+| 28 | 5V (EXT_5V_BUS) | — (gated by EXT5V_EN on E1.P4) | 5V in | Tab5 powers the module via M5-Bus when EXT5V is on |
+
+**Why this is the same UART as side-connector "Port C":** Tab5 routes the same ESP32-P4 UART (GPIO 6 TX / GPIO 7 RX) to both the M5-Bus rear pins 15/16 *and* the side 4-pin Port C header — they're physically wired in parallel. So the firmware filename `bsp/tab5/uart_port_c.{c,h}` from the original plan is still correct; it just means "the Port-C UART (GPIO 6/7), exposed at whatever physical connector you plug into."
+
+**Bonus:** UART0 (RXD0=GPIO 38, TXD0=GPIO 37) is *also* exposed on M5-Bus pins 13/14. Don't use it for the K144 — it's the ESP32-P4's primary serial console and gets fought over by `idf.py monitor`.
+
+**First firmware step:** stand up a UART driver on GPIO 6/7 (115200 8N1). Loopback first (jumper TX→RX with the K144 unstacked), then `sys.reset`/`sys.ping` against the live K144.
+
+### Power note — EXT5V must be ON before the module boots
+
+The M5-Bus 5V rail is *gated* by `EXT5V_EN` on IO-Expander 1 pin P4. Today this gate is also used by Port A (HY2.0-4P) and the side expansion header, so toggling it has multi-rail consequences (see `docs/PLAN-grove.md`). Default state at boot today: **OFF**. The module won't power up via M5-Bus unless we explicitly drive EXT5V_EN high during Phase 1 service init. **Until that's wired**, the second USB-C (the K144's top USB-C) will keep the module powered for bench testing — which is why we keep both USB-Cs plugged in during development.
 
 ---
 
@@ -233,12 +245,31 @@ Same structure as PLAN-grove.md but with bigger phases.
 
 ### Phase 1 — Port C UART bring-up (1 day)
 
-**Files:** `bsp/tab5/uart_port_c.{c,h}` (new), `bsp/tab5/bsp_config.h` (TX/RX pins TBD per Phase 0 bench), `main/service_uart_port_c.{c,h}`.
+**Files:** `bsp/tab5/uart_port_c.{c,h}` (new), `bsp/tab5/bsp_config.h` (add `TAB5_PORT_C_UART_TX = 6`, `TAB5_PORT_C_UART_RX = 7`, `TAB5_PORT_C_UART_NUM = UART_NUM_1`), `main/service_uart_port_c.{c,h}`.
+
+**Pins locked (verified against M5Module-LLM TextAssistant example + Tab5 schematic, 2026-04-28):**
+- TX = **GPIO 6** (PC_TX, M5-Bus rear pin 16, also wired to side Port C header)
+- RX = **GPIO 7** (PC_RX, M5-Bus rear pin 15, also wired to side Port C header)
+- UART peripheral: **UART_NUM_1** (UART0 reserved for boot console; UART2 free if we ever need a second link)
+- Framing: 115200 8N1, no flow control
+
+**Power coupling — must drive EXT5V_EN before talking to the module:**
+- Today the side Port A + Port C 5V + M5-Bus 5V are all gated by IO-Expander 1, P4 (`EXT5V_EN`). Boot default is OFF.
+- During development we leave the K144's top USB-C plugged in (powers the module independently), so the firmware doesn't strictly need to flip EXT5V_EN to bench Phase 1.
+- **Production path:** Phase 1 service init flips P4 high once per boot. This is the same gate Grove will need (see `docs/PLAN-grove.md`), so coordinate the two PRs to avoid double-init.
 
 **Acceptance:**
-- Boot logs "Port C UART ready (TX=N, RX=M, 115200 8N1)".
-- `tab5_port_c_send(buf, len)` and `tab5_port_c_recv(buf, len, timeout)` APIs work.
-- A loopback test (TX shorted to RX) round-trips.
+- Boot logs `"Port C UART ready (TX=6, RX=7, 115200 8N1)"` after the Phase 1 service starts (and only when the addon-detect probe in Phase 3 succeeds — Phase 1 itself is allowed to fire unconditionally for bring-up debugging).
+- `tab5_port_c_send(buf, len)` and `tab5_port_c_recv(buf, len, timeout_ms)` APIs work.
+- Loopback test (TX shorted to RX, K144 *unstacked*) round-trips a 64-byte payload in <50 ms.
+- With the K144 stacked + powered (top USB-C OR EXT5V on), `sys.ping` returns `MODULE_LLM_OK` shape (`{"created":..., "request_id":..., "error":{"code":0,...}, "object":"None", "data":"None"}`).
+- Negative test: with the K144 disconnected, `sys.ping` times out cleanly after 500 ms — Tab5 never blocks the LVGL task.
+
+**Memory risk discovered 2026-04-28** (see `LEARNINGS.md` "Adding ANY UART driver to debug_server.c boot-panics at FreeRTOS init"): a verification attempt that added a tiny `/m5/probe` HTTP endpoint to `main/debug_server.c` boot-panicked **before app_main**, even with a minimal probe (+5.8 KB DIRAM in a 445 KB region with 208 KB free).  The failure is `vApplicationGetTimerTaskMemory port_common.c:97` — heap-allocated timer-task stack returns NULL despite total-heap-free being fine, suggesting the bootstrap heap regions are layout-sensitive.  **Implications for Phase 1:**
+- Place `uart_port_c.c` in **its own component** (`bsp/tab5/` is fine — already its own component) rather than in `main/`.  Different linker placement may avoid the layout that perturbs the timer-task heap.
+- Land Phase 1 in a **dedicated PR** with no other main/ changes piggybacked on top, so any boot panic is isolated to one code change.
+- Have a tested rollback ready before flashing: `idf.py -p /dev/ttyACM0 flash` against `main` should always recover within ~15 s.
+- If Phase 1 boot-panics, the next debugging step is `idf.py size-files` against the panicking and clean builds to find which symbol shifted.  May need to bump `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH` or move something off internal SRAM via `MALLOC_CAP_SPIRAM` to give the timer-task allocator slack.
 
 ### Phase 2 — StackFlow JSON marshalling (1 day)
 
@@ -291,12 +322,13 @@ Same structure as PLAN-grove.md but with bigger phases.
 
 ## Honest unknowns
 
-1. **TTFT on AX630C** — no published figure. Phase 0 will measure it directly.
-2. **Module's wire-protocol completeness** — the M5Module-LLM Arduino library is the de facto spec but might not cover every edge case (timeouts, error responses, partial-token streaming). Phase 0 documents gaps.
+1. ~~**TTFT on AX630C**~~ — **resolved Phase 0 (2026-04-28):** measured ~600 ms cold or warm, ~15 tok/s during stream.
+2. **Module's wire-protocol completeness** — the M5Module-LLM Arduino library is the de facto spec but might not cover every edge case (timeouts, error responses, partial-token streaming). Phase 0 captured the major shapes; gaps documented inline above.
 3. **Whether VLM (`internvl2.5-1B`) and LLM can co-reside in 3 GB NPU budget** — undocumented. If we want vision-on-device, this is the blocking question.
 4. **Whether M5 still ships a working AX630C model toolchain** as of 2026 — needed for custom models. If Axera deprecated it, we're stuck with the pre-converted models in their package repo.
 5. **Power draw under sustained load + thermal throttling** — 500-800 mA peak per spec. Tab5's 30 Wh battery → ~30-36 hr if module is plugged in continuously. Episodic use is fine. Continuous voice for hours is not.
-6. **Whether Port C exposes UART pins without rework** — research says yes (4-pin connector on the side), but our firmware never tested it.
+6. ~~**Whether Port C exposes UART pins without rework**~~ — **resolved 2026-04-28:** Tab5 wires the same UART (GPIO 6 TX / GPIO 7 RX) to *both* the side Port C 4-pin header and M5-Bus rear pins 15/16 (`PC_TX` / `PC_RX`). The K144's stock solder-pad config matches M5Unified's `port_c_*` pins, so no PCB rework is needed for the stacked path. UART0 (G37/G38) is also exposed on M5-Bus 13/14 but should be avoided — collides with `idf.py monitor`.
+7. **EXT5V_EN coupling with Port A** — `IO-Expander 1, P4` gates Tab5's external 5V rail to *all* expansion connectors at once: HY2.0-4P (Grove), side Port C 5V, and M5-Bus rear 5V. Driving it for the K144 also energises whatever's plugged into Grove, and vice-versa. Coordination required between this plan and `docs/PLAN-grove.md`. For dev we sidestep by leaving the K144's top USB-C plugged in.
 
 ## Out of scope of this plan
 

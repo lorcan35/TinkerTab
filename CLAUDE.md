@@ -19,7 +19,8 @@ Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scop
 - Plan: [`docs/PLAN-m5-llm-module.md`](docs/PLAN-m5-llm-module.md) · Tracking: [#317](https://github.com/lorcan35/TinkerTab/issues/317)
 - **Phase 0 — DONE 2026-04-28.**  Module mechanically + electrically validated stacked on Tab5's M5-Bus rear connector.  Boots cleanly on Tab5 5 V alone (no external USB-C needed).  All 9 StackFlow services running on Ubuntu 22.04 aarch64.  Real LLM inference round-trip via TCP 10001 JSON: **~600 ms TTFT, ~15 tok/s** for `qwen2.5-0.5B-prefill-20e`.
 - Strategic choice locked: **Option A** (failover sidecar over UART) is the recommended Phase 1-4 path.  Option B (`voice_mode = LOCAL_ONBOARD`) deferred.  Option C (replace Dragon entirely) ruled out.
-- Phases 1-4 not started: Port C UART bring-up → StackFlow JSON marshalling → `voice_m5_llm.{c,h}` sidecar → failover wiring (Option A).  ~3.5 days estimated.
+- **Pins locked 2026-04-28:** UART_NUM_1, **TX = GPIO 6, RX = GPIO 7** (Port C UART; M5-Bus rear pins 16/15 — same wires as the side Port C header).  Schematic-verified against [Tab5 PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1132/Tab5_Schematics_PDF.pdf) and the M5Module-LLM `TextAssistant.ino` (`m5::pin_name_t::port_c_*`).  Avoid UART0 (G37/G38, M5-Bus 13/14) — collides with `idf.py monitor`.  EXT5V_EN sits on E1.P4 and is shared with Grove (Port A) — coordinate via a refcounted helper.  See [`docs/HARDWARE.md` § M5-Bus](docs/HARDWARE.md#m5-bus-rear-connector) for the full 30-pin table + LEARNINGS entries "M5-Bus Rear UART Aliases Side Port C" and "EXT5V Rail Gates ALL Expansion 5V Together".
+- Phases 1-4 not started: Port C UART bring-up (G6 TX / G7 RX) → StackFlow JSON marshalling → `voice_m5_llm.{c,h}` sidecar → failover wiring (Option A).  ~3.5 days estimated.
 
 ### Talking to a stacked K144 from the dev host (debugging)
 
