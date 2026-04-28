@@ -577,6 +577,14 @@ void app_main(void)
     // first enqueue doesn't race the init.
     tab5_worker_init();
 
+    /* TT #317 Phase 4: kick off the K144 LLM Module failover warm-up.
+     * Posts ONE long-running job to the worker queue; safe to call here
+     * because subsequent boot work (UI, voice, watchdog) doesn't depend
+     * on the K144.  If the K144 isn't connected or its NPU is hung, the
+     * job times out internally and flips the failover gate to
+     * UNAVAILABLE — no impact on the rest of the firmware. */
+    (void)voice_m5_failover_start_warmup();
+
     // Start PSRAM heap fragmentation watchdog (background, Core 1, prio 1)
     heap_watchdog_start();
 

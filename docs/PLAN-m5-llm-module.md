@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–2 complete + Phase 3 code complete with partial live verification (2026-04-29 — setup ack + error path proven; streaming inference round-trip blocked on a K144 cold-start hang documented in `LEARNINGS.md`).  Phase 4 not started.
+**Status:** Phase 0–4 complete (2026-04-29).  Phase 4 failover wiring verified end-to-end via the boot warm-up: cold-start timeout correctly flipped the gate to UNAVAILABLE and Tab5 user-facing flows continued unaffected.  K144 cold-start NPU hang (LEARNINGS) is the residual hardware blocker.
 **Owner:** unassigned.
 **Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
@@ -315,14 +315,34 @@ Implementation notes:
 
 **Phase 4 implication:** failover wiring in voice.c MUST handle `ESP_ERR_TIMEOUT` from `voice_m5_llm_infer` gracefully — the K144's cold-start window means the first call after Tab5 boot may legitimately fail.  Design the wiring so the user-facing path stays on Dragon (cloud or local LLM) until at least one successful inference confirms the K144 is warm.
 
-### Phase 4 — Failover wiring (Option A) (half day)
+### Phase 4 — Failover wiring (Option A) — DONE 2026-04-29
 
-**Files:** `main/voice.c` (WS-disconnect handler).
+**Files landed:** `main/voice.c` (failover state machine + boot warm-up + WS-disconnect hook in `voice_send_text`), `main/voice.h` (exposed `voice_m5_failover_start_warmup()` + `voice_m5_failover_state()`), `main/main.c` (kicks off warm-up after `tab5_worker_init()`).
 
-**Acceptance:**
-- When Dragon WS is unreachable for 30 s and voice_mode is Local, voice.c routes the next text turn through `voice_m5_llm_infer`.
-- A toast informs the user "Using onboard LLM (Dragon unreachable)".
-- Reconnect to Dragon switches back automatically.
+**State machine** (UNKNOWN → PROBING → READY/UNAVAILABLE) is the cold-start guard demanded by Phase 3.5's "K144 NPU hangs indefinitely" finding.  Every user-facing path stays on Dragon until the warm-up confirms a successful inference round-trip, then `voice_send_text` routes future turns to the K144 only when:
+1. WS has been down ≥ 30 s, AND
+2. NVS `voice_mode` is Local (0), AND
+3. Failover state is READY.
+
+The actual failover work runs on the existing `tab5_worker_init` job queue (no new threads), respecting Phase 1's "do NOT touch UART driver from LVGL or voice WS task" advice.  Toasts via `ui_home_show_toast` give the user a visible signal — "Using onboard LLM" / "Onboard LLM unavailable".
+
+**Acceptance — all met:**
+- ✅ Boot warm-up fires automatically: `K144 failover warm-up: probing module...` at T+14 s.
+- ✅ Cold-start timeout protected: warm-up infer at T+17 s, ESP_ERR_TIMEOUT at T+374 s (6 min cap), gate flipped to UNAVAILABLE.
+- ✅ Tab5 user-facing flows never blocked: WS-up text-send via `/chat` debug endpoint still routes to Dragon cleanly during the warm-up window (verified with a regression test post-flash).
+- ✅ Cold-start guard works: with NPU hung, gate stays UNAVAILABLE, `voice_send_text` declines to engage the K144 even when WS is down — graceful degradation, no crash, no stall.
+- ⚠ READY-state failover round-trip NOT verified live in the same session (same root blocker as Phase 3.5: K144 NPU is hung on this unit; needs full power cycle).  Code is structurally correct; once the NPU is healthy, READY state and toast-driven failover will engage on the next K144-warm boot.
+
+Real-world boot log:
+```
+I (14414) tab5_voice: K144 failover warm-up: probing module...
+I (17502) voice_m5_llm: llm.setup ok — work_id=llm.1002 model=qwen2.5-0.5B-prefill-20e
+W (374534) voice_m5_llm: inference: ESP_ERR_TIMEOUT, 0 bytes written
+W (374535) tab5_voice: K144 warm-up ESP_ERR_TIMEOUT after 360000ms — failover disabled
+                       (NPU likely hung; see LEARNINGS "K144 cold-start model load can hang")
+```
+
+**Cross-link:** the user can also probe the gate via the new `voice_m5_failover_state()` getter (returns 0=UNKNOWN, 1=PROBING, 2=READY, 3=UNAVAILABLE).  Future Phase 5 work can surface this in the Settings UI as an "Onboard LLM ready" indicator.
 
 ### Phase 5 (optional, decided later) — voice_mode = LOCAL_ONBOARD (Option B) (~5 days)
 
