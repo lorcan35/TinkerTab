@@ -6,8 +6,11 @@
  */
 
 #include "ui_onboarding.h"
+#include "ui_home.h"
 #include "ui_theme.h"
 #include "settings.h"
+#include "voice.h"
+#include "wifi.h"
 #include "config.h"
 
 #include "esp_log.h"
@@ -253,11 +256,42 @@ void ui_onboarding_force_show(void)
     ESP_LOGI(TAG, "onboarding shown (step 0/%d)", S_CARD_COUNT);
 }
 
+/* U22 (#206): post-finish round-trip verification.  The static
+ * carousel doesn't actually exercise the device's connectivity, so a
+ * user can finish onboarding while WiFi is mis-configured or Dragon is
+ * unreachable and never know — they'll just hit "Hold to speak" and
+ * wonder why nothing happens.
+ *
+ * 3 s after finish, check WiFi + voice-WS state.  Both up: silent
+ * "Connected to Dragon ✓" confirmation.  Either down: visible
+ * "Setup unfinished — check Settings → Network" toast.  Either way
+ * onboarding stays marked done (no relooping), but the user gets a
+ * clear signal about whether their setup actually works. */
+static void verify_round_trip_cb(lv_timer_t *t)
+{
+    lv_timer_del(t);
+    bool wifi   = tab5_wifi_connected();
+    bool dragon = voice_is_connected();
+    if (wifi && dragon) {
+        ESP_LOGI(TAG, "onboard verify: wifi=1 dragon=1 — round-trip OK");
+        ui_home_show_toast("Connected to Dragon");
+    } else {
+        ESP_LOGW(TAG, "onboard verify: wifi=%d dragon=%d — round-trip incomplete",
+                 wifi, dragon);
+        ui_home_show_toast("Setup unfinished — check Settings");
+    }
+}
+
 void ui_onboarding_finish(void)
 {
     tab5_settings_set_onboarded(true);
     destroy_overlay();
     ESP_LOGI(TAG, "onboarding finished, NVS onboard=1");
+    /* U22 (#206): single-shot timer so the home screen is visible
+     * before the verify toast lands.  3 s gives wifi/voice a moment
+     * to settle if they were mid-connect during the carousel. */
+    lv_timer_t *vt = lv_timer_create(verify_round_trip_cb, 3000, NULL);
+    if (vt) lv_timer_set_repeat_count(vt, 1);
 }
 
 bool ui_onboarding_visible(void)
