@@ -16,6 +16,7 @@
 #include "chat_msg_view.h"
 #include "chat_msg_store.h"
 #include "ui_chat.h"                  /* U5: ui_chat_play_audio_clip */
+#include "voice.h"                    /* Phase 2 (#70): voice_send_widget_action */
 #include "ui_core.h"                  /* tab5_lv_async_call (#258) */
 #include "ui_theme.h"
 #include "config.h"
@@ -69,6 +70,11 @@ typedef struct {
     lv_image_dsc_t brk_dsc; /* decoded pixel buffer owned by media_cache */
     char      brk_url[256]; /* the URL currently bound to brk_image */
     bool      brk_fetch_inflight;
+    /* Phase 2 (#70): MSG_CARD optional tappable action button.  Lazy-
+     * created on first card-with-action; subsequent renders re-use
+     * the same widgets via show/hide. */
+    lv_obj_t *brk_action_btn;
+    lv_obj_t *brk_action_lbl;
     int       data_idx;     /* store logical index bound to this slot, -1 = empty */
 } msg_slot_t;
 
@@ -215,6 +221,7 @@ static void slot_reset(msg_slot_t *slot)
 
 /* U5 (#206): forward decl — defined below with the AUDIO_CLIP wiring. */
 static void brk_body_clicked_cb(lv_event_t *e);
+static void brk_action_clicked_cb(lv_event_t *e);  /* Phase 2 (#70) */
 
 static void slot_ensure_breakout(msg_slot_t *slot, lv_obj_t *parent, uint32_t accent)
 {
@@ -307,6 +314,12 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
          * AUDIO_CLIP branch below re-adds the flag. */
         if (slot->brk_body)
             lv_obj_clear_flag(slot->brk_body, LV_OBJ_FLAG_CLICKABLE);
+        /* Phase 2 (#70): hide any prior action button on rebind.  The
+         * MSG_CARD branch re-shows it when the new message carries
+         * action_label + action_event + card_id; for MSG_IMAGE /
+         * MSG_AUDIO_CLIP / no-action cards it stays hidden. */
+        if (slot->brk_action_btn)
+            lv_obj_add_flag(slot->brk_action_btn, LV_OBJ_FLAG_HIDDEN);
 
         char kicker[64];
         switch (msg->type) {
@@ -389,6 +402,41 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
             lv_label_set_text(slot->brk_body, body);
             lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
             lv_obj_set_size(slot->breakout, 720, BREAK_H);
+
+            /* Phase 2 (#70): optional tappable action button.  Lazy-
+             * create on first card-with-action; show/hide on subsequent
+             * renders.  Position bottom-right of breakout (-16, -16)
+             * with a 120×40 footprint so a 5-line body still has room
+             * above it.  Amber pill matches the v5 accent colour the
+             * card kicker uses for read-order continuity. */
+            bool has_action = (msg->action_label[0] && msg->action_event[0]
+                               && msg->card_id[0]);
+            if (has_action) {
+                if (!slot->brk_action_btn) {
+                    slot->brk_action_btn = lv_button_create(slot->breakout);
+                    lv_obj_set_size(slot->brk_action_btn, 140, 44);
+                    lv_obj_set_style_bg_color(slot->brk_action_btn,
+                        lv_color_hex(TH_AMBER), 0);
+                    lv_obj_set_style_bg_opa(slot->brk_action_btn, LV_OPA_COVER, 0);
+                    lv_obj_set_style_radius(slot->brk_action_btn, 22, 0);
+                    lv_obj_set_style_border_width(slot->brk_action_btn, 0, 0);
+                    lv_obj_set_style_shadow_width(slot->brk_action_btn, 0, 0);
+                    lv_obj_set_style_pad_all(slot->brk_action_btn, 0, 0);
+                    lv_obj_add_event_cb(slot->brk_action_btn,
+                        brk_action_clicked_cb, LV_EVENT_CLICKED, slot);
+                    slot->brk_action_lbl = lv_label_create(slot->brk_action_btn);
+                    lv_obj_set_style_text_font(slot->brk_action_lbl, FONT_BODY, 0);
+                    lv_obj_set_style_text_color(slot->brk_action_lbl,
+                        lv_color_hex(0x000000), 0);
+                    lv_obj_center(slot->brk_action_lbl);
+                }
+                lv_label_set_text(slot->brk_action_lbl, msg->action_label);
+                lv_obj_align(slot->brk_action_btn, LV_ALIGN_BOTTOM_RIGHT,
+                             -SIDE_PAD, -16);
+                lv_obj_clear_flag(slot->brk_action_btn, LV_OBJ_FLAG_HIDDEN);
+            } else if (slot->brk_action_btn) {
+                lv_obj_add_flag(slot->brk_action_btn, LV_OBJ_FLAG_HIDDEN);
+            }
         } else { /* MSG_AUDIO_CLIP */
             lv_obj_set_style_text_font(slot->brk_body, FONT_BODY, 0);
             lv_obj_set_style_text_color(slot->brk_body, lv_color_hex(TH_AMBER), 0);
@@ -854,4 +902,19 @@ static void brk_body_clicked_cb(lv_event_t *e)
     if (!msg || msg->type != MSG_AUDIO_CLIP) return;
     if (!msg->media_url[0]) return;
     ui_chat_play_audio_clip(msg->media_url);
+}
+
+/* Phase 2 (#70): widget_card action button click → fire widget_action
+ * back to Dragon.  Slot rebind is safe because we re-read the bound
+ * card from the store every time; if the slot's been recycled to a
+ * different message between render and tap, msg->card_id will be empty
+ * and we no-op. */
+static void brk_action_clicked_cb(lv_event_t *e)
+{
+    msg_slot_t *slot = (msg_slot_t *)lv_event_get_user_data(e);
+    if (!slot || slot->data_idx < 0) return;
+    const chat_msg_t *msg = chat_store_get(slot->data_idx);
+    if (!msg || msg->type != MSG_CARD) return;
+    if (!msg->card_id[0] || !msg->action_event[0]) return;
+    voice_send_widget_action(msg->card_id, msg->action_event, NULL);
 }

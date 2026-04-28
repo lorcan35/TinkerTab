@@ -1397,15 +1397,31 @@ static void handle_text_message(const char *data, int len)
          * is a different shape than the legacy "card" message used by
          * rich-media turns — title + body + tone + optional image_url.
          * Route it to the same chat bubble renderer so skills can push
-         * context cards into the conversation. */
+         * context cards into the conversation.
+         *
+         * Phase 2 (#70): also read card_id + action.{label,event} so the
+         * chat renderer can draw a tappable button that round-trips a
+         * widget_action back to the skill. */
         const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
         const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
         const char *img = cJSON_GetStringValue(cJSON_GetObjectItem(root, "image_url"));
+        const char *card_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
+        const char *action_label = NULL;
+        const char *action_event = NULL;
+        cJSON *action = cJSON_GetObjectItem(root, "action");
+        if (cJSON_IsObject(action)) {
+            action_label = cJSON_GetStringValue(cJSON_GetObjectItem(action, "label"));
+            action_event = cJSON_GetStringValue(cJSON_GetObjectItem(action, "event"));
+        }
         if (title) {
-            ESP_LOGI(TAG, "widget_card: %s", title);
-            /* chat_push_card takes (title, subtitle, image_url, description).
-             * Map body → description for read-order; subtitle stays NULL. */
-            ui_chat_push_card(title, NULL, img, body);
+            ESP_LOGI(TAG, "widget_card: %s%s", title,
+                     (action_label && action_label[0]) ? " [+action]" : "");
+            /* chat_push_card_action takes (title, subtitle, image_url,
+             * description, card_id, action_label, action_event).
+             * Map body → description for read-order; subtitle stays NULL.
+             * Action fields gated behind all-three-present in the helper. */
+            ui_chat_push_card_action(title, NULL, img, body,
+                                     card_id, action_label, action_event);
         }
     } else if (strcmp(type_str, "audio_clip") == 0) {
         const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));

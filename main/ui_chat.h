@@ -24,6 +24,23 @@ void ui_chat_push_media(const char *url, const char *media_type,
                         int width, int height, const char *alt);
 void ui_chat_push_card(const char *title, const char *subtitle,
                        const char *image_url, const char *description);
+
+/**
+ * Widget-platform phase 2 (#70): push a chat card carrying an optional
+ * tappable action button.  When `action_label` and `action_event` are
+ * both non-NULL/non-empty AND `card_id` is non-empty, the chat renderer
+ * draws an amber pill at the bottom-right of the card breakout; tap
+ * fires voice_send_widget_action(card_id, action_event, NULL).
+ *
+ * Pass NULL for any of card_id / action_label / action_event to render
+ * a plain card (no button).  card_id alone with no action is fine —
+ * future user-side dismiss could use it.
+ */
+void ui_chat_push_card_action(const char *title, const char *subtitle,
+                              const char *image_url, const char *description,
+                              const char *card_id,
+                              const char *action_label,
+                              const char *action_event);
 void ui_chat_push_audio_clip(const char *url, float duration_s, const char *label);
 
 /**
