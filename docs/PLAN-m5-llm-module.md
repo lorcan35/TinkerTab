@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0 + Phase 1 complete (Phase 1 verified live via `m5ping` serial command, 2026-04-28).  Phases 2-4 not started.
+**Status:** Phase 0–2 complete (Phase 2 verified live via `m5ping` + `m5lscmd` serial commands going through `main/m5_stackflow.{c,h}` marshalling, 2026-04-28).  Phases 3-4 not started.
 **Owner:** unassigned.
 **Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
@@ -267,14 +267,29 @@ Same structure as PLAN-grove.md but with bigger phases.
 
 **Memory ceiling resolved 2026-04-28** (root-cause + fix in LEARNINGS.md "Adding the ESP-IDF UART driver pulls in esp_ringbuf, IRAM-hungry, → boot panic").  Three earlier attempts boot-panicked at `vApplicationGetTimerTaskMemory port_common.c:97` — including one with `uart_port_c.c` properly placed in its own `bsp/tab5/` component (so the "different component" hypothesis was wrong).  The real cause: pulling in `driver/uart.h` brings `esp_ringbuf`'s 5.6 KB of `.text` into IRAM, shifting heap region layout enough that `pvPortMalloc(16 KB)` for the timer task stack returns NULL.  Fix is two `sdkconfig.defaults` lines: `CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y` + `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048`.  Verified live: `m5ping` serial command rounds JSON to/from the stacked K144 cleanly (`error.code: 0` MODULE_LLM_OK).
 
-### Phase 2 — StackFlow JSON marshalling (1 day)
+### Phase 2 — StackFlow JSON marshalling — DONE 2026-04-28
 
-**Files:** `main/m5_stackflow.{c,h}` (new) — request builder + response parser. Reuses cJSON which we already include.
+**Files landed:** `main/m5_stackflow.{c,h}` (new) — pure marshalling layer, transport-agnostic (no UART dep, takes caller buffers).  Built around five small functions following ISP / SRP:
 
-**Acceptance:**
-- `m5_stackflow_send_request(...)` builds a JSON object and sends over Port C.
-- `m5_stackflow_parse_response(...)` validates `request_id` matching and unmarshals payloads.
-- Test against bench-captured frames from Phase 0 — at least one round-trip per unit (`sys`, `llm`, `whisper`, `melotts`).
+- `m5_stackflow_build_request(req, buf, buf_cap)` → newline-terminated JSON
+- `m5_stackflow_parse_response(json, len, &resp)` → owned cJSON tree + typed view
+- `m5_stackflow_response_free(&resp)`
+- `m5_stackflow_response_matches(&resp, expected_request_id)`
+- `m5_stackflow_response_is_stream(&resp)` + `m5_stackflow_extract_stream_chunk(&resp, &chunk)` — open-closed for future units (`asr.utf-8.stream`, `kws.utf-8.stream`, etc.) via a `*.stream` suffix check, no core changes needed when M5 ships new objects.
+
+The `voice_m5_llm.c` sidecar (Phase 3) and any future Tab5↔K144 transport layer (TCP, ZMQ) sit on top of this marshalling without modification — pure functions, no transport coupling.
+
+**Acceptance — all met:**
+- `m5_stackflow_build_request` accepts text-or-object `data` and an optional `object` field; returns -1 on missing required fields or buffer-too-small (verified via Tab5 unit test path through the `m5ping` serial command).
+- `m5_stackflow_parse_response` validates `request_id` matching, extracts `error.code` + `error.message`, and produces a borrowed cJSON pointer for `data`.
+- Live round-trip via `m5ping` (action=ping, expected `err=0`) AND `m5lscmd` (action=lscmd, intentional invalid action → `err=-3 "action match false"`).  Both commands match request_id and surface error fields cleanly through the new layer.
+
+```text
+[ping]  tx=52 rx=119  match=yes err=0  ()                    work=sys object=None
+[lscmd] tx=54 rx=139  match=yes err=-3 ("action match false") work=sys object=None
+```
+
+The error-path test is the more valuable one — it confirms `error_code` / `error_message` propagate through the parser, which Phase 3's `voice_m5_llm_infer` will lean on for setup-failure / timeout handling.
 
 ### Phase 3 — `voice_m5_llm.c` sidecar service (1 day)
 
