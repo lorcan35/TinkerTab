@@ -21,6 +21,13 @@
 #define CHAT_TEXT_LEN         512
 #define CHAT_MEDIA_URL_LEN    256
 #define CHAT_SUBTITLE_LEN     128
+/* Widget-platform phase 2 (#70): card action slot.  Per docs/WIDGETS.md
+ * §6 the protocol limits action.label to ≤8 visible chars; we allow a
+ * bit more bytes to cover UTF-8 + a NUL.  card_id matches WIDGET_ID_LEN
+ * (32) in widget.h. */
+#define CHAT_CARD_ID_LEN      32
+#define CHAT_ACTION_LABEL_LEN 16
+#define CHAT_ACTION_EVENT_LEN 32
 
 typedef enum {
     MSG_TEXT = 0,        /* Plain text (user or AI) */
@@ -58,6 +65,15 @@ typedef struct {
     uint16_t   receipt_ctok;
     char       receipt_model_short[16];  /* "haiku-3.5", "sonnet-3.5", etc */
     bool       receipt_retried;          /* v4·D Gauntlet G2: context-trim or 429 retry */
+    /* Widget-platform phase 2 (#70): MSG_CARD optional tappable action.
+     * card_id[0]=='\0' means no card_id known; action_label[0]=='\0'
+     * means no action button rendered.  When both label and event are
+     * non-empty the renderer draws an amber pill at the bottom-right of
+     * the breakout that fires voice_send_widget_action(card_id, event)
+     * on tap. */
+    char       card_id[CHAT_CARD_ID_LEN];
+    char       action_label[CHAT_ACTION_LABEL_LEN];
+    char       action_event[CHAT_ACTION_EVENT_LEN];
 } chat_msg_t;
 
 /* ── API ─────────────────────────────────────────────────────── */

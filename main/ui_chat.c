@@ -81,7 +81,13 @@ static voice_state_t         s_last_state = VOICE_STATE_IDLE;
 /* Async push payloads. */
 typedef struct { char *role; char *text; } push_msg_t;
 typedef struct { char url[256]; char alt[128]; int w, h; } push_media_t;
-typedef struct { char title[128]; char subtitle[256]; char img[256]; char desc[256]; } push_card_t;
+typedef struct {
+    char title[128]; char subtitle[256]; char img[256]; char desc[256];
+    /* Phase 2 (#70) */
+    char card_id[CHAT_CARD_ID_LEN];
+    char action_label[CHAT_ACTION_LABEL_LEN];
+    char action_event[CHAT_ACTION_EVENT_LEN];
+} push_card_t;
 typedef struct { char url[256]; float dur; char label[128]; } push_audio_t;
 typedef struct { char *text; } push_update_t;
 
@@ -856,6 +862,11 @@ static void async_push_card_cb(void *arg)
     safe_copy(msg.text, sizeof(msg.text), c->title);
     safe_copy(msg.subtitle, sizeof(msg.subtitle), c->subtitle);
     if (c->img[0]) safe_copy(msg.media_url, sizeof(msg.media_url), c->img);
+    /* Phase 2 (#70): plumb action fields through to the renderer.
+     * action_label[0]=='\0' is the no-action sentinel. */
+    safe_copy(msg.card_id,      sizeof(msg.card_id),      c->card_id);
+    safe_copy(msg.action_label, sizeof(msg.action_label), c->action_label);
+    safe_copy(msg.action_event, sizeof(msg.action_event), c->action_event);
     chat_store_add(&msg);
     suggestions_sync_visibility();
     if (s_view) {
@@ -868,12 +879,35 @@ static void async_push_card_cb(void *arg)
 void ui_chat_push_card(const char *title, const char *subtitle,
                        const char *image_url, const char *description)
 {
+    /* Phase 2 (#70): legacy entry point — no action.  Delegate to the
+     * full path with NULL action so there's a single async cb to
+     * maintain. */
+    ui_chat_push_card_action(title, subtitle, image_url, description,
+                             NULL, NULL, NULL);
+}
+
+void ui_chat_push_card_action(const char *title, const char *subtitle,
+                              const char *image_url, const char *description,
+                              const char *card_id,
+                              const char *action_label,
+                              const char *action_event)
+{
     push_card_t *c = calloc(1, sizeof(*c));
     if (!c) return;
     safe_copy(c->title,    sizeof(c->title),    title);
     safe_copy(c->subtitle, sizeof(c->subtitle), subtitle);
     safe_copy(c->img,      sizeof(c->img),      image_url);
     safe_copy(c->desc,     sizeof(c->desc),     description);
+    /* Phase 2 (#70): only stamp action fields when ALL three are
+     * present.  Skill emitting card_id without action would still
+     * round-trip cleanly (id is informational), but rendering an
+     * action button without an event to fire makes no sense. */
+    if (card_id && card_id[0] && action_label && action_label[0]
+        && action_event && action_event[0]) {
+        safe_copy(c->card_id,      sizeof(c->card_id),      card_id);
+        safe_copy(c->action_label, sizeof(c->action_label), action_label);
+        safe_copy(c->action_event, sizeof(c->action_event), action_event);
+    }
     tab5_lv_async_call(async_push_card_cb, c);
 }
 
