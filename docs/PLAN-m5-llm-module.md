@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0 complete (live bench done 2026-04-28).  Phases 1-4 not started.
+**Status:** Phase 0 + Phase 1 complete (Phase 1 verified live via `m5ping` serial command, 2026-04-28).  Phases 2-4 not started.
 **Owner:** unassigned.
 **Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
@@ -265,11 +265,7 @@ Same structure as PLAN-grove.md but with bigger phases.
 - With the K144 stacked + powered (top USB-C OR EXT5V on), `sys.ping` returns `MODULE_LLM_OK` shape (`{"created":..., "request_id":..., "error":{"code":0,...}, "object":"None", "data":"None"}`).
 - Negative test: with the K144 disconnected, `sys.ping` times out cleanly after 500 ms — Tab5 never blocks the LVGL task.
 
-**Memory risk discovered 2026-04-28** (see `LEARNINGS.md` "Adding ANY UART driver to debug_server.c boot-panics at FreeRTOS init"): a verification attempt that added a tiny `/m5/probe` HTTP endpoint to `main/debug_server.c` boot-panicked **before app_main**, even with a minimal probe (+5.8 KB DIRAM in a 445 KB region with 208 KB free).  The failure is `vApplicationGetTimerTaskMemory port_common.c:97` — heap-allocated timer-task stack returns NULL despite total-heap-free being fine, suggesting the bootstrap heap regions are layout-sensitive.  **Implications for Phase 1:**
-- Place `uart_port_c.c` in **its own component** (`bsp/tab5/` is fine — already its own component) rather than in `main/`.  Different linker placement may avoid the layout that perturbs the timer-task heap.
-- Land Phase 1 in a **dedicated PR** with no other main/ changes piggybacked on top, so any boot panic is isolated to one code change.
-- Have a tested rollback ready before flashing: `idf.py -p /dev/ttyACM0 flash` against `main` should always recover within ~15 s.
-- If Phase 1 boot-panics, the next debugging step is `idf.py size-files` against the panicking and clean builds to find which symbol shifted.  May need to bump `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH` or move something off internal SRAM via `MALLOC_CAP_SPIRAM` to give the timer-task allocator slack.
+**Memory ceiling resolved 2026-04-28** (root-cause + fix in LEARNINGS.md "Adding the ESP-IDF UART driver pulls in esp_ringbuf, IRAM-hungry, → boot panic").  Three earlier attempts boot-panicked at `vApplicationGetTimerTaskMemory port_common.c:97` — including one with `uart_port_c.c` properly placed in its own `bsp/tab5/` component (so the "different component" hypothesis was wrong).  The real cause: pulling in `driver/uart.h` brings `esp_ringbuf`'s 5.6 KB of `.text` into IRAM, shifting heap region layout enough that `pvPortMalloc(16 KB)` for the timer task stack returns NULL.  Fix is two `sdkconfig.defaults` lines: `CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y` + `CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048`.  Verified live: `m5ping` serial command rounds JSON to/from the stacked K144 cleanly (`error.code: 0` MODULE_LLM_OK).
 
 ### Phase 2 — StackFlow JSON marshalling (1 day)
 

@@ -147,7 +147,17 @@ CONFIG_FREERTOS_IDLE_TASK_STACKSIZE=2048
 # Let RTC FAST memory also serve as internal-capable heap (extra pool for
 # early static-task allocations).
 CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=y
-CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+# Default 4096 was crashing on builds that pulled in the UART driver
+# (which links esp_ringbuf and shifts internal-RAM layout enough that
+# pvPortMalloc(16KB) for the timer task stack returns NULL —
+# port_common.c:97 assert).  2048 matches stock FreeRTOS, halves the
+# allocation, and was already the precedent for the IDLE task above.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=2048
+
+# Move the bulk of esp_ringbuf out of IRAM (saves ~2 KB) — pressure
+# relief that pairs with the timer-task stack reduction above.  Tab5
+# never reads from ring buffers in IRAM ISR context.
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
 # Disable TLSP deletion callbacks — esp_ptr_executable() false positive on P4
 # with PSRAM XIP (.text at 0x4800xxxx not recognized as executable) (#18)
 CONFIG_FREERTOS_TLSP_DELETION_CALLBACKS=n
