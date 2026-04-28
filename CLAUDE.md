@@ -1,5 +1,7 @@
 # TinkerTab — TinkerOS Firmware (ESP32-P4 Tab5) — THE FACE
 
+> **Trying to understand what this project IS rather than how to operate it?**  Start with [TinkerBox's `docs/ARCHITECTURE.md`](https://github.com/lorcan35/TinkerBox/blob/main/docs/ARCHITECTURE.md) — the canonical "what is TinkerClaw?" doc, with diagrams of how Tab5 + Dragon + TinkerClaw fit together. Then [`docs/HARDWARE.md`](docs/HARDWARE.md) for the Tab5 pinout + IC list, and [`GLOSSARY.md`](GLOSSARY.md) for any unfamiliar terms.  This file (CLAUDE.md) is the *runbook* — deploy, debug, restart, monitor.
+
 ## Active Investigations — READ FIRST before related work
 
 - **Stability — CLOSED** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
