@@ -139,6 +139,53 @@ System I2C, addresses 0x43 + 0x44.
 | P2 | Battery charging enable |
 | ... | ... |
 
+## M5-Bus rear connector
+
+30-pin pinheader on the back of the Tab5, hidden behind the battery cover.  Used for stacked M5Stack modules (K144 LLM Module Kit, etc.) — see [`docs/PLAN-m5-llm-module.md`](PLAN-m5-llm-module.md) and [`docs/PLAN-grove.md`](PLAN-grove.md) for the active integration plans.  Authoritative source: the official M5Stack [Tab5 schematic PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1132/Tab5_Schematics_PDF.pdf).
+
+| M5-Bus pin | Tab5 signal | ESP32-P4 GPIO | Notes |
+|---|---|---|---|
+| 1 | GND | — | |
+| 2 | GPIO | G16 | General-purpose, currently unused |
+| 3 | GND | — | |
+| 4 | PB_IN | G17 | Power-button input chain |
+| 5 | GND | — | |
+| 6 | EN / RST | — | Tab5 reset line — driven by reset switch |
+| 7 | SPI MOSI | G18 | Shared with internal SPI |
+| 8 | GPIO | G45 | Currently unused |
+| 9 | SPI MISO | G19 | Shared with internal SPI |
+| 10 | PB_OUT | G52 | Power-button output chain |
+| 11 | SPI SCK | G5 | Shared with internal SPI |
+| 12 | 3V3 | — | |
+| 13 | RXD0 | G38 | UART0 RX — collides with the boot console; **don't use for new modules** |
+| 14 | TXD0 | G37 | UART0 TX — same caveat |
+| 15 | PC_RX | **G7** | Port C UART RX (also exposed at side 4-pin Port C header — same wires) |
+| 16 | PC_TX | **G6** | Port C UART TX (also exposed at side 4-pin Port C header — same wires) |
+| 17 | Internal SDA | G31 | System I2C — same bus as touch / IO expanders / IMU |
+| 18 | Internal SCL | G32 | System I2C — same bus as touch / IO expanders / IMU |
+| 19 | GPIO | G3 | Currently unused |
+| 20 | GPIO | G4 | Currently unused |
+| 21 | GPIO | G2 | Currently unused |
+| 22 | GPIO | G48 | Currently unused |
+| 23 | GPIO | G47 | Currently unused |
+| 24 | GPIO | G35 | Currently unused |
+| 25 | HVIN | — | High-voltage input (M5-Bus power-injection) |
+| 26 | GPIO | G51 | Currently unused |
+| 27 | HVIN | — | |
+| 28 | EXT_5V_BUS | — | External 5V to all expansion connectors; gated by `EXT5V_EN` on IO-Expander 1, pin P4 |
+| 29 | HVIN | — | |
+| 30 | BAT | — | Direct battery rail |
+
+**Special signals:**
+- `EXT_5V_BUS` (pin 28) is OFF by default at boot.  Driving it requires asserting `EXT5V_EN` (IO-Expander 1, P4).  Same gate also powers Port A (HY2.0-4P) and side Port C 5V — flipping it energises ALL expansion 5V rails simultaneously.  Implication: the K144 stacked LLM module won't power up via M5-Bus until firmware enables EXT5V_EN — bench rigs sidestep by plugging the K144's top USB-C in for independent power.
+- `RF_PTH_L_INT_H_EXT` (not exposed on the 30-pin header but referenced in the schematic) selects internal vs SMA antenna for the ESP32-C6 radio.
+- `WLAN_PWR_EN` (IO-Expander 2, pin P0) gates power to the ESP32-C6 — orthogonal to M5-Bus modules but listed here because it shares the same expander logic.
+
+**UART selection rules:**
+- For new modules: use **GPIO 6 (TX) / GPIO 7 (RX) on UART_NUM_1** (Port C UART, M5-Bus pins 15/16).  Same UART is exposed on the side Port C 4-pin header so the firmware works whether the module is stacked or wired via Grove cable.
+- Avoid UART0 on M5-Bus pins 13/14 (G37/G38) — collides with `idf.py monitor` boot console.
+- UART_NUM_2 stays free for a future second module.
+
 ## Sensors
 
 | Sensor | I2C addr | Use |

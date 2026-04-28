@@ -58,6 +58,28 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** Known open issue. Needs shunt resistance measurement from the PCB and corresponding calibration register programming.
 - **Prevention:** When integrating power monitors, always verify the shunt resistor value against the schematic and calculate calibration register from datasheet formula.
 
+### Adding ANY UART driver to debug_server.c boot-panics at FreeRTOS init
+- **Date:** 2026-04-28
+- **Symptom:** While trying to verify the K144 / M5-Bus pinout, added a `/m5/probe` HTTP endpoint to `main/debug_server.c` that drove `UART_NUM_1` on GPIO 6/7.  Two attempts:  (a) full-fat probe with 1024+1280-byte stack buffers,  (b) minimal probe with 256-byte ring + 160-byte stack buffer + driver-install-on-call + delete-after.  Both attempts boot-panicked **before app_main** with `assert failed: vApplicationGetTimerTaskMemory port_common.c:97 (pxStackBufferTemp != NULL)`.  Display stayed dark, WiFi never came up.  Reverting + reflashing recovered Tab5 cleanly within ~15 s.
+- **Investigated:** `idf.py size` between clean and probe builds showed only **+5.8 KB DIRAM** (231 KB → 237 KB used; 208 KB still free of 445 KB total) and +28 bytes BSS.  Plenty of headroom on paper, yet boot still failed deterministically.
+- **Root Cause:** Suspected to be an ESP-IDF-v5.5.2 + Tab5 linker-layout sensitivity — Tab5's main app already loads near a structural ceiling that any addition in `debug_server.c` perturbs.  The configASSERT is FreeRTOS's timer task asking for its stack via `heap_caps_calloc(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)` (ESP_TIMER_TASK_STACK_CAPS_INTERNAL) at vTaskStartScheduler.  Even though the TOTAL internal heap is fine, the bootstrap heap available at that exact moment is shifted by even-tiny code re-layout, and one of the heap regions becomes too small for the 4 KB-aligned stack alloc.  Not yet root-caused; track as an open issue.
+- **Fix:** Reverted both probe attempts.  Static-research for the K144 pinout was sufficient (M5Module-LLM Arduino library uses M5Unified `port_c_*` pins; Tab5 schematic puts those at GPIO 6/7 on M5-Bus pins 15/16).  Dynamic verification deferred to Phase 1 of `docs/PLAN-m5-llm-module.md` where the UART driver will be added carefully + tested incrementally.
+- **Prevention:** Until the structural ceiling is investigated, **do not add new code to `main/debug_server.c` that pulls in additional ESP-IDF driver components** (uart, gpio_driver, twai, etc.) without budgeting time for boot-recovery flashing.  When Phase 1 of K144 lands, put `uart_port_c.c` in `bsp/tab5/` (its own component) — different linker placement may avoid the layout-sensitive boundary that `debug_server.c` adds trip.  Always have `idf.py -p /dev/ttyACM0 flash` ready to recover before testing new firmware against an unbootable image.
+
+### M5-Bus Rear UART Aliases Side Port C (Same Wires)
+- **Date:** 2026-04-28
+- **Symptom:** While planning K144 LLM Module integration, ambiguity over whether stacked-on-rear vs side-Port-C connector required different firmware paths. The `bsp/tab5/uart_port_c.{c,h}` filename suggested side-only.
+- **Root Cause:** Tab5 wires the same ESP32-P4 UART (GPIO 6 TX / GPIO 7 RX) in parallel to BOTH the side 4-pin Port C header AND M5-Bus rear pins 15/16 (labeled `PC_TX` / `PC_RX` in the schematic).  No physical multiplexing — the pins are the same copper.
+- **Fix:** Documented the M5-Bus rear pinout in `docs/HARDWARE.md` and locked GPIO 6/7 on UART_NUM_1 as the canonical "Port C UART" regardless of which connector the module is plugged into.  K144's M5Module-LLM Arduino library uses M5Unified's `port_c_rxd` / `port_c_txd` pin names, confirming the K144 expects this same UART position via stacking.
+- **Prevention:** When a Tab5 schematic shows `PC_*` (Port C) signals on a M5-Bus pin, treat them as identical to side Port C connector wires.  UART0 (G37/G38) on M5-Bus 13/14 is a separate UART — avoid for new modules because it conflicts with `idf.py monitor` boot console.
+
+### EXT5V Rail Gates ALL Expansion 5V Together
+- **Date:** 2026-04-28
+- **Symptom:** Verifying power path for K144 stacked on M5-Bus rear: how do we power the module from Tab5 instead of relying on its top USB-C cable?
+- **Root Cause:** A single IO-Expander pin (E1.P4 = `EXT5V_EN`) gates Tab5's external 5V rail to *every* expansion connector at once: HY2.0-4P (Port A / Grove), side Port C 5V, AND M5-Bus rear pin 28.  Default state at boot is OFF.  Driving it for the K144 also energises whatever's plugged into Grove and vice versa.
+- **Fix:** Phase 1 of the K144 integration plan flips P4 high in the UART service init, with a coordination note in `docs/PLAN-grove.md` so both plans don't double-init the gate.  Bench rigs sidestep by leaving the K144's top USB-C plugged in for independent power during development.
+- **Prevention:** Treat `EXT5V_EN` as a shared resource — wrap it behind a refcounted `tab5_ext5v_acquire()` / `release()` helper before adding the second user.  Any addon (Grove sensor, K144, side-port module) that needs 5V from Tab5 must go through that helper.  Don't toggle E1.P4 directly.
+
 ### IDF v5.5.x MIPI-DSI Is Broken
 - **Date:** 2026-03-15
 - **Symptom:** Display stopped working after upgrading to IDF v5.5.x. DSI init fails or produces no output.

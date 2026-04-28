@@ -47,14 +47,13 @@ This makes the work **strictly additive** — every sensor PR can land without t
 | 3 | red | **5 V (gated)** | The 5 V rail is gated by `EXT5V_EN` on one of the IO expanders (0x43 or 0x44). Without flipping that pin, Port A is dark. |
 | 4 | black | GND | — |
 
-### EXT5V_EN — the unknown pin
+### EXT5V_EN — pin confirmed via M5 schematic (2026-04-28)
 
-Both `bsp/tab5/io_expander.{c,h}` and `bsp/tab5/bsp_config.h` document the IO expanders' P-pins **partially**:
+Cross-referenced from `docs/PLAN-m5-llm-module.md` research: the official Tab5 schematic documents `EXT5V_EN` on **IO-Expander 1, P4** (0x43, P4).  This single pin gates the 5V rail to **all** expansion connectors simultaneously: HY2.0-4P (Port A / Grove), side Port C 5V, AND M5-Bus rear pin 28.  Boot default is OFF.
 
-- **0x43:** P0 = LCD reset, P1 = speaker amp, P2 = touch reset, P3 = camera reset, P4 = ??? (likely EXT5V), P5-P15 = ???
-- **0x44:** P0 = WiFi C6 power, P1 = USB 5V, P2 = battery charging, P3-P15 = ???
+**Coordination warning:** The K144 LLM Module integration (Phase 1 of `PLAN-m5-llm-module.md`) also needs to drive EXT5V_EN.  Don't have both plans toggle the bit independently — wrap it behind a refcounted `tab5_ext5v_acquire()` / `release()` helper so two addons sharing the rail co-exist cleanly.  See LEARNINGS.md "EXT5V Rail Gates ALL Expansion 5V Together" entry.
 
-The EXT5V pin is **mentioned in M5's docs as existing** but the exact P-number isn't recorded in our firmware. **First task:** read both expanders' GPIO direction registers + states, log them, then probe Port A for any device while toggling each unknown pin. Whichever pin makes a sensor appear at I2C addr 0x77 is EXT5V.
+Note: Phase 2's "EXT5V pin discovery" task is therefore narrower than originally scoped — we already know it's E1.P4.  Phase 2 now reduces to: add the refcounted helper, default-on at boot, document in `bsp_config.h` as `TAB5_IOEXP_EXT5V_PIN = 4` (and `TAB5_IOEXP_EXT5V_DEV = 1` for which expander).
 
 ### Voltage levels
 
