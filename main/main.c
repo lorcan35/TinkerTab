@@ -463,6 +463,14 @@ void app_main(void)
         tab5_ui_unlock();
         ESP_LOGI(TAG, "TinkerOS home screen loaded");
 
+        /* Phase 1 of #42: spring engine boot smoke.  Runs each preset
+         * 0→100 once at 60 Hz and logs convergence times.  Cheap (~3
+         * iterations of <600 frames each, all pure float math) — runs
+         * once at boot, not per frame.  Gives a real-device sanity
+         * check for the math without needing host-side unit tests. */
+        extern int spring_anim_boot_smoke(void);
+        spring_anim_boot_smoke();
+
         // Defer overlay creation — runs on the LVGL timer task stack
         // (main task stack is too small for all the LVGL object creation)
         tab5_ui_lock();

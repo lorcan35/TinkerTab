@@ -39,6 +39,7 @@ else()
              "ui_core.c" ${UI_SRCS}
              "settings.c" "ota.c" "media_cache.c"
              "widget_store.c"
+             "spring_anim.c"
              "task_worker.c"
              "tool_log.c"
         EMBED_TXTFILES "debug_ui.html"
