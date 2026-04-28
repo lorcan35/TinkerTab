@@ -293,9 +293,70 @@ static void orb_paint_for_tone(widget_tone_t tone)
     lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
 }
 
+/* Phase 4 of #42: bouncy dot pulse on mode cycle.
+ *
+ * Pre-fix the mode chip's text changed instantly on cycle (long-press
+ * → next mode → label swap).  No visible feedback that the device
+ * acknowledged the action before the user looked at the new label.
+ *
+ * Now the colour dot to the left of the mode name pulses via
+ * SPRING_BOUNCY: snaps to peak (18 px) on cycle, springs back to
+ * baseline (10 px) with a small undershoot.  ~1.2 s total cycle —
+ * visible without being noisy.
+ *
+ * State invariants:
+ *   s_dot_size_current is the live displayed size (= s_dot_spring.pos)
+ *   s_dot_anim_t is non-NULL exactly while the spring is animating
+ *   First-ever update_mode_ui call snaps to baseline without pulsing
+ *   (the chip is being created; no prior mode to "feedback off") */
+#define MODE_DOT_BASE_PX 10
+#define MODE_DOT_PEAK_PX 18
+
+static spring_anim_t s_dot_spring;
+static lv_timer_t *s_dot_anim_t = NULL;
+static float s_dot_size_current = 0.0f;
+static bool s_dot_first_paint = true;
+
+static void mode_dot_anim_cb(lv_timer_t *t) {
+   if (!s_mode_dot) {
+      s_dot_anim_t = NULL;
+      lv_timer_delete(t);
+      return;
+   }
+   float sz = spring_anim_update(&s_dot_spring, 1.0f / 60.0f);
+   /* Floor at 4 px so an overshoot below baseline doesn't make the dot
+    * visually disappear or flip negative; still leaves room for a
+    * visible undershoot dip on the bounce. */
+   if (sz < 4.0f) sz = 4.0f;
+   s_dot_size_current = sz;
+   int32_t isz = (int32_t)(sz + 0.5f);
+   lv_obj_set_size(s_mode_dot, isz, isz);
+   lv_obj_set_style_radius(s_mode_dot, isz / 2, 0);
+   if (spring_anim_done(&s_dot_spring)) {
+      s_dot_anim_t = NULL;
+      lv_timer_delete(t);
+   }
+}
+
+static void mode_dot_kick_pulse(void) {
+   if (!s_mode_dot) return;
+   /* Snap to peak immediately, then spring back to baseline with
+    * SPRING_BOUNCY — the small undershoot below baseline gives the
+    * iOS-style "boop" feel. */
+   spring_anim_init(&s_dot_spring, SPRING_BOUNCY);
+   spring_anim_retarget(&s_dot_spring, (float)MODE_DOT_PEAK_PX, (float)MODE_DOT_BASE_PX, 0.0f);
+   s_dot_size_current = (float)MODE_DOT_PEAK_PX;
+   lv_obj_set_size(s_mode_dot, MODE_DOT_PEAK_PX, MODE_DOT_PEAK_PX);
+   lv_obj_set_style_radius(s_mode_dot, MODE_DOT_PEAK_PX / 2, 0);
+   if (!s_dot_anim_t) {
+      s_dot_anim_t = lv_timer_create(mode_dot_anim_cb, 16, NULL);
+   }
+}
+
 static void update_mode_ui(uint8_t mode)
 {
     if (mode >= 4) mode = 0;
+    bool changed = (s_badge_mode != mode);
     s_badge_mode = mode;
     if (s_mode_dot) {
         lv_obj_set_style_bg_color(s_mode_dot, lv_color_hex(s_mode_tint[mode]), 0);
@@ -303,6 +364,18 @@ static void update_mode_ui(uint8_t mode)
     if (s_mode_name) lv_label_set_text(s_mode_name, s_mode_short[mode]);
     if (s_mode_sub)  lv_label_set_text(s_mode_sub,  s_mode_tagline[mode]);
     orb_paint_for_mode(mode);
+
+    /* Phase 4 (#42): pulse the dot only on actual mode changes (not the
+     * initial chip creation paint).  Without the first-paint guard, the
+     * dot would visibly grow + bounce on every overlay open / home
+     * re-create even when nothing changed. */
+    if (s_dot_first_paint) {
+       s_dot_first_paint = false;
+       return;
+    }
+    if (changed) {
+       mode_dot_kick_pulse();
+    }
 }
 
 /* ── Centered placement helper ──────────────────────────────────
@@ -1734,6 +1807,16 @@ void ui_home_destroy(void)
        toast_ctx_destroy(s_toast_ctx);
        s_toast_ctx = NULL;
     }
+    /* Phase 4 (#42): tear down the mode-dot pulse timer so it doesn't
+     * fire on a freed s_mode_dot after the screen is gone.  Reset the
+     * first-paint flag so a re-created home doesn't mistakenly skip
+     * the pulse on its first real cycle. */
+    if (s_dot_anim_t) {
+       lv_timer_delete(s_dot_anim_t);
+       s_dot_anim_t = NULL;
+    }
+    s_dot_size_current = 0.0f;
+    s_dot_first_paint = true;
     if (s_screen) { lv_obj_del(s_screen); s_screen = NULL; }
     s_sys_dot = s_sys_label = s_time_label = NULL;
     s_halo_outer = s_halo_inner = NULL;
