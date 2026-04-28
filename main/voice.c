@@ -243,7 +243,20 @@ static SemaphoreHandle_t s_play_mutex    = NULL;
  * heap_caps_free in handle_binary_message caused PSRAM fragmentation
  * over long sessions and — combined with DMA pressure from the WS rx
  * backlog — was a contributor to the one-way WiFi death at ~15 KB DMA. */
-#define UPSAMPLE_BUF_CAPACITY  (4096 * 2)  /* samples — 8 KB PSRAM */
+/* The buffer is split in halves: low half = decoder dest, high half =
+ * upsampler dest.  Upsample is 1:3 (16 kHz → 48 kHz), so the high half
+ * needs to fit ≈ 3 × max-decoded-samples or the upsample call gets
+ * clamped via the dec_cap guard at handle_binary_message.  Pre-fix the
+ * cap was 8192 / 2 = 4096 samples, but Dragon ships TTS in 4096-byte
+ * chunks (= 2048 int16 samples) which upsamples to 6144 — well past
+ * 4096.  Result: every TTS chunk silently lost ≈ 33 % of its samples
+ * (`max_out` clamped from 6144 → 4096), and the audio sounded
+ * compressed / sped up because each chunk's full 128 ms-of-source was
+ * delivered to the speaker as ≈ 85 ms-of-output.  Bumping to 16384
+ * (32 KB PSRAM) gives each half 8192 samples — fits 6144 upsampled
+ * with headroom and matches the call-audio (AUD0) path's pre-existing
+ * "max_out ≤ UPSAMPLE_BUF_CAPACITY" check shape. */
+#define UPSAMPLE_BUF_CAPACITY (8192 * 2) /* samples — 32 KB PSRAM */
 static int16_t          *s_upsample_buf  = NULL;
 
 // Last transcript from Dragon STT
