@@ -2002,74 +2002,92 @@ static esp_err_t chat_handler(httpd_req_t *req)
 /* Forward decl — definition is further down the file. */
 static esp_err_t send_json_resp(httpd_req_t *req, cJSON *root);
 
-/* ── POST /input/text — type into the focused LVGL textarea (#296) ────
+/* ── POST /input/text — type into a *named* LVGL textarea ─────────────
  *
- * Body: {"text": "string", "submit": true|false}
- * (Also accepts ?text= and ?submit= query params for short payloads.)
+ * Body: {"text": "string", "submit": true|false, "target": "<name>"}
+ * (Also accepts ?text= and ?submit= and ?target= query params.)
  *
- * Walks lv_screen_active() + lv_layer_top() looking for textareas; if
- * one has LV_STATE_FOCUSED that wins, otherwise picks the first
- * textarea found (deepest-first via recursion).  When `submit` is
- * true, dispatches LV_EVENT_READY after the write — same path the
- * keyboard's Done key takes for form submission.
+ * #299 fix (was #296): the original implementation walked
+ * lv_screen_active() + lv_layer_top() and wrote into the first
+ * focused-or-found textarea.  That meant when the harness happened
+ * to be on the Settings screen with the dragon_host textarea
+ * focused, the test write went into NVS — corrupted dragon_host
+ * overnight and broke voice WS reconnect on next boot.
+ *
+ * The new contract: the caller MUST name a target widget that the
+ * firmware exposes via a registered accessor.  Currently registered
+ * targets:
+ *
+ *   "chat"   (default if `target` omitted) — chat input bar's hidden
+ *            textarea.  Requires the chat overlay to be active;
+ *            otherwise returns {"ok":false,"error":"chat_not_active"}.
+ *
+ * Future targets (notes_edit, settings_dragon_host, wifi_pass, etc.)
+ * land here when a real harness scenario needs them.  Keeping the
+ * target list small means the harness can't accidentally clobber
+ * credentials.
  *
  * Returns:
- *   {"ok": true,  "accepted": N, "submitted": bool, "widget": "0x…"}
- *   {"ok": false, "error": "no_textarea"}
+ *   {"ok": true,  "accepted": N, "submitted": bool, "target": "<name>"}
+ *   {"ok": false, "error": "chat_not_active" | "unknown_target" }
  */
 typedef struct {
-    lv_obj_t *focused;
-    lv_obj_t *fallback;
-} find_ta_ctx_t;
-
-static void find_ta_walk(lv_obj_t *node, find_ta_ctx_t *ctx)
-{
-    if (!node) return;
-    /* lv_obj_check_type uses class pointer comparison; the
-     * lv_textarea_class symbol is exported by the LVGL textarea unit. */
-    extern const lv_obj_class_t lv_textarea_class;
-    if (lv_obj_check_type(node, &lv_textarea_class)) {
-        if (!ctx->fallback) ctx->fallback = node;
-        if (lv_obj_has_state(node, LV_STATE_FOCUSED)) ctx->focused = node;
-    }
-    uint32_t n = lv_obj_get_child_count(node);
-    for (uint32_t i = 0; i < n && !ctx->focused; i++) {
-        find_ta_walk(lv_obj_get_child(node, i), ctx);
-    }
-}
-
-typedef struct {
     char text[1024];
+    char target[24];     /* widget name; "" → defaults to "chat" */
     bool submit;
     /* Reply slot — written by the LVGL-thread executor. */
     bool ok;
     int  accepted;
     bool submitted;
-    void *widget;
+    char  resolved_target[24];
     char  err[40];
     SemaphoreHandle_t done;
 } input_text_args_t;
 
+/* Resolve a target name to its LVGL textarea, or NULL.  Each target
+ * is responsible for its own visibility/state checks (e.g. "chat"
+ * returns NULL when the chat overlay isn't active). */
+static lv_obj_t *resolve_input_target(const char *name)
+{
+    extern lv_obj_t *ui_chat_get_input_textarea(void);
+    if (!name || !name[0] || strcmp(name, "chat") == 0) {
+        return ui_chat_get_input_textarea();
+    }
+    return NULL;  /* unknown_target */
+}
+
 static void input_text_apply_lvgl(void *arg)
 {
     input_text_args_t *a = (input_text_args_t *)arg;
-    find_ta_ctx_t ctx = {0};
-    /* Walk active screen + lv_layer_top so overlays count. */
-    find_ta_walk(lv_screen_active(), &ctx);
-    if (!ctx.focused) find_ta_walk(lv_layer_top(), &ctx);
-    lv_obj_t *ta = ctx.focused ? ctx.focused : ctx.fallback;
+    const char *name = a->target[0] ? a->target : "chat";
+    snprintf(a->resolved_target, sizeof(a->resolved_target), "%s", name);
+
+    /* Distinguish "unknown name" from "name resolved but widget
+     * unavailable" so the harness gets actionable diagnostics. */
+    bool known = (!a->target[0] || strcmp(name, "chat") == 0);
+    if (!known) {
+        a->ok = false;
+        snprintf(a->err, sizeof(a->err), "unknown_target");
+        xSemaphoreGive(a->done);
+        return;
+    }
+
+    lv_obj_t *ta = resolve_input_target(name);
     if (!ta) {
         a->ok = false;
-        snprintf(a->err, sizeof(a->err), "no_textarea");
-    } else {
-        lv_textarea_set_text(ta, a->text);
-        a->ok = true;
-        a->accepted = (int)strlen(a->text);
-        a->widget = ta;
-        if (a->submit) {
-            lv_obj_send_event(ta, LV_EVENT_READY, NULL);
-            a->submitted = true;
-        }
+        snprintf(a->err, sizeof(a->err),
+                 strcmp(name, "chat") == 0 ? "chat_not_active"
+                                           : "target_unavailable");
+        xSemaphoreGive(a->done);
+        return;
+    }
+
+    lv_textarea_set_text(ta, a->text);
+    a->ok = true;
+    a->accepted = (int)strlen(a->text);
+    if (a->submit) {
+        lv_obj_send_event(ta, LV_EVENT_READY, NULL);
+        a->submitted = true;
     }
     xSemaphoreGive(a->done);
 }
@@ -2089,7 +2107,8 @@ static esp_err_t input_text_handler(httpd_req_t *req)
     /* Query string first (small payloads). */
     char query[1280] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "text", a.text, sizeof(a.text));
+        httpd_query_key_value(query, "text",   a.text,   sizeof(a.text));
+        httpd_query_key_value(query, "target", a.target, sizeof(a.target));
         char sv[8] = {0};
         if (httpd_query_key_value(query, "submit", sv, sizeof(sv)) == ESP_OK) {
             a.submit = (sv[0] == '1' || sv[0] == 't');
@@ -2097,7 +2116,7 @@ static esp_err_t input_text_handler(httpd_req_t *req)
     }
 
     /* Body fallback (JSON). */
-    if (a.text[0] == '\0') {
+    if (a.text[0] == '\0' && a.target[0] == '\0') {
         int total = req->content_len;
         if (total > 0 && total < 4096) {
             char *body = heap_caps_malloc(total + 1, MALLOC_CAP_SPIRAM);
@@ -2112,10 +2131,14 @@ static esp_err_t input_text_handler(httpd_req_t *req)
                 cJSON *root = cJSON_Parse(body);
                 heap_caps_free(body);
                 if (root) {
-                    cJSON *t = cJSON_GetObjectItem(root, "text");
-                    cJSON *s = cJSON_GetObjectItem(root, "submit");
+                    cJSON *t   = cJSON_GetObjectItem(root, "text");
+                    cJSON *s   = cJSON_GetObjectItem(root, "submit");
+                    cJSON *tgt = cJSON_GetObjectItem(root, "target");
                     if (cJSON_IsString(t) && t->valuestring) {
                         snprintf(a.text, sizeof(a.text), "%s", t->valuestring);
+                    }
+                    if (cJSON_IsString(tgt) && tgt->valuestring) {
+                        snprintf(a.target, sizeof(a.target), "%s", tgt->valuestring);
                     }
                     if (cJSON_IsBool(s)) a.submit = cJSON_IsTrue(s);
                     cJSON_Delete(root);
@@ -2134,12 +2157,12 @@ static esp_err_t input_text_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "ok", a.ok);
+    cJSON_AddStringToObject(root, "target",
+                            a.resolved_target[0] ? a.resolved_target
+                                                 : (a.target[0] ? a.target : "chat"));
     if (a.ok) {
         cJSON_AddNumberToObject(root, "accepted", a.accepted);
         cJSON_AddBoolToObject(root, "submitted", a.submitted);
-        char wbuf[20];
-        snprintf(wbuf, sizeof(wbuf), "%p", a.widget);
-        cJSON_AddStringToObject(root, "widget", wbuf);
     } else {
         cJSON_AddStringToObject(root, "error",
                                 a.err[0] ? a.err : "unknown");
