@@ -14,20 +14,23 @@
  */
 
 #include "ui_voice.h"
-#include "ui_core.h"       /* tab5_lv_async_call (#258) */
-#include "md_strip.h"      /* #116: inline markdown cleanup */
-#include "ui_notes.h"
-#include "mode_manager.h"
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "config.h"
-#include "settings.h"
-#include "task_worker.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include <string.h>
-#include <stdlib.h>
-#include <stdint.h>
+#include "md_strip.h" /* #116: inline markdown cleanup */
+#include "mode_manager.h"
+#include "settings.h"
+#include "spring_anim.h" /* Phase 3 of #42 — spring-driven orb size */
+#include "task_worker.h"
+#include "ui_core.h" /* tab5_lv_async_call (#258) */
+#include "ui_notes.h"
 
 static const char *TAG = "ui_voice";
 
@@ -1311,17 +1314,78 @@ static void set_orb_color(uint32_t ring_hex, uint32_t glow_hex, lv_opa_t ring_op
     }
 }
 
-static void set_orb_size(int32_t sz)
-{
-    lv_obj_set_size(s_orb_ring, sz, sz);
-    lv_obj_center(s_orb_ring);
+/* Phase 3 of #42: spring-driven orb size transitions.
+ *
+ * Pre-fix the orb's diameter snapped instantly between LISTEN/PROCESS/
+ * SPEAK sizes (300 / 240 / 340 px) on every state change.  Visible
+ * artefact: rapid PROCESSING → SPEAKING transitions (LLM cold-start
+ * then immediate token emit) made the orb visibly jump 100 px in one
+ * frame.
+ *
+ * Post-fix: set_orb_size retargets a SPRING_SMOOTH-driven anim that
+ * carries velocity across mid-flight retargets — feels physical
+ * instead of teleporty.  SMOOTH (zeta = 1.0, critically damped) is
+ * the right preset for this slot: no overshoot (orb shouldn't
+ * jiggle), ~600 ms convergence on a 100 px swing.
+ *
+ * State invariants:
+ *   s_orb_size_current is the live displayed size (= s_orb_spring.pos)
+ *   s_orb_anim_t is non-NULL exactly while the spring is animating
+ *   First-ever set_orb_size call snaps without animating (no velocity
+ *   to carry, and instant "at-rest" first paint matches the existing
+ *   visual contract on screen-create) */
+static spring_anim_t s_orb_spring;
+static lv_timer_t *s_orb_anim_t = NULL;
+static float s_orb_size_current = 0.0f;
 
-    for (int i = ORB_GLOW_LAYERS - 1; i >= 0; i--) {
-        float frac = (float)(ORB_GLOW_LAYERS - i) / (float)ORB_GLOW_LAYERS;
-        int32_t layer_sz = (int32_t)(sz * (0.4f + 0.6f * frac));
-        lv_obj_set_size(s_orb_glow[i], layer_sz, layer_sz);
-        lv_obj_center(s_orb_glow[i]);
-    }
+static void apply_orb_size_now(int32_t sz) {
+   if (!s_orb_ring) return;
+   lv_obj_set_size(s_orb_ring, sz, sz);
+   lv_obj_center(s_orb_ring);
+
+   for (int i = ORB_GLOW_LAYERS - 1; i >= 0; i--) {
+      float frac = (float)(ORB_GLOW_LAYERS - i) / (float)ORB_GLOW_LAYERS;
+      int32_t layer_sz = (int32_t)(sz * (0.4f + 0.6f * frac));
+      lv_obj_set_size(s_orb_glow[i], layer_sz, layer_sz);
+      lv_obj_center(s_orb_glow[i]);
+   }
+}
+
+static void orb_size_anim_cb(lv_timer_t *t) {
+   if (!s_orb_ring) {
+      s_orb_anim_t = NULL;
+      lv_timer_delete(t);
+      return;
+   }
+   float sz = spring_anim_update(&s_orb_spring, 1.0f / 60.0f);
+   s_orb_size_current = sz;
+   apply_orb_size_now((int32_t)(sz + 0.5f));
+   if (spring_anim_done(&s_orb_spring)) {
+      s_orb_anim_t = NULL;
+      lv_timer_delete(t);
+   }
+}
+
+static void set_orb_size(int32_t sz) {
+   if (s_orb_size_current <= 0.0f) {
+      /* First call: snap without animating.  No velocity to carry,
+       * and the first paint should be at-rest at the requested size
+       * (matches the existing visual contract on overlay create). */
+      spring_anim_init(&s_orb_spring, SPRING_SMOOTH);
+      s_orb_size_current = (float)sz;
+      apply_orb_size_now(sz);
+      return;
+   }
+   if ((int32_t)(s_orb_size_current + 0.5f) == sz && spring_anim_done(&s_orb_spring)) {
+      /* Already at target with no in-flight motion → no-op. */
+      return;
+   }
+   /* Retarget mid-flight if still animating; carries the spring's
+    * current velocity so back-to-back state changes feel physical. */
+   spring_anim_retarget(&s_orb_spring, s_orb_size_current, (float)sz, s_orb_spring.velocity);
+   if (!s_orb_anim_t) {
+      s_orb_anim_t = lv_timer_create(orb_size_anim_cb, 16, NULL);
+   }
 }
 
 static void update_mic_button_state(voice_state_t state)
@@ -1573,11 +1637,22 @@ static void start_wave_anim(void)
 
 static void stop_all_anims(void)
 {
-    /* Stop orb animations */
-    lv_anim_delete(s_orb_ring, orb_ring_opa_cb);
-    for (int i = 0; i < ORB_GLOW_LAYERS; i++) {
-        lv_anim_delete(s_orb_glow[i], orb_breathe_cb);
-    }
+   /* Phase 3 of #42: also tear down the spring-driven orb size anim
+    * so its 60 fps timer doesn't fire on a freed s_orb_ring after
+    * overlay hide / screen change.  Resets s_orb_size_current so
+    * the next overlay show snaps to the correct first-frame size
+    * via the "first call" branch in set_orb_size. */
+   if (s_orb_anim_t) {
+      lv_timer_delete(s_orb_anim_t);
+      s_orb_anim_t = NULL;
+   }
+   s_orb_size_current = 0.0f;
+
+   /* Stop orb animations */
+   lv_anim_delete(s_orb_ring, orb_ring_opa_cb);
+   for (int i = 0; i < ORB_GLOW_LAYERS; i++) {
+      lv_anim_delete(s_orb_glow[i], orb_breathe_cb);
+   }
 
     /* Stop wave bar animations */
     for (int i = 0; i < WAVE_BARS; i++) {
