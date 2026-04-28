@@ -2,7 +2,7 @@
 
 **ESP32-P4 firmware for the M5Stack Tab5 -- the face of the TinkerClaw voice assistant platform.**
 
-📚 **Docs:** [Hardware](docs/HARDWARE.md) · [Voice pipeline](docs/VOICE_PIPELINE.md) · [Widget platform](docs/WIDGETS.md) · [E2E harness](tests/e2e/README.md) · [Dev setup](docs/dev-setup.md) · [Glossary](GLOSSARY.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Lessons](LEARNINGS.md) · [CLAUDE.md](CLAUDE.md) (runbook)
+📚 **Docs:** [Hardware](docs/HARDWARE.md) · [Hardware mods](docs/hardware-mods.md) · [Voice pipeline](docs/VOICE_PIPELINE.md) · [Widget platform](docs/WIDGETS.md) · [E2E harness](tests/e2e/README.md) · [Dev setup](docs/dev-setup.md) · [Glossary](GLOSSARY.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [Lessons](LEARNINGS.md) · [CLAUDE.md](CLAUDE.md) (runbook)
 
 > **First time here?**  Tab5 is the *face*; the brain lives in [TinkerBox](https://github.com/lorcan35/TinkerBox).  Start with [TinkerBox `WELCOME.md`](https://github.com/lorcan35/TinkerBox/blob/main/WELCOME.md) — it's a multi-audience landing page (use it / build it / hack it).  Then come back here for hardware, the LVGL UI, and the firmware-side runbook.
 
