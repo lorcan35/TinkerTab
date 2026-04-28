@@ -35,12 +35,12 @@ extern "C" {
 
 /* Spring config — pick a preset or roll your own. */
 typedef struct {
-    float stiffness;   /* k — higher = snappier */
-    float damping;     /* c — higher = less oscillation */
-    float mass;        /* m — usually 1 */
-    float bounce;      /* 0..1 — informational only (not used in math; let the
-                        * (k, c, m) ratios drive the regime).  Documents intent
-                        * for callers reading the preset. */
+   float stiffness; /* k — higher = snappier */
+   float damping;   /* c — higher = less oscillation */
+   float mass;      /* m — usually 1 */
+   float bounce;    /* 0..1 — informational only (not used in math; let the
+                     * (k, c, m) ratios drive the regime).  Documents intent
+                     * for callers reading the preset. */
 } spring_config_t;
 
 /* Three named presets matching the issue body's tuning targets.
@@ -52,31 +52,31 @@ typedef struct {
  *   SMOOTH  — slow, no overshoot, eased glide.  ~600 ms.
  *             For panel drags, screen transitions.
  */
-#define SPRING_SNAPPY ((spring_config_t){ .stiffness = 400.0f, .damping = 30.0f, .mass = 1.0f, .bounce = 0.0f })
-#define SPRING_BOUNCY ((spring_config_t){ .stiffness = 200.0f, .damping = 10.0f, .mass = 1.0f, .bounce = 0.4f })
-#define SPRING_SMOOTH ((spring_config_t){ .stiffness = 100.0f, .damping = 20.0f, .mass = 1.0f, .bounce = 0.1f })
+#define SPRING_SNAPPY ((spring_config_t){.stiffness = 400.0f, .damping = 30.0f, .mass = 1.0f, .bounce = 0.0f})
+#define SPRING_BOUNCY ((spring_config_t){.stiffness = 200.0f, .damping = 10.0f, .mass = 1.0f, .bounce = 0.4f})
+#define SPRING_SMOOTH ((spring_config_t){.stiffness = 100.0f, .damping = 20.0f, .mass = 1.0f, .bounce = 0.1f})
 
 /* Convergence epsilon: spring_anim_done() returns true when both
  * |pos − target| AND |velocity| drop below these for one frame.
  * Sized for pixel-space animation (sub-pixel residual is invisible). */
-#define SPRING_EPS_POS  0.5f
-#define SPRING_EPS_VEL  0.5f
+#define SPRING_EPS_POS 0.5f
+#define SPRING_EPS_VEL 0.5f
 
 /* Hard ceiling on elapsed time before we force-snap to target.  Catches
  * pathological configs (zero stiffness, huge mass) that would otherwise
  * loop forever consuming CPU.  3 s is well past every reasonable UI
  * transition; if your animation legitimately needs longer, you don't
  * want a spring, you want a tween. */
-#define SPRING_MAX_ELAPSED_S  3.0f
+#define SPRING_MAX_ELAPSED_S 3.0f
 
 typedef struct {
-    spring_config_t cfg;
-    float from;       /* anchor at last retarget */
-    float to;         /* destination */
-    float pos;        /* current position (output) */
-    float velocity;   /* current velocity */
-    float t;          /* elapsed seconds since last retarget */
-    bool  done;       /* true once converged or SPRING_MAX_ELAPSED_S hit */
+   spring_config_t cfg;
+   float from;     /* anchor at last retarget */
+   float to;       /* destination */
+   float pos;      /* current position (output) */
+   float velocity; /* current velocity */
+   float t;        /* elapsed seconds since last retarget */
+   bool done;      /* true once converged or SPRING_MAX_ELAPSED_S hit */
 } spring_anim_t;
 
 /**
