@@ -19,6 +19,23 @@ Tab5 ships the connector physically but our firmware doesn't initialize the bus,
 
 ---
 
+## Non-negotiable: modular addon
+
+**Tab5 must never depend on a Grove sensor being plugged in.** Same architectural rule as the M5 LLM Module plan — sensors are additive features that light up when present and silent when absent.
+
+Translated into rules:
+
+1. **Boot path is sensor-agnostic.** No "waiting for sensor" probes that block boot. The Port A bus comes up; if no device responds at any expected address, the sensor service stays in `IDLE` state.
+2. **No Tab5-side feature regresses without a sensor.** All existing functionality works identically. The LLM context-builder gates on "sensor data available" before injecting — no sensor → no injection, normal prompt.
+3. **Capability detection is the gate.** On boot, the sensor service probes its expected address (≤200 ms). Found → start sampling task + advertise via WS register frame. Not found → silent.
+4. **WS protocol is additive.** `sensor_data` frames only emit when a sensor is present. Dragon must tolerate any subset of capabilities (zero, one, many). No "sensor required" code path on either side.
+5. **Hot-unplug is graceful.** If a sensor stops responding mid-session, the sample task logs a warning, drops the capability advertisement, and the Tab5 keeps running. No reboot, no toast spam.
+6. **No firmware build-time coupling.** Each sensor driver lives behind a runtime probe; no `#ifdef TAB5_HAS_BME280` branches.
+
+This makes the work **strictly additive** — every sensor PR can land without touching production paths used today.
+
+---
+
 ## Hardware reality
 
 ### Port A (HY2.0-4P, Grove-compatible)
