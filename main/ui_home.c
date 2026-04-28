@@ -27,6 +27,7 @@
 
 #include "ui_home.h"
 #include "ui_theme.h"
+#include "spring_anim.h"  /* Phase 2 of #42 — toast slide-in */
 #include "ui_agents.h"
 #include "ui_memory.h"
 #include "ui_focus.h"
@@ -1600,23 +1601,80 @@ static void screen_gesture_cb(lv_event_t *e)
 
 /* ── Toast ───────────────────────────────────────────────────── */
 
-typedef struct { lv_timer_t *t; lv_obj_t *obj; } toast_ctx_t;
+/* Phase 2 of #42: toasts slide in from +50 px below their resting
+ * position via SPRING_SNAPPY rather than appearing instantly.  The
+ * lifetime + replacement plumbing also got a bit safer along the way:
+ * the prior replacement path (`if (s_toast) { lv_obj_del; s_toast = NULL; }`)
+ * leaked the previous ctx + lifetime timer.  Now both ctx pointers are
+ * tracked via s_toast_ctx and torn down together via toast_ctx_destroy. */
+#define TOAST_FINAL_Y     200   /* y-offset from CENTER when settled */
+#define TOAST_START_Y     250   /* spawn 50 px below final (slides up) */
+#define TOAST_LIFETIME_MS 2200
+#define TOAST_FRAME_MS      16  /* ~60 fps */
+
+typedef struct {
+    lv_timer_t   *life_t;   /* one-shot lifetime → toast_remove_cb */
+    lv_timer_t   *anim_t;   /* per-frame slide cb; deleted on convergence */
+    lv_obj_t     *obj;      /* the toast itself */
+    spring_anim_t spring;
+} toast_ctx_t;
+
+/* Track the currently-displayed toast so a back-to-back show_toast can
+ * tear down BOTH timers + the obj before spawning the replacement. */
+static toast_ctx_t *s_toast_ctx = NULL;
+
+static void toast_ctx_destroy(toast_ctx_t *ctx)
+{
+    if (!ctx) return;
+    if (ctx->anim_t) { lv_timer_delete(ctx->anim_t); ctx->anim_t = NULL; }
+    if (ctx->life_t) { lv_timer_delete(ctx->life_t); ctx->life_t = NULL; }
+    if (ctx->obj)    { lv_obj_del(ctx->obj);         ctx->obj    = NULL; }
+    free(ctx);
+}
+
+static void toast_anim_cb(lv_timer_t *t)
+{
+    toast_ctx_t *ctx = (toast_ctx_t *)lv_timer_get_user_data(t);
+    if (!ctx || !ctx->obj) { lv_timer_delete(t); return; }
+    float y = spring_anim_update(&ctx->spring, TOAST_FRAME_MS / 1000.0f);
+    lv_obj_align(ctx->obj, LV_ALIGN_CENTER, 0, (int32_t)y);
+    if (spring_anim_done(&ctx->spring)) {
+        ctx->anim_t = NULL;        /* mark before deleting so destroy is idempotent */
+        lv_timer_delete(t);
+    }
+}
 
 static void toast_remove_cb(lv_timer_t *t)
 {
     toast_ctx_t *ctx = (toast_ctx_t *)lv_timer_get_user_data(t);
-    if (ctx) {
-        if (ctx->obj) lv_obj_del(ctx->obj);
-        if (s_toast == ctx->obj) s_toast = NULL;
-        free(ctx);
-    }
+    if (!ctx) { lv_timer_delete(t); return; }
+    /* The lifetime timer is the one that just fired — null it before
+     * destroy so toast_ctx_destroy doesn't try to delete a timer we're
+     * already inside the callback of. */
+    ctx->life_t = NULL;
+    if (s_toast == ctx->obj)   s_toast = NULL;
+    if (s_toast_ctx == ctx)    s_toast_ctx = NULL;
+    toast_ctx_destroy(ctx);
     lv_timer_delete(t);
 }
 
 static void show_toast_internal(const char *text)
 {
     if (!text) return;
-    if (s_toast) { lv_obj_del(s_toast); s_toast = NULL; }
+    /* Replace any in-flight toast: tear down ctx + both timers + obj,
+     * not just the obj (which the pre-#42 path leaked). */
+    if (s_toast_ctx) {
+        toast_ctx_destroy(s_toast_ctx);
+        s_toast_ctx = NULL;
+        s_toast    = NULL;
+    } else if (s_toast) {
+        /* Defensive: an obj somehow exists without a ctx (shouldn't
+         * happen post-Phase-2, but ui_home_destroy may have nulled
+         * s_toast_ctx independently).  Free the obj to keep state
+         * consistent. */
+        lv_obj_del(s_toast);
+        s_toast = NULL;
+    }
 
     lv_obj_t *t = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(t);
@@ -1635,15 +1693,21 @@ static void show_toast_internal(const char *text)
     lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_letter_space(lbl, 1, 0);
 
-    lv_obj_align(t, LV_ALIGN_CENTER, 0, 200);
+    /* Spawn at the start position so the first frame paints correctly
+     * even if the anim timer is delayed by a busy LVGL queue. */
+    lv_obj_align(t, LV_ALIGN_CENTER, 0, TOAST_START_Y);
     s_toast = t;
 
     toast_ctx_t *ctx = (toast_ctx_t *)calloc(1, sizeof(*ctx));
-    if (ctx) {
-        ctx->obj = t;
-        ctx->t = lv_timer_create(toast_remove_cb, 2200, ctx);
-        lv_timer_set_repeat_count(ctx->t, 1);
-    }
+    if (!ctx) return;  /* OOM — toast still renders, just won't auto-remove. */
+    ctx->obj = t;
+    spring_anim_init(&ctx->spring, SPRING_SNAPPY);
+    spring_anim_retarget(&ctx->spring,
+                         (float)TOAST_START_Y, (float)TOAST_FINAL_Y, 0.0f);
+    ctx->anim_t = lv_timer_create(toast_anim_cb,   TOAST_FRAME_MS,   ctx);
+    ctx->life_t = lv_timer_create(toast_remove_cb, TOAST_LIFETIME_MS, ctx);
+    if (ctx->life_t) lv_timer_set_repeat_count(ctx->life_t, 1);
+    s_toast_ctx = ctx;
 }
 
 /* ── Public API ──────────────────────────────────────────────── */
@@ -1651,6 +1715,9 @@ static void show_toast_internal(const char *text)
 void ui_home_destroy(void)
 {
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
+    /* Phase 2 (#42): tear down any in-flight toast ctx so its anim
+     * timer doesn't fire on a freed obj after the screen is gone. */
+    if (s_toast_ctx) { toast_ctx_destroy(s_toast_ctx); s_toast_ctx = NULL; }
     if (s_screen) { lv_obj_del(s_screen); s_screen = NULL; }
     s_sys_dot = s_sys_label = s_time_label = NULL;
     s_halo_outer = s_halo_inner = NULL;
