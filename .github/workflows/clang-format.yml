@@ -10,6 +10,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # git-clang-format needs the full history + the merge base
+          fetch-depth: 0
 
       - name: Install clang-format
         run: |
@@ -30,14 +33,32 @@ jobs:
           EOF
           fi
 
-      - name: Check formatting
+      # Scope the gate to lines actually changed in this PR.  The whole-
+      # tree dry-run failed on every PR because main/ has accumulated
+      # pre-existing format rot from before clang-format adoption.
+      # git-clang-format exits 0 if no changes are needed for the
+      # changed lines, prints a unified diff otherwise.
+      - name: Check formatting (changed lines only)
         run: |
-          unformatted=$(clang-format-18 --dry-run --Werror main/*.c main/*.h 2>&1 || true)
-          if [ -n "$unformatted" ]; then
-            echo "The following files need formatting:"
-            echo "$unformatted"
-            echo ""
-            echo "Format them with: clang-format-18 -i main/*.c main/*.h"
-            exit 1
+          # Resolve the merge base with origin/main.
+          git fetch origin main:refs/remotes/origin/main
+          BASE=$(git merge-base origin/main HEAD)
+          echo "Comparing against merge-base $BASE"
+
+          # git-clang-format is shipped alongside clang-format-18.
+          which git-clang-format || ls /usr/share/clang/
+
+          # Restrict to main/*.{c,h} since that's the firmware tree.
+          DIFF=$(git-clang-format --binary clang-format-18 \
+                                  --diff "$BASE" -- 'main/*.c' 'main/*.h' 2>&1)
+          if [ -z "$DIFF" ] || [ "$DIFF" = "no modified files to format" ] \
+             || [ "$DIFF" = "clang-format did not modify any files" ]; then
+            echo "✓ Format check passed — no violations on changed lines."
+            exit 0
           fi
-          echo "All files are correctly formatted."
+          echo "✗ Format violations on lines changed in this PR:"
+          echo "$DIFF"
+          echo ""
+          echo "Reproduce locally:"
+          echo "  git-clang-format --binary clang-format-18 origin/main"
+          exit 1

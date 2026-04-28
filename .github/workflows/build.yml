@@ -35,10 +35,15 @@ jobs:
       # Rolling our own was fragile — install.sh's pwd-based IDF_PATH
       # detection kept picking up /home/runner/work/_temp instead of the
       # downloaded tree, regardless of how we exported IDF_PATH.
-      - name: Build with ESP-IDF v5.4.3
+      # CLAUDE.md pins ESP-IDF 5.5.2 — matches dependencies.lock + the
+      # local build target.  v5.4.3 had a -Werror=format= mismatch in
+      # esp_log_color.h between %u and uint32_t (long unsigned int on
+      # ARM64) that broke every CI build.  Bumping to 5.5.2 aligns CI
+      # with what we actually flash to the device.
+      - name: Build with ESP-IDF v5.5.2
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.4.3
+          esp_idf_version: v5.5.2
           target: esp32p4
           path: .
 
