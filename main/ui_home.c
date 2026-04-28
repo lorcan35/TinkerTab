@@ -185,6 +185,7 @@ static void orb_click_cb(lv_event_t *e);
 static void orb_long_press_cb(lv_event_t *e);
 static void screen_gesture_cb(lv_event_t *e);
 static void now_card_click_cb(lv_event_t *e);
+static void now_card_long_press_cb(lv_event_t *e);
 static void sys_click_cb(lv_event_t *e);
 static void mode_chip_long_press_cb(lv_event_t *e);
 /* U19 (#206): rail callbacks removed with the rail itself. */
@@ -517,6 +518,12 @@ lv_obj_t *ui_home_create(void)
     lv_obj_clear_flag(s_now_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_now_card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_now_card, now_card_click_cb, LV_EVENT_CLICKED, NULL);
+    /* U24 (#206): long-press to dismiss the active live widget.  Hidden
+     * gesture matches the orb / mode-chip long-press idiom — discoverable
+     * once the user knows the platform.  Dismiss is local-store immediate
+     * + Dragon notify-best-effort (skill is informed via widget_action so
+     * it can stop re-emitting). */
+    lv_obj_add_event_cb(s_now_card, now_card_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     /* Accent bar top-left (140×3 amber) */
     /* Accent bar removed in Sovereign Halo live-line -- amber pip inline with
@@ -1483,12 +1490,54 @@ static void mode_chip_long_press_cb(lv_event_t *e)
     ui_mode_sheet_show();
 }
 
+/* U24 (#206): set by now_card_long_press_cb when a long-press just
+ * dismissed the live widget — swallows the trailing CLICKED event
+ * that LVGL still emits on release so the dismiss doesn't accidentally
+ * also navigate to Agents. */
+static bool s_now_card_long_pressed = false;
+
 static void now_card_click_cb(lv_event_t *e)
 {
     (void)e;
+    if (s_now_card_long_pressed) {
+        s_now_card_long_pressed = false;
+        return;
+    }
     if (any_overlay_visible()) return;
     ESP_LOGI(TAG, "now-card tapped -> Agents");
     ui_agents_show();
+}
+
+static void now_card_long_press_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;
+    widget_t *live_w = widget_store_live_active();
+    if (!live_w) {
+        /* No live widget → long-press is a no-op (don't show a toast,
+         * don't suppress the trailing CLICKED — let it fall through to
+         * the Agents-open path). */
+        return;
+    }
+    /* Stash card_id before we mutate the store. */
+    char card_id[WIDGET_ID_LEN];
+    strncpy(card_id, live_w->card_id, sizeof(card_id) - 1);
+    card_id[sizeof(card_id) - 1] = '\0';
+
+    s_now_card_long_pressed = true;
+
+    /* Notify Dragon best-effort.  Skill receives widget_action with
+     * event="dismiss" and can stop re-emitting; if Dragon is offline
+     * the dismiss is still local-immediate which is the right UX. */
+    voice_send_widget_action(card_id, "dismiss", NULL);
+
+    /* Local-store dismiss → ui_home_update_status will re-render the
+     * empty state (or surface the next-priority queued widget if any). */
+    widget_store_dismiss(card_id);
+    ui_home_update_status();
+
+    ESP_LOGI(TAG, "now-card long-press → dismissed widget %s", card_id);
+    show_toast_internal("Widget dismissed");
 }
 
 static void sys_click_cb(lv_event_t *e)
