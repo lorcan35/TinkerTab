@@ -8,52 +8,53 @@
  * 5. Start Dragon link (mDNS discovery + health check, user triggers mode switch)
  */
 
-#include <stdio.h>
-#include <string.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "esp_log.h"
-#include "esp_system.h"
-#include "esp_chip_info.h"
-#include "esp_task_wdt.h"
-#include "nvs_flash.h"
-#include "esp_heap_caps.h"
-#include "cJSON.h"   /* #182 follow-up: route cJSON allocs to PSRAM */
-#include "esp_timer.h"
-#include "driver/i2c_master.h"
 
-#include "config.h"
-#include "io_expander.h"
-#include "display.h"
-#include "touch.h"
-#include "wifi.h"
-#include "sdcard.h"
-#include "camera.h"
 #include "audio.h"
-#include "imu.h"
-#include "tab5_rtc.h"
 #include "battery.h"
 #include "bluetooth.h"
+#include "cJSON.h" /* #182 follow-up: route cJSON allocs to PSRAM */
+#include "camera.h"
+#include "config.h"
+#include "debug_server.h"
+#include "display.h"
+#include "driver/i2c_master.h"
+#include "esp_chip_info.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "heap_watchdog.h"
+#include "imu.h"
+#include "io_expander.h"
+#include "lvgl.h"
+#include "mode_manager.h"
+#include "nvs_flash.h"
+#include "ota.h"
+#include "pool_probe.h"
+#include "sdcard.h"
+#include "service_registry.h"
+#include "settings.h"
+#include "tab5_rtc.h"
+#include "task_worker.h"
+#include "touch.h"
+#include "uart_port_c.h"
 #include "ui_core.h"
-#include "ui_theme.h"
-#include "ui_splash.h"
 #include "ui_home.h"
 #include "ui_keyboard.h"
-#include "ui_voice.h"
 #include "ui_notes.h"
-#include "settings.h"
-#include "debug_server.h"
+#include "ui_splash.h"
+#include "ui_theme.h"
+#include "ui_voice.h"
 #include "voice.h"
-#include "ota.h"
-#include "mode_manager.h"
-#include "service_registry.h"
-#include "heap_watchdog.h"
-#include "pool_probe.h"
-#include "task_worker.h"
-#include "lvgl.h"
+#include "wifi.h"
 
 static const char *TAG = "tab5";
 
@@ -869,12 +870,36 @@ void app_main(void)
                         printf("Rebooting...\n");
                         vTaskDelay(pdMS_TO_TICKS(100));
                         esp_restart();
+                    } else if (strcmp(cmd_buf, "m5ping") == 0) {
+                       esp_err_t ie = tab5_port_c_uart_init();
+                       if (ie != ESP_OK) {
+                          printf("port_c init failed: %s\n", esp_err_to_name(ie));
+                       } else {
+                          const char *tx = "{\"request_id\":\"p1\",\"work_id\":\"sys\",\"action\":\"ping\"}\n";
+                          tab5_port_c_flush();
+                          int w = tab5_port_c_send(tx, strlen(tx));
+                          uint8_t rx[256] = {0};
+                          int total = 0;
+                          int64_t deadline = esp_timer_get_time() + 800 * 1000;
+                          while (esp_timer_get_time() < deadline && total < (int)sizeof(rx) - 1) {
+                             int got = tab5_port_c_recv(rx + total, sizeof(rx) - 1 - total, 100);
+                             if (got > 0) total += got;
+                          }
+                          rx[total] = 0;
+                          printf("m5ping tx=%d rx=%d\n", w, total);
+                          if (total > 0)
+                             printf("--- raw rx ---\n%s\n--- /raw rx ---\n", (char *)rx);
+                          else
+                             printf("(no response — check stacking + EXT5V or top USB-C)\n");
+                       }
                     } else {
-                        printf("Unknown: %s\n", cmd_buf);
-                        printf("Commands: info, heap, wifi, stream, scan,\n"
-                               "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
-                               "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
-                               "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot\n");
+                       printf("Unknown: %s\n", cmd_buf);
+                       printf(
+                           "Commands: info, heap, wifi, stream, scan,\n"
+                           "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
+                           "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
+                           "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot,\n"
+                           "  m5ping\n");
                     }
                 }
                 pos = 0;

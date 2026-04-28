@@ -130,6 +130,15 @@
 #define TAB5_ES7210_I2C_ADDR     0x40
 
 // ---------------------------------------------------------------------------
+// Port C UART — exposed at side 4-pin header AND M5-Bus rear pins 15/16.
+// Used to talk to stacked add-ons (M5 K144 LLM Module, etc.) at 115200 8N1.
+// ---------------------------------------------------------------------------
+#define TAB5_PORT_C_UART_NUM     1     // UART_NUM_1; UART0 reserved for boot console
+#define TAB5_PORT_C_UART_TX_GPIO 6     // PC_TX, M5-Bus pin 16
+#define TAB5_PORT_C_UART_RX_GPIO 7     // PC_RX, M5-Bus pin 15
+#define TAB5_PORT_C_UART_BAUD    115200
+
+// ---------------------------------------------------------------------------
 // Chat UI — pool and history sizing
 // ---------------------------------------------------------------------------
 #define BSP_CHAT_MAX_MESSAGES   100   /* Per-mode message history depth */
