@@ -14,12 +14,19 @@ jobs:
           # git-clang-format needs the full history + the merge base
           fetch-depth: 0
 
-      - name: Install clang-format
+      - name: Install clang-format + git-clang-format
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 18
           which clang-format-18
+          # The LLVM apt package doesn't bundle git-clang-format on the
+          # runner image; pull the script straight from the matching
+          # release tag and drop it on PATH.
+          sudo curl -sSL -o /usr/local/bin/git-clang-format \
+            https://raw.githubusercontent.com/llvm/llvm-project/release/18.x/clang/tools/clang-format/git-clang-format
+          sudo chmod +x /usr/local/bin/git-clang-format
+          git-clang-format --help | head -3
 
       - name: Create .clang-format
         run: |
