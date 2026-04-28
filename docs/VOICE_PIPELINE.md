@@ -1,5 +1,18 @@
 # Voice Pipeline Documentation
 
+> **Status (2026-04-28):** Phase 1 (basic STT→LLM→TTS) is complete and
+> in production. **Phase 2** (streaming OPUS) is partially shipped —
+> the OPUS *decoder* on Tab5 is ready, but the *encoder* is gated OFF
+> in `voice_codec.h` pending issue [#264](https://github.com/lorcan35/TinkerTab/issues/264)
+> (SILK NSQ crash on ESP32-P4 mid-frame). **Phase 3** (wake word + AEC)
+> was retired in PR [#162](https://github.com/lorcan35/TinkerTab/pull/162);
+> see CLAUDE.md "Phase 2" section for the revival path.
+>
+> Dragon-side: a multi-model router landed in TinkerBox [#185](https://github.com/lorcan35/TinkerBox/pull/185)
+> that picks LLM backends per-modality per-tier. **Not yet reflected
+> below** — for the canonical router architecture see TinkerBox
+> `CLAUDE.md` "Multi-Model Router" + `docs/router-cookbook.md`.
+
 Conversational AI voice pipeline for TinkerClaw: **STT -> LLM -> TTS**.
 
 The Tab5 (ESP32-P4) captures microphone audio and streams it over WiFi to the Dragon (ARM mini-PC), which runs speech-to-text, a large language model, and text-to-speech, then streams the spoken response back to the Tab5 speaker.

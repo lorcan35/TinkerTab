@@ -1,6 +1,15 @@
 # Conversational STT/TTS Pipeline Research for TinkerClaw
 **Date: 2026-03-27**
 
+> **Status: research archive.** This document is the due-diligence
+> research that informed the Moonshine + Piper + Ollama choices that
+> shipped. **Not prescriptive** — current implementation is described
+> in [`VOICE_PIPELINE.md`](VOICE_PIPELINE.md) and `CLAUDE.md`. Useful
+> when revisiting "why did we choose X?" questions or considering
+> alternatives, not when explaining what the code does today. Wake-word
+> and AEC plans here were retired in PR [#162](https://github.com/lorcan35/TinkerTab/pull/162);
+> OPUS encoder is gated off pending issue [#264](https://github.com/lorcan35/TinkerTab/issues/264).
+
 Architecture: Tab5 (ESP32-P4) ↔ WiFi ↔ Dragon (ARM mini-PC, 8GB RAM, Linux) running Ollama
 
 Goal: User speaks → Tab5 captures → Dragon does STT → LLM → TTS → audio back to Tab5 → plays response. Target: <1s total latency.
