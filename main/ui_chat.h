@@ -67,3 +67,12 @@ void ui_chat_refresh_receipts(void);
  * voice.c can call it from the WS task on every stt_partial frame.
  */
 void ui_chat_show_partial(const char *partial);
+
+/**
+ * #299: return the chat input bar's hidden textarea, or NULL when the
+ * chat overlay is not active.  Used by the debug server's /input/text
+ * handler so it targets a *named* widget instead of "whatever was
+ * focused last", which previously corrupted dragon_host in NVS when
+ * the harness happened to be on Settings.
+ */
+lv_obj_t *ui_chat_get_input_textarea(void);

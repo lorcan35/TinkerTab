@@ -642,6 +642,16 @@ void ui_chat_destroy(void)
 
 bool ui_chat_is_active(void) { return s_active; }
 
+/* #299: scoped accessor for /input/text. Returns NULL when chat is not
+ * active so the debug handler can refuse with a clear error instead of
+ * defaulting to "whatever textarea was focused" (which previously
+ * landed in Settings.dragon_host overnight). */
+lv_obj_t *ui_chat_get_input_textarea(void)
+{
+    if (!s_active || !s_input) return NULL;
+    return chat_input_bar_get_textarea(s_input);
+}
+
 /* v4·D Phase 4d async refresh: called from the WS rx task after a receipt
  * is attached to the last assistant bubble.  Hops to the LVGL thread via
  * lv_async_call so the paint happens under the lock. */
