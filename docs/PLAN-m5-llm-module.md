@@ -73,6 +73,25 @@ We don't currently initialize Port C in firmware. **First firmware step:** stand
 
 ---
 
+## Non-negotiable: modular addon
+
+**Tab5 must never depend on the LLM Module being present.** This is the architectural constraint that shapes every design choice below.
+
+Translated into rules:
+
+1. **Boot path is module-agnostic.** Tab5 boots identically whether the module is plugged in, unplugged mid-flight, or never present. No "waiting for module" loops. No error dialogs. No log spam past a single "module not detected" debug line.
+2. **No Tab5-side feature regresses if the module is absent.** Local mode still works via Dragon. Cloud still works. Voice overlay still functions. The user must not lose anything by not having the module.
+3. **Capability detection is the gate.** On boot, probe with a short `sys.ping` (≤500 ms timeout). Present → light up addon paths. Absent → silent, no UI artifacts.
+4. **UI surfaces gate on detection.** Mode-sheet entry "Onboard" (if/when shipped) appears **grayed out with a subtitle "module not detected"** when absent — never just missing. Predictable UX.
+5. **Hot-unplug is graceful.** If the module disappears mid-session, in-flight inference fails-soft (toast + reconnect to Dragon path); no Tab5 crash, no LVGL screen-load fault.
+6. **No firmware build-time coupling.** The module-driver code lives behind a runtime check, not `#ifdef TAB5_HAS_M5_LLM`. Same firmware binary works with or without the module.
+
+This **rules out Option C** (replace Dragon entirely) and **constrains Option B** (capability-gated, never default).
+
+**Option A is already shape-correct** — failover sidecar that's silent when Dragon is up, so Tab5 with no module behaves identically to Tab5 with module + Dragon-up.
+
+---
+
 ## Three integration strategies
 
 The decision between these is a **product call**, not an engineering call. Each has different scope, latency, and complexity.
