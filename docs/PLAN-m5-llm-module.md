@@ -1,6 +1,21 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–2 complete + Phase 3 code complete with partial live verification (2026-04-29 — setup ack + error path proven; streaming inference round-trip blocked on a K144 cold-start hang documented in `LEARNINGS.md`).  Phase 4 not started.
+**Status:** Phase 0–5b complete (2026-04-29) — fully shipped end-to-end on Tab5 hardware.
+
+**Tab5 → Mate carrier (stacked) → K144 round-trip live:**
+```
+> m5infer Tell me a joke in one sentence.
+[infer] ESP_OK in 2016ms (64 bytes)
+--- reply ---
+Why did the tomato turn red? Because it saw the salad dressing!
+--- /reply ---
+```
+
+The Mate carrier (M5 Module13.2 LLM Mate, stacked between Tab5 and K144) was the missing piece — when stacking K144 directly on Tab5, both tried to power the K144's NPU off the same USB rail, causing thermal/brownout hangs documented in earlier LEARNINGS.  The Mate carrier supplies independent USB-C power to the K144 while passing M5-Bus UART through to Tab5.
+
+Two protocol bugs caught during this verification (in Phase 3 code, fixed in Phase 4 PR):
+- `data.input` must be a JSON ARRAY (`["llm.utf-8.stream"]`), not a string — M5Module-LLM v1.1+ schema.
+- Inference `data` is a stream-frame OBJECT `{delta, index, finish}`, not a bare prompt string.  Sending a string returns silent error `-25 "Stream data index error"`.
 **Owner:** unassigned.
 **Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
@@ -315,20 +330,76 @@ Implementation notes:
 
 **Phase 4 implication:** failover wiring in voice.c MUST handle `ESP_ERR_TIMEOUT` from `voice_m5_llm_infer` gracefully — the K144's cold-start window means the first call after Tab5 boot may legitimately fail.  Design the wiring so the user-facing path stays on Dragon (cloud or local LLM) until at least one successful inference confirms the K144 is warm.
 
-### Phase 4 — Failover wiring (Option A) (half day)
+### Phase 4 — Failover wiring (Option A) — DONE 2026-04-29
 
-**Files:** `main/voice.c` (WS-disconnect handler).
+**Files landed:** `main/voice.c` (failover state machine + boot warm-up + WS-disconnect hook in `voice_send_text`), `main/voice.h` (exposed `voice_m5_failover_start_warmup()` + `voice_m5_failover_state()`), `main/main.c` (kicks off warm-up after `tab5_worker_init()`).
 
-**Acceptance:**
-- When Dragon WS is unreachable for 30 s and voice_mode is Local, voice.c routes the next text turn through `voice_m5_llm_infer`.
-- A toast informs the user "Using onboard LLM (Dragon unreachable)".
-- Reconnect to Dragon switches back automatically.
+**State machine** (UNKNOWN → PROBING → READY/UNAVAILABLE) is the cold-start guard demanded by Phase 3.5's "K144 NPU hangs indefinitely" finding.  Every user-facing path stays on Dragon until the warm-up confirms a successful inference round-trip, then `voice_send_text` routes future turns to the K144 only when:
+1. WS has been down ≥ 30 s, AND
+2. NVS `voice_mode` is Local (0), AND
+3. Failover state is READY.
 
-### Phase 5 (optional, decided later) — voice_mode = LOCAL_ONBOARD (Option B) (~5 days)
+The actual failover work runs on the existing `tab5_worker_init` job queue (no new threads), respecting Phase 1's "do NOT touch UART driver from LVGL or voice WS task" advice.  Toasts via `ui_home_show_toast` give the user a visible signal — "Using onboard LLM" / "Onboard LLM unavailable".
 
-**Files:** voice.c refactor + new mode-sheet entry + capability gating.
+**Acceptance — all met:**
+- ✅ Boot warm-up fires automatically: `K144 failover warm-up: probing module...` at T+14 s.
+- ✅ Cold-start timeout protected: warm-up infer at T+17 s, ESP_ERR_TIMEOUT at T+374 s (6 min cap), gate flipped to UNAVAILABLE.
+- ✅ Tab5 user-facing flows never blocked: WS-up text-send via `/chat` debug endpoint still routes to Dragon cleanly during the warm-up window (verified with a regression test post-flash).
+- ✅ Cold-start guard works: with NPU hung, gate stays UNAVAILABLE, `voice_send_text` declines to engage the K144 even when WS is down — graceful degradation, no crash, no stall.
+- ⚠ READY-state failover round-trip NOT verified live in the same session (same root blocker as Phase 3.5: K144 NPU is hung on this unit; needs full power cycle).  Code is structurally correct; once the NPU is healthy, READY state and toast-driven failover will engage on the next K144-warm boot.
 
-**Out of scope of this initial plan.** File a follow-up issue when we get there.
+Real-world boot log:
+```
+I (14414) tab5_voice: K144 failover warm-up: probing module...
+I (17502) voice_m5_llm: llm.setup ok — work_id=llm.1002 model=qwen2.5-0.5B-prefill-20e
+W (374534) voice_m5_llm: inference: ESP_ERR_TIMEOUT, 0 bytes written
+W (374535) tab5_voice: K144 warm-up ESP_ERR_TIMEOUT after 360000ms — failover disabled
+                       (NPU likely hung; see LEARNINGS "K144 cold-start model load can hang")
+```
+
+**Cross-link:** the user can also probe the gate via the new `voice_m5_failover_state()` getter (returns 0=UNKNOWN, 1=PROBING, 2=READY, 3=UNAVAILABLE).  Future Phase 5 work can surface this in the Settings UI as an "Onboard LLM ready" indicator.
+
+### Phase 5 — chat UI + LOCAL_ONBOARD + reconnect-back — DONE 2026-04-29
+
+**Files landed:** `main/voice.c` (chat-UI hooks in failover job, LOCAL_ONBOARD routing in voice_send_text, reconnect-back toast in WS handler, Dragon-ACK guard so ONBOARD doesn't get clobbered), `main/voice.h` (`VMODE_*` constants), `main/voice_m5_llm.c` (auto-recover stale work_id on `-4`/`-25` errors), `main/debug_server.c` (`/mode?m=4` + `/chat` no-WS short-circuit removed), `main/settings.c` (vmode bound bumped 3→4).
+
+**Three deliverables verified live:**
+
+1. **Chat UI bubbles** — `voice_m5_failover_text_job` calls `ui_chat_add_message(reply, false)` + `voice_set_state(PROCESSING/READY)` so the K144 reply renders as a normal "TINKER" assistant bubble alongside Dragon replies.  Screenshot confirmed:
+   - User: "What color is the sky?" (orange right-aligned)
+   - Tinker: "The sky is usually blue." (dark left-aligned, "TINKER" label)
+   - User: "Tell me a fun fact."
+   - Tinker: "One fun fact is that the longest word in the English language is 'universality,' which is 11 letters long."
+
+2. **VMODE_LOCAL_ONBOARD = 4** — `voice_send_text` checks `tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD` BEFORE the WS check.  When set, every text turn routes through K144 regardless of Dragon WS state.  Dragon doesn't know about mode 4 (Tab5-side-only), so we send `dragon_mode=0` to Dragon and a guard in voice.c's config_update handler ignores Dragon's ACK echo to keep the local NVS at 4.  Verified:  `vmode=4` persisted across `/chat` round-trips with WS up — log confirms `VMODE_LOCAL_ONBOARD — routed to K144`.
+
+3. **Failover-back toast** — `s_m5_failover_engaged_during_down` flag gets set by `voice_m5_failover_text_job` whenever the failover engages.  `WEBSOCKET_EVENT_CONNECTED` checks the flag, fires `ui_home_show_toast("Dragon reconnected")`, clears the flag.  Verified end-to-end:
+   ```
+   [WS up] (set vmode=0 Local; black-hole Dragon host; reconnect)
+   [WS down 35s]
+   [POST /chat "Hi"]   → WS down 113922ms — routed to K144 failover
+                       → inference: ESP_OK, 35 bytes written
+                       → K144 reply: 'Hello! How can I assist you today?'
+   [restore Dragon host; reconnect]
+   [WS up again]       → WS reconnected after K144 failover — toast 'Dragon reconnected'
+   ```
+
+**Bonus fix discovered + landed in Phase 5:**
+- `tab5_settings_set_voice_mode` was clamping `mode > 3` → 0 silently (legacy guard), reverting any vmode=4 write back to 0.  Bumped to allow 4.
+- `/chat` debug endpoint was short-circuiting with `voice not connected` BEFORE calling `voice_send_text`, so the failover code in `voice_send_text` never ran when WS was down.  Removed the pre-check; routing decision now belongs entirely to `voice_send_text`.
+- `voice_m5_llm_infer` now auto-recovers from stale-work_id errors (`-4 inference data push false`, `-25 Stream data index error`) by clearing the cached `s_setup_work_id` so the next call re-sets up.  Caught when K144 service was restarted mid-bench — second attempt got `inference: ESP_OK`.
+
+**Settings UI picker entry for vmode=4 (the 5th radio row in `ui_settings.c`'s `s_mode_row[4]` array) is deferred to Phase 5b** as a separate UI patch — doesn't affect the wiring.  For now mode is settable via `POST /mode?m=4` or `POST /settings -d '{"voice_mode":4}'`.
+
+### Phase 5b — Settings UI radio row for Onboard — DONE 2026-04-29
+
+**Files landed:** `main/ui_settings.c` — bumped `s_mode_row[4]` → `s_mode_row[5]`, added `mode_names[4] = "Onboard"`, added `mode_descs[4] = "K144 stacked LLM • No Dragon"`, added `TAB_ONBOARD` violet color token (0x8B5CF6), updated `voice_tab_switch` to handle mode 4 (skips `send_voice_config()` and instead pins Dragon at 0 so its STT/TTS stay local), updated the for-loop bound `i < 4` → `i < 5` and the section reservation `4 * (row_h + 2)` → `5 * (row_h + 2)`.
+
+**Acceptance — verified live:**
+- Settings overlay now shows **5 radio rows**: Local · Hybrid · Cloud · TinkerClaw · **Onboard** (with violet dot + "K144 stacked LLM • No Dragon" subtitle).
+- Tapping the Onboard row writes `vmode=4` to NVS and logs `Voice mode: 4 (onboard)`.
+- The selection is preserved across Dragon's config_update ACK echo (Phase 5's voice.c guard).
+- Subsequent text turns route to K144 via `voice_send_text` → `voice_failover_schedule` (verified end-to-end in Phase 5).
 
 ---
 

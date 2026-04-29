@@ -22,40 +22,41 @@
  */
 
 #include "voice.h"
-#include "voice_codec.h"   /* #262: OPUS encode/decode wrapper */
-#include "voice_video.h"   /* #266: live JPEG streaming */
-#include "task_worker.h"   /* #133: defer queue-drain to avoid stack blow */
-#include "tool_log.h"      /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
-#include "md_strip.h"     /* #78 + #160: scrub <tool>...</tool> markers from streamed LLM text */
-#include <limits.h>  /* W14-L02: INT_MAX for WS size_t->int bound */
-#include "widget.h"
-#include "ui_voice.h"
-#include "ui_notes.h"
-#include "ui_chat.h"
-#include "audio.h"
-#include "config.h"
-#include "driver/i2s_common.h"  /* US-C13: i2s_channel_disable/enable for safe mic task shutdown */
-#include "settings.h"
-#include "ui_core.h"
 
-#include <string.h>
+#include <limits.h> /* W14-L02: INT_MAX for WS size_t->int bound */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
-
-#include "esp_log.h"
-#include "esp_check.h"
-#include "esp_timer.h"
-#include "esp_heap_caps.h"
-#include "esp_cache.h"
-#include "esp_crt_bundle.h"
-#include "esp_http_client.h"
-#include "esp_websocket_client.h"
+#include "audio.h"
 #include "cJSON.h"
+#include "config.h"
+#include "driver/i2s_common.h" /* US-C13: i2s_channel_disable/enable for safe mic task shutdown */
+#include "esp_cache.h"
+#include "esp_check.h"
+#include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_websocket_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "md_strip.h" /* #78 + #160: scrub <tool>...</tool> markers from streamed LLM text */
+#include "settings.h"
+#include "task_worker.h" /* #133: defer queue-drain to avoid stack blow */
+#include "tool_log.h"    /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
+#include "ui_chat.h"
+#include "ui_core.h"
+#include "ui_home.h" /* TT #317 Phase 4: ui_home_show_toast for failover UX */
+#include "ui_notes.h"
+#include "ui_voice.h"
+#include "voice_codec.h"  /* #262: OPUS encode/decode wrapper */
+#include "voice_m5_llm.h" /* TT #317 Phase 4: K144 LLM Module failover */
+#include "voice_video.h"  /* #266: live JPEG streaming */
+#include "widget.h"
 #include "wifi.h"
 
 static const char *TAG = "tab5_voice";
@@ -293,6 +294,31 @@ static char           s_dictation_summary[512] = {0};
 
 // Drop counter for audio frames lost under back-pressure (US-C04)
 static int s_audio_drop_count = 0;
+
+/* ---------------------------------------------------------------------- */
+/*  TT #317 Phase 4 — K144 LLM Module failover state                      */
+/*                                                                        */
+/*  When Dragon WS is unreachable for >= 30 s and the NVS voice_mode      */
+/*  setting is "Local" (0), we route the next text turn through           */
+/*  voice_m5_llm_infer() on the shared task_worker queue.  Engagement is  */
+/*  gated on a successful one-time warm-up so the K144's slow / hung      */
+/*  NPU cold-start (LEARNINGS: "K144 cold-start model load can hang for   */
+/*  5+ min") never blocks user-facing flows.                              */
+/* ---------------------------------------------------------------------- */
+typedef enum {
+   M5_FAIL_UNKNOWN,     /* boot default — warm-up not yet started */
+   M5_FAIL_PROBING,     /* warm-up job posted, infer in progress */
+   M5_FAIL_READY,       /* one successful infer completed */
+   M5_FAIL_UNAVAILABLE, /* probe/warm-up failed; failover disabled */
+} m5_failover_state_t;
+
+static volatile m5_failover_state_t s_m5_failover = M5_FAIL_UNKNOWN;
+static volatile bool s_m5_failover_in_flight = false;
+static volatile bool s_m5_failover_engaged_during_down = false; /* P5: triggers "Dragon reconnected" toast */
+static int64_t s_ws_last_alive_us = 0;
+#define M5_FAILOVER_GRACE_MS 30000       /* WS down this long before failover engages */
+#define M5_FAILOVER_INFER_TIMEOUT_S 60   /* per-turn budget */
+#define M5_FAILOVER_WARMUP_TIMEOUT_S 360 /* cold-start budget — 6 min cap */
 
 // Activity timestamp shared with stop_listening for response timeout
 static volatile int64_t s_last_activity_us = 0;
@@ -1270,7 +1296,10 @@ static void handle_text_message(const char *data, int len)
         cJSON *error = cJSON_GetObjectItem(root, "error");
         if (cJSON_IsString(error) && error->valuestring[0]) {
             ESP_LOGW(TAG, "Config update error from Dragon: %s", error->valuestring);
-            tab5_settings_set_voice_mode(0);
+            /* TT #317 Phase 5: don't clobber a Tab5-only ONBOARD pick. */
+            if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
+               tab5_settings_set_voice_mode(0);
+            }
             voice_async_refresh_badge();
             {
                 size_t elen = strlen(error->valuestring);
@@ -1293,8 +1322,15 @@ static void handle_text_message(const char *data, int len)
         }
         if (cJSON_IsNumber(vmode)) {
             uint8_t mode = (uint8_t)vmode->valueint;
-            tab5_settings_set_voice_mode(mode);
-            ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
+            /* TT #317 Phase 5: ONBOARD is Tab5-side-only.  Dragon never
+             * knows about it — its ACK always echoes 0/1/2/3.  If user
+             * has set ONBOARD locally, ignore Dragon's echo. */
+            if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
+               tab5_settings_set_voice_mode(mode);
+               ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
+            } else {
+               ESP_LOGD(TAG, "Config update: ignoring Dragon vmode=%d (we're in ONBOARD)", mode);
+            }
             voice_async_refresh_badge();
         }
         cJSON *config = cJSON_GetObjectItem(root, "config");
@@ -1803,6 +1839,20 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         /* #293: emit obs event for e2e harness. */
         extern void tab5_debug_obs_event(const char *kind, const char *detail);
         tab5_debug_obs_event("ws.connect", "");
+        /* TT #317 Phase 4: stamp WS-alive so the K144 failover gate can
+         * measure how long Dragon's been down before engaging. */
+        s_ws_last_alive_us = esp_timer_get_time();
+        /* TT #317 Phase 5: if a K144 failover engaged during the down
+         * period, surface "Dragon reconnected" so the user knows the
+         * next turn is back on the cloud/LAN brain. */
+        if (s_m5_failover_engaged_during_down) {
+           s_m5_failover_engaged_during_down = false;
+           ESP_LOGI(TAG, "WS reconnected after K144 failover — toast 'Dragon reconnected'");
+           if (tab5_ui_try_lock(100)) {
+              ui_home_show_toast("Dragon reconnected");
+              tab5_ui_unlock();
+           }
+        }
         /* US-C02: bump session gen on every successful connect. */
         s_session_gen++;
         s_handshake_fail_cnt = 0;
@@ -3380,10 +3430,155 @@ bool voice_get_llm_text_copy(char *buf, size_t len)
     return _voice_copy_under_lock(s_llm_text, buf, len);
 }
 
+/* ---------------------------------------------------------------------- */
+/*  TT #317 Phase 4 — K144 failover jobs (run on tab5_worker queue)       */
+/* ---------------------------------------------------------------------- */
+
+/* Boot warm-up: probe + one synchronous infer to map the LLM into NPU
+ * memory.  Up to 6 minutes — covers the K144's pathologically slow
+ * cold-start.  On success the failover gate flips to READY; on any
+ * failure (probe timeout, infer hang, NPU stall) it flips to UNAVAILABLE
+ * and stays there until the next reboot. */
+static void voice_m5_warmup_job(void *arg) {
+   (void)arg;
+   s_m5_failover = M5_FAIL_PROBING;
+   ESP_LOGI(TAG, "K144 failover warm-up: probing module...");
+   esp_err_t pe = voice_m5_llm_probe();
+   if (pe != ESP_OK) {
+      ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
+      s_m5_failover = M5_FAIL_UNAVAILABLE;
+      return;
+   }
+   char scratch[64];
+   int64_t t0 = esp_timer_get_time();
+   esp_err_t ie = voice_m5_llm_infer("hi", scratch, sizeof(scratch), M5_FAILOVER_WARMUP_TIMEOUT_S);
+   int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+   if (ie == ESP_OK) {
+      ESP_LOGI(TAG, "K144 warm in %lldms — failover available: '%s'", dt_ms, scratch);
+      s_m5_failover = M5_FAIL_READY;
+   } else {
+      ESP_LOGW(TAG,
+               "K144 warm-up %s after %lldms — failover disabled (NPU likely hung; "
+               "see LEARNINGS \"K144 cold-start model load can hang\")",
+               esp_err_to_name(ie), dt_ms);
+      s_m5_failover = M5_FAIL_UNAVAILABLE;
+   }
+}
+
+/* Per-turn job: caller mallocs the prompt, this job free()s it.
+ * Phase 5: full chat UI integration via ui_chat_add_message + voice_set_state
+ * so the K144 reply renders as a regular assistant bubble alongside Dragon
+ * replies, not a fly-by toast. */
+static void voice_m5_failover_text_job(void *arg) {
+   char *prompt = (char *)arg;
+   if (prompt == NULL) return;
+
+   s_m5_failover_in_flight = true;
+   s_m5_failover_engaged_during_down = true; /* P5: arms the reconnect-back toast */
+
+   /* Onboard-LLM badge.  voice_set_state(PROCESSING) drives the orb /
+    * status bar to "thinking..." just like a Dragon turn.  The USER
+    * bubble is added by the caller (/chat handler does
+    * `ui_chat_push_message("user", ...)` before voice_send_text),
+    * so we don't add it here — would duplicate. */
+   if (tab5_ui_try_lock(150)) {
+      ui_home_show_toast("Using onboard LLM");
+      tab5_ui_unlock();
+   }
+   voice_set_state(VOICE_STATE_PROCESSING, "K144");
+
+   char reply[1024] = {0};
+   esp_err_t ie = voice_m5_llm_infer(prompt, reply, sizeof(reply), M5_FAILOVER_INFER_TIMEOUT_S);
+
+   if (ie == ESP_OK && reply[0] != '\0') {
+      if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+      strncpy(s_llm_text, reply, MAX_TRANSCRIPT_LEN - 1);
+      s_llm_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+      if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+
+      if (tab5_ui_try_lock(150)) {
+         ui_chat_add_message(reply, /*is_user=*/false);
+         tab5_ui_unlock();
+      }
+      ESP_LOGI(TAG, "K144 reply: '%s'", reply);
+   } else {
+      if (tab5_ui_try_lock(150)) {
+         ui_home_show_toast("Onboard LLM unavailable");
+         tab5_ui_unlock();
+      }
+      ESP_LOGW(TAG, "K144 failover failed (%s) for prompt '%s'", esp_err_to_name(ie), prompt);
+      /* If the K144 has gone hung mid-session, lock failover off so we
+       * don't keep retrying every text turn. */
+      if (ie == ESP_ERR_TIMEOUT) s_m5_failover = M5_FAIL_UNAVAILABLE;
+   }
+
+   voice_set_state(VOICE_STATE_READY, NULL);
+   free(prompt);
+   s_m5_failover_in_flight = false;
+}
+
+/* Public wrapper — called by both voice_send_text and any future REPL.
+ * Returns ESP_OK if the failover was scheduled, otherwise propagates a
+ * status the caller can surface to the user. */
+static esp_err_t voice_failover_schedule(const char *text) {
+   if (s_m5_failover != M5_FAIL_READY) return ESP_ERR_INVALID_STATE;
+   if (s_m5_failover_in_flight) return ESP_ERR_NO_MEM;
+   char *copy = strdup(text);
+   if (copy == NULL) return ESP_ERR_NO_MEM;
+   esp_err_t qe = tab5_worker_enqueue(voice_m5_failover_text_job, copy, "m5_failover");
+   if (qe != ESP_OK) {
+      free(copy);
+      return qe;
+   }
+   return ESP_OK;
+}
+
+esp_err_t voice_m5_failover_start_warmup(void) {
+   if (s_m5_failover != M5_FAIL_UNKNOWN) return ESP_ERR_INVALID_STATE;
+   return tab5_worker_enqueue(voice_m5_warmup_job, NULL, "m5_warmup");
+}
+
+int voice_m5_failover_state(void) { return (int)s_m5_failover; }
+
 esp_err_t voice_send_text(const char *text)
 {
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
+
+    /* TT #317 Phase 5: VMODE_LOCAL_ONBOARD always routes through the K144,
+     * regardless of WS state.  Lets users go fully Dragon-free for chat;
+     * Dragon WS may still be up (used for things like tool calls in a
+     * future Phase 6) but text turns bypass it entirely. */
+    if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
+       esp_err_t fe = voice_failover_schedule(text);
+       if (fe == ESP_OK) {
+          ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD — routed to K144");
+          return ESP_OK;
+       }
+       ESP_LOGW(TAG, "VMODE_LOCAL_ONBOARD but K144 unavailable (%s) — refusing send", esp_err_to_name(fe));
+       if (tab5_ui_try_lock(100)) {
+          ui_home_show_toast("Onboard LLM not ready");
+          tab5_ui_unlock();
+       }
+       return fe;
+    }
+
+    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) {
+       /* TT #317 Phase 4: WS unreachable — try the K144 failover when
+        * the user is in Local mode and the K144 is warm.  Falling back
+        * to ESP_ERR_INVALID_STATE if any precondition fails preserves
+        * the existing contract for callers that don't yet handle K144. */
+       const int64_t now_us = esp_timer_get_time();
+       const int64_t down_ms = (s_ws_last_alive_us == 0) ? INT64_MAX : (now_us - s_ws_last_alive_us) / 1000;
+       if (down_ms >= M5_FAILOVER_GRACE_MS && tab5_settings_get_voice_mode() == VMODE_LOCAL) {
+          esp_err_t fe = voice_failover_schedule(text);
+          if (fe == ESP_OK) {
+             ESP_LOGI(TAG, "WS down %lldms — routed to K144 failover", down_ms);
+             return ESP_OK;
+          }
+          ESP_LOGW(TAG, "WS down but K144 failover unavailable (%s)", esp_err_to_name(fe));
+       }
+       return ESP_ERR_INVALID_STATE;
+    }
 
     /* Wave 13 H1: snapshot state once so the LISTENING branch and the
      * PROCESSING/SPEAKING branch below reason about the same tick. */

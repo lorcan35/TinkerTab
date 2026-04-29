@@ -42,6 +42,19 @@ typedef enum {
                          // start/stop messages, no LLM/TTS — pure relay.
 } voice_mode_t;
 
+/* TT #317 Phase 5: NVS `vmode` LLM-tier values.  Existing 0..3 documented
+ * in CLAUDE.md "NVS Settings Keys".  Tier 4 added for the K144 LLM Module:
+ * voice.c routes EVERY text turn through voice_m5_llm_infer (the K144
+ * sidecar) regardless of Dragon WS state, no 30-sec failover grace.
+ * Settings UI picker entry deferred to Phase 5b (the s_mode_row array
+ * is hardcoded to 4 rows; expanding to 5 is a separate UI patch).
+ * For now, set via:  POST /settings -d '{"voice_mode": 4}' */
+#define VMODE_LOCAL 0         /* Dragon Q6A only */
+#define VMODE_HYBRID 1        /* Dragon LLM, OpenRouter STT/TTS */
+#define VMODE_CLOUD 2         /* OpenRouter LLM/STT/TTS */
+#define VMODE_TINKERCLAW 3    /* TinkerClaw Gateway LLM */
+#define VMODE_LOCAL_ONBOARD 4 /* K144 stacked-on-Mate LLM, Dragon-free */
+
 // Callback for state changes (for UI updates)
 typedef void (*voice_state_cb_t)(voice_state_t new_state, const char *detail);
 
@@ -197,6 +210,27 @@ esp_err_t voice_start_reconnect_watchdog(void);
 
 /** Stop the reconnect watchdog task (it exits on its next check cycle). */
 void voice_stop_reconnect_watchdog(void);
+
+/** TT #317 Phase 4 — kick off the K144 LLM Module failover warm-up.
+ *  Call ONCE after `tab5_worker_init()` in `app_main()`.  The warm-up
+ *  runs on the shared worker queue: probes the K144, then issues one
+ *  blocking `voice_m5_llm_infer("hi", ...)` (up to 6 minutes) to map the
+ *  on-module model into NPU memory.  On success the failover gate flips
+ *  to READY; on any failure (probe timeout, infer hang, NPU stall) it
+ *  flips to UNAVAILABLE and stays there until the next reboot.
+ *
+ *  Returns `ESP_ERR_INVALID_STATE` if already started, `ESP_ERR_NO_MEM`
+ *  if the worker queue is full, otherwise propagates from the queue. */
+esp_err_t voice_m5_failover_start_warmup(void);
+
+/** TT #317 Phase 4 — current K144 failover gate.  Returns one of:
+ *  0 = UNKNOWN (warm-up not yet posted),
+ *  1 = PROBING (warm-up in flight),
+ *  2 = READY (failover available),
+ *  3 = UNAVAILABLE (probe/warm-up failed).
+ *  Diagnostic only — do NOT make user-facing decisions on this without
+ *  also checking `voice_is_connected()`. */
+int voice_m5_failover_state(void);
 
 /** Return true if the voice WebSocket is connected and the receive task is running. */
 bool voice_is_connected(void);

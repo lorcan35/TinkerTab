@@ -79,6 +79,7 @@ static inline void feed_wdt(void) {
 #define TAB_HYBRID   0xF59E0B
 #define TAB_CLOUD    0x3B82F6
 #define TAB_TINKERCLAW 0xF43F5E
+#define TAB_ONBOARD 0x8B5CF6 /* P5b: violet — distinct from existing four */
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
@@ -146,9 +147,10 @@ static lv_timer_t *s_bright_save_timer = NULL;
 static lv_timer_t *s_vol_save_timer    = NULL;
 
 /* Voice tab system */
-/* v5: four flat radio rows (no tabs). Indexed by voice_mode. */
-static lv_obj_t *s_mode_row[4] = {NULL, NULL, NULL, NULL};
-static lv_obj_t *s_mode_row_dot[4] = {NULL, NULL, NULL, NULL};
+/* v5: five flat radio rows (no tabs).  Indexed by voice_mode.
+ * Row 4 = Onboard (K144 stacked LLM via Mate carrier) — added in TT #317 P5b. */
+static lv_obj_t *s_mode_row[5] = {NULL, NULL, NULL, NULL, NULL};
+static lv_obj_t *s_mode_row_dot[5] = {NULL, NULL, NULL, NULL, NULL};
 /* Back-compat pointers kept = NULL so legacy references compile. */
 static lv_obj_t *s_tab_local      = NULL;
 static lv_obj_t *s_tab_hybrid     = NULL;
@@ -428,15 +430,25 @@ static void _mode_row_style(lv_obj_t *row, bool selected)
 static void voice_tab_switch(uint8_t new_tab)
 {
     if (new_tab == s_active_tab) return;
-    if (new_tab > 3) return;
+    if (new_tab > 4) return;
     _mode_row_style(s_mode_row[s_active_tab], false);
     _mode_row_style(s_mode_row[new_tab], true);
     s_active_tab = new_tab;
     tab5_settings_set_voice_mode(new_tab);
     ESP_LOGI(TAG, "Voice mode: %d (%s)", new_tab,
-             new_tab == 0 ? "local" : new_tab == 1 ? "hybrid" :
-             new_tab == 2 ? "cloud" : "tinkerclaw");
-    send_voice_config();
+             new_tab == 0   ? "local"
+             : new_tab == 1 ? "hybrid"
+             : new_tab == 2 ? "cloud"
+             : new_tab == 3 ? "tinkerclaw"
+                            : "onboard");
+    /* TT #317 P5b: ONBOARD is Tab5-side-only — Dragon doesn't know about
+     * mode 4 and would error-revert via config_update.  send_voice_config
+     * downgrades to mode 0 in that case via the same path /mode does. */
+    if (new_tab != 4) {
+       send_voice_config();
+    } else if (voice_is_connected()) {
+       voice_send_config_update(0, NULL); /* keep Dragon on local STT/TTS */
+    }
 }
 
 /* Audit E3 (2026-04-20): tapping TinkerClaw from Settings used to hot-switch
@@ -456,11 +468,11 @@ static void consent_cancel_tc_cb(void *ctx)
     /* No-op — voice_tab_switch never ran, so nothing to revert. */
 }
 
-/* Single click handler for all 4 radio rows. Mode index comes via user_data. */
+/* Single click handler for all 5 radio rows. Mode index comes via user_data. */
 static void cb_tab_local(lv_event_t *e)
 {
     intptr_t idx = (intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= 4) return;
+    if (idx < 0 || idx >= 5) return;
     if ((uint8_t)idx == 3 && s_active_tab != 3) {
         /* Going from any mode -> Agent: gate the switch behind the consent
          * modal.  If already on Agent the tap is a no-op and no modal is
@@ -1217,70 +1229,71 @@ lv_obj_t *ui_settings_create(void)
     /* v5 flat vertical radio rows. Each row = colored dot + name + desc;
      * selected row gets an amber left bar + faint amber wash. */
     s_active_tab = tab5_settings_get_voice_mode();
-    if (s_active_tab > 3) s_active_tab = 0;
+    if (s_active_tab > 4) s_active_tab = 0;
     {
-        static const char *mode_names[4] = { "Local", "Hybrid", "Cloud", "TinkerClaw" };
-        /* Cloud description reflects the LIVE llm_model from NVS so the
-         * row doesn't lie when the user has picked, say, gemini or gpt-4o
-         * instead of the original Claude default.  Condensed to the short
-         * form ("gemini-3-flash-preview" -> "gemini-3-flash-preview"
-         * truncated to fit the row). */
-        char cloud_desc[48] = "Cloud LLM";
-        {
-            char lm[64] = {0};
-            tab5_settings_get_llm_model(lm, sizeof(lm));
-            if (lm[0]) {
-                const char *slash = strchr(lm, '/');
-                const char *tail  = slash ? slash + 1 : lm;
-                snprintf(cloud_desc, sizeof(cloud_desc), "%.47s", tail);
-            }
-        }
-        const char *mode_descs[4] = {
-            "Moonshine \xe2\x80\xa2 NPU",
-            "Cloud STT/TTS",
-            cloud_desc,
-            "Agents \xe2\x80\xa2 Memory",
-        };
-        static const uint32_t mode_dot_col[4] = {
-            TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW,
-        };
-        const int row_h = 64;
-        const int row_w = CONTENT_W;
-        for (int i = 0; i < 4; i++) {
-            lv_obj_t *row = lv_obj_create(s_scroll);
-            lv_obj_remove_style_all(row);
-            lv_obj_set_pos(row, SIDE_PAD, y + i * (row_h + 2));
-            lv_obj_set_size(row, row_w, row_h);
-            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(row, cb_tab_local, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-            if (i < 3) {
-                lv_obj_set_style_border_color(row, lv_color_hex(HAIR_COLOR), 0);
-            }
-            lv_obj_t *dot = lv_obj_create(row);
-            lv_obj_remove_style_all(dot);
-            lv_obj_set_size(dot, 10, 10);
-            lv_obj_set_pos(dot, 18, (row_h - 10) / 2);
-            lv_obj_set_style_bg_color(dot, lv_color_hex(mode_dot_col[i]), 0);
-            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-            lv_obj_t *nm = lv_label_create(row);
-            lv_label_set_text(nm, mode_names[i]);
-            lv_obj_set_style_text_font(nm, FONT_BODY, 0);
-            lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
-            lv_obj_set_pos(nm, 44, 12);
-            lv_obj_t *dc = lv_label_create(row);
-            lv_label_set_text(dc, mode_descs[i]);
-            lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
-            lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
-            lv_obj_set_style_text_letter_space(dc, 2, 0);
-            lv_obj_set_pos(dc, 44, 38);
-            s_mode_row[i]     = row;
-            s_mode_row_dot[i] = dot;
-            if (i == s_active_tab) _mode_row_style(row, true);
-            feed_wdt();
-        }
-        y += 4 * (row_h + 2) + 12;
+       static const char *mode_names[5] = {"Local", "Hybrid", "Cloud", "TinkerClaw", "Onboard"};
+       /* Cloud description reflects the LIVE llm_model from NVS so the
+        * row doesn't lie when the user has picked, say, gemini or gpt-4o
+        * instead of the original Claude default.  Condensed to the short
+        * form ("gemini-3-flash-preview" -> "gemini-3-flash-preview"
+        * truncated to fit the row). */
+       char cloud_desc[48] = "Cloud LLM";
+       {
+          char lm[64] = {0};
+          tab5_settings_get_llm_model(lm, sizeof(lm));
+          if (lm[0]) {
+             const char *slash = strchr(lm, '/');
+             const char *tail = slash ? slash + 1 : lm;
+             snprintf(cloud_desc, sizeof(cloud_desc), "%.47s", tail);
+          }
+       }
+       const char *mode_descs[5] = {
+           "Moonshine \xe2\x80\xa2 NPU",
+           "Cloud STT/TTS",
+           cloud_desc,
+           "Agents \xe2\x80\xa2 Memory",
+           "K144 stacked LLM \xe2\x80\xa2 No Dragon",
+       };
+       static const uint32_t mode_dot_col[5] = {
+           TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW, TAB_ONBOARD,
+       };
+       const int row_h = 64;
+       const int row_w = CONTENT_W;
+       for (int i = 0; i < 5; i++) {
+          lv_obj_t *row = lv_obj_create(s_scroll);
+          lv_obj_remove_style_all(row);
+          lv_obj_set_pos(row, SIDE_PAD, y + i * (row_h + 2));
+          lv_obj_set_size(row, row_w, row_h);
+          lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+          lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+          lv_obj_add_event_cb(row, cb_tab_local, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+          if (i < 4) {
+             lv_obj_set_style_border_color(row, lv_color_hex(HAIR_COLOR), 0);
+          }
+          lv_obj_t *dot = lv_obj_create(row);
+          lv_obj_remove_style_all(dot);
+          lv_obj_set_size(dot, 10, 10);
+          lv_obj_set_pos(dot, 18, (row_h - 10) / 2);
+          lv_obj_set_style_bg_color(dot, lv_color_hex(mode_dot_col[i]), 0);
+          lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+          lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+          lv_obj_t *nm = lv_label_create(row);
+          lv_label_set_text(nm, mode_names[i]);
+          lv_obj_set_style_text_font(nm, FONT_BODY, 0);
+          lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
+          lv_obj_set_pos(nm, 44, 12);
+          lv_obj_t *dc = lv_label_create(row);
+          lv_label_set_text(dc, mode_descs[i]);
+          lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
+          lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
+          lv_obj_set_style_text_letter_space(dc, 2, 0);
+          lv_obj_set_pos(dc, 44, 38);
+          s_mode_row[i] = row;
+          s_mode_row_dot[i] = dot;
+          if (i == s_active_tab) _mode_row_style(row, true);
+          feed_wdt();
+       }
+       y += 5 * (row_h + 2) + 12;
     }
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
 
