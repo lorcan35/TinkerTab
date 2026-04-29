@@ -3483,6 +3483,8 @@ static void voice_m5_warmup_job(void *arg) {
    (void)arg;
    s_m5_failover = M5_FAIL_PROBING;
    ESP_LOGI(TAG, "K144 failover warm-up: probing module...");
+   extern void tab5_debug_obs_event(const char *kind, const char *detail);
+   tab5_debug_obs_event("m5.warmup", "start");
    esp_err_t pe = voice_m5_llm_probe();
    if (pe != ESP_OK) {
       ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
@@ -3496,12 +3498,14 @@ static void voice_m5_warmup_job(void *arg) {
    if (ie == ESP_OK) {
       ESP_LOGI(TAG, "K144 warm in %lldms — failover available: '%s'", dt_ms, scratch);
       s_m5_failover = M5_FAIL_READY;
+      tab5_debug_obs_event("m5.warmup", "ready");
    } else {
       ESP_LOGW(TAG,
                "K144 warm-up %s after %lldms — failover disabled (NPU likely hung; "
                "see LEARNINGS \"K144 cold-start model load can hang\")",
                esp_err_to_name(ie), dt_ms);
       s_m5_failover = M5_FAIL_UNAVAILABLE;
+      tab5_debug_obs_event("m5.warmup", "unavailable");
    }
 }
 
@@ -3832,12 +3836,16 @@ static esp_err_t voice_m5_chain_start(void) {
       tab5_ui_unlock();
    }
    ESP_LOGI(TAG, "chain start dispatched to drain task");
+   extern void tab5_debug_obs_event(const char *kind, const char *detail);
+   tab5_debug_obs_event("m5.chain", "start");
    return ESP_OK;
 }
 
 static esp_err_t voice_m5_chain_stop(void) {
    if (!s_chain_active) return ESP_ERR_INVALID_STATE;
    ESP_LOGI(TAG, "chain stop requested");
+   extern void tab5_debug_obs_event(const char *kind, const char *detail);
+   tab5_debug_obs_event("m5.chain", "stop");
    s_chain_stop_flag = true;
    /* Drain task notices stop_flag, tears down, transitions state to READY,
     * shows toast, deletes itself.  Do NOT free the handle here — the task

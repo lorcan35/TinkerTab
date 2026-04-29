@@ -133,6 +133,11 @@ class Tab5Driver:
     def voice_reconnect(self) -> dict:
         return self._post("/voice/reconnect").json()
 
+    # ── M5 / K144 chain (vmode=4) ─────────────────────────────────
+    def m5_status(self) -> dict:
+        """GET /m5 — chain_active, failover_state, uart_baud."""
+        return self._get("/m5").json()
+
     # ── Mode + settings ───────────────────────────────────────────
     def mode(self, m: int, model: str | None = None) -> dict:
         q = f"/mode?m={m}"

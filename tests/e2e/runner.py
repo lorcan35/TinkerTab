@@ -351,10 +351,94 @@ def story_stress(r: Runner) -> None:
            screenshot=False)
 
 
+def story_onboard(r: Runner) -> None:
+    """vmode=4 / K144 lifecycle smoke (no mic-driven voice; harness can't
+    speak).  Exercises:
+      - /m5 endpoint shape
+      - mode switch to 4 (Onboard)
+      - text path via /chat (routes through K144 failover)
+      - chain start via tap-mic (assert state transitions only)
+      - chain stop via /navigate?screen=home (Wave 3 lifecycle hook)
+
+    Skips if voice_m5_failover_state != 2 (READY) — the K144 may be
+    powered down or warming up.
+    """
+    tab5 = r.tab5
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+
+    # Pre-check K144 ready
+    def _gate(t):
+        m5 = t.m5_status()
+        return m5.get("failover_state") == 2
+    r.step("K144 failover ready (skip if not)", _gate, screenshot=False)
+
+    # Reset to clean state — navigate home which Wave 3's hook stops any
+    # leftover chain from a prior test session.
+    r.step("Navigate home (clear chain if leftover)",
+           lambda t: t.navigate("home").get("navigated") == "home",
+           screenshot=False)
+    time.sleep(3)
+
+    # /m5 endpoint shape sanity
+    r.step("/m5 returns chain_active=False at rest",
+           lambda t: t.m5_status().get("chain_active") is False)
+
+    # Mode switch to vmode=4
+    r.step("Switch to vmode=4 (Onboard)",
+           lambda t: t.mode(4).get("ok") is not False)
+
+    # Chain lifecycle: start via mic-tap in chat overlay.  We do this
+    # FIRST (before /chat) because /chat schedules a per-turn K144 infer
+    # that holds the UART mutex for 5-30 sec; tapping during that
+    # collides with chain_setup's mutex acquire and confuses timing.
+    r.step("Navigate to chat",
+           lambda t: t.navigate("chat").get("navigated") == "chat")
+    time.sleep(2)
+    r.step("Tap mic orb to start chain",
+           lambda t: t.tap(94, 1114) and True)
+    # voice_m5_chain_start sets s_chain_active=true SYNCHRONOUSLY before
+    # spawning the drain task — but the LVGL touch input occasionally
+    # eats the first tap after a navigation (audit P0 #4 side effect:
+    # audio_cb blocking the input device thread).  Accept either chain
+    # active OR voice in a transitional state as success.
+    time.sleep(3)
+    def _chain_or_processing(t):
+        m5 = t.m5_status()
+        vs = t.voice_state()
+        return (m5.get("chain_active") is True) or (vs.get("state_name") in
+            ("PROCESSING", "LISTENING"))
+    # Note: occasionally flaky — LVGL input drops first tap post-nav
+    # (audit #4 audio_cb side effect).  Accepts transitional voice state
+    # to be lenient; deeper fix is the audit #4 dispatch refactor.
+    r.step("/m5 chain_active or voice transitional",
+           _chain_or_processing)
+
+    # Stop chain via navigation hook (Wave 3 fix)
+    r.step("Navigate to home stops chain",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(4)
+    r.step("/m5 reports chain_active=False after nav-away",
+           lambda t: t.m5_status().get("chain_active") is False)
+
+    # Now exercise the text-path-through-K144 (failover_text_job)
+    # AFTER the chain teardown so they don't collide.
+    r.step("Send chat text 'hi' (routes through K144 failover)",
+           lambda t: t.chat("hi") and True)
+    time.sleep(5)
+    r.step("K144 still ready after text turn",
+           lambda t: t.m5_status().get("failover_state") == 2)
+
+    # Reset to default mode
+    r.step("Restore vmode=0 (Local)",
+           lambda t: t.mode(0).get("ok") is not False)
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
     "story_stress":  story_stress,
+    "story_onboard": story_onboard,
 }
 
 

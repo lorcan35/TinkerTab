@@ -10,52 +10,53 @@
  */
 
 #include "debug_server.h"
-#include "task_worker.h"
-#include "config.h"
-#include "esp_random.h"
-#include "pool_probe.h"
-#include "display.h"
-#include "sdcard.h"
-#include "voice.h"
-#include "ota.h"
-#include "camera.h"
-#include "settings.h"
-#include "ui_core.h"
-#include "ui_core.h"
-#include "ui_wifi.h"
-#include "ui_camera.h"
-#include "ui_settings.h"
-#include "ui_files.h"
-#include "ui_home.h"
-#include "ui_chat.h"
-#include "ui_keyboard.h"
-#include "widget.h"           /* Audit C4 (#202): widget_store_evictions_total */
-#include "chat_msg_store.h"   /* Audit B2 (#202): chat_store_evictions_total */
-#include "wifi.h"
-#include "battery.h"
 
-#include <string.h>
-#include <stdio.h>
 #include <dirent.h>
+#include <netinet/tcp.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
-#include "esp_http_server.h"
-#include "esp_log.h"
-#include "esp_system.h"
-#include "esp_heap_caps.h"
-#include "esp_timer.h"
+
+#include "battery.h"
+#include "cJSON.h"
+#include "camera.h"
+#include "chat_msg_store.h" /* Audit B2 (#202): chat_store_evictions_total */
+#include "config.h"
+#include "display.h"
+#include "driver/jpeg_encode.h"
 #include "esp_cache.h"
-#include "esp_lcd_mipi_dsi.h"
-#include "esp_netif.h"
 #include "esp_core_dump.h"
+#include "esp_heap_caps.h"
+#include "esp_http_server.h"
+#include "esp_lcd_mipi_dsi.h"
+#include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_partition.h"
+#include "esp_random.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/atomic.h"
 #include "freertos/task.h"
-#include "cJSON.h"
-#include "driver/jpeg_encode.h"
 #include "lwip/sockets.h"
 #include "lwip/tcp.h"
-#include <netinet/tcp.h>
+#include "ota.h"
+#include "pool_probe.h"
+#include "sdcard.h"
+#include "settings.h"
+#include "task_worker.h"
+#include "ui_camera.h"
+#include "ui_chat.h"
+#include "ui_core.h"
+#include "ui_files.h"
+#include "ui_home.h"
+#include "ui_keyboard.h"
+#include "ui_settings.h"
+#include "ui_wifi.h"
+#include "voice.h"
+#include "voice_m5_llm.h" /* TT #327 Wave 5: K144 baud + chain accessors for /m5 */
+#include "widget.h"       /* Audit C4 (#202): widget_store_evictions_total */
+#include "wifi.h"
 
 static const char *TAG = "debug_srv";
 
@@ -2342,6 +2343,30 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
     return ret;
 }
 
+/* ── M5 / K144 status endpoint (TT #327 Wave 5) ─────────────────────────
+ * GET /m5 — diagnostic snapshot of K144 LLM Module state.  Closes audit
+ * #18 (no remote diagnostic for "chain didn't start" / "is K144 warm").
+ */
+static esp_err_t m5_status_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "chain_active", voice_m5_chain_is_active());
+   int fs = voice_m5_failover_state();
+   cJSON_AddNumberToObject(root, "failover_state", fs);
+   const char *fs_names[] = {"unknown", "probing", "ready", "unavailable"};
+   cJSON_AddStringToObject(root, "failover_state_name", (fs >= 0 && fs <= 3) ? fs_names[fs] : "?");
+   cJSON_AddNumberToObject(root, "uart_baud", (double)voice_m5_llm_get_baud());
+
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+   esp_err_t ret = httpd_resp_sendstr(req, json);
+   free(json);
+   return ret;
+}
+
 /* ── Voice reconnect endpoint ─────────────────────────────────────────── */
 
 static esp_err_t voice_reconnect_handler(httpd_req_t *req)
@@ -3583,6 +3608,8 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_voice_reconnect = {
         .uri = "/voice/reconnect", .method = HTTP_POST, .handler = voice_reconnect_handler
     };
+    /* TT #327 Wave 5: K144 / chain diagnostic snapshot. */
+    const httpd_uri_t uri_m5_status = {.uri = "/m5", .method = HTTP_GET, .handler = m5_status_handler};
     /* #266: live video streaming control.  #268 adds /video/show + hide. */
     const httpd_uri_t uri_video_start = {
         .uri = "/video/start", .method = HTTP_POST, .handler = video_start_handler
@@ -3686,6 +3713,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_screen);
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
+    httpd_register_uri_handler(server, &uri_m5_status);
     httpd_register_uri_handler(server, &uri_video_start);
     httpd_register_uri_handler(server, &uri_video_stop);
     httpd_register_uri_handler(server, &uri_video_state);
