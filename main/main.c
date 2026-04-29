@@ -975,6 +975,39 @@ void app_main(void)
                     } else if (strcmp(cmd_buf, "m5release") == 0) {
                        voice_m5_llm_release();
                        printf("released\n");
+                    } else if (strncmp(cmd_buf, "m5recover ", 10) == 0) {
+                       uint32_t bps = (uint32_t)strtoul(cmd_buf + 10, NULL, 10);
+                       printf("[m5recover] probing %lu...\n", (unsigned long)bps);
+                       esp_err_t ie = voice_m5_llm_recover_baud(bps);
+                       printf("[m5recover] %s; now at %lu\n", esp_err_to_name(ie),
+                              (unsigned long)voice_m5_llm_get_baud());
+                    } else if (strncmp(cmd_buf, "m5baud ", 7) == 0) {
+                       /* Phase 6a bench: m5baud <bps> [N]
+                        *   switches Tab5+K144 to <bps> then runs N pings (default 50). */
+                       const char *args = cmd_buf + 7;
+                       uint32_t bps = (uint32_t)strtoul(args, NULL, 10);
+                       int loops = 50;
+                       const char *space = strchr(args, ' ');
+                       if (space) loops = atoi(space + 1);
+                       printf("[m5baud] requesting %lu (current %lu)...\n", (unsigned long)bps,
+                              (unsigned long)voice_m5_llm_get_baud());
+                       int64_t t0 = esp_timer_get_time();
+                       esp_err_t ie = voice_m5_llm_set_baud(bps);
+                       int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+                       printf("[m5baud] switch %s in %lldms; now at %lu\n", esp_err_to_name(ie), dt_ms,
+                              (unsigned long)voice_m5_llm_get_baud());
+                       /* Ping loop — count clean acks vs failures. */
+                       int ok_count = 0, fail_count = 0;
+                       int64_t t1 = esp_timer_get_time();
+                       for (int i = 0; i < loops; i++) {
+                          if (voice_m5_llm_probe() == ESP_OK)
+                             ok_count++;
+                          else
+                             fail_count++;
+                       }
+                       int64_t dt2_ms = (esp_timer_get_time() - t1) / 1000;
+                       printf("[m5baud] %d/%d pings OK in %lldms (avg %lldms/ping)\n", ok_count, ok_count + fail_count,
+                              dt2_ms, (ok_count + fail_count) ? dt2_ms / (ok_count + fail_count) : 0);
                     } else {
                        printf("Unknown: %s\n", cmd_buf);
                        printf(
@@ -982,7 +1015,7 @@ void app_main(void)
                            "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
                            "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
                            "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot,\n"
-                           "  m5ping, m5lscmd, m5infer <prompt>, m5release\n");
+                           "  m5ping, m5lscmd, m5infer <prompt>, m5release, m5baud <bps> [N]\n");
                     }
                 }
                 pos = 0;

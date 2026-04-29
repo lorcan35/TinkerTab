@@ -403,3 +403,162 @@ void voice_m5_llm_release(void) {
 }
 
 bool voice_m5_llm_is_ready(void) { return s_setup_work_id[0] != '\0'; }
+
+/* ---------------------------------------------------------------------- */
+/*  Phase 6a — adaptive baud negotiation                                  */
+/* ---------------------------------------------------------------------- */
+
+/* Helper: send sys.ping at current baud, return true on a clean ACK. */
+static bool ping_ok(void) {
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "baudping-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "ping",
+   };
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) return false;
+   int frame_len = send_and_recv_one_frame(tx, tx_len, M5_PING_TIMEOUT_MS);
+   if (frame_len < 0) return false;
+   m5_stackflow_response_t resp = {0};
+   if (m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp) != ESP_OK) {
+      return false;
+   }
+   bool ok = m5_stackflow_response_matches(&resp, request_id) && resp.error_code == 0;
+   m5_stackflow_response_free(&resp);
+   return ok;
+}
+
+esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
+   esp_err_t uart_err = ensure_uart();
+   if (uart_err != ESP_OK) return uart_err;
+
+   const uint32_t old_baud = tab5_port_c_uart_get_baud();
+   if (old_baud == new_baud) return ESP_OK;
+   ESP_LOGI(TAG, "Negotiating UART baud %lu -> %lu", (unsigned long)old_baud, (unsigned long)new_baud);
+
+   /* Build sys.uartsetup request.  K144 expects:
+    *   data = {baud, data_bits:8, stop_bits:1, parity:"n"} */
+   cJSON *data = cJSON_CreateObject();
+   if (data == NULL) return ESP_ERR_NO_MEM;
+   cJSON_AddNumberToObject(data, "baud", (double)new_baud);
+   cJSON_AddNumberToObject(data, "data_bits", 8);
+   cJSON_AddNumberToObject(data, "stop_bits", 1);
+   cJSON_AddStringToObject(data, "parity", "n");
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "uartsetup-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "uartsetup",
+       .object = "sys.uartsetup",
+       .data_json = data,
+   };
+
+   char tx[M5_TX_BUF_BYTES];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   cJSON_Delete(data);
+   if (tx_len < 0) {
+      ESP_LOGE(TAG, "build_request(uartsetup) failed");
+      return ESP_ERR_NO_MEM;
+   }
+
+   /* Send at OLD baud, wait for ACK at OLD baud. */
+   int frame_len = send_and_recv_one_frame(tx, tx_len, 2000);
+   if (frame_len < 0) {
+      ESP_LOGE(TAG, "uartsetup: no ACK at old baud %lu", (unsigned long)old_baud);
+      return ESP_ERR_TIMEOUT;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   if (m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp) != ESP_OK) {
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+   bool ack_ok = m5_stackflow_response_matches(&resp, request_id) && resp.error_code == 0;
+   m5_stackflow_response_free(&resp);
+   if (!ack_ok) {
+      ESP_LOGE(TAG, "uartsetup: K144 NACK'd baud-switch request");
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+
+   /* K144 has accepted the new baud and is switching its UART NOW.
+    * Give it a tiny window (StackFlow's serial_com module has TX-FIFO
+    * drain + reconfig to do) before we follow. */
+   vTaskDelay(pdMS_TO_TICKS(50));
+   esp_err_t bset = tab5_port_c_uart_set_baud(new_baud);
+   if (bset != ESP_OK) {
+      /* We can't switch — try to revert K144 by sending another uartsetup
+       * at the new baud (which we can't reach because we couldn't
+       * switch).  Best we can do is bail; user power-cycle resets K144. */
+      return bset;
+   }
+
+   /* Verify with up to 5 pings at the new baud.  K144's UART reconfig +
+    * StackFlow's serial_com module restart can take >100 ms.  Each ping
+    * has its own 500 ms timeout via M5_PING_TIMEOUT_MS; total budget
+    * here is ~2.5 s for the new baud to come up. */
+   vTaskDelay(pdMS_TO_TICKS(200));
+   for (int i = 0; i < 5; i++) {
+      if (ping_ok()) {
+         ESP_LOGI(TAG, "Baud switch OK — Tab5 + K144 now at %lu (verify took %d tries)", (unsigned long)new_baud,
+                  i + 1);
+         return ESP_OK;
+      }
+      vTaskDelay(pdMS_TO_TICKS(200));
+   }
+
+   ESP_LOGW(TAG, "Post-switch ping failed at %lu — K144 may be stranded; trying revert", (unsigned long)new_baud);
+   /* Tab5 reverts.  If K144 also auto-reverted on its own ack-timeout
+    * watchdog, the next ping at old_baud succeeds.  If K144 stayed at
+    * new_baud (observed in Phase 6a bench), neither baud will ping —
+    * we surface that loudly so the bench harness flags it. */
+   tab5_port_c_uart_set_baud(old_baud);
+   vTaskDelay(pdMS_TO_TICKS(200));
+   for (int i = 0; i < 3; i++) {
+      if (ping_ok()) {
+         ESP_LOGI(TAG, "Reverted to %lu — comms restored", (unsigned long)old_baud);
+         return ESP_ERR_INVALID_RESPONSE;
+      }
+      vTaskDelay(pdMS_TO_TICKS(200));
+   }
+   ESP_LOGE(TAG,
+            "K144 unreachable at both %lu and %lu — likely stranded at new baud; "
+            "use voice_m5_llm_recover_baud to retry, or power-cycle the K144",
+            (unsigned long)new_baud, (unsigned long)old_baud);
+   return ESP_ERR_INVALID_RESPONSE;
+}
+
+uint32_t voice_m5_llm_get_baud(void) { return tab5_port_c_uart_get_baud(); }
+
+esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
+   esp_err_t uart_err = ensure_uart();
+   if (uart_err != ESP_OK) return uart_err;
+   const uint32_t before = tab5_port_c_uart_get_baud();
+   ESP_LOGI(TAG, "Recovery: probing K144 at %lu (Tab5 was at %lu)", (unsigned long)candidate_baud,
+            (unsigned long)before);
+   tab5_port_c_uart_set_baud(candidate_baud);
+   vTaskDelay(pdMS_TO_TICKS(100));
+   bool found = false;
+   for (int i = 0; i < 3; i++) {
+      if (ping_ok()) {
+         found = true;
+         break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(150));
+   }
+   if (!found) {
+      ESP_LOGW(TAG, "Recovery: K144 not at %lu either", (unsigned long)candidate_baud);
+      tab5_port_c_uart_set_baud(before);
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+   ESP_LOGI(TAG, "Recovery: K144 found at %lu — reuniting both ends at 115200", (unsigned long)candidate_baud);
+   /* Now do a clean uartsetup back to 115200. */
+   esp_err_t ret = voice_m5_llm_set_baud(115200);
+   if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "Recovery: graceful switch back to 115200 failed (%s)", esp_err_to_name(ret));
+   }
+   return ret;
+}

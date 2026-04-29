@@ -17,6 +17,7 @@ static const char *TAG = "uart_port_c";
 #define PORT_C_UART_RX_BUF_SZ (256)
 
 static bool s_initialized = false;
+static uint32_t s_current_baud = TAB5_PORT_C_UART_BAUD;
 
 esp_err_t tab5_port_c_uart_init(void) {
    if (s_initialized) {
@@ -80,3 +81,20 @@ void tab5_port_c_flush(void) {
    if (!s_initialized) return;
    uart_flush_input(PORT_C_UART_PORT);
 }
+
+esp_err_t tab5_port_c_uart_set_baud(uint32_t baud) {
+   if (!s_initialized) return ESP_ERR_INVALID_STATE;
+   /* Drain TX before flipping so any in-flight bytes finish at the old
+    * baud — uart_set_baudrate doesn't wait for the FIFO. */
+   uart_wait_tx_done(PORT_C_UART_PORT, pdMS_TO_TICKS(50));
+   esp_err_t err = uart_set_baudrate(PORT_C_UART_PORT, baud);
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "uart_set_baudrate(%lu) failed: %s", (unsigned long)baud, esp_err_to_name(err));
+      return err;
+   }
+   s_current_baud = baud;
+   ESP_LOGI(TAG, "Port C UART baud → %lu", (unsigned long)baud);
+   return ESP_OK;
+}
+
+uint32_t tab5_port_c_uart_get_baud(void) { return s_current_baud; }
