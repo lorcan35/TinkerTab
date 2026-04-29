@@ -975,6 +975,46 @@ void app_main(void)
                     } else if (strcmp(cmd_buf, "m5release") == 0) {
                        voice_m5_llm_release();
                        printf("released\n");
+                    } else if (strncmp(cmd_buf, "m5tts ", 6) == 0) {
+                       const char *text = cmd_buf + 6;
+                       if (text[0] == '\0') {
+                          printf("usage: m5tts <text>\n");
+                       } else {
+                          const size_t cap_16k = 16000 * 8; /* 8 sec @ 16 kHz mono */
+                          int16_t *pcm16 =
+                              heap_caps_malloc(cap_16k * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                          if (!pcm16) {
+                             printf("alloc failed\n");
+                          } else {
+                             size_t got = 0;
+                             int64_t t0 = esp_timer_get_time();
+                             esp_err_t te = voice_m5_llm_tts(text, pcm16, cap_16k, &got, 30);
+                             int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+                             printf("[m5tts] %s in %lldms (%u samples = %u ms speech)\n", esp_err_to_name(te), dt_ms,
+                                    (unsigned)got, (unsigned)((got * 1000) / 16000));
+                             if (te == ESP_OK && got > 0) {
+                                /* Upsample 1:3 → 48k mono for tab5_audio_play_raw. */
+                                const size_t cap_48k = got * 3;
+                                int16_t *pcm48 =
+                                    heap_caps_malloc(cap_48k * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                                if (pcm48) {
+                                   for (size_t i = 0; i < got; i++) {
+                                      int16_t cur = pcm16[i];
+                                      int16_t nxt = (i + 1 < got) ? pcm16[i + 1] : cur;
+                                      for (int j = 0; j < 3; j++) {
+                                         pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
+                                      }
+                                   }
+                                   tab5_audio_play_raw(pcm48, cap_48k);
+                                   printf("[m5tts] played %u samples @ 48k\n", (unsigned)cap_48k);
+                                   heap_caps_free(pcm48);
+                                } else {
+                                   printf("[m5tts] 48k alloc failed\n");
+                                }
+                             }
+                             heap_caps_free(pcm16);
+                          }
+                       }
                     } else if (strncmp(cmd_buf, "m5recover ", 10) == 0) {
                        uint32_t bps = (uint32_t)strtoul(cmd_buf + 10, NULL, 10);
                        printf("[m5recover] probing %lu...\n", (unsigned long)bps);

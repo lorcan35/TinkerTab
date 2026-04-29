@@ -38,6 +38,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "m5_stackflow.h"
+#include "mbedtls/base64.h"
 #include "uart_port_c.h"
 
 static const char *TAG = "voice_m5_llm";
@@ -61,9 +62,12 @@ static const char *TAG = "voice_m5_llm";
 #define M5_PING_TIMEOUT_MS 500
 #define M5_SETUP_TIMEOUT_MS 5000
 
-/* RX scratch — sized for a few streaming chunks at a time.  Heap-allocated
- * once on first use, never freed. */
-#define M5_RX_BUF_BYTES 4096
+/* RX scratch — sized for a single TTS response frame (base64 of ~10 sec
+ * of 16 kHz mono PCM ≈ 425 KB; we cap at 8 sec so 340 KB covers it).
+ * Heap-allocated in PSRAM once on first use, never freed.  P6c bumped
+ * from 4 KB → 384 KB after observing TTS responses larger than the old
+ * cap caused the read loop to spin until the buffer filled with no '\n'. */
+#define M5_RX_BUF_BYTES (384 * 1024)
 
 /* TX scratch — request frames stay well under 1 KB.  Stack-allocated. */
 #define M5_TX_BUF_BYTES 1024
@@ -73,6 +77,7 @@ static const char *TAG = "voice_m5_llm";
 /* ---------------------------------------------------------------------- */
 
 static char s_setup_work_id[32];   /* "llm.NNNN" or empty if not set up */
+static char s_tts_work_id[32];     /* P6c — "tts.NNNN" or empty */
 static uint32_t s_request_counter; /* monotonic; wraps after 4 B requests */
 static char *s_rx_buf;             /* lazy heap_caps_malloc(SPIRAM) */
 static size_t s_rx_len;            /* bytes already in s_rx_buf */
@@ -532,6 +537,200 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
 }
 
 uint32_t voice_m5_llm_get_baud(void) { return tab5_port_c_uart_get_baud(); }
+
+/* ---------------------------------------------------------------------- */
+/*  Phase 6c — TTS                                                        */
+/* ---------------------------------------------------------------------- */
+
+#define M5_TTS_MODEL "single_speaker_english_fast"
+
+/* TTS setup: lazy, reuses work_id across calls (like LLM setup). */
+static esp_err_t do_tts_setup(void) {
+   if (s_tts_work_id[0] != '\0') return ESP_OK;
+
+   cJSON *data = cJSON_CreateObject();
+   if (data == NULL) return ESP_ERR_NO_MEM;
+   cJSON_AddStringToObject(data, "model", M5_TTS_MODEL);
+   /* tts.base64.wav → K144 returns headerless 16 kHz mono int16 PCM
+    * base64-encoded in `data` (despite the .wav suffix — confirmed via
+    * Phase 6c TCP spike). */
+   cJSON_AddStringToObject(data, "response_format", "tts.base64.wav");
+   cJSON *input_arr = cJSON_CreateArray();
+   cJSON_AddItemToArray(input_arr, cJSON_CreateString("tts.utf-8"));
+   cJSON_AddItemToObject(data, "input", input_arr);
+   cJSON_AddBoolToObject(data, "enoutput", true);
+   cJSON_AddBoolToObject(data, "enkws", false);
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "tts-setup-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "tts",
+       .action = "setup",
+       .object = "tts.setup",
+       .data_json = data,
+   };
+
+   char tx[M5_TX_BUF_BYTES];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   cJSON_Delete(data);
+   if (tx_len < 0) return ESP_ERR_NO_MEM;
+
+   int frame_len = send_and_recv_one_frame(tx, tx_len, M5_SETUP_TIMEOUT_MS);
+   if (frame_len < 0) return ESP_ERR_TIMEOUT;
+
+   m5_stackflow_response_t resp = {0};
+   if (m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp) != ESP_OK) {
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+   if (!m5_stackflow_response_matches(&resp, request_id) || resp.error_code != 0 || resp.work_id == NULL) {
+      ESP_LOGE(TAG, "tts.setup ack mismatch or err=%d msg='%s'", resp.error_code,
+               resp.error_message ? resp.error_message : "");
+      m5_stackflow_response_free(&resp);
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+   strncpy(s_tts_work_id, resp.work_id, sizeof(s_tts_work_id) - 1);
+   s_tts_work_id[sizeof(s_tts_work_id) - 1] = '\0';
+   ESP_LOGI(TAG, "tts.setup ok — work_id=%s model=%s", s_tts_work_id, M5_TTS_MODEL);
+   m5_stackflow_response_free(&resp);
+   return ESP_OK;
+}
+
+esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_samples, size_t *out_samples,
+                           uint32_t timeout_s) {
+   if (text == NULL || text[0] == '\0' || pcm_out == NULL || out_samples == NULL || max_samples == 0) {
+      return ESP_ERR_INVALID_ARG;
+   }
+   *out_samples = 0;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_s * 1000 * 1000;
+   err = do_tts_setup();
+   if (err != ESP_OK) return err;
+   if (esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
+
+   /* Send inference: tts.utf-8 with text as bare string (per K144 docs). */
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "tts-infer-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = s_tts_work_id,
+       .action = "inference",
+       .object = "tts.utf-8",
+       .data_string = text,
+   };
+   char tx[M5_TX_BUF_BYTES];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) return ESP_ERR_NO_MEM;
+   tab5_port_c_flush();
+   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) return ESP_FAIL;
+
+   /* Drain frames; concatenate base64 strings until parse-success-but-no-more
+    * arrives.  K144's `tts.base64.wav` (non-stream) emits a single
+    * response per inference with the entire base64 in `data` as a string.
+    * Future enhancement: tts.base64.wav.stream for token-by-token. */
+   if (ensure_rx_buf() != ESP_OK) return ESP_ERR_NO_MEM;
+   s_rx_len = 0;
+
+   /* Allocate a PSRAM scratch for accumulated base64 (~256 KB max).  The
+    * K144's TTS for short utterances stays under 50 KB base64; alloc a
+    * generous cap to handle longer prompts. */
+   const size_t b64_cap = 256 * 1024;
+   char *b64 = heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (b64 == NULL) return ESP_ERR_NO_MEM;
+   size_t b64_len = 0;
+
+   while (esp_timer_get_time() < deadline_us) {
+      char *nl = memchr(s_rx_buf, '\n', s_rx_len);
+      while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && esp_timer_get_time() < deadline_us) {
+         uint32_t budget_ms = (uint32_t)((deadline_us - esp_timer_get_time()) / 1000);
+         if (budget_ms > 200) budget_ms = 200;
+         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
+         if (n > 0) {
+            s_rx_len += (size_t)n;
+            nl = memchr(s_rx_buf, '\n', s_rx_len);
+         }
+      }
+      if (nl == NULL) break;
+
+      size_t frame_len = (size_t)(nl - s_rx_buf);
+      m5_stackflow_response_t resp = {0};
+      esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, frame_len, &resp);
+      size_t consumed = frame_len + 1;
+      if (consumed < s_rx_len) {
+         memmove(s_rx_buf, s_rx_buf + consumed, s_rx_len - consumed);
+      }
+      s_rx_len -= consumed;
+
+      if (pe != ESP_OK) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      if (!m5_stackflow_response_matches(&resp, request_id)) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      if (resp.error_code != 0) {
+         ESP_LOGE(TAG, "K144 tts error %d: %s", resp.error_code, resp.error_message ? resp.error_message : "");
+         if (resp.error_code == -4 || resp.error_code == -25) {
+            s_tts_work_id[0] = '\0';
+         }
+         m5_stackflow_response_free(&resp);
+         heap_caps_free(b64);
+         return ESP_ERR_INVALID_RESPONSE;
+      }
+      /* Audio comes in `data` — could be a string (whole base64) or a
+       * stream-frame {delta, index, finish}.  Handle both. */
+      if (resp.data != NULL) {
+         const char *delta_str = NULL;
+         bool finished = false;
+         if (cJSON_IsString(resp.data)) {
+            delta_str = resp.data->valuestring;
+            finished = true; /* non-stream → single shot */
+         } else if (cJSON_IsObject(resp.data)) {
+            const cJSON *d = cJSON_GetObjectItemCaseSensitive(resp.data, "delta");
+            if (cJSON_IsString(d)) delta_str = d->valuestring;
+            const cJSON *fin = cJSON_GetObjectItemCaseSensitive(resp.data, "finish");
+            finished = cJSON_IsTrue(fin);
+         }
+         if (delta_str != NULL) {
+            size_t add = strlen(delta_str);
+            if (b64_len + add < b64_cap) {
+               memcpy(b64 + b64_len, delta_str, add);
+               b64_len += add;
+            }
+         }
+         m5_stackflow_response_free(&resp);
+         if (finished) break;
+      } else {
+         m5_stackflow_response_free(&resp);
+      }
+   }
+
+   if (b64_len == 0) {
+      heap_caps_free(b64);
+      ESP_LOGW(TAG, "tts: no audio data received");
+      return ESP_ERR_TIMEOUT;
+   }
+
+   /* Decode base64 → raw PCM (bytes).  pcm_out capacity in samples,
+    * 2 bytes per sample. */
+   size_t pcm_bytes = 0;
+   const size_t pcm_cap_bytes = max_samples * sizeof(int16_t);
+   int dec =
+       mbedtls_base64_decode((unsigned char *)pcm_out, pcm_cap_bytes, &pcm_bytes, (const unsigned char *)b64, b64_len);
+   heap_caps_free(b64);
+   if (dec != 0) {
+      ESP_LOGE(TAG, "base64 decode failed: -0x%04x (b64_len=%u)", -dec, (unsigned)b64_len);
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+   *out_samples = pcm_bytes / sizeof(int16_t);
+   ESP_LOGI(TAG, "tts: %u samples @ 16 kHz mono (%u ms speech)", (unsigned)*out_samples,
+            (unsigned)((*out_samples * 1000) / 16000));
+   return ESP_OK;
+}
 
 esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
    esp_err_t uart_err = ensure_uart();

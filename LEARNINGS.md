@@ -69,6 +69,36 @@ Every entry here was learned the hard way. Read this before touching the codebas
   - Acts as a passive heatsink for the K144's metal frame
 - **Prevention:** Document the carrier-required topology in `docs/PLAN-m5-llm-module.md` — direct K144-on-Tab5 stacking is NOT a supported config.  When verifying K144 setup against Tab5, the bench rig must be:  Tab5 base → Mate carrier (M5-Bus) → K144 (FPC) → top USB-C powering K144.
 
+### K144 ASR is subscription-only — no push-PCM-via-JSON path exists
+- **Date:** 2026-04-29
+- **Symptom:** Phase 6b ("Tab5 mic → K144 ASR → text") spike attempted to send base64-encoded WAV in an `inference` call to the `asr` unit.  Setup OK with `input=["asr.audio.wav.base64.stream"]` (got valid `work_id=asr.NNNN`), but the inference always failed: `-23 "Base64 decoding error"` (single frame) or silent drop (chunked stream).
+- **Root Cause:** The K144's StackFlow architecture is **subscription-based** for audio, not push-based.  Reading the K144 source (`projects/llm_framework/main_audio/src/main.cpp`) shows:
+  - The `audio` unit captures PCM from the K144's hardware ALSA codec (`hw_cap` thread)
+  - It PUBLISHES raw PCM bytes to a ZMQ topic `ipc:///tmp/llm/pcm.cap.socket` (the `sys.pcm` channel)
+  - ASR / Whisper / KWS / VAD all SUBSCRIBE to that topic
+  - The audio unit only exposes `queue_play`, `play_stop`, `queue_play_stop` RPC actions — **no documented "push capture data" action**
+  - No StackFlow protocol path lets a remote client push PCM into the `sys.pcm` channel via UART or TCP JSON
+- **Three possible workarounds (all K144-side or hardware refactor):**
+  1. **Custom K144 service** — write a Linux daemon (~50 LOC C++) that reads PCM from `/dev/ttyS1` and ZMQ-publishes to `ipc:///tmp/llm/pcm.cap.socket`.  Works but requires K144-side code on a device M5 ships fixed.
+  2. **Audio.cap_channel override** — config the audio module to read from a named pipe instead of ALSA, then Tab5 writes PCM into that pipe over UART.  More invasive than #1.
+  3. **I2S-over-M5-Bus** — wire Tab5's I2S through the Mate carrier to feed the K144's hardware audio codec directly.  Hardware refactor; bypasses StackFlow protocol entirely.
+- **Fix (today):** None.  Phase 6b deferred indefinitely; Tab5's existing Dragon-side STT (Moonshine) covers voice-input use cases.  Phase 6c (TTS) lands fine because TTS is one-way (text in via JSON works; audio out is just streaming back the synthesized bytes).
+- **Prevention:** When evaluating M5 / StackFlow integrations, **read the unit source for `register_rpc_action` calls before assuming an inference action exists**.  StackFlow units that expose only `setup`/`exit`/`pause`/`work` (no `inference`) are subscription-driven and won't accept inline data via JSON.  Documented inference paths exist for: LLM (Phase 3), TTS (Phase 6c), VLM, MeloTTS.  Subscription-only paths: ASR, Whisper, KWS, VAD, Audio, Camera, YOLO.
+
+### K144 TTS returns headerless 16 kHz mono PCM (not RIFF WAV) despite "tts.base64.wav" name
+- **Date:** 2026-04-29
+- **Symptom:** Setting `response_format = "tts.base64.wav"` on the K144 TTS unit and base64-decoding the response yielded ~32 KB of bytes that didn't validate as a WAV file (`file` reported "data", not "RIFF").
+- **Root Cause:** The `wav` suffix in `tts.base64.wav` is a misnomer in the K144's StackFlow API.  The K144 emits **headerless 16-bit signed-LE mono PCM at 16 kHz** — the format the model produces internally, NOT a RIFF-wrapped WAV file.  Confirmed by passing the bytes through `ffmpeg -f s16le -ar 16000 -ac 1` which validated as proper PCM.
+- **Fix:** Tab5 firmware (`voice_m5_llm_tts`) treats the decoded base64 as raw int16 PCM samples and upsamples 1:3 (16 kHz → 48 kHz) before handing to `tab5_audio_play_raw`.  Documented in `voice_m5_llm.h` API contract.
+- **Prevention:** When a K144 `response_format` mentions `wav` but you don't see a RIFF magic, treat it as raw PCM at the documented sample rate.  Don't try to skip a WAV header that isn't there.
+
+### K144 voice_m5_llm rx buffer must be sized for full TTS response (~384 KB PSRAM)
+- **Date:** 2026-04-29
+- **Symptom:** Phase 6c TTS calls timed out silently with `tts: no audio data received` even though K144 logged the message and synthesized audio.
+- **Root Cause:** `voice_m5_llm.c`'s `M5_RX_BUF_BYTES` was originally 4 KB (sized for short LLM streaming chunks).  TTS responses are SINGLE frames carrying the entire base64-encoded audio (~30 KB+ for 1 sec of speech).  When a frame exceeded 4 KB, the rx buffer filled before any newline appeared, the inner `recv` loop exited on `s_rx_len >= cap` not on `nl != NULL`, and the outer loop broke out before parsing.
+- **Fix:** Bumped `M5_RX_BUF_BYTES` to 384 KB (PSRAM-allocated, lazy first-use), enough for ~8 sec of 16 kHz mono PCM base64-encoded.
+- **Prevention:** When adding K144 actions that return large base64 payloads (TTS, VLM, future video frames), size the rx buffer for the worst-case single-frame response, not the smallest streaming chunk.  All transports here are PSRAM-backed; over-sizing is cheap.
+
 ### K144 inference data shape is stream-frame OBJECT, not a string
 - **Date:** 2026-04-29
 - **Symptom:** Phase 3 / 4 inference attempts returned `error.code: -25 "Stream data index error"` from the K144 even when setup succeeded and the model was confirmed loaded.

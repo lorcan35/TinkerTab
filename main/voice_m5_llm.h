@@ -140,6 +140,38 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud);
  */
 uint32_t voice_m5_llm_get_baud(void);
 
+/* ---------------------------------------------------------------------- */
+/*  Phase 6c — Text-to-Speech via the K144 TTS unit                       */
+/*                                                                        */
+/*  K144 has the `single_speaker_english_fast` voice model (English) and  */
+/*  `melotts` (Chinese) installed.  Setup with                            */
+/*    response_format = "tts.base64.wav"                                  */
+/*  returns a single inference response carrying base64-encoded raw       */
+/*  16-bit signed-LE PCM at 16 kHz mono in `data` (despite the .wav name  */
+/*  the K144 emits headerless PCM, not RIFF — confirmed via Phase 6c      */
+/*  TCP spike).                                                           */
+/*                                                                        */
+/*  Tab5's speaker pipeline runs at 48 kHz; callers should upsample 1:3   */
+/*  before piping into `tab5_audio_play_raw`.                             */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * @brief Synthesize @p text into 16 kHz mono PCM via the K144 TTS unit.
+ *
+ * @param text       Text to speak.  Must be non-NULL/non-empty.
+ * @param pcm_out    Caller buffer for 16 kHz mono int16_t samples.
+ * @param max_samples Capacity of @p pcm_out in samples.
+ * @param[out] out_samples  Number of samples actually written.
+ * @param timeout_s  Hard cap for the full setup+inference round-trip.
+ *
+ * @return ESP_OK on success;
+ *         ESP_ERR_TIMEOUT if the K144 doesn't finish within timeout;
+ *         ESP_ERR_INVALID_ARG on NULL inputs;
+ *         ESP_ERR_INVALID_RESPONSE on parse / base64 / non-zero error from K144.
+ */
+esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_samples, size_t *out_samples,
+                           uint32_t timeout_s);
+
 /**
  * @brief Recovery: try @p candidate_baud blindly to find a stranded K144.
  *
