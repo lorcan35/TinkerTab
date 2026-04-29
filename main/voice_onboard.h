@@ -22,6 +22,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "esp_err.h"
 
@@ -86,6 +87,12 @@ esp_err_t voice_onboard_chain_stop(void);
 /** True while the chain drain task is alive (set in chain_start, cleared
  *  in drain task on exit). */
 bool voice_onboard_chain_active(void);
+
+/** Wall-clock ms since the chain started.  0 if chain isn't active.
+ *  Diagnostic — debug server `/m5` exposes it so a stuck chain ("active
+ *  for 600s without a response") is observable remotely without a
+ *  serial cable. */
+int64_t voice_onboard_chain_uptime_ms(void);
 
 #ifdef __cplusplus
 }

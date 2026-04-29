@@ -2353,6 +2353,9 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
 
    cJSON *root = cJSON_CreateObject();
    cJSON_AddBoolToObject(root, "chain_active", voice_onboard_chain_active());
+   /* Wave 7: chain_uptime_ms — 0 if not active.  Lets a remote operator
+    * spot a stuck chain without a serial cable. */
+   cJSON_AddNumberToObject(root, "chain_uptime_ms", (double)voice_onboard_chain_uptime_ms());
    int fs = voice_onboard_failover_state();
    cJSON_AddNumberToObject(root, "failover_state", fs);
    const char *fs_names[] = {"unknown", "probing", "ready", "unavailable"};

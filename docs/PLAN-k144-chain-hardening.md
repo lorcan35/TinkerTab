@@ -16,16 +16,18 @@
 
 ## Wave overview
 
-| Wave | Theme | PRs | Closes audit items | Depends on |
+| Wave | Theme | Status | Commit | Closes audit items |
 |---|---|---|---|---|
-| 1 | UART discipline + state hygiene + double-fire fix | 1 | #1, #3, #11, #12, #15 | — |
-| 2 | Mode awareness + privacy polish | 1 | #5, #6, #9, #10 | — |
-| 3 | TTS Eigen workaround + chain navigation lifecycle | 2 | #4, #2, #8, #16 | Wave 1 mutex |
-| 4a | stop_flag in chain_setup_unit + chain-aware tap | 1 | #13 | — |
-| 4b | Architecture extract — `voice_onboard` module (DEFERRED) | follow-up | #7, #14, P2-Arch-2.2 | — |
-| 5 | Observability + e2e tests | 1-2 | #17, #18 | — |
+| 1 | UART discipline + state hygiene + double-fire fix | **SHIPPED** | `900caa4` | #1, #3, #11, #12, #15 |
+| 2 | Mode awareness + privacy polish | **SHIPPED** | `cd75662` | #5, #6, #9, #10 |
+| 3 | TTS Eigen workaround + chain navigation lifecycle | **SHIPPED** | `1b2fa71` | #2, #16 (#4 mitigated as side-effect — TTS off drain path) |
+| 4a | stop_flag in chain_setup_unit + chain-aware tap | **SHIPPED** | `bc1012f` | #13 |
+| 4b | Architecture extract — `voice_onboard` module | **SHIPPED** | `b978ffb` | #7, #14, P2-Arch-2.2 |
+| 5 | Observability + e2e tests | **SHIPPED** | `7c2b056` | #17, #18 |
+| 6 | LLM streaming bubble parity + pill smooth slide | **SHIPPED** | `3c614f4` | #8 + UX polish |
+| 7 | Chain UX polish + dead-code cleanup | **SHIPPED** | (this commit) | UX-#4 (error toasts) + `/m5.chain_uptime_ms` + cleanup |
 
-Total scope: ~7 PRs over 5 waves.  Each wave references TT #317 + the new chain-hardening tracking issue (filed at start of Wave 1).
+**Total:** 14 of 18 audit findings closed across 8 commits on PR #326.  Remaining items are P2 polish (chain dispatch OCP gap; touch-after-nav LVGL flake) tracked as backlog.  Each wave referenced TT #317 + TT #327 in its commits.
 
 ---
 

@@ -58,6 +58,7 @@ static volatile bool s_m5_failover_engaged_during_down = false; /* triggers "Dra
 static volatile bool s_chain_active = false;
 static voice_m5_chain_handle_t *s_chain_handle = NULL;
 static volatile bool s_chain_stop_flag = false;
+static int64_t s_chain_started_us = 0; /* Wave 7: set on chain_start, cleared on drain exit */
 
 /* Per-utterance accumulators — reset on every `finish=true` so multiple
  * back-to-back utterances within one chain session each get their own
@@ -307,29 +308,11 @@ static void onboard_text_callback(const char *text, bool from_llm, bool finish, 
    }
 }
 
-/* Dead path post-Wave-3a (chain no longer subscribes to tts.setup), but
- * kept as a no-op-safe callback so chain_run's audio-cb pointer is
- * non-NULL.  Future revival path if the K144 SummerTTS crash gets
- * fixed upstream. */
-static void onboard_audio_callback(const int16_t *pcm, size_t samples, void *user) {
-   (void)user;
-   if (samples == 0 || pcm == NULL) return;
-   const size_t cap_48k = samples * 3;
-   int16_t *pcm48 = heap_caps_malloc(cap_48k * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (pcm48 == NULL) {
-      ESP_LOGW(TAG, "chain TTS: 48k upsample alloc failed (%u samples)", (unsigned)cap_48k);
-      return;
-   }
-   for (size_t i = 0; i < samples; i++) {
-      const int16_t cur = pcm[i];
-      const int16_t nxt = (i + 1 < samples) ? pcm[i + 1] : cur;
-      for (int j = 0; j < 3; j++) {
-         pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
-      }
-   }
-   tab5_audio_play_raw(pcm48, cap_48k);
-   heap_caps_free(pcm48);
-}
+/* No audio callback — Wave 3a stripped tts.setup from the chain after
+ * the K144 SummerTTS Eigen crash documented in LEARNINGS.  Chain_run
+ * accepts a NULL audio_cb (unmatched tts frames are dropped in the
+ * dispatch).  Per-utterance synth lives in onboard_chain_tts_job
+ * instead. */
 
 static void onboard_free_buffers(void) {
    if (s_chain_asr_buf) {
@@ -376,8 +359,37 @@ static void onboard_chain_drain_task(void *arg) {
       onboard_free_buffers();
       s_chain_active = false;
       voice_set_state(VOICE_STATE_READY, NULL);
-      if (tab5_ui_try_lock(150)) {
-         ui_home_show_toast("Onboard chain unavailable");
+
+      /* Wave 7: map common failure modes to specific user toasts so the
+       * user knows what to do, not just that it didn't work.  Audit
+       * UX #4: the previous generic "Onboard chain unavailable" was
+       * not actionable. */
+      const char *toast;
+      switch (e) {
+         case ESP_ERR_TIMEOUT:
+            /* No ACK from K144 within the setup window — module wedged
+             * (NPU hang, USB-C unplugged, services restarting). */
+            toast = "K144 not responding — power-cycle?";
+            break;
+         case ESP_ERR_INVALID_RESPONSE:
+            /* K144 NACK'd a setup (e.g. -21 task full from previous
+             * accumulated work_ids).  Service restart usually clears. */
+            toast = "K144 busy — restart services?";
+            break;
+         case ESP_ERR_INVALID_STATE:
+            /* User tapped stop during NPU cold-start; chain_setup_unit
+             * bailed early via stop_flag.  Quiet return. */
+            toast = NULL;
+            break;
+         case ESP_ERR_NO_MEM:
+            toast = "Out of memory for K144 chain";
+            break;
+         default:
+            toast = "Onboard chain unavailable";
+            break;
+      }
+      if (toast != NULL && tab5_ui_try_lock(150)) {
+         ui_home_show_toast(toast);
          tab5_ui_unlock();
       }
       vTaskDelete(NULL);
@@ -392,8 +404,7 @@ static void onboard_chain_drain_task(void *arg) {
    ESP_LOGI(TAG, "chain ready — entering drain loop");
 
    /* 10-min hard cap; user-initiated stop happens earlier via stop_flag. */
-   esp_err_t re =
-       voice_m5_llm_chain_run(h, onboard_text_callback, onboard_audio_callback, NULL, &s_chain_stop_flag, 600);
+   esp_err_t re = voice_m5_llm_chain_run(h, onboard_text_callback, /*audio_cb=*/NULL, NULL, &s_chain_stop_flag, 600);
    ESP_LOGI(TAG, "chain drain exited: %s", esp_err_to_name(re));
 
    voice_m5_llm_chain_teardown(h);
@@ -403,6 +414,7 @@ static void onboard_chain_drain_task(void *arg) {
     * voice_onboard_chain_start sees freed buffers (onboard_alloc_buffers
     * will re-alloc cleanly) rather than the prior session's still-mapped
     * pointers. */
+   s_chain_started_us = 0;
    s_chain_active = false;
 
    voice_set_state(VOICE_STATE_READY, NULL);
@@ -427,6 +439,7 @@ esp_err_t voice_onboard_chain_start(void) {
    }
 
    s_chain_stop_flag = false;
+   s_chain_started_us = esp_timer_get_time();
    s_chain_active = true;
 
    /* Returns immediately; the drain task does the heavy chain_setup() so
@@ -465,3 +478,8 @@ esp_err_t voice_onboard_chain_stop(void) {
 }
 
 bool voice_onboard_chain_active(void) { return s_chain_active; }
+
+int64_t voice_onboard_chain_uptime_ms(void) {
+   if (!s_chain_active || s_chain_started_us == 0) return 0;
+   return (esp_timer_get_time() - s_chain_started_us) / 1000;
+}
