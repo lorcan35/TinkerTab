@@ -225,12 +225,20 @@ static esp_err_t stream_collect(const char *expected_request_id, char *output, s
 static esp_err_t do_llm_setup(void) {
    if (s_setup_work_id[0] != '\0') return ESP_OK;
 
+   /* Wire shape from M5Module-LLM v1.7.0 source (api_llm.cpp:setup):
+    *   data.input  is an ARRAY in v1.1+ (was string in v1.0)
+    *   data.enkws  is required (false unless using KWS unit)
+    * Sending input as a string trips "task full" / silent rejection on
+    * later infer (Phase 3.5 dig). */
    cJSON *data = cJSON_CreateObject();
    if (data == NULL) return ESP_ERR_NO_MEM;
    cJSON_AddStringToObject(data, "model", M5_LLM_MODEL);
    cJSON_AddStringToObject(data, "response_format", M5_LLM_RESPONSE_FORMAT);
-   cJSON_AddStringToObject(data, "input", M5_LLM_INPUT_FORMAT);
+   cJSON *input_arr = cJSON_CreateArray();
+   cJSON_AddItemToArray(input_arr, cJSON_CreateString(M5_LLM_INPUT_FORMAT));
+   cJSON_AddItemToObject(data, "input", input_arr);
    cJSON_AddBoolToObject(data, "enoutput", true);
+   cJSON_AddBoolToObject(data, "enkws", false);
    cJSON_AddNumberToObject(data, "max_token_len", M5_LLM_MAX_TOKENS);
    cJSON_AddStringToObject(data, "prompt", M5_LLM_PROMPT_PREFIX);
 
@@ -326,18 +334,29 @@ esp_err_t voice_m5_llm_infer(const char *prompt, char *output, size_t output_cap
    if (err != ESP_OK) return err;
    if (esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
 
+   /* Wire shape from M5Module-LLM v1.7.0 (api_llm.cpp:inference): the
+    * inference request's `data` is a stream-frame OBJECT
+    *   { "delta": <prompt>, "index": 0, "finish": true }
+    * NOT a bare string.  Sending a string returns error -25
+    * "Stream data index error" silently — Phase 3.5 dig surfaced this. */
    char request_id[32];
    make_request_id(request_id, sizeof(request_id), "infer-");
+   cJSON *data = cJSON_CreateObject();
+   if (data == NULL) return ESP_ERR_NO_MEM;
+   cJSON_AddStringToObject(data, "delta", prompt);
+   cJSON_AddNumberToObject(data, "index", 0);
+   cJSON_AddBoolToObject(data, "finish", true);
    const m5_stackflow_request_t req = {
        .request_id = request_id,
        .work_id = s_setup_work_id,
        .action = "inference",
        .object = M5_LLM_RESPONSE_FORMAT,
-       .data_string = prompt,
+       .data_json = data,
    };
 
    char tx[M5_TX_BUF_BYTES];
    int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   cJSON_Delete(data);
    if (tx_len < 0) return ESP_ERR_NO_MEM;
 
    tab5_port_c_flush();

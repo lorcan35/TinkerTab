@@ -58,6 +58,28 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Fix:** Known open issue. Needs shunt resistance measurement from the PCB and corresponding calibration register programming.
 - **Prevention:** When integrating power monitors, always verify the shunt resistor value against the schematic and calculate calibration register from datasheet formula.
 
+### K144 must sit on the Module13.2 LLM Mate carrier — direct stack on Tab5 causes power hangs
+- **Date:** 2026-04-29
+- **Symptom:** With the K144 stacked DIRECTLY on Tab5's M5-Bus rear (no carrier between them) and both Tab5 + K144 plugged into separate USB-Cs, the K144's NPU model load consistently hung — `llm_llm` at 0% CPU, load avg 3.5+ from `[npu_task_launch]` D-state kthreads, no `load_mode success` log even after 18+ minutes of waiting.  Phase 3.5 documented this as "K144 cold-start hang".  Inserting the Module13.2 LLM Mate carrier between Tab5 and K144 (Tab5 → Mate → K144) and powering the K144's USB-C on the Mate, the model loaded in ~4 minutes and inference returned in 2 seconds.
+- **Root Cause:** When K144 is stacked directly on Tab5, both devices share the M5-Bus 5V rail.  K144's NPU peaks at 500-800 mA during model load.  Tab5's USB-C provides 5V to the M5-Bus through `EXT5V_EN` (a single switch), but the K144's own top USB-C ALSO feeds 5V into the same rail.  The two power sources fight, causing brownouts / supply-noise on the NPU rail mid-load.  AX630C NPU silicon doesn't recover gracefully from supply transients — it goes into a wedged state visible only as D-state kthreads.  The Mate carrier sits between Tab5 and K144 with its own USB-C feeding power directly to the K144's FPC connector, isolating the rails.
+- **Fix:** **Always use the Module13.2 LLM Mate carrier when stacking the K144.**  The carrier:
+  - Supplies clean dedicated 5V to the K144 via its own USB-C
+  - Passes M5-Bus UART (GPIO 6/7 on Tab5) through to the K144's FPC, so Tab5's `uart_port_c` driver works unchanged
+  - Adds a CH340N debug serial (handy for K144-side log capture)
+  - Acts as a passive heatsink for the K144's metal frame
+- **Prevention:** Document the carrier-required topology in `docs/PLAN-m5-llm-module.md` — direct K144-on-Tab5 stacking is NOT a supported config.  When verifying K144 setup against Tab5, the bench rig must be:  Tab5 base → Mate carrier (M5-Bus) → K144 (FPC) → top USB-C powering K144.
+
+### K144 inference data shape is stream-frame OBJECT, not a string
+- **Date:** 2026-04-29
+- **Symptom:** Phase 3 / 4 inference attempts returned `error.code: -25 "Stream data index error"` from the K144 even when setup succeeded and the model was confirmed loaded.
+- **Root Cause:** The K144's StackFlow daemon expects the `data` field of an `action: inference` request to be a stream-frame OBJECT mirroring the response shape:
+  ```json
+  "data": {"delta": "<prompt>", "index": 0, "finish": true}
+  ```
+  NOT a bare string `"data": "<prompt>"`.  The string form is what the M5Module-LLM v1.0 Arduino library used, but v1.1+ deprecated it.  Confirmed by reading `M5Module-LLM/src/api/api_llm.cpp` v1.7.0 source.
+- **Fix:** Patched `voice_m5_llm.c` to construct the inference request data as a cJSON object with `delta` / `index` / `finish`.  Also patched setup `data.input` from string `"llm.utf-8"` to array `["llm.utf-8"]` (same v1.1+ schema migration).  After both fixes, `m5infer Tell me a joke` returned `"Why did the tomato turn red? Because it saw the salad dressing!"` in 2.0 seconds.
+- **Prevention:** Always cross-reference protocol shapes against the latest `M5Module-LLM` Arduino source (treat M5's docs as approximate, the C++ source is authoritative).  Stale `error.code: -25` should now be a clear "request shape mismatch" tell — log the response and check delta/index/finish presence.
+
 ### K144 cold-start model load can hang for 5+ min — root cause: NPU stack
 - **Date:** 2026-04-29 (initial), updated 2026-04-29 (Phase 3.5 root-cause)
 - **Symptom:** Phase 3 of the K144 LLM Module integration verified setup-ack + error-path but couldn't complete a clean inference round-trip.  After Tab5 sends `llm.setup`, the K144 returns the early ack with `work_id=llm.NNNN` instantly (Tab5 sees `error.code=0`, work_id assigned), but the ACTUAL model load (mapping the qwen2.5-0.5B-prefill-20e checkpoint into NPU memory) runs asynchronously after the ack and **frequently never completes**.  Multiple observations during Phase 3.5:

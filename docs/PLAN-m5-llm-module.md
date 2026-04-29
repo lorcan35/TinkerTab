@@ -1,6 +1,21 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–4 complete (2026-04-29).  Phase 4 failover wiring verified end-to-end via the boot warm-up: cold-start timeout correctly flipped the gate to UNAVAILABLE and Tab5 user-facing flows continued unaffected.  K144 cold-start NPU hang (LEARNINGS) is the residual hardware blocker.
+**Status:** Phase 0–4 complete + verified end-to-end with real K144 generation (2026-04-29).
+
+**Tab5 → Mate carrier (stacked) → K144 round-trip live:**
+```
+> m5infer Tell me a joke in one sentence.
+[infer] ESP_OK in 2016ms (64 bytes)
+--- reply ---
+Why did the tomato turn red? Because it saw the salad dressing!
+--- /reply ---
+```
+
+The Mate carrier (M5 Module13.2 LLM Mate, stacked between Tab5 and K144) was the missing piece — when stacking K144 directly on Tab5, both tried to power the K144's NPU off the same USB rail, causing thermal/brownout hangs documented in earlier LEARNINGS.  The Mate carrier supplies independent USB-C power to the K144 while passing M5-Bus UART through to Tab5.
+
+Two protocol bugs caught during this verification (in Phase 3 code, fixed in Phase 4 PR):
+- `data.input` must be a JSON ARRAY (`["llm.utf-8.stream"]`), not a string — M5Module-LLM v1.1+ schema.
+- Inference `data` is a stream-frame OBJECT `{delta, index, finish}`, not a bare prompt string.  Sending a string returns silent error `-25 "Stream data index error"`.
 **Owner:** unassigned.
 **Tracking issue:** TT #317.
 **Last updated:** 2026-04-28.
