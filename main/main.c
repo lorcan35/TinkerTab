@@ -1093,7 +1093,7 @@ void app_main(void)
                        if (seconds == 0) seconds = 60;
                        printf("[m5chain] bringing up chain (session=%lus)\n", (unsigned long)seconds);
                        voice_m5_chain_handle_t *ch = NULL;
-                       esp_err_t cs = voice_m5_llm_chain_setup(&ch);
+                       esp_err_t cs = voice_m5_llm_chain_setup(&ch, NULL);
                        if (cs != ESP_OK || ch == NULL) {
                           printf("[m5chain] setup failed: %s\n", esp_err_to_name(cs));
                        } else {

@@ -3758,7 +3758,7 @@ static void voice_m5_chain_drain_task(void *arg) {
     * issuing four serialised UART round-trips with NPU cold-start delays
     * blocks for ~5 sec, which would WDT-reset the LVGL task on a tap. */
    voice_m5_chain_handle_t *h = NULL;
-   esp_err_t e = voice_m5_llm_chain_setup(&h);
+   esp_err_t e = voice_m5_llm_chain_setup(&h, &s_chain_stop_flag);
    if (e != ESP_OK || h == NULL) {
       ESP_LOGW(TAG, "chain setup failed: %s", esp_err_to_name(e));
       chain_free_buffers();

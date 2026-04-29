@@ -235,13 +235,18 @@ typedef void (*voice_m5_chain_audio_cb)(const int16_t *pcm_16k_mono, size_t samp
  *
  * @param[out] out_handle  Receives the new chain handle.  Free with
  *                         @ref voice_m5_llm_chain_teardown.
+ * @param stop_flag        Optional volatile bool the inner setup loops
+ *                         poll so a user-tap-to-stop during the K144's
+ *                         ~15-sec NPU cold-start bails fast.  Pass NULL
+ *                         if the caller has no stop signal.
  *
  * @return ESP_OK on success; ESP_ERR_TIMEOUT / ESP_ERR_INVALID_RESPONSE
- *         on per-stage failure (caller must NOT call teardown on a
- *         non-OK return — handle is set to NULL); ESP_ERR_NO_MEM on
- *         allocation failure.
+ *         on per-stage failure; ESP_ERR_INVALID_STATE if stop_flag was
+ *         raised mid-setup; ESP_ERR_NO_MEM on allocation failure.
+ *         Caller must NOT call teardown on a non-OK return — handle is
+ *         set to NULL.
  */
-esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle);
+esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle, volatile bool *stop_flag);
 
 /**
  * @brief Drain output frames from a live chain, invoking callbacks.

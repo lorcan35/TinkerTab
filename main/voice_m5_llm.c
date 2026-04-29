@@ -838,8 +838,12 @@ struct voice_m5_chain_handle {
  * work_id while we're still waiting for the NEXT setup's ACK.  We therefore
  * skip non-matching frames within the timeout instead of bailing on the
  * first one. */
+/* Audit #13: stop_flag short-circuits the inner refill loop so a user
+ * tap-to-stop during a 15-sec NPU cold-start bails fast (within ~100 ms)
+ * instead of blocking on the deadline.  NULL stop_flag is allowed for
+ * callers that don't have one. */
 static esp_err_t chain_setup_unit(const char *work_id_seed, const char *object, cJSON *data_obj, char *out_work_id,
-                                  size_t out_cap, uint32_t timeout_ms) {
+                                  size_t out_cap, uint32_t timeout_ms, volatile bool *stop_flag) {
    char request_id[32];
    make_request_id(request_id, sizeof(request_id), "chain-setup-");
    const m5_stackflow_request_t req = {
@@ -863,9 +867,10 @@ static esp_err_t chain_setup_unit(const char *work_id_seed, const char *object, 
    s_rx_len = 0;
 
    const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-   while (esp_timer_get_time() < deadline_us) {
+   while (esp_timer_get_time() < deadline_us && !(stop_flag != NULL && *stop_flag)) {
       char *nl = memchr(s_rx_buf, '\n', s_rx_len);
-      while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && esp_timer_get_time() < deadline_us) {
+      while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && esp_timer_get_time() < deadline_us &&
+             !(stop_flag != NULL && *stop_flag)) {
          uint32_t budget_ms = (uint32_t)((deadline_us - esp_timer_get_time()) / 1000);
          if (budget_ms > 100) budget_ms = 100;
          int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
@@ -907,11 +912,15 @@ static esp_err_t chain_setup_unit(const char *work_id_seed, const char *object, 
       return ESP_OK;
    }
 
+   if (stop_flag != NULL && *stop_flag) {
+      ESP_LOGI(TAG, "chain setup(%s): user stop during ACK wait", object);
+      return ESP_ERR_INVALID_STATE;
+   }
    ESP_LOGE(TAG, "chain setup(%s): timeout waiting for ACK", object);
    return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
+esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle, volatile bool *stop_flag) {
    if (out_handle == NULL) return ESP_ERR_INVALID_ARG;
    *out_handle = NULL;
 
@@ -938,7 +947,8 @@ esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
       cJSON_AddNumberToObject(d, "playcard", 0);
       cJSON_AddNumberToObject(d, "playdevice", 1);
       cJSON_AddNumberToObject(d, "playVolume", 0.15);
-      err = chain_setup_unit("audio", "audio.setup", d, h->audio_id, sizeof(h->audio_id), M5_SETUP_TIMEOUT_MS);
+      err =
+          chain_setup_unit("audio", "audio.setup", d, h->audio_id, sizeof(h->audio_id), M5_SETUP_TIMEOUT_MS, stop_flag);
       if (err != ESP_OK) goto fail;
    }
 
@@ -951,7 +961,7 @@ esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
       cJSON_AddItemToArray(inp, cJSON_CreateString("sys.pcm"));
       cJSON_AddItemToObject(d, "input", inp);
       cJSON_AddBoolToObject(d, "enoutput", true);
-      err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id), M5_SETUP_TIMEOUT_MS);
+      err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id), M5_SETUP_TIMEOUT_MS, stop_flag);
       if (err != ESP_OK) goto fail;
    }
 
@@ -968,7 +978,7 @@ esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
       cJSON_AddNumberToObject(d, "max_token_len", 127);
       cJSON_AddStringToObject(d, "prompt", "You are a helpful, concise assistant. Reply in one sentence.");
       /* LLM cold-start NPU model load can take 5-10s — give it more headroom. */
-      err = chain_setup_unit("llm", "llm.setup", d, h->llm_id, sizeof(h->llm_id), 15000);
+      err = chain_setup_unit("llm", "llm.setup", d, h->llm_id, sizeof(h->llm_id), 15000, stop_flag);
       if (err != ESP_OK) goto fail;
    }
 

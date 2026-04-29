@@ -238,6 +238,15 @@ static void on_ball_tap(void *ud)
 {
     (void)ud;
     voice_state_t st = voice_get_state();
+    /* Wave 4a: chain-mode tap-toggle is independent of voice state.
+     * The chain spends most of its life in PROCESSING (5-sec setup) or
+     * LISTENING (drain loop), and the user must be able to stop in both.
+     * voice_stop_listening dispatches to voice_m5_chain_stop when the
+     * chain is active. */
+    if (voice_m5_chain_is_active()) {
+       voice_stop_listening();
+       return;
+    }
     if (st == VOICE_STATE_LISTENING) {
         voice_stop_listening();
     } else if (st == VOICE_STATE_READY || st == VOICE_STATE_IDLE) {
