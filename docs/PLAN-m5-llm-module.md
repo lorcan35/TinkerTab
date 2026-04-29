@@ -502,7 +502,9 @@ I (52274) voice_m5_llm: tts: 15360 samples @ 16 kHz mono (960 ms speech)
 | 6c | Text-to-speech via K144 → Tab5 speaker | **DONE** — verified live |
 | 6d | (folded into 6b) | **N/A** |
 
-**User-visible payoff after Phase 6:** the user can speak at the stack and hear the K144's reply through Tab5's speaker without any Dragon-side or cloud involvement.  Currently exposed via the `m5chain [seconds]` REPL command for bench validation.  Wiring this into the chat overlay's mic button (Onboard mode `vmode=4`) is the next user-facing step: tap mic → start chain → drain frames into chat bubbles + speaker → tap stop → teardown.  That belongs in a follow-up issue under TT #317.
+**User-visible payoff after Phase 6:** the user can tap the mic orb in the chat overlay under `vmode=4` (Onboard) and the K144's chain handles the whole conversation — speech → ASR (chat user bubble) → LLM (chat TINKER bubble streaming).  Wired into `voice_start_listening` / `voice_stop_listening` in [`main/voice.c`](../main/voice.c) (`voice_m5_chain_start` / `voice_m5_chain_stop`); the heavy 5-sec K144 setup runs on a worker task so the LVGL tap callback returns immediately.  Live-verified with the user speaking — ASR finalisations push as user bubbles, LLM streams replies, both visible in real time in chat.
+
+**Known gap — TTS audio playback through Tab5 speaker:** the chain's `tts.setup` with `input=[llm_id]` does come up, but the K144's `single_speaker_english_fast` engine crashes intermittently (Eigen reshape assertion in SummerTTS) when consuming token-by-token from the LLM unit.  systemd auto-restarts the K144 service, but the chain's subscription is orphaned and no TTS audio reaches Tab5.  Documented in LEARNINGS "K144 single_speaker_english_fast TTS in stream-from-LLM mode crashes".  **Workaround follow-up:** strip `tts.setup` from the chain and call `voice_m5_llm_tts(reply_text, ...)` on each LLM `finish=true` instead — that's the known-stable one-shot synth path used by `m5tts` REPL + the existing failover flow.  Tracked separately under TT #317.
 
 ---
 

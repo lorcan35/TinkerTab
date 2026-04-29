@@ -949,9 +949,23 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
 
    /* PCM scratch — TTS chunks decode to ~16 KB each (1 sec of 16 kHz mono).
     * Allocate generous PSRAM headroom for longer chunks. */
-   const size_t pcm_cap_samples = 64 * 1024; /* 4 sec @ 16 kHz */
+   const size_t pcm_cap_samples = 128 * 1024; /* 8 sec @ 16 kHz */
    int16_t *pcm = heap_caps_malloc(pcm_cap_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (pcm == NULL) return ESP_ERR_NO_MEM;
+
+   /* TTS base64 accumulator — K144's `tts.base64.wav` chunked stream emits
+    * partial b64 deltas (each is a sub-string of ONE big base64 payload),
+    * not standalone-decodable chunks.  We accumulate across frames keyed
+    * on the LLM utterance, and decode + play the whole payload at the
+    * `finish=true` frame.  256 KB cap covers ~10 sec of speech.  Same
+    * pattern as the existing voice_m5_llm_tts() implementation. */
+   const size_t b64_cap = 256 * 1024;
+   char *b64_acc = heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (b64_acc == NULL) {
+      heap_caps_free(pcm);
+      return ESP_ERR_NO_MEM;
+   }
+   size_t b64_len = 0;
 
    while (!(stop_flag != NULL && *stop_flag) && esp_timer_get_time() < deadline_us) {
       /* Refill rx_buf until we have at least one \n. */
@@ -993,23 +1007,41 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
       }
 
       if (is_tts) {
-         /* TTS: data is either bare base64 string OR {delta,index,finish}. */
-         const char *b64 = NULL;
+         /* TTS: data is either {delta, index, finish} (chunked stream)
+          * or a bare base64 string (single-shot).  Accumulate b64
+          * across delta frames; decode + play on `finish=true` (or on
+          * a single bare-string frame which is implicitly final). */
+         const char *delta = NULL;
+         bool finish = false;
          if (cJSON_IsString(resp.data)) {
-            b64 = resp.data->valuestring;
+            delta = resp.data->valuestring;
+            finish = true;
          } else if (cJSON_IsObject(resp.data)) {
             const cJSON *d = cJSON_GetObjectItemCaseSensitive(resp.data, "delta");
-            if (cJSON_IsString(d)) b64 = d->valuestring;
+            if (cJSON_IsString(d)) delta = d->valuestring;
+            const cJSON *fin = cJSON_GetObjectItemCaseSensitive(resp.data, "finish");
+            finish = cJSON_IsTrue(fin);
          }
-         if (b64 != NULL && audio_cb != NULL) {
+         if (delta != NULL) {
+            const size_t add = strlen(delta);
+            if (b64_len + add < b64_cap) {
+               memcpy(b64_acc + b64_len, delta, add);
+               b64_len += add;
+            } else {
+               ESP_LOGW(TAG, "chain: TTS b64 acc overflow (have=%u add=%u cap=%u) — dropping frame", (unsigned)b64_len,
+                        (unsigned)add, (unsigned)b64_cap);
+            }
+         }
+         if (finish && b64_len > 0 && audio_cb != NULL) {
             size_t pcm_bytes = 0;
             int dec = mbedtls_base64_decode((unsigned char *)pcm, pcm_cap_samples * sizeof(int16_t), &pcm_bytes,
-                                            (const unsigned char *)b64, strlen(b64));
+                                            (const unsigned char *)b64_acc, b64_len);
             if (dec == 0 && pcm_bytes > 0) {
                audio_cb(pcm, pcm_bytes / sizeof(int16_t), user);
             } else if (dec != 0) {
-               ESP_LOGW(TAG, "chain: tts base64 decode failed -0x%04x (b64_len=%u)", -dec, (unsigned)strlen(b64));
+               ESP_LOGW(TAG, "chain: tts base64 decode failed -0x%04x (b64_len=%u)", -dec, (unsigned)b64_len);
             }
+            b64_len = 0; /* ready for next utterance */
          }
       } else {
          /* ASR or LLM: data is {delta,...,finish} or bare string. */
@@ -1032,6 +1064,7 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
    }
 
    heap_caps_free(pcm);
+   heap_caps_free(b64_acc);
    if (stop_flag != NULL && *stop_flag) return ESP_OK;
    return ESP_ERR_TIMEOUT;
 }

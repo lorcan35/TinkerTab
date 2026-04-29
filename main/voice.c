@@ -320,6 +320,13 @@ static int64_t s_ws_last_alive_us = 0;
 #define M5_FAILOVER_INFER_TIMEOUT_S 60   /* per-turn budget */
 #define M5_FAILOVER_WARMUP_TIMEOUT_S 360 /* cold-start budget — 6 min cap */
 
+/* TT #317 Phase 6b — chain-mode state.  voice_start/stop_listening
+ * reference these before the bodies are defined further down, so they live
+ * here next to the failover state to keep the M5 control surface together. */
+static volatile bool s_chain_active = false;
+static esp_err_t voice_m5_chain_start(void);
+static esp_err_t voice_m5_chain_stop(void);
+
 // Activity timestamp shared with stop_listening for response timeout
 static volatile int64_t s_last_activity_us = 0;
 
@@ -3044,6 +3051,19 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
 
 esp_err_t voice_start_listening(void)
 {
+   /* TT #317 Phase 6b: in Onboard mode the K144's own mic + chain handles
+    * the whole turn — no Tab5 mic, no Dragon WS.  Short-circuit BEFORE the
+    * mic_mute / ws_live checks since those are about Tab5's mic + Dragon
+    * connectivity, neither of which the chain uses.  If the chain is
+    * already active, treat tap-mic as toggle-stop (chain_stop is harmless
+    * in that order — voice_stop_listening also catches it explicitly). */
+   if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
+      if (s_chain_active) {
+         return voice_m5_chain_stop();
+      }
+      return voice_m5_chain_start();
+   }
+
     bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
     /* Wave 13 H1: snapshot state once under the mutex so the log and the
      * guard below see the same value, and neither races the WS RX callback. */
@@ -3232,6 +3252,14 @@ esp_err_t voice_clear_history(void)
 
 esp_err_t voice_stop_listening(void)
 {
+   /* TT #317 Phase 6b: chain mode lives outside the Dragon WS pipeline, so
+    * its stop path bypasses the mic-disable / WS stop-frame handshake.
+    * The drain task tears down the K144 chain on the next loop iteration
+    * and transitions state back to READY itself. */
+   if (s_chain_active) {
+      return voice_m5_chain_stop();
+   }
+
     if (s_state != VOICE_STATE_LISTENING) {
         ESP_LOGW(TAG, "Not listening (state=%d)", s_state);
         return ESP_ERR_INVALID_STATE;
@@ -3539,6 +3567,214 @@ esp_err_t voice_m5_failover_start_warmup(void) {
 }
 
 int voice_m5_failover_state(void) { return (int)s_m5_failover; }
+
+/* ---------------------------------------------------------------------- */
+/*  TT #317 Phase 6b — autonomous K144 voice-assistant chain              */
+/*                                                                        */
+/*  Wired into the chat overlay's mic button when vmode=4 (Onboard).      */
+/*  Tap mic → voice_m5_chain_start() brings up audio→asr→llm→tts on the   */
+/*  K144 and spawns a drain task; ASR/LLM deltas land as chat bubbles,    */
+/*  TTS bytes upsample 1:3 and play through Tab5's speaker.  Tap mic      */
+/*  again → voice_m5_chain_stop() raises a stop_flag; the drain task      */
+/*  tears down the chain on the next loop iteration and exits.            */
+/* ---------------------------------------------------------------------- */
+static voice_m5_chain_handle_t *s_chain_handle = NULL;
+/* s_chain_active forward-declared near the top of the file alongside the
+ * other M5 control state — voice_start_listening references it before this
+ * section's bodies. */
+static volatile bool s_chain_stop_flag = false;
+/* Per-utterance accumulators — reset on every `finish=true` so multiple
+ * back-to-back utterances within one chain session each get their own
+ * bubble.  PSRAM-backed; statically declaring 2.5 KB of BSS pushed the
+ * internal SRAM budget past the FreeRTOS timer-task stack alloc and the
+ * device boot-looped with `vApplicationGetTimerTaskMemory: pxStackBufferTemp
+ * != NULL` (same class of failure ui_sessions.c hit and fixed). */
+#define CHAIN_ASR_CAP 512
+#define CHAIN_LLM_CAP 2048
+static char *s_chain_asr_buf = NULL;
+static size_t s_chain_asr_len;
+static char *s_chain_llm_buf = NULL;
+static size_t s_chain_llm_len;
+
+static void chain_text_callback(const char *text, bool from_llm, bool finish, void *user) {
+   (void)user;
+   char *buf = from_llm ? s_chain_llm_buf : s_chain_asr_buf;
+   size_t *len = from_llm ? &s_chain_llm_len : &s_chain_asr_len;
+   const size_t cap = from_llm ? CHAIN_LLM_CAP : CHAIN_ASR_CAP;
+   if (buf == NULL) return; /* race with teardown */
+   const size_t add = strlen(text);
+
+   /* sherpa-ncnn ASR streams CUMULATIVE partials — each delta is the full
+    * transcription so far, growing incrementally.  K144 LLM streams
+    * ADDITIVE tokens — each delta is the next chunk to append.  Different
+    * accumulator strategies. */
+   if (from_llm) {
+      if (*len + add < cap - 1) {
+         memcpy(buf + *len, text, add);
+         *len += add;
+         buf[*len] = '\0';
+      }
+   } else {
+      const size_t copy = (add < cap - 1) ? add : cap - 1;
+      memcpy(buf, text, copy);
+      buf[copy] = '\0';
+      *len = copy;
+   }
+
+   if (finish && *len > 0) {
+      ESP_LOGI(TAG, "chain %s commit: '%s'", from_llm ? "LLM" : "ASR", buf);
+      if (tab5_ui_try_lock(150)) {
+         ui_chat_add_message(buf, /*is_user=*/!from_llm);
+         tab5_ui_unlock();
+      }
+      *len = 0;
+      buf[0] = '\0';
+   }
+}
+
+static void chain_audio_callback(const int16_t *pcm, size_t samples, void *user) {
+   (void)user;
+   if (samples == 0 || pcm == NULL) return;
+   const size_t cap_48k = samples * 3;
+   int16_t *pcm48 = heap_caps_malloc(cap_48k * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (pcm48 == NULL) {
+      ESP_LOGW(TAG, "chain TTS: 48k upsample alloc failed (%u samples)", (unsigned)cap_48k);
+      return;
+   }
+   for (size_t i = 0; i < samples; i++) {
+      const int16_t cur = pcm[i];
+      const int16_t nxt = (i + 1 < samples) ? pcm[i + 1] : cur;
+      for (int j = 0; j < 3; j++) {
+         pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
+      }
+   }
+   tab5_audio_play_raw(pcm48, cap_48k);
+   heap_caps_free(pcm48);
+}
+
+static void chain_free_buffers(void) {
+   if (s_chain_asr_buf) {
+      heap_caps_free(s_chain_asr_buf);
+      s_chain_asr_buf = NULL;
+   }
+   if (s_chain_llm_buf) {
+      heap_caps_free(s_chain_llm_buf);
+      s_chain_llm_buf = NULL;
+   }
+   s_chain_asr_len = 0;
+   s_chain_llm_len = 0;
+}
+
+static esp_err_t chain_alloc_buffers(void) {
+   if (s_chain_asr_buf == NULL) {
+      s_chain_asr_buf = heap_caps_malloc(CHAIN_ASR_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (s_chain_asr_buf == NULL) goto fail;
+   }
+   if (s_chain_llm_buf == NULL) {
+      s_chain_llm_buf = heap_caps_malloc(CHAIN_LLM_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (s_chain_llm_buf == NULL) goto fail;
+   }
+   s_chain_asr_buf[0] = '\0';
+   s_chain_llm_buf[0] = '\0';
+   s_chain_asr_len = 0;
+   s_chain_llm_len = 0;
+   return ESP_OK;
+fail:
+   chain_free_buffers();
+   return ESP_ERR_NO_MEM;
+}
+
+static void voice_m5_chain_drain_task(void *arg) {
+   (void)arg;
+
+   /* Setup runs HERE on the worker task, NOT on the LVGL tap callback —
+    * issuing four serialised UART round-trips with NPU cold-start delays
+    * blocks for ~5 sec, which would WDT-reset the LVGL task on a tap. */
+   voice_m5_chain_handle_t *h = NULL;
+   esp_err_t e = voice_m5_llm_chain_setup(&h);
+   if (e != ESP_OK || h == NULL) {
+      ESP_LOGW(TAG, "chain setup failed: %s", esp_err_to_name(e));
+      chain_free_buffers();
+      s_chain_active = false;
+      voice_set_state(VOICE_STATE_READY, NULL);
+      if (tab5_ui_try_lock(150)) {
+         ui_home_show_toast("Onboard chain unavailable");
+         tab5_ui_unlock();
+      }
+      vTaskDelete(NULL);
+      return;
+   }
+   s_chain_handle = h;
+   voice_set_state(VOICE_STATE_LISTENING, "K144");
+   if (tab5_ui_try_lock(150)) {
+      ui_home_show_toast("Onboard chat — speak at the K144");
+      tab5_ui_unlock();
+   }
+   ESP_LOGI(TAG, "chain ready — entering drain loop");
+
+   /* 10-min hard cap; user-initiated stop happens earlier via stop_flag. */
+   esp_err_t re = voice_m5_llm_chain_run(h, chain_text_callback, chain_audio_callback, NULL, &s_chain_stop_flag, 600);
+   ESP_LOGI(TAG, "chain drain exited: %s", esp_err_to_name(re));
+
+   voice_m5_llm_chain_teardown(h);
+   s_chain_handle = NULL;
+   s_chain_active = false;
+   chain_free_buffers();
+
+   voice_set_state(VOICE_STATE_READY, NULL);
+   if (tab5_ui_try_lock(150)) {
+      ui_home_show_toast("Onboard chat ended");
+      tab5_ui_unlock();
+   }
+   vTaskDelete(NULL);
+}
+
+static esp_err_t voice_m5_chain_start(void) {
+   if (s_chain_active) return ESP_ERR_INVALID_STATE;
+
+   esp_err_t be = chain_alloc_buffers();
+   if (be != ESP_OK) {
+      ESP_LOGW(TAG, "chain buffer alloc failed");
+      return be;
+   }
+
+   s_chain_stop_flag = false;
+   s_chain_active = true;
+
+   /* Returns immediately; the drain task does the heavy chain_setup() so
+    * the LVGL tap callback isn't blocked for the K144's 5-sec NPU cold
+    * start.  PROCESSING is the right transient — chain_drain_task flips
+    * to LISTENING once setup completes, READY on teardown.
+    *
+    * 8 KB stack — drain loop calls cJSON parse + base64 decode + the audio
+    * upsample inline; matches voice's other long-lived tasks. */
+   BaseType_t r = xTaskCreate(voice_m5_chain_drain_task, "m5_chain", 8192, NULL, 5, NULL);
+   if (r != pdPASS) {
+      s_chain_active = false;
+      chain_free_buffers();
+      return ESP_ERR_NO_MEM;
+   }
+
+   voice_set_state(VOICE_STATE_PROCESSING, "K144 setup");
+   if (tab5_ui_try_lock(150)) {
+      ui_home_show_toast("Onboard chat starting…");
+      tab5_ui_unlock();
+   }
+   ESP_LOGI(TAG, "chain start dispatched to drain task");
+   return ESP_OK;
+}
+
+static esp_err_t voice_m5_chain_stop(void) {
+   if (!s_chain_active) return ESP_ERR_INVALID_STATE;
+   ESP_LOGI(TAG, "chain stop requested");
+   s_chain_stop_flag = true;
+   /* Drain task notices stop_flag, tears down, transitions state to READY,
+    * shows toast, deletes itself.  Do NOT free the handle here — the task
+    * owns its lifetime. */
+   return ESP_OK;
+}
+
+bool voice_m5_chain_is_active(void) { return s_chain_active; }
 
 esp_err_t voice_send_text(const char *text)
 {

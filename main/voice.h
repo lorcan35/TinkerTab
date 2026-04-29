@@ -223,6 +223,12 @@ void voice_stop_reconnect_watchdog(void);
  *  if the worker queue is full, otherwise propagates from the queue. */
 esp_err_t voice_m5_failover_start_warmup(void);
 
+/** TT #317 Phase 6b — true while the autonomous K144 voice-assistant chain
+ *  is running (i.e., the user tapped mic under vmode=4 and we're streaming
+ *  ASR/LLM/TTS frames from the K144).  Diagnostic only; the chain owns its
+ *  own state-machine transitions. */
+bool voice_m5_chain_is_active(void);
+
 /** TT #317 Phase 4 — current K144 failover gate.  Returns one of:
  *  0 = UNKNOWN (warm-up not yet posted),
  *  1 = PROBING (warm-up in flight),
