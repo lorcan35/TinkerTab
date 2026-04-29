@@ -15,6 +15,33 @@
 5. **Information architecture + mental models** — does system structure match user expectations
 6. **Error handling + recovery UX** — failure modes, communication, recovery paths
 
+## Verification status (2026-04-30)
+
+All 16 cross-audit P0s independently verified by reading the cited file:line refs and computing values where claimed.  Code-level confirmations recorded inline below; runtime confirmations spot-checked on hardware (see `/tmp/verify-navsheet.png` for #4 visual proof — Focus tile is clearly clipped 134 px below the sheet edge).  No agent claims invalidated.
+
+| # | Code-level | Runtime-level | Notes |
+|---|---|---|---|
+| 1 | ✓ verified `ui_theme.c:14`, `ui_sessions.c:97-103`, `chat_session_drawer.c:38-41` | (would need vmode=4 session) | Stale `[4]` arrays + `default → 0x5C5C68 grey` switch confirmed |
+| 2 | ✓ verified `ui_keyboard.c:247` unconditional `lv_obj_clear_flag(mic_btn, HIDDEN)` | (would need: keyboard close → home → screenshot) | mic-btn parents to lv_layer_top |
+| 3 | ✓ verified `debug_server.c:163-175` 4 separate `volatile` globals, no atomicity | (already symptomatic via story_onboard step-9 flake) | |
+| 4 | ✓ verified math: 4 rows × 184 + 3 × 16 + 170 = 954 > 820 sheet height | ✓ confirmed via `/tmp/verify-navsheet.png` — Focus tile bottom row clipped | Comment at L197 stale ("3 rows" — was true at 9 tiles) |
+| 5 | ✓ Settings `TAB_HYBRID = 0xF59E0B` ≠ theme `TH_MODE_HYBRID = 0xEAB308`; `TAB_ONBOARD = 0x8B5CF6` ≠ `TH_MODE_ONBOARD = 0x8E5BFF`; `COL_CYAN = COL_AMBER = 0xF59E0B` (alias bug) in `ui_notes.c:44-45` | (visible if user toggles modes) | |
+| 6 | ✓ verified by `grep -rln ui_fb_ main/*.c` — only `ui_camera.c` (5 sites) + `ui_feedback.c` itself | (visible — taps without pressed state feel dead) | |
+| 7 | ✓ contrast computed: TH_TEXT_DIM 0x444444 on TH_BG 0x08080E ≈ 2.11:1.  WCAG 1.4.3 needs 4.5:1.  FAIL | (visible in low light) | |
+| 8 | ✓ comments at `ui_voice.c:49-61` openly admit `VO_CYAN/PURPLE/GREEN` are all amber variants | (visible — screenshots indistinguishable) | |
+| 9 | ✓ verified `ui_home.c:1562-1577 orb_long_press_cb` writes NVS + sends WS update, no undo | (testable: long-press orb on home → state flips immediately) | |
+| 10 | ✓ verified two paths: orb LP → `tab5_settings_set_voice_mode()` (`ui_home.c:1568`) AND dial sheet → `tab5_settings_set_int_tier/voi_tier/aut_tier` + derived voice_mode (`ui_mode_sheet.c:478-485`) | | |
+| 11 | ✓ verified `ui_onboarding.c` mentions network only in copy text; never collects credentials | (confirmable via reflashed factory device) | |
+| 12 | ✓ verified `voice_onboard.c:95/112/155` — `M5_FAIL_UNAVAILABLE` set with **no** toast/banner/obs surface | (testable: unplug K144 + boot → check /m5 vs UI) | |
+| 13 | ✓ verified `voice.c:2318` "WS send failed — continuing SD recording" is `ESP_LOGW` only; `ui_notes.c:1343/1464` likewise | (testable: dictate, drop Wi-Fi mid-flight) | |
+| 14 | ✓ verified `main.c:603` `tab5_ota_mark_valid()` runs early; `ota.c:344` only logs.  No NVS persistence of attempted-version.  No on-rollback-boot UI surface | | |
+| 15 | ✓ verified `voice.c:2104-2107` increments + logs only; `voice.c:723-724` `auth_failed worker` logs only | | |
+| 16 | ✓ verified `voice.c:986` writes `voice_set_state(IDLE, err_buf)`; `ui_voice.c` is the ONLY consumer of the detail string and renders only when overlay visible | | |
+
+**All 16 P0s stand.**  No false positives.  Plan is sound.
+
+---
+
 ## Headline P0 findings (cross-audit cluster)
 
 | # | Issue | Audits | Severity |
