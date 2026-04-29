@@ -211,32 +211,18 @@ esp_err_t voice_start_reconnect_watchdog(void);
 /** Stop the reconnect watchdog task (it exits on its next check cycle). */
 void voice_stop_reconnect_watchdog(void);
 
-/** TT #317 Phase 4 — kick off the K144 LLM Module failover warm-up.
- *  Call ONCE after `tab5_worker_init()` in `app_main()`.  The warm-up
- *  runs on the shared worker queue: probes the K144, then issues one
- *  blocking `voice_m5_llm_infer("hi", ...)` (up to 6 minutes) to map the
- *  on-module model into NPU memory.  On success the failover gate flips
- *  to READY; on any failure (probe timeout, infer hang, NPU stall) it
- *  flips to UNAVAILABLE and stays there until the next reboot.
- *
- *  Returns `ESP_ERR_INVALID_STATE` if already started, `ESP_ERR_NO_MEM`
- *  if the worker queue is full, otherwise propagates from the queue. */
-esp_err_t voice_m5_failover_start_warmup(void);
+/* TT #327 Wave 4b: K144 vmode=4 lifecycle (warmup + per-text failover +
+ * autonomous chain) was extracted into main/voice_onboard.{c,h}.  Use
+ * voice_onboard_start_warmup / _failover_state / _chain_active there.
+ * Old voice_m5_* names below are kept as forwarding shims so existing
+ * callers (debug_server.c, ui_home.c, ui_chat.c, main.c) compile
+ * unchanged during the transition; they will be removed in a follow-up
+ * once those callers have been migrated. */
 
-/** TT #317 Phase 6b — true while the autonomous K144 voice-assistant chain
- *  is running (i.e., the user tapped mic under vmode=4 and we're streaming
- *  ASR/LLM/TTS frames from the K144).  Diagnostic only; the chain owns its
- *  own state-machine transitions. */
-bool voice_m5_chain_is_active(void);
-
-/** TT #317 Phase 4 — current K144 failover gate.  Returns one of:
- *  0 = UNKNOWN (warm-up not yet posted),
- *  1 = PROBING (warm-up in flight),
- *  2 = READY (failover available),
- *  3 = UNAVAILABLE (probe/warm-up failed).
- *  Diagnostic only — do NOT make user-facing decisions on this without
- *  also checking `voice_is_connected()`. */
-int voice_m5_failover_state(void);
+/** TT #327 Wave 4b: needed by voice_onboard.c to drive the voice state
+ *  machine (was static — promoted to allow extraction).  Detail string
+ *  is for log/badge clarity; safe to pass NULL. */
+void voice_set_state(voice_state_t new_state, const char *detail);
 
 /** Return true if the voice WebSocket is connected and the receive task is running. */
 bool voice_is_connected(void);

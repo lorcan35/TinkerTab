@@ -56,6 +56,7 @@
 #include "ui_voice.h"
 #include "voice.h"
 #include "voice_m5_llm.h"
+#include "voice_onboard.h"
 #include "wifi.h"
 
 static const char *TAG = "tab5";
@@ -616,7 +617,7 @@ void app_main(void)
      * on the K144.  If the K144 isn't connected or its NPU is hung, the
      * job times out internally and flips the failover gate to
      * UNAVAILABLE — no impact on the rest of the firmware. */
-    (void)voice_m5_failover_start_warmup();
+    (void)voice_onboard_start_warmup();
 
     // Start PSRAM heap fragmentation watchdog (background, Core 1, prio 1)
     heap_watchdog_start();

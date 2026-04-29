@@ -55,6 +55,7 @@
 #include "ui_theme.h"
 #include "ui_voice.h"
 #include "voice.h"
+#include "voice_onboard.h"
 #include "widget.h"
 #include "wifi.h"
 
@@ -952,7 +953,7 @@ void ui_home_update_status(void)
          * word instead.  When K144 is unavailable in vmode=4 we fall
          * through to normal degraded reasoning. */
         const bool onboard_healthy = (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) &&
-                                     (voice_m5_failover_state() == 2 /* M5_FAIL_READY */);
+                                     (voice_onboard_failover_state() == 2 /* M5_FAIL_READY */);
         /* v4·D Gauntlet G7 fix: budget-capped state beats ONLINE so the
          * user sees it without looking for a missed toast.  Rose colour
          * matches the other "trust-broken" states (NO DRAGON, OFFLINE). */

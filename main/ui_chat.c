@@ -12,37 +12,36 @@
  * Spec: docs/superpowers/specs/2026-04-19-chat-v4c-design.md §7.
  */
 #include "ui_chat.h"
-#include "ui_core.h"                /* tab5_lv_async_call (#258) */
 
-#include "chat_msg_store.h"
-#include "chat_msg_view.h"
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <time.h>
+
 #include "chat_header.h"
 #include "chat_input_bar.h"
-#include "chat_suggestions.h"
+#include "chat_msg_store.h"
+#include "chat_msg_view.h"
 #include "chat_session_drawer.h"
-
-#include "ui_audio.h"
-#include "ui_theme.h"
-#include "ui_keyboard.h"
+#include "chat_suggestions.h"
 #include "config.h"
-#include "settings.h"
-#include "task_worker.h"
-#include "voice.h"
-#include "tab5_rtc.h"
-
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
-
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <strings.h>
+#include "settings.h"
+#include "tab5_rtc.h"
+#include "task_worker.h"
+#include "ui_audio.h"
+#include "ui_core.h" /* tab5_lv_async_call (#258) */
+#include "ui_keyboard.h"
+#include "ui_theme.h"
+#include "voice.h"
+#include "voice_onboard.h"
 
 extern lv_obj_t *ui_home_get_screen(void);
 extern void      ui_home_show_toast(const char *text);
@@ -243,7 +242,7 @@ static void on_ball_tap(void *ud)
      * LISTENING (drain loop), and the user must be able to stop in both.
      * voice_stop_listening dispatches to voice_m5_chain_stop when the
      * chain is active. */
-    if (voice_m5_chain_is_active()) {
+    if (voice_onboard_chain_active()) {
        voice_stop_listening();
        return;
     }
@@ -632,7 +631,7 @@ void ui_chat_hide(void)
      * bubbles into the (hidden) chat store and playing TTS through the
      * speaker.  voice_stop_listening dispatches to voice_m5_chain_stop
      * when chain is active. */
-    if (voice_m5_chain_is_active()) {
+    if (voice_onboard_chain_active()) {
        voice_stop_listening();
     }
     ui_keyboard_set_layout_cb(NULL);

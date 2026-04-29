@@ -54,8 +54,9 @@
 #include "ui_settings.h"
 #include "ui_wifi.h"
 #include "voice.h"
-#include "voice_m5_llm.h" /* TT #327 Wave 5: K144 baud + chain accessors for /m5 */
-#include "widget.h"       /* Audit C4 (#202): widget_store_evictions_total */
+#include "voice_m5_llm.h"  /* TT #327 Wave 5: K144 baud accessor for /m5 */
+#include "voice_onboard.h" /* TT #327 Wave 4b: chain_active + failover_state */
+#include "widget.h"        /* Audit C4 (#202): widget_store_evictions_total */
 #include "wifi.h"
 
 static const char *TAG = "debug_srv";
@@ -2351,8 +2352,8 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    if (!check_auth(req)) return ESP_OK;
 
    cJSON *root = cJSON_CreateObject();
-   cJSON_AddBoolToObject(root, "chain_active", voice_m5_chain_is_active());
-   int fs = voice_m5_failover_state();
+   cJSON_AddBoolToObject(root, "chain_active", voice_onboard_chain_active());
+   int fs = voice_onboard_failover_state();
    cJSON_AddNumberToObject(root, "failover_state", fs);
    const char *fs_names[] = {"unknown", "probing", "ready", "unavailable"};
    cJSON_AddStringToObject(root, "failover_state_name", (fs >= 0 && fs <= 3) ? fs_names[fs] : "?");

@@ -295,37 +295,15 @@ static char           s_dictation_summary[512] = {0};
 // Drop counter for audio frames lost under back-pressure (US-C04)
 static int s_audio_drop_count = 0;
 
-/* ---------------------------------------------------------------------- */
-/*  TT #317 Phase 4 — K144 LLM Module failover state                      */
-/*                                                                        */
-/*  When Dragon WS is unreachable for >= 30 s and the NVS voice_mode      */
-/*  setting is "Local" (0), we route the next text turn through           */
-/*  voice_m5_llm_infer() on the shared task_worker queue.  Engagement is  */
-/*  gated on a successful one-time warm-up so the K144's slow / hung      */
-/*  NPU cold-start (LEARNINGS: "K144 cold-start model load can hang for   */
-/*  5+ min") never blocks user-facing flows.                              */
-/* ---------------------------------------------------------------------- */
-typedef enum {
-   M5_FAIL_UNKNOWN,     /* boot default — warm-up not yet started */
-   M5_FAIL_PROBING,     /* warm-up job posted, infer in progress */
-   M5_FAIL_READY,       /* one successful infer completed */
-   M5_FAIL_UNAVAILABLE, /* probe/warm-up failed; failover disabled */
-} m5_failover_state_t;
-
-static volatile m5_failover_state_t s_m5_failover = M5_FAIL_UNKNOWN;
-static volatile bool s_m5_failover_in_flight = false;
-static volatile bool s_m5_failover_engaged_during_down = false; /* P5: triggers "Dragon reconnected" toast */
+/* TT #327 Wave 4b: K144 failover state + autonomous chain were extracted
+ * into main/voice_onboard.{c,h}.  voice.c only needs the WS-down grace
+ * window for the Local-mode-failover routing decision (see
+ * voice_send_text below) and a forward declaration for voice_onboard's
+ * public API. */
 static int64_t s_ws_last_alive_us = 0;
-#define M5_FAILOVER_GRACE_MS 30000       /* WS down this long before failover engages */
-#define M5_FAILOVER_INFER_TIMEOUT_S 60   /* per-turn budget */
-#define M5_FAILOVER_WARMUP_TIMEOUT_S 360 /* cold-start budget — 6 min cap */
+#define M5_FAILOVER_GRACE_MS 30000 /* WS down this long before vmode=0 routes to K144 */
 
-/* TT #317 Phase 6b — chain-mode state.  voice_start/stop_listening
- * reference these before the bodies are defined further down, so they live
- * here next to the failover state to keep the M5 control surface together. */
-static volatile bool s_chain_active = false;
-static esp_err_t voice_m5_chain_start(void);
-static esp_err_t voice_m5_chain_stop(void);
+#include "voice_onboard.h"
 
 // Activity timestamp shared with stop_listening for response timeout
 static volatile int64_t s_last_activity_us = 0;
@@ -333,7 +311,8 @@ static volatile int64_t s_last_activity_us = 0;
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
-static void voice_set_state(voice_state_t new_state, const char *detail);
+/* voice_set_state is now declared in voice.h (TT #327 Wave 4b — used by
+ * voice_onboard.c to drive state transitions). */
 static void _drain_queued_text_job(void *arg);   /* #133 */
 static void mic_capture_task(void *arg);
 static void playback_drain_task(void *arg);
@@ -398,89 +377,83 @@ void voice_defer_receipt_attach(uint32_t mils,
 // ---------------------------------------------------------------------------
 // State machine
 // ---------------------------------------------------------------------------
-static void voice_set_state(voice_state_t new_state, const char *detail)
-{
-    if (s_state_mutex) {
-        xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    }
-    voice_state_t old = s_state;
-    s_state = new_state;
-    if (s_state_mutex) {
-        xSemaphoreGive(s_state_mutex);
-    }
+void voice_set_state(voice_state_t new_state, const char *detail) {
+   if (s_state_mutex) {
+      xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   }
+   voice_state_t old = s_state;
+   s_state = new_state;
+   if (s_state_mutex) {
+      xSemaphoreGive(s_state_mutex);
+   }
 
-    if (old != new_state || (detail != NULL && detail[0] != '\0')) {
-        ESP_LOGI(TAG, "State: %d -> %d (%s)", old, new_state,
-                 detail ? detail : "");
-        if (s_state_cb) {
-            if (tab5_ui_try_lock(200)) {
-                s_state_cb(new_state, detail);
-                tab5_ui_unlock();
-            } else {
-                ESP_LOGW(TAG, "State %d->%d: LVGL lock busy, UI callback skipped",
-                         old, new_state);
-            }
-        }
-        /* Always poke the home screen — ui_home_refresh_sys_label() uses
-         * tab5_lv_async_call(), lock-free and thread-safe. */
-        extern void ui_home_refresh_sys_label(void);
-        ui_home_refresh_sys_label();
+   if (old != new_state || (detail != NULL && detail[0] != '\0')) {
+      ESP_LOGI(TAG, "State: %d -> %d (%s)", old, new_state, detail ? detail : "");
+      if (s_state_cb) {
+         if (tab5_ui_try_lock(200)) {
+            s_state_cb(new_state, detail);
+            tab5_ui_unlock();
+         } else {
+            ESP_LOGW(TAG, "State %d->%d: LVGL lock busy, UI callback skipped", old, new_state);
+         }
+      }
+      /* Always poke the home screen — ui_home_refresh_sys_label() uses
+       * tab5_lv_async_call(), lock-free and thread-safe. */
+      extern void ui_home_refresh_sys_label(void);
+      ui_home_refresh_sys_label();
 
-        /* #293: emit a debug obs event on every state transition so the
-         * e2e harness can subscribe to /events instead of polling
-         * /voice every 200ms. */
-        if (old != new_state) {
-            extern void tab5_debug_obs_event(const char *kind, const char *detail);
-            const char *names[] = {
-                "IDLE", "CONNECTING", "READY",
-                "LISTENING", "PROCESSING", "SPEAKING", "RECONNECTING",
-            };
-            const char *name = (new_state >= 0 && new_state < (int)(sizeof(names)/sizeof(names[0])))
-                ? names[new_state] : "UNKNOWN";
-            tab5_debug_obs_event("voice.state", name);
-        }
-    }
+      /* #293: emit a debug obs event on every state transition so the
+       * e2e harness can subscribe to /events instead of polling
+       * /voice every 200ms. */
+      if (old != new_state) {
+         extern void tab5_debug_obs_event(const char *kind, const char *detail);
+         const char *names[] = {
+             "IDLE", "CONNECTING", "READY", "LISTENING", "PROCESSING", "SPEAKING", "RECONNECTING",
+         };
+         const char *name =
+             (new_state >= 0 && new_state < (int)(sizeof(names) / sizeof(names[0]))) ? names[new_state] : "UNKNOWN";
+         tab5_debug_obs_event("voice.state", name);
+      }
+   }
 
-    /* v4·D Gauntlet G1: drain the queued turn on transition to READY.
-     *
-     * closes #133: was `voice_send_text(pending)` called inline here.
-     * That recursed voice_set_state → ui_voice_on_state_change → ESP_LOGI
-     * on the CURRENT task's stack.  When the current task was voice_play
-     * (6 KB stack) and the log chain went deep into newlib's vfprintf,
-     * the stack blew up and the task panicked.  Captured coredump:
-     * voice_play → voice_set_state(READY) → voice_send_text('And 5 times
-     * 3?') → voice_set_state(PROCESSING) → ui_voice_on_state_change →
-     * _vfprintf_r → fault.
-     *
-     * Defer the drain via tab5_worker_enqueue so it runs on the shared
-     * worker task (16 KB stack in PSRAM) instead of whatever task
-     * triggered the state change.  */
-    if (new_state == VOICE_STATE_READY && s_queue_pending) {
-        char *pending = malloc(MAX_TRANSCRIPT_LEN);
-        if (!pending) {
-            ESP_LOGW(TAG, "queue drain: malloc failed; dropping queued text");
-            s_queued_text[0] = '\0';
-            s_queue_pending = false;
-            return;
-        }
-        if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-        strncpy(pending, s_queued_text, MAX_TRANSCRIPT_LEN - 1);
-        pending[MAX_TRANSCRIPT_LEN - 1] = '\0';
-        s_queued_text[0] = '\0';
-        s_queue_pending = false;
-        if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-        if (pending[0]) {
-            ESP_LOGI(TAG, "G1 drain: deferring queued text -> '%s'", pending);
-            if (tab5_worker_enqueue(_drain_queued_text_job, pending,
-                                    "voice-drain-queue") != ESP_OK) {
-                ESP_LOGW(TAG, "queue drain: enqueue failed; dropping '%s'",
-                         pending);
-                free(pending);
-            }
-        } else {
+   /* v4·D Gauntlet G1: drain the queued turn on transition to READY.
+    *
+    * closes #133: was `voice_send_text(pending)` called inline here.
+    * That recursed voice_set_state → ui_voice_on_state_change → ESP_LOGI
+    * on the CURRENT task's stack.  When the current task was voice_play
+    * (6 KB stack) and the log chain went deep into newlib's vfprintf,
+    * the stack blew up and the task panicked.  Captured coredump:
+    * voice_play → voice_set_state(READY) → voice_send_text('And 5 times
+    * 3?') → voice_set_state(PROCESSING) → ui_voice_on_state_change →
+    * _vfprintf_r → fault.
+    *
+    * Defer the drain via tab5_worker_enqueue so it runs on the shared
+    * worker task (16 KB stack in PSRAM) instead of whatever task
+    * triggered the state change.  */
+   if (new_state == VOICE_STATE_READY && s_queue_pending) {
+      char *pending = malloc(MAX_TRANSCRIPT_LEN);
+      if (!pending) {
+         ESP_LOGW(TAG, "queue drain: malloc failed; dropping queued text");
+         s_queued_text[0] = '\0';
+         s_queue_pending = false;
+         return;
+      }
+      if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+      strncpy(pending, s_queued_text, MAX_TRANSCRIPT_LEN - 1);
+      pending[MAX_TRANSCRIPT_LEN - 1] = '\0';
+      s_queued_text[0] = '\0';
+      s_queue_pending = false;
+      if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+      if (pending[0]) {
+         ESP_LOGI(TAG, "G1 drain: deferring queued text -> '%s'", pending);
+         if (tab5_worker_enqueue(_drain_queued_text_job, pending, "voice-drain-queue") != ESP_OK) {
+            ESP_LOGW(TAG, "queue drain: enqueue failed; dropping '%s'", pending);
             free(pending);
-        }
-    }
+         }
+      } else {
+         free(pending);
+      }
+   }
 }
 
 /* closes #133: runs on the shared worker (16 KB PSRAM stack), safe for
@@ -1851,9 +1824,11 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
         s_ws_last_alive_us = esp_timer_get_time();
         /* TT #317 Phase 5: if a K144 failover engaged during the down
          * period, surface "Dragon reconnected" so the user knows the
-         * next turn is back on the cloud/LAN brain. */
-        if (s_m5_failover_engaged_during_down) {
-           s_m5_failover_engaged_during_down = false;
+         * next turn is back on the cloud/LAN brain.  Wave 4b: the flag
+         * lives in voice_onboard now; consume_engagement_flag returns
+         * true once and clears, so the toast fires exactly once per
+         * disconnect cycle. */
+        if (voice_onboard_consume_engagement_flag()) {
            ESP_LOGI(TAG, "WS reconnected after K144 failover — toast 'Dragon reconnected'");
            if (tab5_ui_try_lock(100)) {
               ui_home_show_toast("Dragon reconnected");
@@ -3062,8 +3037,8 @@ esp_err_t voice_start_listening(void)
        * vmode=4 the chain uses K144's onboard mic, not Tab5's, but a
        * privacy-conscious user pressing mute expects ALL mics to stop.
        * Refuse to start the chain when muted. */
-      if (s_chain_active) {
-         return voice_m5_chain_stop();
+      if (voice_onboard_chain_active()) {
+         return voice_onboard_chain_stop();
       }
       if (tab5_settings_get_mic_mute()) {
          extern void ui_home_show_toast(const char *text);
@@ -3073,7 +3048,7 @@ esp_err_t voice_start_listening(void)
          }
          return ESP_ERR_INVALID_STATE;
       }
-      return voice_m5_chain_start();
+      return voice_onboard_chain_start();
    }
 
     bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
@@ -3268,8 +3243,8 @@ esp_err_t voice_stop_listening(void)
     * its stop path bypasses the mic-disable / WS stop-frame handshake.
     * The drain task tears down the K144 chain on the next loop iteration
     * and transitions state back to READY itself. */
-   if (s_chain_active) {
-      return voice_m5_chain_stop();
+   if (voice_onboard_chain_active()) {
+      return voice_onboard_chain_stop();
    }
 
     if (s_state != VOICE_STATE_LISTENING) {
@@ -3470,391 +3445,6 @@ bool voice_get_llm_text_copy(char *buf, size_t len)
     return _voice_copy_under_lock(s_llm_text, buf, len);
 }
 
-/* ---------------------------------------------------------------------- */
-/*  TT #317 Phase 4 — K144 failover jobs (run on tab5_worker queue)       */
-/* ---------------------------------------------------------------------- */
-
-/* Boot warm-up: probe + one synchronous infer to map the LLM into NPU
- * memory.  Up to 6 minutes — covers the K144's pathologically slow
- * cold-start.  On success the failover gate flips to READY; on any
- * failure (probe timeout, infer hang, NPU stall) it flips to UNAVAILABLE
- * and stays there until the next reboot. */
-static void voice_m5_warmup_job(void *arg) {
-   (void)arg;
-   s_m5_failover = M5_FAIL_PROBING;
-   ESP_LOGI(TAG, "K144 failover warm-up: probing module...");
-   extern void tab5_debug_obs_event(const char *kind, const char *detail);
-   tab5_debug_obs_event("m5.warmup", "start");
-   esp_err_t pe = voice_m5_llm_probe();
-   if (pe != ESP_OK) {
-      ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
-      s_m5_failover = M5_FAIL_UNAVAILABLE;
-      return;
-   }
-   char scratch[64];
-   int64_t t0 = esp_timer_get_time();
-   esp_err_t ie = voice_m5_llm_infer("hi", scratch, sizeof(scratch), M5_FAILOVER_WARMUP_TIMEOUT_S);
-   int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
-   if (ie == ESP_OK) {
-      ESP_LOGI(TAG, "K144 warm in %lldms — failover available: '%s'", dt_ms, scratch);
-      s_m5_failover = M5_FAIL_READY;
-      tab5_debug_obs_event("m5.warmup", "ready");
-   } else {
-      ESP_LOGW(TAG,
-               "K144 warm-up %s after %lldms — failover disabled (NPU likely hung; "
-               "see LEARNINGS \"K144 cold-start model load can hang\")",
-               esp_err_to_name(ie), dt_ms);
-      s_m5_failover = M5_FAIL_UNAVAILABLE;
-      tab5_debug_obs_event("m5.warmup", "unavailable");
-   }
-}
-
-/* Per-turn job: caller mallocs the prompt, this job free()s it.
- * Phase 5: full chat UI integration via ui_chat_add_message + voice_set_state
- * so the K144 reply renders as a regular assistant bubble alongside Dragon
- * replies, not a fly-by toast. */
-static void voice_m5_failover_text_job(void *arg) {
-   char *prompt = (char *)arg;
-   if (prompt == NULL) return;
-
-   s_m5_failover_in_flight = true;
-   s_m5_failover_engaged_during_down = true; /* P5: arms the reconnect-back toast */
-
-   /* Onboard-LLM badge.  voice_set_state(PROCESSING) drives the orb /
-    * status bar to "thinking..." just like a Dragon turn.  The USER
-    * bubble is added by the caller (/chat handler does
-    * `ui_chat_push_message("user", ...)` before voice_send_text),
-    * so we don't add it here — would duplicate. */
-   if (tab5_ui_try_lock(150)) {
-      ui_home_show_toast("Using onboard LLM");
-      tab5_ui_unlock();
-   }
-   voice_set_state(VOICE_STATE_PROCESSING, "K144");
-
-   char reply[1024] = {0};
-   esp_err_t ie = voice_m5_llm_infer(prompt, reply, sizeof(reply), M5_FAILOVER_INFER_TIMEOUT_S);
-
-   if (ie == ESP_OK && reply[0] != '\0') {
-      if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-      strncpy(s_llm_text, reply, MAX_TRANSCRIPT_LEN - 1);
-      s_llm_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
-      if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-
-      if (tab5_ui_try_lock(150)) {
-         ui_chat_add_message(reply, /*is_user=*/false);
-         tab5_ui_unlock();
-      }
-      ESP_LOGI(TAG, "K144 reply: '%s'", reply);
-   } else {
-      if (tab5_ui_try_lock(150)) {
-         ui_home_show_toast("Onboard LLM unavailable");
-         tab5_ui_unlock();
-      }
-      ESP_LOGW(TAG, "K144 failover failed (%s) for prompt '%s'", esp_err_to_name(ie), prompt);
-      /* If the K144 has gone hung mid-session, lock failover off so we
-       * don't keep retrying every text turn. */
-      if (ie == ESP_ERR_TIMEOUT) s_m5_failover = M5_FAIL_UNAVAILABLE;
-   }
-
-   voice_set_state(VOICE_STATE_READY, NULL);
-   free(prompt);
-   s_m5_failover_in_flight = false;
-}
-
-/* Public wrapper — called by both voice_send_text and any future REPL.
- * Returns ESP_OK if the failover was scheduled, otherwise propagates a
- * status the caller can surface to the user. */
-static esp_err_t voice_failover_schedule(const char *text) {
-   if (s_m5_failover != M5_FAIL_READY) return ESP_ERR_INVALID_STATE;
-   if (s_m5_failover_in_flight) return ESP_ERR_NO_MEM;
-   char *copy = strdup(text);
-   if (copy == NULL) return ESP_ERR_NO_MEM;
-   esp_err_t qe = tab5_worker_enqueue(voice_m5_failover_text_job, copy, "m5_failover");
-   if (qe != ESP_OK) {
-      free(copy);
-      return qe;
-   }
-   return ESP_OK;
-}
-
-esp_err_t voice_m5_failover_start_warmup(void) {
-   if (s_m5_failover != M5_FAIL_UNKNOWN) return ESP_ERR_INVALID_STATE;
-   return tab5_worker_enqueue(voice_m5_warmup_job, NULL, "m5_warmup");
-}
-
-int voice_m5_failover_state(void) { return (int)s_m5_failover; }
-
-/* ---------------------------------------------------------------------- */
-/*  TT #317 Phase 6b — autonomous K144 voice-assistant chain              */
-/*                                                                        */
-/*  Wired into the chat overlay's mic button when vmode=4 (Onboard).      */
-/*  Tap mic → voice_m5_chain_start() brings up audio→asr→llm→tts on the   */
-/*  K144 and spawns a drain task; ASR/LLM deltas land as chat bubbles,    */
-/*  TTS bytes upsample 1:3 and play through Tab5's speaker.  Tap mic      */
-/*  again → voice_m5_chain_stop() raises a stop_flag; the drain task      */
-/*  tears down the chain on the next loop iteration and exits.            */
-/* ---------------------------------------------------------------------- */
-static voice_m5_chain_handle_t *s_chain_handle = NULL;
-/* s_chain_active forward-declared near the top of the file alongside the
- * other M5 control state — voice_start_listening references it before this
- * section's bodies. */
-static volatile bool s_chain_stop_flag = false;
-/* Per-utterance accumulators — reset on every `finish=true` so multiple
- * back-to-back utterances within one chain session each get their own
- * bubble.  PSRAM-backed; statically declaring 2.5 KB of BSS pushed the
- * internal SRAM budget past the FreeRTOS timer-task stack alloc and the
- * device boot-looped with `vApplicationGetTimerTaskMemory: pxStackBufferTemp
- * != NULL` (same class of failure ui_sessions.c hit and fixed). */
-#define CHAIN_ASR_CAP 512
-#define CHAIN_LLM_CAP 2048
-static char *s_chain_asr_buf = NULL;
-static size_t s_chain_asr_len;
-static char *s_chain_llm_buf = NULL;
-static size_t s_chain_llm_len;
-
-/* Wave 3a Eigen workaround: synthesize one LLM reply text via the K144's
- * one-shot TTS path (NOT the chained tts.setup that crashes), upsample
- * 1:3 to 48 kHz, play through Tab5's speaker.  Posted to tab5_worker by
- * chain_text_callback on every LLM finish=true so it runs off the
- * chain drain task (which is busy reading more frames). */
-static void voice_m5_chain_tts_job(void *arg) {
-   char *text = (char *)arg;
-   if (text == NULL) return;
-   /* PSRAM scratch — 8 sec @ 16 kHz mono = 128 KB samples = 256 KB. */
-   const size_t cap = 16 * 8 * 1024;
-   int16_t *pcm16 = heap_caps_malloc(cap * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (pcm16 == NULL) {
-      free(text);
-      return;
-   }
-   size_t got = 0;
-   esp_err_t te = voice_m5_llm_tts(text, pcm16, cap, &got, 30);
-   if (te == ESP_OK && got > 0) {
-      const size_t cap48 = got * 3;
-      int16_t *pcm48 = heap_caps_malloc(cap48 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (pcm48 != NULL) {
-         for (size_t i = 0; i < got; i++) {
-            const int16_t cur = pcm16[i];
-            const int16_t nxt = (i + 1 < got) ? pcm16[i + 1] : cur;
-            for (int j = 0; j < 3; j++) {
-               pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
-            }
-         }
-         tab5_audio_play_raw(pcm48, cap48);
-         heap_caps_free(pcm48);
-      }
-   } else if (te != ESP_OK) {
-      ESP_LOGW(TAG, "chain per-utterance TTS failed (%s) for '%.60s'", esp_err_to_name(te), text);
-   }
-   heap_caps_free(pcm16);
-   free(text);
-}
-
-static void chain_text_callback(const char *text, bool from_llm, bool finish, void *user) {
-   (void)user;
-   char *buf = from_llm ? s_chain_llm_buf : s_chain_asr_buf;
-   size_t *len = from_llm ? &s_chain_llm_len : &s_chain_asr_len;
-   const size_t cap = from_llm ? CHAIN_LLM_CAP : CHAIN_ASR_CAP;
-   if (buf == NULL) return; /* race with teardown */
-   const size_t add = strlen(text);
-
-   /* sherpa-ncnn ASR streams CUMULATIVE partials — each delta is the full
-    * transcription so far, growing incrementally.  K144 LLM streams
-    * ADDITIVE tokens — each delta is the next chunk to append.  Different
-    * accumulator strategies. */
-   if (from_llm) {
-      if (*len + add < cap - 1) {
-         memcpy(buf + *len, text, add);
-         *len += add;
-         buf[*len] = '\0';
-      }
-   } else {
-      const size_t copy = (add < cap - 1) ? add : cap - 1;
-      memcpy(buf, text, copy);
-      buf[copy] = '\0';
-      *len = copy;
-   }
-
-   if (finish && *len > 0) {
-      ESP_LOGI(TAG, "chain %s commit: '%s'", from_llm ? "LLM" : "ASR", buf);
-
-      /* Wave 3a Eigen workaround: chain doesn't include tts.setup any
-       * more (K144's SummerTTS crashes mid-stream from LLM).  Instead,
-       * on every LLM finish=true, kick off a per-utterance synth via
-       * voice_m5_llm_tts on the worker queue.  The worker's
-       * voice_m5_llm_tts call serialises on the same UART mutex the
-       * chain holds per-iteration (Wave 1) so they don't collide. */
-      if (from_llm) {
-         char *copy = strdup(buf);
-         if (copy != NULL) {
-            if (tab5_worker_enqueue(voice_m5_chain_tts_job, copy, "chain_tts") != ESP_OK) {
-               ESP_LOGW(TAG, "chain TTS enqueue failed (queue full?), reply text-only");
-               free(copy);
-            }
-         }
-      }
-
-      if (tab5_ui_try_lock(150)) {
-         ui_chat_add_message(buf, /*is_user=*/!from_llm);
-         tab5_ui_unlock();
-      }
-      *len = 0;
-      buf[0] = '\0';
-   }
-}
-
-static void chain_audio_callback(const int16_t *pcm, size_t samples, void *user) {
-   (void)user;
-   if (samples == 0 || pcm == NULL) return;
-   const size_t cap_48k = samples * 3;
-   int16_t *pcm48 = heap_caps_malloc(cap_48k * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (pcm48 == NULL) {
-      ESP_LOGW(TAG, "chain TTS: 48k upsample alloc failed (%u samples)", (unsigned)cap_48k);
-      return;
-   }
-   for (size_t i = 0; i < samples; i++) {
-      const int16_t cur = pcm[i];
-      const int16_t nxt = (i + 1 < samples) ? pcm[i + 1] : cur;
-      for (int j = 0; j < 3; j++) {
-         pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
-      }
-   }
-   tab5_audio_play_raw(pcm48, cap_48k);
-   heap_caps_free(pcm48);
-}
-
-static void chain_free_buffers(void) {
-   if (s_chain_asr_buf) {
-      heap_caps_free(s_chain_asr_buf);
-      s_chain_asr_buf = NULL;
-   }
-   if (s_chain_llm_buf) {
-      heap_caps_free(s_chain_llm_buf);
-      s_chain_llm_buf = NULL;
-   }
-   s_chain_asr_len = 0;
-   s_chain_llm_len = 0;
-}
-
-static esp_err_t chain_alloc_buffers(void) {
-   if (s_chain_asr_buf == NULL) {
-      s_chain_asr_buf = heap_caps_malloc(CHAIN_ASR_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (s_chain_asr_buf == NULL) goto fail;
-   }
-   if (s_chain_llm_buf == NULL) {
-      s_chain_llm_buf = heap_caps_malloc(CHAIN_LLM_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-      if (s_chain_llm_buf == NULL) goto fail;
-   }
-   s_chain_asr_buf[0] = '\0';
-   s_chain_llm_buf[0] = '\0';
-   s_chain_asr_len = 0;
-   s_chain_llm_len = 0;
-   return ESP_OK;
-fail:
-   chain_free_buffers();
-   return ESP_ERR_NO_MEM;
-}
-
-static void voice_m5_chain_drain_task(void *arg) {
-   (void)arg;
-
-   /* Setup runs HERE on the worker task, NOT on the LVGL tap callback —
-    * issuing four serialised UART round-trips with NPU cold-start delays
-    * blocks for ~5 sec, which would WDT-reset the LVGL task on a tap. */
-   voice_m5_chain_handle_t *h = NULL;
-   esp_err_t e = voice_m5_llm_chain_setup(&h, &s_chain_stop_flag);
-   if (e != ESP_OK || h == NULL) {
-      ESP_LOGW(TAG, "chain setup failed: %s", esp_err_to_name(e));
-      chain_free_buffers();
-      s_chain_active = false;
-      voice_set_state(VOICE_STATE_READY, NULL);
-      if (tab5_ui_try_lock(150)) {
-         ui_home_show_toast("Onboard chain unavailable");
-         tab5_ui_unlock();
-      }
-      vTaskDelete(NULL);
-      return;
-   }
-   s_chain_handle = h;
-   voice_set_state(VOICE_STATE_LISTENING, "K144");
-   if (tab5_ui_try_lock(150)) {
-      ui_home_show_toast("Onboard chat — speak at the K144");
-      tab5_ui_unlock();
-   }
-   ESP_LOGI(TAG, "chain ready — entering drain loop");
-
-   /* 10-min hard cap; user-initiated stop happens earlier via stop_flag. */
-   esp_err_t re = voice_m5_llm_chain_run(h, chain_text_callback, chain_audio_callback, NULL, &s_chain_stop_flag, 600);
-   ESP_LOGI(TAG, "chain drain exited: %s", esp_err_to_name(re));
-
-   voice_m5_llm_chain_teardown(h);
-   chain_free_buffers();
-   s_chain_handle = NULL;
-   /* Audit #12: gate flips LAST so a fast double-tap re-entry of
-    * voice_m5_chain_start sees freed buffers (chain_alloc_buffers will
-    * re-alloc cleanly) rather than the prior session's still-mapped
-    * pointers. */
-   s_chain_active = false;
-
-   voice_set_state(VOICE_STATE_READY, NULL);
-   if (tab5_ui_try_lock(150)) {
-      ui_home_show_toast("Onboard chat ended");
-      tab5_ui_unlock();
-   }
-   vTaskDelete(NULL);
-}
-
-static esp_err_t voice_m5_chain_start(void) {
-   if (s_chain_active) return ESP_ERR_INVALID_STATE;
-
-   esp_err_t be = chain_alloc_buffers();
-   if (be != ESP_OK) {
-      ESP_LOGW(TAG, "chain buffer alloc failed");
-      return be;
-   }
-
-   s_chain_stop_flag = false;
-   s_chain_active = true;
-
-   /* Returns immediately; the drain task does the heavy chain_setup() so
-    * the LVGL tap callback isn't blocked for the K144's 5-sec NPU cold
-    * start.  PROCESSING is the right transient — chain_drain_task flips
-    * to LISTENING once setup completes, READY on teardown.
-    *
-    * 8 KB stack — drain loop calls cJSON parse + base64 decode + the audio
-    * upsample inline; matches voice's other long-lived tasks. */
-   BaseType_t r = xTaskCreate(voice_m5_chain_drain_task, "m5_chain", 8192, NULL, 5, NULL);
-   if (r != pdPASS) {
-      s_chain_active = false;
-      chain_free_buffers();
-      return ESP_ERR_NO_MEM;
-   }
-
-   voice_set_state(VOICE_STATE_PROCESSING, "K144 setup");
-   if (tab5_ui_try_lock(150)) {
-      ui_home_show_toast("Onboard chat starting…");
-      tab5_ui_unlock();
-   }
-   ESP_LOGI(TAG, "chain start dispatched to drain task");
-   extern void tab5_debug_obs_event(const char *kind, const char *detail);
-   tab5_debug_obs_event("m5.chain", "start");
-   return ESP_OK;
-}
-
-static esp_err_t voice_m5_chain_stop(void) {
-   if (!s_chain_active) return ESP_ERR_INVALID_STATE;
-   ESP_LOGI(TAG, "chain stop requested");
-   extern void tab5_debug_obs_event(const char *kind, const char *detail);
-   tab5_debug_obs_event("m5.chain", "stop");
-   s_chain_stop_flag = true;
-   /* Drain task notices stop_flag, tears down, transitions state to READY,
-    * shows toast, deletes itself.  Do NOT free the handle here — the task
-    * owns its lifetime. */
-   return ESP_OK;
-}
-
-bool voice_m5_chain_is_active(void) { return s_chain_active; }
-
 esp_err_t voice_send_text(const char *text)
 {
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
@@ -3865,10 +3455,10 @@ esp_err_t voice_send_text(const char *text)
      * future Phase 6) but text turns bypass it entirely. */
     if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
        /* Audit #3: chain owns the K144 LLM unit while active.  A
-        * concurrent voice_failover_schedule races the chain on the same
+        * concurrent voice_onboard_send_text races the chain on the same
         * UART (now mutex-serialised post-Wave-1 but still produces
         * duplicate replies the user didn't ask for).  Refuse cleanly. */
-       if (s_chain_active) {
+       if (voice_onboard_chain_active()) {
           ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD: chain active, refusing text turn");
           if (tab5_ui_try_lock(100)) {
              ui_home_show_toast("Stop onboard chat first to send text");
@@ -3877,7 +3467,7 @@ esp_err_t voice_send_text(const char *text)
           return ESP_ERR_INVALID_STATE;
        }
 
-       esp_err_t fe = voice_failover_schedule(text);
+       esp_err_t fe = voice_onboard_send_text(text);
        if (fe == ESP_OK) {
           ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD — routed to K144");
           return ESP_OK;
@@ -3898,7 +3488,7 @@ esp_err_t voice_send_text(const char *text)
        const int64_t now_us = esp_timer_get_time();
        const int64_t down_ms = (s_ws_last_alive_us == 0) ? INT64_MAX : (now_us - s_ws_last_alive_us) / 1000;
        if (down_ms >= M5_FAILOVER_GRACE_MS && tab5_settings_get_voice_mode() == VMODE_LOCAL) {
-          esp_err_t fe = voice_failover_schedule(text);
+          esp_err_t fe = voice_onboard_send_text(text);
           if (fe == ESP_OK) {
              ESP_LOGI(TAG, "WS down %lldms — routed to K144 failover", down_ms);
              return ESP_OK;
