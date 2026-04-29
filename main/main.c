@@ -228,6 +228,39 @@ static void install_cjson_psram_hooks(void) {
 }
 
 /* ---------------------------------------------------------------------- */
+/*  K144 chain callbacks — hoisted to file scope to avoid GCC nested-     */
+/*  function trampolines on the embedded stack (executable-stack pages    */
+/*  are disabled on ESP32-P4).                                             */
+/* ---------------------------------------------------------------------- */
+static void m5chain_text_cb(const char *text, bool from_llm, bool finish, void *user) {
+   (void)user;
+   printf("[%s] %s%s", from_llm ? "LLM" : "ASR", text, finish ? " (fin)\n" : "\n");
+   fflush(stdout);
+}
+
+static void m5chain_audio_cb(const int16_t *pcm, size_t samples, void *user) {
+   (void)user;
+   if (samples == 0) return;
+   const size_t cap_48k = samples * 3;
+   int16_t *pcm48 = heap_caps_malloc(cap_48k * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!pcm48) {
+      printf("[m5chain] 48k alloc failed (%u samples)\n", (unsigned)cap_48k);
+      return;
+   }
+   for (size_t i = 0; i < samples; i++) {
+      int16_t cur = pcm[i];
+      int16_t nxt = (i + 1 < samples) ? pcm[i + 1] : cur;
+      for (int j = 0; j < 3; j++) {
+         pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
+      }
+   }
+   tab5_audio_play_raw(pcm48, cap_48k);
+   heap_caps_free(pcm48);
+   printf("[TTS] %u samples (~%u ms)\n", (unsigned)samples, (unsigned)((samples * 1000) / 16000));
+   fflush(stdout);
+}
+
+/* ---------------------------------------------------------------------- */
 /*  K144 LLM Module bench helpers (TT #317 Phase 2 — StackFlow JSON)      */
 /*                                                                        */
 /*  Used by the `m5ping` and `m5lscmd` serial REPL commands at the bottom */
@@ -1048,6 +1081,29 @@ void app_main(void)
                        int64_t dt2_ms = (esp_timer_get_time() - t1) / 1000;
                        printf("[m5baud] %d/%d pings OK in %lldms (avg %lldms/ping)\n", ok_count, ok_count + fail_count,
                               dt2_ms, (ok_count + fail_count) ? dt2_ms / (ok_count + fail_count) : 0);
+                    } else if (strncmp(cmd_buf, "m5chain", 7) == 0) {
+                       /* Phase 6b: m5chain [seconds]
+                        *   Brings up audio→asr→llm→tts on K144, drains
+                        *   ASR + LLM text to stdout, plays TTS chunks
+                        *   through the Tab5 speaker (upsampled 1:3 from
+                        *   16k mono to 48k mono).  Default 60s session. */
+                       const char *args = cmd_buf + 7;
+                       while (*args == ' ') args++;
+                       uint32_t seconds = (*args) ? (uint32_t)strtoul(args, NULL, 10) : 60;
+                       if (seconds == 0) seconds = 60;
+                       printf("[m5chain] bringing up chain (session=%lus)\n", (unsigned long)seconds);
+                       voice_m5_chain_handle_t *ch = NULL;
+                       esp_err_t cs = voice_m5_llm_chain_setup(&ch);
+                       if (cs != ESP_OK || ch == NULL) {
+                          printf("[m5chain] setup failed: %s\n", esp_err_to_name(cs));
+                       } else {
+                          printf("[m5chain] CHAIN READY — speak at the K144 stack now\n");
+                          esp_err_t re =
+                              voice_m5_llm_chain_run(ch, m5chain_text_cb, m5chain_audio_cb, NULL, NULL, seconds);
+                          printf("[m5chain] run finished: %s\n", esp_err_to_name(re));
+                          voice_m5_llm_chain_teardown(ch);
+                          printf("[m5chain] torn down\n");
+                       }
                     } else {
                        printf("Unknown: %s\n", cmd_buf);
                        printf(
@@ -1055,7 +1111,8 @@ void app_main(void)
                            "  red/green/blue/white/black, bright <0-100>, pattern [0-3],\n"
                            "  touch, touchdiag, sd, cam, audio, mic, voice, imu, rtc, ntp, bat,\n"
                            "  noteadd <text>, notes, notedel <idx>, notetest, noteclear, reboot,\n"
-                           "  m5ping, m5lscmd, m5infer <prompt>, m5release, m5baud <bps> [N]\n");
+                           "  m5ping, m5lscmd, m5infer <prompt>, m5release, m5baud <bps> [N],\n"
+                           "  m5tts <text>, m5recover <bps>, m5chain [seconds]\n");
                     }
                 }
                 pos = 0;

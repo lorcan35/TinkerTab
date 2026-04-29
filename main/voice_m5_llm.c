@@ -732,6 +732,310 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
    return ESP_OK;
 }
 
+/* ---------------------------------------------------------------------- */
+/*  Phase 6b — Autonomous K144 voice-assistant chain                      */
+/* ---------------------------------------------------------------------- */
+
+#define M5_CHAIN_ASR_MODEL "sherpa-ncnn-streaming-zipformer-20M-2023-02-17"
+
+struct voice_m5_chain_handle {
+   char audio_id[32]; /* "audio" or "audio.NNNN" depending on K144 ver */
+   char asr_id[32];   /* "asr.NNNN" */
+   char llm_id[32];   /* "llm.NNNN" */
+   char tts_id[32];   /* "tts.NNNN" */
+};
+
+/* Generic setup helper — sends one `setup` and returns the assigned work_id
+ * via @p out_work_id (32-byte buffer).  data_obj is consumed (deleted).
+ *
+ * NB: once a unit upstream is set up (e.g. ASR after audio.setup), the K144
+ * may already be emitting stream frames on the UART carrying that unit's
+ * work_id while we're still waiting for the NEXT setup's ACK.  We therefore
+ * skip non-matching frames within the timeout instead of bailing on the
+ * first one. */
+static esp_err_t chain_setup_unit(const char *work_id_seed, const char *object, cJSON *data_obj, char *out_work_id,
+                                  size_t out_cap, uint32_t timeout_ms) {
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "chain-setup-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = work_id_seed,
+       .action = "setup",
+       .object = object,
+       .data_json = data_obj,
+   };
+   char tx[M5_TX_BUF_BYTES];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   cJSON_Delete(data_obj);
+   if (tx_len < 0) return ESP_ERR_NO_MEM;
+
+   tab5_port_c_flush();
+   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+      ESP_LOGE(TAG, "chain setup(%s): port_c send truncated", object);
+      return ESP_FAIL;
+   }
+   if (ensure_rx_buf() != ESP_OK) return ESP_ERR_NO_MEM;
+   s_rx_len = 0;
+
+   const int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+   while (esp_timer_get_time() < deadline_us) {
+      char *nl = memchr(s_rx_buf, '\n', s_rx_len);
+      while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && esp_timer_get_time() < deadline_us) {
+         uint32_t budget_ms = (uint32_t)((deadline_us - esp_timer_get_time()) / 1000);
+         if (budget_ms > 100) budget_ms = 100;
+         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
+         if (n > 0) {
+            s_rx_len += (size_t)n;
+            nl = memchr(s_rx_buf, '\n', s_rx_len);
+         }
+      }
+      if (nl == NULL) break;
+
+      size_t frame_len = (size_t)(nl - s_rx_buf);
+      m5_stackflow_response_t resp = {0};
+      esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, frame_len, &resp);
+      size_t consumed = frame_len + 1;
+      if (consumed < s_rx_len) {
+         memmove(s_rx_buf, s_rx_buf + consumed, s_rx_len - consumed);
+      }
+      s_rx_len -= consumed;
+
+      if (pe != ESP_OK) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      if (!m5_stackflow_response_matches(&resp, request_id)) {
+         /* Stream frame from a previously-set-up unit — ignore. */
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      if (resp.error_code != 0 || resp.work_id == NULL) {
+         ESP_LOGE(TAG, "chain setup(%s) err=%d msg='%s' work_id=%s", object, resp.error_code,
+                  resp.error_message ? resp.error_message : "", resp.work_id ? resp.work_id : "(null)");
+         m5_stackflow_response_free(&resp);
+         return ESP_ERR_INVALID_RESPONSE;
+      }
+      strncpy(out_work_id, resp.work_id, out_cap - 1);
+      out_work_id[out_cap - 1] = '\0';
+      ESP_LOGI(TAG, "chain setup(%s) -> %s", object, out_work_id);
+      m5_stackflow_response_free(&resp);
+      return ESP_OK;
+   }
+
+   ESP_LOGE(TAG, "chain setup(%s): timeout waiting for ACK", object);
+   return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
+   if (out_handle == NULL) return ESP_ERR_INVALID_ARG;
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   voice_m5_chain_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) return ESP_ERR_NO_MEM;
+
+   /* 1) audio.setup — onboard mic + speaker, capcard=0/capdev=0,
+    *    playcard=0/playdev=1.  Verified via TCP spike. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddNumberToObject(d, "capcard", 0);
+      cJSON_AddNumberToObject(d, "capdevice", 0);
+      cJSON_AddNumberToObject(d, "capVolume", 0.5);
+      cJSON_AddNumberToObject(d, "playcard", 0);
+      cJSON_AddNumberToObject(d, "playdevice", 1);
+      cJSON_AddNumberToObject(d, "playVolume", 0.15);
+      err = chain_setup_unit("audio", "audio.setup", d, h->audio_id, sizeof(h->audio_id), M5_SETUP_TIMEOUT_MS);
+      if (err != ESP_OK) goto fail;
+   }
+
+   /* 2) asr.setup — subscribe to sys.pcm, stream UTF-8 out. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddStringToObject(d, "model", M5_CHAIN_ASR_MODEL);
+      cJSON_AddStringToObject(d, "response_format", "asr.utf-8.stream");
+      cJSON *inp = cJSON_CreateArray();
+      cJSON_AddItemToArray(inp, cJSON_CreateString("sys.pcm"));
+      cJSON_AddItemToObject(d, "input", inp);
+      cJSON_AddBoolToObject(d, "enoutput", true);
+      err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id), M5_SETUP_TIMEOUT_MS);
+      if (err != ESP_OK) goto fail;
+   }
+
+   /* 3) llm.setup — subscribe to ASR text, stream UTF-8 out. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddStringToObject(d, "model", M5_LLM_MODEL);
+      cJSON_AddStringToObject(d, "response_format", M5_LLM_RESPONSE_FORMAT);
+      cJSON *inp = cJSON_CreateArray();
+      cJSON_AddItemToArray(inp, cJSON_CreateString(h->asr_id));
+      cJSON_AddItemToObject(d, "input", inp);
+      cJSON_AddBoolToObject(d, "enoutput", true);
+      cJSON_AddBoolToObject(d, "enkws", false);
+      cJSON_AddNumberToObject(d, "max_token_len", 127);
+      cJSON_AddStringToObject(d, "prompt", "You are a helpful, concise assistant. Reply in one sentence.");
+      /* LLM cold-start NPU model load can take 5-10s — give it more headroom. */
+      err = chain_setup_unit("llm", "llm.setup", d, h->llm_id, sizeof(h->llm_id), 15000);
+      if (err != ESP_OK) goto fail;
+   }
+
+   /* 4) tts.setup — subscribe to LLM text, base64 wav out. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddStringToObject(d, "model", M5_TTS_MODEL);
+      cJSON_AddStringToObject(d, "response_format", "tts.base64.wav");
+      cJSON *inp = cJSON_CreateArray();
+      cJSON_AddItemToArray(inp, cJSON_CreateString(h->llm_id));
+      cJSON_AddItemToObject(d, "input", inp);
+      cJSON_AddBoolToObject(d, "enoutput", true);
+      cJSON_AddBoolToObject(d, "enkws", false);
+      err = chain_setup_unit("tts", "tts.setup", d, h->tts_id, sizeof(h->tts_id), M5_SETUP_TIMEOUT_MS);
+      if (err != ESP_OK) goto fail;
+   }
+
+   ESP_LOGI(TAG, "chain ready: audio=%s asr=%s llm=%s tts=%s — speak at the K144", h->audio_id, h->asr_id, h->llm_id,
+            h->tts_id);
+   *out_handle = h;
+   return ESP_OK;
+
+fail:
+   /* Best-effort tear-down of whatever DID come up. */
+   voice_m5_llm_chain_teardown(h);
+   return err;
+}
+
+/* Helper: one-shot exit by work_id (no response wait — fire-and-forget). */
+static void chain_exit_unit(const char *work_id) {
+   if (work_id == NULL || work_id[0] == '\0') return;
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "chain-exit-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = work_id,
+       .action = "exit",
+   };
+   char tx[M5_TX_BUF_BYTES];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len > 0) {
+      (void)send_and_recv_one_frame(tx, tx_len, 500);
+   }
+}
+
+void voice_m5_llm_chain_teardown(voice_m5_chain_handle_t *handle) {
+   if (handle == NULL) return;
+   /* Reverse order of bring-up so each unit's downstream subscriber is
+    * killed before the publisher disappears. */
+   chain_exit_unit(handle->tts_id);
+   chain_exit_unit(handle->llm_id);
+   chain_exit_unit(handle->asr_id);
+   chain_exit_unit(handle->audio_id);
+   ESP_LOGI(TAG, "chain torn down");
+   heap_caps_free(handle);
+}
+
+esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain_text_cb text_cb,
+                                 voice_m5_chain_audio_cb audio_cb, void *user, volatile bool *stop_flag,
+                                 uint32_t timeout_s) {
+   if (handle == NULL) return ESP_ERR_INVALID_ARG;
+   if (handle->asr_id[0] == '\0' || handle->llm_id[0] == '\0' || handle->tts_id[0] == '\0') {
+      return ESP_ERR_INVALID_STATE;
+   }
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   if (ensure_rx_buf() != ESP_OK) return ESP_ERR_NO_MEM;
+
+   const int64_t deadline_us = (timeout_s == 0) ? INT64_MAX : esp_timer_get_time() + (int64_t)timeout_s * 1000 * 1000;
+
+   /* PCM scratch — TTS chunks decode to ~16 KB each (1 sec of 16 kHz mono).
+    * Allocate generous PSRAM headroom for longer chunks. */
+   const size_t pcm_cap_samples = 64 * 1024; /* 4 sec @ 16 kHz */
+   int16_t *pcm = heap_caps_malloc(pcm_cap_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (pcm == NULL) return ESP_ERR_NO_MEM;
+
+   while (!(stop_flag != NULL && *stop_flag) && esp_timer_get_time() < deadline_us) {
+      /* Refill rx_buf until we have at least one \n. */
+      char *nl = memchr(s_rx_buf, '\n', s_rx_len);
+      while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && !(stop_flag != NULL && *stop_flag) &&
+             esp_timer_get_time() < deadline_us) {
+         /* Short slice so we can re-check stop_flag and the deadline often. */
+         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 100);
+         if (n > 0) {
+            s_rx_len += (size_t)n;
+            nl = memchr(s_rx_buf, '\n', s_rx_len);
+         }
+      }
+      if (nl == NULL) continue;
+
+      size_t frame_len = (size_t)(nl - s_rx_buf);
+      m5_stackflow_response_t resp = {0};
+      esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, frame_len, &resp);
+      size_t consumed = frame_len + 1;
+      if (consumed < s_rx_len) {
+         memmove(s_rx_buf, s_rx_buf + consumed, s_rx_len - consumed);
+      }
+      s_rx_len -= consumed;
+      if (pe != ESP_OK) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      if (resp.work_id == NULL || resp.data == NULL) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+
+      const bool is_asr = (strcmp(resp.work_id, handle->asr_id) == 0);
+      const bool is_llm = (strcmp(resp.work_id, handle->llm_id) == 0);
+      const bool is_tts = (strcmp(resp.work_id, handle->tts_id) == 0);
+      if (!is_asr && !is_llm && !is_tts) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+
+      if (is_tts) {
+         /* TTS: data is either bare base64 string OR {delta,index,finish}. */
+         const char *b64 = NULL;
+         if (cJSON_IsString(resp.data)) {
+            b64 = resp.data->valuestring;
+         } else if (cJSON_IsObject(resp.data)) {
+            const cJSON *d = cJSON_GetObjectItemCaseSensitive(resp.data, "delta");
+            if (cJSON_IsString(d)) b64 = d->valuestring;
+         }
+         if (b64 != NULL && audio_cb != NULL) {
+            size_t pcm_bytes = 0;
+            int dec = mbedtls_base64_decode((unsigned char *)pcm, pcm_cap_samples * sizeof(int16_t), &pcm_bytes,
+                                            (const unsigned char *)b64, strlen(b64));
+            if (dec == 0 && pcm_bytes > 0) {
+               audio_cb(pcm, pcm_bytes / sizeof(int16_t), user);
+            } else if (dec != 0) {
+               ESP_LOGW(TAG, "chain: tts base64 decode failed -0x%04x (b64_len=%u)", -dec, (unsigned)strlen(b64));
+            }
+         }
+      } else {
+         /* ASR or LLM: data is {delta,...,finish} or bare string. */
+         const char *delta = NULL;
+         bool finish = false;
+         if (cJSON_IsString(resp.data)) {
+            delta = resp.data->valuestring;
+            finish = true;
+         } else if (cJSON_IsObject(resp.data)) {
+            const cJSON *d = cJSON_GetObjectItemCaseSensitive(resp.data, "delta");
+            if (cJSON_IsString(d)) delta = d->valuestring;
+            const cJSON *fin = cJSON_GetObjectItemCaseSensitive(resp.data, "finish");
+            finish = cJSON_IsTrue(fin);
+         }
+         if (delta != NULL && delta[0] != '\0' && text_cb != NULL) {
+            text_cb(delta, is_llm, finish, user);
+         }
+      }
+      m5_stackflow_response_free(&resp);
+   }
+
+   heap_caps_free(pcm);
+   if (stop_flag != NULL && *stop_flag) return ESP_OK;
+   return ESP_ERR_TIMEOUT;
+}
+
 esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
    esp_err_t uart_err = ensure_uart();
    if (uart_err != ESP_OK) return uart_err;

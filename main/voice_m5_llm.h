@@ -192,6 +192,83 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
  */
 esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud);
 
+/* ---------------------------------------------------------------------- */
+/*  Phase 6b — Autonomous K144 voice-assistant chain                      */
+/*                                                                        */
+/*  K144 has its own onboard mic (verified via /opt/usr/bin/tinycap on    */
+/*  the AX630C: RMS jumps 8× when the user speaks).  Push-PCM-over-JSON   */
+/*  is NOT a workable path — the asr unit's `input` field accepts a       */
+/*  publish/subscribe queue name, not inline frames.  Instead, we wire    */
+/*  the four units together on the K144 ITSELF and just drain output     */
+/*  frames over UART.                                                     */
+/*                                                                        */
+/*  Chain topology (from `/tmp/m5spike/chain_probe.py` — TCP-verified):   */
+/*    audio.setup  capture=card0/dev0 (onboard mic), play=card0/dev1     */
+/*       └── publishes "sys.pcm" to internal ZMQ                          */
+/*    asr.setup    input=["sys.pcm"], stream out                          */
+/*       └── publishes "asr.NNNN" stream                                  */
+/*    llm.setup    input=[asr_id], stream out                             */
+/*       └── publishes "llm.NNNN" stream                                  */
+/*    tts.setup    input=[llm_id], base64.wav                             */
+/*       └── audible on K144's own speaker AND emits frames over UART    */
+/*                                                                        */
+/*  The chain runs autonomously after setup — Tab5 is purely a passive    */
+/*  observer.  TTS audio also plays through the K144 speaker locally,    */
+/*  but the chain emits the same audio over UART so Tab5 can render it    */
+/*  through its own speaker via tab5_audio_play_raw if desired.           */
+/* ---------------------------------------------------------------------- */
+
+/** Opaque chain handle. */
+typedef struct voice_m5_chain_handle voice_m5_chain_handle_t;
+
+/** Per-frame callbacks invoked from voice_m5_llm_chain_run during drain. */
+typedef void (*voice_m5_chain_text_cb)(const char *text, bool from_llm, bool finish, void *user);
+typedef void (*voice_m5_chain_audio_cb)(const int16_t *pcm_16k_mono, size_t samples, void *user);
+
+/**
+ * @brief Bring up the autonomous voice-assistant chain on the K144.
+ *
+ * Issues four `setup` calls in sequence (audio → asr → llm → tts), each
+ * subscribing to the previous unit's output.  After this call the K144's
+ * mic is live and audio flows internally; ASR/LLM/TTS frames also leak
+ * out on the UART for Tab5 to drain via voice_m5_llm_chain_run.
+ *
+ * @param[out] out_handle  Receives the new chain handle.  Free with
+ *                         @ref voice_m5_llm_chain_teardown.
+ *
+ * @return ESP_OK on success; ESP_ERR_TIMEOUT / ESP_ERR_INVALID_RESPONSE
+ *         on per-stage failure (caller must NOT call teardown on a
+ *         non-OK return — handle is set to NULL); ESP_ERR_NO_MEM on
+ *         allocation failure.
+ */
+esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle);
+
+/**
+ * @brief Drain output frames from a live chain, invoking callbacks.
+ *
+ * Blocking — runs until @p stop_flag transitions to true OR @p timeout_s
+ * elapses.  Frames arrive in any order from the four work_ids:
+ *   - asr.NNNN → text_cb(delta, from_llm=false, finish, user)
+ *   - llm.NNNN → text_cb(delta, from_llm=true,  finish, user)
+ *   - tts.NNNN → base64-decoded into PSRAM scratch, then audio_cb(pcm,...)
+ *
+ * Callbacks may be NULL — that frame type is then silently consumed.
+ *
+ * @return ESP_OK on stop_flag-driven exit;
+ *         ESP_ERR_TIMEOUT if @p timeout_s elapsed;
+ *         ESP_ERR_INVALID_ARG / ESP_ERR_INVALID_STATE on bad inputs;
+ *         propagated UART error on transport failure.
+ */
+esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain_text_cb text_cb,
+                                 voice_m5_chain_audio_cb audio_cb, void *user, volatile bool *stop_flag,
+                                 uint32_t timeout_s);
+
+/**
+ * @brief Tear down a chain — issues `exit` to each unit in reverse order
+ *        and frees the handle.  Safe with NULL.
+ */
+void voice_m5_llm_chain_teardown(voice_m5_chain_handle_t *handle);
+
 #ifdef __cplusplus
 }
 #endif

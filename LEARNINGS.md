@@ -69,21 +69,47 @@ Every entry here was learned the hard way. Read this before touching the codebas
   - Acts as a passive heatsink for the K144's metal frame
 - **Prevention:** Document the carrier-required topology in `docs/PLAN-m5-llm-module.md` — direct K144-on-Tab5 stacking is NOT a supported config.  When verifying K144 setup against Tab5, the bench rig must be:  Tab5 base → Mate carrier (M5-Bus) → K144 (FPC) → top USB-C powering K144.
 
-### K144 ASR is subscription-only — no push-PCM-via-JSON path exists
+### K144 has a working microphone — push-PCM is NOT needed; chain runs autonomously on K144
+- **Date:** 2026-04-29 (corrected from earlier "subscription-only" finding)
+- **Earlier wrong claim:** Documented Phase 6b as "deferred indefinitely" because I assumed K144 had no mic and the only path was Tab5-pushes-PCM-to-K144 (which the StackFlow protocol doesn't expose).
+- **What I actually missed:** The K144 hardware has a **working microphone** wired through the AX630C audio codec.  Live capture from `/opt/usr/bin/tinycap -D 0 -d 0 -r 48000 -c 2 -b 16` shows:
+  ```
+  sec 0: rms=  42  peak= 665   (silence)
+  sec 1: rms= 357  peak=2984   ████████  (user speaking)
+  sec 2: rms= 422  peak=2983   ████████
+  sec 3: rms= 276  peak=2211   █████
+  sec 4: rms= 363  peak=3108   ███████
+  ```
+  RMS jumped 8× when audio was present.  The mic is NOT a dead channel — it's wired, working, and picks up speech clearly.
+- **My initial mistake:** I recorded for 2 seconds in silence, got RMS=42, and concluded "no mic."  RMS=42 in a quiet room is normal ambient noise floor for a working mic — a truly disconnected channel reads RMS≈0-5 (just ADC quantization).  Should have asked the user to speak BEFORE concluding.
+- **What this means for the architecture:**  The K144 doesn't need Tab5 to send it audio.  The K144 captures sound itself, runs the full ASR → LLM → TTS chain locally, and only needs to send the synthesized TTS audio back to Tab5 over UART for playback.  This matches the official M5 KWS_VAD_Whisper_LLM_TTS example exactly — host devices just kick off the pipeline and drain output.
+- **Correct architecture (Phase 6b reopened with this approach):**
+  ```
+  User speaks at the stack
+        ↓
+  K144 mic (sys.pcm topic, published by llm-audio)
+        ↓
+  K144 ASR (sherpa-ncnn streaming) subscribes → text
+        ↓
+  K144 LLM (qwen2.5-0.5B) subscribes to ASR → reply text
+        ↓
+  K144 TTS (single_speaker_english_fast) subscribes to LLM → audio bytes
+        ↓
+  TTS output frames sent back to caller via the StackFlow gateway (UART)
+        ↓
+  Tab5 drains audio frames from UART, plays through speaker
+  ```
+  No push-PCM, no custom binaries, no protocol gymnastics.  The K144's StackFlow framework was designed for exactly this.
+- **Prevention:** When the AX630C / K144 / similar M5 module exposes ALSA capture devices, **always test capture WITH audible input** (have the user speak, clap, play music) before assuming the channel is disconnected.  Pure silence in a quiet room reads RMS≈40-60 from any working mic — that's not "no signal," that's "ambient noise floor."  A truly dead channel reads RMS≈0-5.
+
+### K144 ASR via push-PCM-over-UART — alternative documented for completeness
 - **Date:** 2026-04-29
-- **Symptom:** Phase 6b ("Tab5 mic → K144 ASR → text") spike attempted to send base64-encoded WAV in an `inference` call to the `asr` unit.  Setup OK with `input=["asr.audio.wav.base64.stream"]` (got valid `work_id=asr.NNNN`), but the inference always failed: `-23 "Base64 decoding error"` (single frame) or silent drop (chunked stream).
-- **Root Cause:** The K144's StackFlow architecture is **subscription-based** for audio, not push-based.  Reading the K144 source (`projects/llm_framework/main_audio/src/main.cpp`) shows:
-  - The `audio` unit captures PCM from the K144's hardware ALSA codec (`hw_cap` thread)
-  - It PUBLISHES raw PCM bytes to a ZMQ topic `ipc:///tmp/llm/pcm.cap.socket` (the `sys.pcm` channel)
-  - ASR / Whisper / KWS / VAD all SUBSCRIBE to that topic
-  - The audio unit only exposes `queue_play`, `play_stop`, `queue_play_stop` RPC actions — **no documented "push capture data" action**
-  - No StackFlow protocol path lets a remote client push PCM into the `sys.pcm` channel via UART or TCP JSON
-- **Three possible workarounds (all K144-side or hardware refactor):**
-  1. **Custom K144 service** — write a Linux daemon (~50 LOC C++) that reads PCM from `/dev/ttyS1` and ZMQ-publishes to `ipc:///tmp/llm/pcm.cap.socket`.  Works but requires K144-side code on a device M5 ships fixed.
-  2. **Audio.cap_channel override** — config the audio module to read from a named pipe instead of ALSA, then Tab5 writes PCM into that pipe over UART.  More invasive than #1.
-  3. **I2S-over-M5-Bus** — wire Tab5's I2S through the Mate carrier to feed the K144's hardware audio codec directly.  Hardware refactor; bypasses StackFlow protocol entirely.
-- **Fix (today):** None.  Phase 6b deferred indefinitely; Tab5's existing Dragon-side STT (Moonshine) covers voice-input use cases.  Phase 6c (TTS) lands fine because TTS is one-way (text in via JSON works; audio out is just streaming back the synthesized bytes).
-- **Prevention:** When evaluating M5 / StackFlow integrations, **read the unit source for `register_rpc_action` calls before assuming an inference action exists**.  StackFlow units that expose only `setup`/`exit`/`pause`/`work` (no `inference`) are subscription-driven and won't accept inline data via JSON.  Documented inference paths exist for: LLM (Phase 3), TTS (Phase 6c), VLM, MeloTTS.  Subscription-only paths: ASR, Whisper, KWS, VAD, Audio, Camera, YOLO.
+- **Context:** If you ever WANT Tab5's mic specifically (not K144's) to feed ASR — for example to use Tab5's superior beamforming or ECM mic — you'd need to bridge audio over UART because the K144's StackFlow architecture is **subscription-based** (the `audio` unit owns the `ipc:///tmp/llm/pcm.cap.socket` ZMQ publish channel, no push action exists in `register_rpc_action`).
+- **Engineering paths to enable Tab5-mic→K144-ASR:**
+  1. **Custom K144 binary** — replace `llm_audio` with one that adds a `push_pcm` RPC action.  Native compile on K144 (gcc + libzmq.so.5 present).  ~200 LOC C++.  Real engineering, ~8 hours.
+  2. **`audio.cap_channel` override** — point K144's audio module at a named pipe that a custom helper feeds from UART.  More invasive than #1.
+  3. **I2S over M5-Bus** — wire Tab5's I2S through the Mate carrier to K144 audio codec input.  Hardware refactor.
+- **For TT #317 we use Option 0 instead:** K144's onboard mic (which works) handles voice input.  Tab5 only needs to drain TTS output frames, not push audio in.
 
 ### K144 TTS returns headerless 16 kHz mono PCM (not RIFF WAV) despite "tts.base64.wav" name
 - **Date:** 2026-04-29
@@ -1204,3 +1230,33 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Prevention:**
   1. **Stateful side effects in "read" methods are easy to write and hard to debug.**  Whenever a read advances a cursor, give callers an opt-out for the side effect.
   2. **Diagnostic plumbing should never compete with primary control plumbing.**  Capturing "what happened" for a report is observation; consuming events for routing is action.  Separate the two.
+
+### K144 chain setup ACK reads must skip non-matching frames — not bail on the first one
+- **Date:** 2026-04-29
+- **Symptom:** Phase 6b first attempt at `voice_m5_llm_chain_setup`: `audio.setup` and `asr.setup` succeeded cleanly, but `llm.setup` failed with `err=0 msg=''`.  Confusing because error_code 0 means the K144 ACK'd OK, yet the chain bailed.
+- **Root Cause:** Once `audio.setup` and `asr.setup` are live, the K144's ASR unit immediately starts publishing stream frames on the UART carrying its own `work_id` (e.g. `asr.1012`) the moment it sees published audio on `sys.pcm`.  My `chain_setup_unit` helper read **the first frame** that arrived after sending `llm.setup`, parsed it, and checked: `request_id matches? error_code 0? work_id non-NULL?`  The frame was a valid ASR stream chunk — `error_code` was 0 (it's a stream frame, not a NACK), `work_id` was `asr.1012` (the ASR unit's id), and `request_id` did NOT match the LLM-setup ID we'd just sent — so the helper logged the (uselessly partial) error and bailed.  The actual `llm.setup` ACK arrived a beat later but my helper had already given up.
+- **Fix:** Rewrote `chain_setup_unit` to keep reading frames until either (a) one matches our `request_id` (success path) or (b) the timeout elapses.  Frames with mismatched `request_id` are silently dropped — they're stream-side noise from already-running upstream units, not relevant to the setup ACK we're waiting for.
+- **Prevention:**
+  1. **In a publish/subscribe protocol where multiple actors emit on the same wire, every `recv` loop is implicitly multiplexed — you cannot assume the next frame answers your last request.**  Always filter by `request_id` and keep reading until you see *yours*.  This is the same lesson as `stream_collect` (which already did this for inference) but easier to forget on a one-shot setup call.
+  2. **Logging "err=0 msg='' work_id=null" is the symptom of the multiplex-blindness above, not a K144 bug.**  When you see error_code 0 but the helper bailed, the helper is probably reading a stream frame from a different unit.  Log the *full* response (request_id, work_id, object) at error time so this is obvious next time.
+
+### K144 voice-assistant chain runs autonomously — Tab5 only drains output frames
+- **Date:** 2026-04-29
+- **Symptom:** Phase 6b first sketch had Tab5 running an inference loop: capture mic, push PCM over UART, wait for ASR, send to LLM, get reply, request TTS, play back.  This was the natural extrapolation from the existing `voice_m5_llm_infer` API but didn't match what the K144 actually exposes.
+- **Root Cause:** I was modeling the K144 as a stateless function (text in → text out, audio in → audio out) when it's actually a publish/subscribe runtime.  The K144's `audio` unit publishes `sys.pcm` from its onboard mic; `asr` subscribes and publishes text; `llm` subscribes to ASR text and publishes reply text; `tts` subscribes to LLM text and publishes audio bytes.  Once the four units are wired up via `setup` calls with chained `input` arrays, the entire pipeline runs **autonomously inside the K144** — no host involvement after setup.  The TCP spike at `/tmp/m5spike/chain_probe.py` proved this: `[ASR] delta='ah'` → `[LLM] delta='Ah, I understand. How may I assist you today?'` → `[TTS] AUDIO (4352 samples)` all flowed back over a passive socket while the spike was just calling `recv`.
+- **Fix:** Implemented `voice_m5_llm_chain_setup` / `_chain_run` / `_chain_teardown` in `voice_m5_llm.{c,h}` that:
+  1. Issue four `setup` calls with chained `input` references (`audio` → `asr` ← `sys.pcm`, `llm` ← `asr.NNNN`, `tts` ← `llm.NNNN`).
+  2. Drain UART output frames in a passive loop, dispatching ASR/LLM text to a `text_cb` and base64-decoded TTS PCM to an `audio_cb`.
+  3. Tear down each unit in reverse order via `exit`.
+- **Live verification:**  Built + flashed firmware, sent `m5chain 35` over the REPL.  User said "ah".  Logs:
+  ```
+  [ASR]  ah
+  [ASR]  ah. (fin)
+  [LLM] Ah, I understand. How may I assist you today?
+  [TTS] 4352 samples (~272 ms)         ← played through Tab5 speaker
+  ```
+  Full closed loop: K144 mic → ASR → LLM → TTS → UART → Tab5 speaker (upsampled 1:3 to 48 kHz).
+- **Prevention:**
+  1. **Before designing a host-driven control loop for an external module, find out if the module already has its own runtime that just needs wiring up.**  M5Stack's StackFlow protocol is explicitly designed for inter-unit chaining via `input` arrays — read M5Module-LLM's example sketches (KWS_VAD_Whisper_LLM_TTS) before assuming the host has to mediate every byte.
+  2. **Pub/sub modules don't need request/response framing for streamed output.**  The chain emits frames spontaneously; consumers need a passive `recv` loop with a stop signal, not an inference-driven request/wait pattern.
+  3. **K144 work_id state is per-service-process and persists across host disconnects.**  After clean teardown via `exit` everything is freed, but if a chain setup fails partway through the K144 keeps the partial state.  Restarting the K144 services via adb (`systemctl restart llm-llm llm-asr llm-tts llm-audio`) clears it.  In code we tear down in reverse order on partial failure to minimise this.

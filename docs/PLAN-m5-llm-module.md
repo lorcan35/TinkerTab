@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–6c complete + 6b deferred (2026-04-29) — K144 LLM and TTS both verified end-to-end on Tab5 hardware.  Voice input (Phase 6b) out of scope due to K144's subscription-based audio architecture; documented in LEARNINGS.
+**Status:** Phase 0–6c complete + 6b complete (2026-04-29) — K144 LLM, TTS, and full voice-assistant chain (audio → asr → llm → tts) verified end-to-end live.  User speaks at the K144 stack, ASR transcribes on K144, LLM responds on K144, TTS synthesizes on K144, and the synthesized audio plays through Tab5's speaker via UART.  No Tab5-side mic involvement; K144's onboard mic + autonomous chain handles the whole loop.
 
 **Tab5 → Mate carrier (stacked) → K144 round-trip live:**
 ```
@@ -419,18 +419,59 @@ W (374535) tab5_voice: K144 warm-up ESP_ERR_TIMEOUT after 360000ms — failover 
 
 Latency floors at ~109 ms because that's K144 protocol round-trip cost (StackFlow JSON parse + reply), not transport.  K144 needs ~200 ms to reconfigure its UART after switching; if Tab5 doesn't wait long enough or the ack comes back at the new baud during reconfig, the K144 strands at the new baud while Tab5 reverts.  `voice_m5_llm_recover_baud(candidate)` rescues a stranded K144 by force-switching Tab5 to the candidate baud, pinging, then doing a graceful uartsetup back to 115200.
 
-### Phase 6b — push-PCM-to-ASR-via-UART — UNREACHABLE (deferred indefinitely)
+### Phase 6b — autonomous K144 voice-assistant chain — DONE 2026-04-29
 
-**Investigated 2026-04-29 via TCP spike + K144 source review.**  See LEARNINGS "K144 ASR is subscription-only" for the full root-cause writeup.
+**Earlier (wrong) conclusion:** "Phase 6b unreachable, deferred indefinitely" because I assumed the K144 had no microphone and the only path was Tab5-pushes-PCM-to-K144 (which StackFlow doesn't expose).  See LEARNINGS "K144 has a working microphone" for the correction.
 
-The K144's StackFlow audio architecture is **subscription-based**: the `audio` unit captures from K144's hardware ALSA codec and ZMQ-publishes raw PCM to `ipc:///tmp/llm/pcm.cap.socket` (the `sys.pcm` topic).  ASR / Whisper / KWS / VAD all subscribe.  No StackFlow JSON action exists to push PCM into this channel from outside the device.
+**Actual architecture:** the K144 has a **working microphone** wired through the AX630C audio codec.  Verified live with `/opt/usr/bin/tinycap` — RMS jumps from 42 (silent room) to 357+ when speech is present.  This means the K144 can run the full voice-assistant chain locally and only needs to send TTS audio back to Tab5 over UART.
 
-Three workaround paths (none small, all K144-side or hardware refactor):
-1. Custom K144 daemon (~50 LOC C++ Linux service) that reads PCM from `/dev/ttyS1` and ZMQ-publishes to the sys.pcm channel.
-2. Override `audio.cap_channel` config to read from a named pipe; Tab5 writes PCM into the pipe over UART.
-3. Wire Tab5's I2S through the Mate carrier directly into the K144 audio codec (hardware refactor).
+**Chain to set up on K144** (matches the official M5 KWS_VAD_Whisper_LLM_TTS example, with `whisper` swapped for `asr` since the K144 ships with sherpa-ncnn streaming Zipformer not Whisper):
 
-**Decision:** Out of scope of this PR.  Tab5 keeps using Dragon's Moonshine for STT (Phase 5 state).  Phase 6c (TTS) lands cleanly because TTS is one-way push (text in → audio out), no subscription dependency.
+```
+User speaks at the stack
+      ↓
+audio.setup           → K144 mic captures continuously, publishes to sys.pcm
+      ↓
+asr.setup with input=["sys.pcm"]    → subscribes; emits asr.utf-8.stream as speech is detected
+      ↓
+llm.setup with input=[asr_work_id]  → subscribes to ASR text; runs qwen2.5-0.5B
+      ↓
+tts.setup with input=[llm_work_id]  → subscribes to LLM output; emits tts.base64.wav
+      ↓
+TTS audio frames flow back via UART
+      ↓
+Tab5 voice_m5_llm.c drain task plays through tab5_audio_play_raw
+```
+
+Optionally add `kws` (keyword spotting, "Hey Tinker") and `vad` (voice activity detection) between audio and asr for wake-word UX.  Deferred to a follow-up — Phase 6b ships with continuous-listen ASR first.
+
+**Files added:**
+- `main/voice_m5_llm.{c,h}` — `voice_m5_llm_chain_setup(out)`, `voice_m5_llm_chain_run(handle, text_cb, audio_cb, user, stop_flag, timeout_s)`, `voice_m5_llm_chain_teardown(handle)`
+- `main/main.c` — `m5chain [seconds]` REPL command that sets up the chain, drains output, and plays each TTS chunk through `tab5_audio_play_raw` (upsampled 1:3 from 16k mono to 48k mono)
+
+**Live verification (2026-04-29 on hardware):**
+```
+> m5chain 35
+[m5chain] bringing up chain (session=35s)
+I (35686) voice_m5_llm: chain setup(audio.setup) -> audio
+I (36533) voice_m5_llm: chain setup(asr.setup) -> asr.1012
+I (40031) voice_m5_llm: chain setup(llm.setup) -> llm.1013
+I (41075) voice_m5_llm: chain setup(tts.setup) -> tts.1014
+I (41077) voice_m5_llm: chain ready: audio=audio asr=asr.1012 llm=llm.1013 tts=tts.1014 — speak at the K144
+[m5chain] CHAIN READY — speak at the K144 stack now
+[ASR]  ah
+[ASR]  ah. (fin)
+[LLM] Ah, I understand. How may I assist you today?
+[TTS] 4352 samples (~272 ms)
+[m5chain] run finished: ESP_ERR_TIMEOUT
+I (77443) voice_m5_llm: chain torn down
+```
+
+User said "ah".  K144's mic captured it, on-device ASR transcribed, on-device LLM responded with "Ah, I understand. How may I assist you today?", on-device TTS synthesized 272 ms of speech, the bytes streamed back over UART, Tab5 upsampled to 48 kHz and played through its speaker.  All four units shut down cleanly on teardown.
+
+**One root-cause bug fixed during integration:** `chain_setup_unit` initially read the *first* frame after sending each setup as that setup's ACK.  After `audio.setup` and `asr.setup` are live, the K144's ASR unit emits stream frames continuously — those arrived first and the helper bailed with "err=0 msg=''".  Fixed by skipping non-matching `request_id` frames and continuing to read until ours arrives or the timeout elapses.  Documented in LEARNINGS "K144 chain setup ACK reads must skip non-matching frames".
+
+**Alternative (Tab5-mic→K144-ASR) documented as future work in LEARNINGS:** "K144 ASR via push-PCM-over-UART — alternative documented for completeness".  Requires either a custom K144 binary (~200 LOC C++ replacing llm-audio) or I2S-over-M5-Bus hardware refactor.  Not needed today since K144's onboard mic works.
 
 ### Phase 6c — TTS via K144 single-speaker model — DONE 2026-04-29
 
@@ -457,11 +498,11 @@ I (52274) voice_m5_llm: tts: 15360 samples @ 16 kHz mono (960 ms speech)
 | Sub-phase | Scope | Status |
 |---|---|---|
 | 6a | UART baud negotiation (115200 → 1.5 Mbps) | **DONE** — 30/30 pings clean at every tier |
-| 6b | Push-PCM-to-ASR over UART | **DEFERRED** — K144 architecture subscription-only |
+| 6b | Autonomous voice-assistant chain (mic → ASR → LLM → TTS → Tab5 speaker) | **DONE** — verified live with user voice |
 | 6c | Text-to-speech via K144 → Tab5 speaker | **DONE** — verified live |
-| 6d | Full voice pipeline (mic → ASR → LLM → TTS → speaker) | **BLOCKED on 6b** — out of scope |
+| 6d | (folded into 6b) | **N/A** |
 
-**User-visible payoff after Phase 6c:** chat replies in `vmode=4` Onboard mode can now SPEAK through Tab5's speaker (text from K144 LLM → text into K144 TTS → audio).  Optional Phase 6e: wire `voice_m5_failover_text_job` to call `voice_m5_llm_tts` after rendering the chat bubble, so the user hears the K144 reply too.
+**User-visible payoff after Phase 6:** the user can speak at the stack and hear the K144's reply through Tab5's speaker without any Dragon-side or cloud involvement.  Currently exposed via the `m5chain [seconds]` REPL command for bench validation.  Wiring this into the chat overlay's mic button (Onboard mode `vmode=4`) is the next user-facing step: tap mic → start chain → drain frames into chat bubbles + speaker → tap stop → teardown.  That belongs in a follow-up issue under TT #317.
 
 ---
 
