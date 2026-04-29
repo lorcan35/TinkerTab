@@ -618,6 +618,14 @@ void ui_chat_show(void)
 void ui_chat_hide(void)
 {
     if (!s_overlay) return;
+    /* Audit #2: tear down the K144 chain when leaving chat — otherwise
+     * it keeps running for up to 10 minutes in the background, dropping
+     * bubbles into the (hidden) chat store and playing TTS through the
+     * speaker.  voice_stop_listening dispatches to voice_m5_chain_stop
+     * when chain is active. */
+    if (voice_m5_chain_is_active()) {
+       voice_stop_listening();
+    }
     ui_keyboard_set_layout_cb(NULL);
     ui_keyboard_hide();
     /* U16 (#206): don't auto-restore the floating keyboard trigger on

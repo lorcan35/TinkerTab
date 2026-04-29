@@ -3608,6 +3608,44 @@ static size_t s_chain_asr_len;
 static char *s_chain_llm_buf = NULL;
 static size_t s_chain_llm_len;
 
+/* Wave 3a Eigen workaround: synthesize one LLM reply text via the K144's
+ * one-shot TTS path (NOT the chained tts.setup that crashes), upsample
+ * 1:3 to 48 kHz, play through Tab5's speaker.  Posted to tab5_worker by
+ * chain_text_callback on every LLM finish=true so it runs off the
+ * chain drain task (which is busy reading more frames). */
+static void voice_m5_chain_tts_job(void *arg) {
+   char *text = (char *)arg;
+   if (text == NULL) return;
+   /* PSRAM scratch — 8 sec @ 16 kHz mono = 128 KB samples = 256 KB. */
+   const size_t cap = 16 * 8 * 1024;
+   int16_t *pcm16 = heap_caps_malloc(cap * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (pcm16 == NULL) {
+      free(text);
+      return;
+   }
+   size_t got = 0;
+   esp_err_t te = voice_m5_llm_tts(text, pcm16, cap, &got, 30);
+   if (te == ESP_OK && got > 0) {
+      const size_t cap48 = got * 3;
+      int16_t *pcm48 = heap_caps_malloc(cap48 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (pcm48 != NULL) {
+         for (size_t i = 0; i < got; i++) {
+            const int16_t cur = pcm16[i];
+            const int16_t nxt = (i + 1 < got) ? pcm16[i + 1] : cur;
+            for (int j = 0; j < 3; j++) {
+               pcm48[i * 3 + j] = (int16_t)(cur + (int32_t)(nxt - cur) * j / 3);
+            }
+         }
+         tab5_audio_play_raw(pcm48, cap48);
+         heap_caps_free(pcm48);
+      }
+   } else if (te != ESP_OK) {
+      ESP_LOGW(TAG, "chain per-utterance TTS failed (%s) for '%.60s'", esp_err_to_name(te), text);
+   }
+   heap_caps_free(pcm16);
+   free(text);
+}
+
 static void chain_text_callback(const char *text, bool from_llm, bool finish, void *user) {
    (void)user;
    char *buf = from_llm ? s_chain_llm_buf : s_chain_asr_buf;
@@ -3635,6 +3673,23 @@ static void chain_text_callback(const char *text, bool from_llm, bool finish, vo
 
    if (finish && *len > 0) {
       ESP_LOGI(TAG, "chain %s commit: '%s'", from_llm ? "LLM" : "ASR", buf);
+
+      /* Wave 3a Eigen workaround: chain doesn't include tts.setup any
+       * more (K144's SummerTTS crashes mid-stream from LLM).  Instead,
+       * on every LLM finish=true, kick off a per-utterance synth via
+       * voice_m5_llm_tts on the worker queue.  The worker's
+       * voice_m5_llm_tts call serialises on the same UART mutex the
+       * chain holds per-iteration (Wave 1) so they don't collide. */
+      if (from_llm) {
+         char *copy = strdup(buf);
+         if (copy != NULL) {
+            if (tab5_worker_enqueue(voice_m5_chain_tts_job, copy, "chain_tts") != ESP_OK) {
+               ESP_LOGW(TAG, "chain TTS enqueue failed (queue full?), reply text-only");
+               free(copy);
+            }
+         }
+      }
+
       if (tab5_ui_try_lock(150)) {
          ui_chat_add_message(buf, /*is_user=*/!from_llm);
          tab5_ui_unlock();

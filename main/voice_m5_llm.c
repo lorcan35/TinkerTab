@@ -972,22 +972,20 @@ esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
       if (err != ESP_OK) goto fail;
    }
 
-   /* 4) tts.setup — subscribe to LLM text, base64 wav out. */
-   {
-      cJSON *d = cJSON_CreateObject();
-      cJSON_AddStringToObject(d, "model", M5_TTS_MODEL);
-      cJSON_AddStringToObject(d, "response_format", "tts.base64.wav");
-      cJSON *inp = cJSON_CreateArray();
-      cJSON_AddItemToArray(inp, cJSON_CreateString(h->llm_id));
-      cJSON_AddItemToObject(d, "input", inp);
-      cJSON_AddBoolToObject(d, "enoutput", true);
-      cJSON_AddBoolToObject(d, "enkws", false);
-      err = chain_setup_unit("tts", "tts.setup", d, h->tts_id, sizeof(h->tts_id), M5_SETUP_TIMEOUT_MS);
-      if (err != ESP_OK) goto fail;
-   }
+   /* 4) tts.setup — INTENTIONALLY OMITTED.  K144's
+    * `single_speaker_english_fast` engine crashes mid-utterance with an
+    * Eigen reshape assertion when consuming token-by-token from the LLM
+    * unit (LEARNINGS: "K144 single_speaker_english_fast TTS in stream-
+    * from-LLM mode crashes").  systemd auto-restarts the service but
+    * the chain's tts subscription gets orphaned.
+    *
+    * Workaround: tts_id stays empty.  voice.c chain_text_callback now
+    * calls voice_m5_llm_tts (the one-shot synth path) on each LLM
+    * `finish=true` instead.  The chain's recv loop's `is_tts` strcmp
+    * never matches an empty work_id (early-skip in the dispatch). */
 
-   ESP_LOGI(TAG, "chain ready: audio=%s asr=%s llm=%s tts=%s — speak at the K144", h->audio_id, h->asr_id, h->llm_id,
-            h->tts_id);
+   ESP_LOGI(TAG, "chain ready: audio=%s asr=%s llm=%s (TTS via per-utterance synth) — speak at the K144", h->audio_id,
+            h->asr_id, h->llm_id);
    *out_handle = h;
    M5_UNLOCK();
    return ESP_OK;
@@ -1047,7 +1045,10 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
                                  voice_m5_chain_audio_cb audio_cb, void *user, volatile bool *stop_flag,
                                  uint32_t timeout_s) {
    if (handle == NULL) return ESP_ERR_INVALID_ARG;
-   if (handle->asr_id[0] == '\0' || handle->llm_id[0] == '\0' || handle->tts_id[0] == '\0') {
+   /* tts_id is allowed to be empty (Wave 3a Eigen workaround — chain
+    * handles ASR + LLM only; per-utterance TTS happens in the caller's
+    * text_cb on LLM finish=true). */
+   if (handle->asr_id[0] == '\0' || handle->llm_id[0] == '\0') {
       return ESP_ERR_INVALID_STATE;
    }
    esp_err_t err = ensure_uart();
