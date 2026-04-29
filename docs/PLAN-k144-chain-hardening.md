@@ -21,7 +21,8 @@
 | 1 | UART discipline + state hygiene + double-fire fix | 1 | #1, #3, #11, #12, #15 | — |
 | 2 | Mode awareness + privacy polish | 1 | #5, #6, #9, #10 | — |
 | 3 | TTS Eigen workaround + chain navigation lifecycle | 2 | #4, #2, #8, #16 | Wave 1 mutex |
-| 4 | Architecture extract — `voice_onboard` module | 1 | #7, #13, #14, P2-Arch-2.2 | — (parallelisable) |
+| 4a | stop_flag in chain_setup_unit + chain-aware tap | 1 | #13 | — |
+| 4b | Architecture extract — `voice_onboard` module (DEFERRED) | follow-up | #7, #14, P2-Arch-2.2 | — |
 | 5 | Observability + e2e tests | 1-2 | #17, #18 | — |
 
 Total scope: ~7 PRs over 5 waves.  Each wave references TT #317 + the new chain-hardening tracking issue (filed at start of Wave 1).
@@ -845,7 +846,20 @@ gh pr create --title "feat(k144): chain navigation lifecycle + LLM streaming bub
 
 ---
 
-# Wave 4 — Architecture extract: `main/voice_onboard.{c,h}`
+# Wave 4 — split into 4a (shipped) + 4b (deferred)
+
+**Wave 4a (shipped commit `bc1012f`):**  stop_flag plumbing through
+`chain_setup_unit` + chain-aware tap in `on_ball_tap`.  Closes audit #13.
+
+**Wave 4b (deferred to follow-up PR):**  full architecture extract of
+`main/voice_onboard.{c,h}`.  ~600 lines moved out of voice.c (chain +
+failover state + lifecycle).  Defers because:
+  - voice.c is at 4,243 lines; mixing extract with hardening risks
+    breaking working code under one squash-merge
+  - The extract is decoupled from waves 1-3 fixes; can land any time
+  - Worth its own focused review as a refactor PR
+
+**Spec for the deferred extract** (kept here so the next session has it):
 
 **Goal:** Extract chain + failover state and lifecycle into a dedicated module.  voice.c shrinks back below 3.7K lines; chain feature has clear ownership for the next iteration.
 
