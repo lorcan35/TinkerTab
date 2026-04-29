@@ -372,12 +372,13 @@ esp_err_t tab5_settings_set_volume(uint8_t vol)
 
 uint8_t tab5_settings_get_voice_mode(void)
 {
-    return get_u8("vmode", 0);  /* 0=local, 1=hybrid, 2=cloud, 3=tinkerclaw */
+    /* TT #317 P5: 0=local, 1=hybrid, 2=cloud, 3=tinkerclaw, 4=local_onboard (K144). */
+    return get_u8("vmode", 0);
 }
 
 esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 {
-    if (mode > 3) mode = 0;
+    if (mode > 4) mode = 0;
     return set_u8("vmode", mode);
 }
 

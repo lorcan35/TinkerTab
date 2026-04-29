@@ -1369,7 +1369,8 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     cJSON *vm = cJSON_GetObjectItem(req_json, "voice_mode");
     if (cJSON_IsNumber(vm)) {
         int v = (int)vm->valuedouble;
-        if (v >= 0 && v <= 3 &&
+        /* TT #317 Phase 5: vmode=4 added for VMODE_LOCAL_ONBOARD (K144). */
+        if (v >= 0 && v <= 4 &&
             tab5_settings_set_voice_mode((uint8_t)v) == ESP_OK) {
             cJSON_AddItemToArray(updated, cJSON_CreateString("voice_mode"));
         }
@@ -1499,7 +1500,8 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
     httpd_query_key_value(query, "model", model, sizeof(model));
 
     int mode = atoi(val);
-    if (mode < 0 || mode > 3) mode = 0;
+    /* TT #317 Phase 5: vmode=4 added for VMODE_LOCAL_ONBOARD (K144). */
+    if (mode < 0 || mode > 4) mode = 0;
 
     /* Save to NVS */
     tab5_settings_set_voice_mode((uint8_t)mode);
@@ -1509,9 +1511,15 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
 
     ESP_LOGI("debug", "Mode switch: voice_mode=%d, llm_model=%s", mode, model[0] ? model : "(unchanged)");
 
-    /* Send config_update to Dragon via voice WS */
+    /* Send config_update to Dragon via voice WS — except for vmode=4
+     * (VMODE_LOCAL_ONBOARD) which is a Tab5-side-only tier.  Dragon
+     * doesn't understand it and would ACK with an error that reverts our
+     * NVS write back to 0.  When user picks ONBOARD, tell Dragon we're
+     * still in "local" (mode=0) so its STT/TTS stay on local backends;
+     * Tab5 then bypasses Dragon for the LLM turn via voice_send_text. */
     if (voice_is_connected()) {
-        voice_send_config_update((int)mode, model[0] ? model : NULL);
+        int dragon_mode = (mode == 4) ? 0 : mode;
+        voice_send_config_update(dragon_mode, model[0] ? model : NULL);
     }
 
     /* Refresh home screen mode badge (runs on LVGL thread) */
@@ -1520,8 +1528,8 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
     /* Return current state */
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "voice_mode", mode);
-    const char *mode_names[] = {"local", "hybrid", "cloud", "tinkerclaw"};
-    cJSON_AddStringToObject(root, "mode_name", mode <= 3 ? mode_names[mode] : "unknown");
+    const char *mode_names[] = {"local", "hybrid", "cloud", "tinkerclaw", "local_onboard"};
+    cJSON_AddStringToObject(root, "mode_name", mode <= 4 ? mode_names[mode] : "unknown");
     char cur_model[64];
     tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
     cJSON_AddStringToObject(root, "llm_model", cur_model);
@@ -1974,21 +1982,22 @@ static esp_err_t chat_handler(httpd_req_t *req)
              text_buf, strlen(text_buf) > 80 ? "..." : "",
              (unsigned)strlen(text_buf));
 
-    if (!voice_is_connected()) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"error\":\"voice not connected\",\"sent\":false}");
-        return ESP_OK;
-    }
-
+    /* TT #317 P5: don't short-circuit on !voice_is_connected — let
+     * voice_send_text decide.  When WS is down, the K144 failover (Local
+     * mode) or VMODE_LOCAL_ONBOARD path may still complete the turn. */
     extern void ui_chat_push_message(const char *role, const char *text);
     ui_chat_push_message("user", text_buf);
-    voice_send_text(text_buf);
+    esp_err_t send_err = voice_send_text(text_buf);
+    bool sent_ok = (send_err == ESP_OK);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "text", text_buf);
     cJSON_AddNumberToObject(root, "text_len", (double)strlen(text_buf));
-    cJSON_AddBoolToObject(root, "sent", true);
+    cJSON_AddBoolToObject(root, "sent", sent_ok);
     cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
+    if (!sent_ok) {
+        cJSON_AddStringToObject(root, "send_status", esp_err_to_name(send_err));
+    }
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");

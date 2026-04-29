@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–4 complete + verified end-to-end with real K144 generation (2026-04-29).
+**Status:** Phase 0–5 complete (2026-04-29).
 
 **Tab5 → Mate carrier (stacked) → K144 round-trip live:**
 ```
@@ -359,11 +359,37 @@ W (374535) tab5_voice: K144 warm-up ESP_ERR_TIMEOUT after 360000ms — failover 
 
 **Cross-link:** the user can also probe the gate via the new `voice_m5_failover_state()` getter (returns 0=UNKNOWN, 1=PROBING, 2=READY, 3=UNAVAILABLE).  Future Phase 5 work can surface this in the Settings UI as an "Onboard LLM ready" indicator.
 
-### Phase 5 (optional, decided later) — voice_mode = LOCAL_ONBOARD (Option B) (~5 days)
+### Phase 5 — chat UI + LOCAL_ONBOARD + reconnect-back — DONE 2026-04-29
 
-**Files:** voice.c refactor + new mode-sheet entry + capability gating.
+**Files landed:** `main/voice.c` (chat-UI hooks in failover job, LOCAL_ONBOARD routing in voice_send_text, reconnect-back toast in WS handler, Dragon-ACK guard so ONBOARD doesn't get clobbered), `main/voice.h` (`VMODE_*` constants), `main/voice_m5_llm.c` (auto-recover stale work_id on `-4`/`-25` errors), `main/debug_server.c` (`/mode?m=4` + `/chat` no-WS short-circuit removed), `main/settings.c` (vmode bound bumped 3→4).
 
-**Out of scope of this initial plan.** File a follow-up issue when we get there.
+**Three deliverables verified live:**
+
+1. **Chat UI bubbles** — `voice_m5_failover_text_job` calls `ui_chat_add_message(reply, false)` + `voice_set_state(PROCESSING/READY)` so the K144 reply renders as a normal "TINKER" assistant bubble alongside Dragon replies.  Screenshot confirmed:
+   - User: "What color is the sky?" (orange right-aligned)
+   - Tinker: "The sky is usually blue." (dark left-aligned, "TINKER" label)
+   - User: "Tell me a fun fact."
+   - Tinker: "One fun fact is that the longest word in the English language is 'universality,' which is 11 letters long."
+
+2. **VMODE_LOCAL_ONBOARD = 4** — `voice_send_text` checks `tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD` BEFORE the WS check.  When set, every text turn routes through K144 regardless of Dragon WS state.  Dragon doesn't know about mode 4 (Tab5-side-only), so we send `dragon_mode=0` to Dragon and a guard in voice.c's config_update handler ignores Dragon's ACK echo to keep the local NVS at 4.  Verified:  `vmode=4` persisted across `/chat` round-trips with WS up — log confirms `VMODE_LOCAL_ONBOARD — routed to K144`.
+
+3. **Failover-back toast** — `s_m5_failover_engaged_during_down` flag gets set by `voice_m5_failover_text_job` whenever the failover engages.  `WEBSOCKET_EVENT_CONNECTED` checks the flag, fires `ui_home_show_toast("Dragon reconnected")`, clears the flag.  Verified end-to-end:
+   ```
+   [WS up] (set vmode=0 Local; black-hole Dragon host; reconnect)
+   [WS down 35s]
+   [POST /chat "Hi"]   → WS down 113922ms — routed to K144 failover
+                       → inference: ESP_OK, 35 bytes written
+                       → K144 reply: 'Hello! How can I assist you today?'
+   [restore Dragon host; reconnect]
+   [WS up again]       → WS reconnected after K144 failover — toast 'Dragon reconnected'
+   ```
+
+**Bonus fix discovered + landed in Phase 5:**
+- `tab5_settings_set_voice_mode` was clamping `mode > 3` → 0 silently (legacy guard), reverting any vmode=4 write back to 0.  Bumped to allow 4.
+- `/chat` debug endpoint was short-circuiting with `voice not connected` BEFORE calling `voice_send_text`, so the failover code in `voice_send_text` never ran when WS was down.  Removed the pre-check; routing decision now belongs entirely to `voice_send_text`.
+- `voice_m5_llm_infer` now auto-recovers from stale-work_id errors (`-4 inference data push false`, `-25 Stream data index error`) by clearing the cached `s_setup_work_id` so the next call re-sets up.  Caught when K144 service was restarted mid-bench — second attempt got `inference: ESP_OK`.
+
+**Settings UI picker entry for vmode=4 (the 5th radio row in `ui_settings.c`'s `s_mode_row[4]` array) is deferred to Phase 5b** as a separate UI patch — doesn't affect the wiring.  For now mode is settable via `POST /mode?m=4` or `POST /settings -d '{"voice_mode":4}'`.
 
 ---
 
