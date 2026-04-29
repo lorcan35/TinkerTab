@@ -250,6 +250,17 @@ static void onboard_text_callback(const char *text, bool from_llm, bool finish, 
          *len += add;
          buf[*len] = '\0';
       }
+      /* Wave 6 (audit #8): stream chain LLM tokens through voice_set_llm_text
+       * so ui_chat's poll_voice picks them up via the same streaming-bubble
+       * code path Dragon's WS path uses.  First delta of an LLM turn flips
+       * state to PROCESSING — that's the trigger poll_voice watches for to
+       * begin the live bubble.  finish=true returns to LISTENING (chain
+       * keeps draining) so subsequent ASR finalisations don't get dropped. */
+      voice_set_llm_text(buf);
+      if (*len == add) {
+         /* This was the first delta of this LLM turn (len was 0 before). */
+         voice_set_state(VOICE_STATE_PROCESSING, "K144");
+      }
    } else {
       const size_t copy = (add < cap - 1) ? add : cap - 1;
       memcpy(buf, text, copy);
@@ -276,9 +287,20 @@ static void onboard_text_callback(const char *text, bool from_llm, bool finish, 
          }
       }
 
-      if (tab5_ui_try_lock(150)) {
-         ui_chat_add_message(buf, /*is_user=*/!from_llm);
-         tab5_ui_unlock();
+      if (from_llm) {
+         /* Wave 6: poll_voice's streaming-bubble code path manages the
+          * TINKER bubble create + update + commit lifecycle (sees s_llm_text
+          * during PROCESSING/SPEAKING).  Returning to LISTENING ends the
+          * stream — poll_voice calls chat_msg_view_end_streaming on the
+          * PROCESSING→non-PROCESSING transition. */
+         voice_set_state(VOICE_STATE_LISTENING, "K144");
+      } else {
+         /* ASR is the user's spoken turn — commit as user bubble (no
+          * streaming UX here; ASR commit-on-finish is fine). */
+         if (tab5_ui_try_lock(150)) {
+            ui_chat_add_message(buf, /*is_user=*/true);
+            tab5_ui_unlock();
+         }
       }
       *len = 0;
       buf[0] = '\0';

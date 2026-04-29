@@ -363,14 +363,41 @@ void chat_input_bar_show_partial(chat_input_bar_t *b, const char *partial)
 lv_obj_t *chat_input_bar_get_textarea(chat_input_bar_t *b)
 { return b ? b->textarea : NULL; }
 
+/* TT #327 polish: smooth slide instead of hard teleport when the
+ * keyboard opens/closes.  The exec_cb sets y on both pill + partial
+ * caption so they stay in sync.  220 ms with default ease — matches
+ * LVGL keyboard's own slide cadence so they appear to move together. */
+static void pill_y_anim_cb(void *var, int32_t v) {
+   chat_input_bar_t *b = (chat_input_bar_t *)var;
+   if (!b || !b->pill) return;
+   lv_obj_set_y(b->pill, v);
+   if (b->partial) lv_obj_set_y(b->partial, v - 24);
+}
+
 /* #190: move the pill (and its partial-caption label) to a given Y.
  * The partial sits 24 px above the pill (see create path) — keep that
  * offset so the STT caption doesn't collide with the pill when raised. */
 void chat_input_bar_set_pill_y(chat_input_bar_t *b, int y)
 {
     if (!b || !b->pill) return;
-    lv_obj_set_y(b->pill, y);
-    if (b->partial) lv_obj_set_y(b->partial, y - 24);
+    /* Cancel any in-flight slide so a rapid open/close cycle doesn't
+     * stack animations — start fresh from the current y. */
+    lv_anim_delete(b, pill_y_anim_cb);
+    int32_t cur = (int32_t)lv_obj_get_y(b->pill);
+    if (cur == y) {
+       /* Idempotent — already there.  Mirror to partial just in case
+        * the partial got out of sync. */
+       if (b->partial) lv_obj_set_y(b->partial, y - 24);
+       return;
+    }
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, b);
+    lv_anim_set_exec_cb(&a, pill_y_anim_cb);
+    lv_anim_set_values(&a, cur, y);
+    lv_anim_set_time(&a, 220);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
 }
 
 void chat_input_bar_restore_pill_y(chat_input_bar_t *b)

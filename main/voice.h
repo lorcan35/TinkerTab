@@ -224,6 +224,14 @@ void voice_stop_reconnect_watchdog(void);
  *  is for log/badge clarity; safe to pass NULL. */
 void voice_set_state(voice_state_t new_state, const char *detail);
 
+/** TT #327 Wave 6: write into the s_llm_text buffer that
+ *  voice_get_llm_text returns.  Used by voice_onboard.c to stream chain
+ *  LLM tokens into the same buffer Dragon's WS RX path writes to, so
+ *  ui_chat's poll_voice picks up chain replies via the same streaming
+ *  bubble code path it uses for Dragon (audit #8 parity).  Mutex-
+ *  protected; call from any task. */
+void voice_set_llm_text(const char *text);
+
 /** Return true if the voice WebSocket is connected and the receive task is running. */
 bool voice_is_connected(void);
 

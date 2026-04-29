@@ -3445,6 +3445,19 @@ bool voice_get_llm_text_copy(char *buf, size_t len)
     return _voice_copy_under_lock(s_llm_text, buf, len);
 }
 
+/* TT #327 Wave 6: public setter so voice_onboard.c can stream chain LLM
+ * tokens into the same buffer Dragon's WS RX writes to.  poll_voice in
+ * ui_chat reads voice_get_llm_text() during PROCESSING/SPEAKING and
+ * builds a streaming bubble — chain replies now go through the same
+ * code path for UX parity (audit #8). */
+void voice_set_llm_text(const char *text) {
+   if (!text) text = "";
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   strncpy(s_llm_text, text, MAX_TRANSCRIPT_LEN - 1);
+   s_llm_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+}
+
 esp_err_t voice_send_text(const char *text)
 {
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
