@@ -1298,7 +1298,7 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGW(TAG, "Config update error from Dragon: %s", error->valuestring);
             /* TT #317 Phase 5: don't clobber a Tab5-only ONBOARD pick. */
             if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
-                tab5_settings_set_voice_mode(0);
+               tab5_settings_set_voice_mode(0);
             }
             voice_async_refresh_badge();
             {
@@ -1326,10 +1326,10 @@ static void handle_text_message(const char *data, int len)
              * knows about it — its ACK always echoes 0/1/2/3.  If user
              * has set ONBOARD locally, ignore Dragon's echo. */
             if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
-                tab5_settings_set_voice_mode(mode);
-                ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
+               tab5_settings_set_voice_mode(mode);
+               ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
             } else {
-                ESP_LOGD(TAG, "Config update: ignoring Dragon vmode=%d (we're in ONBOARD)", mode);
+               ESP_LOGD(TAG, "Config update: ignoring Dragon vmode=%d (we're in ONBOARD)", mode);
             }
             voice_async_refresh_badge();
         }
@@ -1846,12 +1846,12 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
          * period, surface "Dragon reconnected" so the user knows the
          * next turn is back on the cloud/LAN brain. */
         if (s_m5_failover_engaged_during_down) {
-            s_m5_failover_engaged_during_down = false;
-            ESP_LOGI(TAG, "WS reconnected after K144 failover — toast 'Dragon reconnected'");
-            if (tab5_ui_try_lock(100)) {
-                ui_home_show_toast("Dragon reconnected");
-                tab5_ui_unlock();
-            }
+           s_m5_failover_engaged_during_down = false;
+           ESP_LOGI(TAG, "WS reconnected after K144 failover — toast 'Dragon reconnected'");
+           if (tab5_ui_try_lock(100)) {
+              ui_home_show_toast("Dragon reconnected");
+              tab5_ui_unlock();
+           }
         }
         /* US-C02: bump session gen on every successful connect. */
         s_session_gen++;
@@ -3549,18 +3549,17 @@ esp_err_t voice_send_text(const char *text)
      * Dragon WS may still be up (used for things like tool calls in a
      * future Phase 6) but text turns bypass it entirely. */
     if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
-        esp_err_t fe = voice_failover_schedule(text);
-        if (fe == ESP_OK) {
-            ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD — routed to K144");
-            return ESP_OK;
-        }
-        ESP_LOGW(TAG, "VMODE_LOCAL_ONBOARD but K144 unavailable (%s) — refusing send",
-                 esp_err_to_name(fe));
-        if (tab5_ui_try_lock(100)) {
-            ui_home_show_toast("Onboard LLM not ready");
-            tab5_ui_unlock();
-        }
-        return fe;
+       esp_err_t fe = voice_failover_schedule(text);
+       if (fe == ESP_OK) {
+          ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD — routed to K144");
+          return ESP_OK;
+       }
+       ESP_LOGW(TAG, "VMODE_LOCAL_ONBOARD but K144 unavailable (%s) — refusing send", esp_err_to_name(fe));
+       if (tab5_ui_try_lock(100)) {
+          ui_home_show_toast("Onboard LLM not ready");
+          tab5_ui_unlock();
+       }
+       return fe;
     }
 
     if (!s_ws || !esp_websocket_client_is_connected(s_ws)) {

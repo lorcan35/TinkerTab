@@ -15,16 +15,26 @@ Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scop
 - Plan: [`docs/PLAN-grove.md`](docs/PLAN-grove.md) · Tracking: [#316](https://github.com/lorcan35/TinkerTab/issues/316)
 - Status: parked, hardware on order.  Phase 1 = Port A I2C bring-up + EXT5V_EN pin discovery on the IO expanders.
 
-### M5Stack LLM Module Kit (K144) — M5-Bus rear stack
+### M5Stack LLM Module Kit (K144) — DONE 2026-04-29 (Phases 0-5 + 5b)
 - Plan: [`docs/PLAN-m5-llm-module.md`](docs/PLAN-m5-llm-module.md) · Tracking: [#317](https://github.com/lorcan35/TinkerTab/issues/317)
-- **Phase 0 — DONE 2026-04-28.**  Module mechanically + electrically validated stacked on Tab5's M5-Bus rear connector.  Boots cleanly on Tab5 5 V alone (no external USB-C needed).  All 9 StackFlow services running on Ubuntu 22.04 aarch64.  Real LLM inference round-trip via TCP 10001 JSON: **~600 ms TTFT, ~15 tok/s** for `qwen2.5-0.5B-prefill-20e`.
-- Strategic choice locked: **Option A** (failover sidecar over UART) is the recommended Phase 1-4 path.  Option B (`voice_mode = LOCAL_ONBOARD`) deferred.  Option C (replace Dragon entirely) ruled out.
-- **Pins locked 2026-04-28:** UART_NUM_1, **TX = GPIO 6, RX = GPIO 7** (Port C UART; M5-Bus rear pins 16/15 — same wires as the side Port C header).  Schematic-verified against [Tab5 PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1132/Tab5_Schematics_PDF.pdf) and the M5Module-LLM `TextAssistant.ino` (`m5::pin_name_t::port_c_*`).  Avoid UART0 (G37/G38, M5-Bus 13/14) — collides with `idf.py monitor`.  EXT5V_EN sits on E1.P4 and is shared with Grove (Port A) — coordinate via a refcounted helper.  See [`docs/HARDWARE.md` § M5-Bus](docs/HARDWARE.md#m5-bus-rear-connector) for the full 30-pin table + LEARNINGS entries "M5-Bus Rear UART Aliases Side Port C" and "EXT5V Rail Gates ALL Expansion 5V Together".
-- Phases 1-4 not started: Port C UART bring-up (G6 TX / G7 RX) → StackFlow JSON marshalling → `voice_m5_llm.{c,h}` sidecar → failover wiring (Option A).  ~3.5 days estimated.
+- **Hardware topology — Mate carrier required:** stack the **Module13.2 LLM Mate** carrier between Tab5 and K144, plug the K144's top USB-C into power.  Direct K144-on-Tab5 stack causes M5-Bus 5V rail collisions that wedge the AX630C NPU silicon (LEARNINGS: "K144 must sit on the Module13.2 LLM Mate carrier").  Stack order:  `Tab5 base → Mate (USB-C powered) → K144`.
+- **Pins:**  UART_NUM_1, TX = GPIO 6, RX = GPIO 7 (Port C UART, M5-Bus pins 16/15 — Mate carrier passes these straight through to Tab5).  115200 8N1.  Avoid UART0 (G37/G38, M5-Bus 13/14) — collides with `idf.py monitor`.
+- **Code:**  [`bsp/tab5/uart_port_c.{c,h}`](bsp/tab5/uart_port_c.h) (Phase 1) → [`main/m5_stackflow.{c,h}`](main/m5_stackflow.h) marshalling (Phase 2) → [`main/voice_m5_llm.{c,h}`](main/voice_m5_llm.h) sidecar (Phase 3) → failover wiring in [`main/voice.c:voice_send_text`](main/voice.c) (Phase 4) → chat UI bubbles + `VMODE_LOCAL_ONBOARD` + reconnect-back toast (Phase 5) → Settings UI radio row (Phase 5b).
+- **Live performance:**  ~4.5s boot warm-up (cold-start NPU model load), ~2-3s per turn after warm.  K144 reply renders as a "TINKER" bubble in the chat overlay.
+- **Voice modes — five tiers now (was four):**
+  - `vmode=0` Local — Dragon Q6A LLM (existing)
+  - `vmode=1` Hybrid — Dragon LLM + OpenRouter STT/TTS (existing)
+  - `vmode=2` Cloud — OpenRouter LLM + STT + TTS (existing)
+  - `vmode=3` TinkerClaw — TinkerClaw Gateway (existing)
+  - `vmode=4` Onboard — **K144 LLM, no Dragon needed** (new in Phase 5)
+- **Failover behavior:**  In Local mode (`vmode=0`), if Dragon WS is unreachable for ≥30s AND the K144 is warm AND the user sends a text turn, voice.c routes to the K144 automatically.  Toast: "Using onboard LLM".  When Dragon comes back, next text turn returns to Dragon and shows "Dragon reconnected" toast.
+- **K144 cold-start guard:**  Boot warm-up posts a probe + one synchronous `voice_m5_llm_infer("hi", ...)` to map the model into NPU memory.  Up to 6 minutes (cold-start budget).  On success the failover gate flips READY; on any failure (probe timeout, NPU hang) it flips UNAVAILABLE — failover stays disabled until next reboot.  User-facing flows are NEVER blocked by K144 hang behaviors.
 
 ### Talking to a stacked K144 from the dev host (debugging)
 
-When the K144 is stacked on Tab5's M5-Bus AND its **top USB-C** (M140 module port) is plugged into the dev host, the AX630C exposes itself over Axera ADB.  The carrier-board USB-C exposes USB-Ethernet (cdc_ncm) instead — power + RJ45-bridge, **not** the AX630C console.
+### Talking to a stacked K144 from the dev host (debugging)
+
+ADB still works the same on the Mate-stacked topology — the **K144's top USB-C** (M140 module port) is what exposes Axera ADB.  Plug your dev-host USB-C into THAT one (not the Mate carrier's USB-C, which is just a power feed for the K144).
 
 ```bash
 # Module enumerates as Axera ADB (vendor 32c9, product 2003)
@@ -405,8 +415,8 @@ Listed in chronological order from real runs:
 - **Reconnect Watchdog:** Checks connection every 5s. If Dragon restarts or network drops, auto-reconnects with exponential backoff (10s→20s→40s→60s max). Idle keepalive pings detect dead TCP.
 - **Offline Fallback:** If Dragon is unreachable on mic tap, auto-starts local SD card recording via Notes module.
 
-### Three-Tier Voice Mode
-Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
+### Five-Tier Voice Mode (Onboard tier added in Phase 5)
+Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw / Onboard (K144)**
 
 | Mode | STT | LLM | TTS | Latency | Cost |
 |------|-----|-----|-----|---------|------|
@@ -414,11 +424,14 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw**
 | Hybrid (1) | OpenRouter gpt-audio-mini | Local (unchanged) | OpenRouter gpt-audio-mini | 4-8s | ~$0.02/req |
 | Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
 | TinkerClaw (3) | Moonshine (or OpenRouter) | TinkerClaw Gateway | Piper (or OpenRouter) | varies | varies |
+| Onboard K144 (4) | (text only — voice still uses Local Dragon for now) | M5 K144 stacked LLM (qwen2.5-0.5B over UART) | (text only) | 2-3s | Free |
 
 - **LLM Model Picker:** Settings dropdown: Local NPU / Local Ollama / Claude Haiku / Claude Sonnet / GPT-4o mini (enabled only in Full Cloud mode)
-- **Auto-Fallback:** If cloud STT/TTS fails, Dragon falls back to local for that request + sends `config_update` with `error` field → Tab5 auto-reverts to Local mode
-- **NVS:** `voice_mode` (uint8: 0/1/2/3), `llm_model` (string: model ID)
-- **Protocol:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"anthropic/claude-sonnet-4-20250514"}`
+- **Auto-Fallback (cloud STT/TTS):** If cloud STT/TTS fails, Dragon falls back to local for that request + sends `config_update` with `error` field → Tab5 auto-reverts to Local mode
+- **K144 failover (Local → Onboard):** When `vmode=0` (Local) and Dragon WS is unreachable for ≥30s with the K144 warm, Tab5 routes the next text turn through `voice_m5_llm_infer` automatically.  Toast: "Using onboard LLM".  When Dragon reconnects, next turn returns to Dragon and shows "Dragon reconnected" toast.
+- **K144 always-on (Onboard mode):** When `vmode=4`, EVERY text turn routes to K144 regardless of Dragon WS state.  Dragon stays on local STT/TTS but never sees the LLM turn.
+- **NVS:** `voice_mode` (uint8: 0-4), `llm_model` (string: model ID)
+- **Protocol:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"anthropic/claude-sonnet-4-20250514"}` — Tab5 always sends Dragon a value in 0..3; mode 4 is Tab5-side-only and Dragon's ACK echo is filtered out by voice.c.
 
 ## OTA Firmware Updates
 - **Dual OTA partitions:** ota_0 (3MB) + ota_1 (3MB) with otadata boot selector
@@ -532,7 +545,7 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `volume` | u8 | 70 | 0-100 | Speaker volume percentage |
 | `device_id` | str | MAC-derived (12 hex chars) | — | Unique device identifier, auto-generated on first boot |
 | `session_id` | str | `""` (empty) | — | Dragon conversation session ID for resume |
-| `vmode` | u8 | 0 | 0-3 | Voice mode: 0=local, 1=hybrid, 2=cloud, 3=TinkerClaw |
+| `vmode` | u8 | 0 | 0-4 | Voice mode: 0=local, 1=hybrid, 2=cloud, 3=TinkerClaw, 4=onboard (K144) |
 | `llm_mdl` | str | `anthropic/claude-3.5-haiku` | — | LLM model identifier for cloud mode |
 | `conn_m` | u8 | 0 | 0-2 | Connection mode: 0=auto (ngrok first then LAN), 1=local only, 2=remote only (Tab5-internal; never crosses the wire — see `voice_ws_start_client`) |
 | `auth_tok` | str | auto-generated (32 hex chars) | — | Debug server bearer auth token, generated on first boot |

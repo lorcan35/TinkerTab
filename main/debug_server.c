@@ -1370,9 +1370,8 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     if (cJSON_IsNumber(vm)) {
         int v = (int)vm->valuedouble;
         /* TT #317 Phase 5: vmode=4 added for VMODE_LOCAL_ONBOARD (K144). */
-        if (v >= 0 && v <= 4 &&
-            tab5_settings_set_voice_mode((uint8_t)v) == ESP_OK) {
-            cJSON_AddItemToArray(updated, cJSON_CreateString("voice_mode"));
+        if (v >= 0 && v <= 4 && tab5_settings_set_voice_mode((uint8_t)v) == ESP_OK) {
+           cJSON_AddItemToArray(updated, cJSON_CreateString("voice_mode"));
         }
     }
     cJSON *lm = cJSON_GetObjectItem(req_json, "llm_model");
@@ -1518,8 +1517,8 @@ static esp_err_t mode_set_handler(httpd_req_t *req)
      * still in "local" (mode=0) so its STT/TTS stay on local backends;
      * Tab5 then bypasses Dragon for the LLM turn via voice_send_text. */
     if (voice_is_connected()) {
-        int dragon_mode = (mode == 4) ? 0 : mode;
-        voice_send_config_update(dragon_mode, model[0] ? model : NULL);
+       int dragon_mode = (mode == 4) ? 0 : mode;
+       voice_send_config_update(dragon_mode, model[0] ? model : NULL);
     }
 
     /* Refresh home screen mode badge (runs on LVGL thread) */
@@ -1996,7 +1995,7 @@ static esp_err_t chat_handler(httpd_req_t *req)
     cJSON_AddBoolToObject(root, "sent", sent_ok);
     cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
     if (!sent_ok) {
-        cJSON_AddStringToObject(root, "send_status", esp_err_to_name(send_err));
+       cJSON_AddStringToObject(root, "send_status", esp_err_to_name(send_err));
     }
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

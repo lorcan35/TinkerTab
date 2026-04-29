@@ -49,11 +49,11 @@ typedef enum {
  * Settings UI picker entry deferred to Phase 5b (the s_mode_row array
  * is hardcoded to 4 rows; expanding to 5 is a separate UI patch).
  * For now, set via:  POST /settings -d '{"voice_mode": 4}' */
-#define VMODE_LOCAL          0   /* Dragon Q6A only */
-#define VMODE_HYBRID         1   /* Dragon LLM, OpenRouter STT/TTS */
-#define VMODE_CLOUD          2   /* OpenRouter LLM/STT/TTS */
-#define VMODE_TINKERCLAW     3   /* TinkerClaw Gateway LLM */
-#define VMODE_LOCAL_ONBOARD  4   /* K144 stacked-on-Mate LLM, Dragon-free */
+#define VMODE_LOCAL 0         /* Dragon Q6A only */
+#define VMODE_HYBRID 1        /* Dragon LLM, OpenRouter STT/TTS */
+#define VMODE_CLOUD 2         /* OpenRouter LLM/STT/TTS */
+#define VMODE_TINKERCLAW 3    /* TinkerClaw Gateway LLM */
+#define VMODE_LOCAL_ONBOARD 4 /* K144 stacked-on-Mate LLM, Dragon-free */
 
 // Callback for state changes (for UI updates)
 typedef void (*voice_state_cb_t)(voice_state_t new_state, const char *detail);

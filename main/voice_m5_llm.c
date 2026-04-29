@@ -189,8 +189,7 @@ static esp_err_t stream_collect(const char *expected_request_id, char *output, s
       }
 
       if (resp.error_code != 0) {
-         ESP_LOGE(TAG, "K144 returned error %d (%s)", resp.error_code,
-                  resp.error_message ? resp.error_message : "");
+         ESP_LOGE(TAG, "K144 returned error %d (%s)", resp.error_code, resp.error_message ? resp.error_message : "");
          /* P5: -4 "inference data push false" or -25 "Stream data index error"
           * mean our cached work_id is stale (e.g. K144 service was
           * restarted).  Clear it so the next infer triggers a fresh setup. */

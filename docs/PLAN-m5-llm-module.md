@@ -1,6 +1,6 @@
 # Plan — M5Stack LLM Module integration on Tab5
 
-**Status:** Phase 0–5 complete (2026-04-29).
+**Status:** Phase 0–5b complete (2026-04-29) — fully shipped end-to-end on Tab5 hardware.
 
 **Tab5 → Mate carrier (stacked) → K144 round-trip live:**
 ```
@@ -390,6 +390,16 @@ W (374535) tab5_voice: K144 warm-up ESP_ERR_TIMEOUT after 360000ms — failover 
 - `voice_m5_llm_infer` now auto-recovers from stale-work_id errors (`-4 inference data push false`, `-25 Stream data index error`) by clearing the cached `s_setup_work_id` so the next call re-sets up.  Caught when K144 service was restarted mid-bench — second attempt got `inference: ESP_OK`.
 
 **Settings UI picker entry for vmode=4 (the 5th radio row in `ui_settings.c`'s `s_mode_row[4]` array) is deferred to Phase 5b** as a separate UI patch — doesn't affect the wiring.  For now mode is settable via `POST /mode?m=4` or `POST /settings -d '{"voice_mode":4}'`.
+
+### Phase 5b — Settings UI radio row for Onboard — DONE 2026-04-29
+
+**Files landed:** `main/ui_settings.c` — bumped `s_mode_row[4]` → `s_mode_row[5]`, added `mode_names[4] = "Onboard"`, added `mode_descs[4] = "K144 stacked LLM • No Dragon"`, added `TAB_ONBOARD` violet color token (0x8B5CF6), updated `voice_tab_switch` to handle mode 4 (skips `send_voice_config()` and instead pins Dragon at 0 so its STT/TTS stay local), updated the for-loop bound `i < 4` → `i < 5` and the section reservation `4 * (row_h + 2)` → `5 * (row_h + 2)`.
+
+**Acceptance — verified live:**
+- Settings overlay now shows **5 radio rows**: Local · Hybrid · Cloud · TinkerClaw · **Onboard** (with violet dot + "K144 stacked LLM • No Dragon" subtitle).
+- Tapping the Onboard row writes `vmode=4` to NVS and logs `Voice mode: 4 (onboard)`.
+- The selection is preserved across Dragon's config_update ACK echo (Phase 5's voice.c guard).
+- Subsequent text turns route to K144 via `voice_send_text` → `voice_failover_schedule` (verified end-to-end in Phase 5).
 
 ---
 
