@@ -43,6 +43,22 @@
 
 static const char *TAG = "voice_m5_llm";
 
+/* All public entry points serialise on the Port C UART.  Long-lived callers
+ * (chain_run) take/release per outer-loop iteration so a stop_flag flip can
+ * land between frames.  See docs/AUDIT-k144-chain-2026-04-29.md item #1.
+ * Recursive mutex permits an audio_cb invoked from chain_run to itself
+ * call back into voice_m5_llm_* if a future feature needs that. */
+#define M5_LOCK_OR_RETURN(timeout_ms)                                        \
+   do {                                                                      \
+      esp_err_t _le = tab5_port_c_lock(timeout_ms);                          \
+      if (_le != ESP_OK) {                                                   \
+         ESP_LOGW(TAG, "uart busy (timeout %u ms)", (unsigned)(timeout_ms)); \
+         return _le;                                                         \
+      }                                                                      \
+   } while (0)
+
+#define M5_UNLOCK() tab5_port_c_unlock()
+
 /* ---------------------------------------------------------------------- */
 /*  Tunables — keep co-located with the constants they constrain          */
 /* ---------------------------------------------------------------------- */
@@ -305,6 +321,7 @@ static esp_err_t do_llm_setup(void) {
 esp_err_t voice_m5_llm_probe(void) {
    esp_err_t err = ensure_uart();
    if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(2000);
 
    char request_id[32];
    make_request_id(request_id, sizeof(request_id), "ping-");
@@ -316,18 +333,28 @@ esp_err_t voice_m5_llm_probe(void) {
 
    char tx[256];
    int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
-   if (tx_len < 0) return ESP_ERR_NO_MEM;
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
 
    int frame_len = send_and_recv_one_frame(tx, tx_len, M5_PING_TIMEOUT_MS);
-   if (frame_len < 0) return ESP_ERR_TIMEOUT;
+   if (frame_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_TIMEOUT;
+   }
 
    m5_stackflow_response_t resp = {0};
    esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp);
-   if (pe != ESP_OK) return ESP_ERR_INVALID_RESPONSE;
+   if (pe != ESP_OK) {
+      M5_UNLOCK();
+      return ESP_ERR_INVALID_RESPONSE;
+   }
 
    bool match = m5_stackflow_response_matches(&resp, request_id);
    bool ok = match && resp.error_code == 0;
    m5_stackflow_response_free(&resp);
+   M5_UNLOCK();
    return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
 }
 
@@ -339,12 +366,19 @@ esp_err_t voice_m5_llm_infer(const char *prompt, char *output, size_t output_cap
 
    esp_err_t err = ensure_uart();
    if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(timeout_s * 1000);
 
    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_s * 1000 * 1000;
 
    err = do_llm_setup();
-   if (err != ESP_OK) return err;
-   if (esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
+   if (err != ESP_OK) {
+      M5_UNLOCK();
+      return err;
+   }
+   if (esp_timer_get_time() >= deadline_us) {
+      M5_UNLOCK();
+      return ESP_ERR_TIMEOUT;
+   }
 
    /* Wire shape from M5Module-LLM v1.7.0 (api_llm.cpp:inference): the
     * inference request's `data` is a stream-frame OBJECT
@@ -354,7 +388,10 @@ esp_err_t voice_m5_llm_infer(const char *prompt, char *output, size_t output_cap
    char request_id[32];
    make_request_id(request_id, sizeof(request_id), "infer-");
    cJSON *data = cJSON_CreateObject();
-   if (data == NULL) return ESP_ERR_NO_MEM;
+   if (data == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
    cJSON_AddStringToObject(data, "delta", prompt);
    cJSON_AddNumberToObject(data, "index", 0);
    cJSON_AddBoolToObject(data, "finish", true);
@@ -369,10 +406,14 @@ esp_err_t voice_m5_llm_infer(const char *prompt, char *output, size_t output_cap
    char tx[M5_TX_BUF_BYTES];
    int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
    cJSON_Delete(data);
-   if (tx_len < 0) return ESP_ERR_NO_MEM;
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
 
    tab5_port_c_flush();
    if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+      M5_UNLOCK();
       return ESP_FAIL;
    }
 
@@ -380,6 +421,7 @@ esp_err_t voice_m5_llm_infer(const char *prompt, char *output, size_t output_cap
    esp_err_t se = stream_collect(request_id, output, output_cap, deadline_us, &used);
    ESP_LOGI(TAG, "inference: %s, %u bytes written%s", esp_err_to_name(se), (unsigned)used,
             (used + 1 >= output_cap) ? " (truncated)" : "");
+   M5_UNLOCK();
    return se;
 }
 
@@ -387,6 +429,10 @@ void voice_m5_llm_release(void) {
    if (s_setup_work_id[0] == '\0') return;
    if (!tab5_port_c_uart_is_initialized()) {
       s_setup_work_id[0] = '\0';
+      return;
+   }
+   if (tab5_port_c_lock(2000) != ESP_OK) {
+      ESP_LOGW(TAG, "release: uart busy, skipping exit (work_id=%s left stale)", s_setup_work_id);
       return;
    }
 
@@ -405,6 +451,7 @@ void voice_m5_llm_release(void) {
    }
    ESP_LOGI(TAG, "released work_id=%s", s_setup_work_id);
    s_setup_work_id[0] = '\0';
+   tab5_port_c_unlock();
 }
 
 bool voice_m5_llm_is_ready(void) { return s_setup_work_id[0] != '\0'; }
@@ -444,10 +491,17 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
    if (old_baud == new_baud) return ESP_OK;
    ESP_LOGI(TAG, "Negotiating UART baud %lu -> %lu", (unsigned long)old_baud, (unsigned long)new_baud);
 
+   /* Hold the lock for the FULL negotiation including verify-loop — any
+    * concurrent caller would clobber both ends mid-switch. */
+   M5_LOCK_OR_RETURN(5000);
+
    /* Build sys.uartsetup request.  K144 expects:
     *   data = {baud, data_bits:8, stop_bits:1, parity:"n"} */
    cJSON *data = cJSON_CreateObject();
-   if (data == NULL) return ESP_ERR_NO_MEM;
+   if (data == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
    cJSON_AddNumberToObject(data, "baud", (double)new_baud);
    cJSON_AddNumberToObject(data, "data_bits", 8);
    cJSON_AddNumberToObject(data, "stop_bits", 1);
@@ -468,6 +522,7 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
    cJSON_Delete(data);
    if (tx_len < 0) {
       ESP_LOGE(TAG, "build_request(uartsetup) failed");
+      M5_UNLOCK();
       return ESP_ERR_NO_MEM;
    }
 
@@ -475,17 +530,20 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
    int frame_len = send_and_recv_one_frame(tx, tx_len, 2000);
    if (frame_len < 0) {
       ESP_LOGE(TAG, "uartsetup: no ACK at old baud %lu", (unsigned long)old_baud);
+      M5_UNLOCK();
       return ESP_ERR_TIMEOUT;
    }
 
    m5_stackflow_response_t resp = {0};
    if (m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp) != ESP_OK) {
+      M5_UNLOCK();
       return ESP_ERR_INVALID_RESPONSE;
    }
    bool ack_ok = m5_stackflow_response_matches(&resp, request_id) && resp.error_code == 0;
    m5_stackflow_response_free(&resp);
    if (!ack_ok) {
       ESP_LOGE(TAG, "uartsetup: K144 NACK'd baud-switch request");
+      M5_UNLOCK();
       return ESP_ERR_INVALID_RESPONSE;
    }
 
@@ -498,6 +556,7 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
       /* We can't switch — try to revert K144 by sending another uartsetup
        * at the new baud (which we can't reach because we couldn't
        * switch).  Best we can do is bail; user power-cycle resets K144. */
+      M5_UNLOCK();
       return bset;
    }
 
@@ -510,6 +569,7 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
       if (ping_ok()) {
          ESP_LOGI(TAG, "Baud switch OK — Tab5 + K144 now at %lu (verify took %d tries)", (unsigned long)new_baud,
                   i + 1);
+         M5_UNLOCK();
          return ESP_OK;
       }
       vTaskDelay(pdMS_TO_TICKS(200));
@@ -525,6 +585,7 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
    for (int i = 0; i < 3; i++) {
       if (ping_ok()) {
          ESP_LOGI(TAG, "Reverted to %lu — comms restored", (unsigned long)old_baud);
+         M5_UNLOCK();
          return ESP_ERR_INVALID_RESPONSE;
       }
       vTaskDelay(pdMS_TO_TICKS(200));
@@ -533,6 +594,7 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
             "K144 unreachable at both %lu and %lu — likely stranded at new baud; "
             "use voice_m5_llm_recover_baud to retry, or power-cycle the K144",
             (unsigned long)new_baud, (unsigned long)old_baud);
+   M5_UNLOCK();
    return ESP_ERR_INVALID_RESPONSE;
 }
 
@@ -605,11 +667,18 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
 
    esp_err_t err = ensure_uart();
    if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(timeout_s * 1000);
 
    int64_t deadline_us = esp_timer_get_time() + (int64_t)timeout_s * 1000 * 1000;
    err = do_tts_setup();
-   if (err != ESP_OK) return err;
-   if (esp_timer_get_time() >= deadline_us) return ESP_ERR_TIMEOUT;
+   if (err != ESP_OK) {
+      M5_UNLOCK();
+      return err;
+   }
+   if (esp_timer_get_time() >= deadline_us) {
+      M5_UNLOCK();
+      return ESP_ERR_TIMEOUT;
+   }
 
    /* Send inference: tts.utf-8 with text as bare string (per K144 docs). */
    char request_id[32];
@@ -623,15 +692,24 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
    };
    char tx[M5_TX_BUF_BYTES];
    int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
-   if (tx_len < 0) return ESP_ERR_NO_MEM;
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
    tab5_port_c_flush();
-   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) return ESP_FAIL;
+   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+      M5_UNLOCK();
+      return ESP_FAIL;
+   }
 
    /* Drain frames; concatenate base64 strings until parse-success-but-no-more
     * arrives.  K144's `tts.base64.wav` (non-stream) emits a single
     * response per inference with the entire base64 in `data` as a string.
     * Future enhancement: tts.base64.wav.stream for token-by-token. */
-   if (ensure_rx_buf() != ESP_OK) return ESP_ERR_NO_MEM;
+   if (ensure_rx_buf() != ESP_OK) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
    s_rx_len = 0;
 
    /* Allocate a PSRAM scratch for accumulated base64 (~256 KB max).  The
@@ -639,7 +717,10 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
     * generous cap to handle longer prompts. */
    const size_t b64_cap = 256 * 1024;
    char *b64 = heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (b64 == NULL) return ESP_ERR_NO_MEM;
+   if (b64 == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
    size_t b64_len = 0;
 
    while (esp_timer_get_time() < deadline_us) {
@@ -679,6 +760,7 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
          }
          m5_stackflow_response_free(&resp);
          heap_caps_free(b64);
+         M5_UNLOCK();
          return ESP_ERR_INVALID_RESPONSE;
       }
       /* Audio comes in `data` — could be a string (whole base64) or a
@@ -712,6 +794,7 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
    if (b64_len == 0) {
       heap_caps_free(b64);
       ESP_LOGW(TAG, "tts: no audio data received");
+      M5_UNLOCK();
       return ESP_ERR_TIMEOUT;
    }
 
@@ -724,11 +807,13 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
    heap_caps_free(b64);
    if (dec != 0) {
       ESP_LOGE(TAG, "base64 decode failed: -0x%04x (b64_len=%u)", -dec, (unsigned)b64_len);
+      M5_UNLOCK();
       return ESP_ERR_INVALID_RESPONSE;
    }
    *out_samples = pcm_bytes / sizeof(int16_t);
    ESP_LOGI(TAG, "tts: %u samples @ 16 kHz mono (%u ms speech)", (unsigned)*out_samples,
             (unsigned)((*out_samples * 1000) / 16000));
+   M5_UNLOCK();
    return ESP_OK;
 }
 
@@ -833,8 +918,15 @@ esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
    esp_err_t err = ensure_uart();
    if (err != ESP_OK) return err;
 
+   /* Hold the lock for all 4 sequential setups — ~5-15 sec on cold NPU
+    * load.  Concurrent text infer or probe would corrupt the rx buffer. */
+   M5_LOCK_OR_RETURN(60000);
+
    voice_m5_chain_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (h == NULL) return ESP_ERR_NO_MEM;
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
 
    /* 1) audio.setup — onboard mic + speaker, capcard=0/capdev=0,
     *    playcard=0/playdev=1.  Verified via TCP spike. */
@@ -897,10 +989,13 @@ esp_err_t voice_m5_llm_chain_setup(voice_m5_chain_handle_t **out_handle) {
    ESP_LOGI(TAG, "chain ready: audio=%s asr=%s llm=%s tts=%s — speak at the K144", h->audio_id, h->asr_id, h->llm_id,
             h->tts_id);
    *out_handle = h;
+   M5_UNLOCK();
    return ESP_OK;
 
 fail:
-   /* Best-effort tear-down of whatever DID come up. */
+   /* Best-effort tear-down of whatever DID come up.  Recursive mutex
+    * lets teardown re-take the lock cleanly. */
+   M5_UNLOCK();
    voice_m5_llm_chain_teardown(h);
    return err;
 }
@@ -924,13 +1019,27 @@ static void chain_exit_unit(const char *work_id) {
 
 void voice_m5_llm_chain_teardown(voice_m5_chain_handle_t *handle) {
    if (handle == NULL) return;
+   /* Hold the lock for the four sequential exits.  If a concurrent caller
+    * holds the lock we wait — teardown is best-effort, so a skipped exit
+    * leaves K144-side state stale (better than corrupting the live
+    * caller's transaction). */
+   if (tab5_port_c_lock(5000) != ESP_OK) {
+      ESP_LOGW(TAG, "teardown: uart busy, skipping unit exits (work_ids will leak on K144 until reset)");
+      heap_caps_free(handle);
+      return;
+   }
    /* Reverse order of bring-up so each unit's downstream subscriber is
     * killed before the publisher disappears. */
    chain_exit_unit(handle->tts_id);
    chain_exit_unit(handle->llm_id);
    chain_exit_unit(handle->asr_id);
    chain_exit_unit(handle->audio_id);
+   /* Drain any in-flight publisher frames so the next chain run starts
+    * clean.  Audit #11. */
+   tab5_port_c_flush();
+   s_rx_len = 0;
    ESP_LOGI(TAG, "chain torn down");
+   tab5_port_c_unlock();
    heap_caps_free(handle);
 }
 
@@ -944,6 +1053,14 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
    esp_err_t err = ensure_uart();
    if (err != ESP_OK) return err;
    if (ensure_rx_buf() != ESP_OK) return ESP_ERR_NO_MEM;
+
+   /* Discard any stale bytes left over from a prior session — without
+    * this, the first iteration can parse garbage as a frame.  Audit #11. */
+   if (tab5_port_c_lock(2000) == ESP_OK) {
+      tab5_port_c_flush();
+      s_rx_len = 0;
+      tab5_port_c_unlock();
+   }
 
    const int64_t deadline_us = (timeout_s == 0) ? INT64_MAX : esp_timer_get_time() + (int64_t)timeout_s * 1000 * 1000;
 
@@ -968,6 +1085,14 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
    size_t b64_len = 0;
 
    while (!(stop_flag != NULL && *stop_flag) && esp_timer_get_time() < deadline_us) {
+      /* Take/release per iteration — concurrent text turn or probe lands
+       * between frames.  Holding across the callbacks is intentional for
+       * Wave 1 (caller blocks at most one iteration's work; audio_cb
+       * blocking is a separate audit item to address later). */
+      if (tab5_port_c_lock(2000) != ESP_OK) {
+         vTaskDelay(pdMS_TO_TICKS(10));
+         continue;
+      }
       /* Refill rx_buf until we have at least one \n. */
       char *nl = memchr(s_rx_buf, '\n', s_rx_len);
       while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && !(stop_flag != NULL && *stop_flag) &&
@@ -979,7 +1104,10 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
             nl = memchr(s_rx_buf, '\n', s_rx_len);
          }
       }
-      if (nl == NULL) continue;
+      if (nl == NULL) {
+         tab5_port_c_unlock();
+         continue;
+      }
 
       size_t frame_len = (size_t)(nl - s_rx_buf);
       m5_stackflow_response_t resp = {0};
@@ -991,10 +1119,12 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
       s_rx_len -= consumed;
       if (pe != ESP_OK) {
          m5_stackflow_response_free(&resp);
+         tab5_port_c_unlock();
          continue;
       }
       if (resp.work_id == NULL || resp.data == NULL) {
          m5_stackflow_response_free(&resp);
+         tab5_port_c_unlock();
          continue;
       }
 
@@ -1003,6 +1133,7 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
       const bool is_tts = (strcmp(resp.work_id, handle->tts_id) == 0);
       if (!is_asr && !is_llm && !is_tts) {
          m5_stackflow_response_free(&resp);
+         tab5_port_c_unlock();
          continue;
       }
 
@@ -1061,6 +1192,7 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
          }
       }
       m5_stackflow_response_free(&resp);
+      tab5_port_c_unlock();
    }
 
    heap_caps_free(pcm);
@@ -1072,6 +1204,8 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
 esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
    esp_err_t uart_err = ensure_uart();
    if (uart_err != ESP_OK) return uart_err;
+   M5_LOCK_OR_RETURN(5000);
+
    const uint32_t before = tab5_port_c_uart_get_baud();
    ESP_LOGI(TAG, "Recovery: probing K144 at %lu (Tab5 was at %lu)", (unsigned long)candidate_baud,
             (unsigned long)before);
@@ -1088,10 +1222,15 @@ esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
    if (!found) {
       ESP_LOGW(TAG, "Recovery: K144 not at %lu either", (unsigned long)candidate_baud);
       tab5_port_c_uart_set_baud(before);
+      M5_UNLOCK();
       return ESP_ERR_INVALID_RESPONSE;
    }
    ESP_LOGI(TAG, "Recovery: K144 found at %lu — reuniting both ends at 115200", (unsigned long)candidate_baud);
-   /* Now do a clean uartsetup back to 115200. */
+   M5_UNLOCK();
+   /* Now do a clean uartsetup back to 115200.  voice_m5_llm_set_baud
+    * takes the lock itself; recursive mutex makes this safe even if we
+    * re-enter from already-holding state, but we released above for
+    * clarity. */
    esp_err_t ret = voice_m5_llm_set_baud(115200);
    if (ret != ESP_OK) {
       ESP_LOGW(TAG, "Recovery: graceful switch back to 115200 failed (%s)", esp_err_to_name(ret));

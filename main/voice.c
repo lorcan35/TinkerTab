@@ -3717,9 +3717,13 @@ static void voice_m5_chain_drain_task(void *arg) {
    ESP_LOGI(TAG, "chain drain exited: %s", esp_err_to_name(re));
 
    voice_m5_llm_chain_teardown(h);
-   s_chain_handle = NULL;
-   s_chain_active = false;
    chain_free_buffers();
+   s_chain_handle = NULL;
+   /* Audit #12: gate flips LAST so a fast double-tap re-entry of
+    * voice_m5_chain_start sees freed buffers (chain_alloc_buffers will
+    * re-alloc cleanly) rather than the prior session's still-mapped
+    * pointers. */
+   s_chain_active = false;
 
    voice_set_state(VOICE_STATE_READY, NULL);
    if (tab5_ui_try_lock(150)) {
@@ -3785,6 +3789,19 @@ esp_err_t voice_send_text(const char *text)
      * Dragon WS may still be up (used for things like tool calls in a
      * future Phase 6) but text turns bypass it entirely. */
     if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
+       /* Audit #3: chain owns the K144 LLM unit while active.  A
+        * concurrent voice_failover_schedule races the chain on the same
+        * UART (now mutex-serialised post-Wave-1 but still produces
+        * duplicate replies the user didn't ask for).  Refuse cleanly. */
+       if (s_chain_active) {
+          ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD: chain active, refusing text turn");
+          if (tab5_ui_try_lock(100)) {
+             ui_home_show_toast("Stop onboard chat first to send text");
+             tab5_ui_unlock();
+          }
+          return ESP_ERR_INVALID_STATE;
+       }
+
        esp_err_t fe = voice_failover_schedule(text);
        if (fe == ESP_OK) {
           ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD — routed to K144");

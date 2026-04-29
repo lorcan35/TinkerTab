@@ -43,6 +43,34 @@ esp_err_t tab5_port_c_uart_set_baud(uint32_t baud);
 /** Current Tab5-side UART baud (last successful set, or init default). */
 uint32_t tab5_port_c_uart_get_baud(void);
 
+/**
+ * @brief Acquire exclusive access to Port C UART.
+ *
+ * The K144 module + StackFlow protocol uses a single UART link shared by
+ * every voice_m5_llm_* caller.  Concurrent send/recv from multiple
+ * FreeRTOS tasks corrupts the response buffer
+ * (see docs/AUDIT-k144-chain-2026-04-29.md item #1).  Every public entry
+ * point in voice_m5_llm.c wraps its send/recv pair with this lock.
+ * Long-lived consumers (chain drain loop) take/release per outer-loop
+ * iteration so a stop-flag flip can land between frames.
+ *
+ * Recursive — same task may take the lock multiple times safely.
+ * Lock is auto-created in tab5_port_c_uart_init().
+ *
+ * @param timeout_ms  Wait budget.  Use UINT32_MAX for portMAX_DELAY.
+ * @return ESP_OK on acquisition;
+ *         ESP_ERR_TIMEOUT on contention;
+ *         ESP_ERR_INVALID_STATE if UART not yet initialised.
+ */
+esp_err_t tab5_port_c_lock(uint32_t timeout_ms);
+
+/**
+ * @brief Release the Port C UART lock.  Must be paired with a prior
+ *        successful tab5_port_c_lock().  Safe to call on a recursively-
+ *        held lock; releases one level.
+ */
+void tab5_port_c_unlock(void);
+
 #ifdef __cplusplus
 }
 #endif

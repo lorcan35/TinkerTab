@@ -9,6 +9,7 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "uart_port_c";
@@ -18,10 +19,22 @@ static const char *TAG = "uart_port_c";
 
 static bool s_initialized = false;
 static uint32_t s_current_baud = TAB5_PORT_C_UART_BAUD;
+static SemaphoreHandle_t s_uart_mutex = NULL; /* recursive — created in init */
 
 esp_err_t tab5_port_c_uart_init(void) {
    if (s_initialized) {
       return ESP_OK;
+   }
+
+   /* Create the mutex once on first init.  Recursive so the same task can
+    * re-enter (e.g. an audio_cb invoked from chain_run that itself wants
+    * to call back into voice_m5_llm_*). */
+   if (s_uart_mutex == NULL) {
+      s_uart_mutex = xSemaphoreCreateRecursiveMutex();
+      if (s_uart_mutex == NULL) {
+         ESP_LOGE(TAG, "Port C UART mutex create failed");
+         return ESP_ERR_NO_MEM;
+      }
    }
 
    const uart_config_t cfg = {
@@ -98,3 +111,14 @@ esp_err_t tab5_port_c_uart_set_baud(uint32_t baud) {
 }
 
 uint32_t tab5_port_c_uart_get_baud(void) { return s_current_baud; }
+
+esp_err_t tab5_port_c_lock(uint32_t timeout_ms) {
+   if (s_uart_mutex == NULL) return ESP_ERR_INVALID_STATE;
+   const TickType_t ticks = (timeout_ms == UINT32_MAX) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+   return (xSemaphoreTakeRecursive(s_uart_mutex, ticks) == pdTRUE) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+void tab5_port_c_unlock(void) {
+   if (s_uart_mutex == NULL) return;
+   xSemaphoreGiveRecursive(s_uart_mutex);
+}
