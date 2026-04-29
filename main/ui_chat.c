@@ -62,8 +62,8 @@ static const char *TAG = "ui_chat";
 #define CHAT_VIEW_Y       (CHAT_HDR_H + CHAT_ACCENT_H + 20)
 #define CHAT_VIEW_H       (CHAT_H - CHAT_VIEW_Y - (CHAT_PILL_BOT_PAD + CHAT_PILL_H + 24) - NAV_H)
 
-static const uint32_t s_mode_tint[4] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
+static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
 };
 
 /* ── State ─────────────────────────────────────────────────────── */
@@ -163,19 +163,19 @@ static void ensure_session_loaded(void)
 
 static void paint_header_and_view_for_mode(uint8_t mode)
 {
-    if (mode > 3) mode = 0;
-    chat_header_set_mode(s_hdr, mode, NULL);
-    {
-        char llm[CHAT_LLM_MODEL_LEN] = {0};
-        const chat_session_t *cur = chat_store_active_session();
-        if (cur && cur->llm_model[0]) {
-            safe_copy(llm, sizeof(llm), cur->llm_model);
-        } else {
-            tab5_settings_get_llm_model(llm, sizeof(llm));
-        }
-        chat_header_set_mode(s_hdr, mode, llm);
-    }
-    chat_msg_view_set_mode_color(s_view, s_mode_tint[mode]);
+   if (mode >= VOICE_MODE_COUNT) mode = 0;
+   chat_header_set_mode(s_hdr, mode, NULL);
+   {
+      char llm[CHAT_LLM_MODEL_LEN] = {0};
+      const chat_session_t *cur = chat_store_active_session();
+      if (cur && cur->llm_model[0]) {
+         safe_copy(llm, sizeof(llm), cur->llm_model);
+      } else {
+         tab5_settings_get_llm_model(llm, sizeof(llm));
+      }
+      chat_header_set_mode(s_hdr, mode, llm);
+   }
+   chat_msg_view_set_mode_color(s_view, s_mode_tint[mode]);
 }
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
@@ -224,7 +224,7 @@ static void on_mode_lp(void *ud)
     paint_header_and_view_for_mode(m);
     if (s_sugg) chat_suggestions_set_mode(s_sugg, m);
 
-    static const char *names[4] = { "Local", "Hybrid", "Cloud", "Claw" };
+    static const char *names[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
     char toast[64];
     const char *nick = llm;
     const char *slash = strchr(nick, '/');

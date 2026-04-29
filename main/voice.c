@@ -3058,8 +3058,20 @@ esp_err_t voice_start_listening(void)
     * already active, treat tap-mic as toggle-stop (chain_stop is harmless
     * in that order — voice_stop_listening also catches it explicitly). */
    if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
+      /* Audit #9: privacy.  Mic-mute is a user privacy switch.  In
+       * vmode=4 the chain uses K144's onboard mic, not Tab5's, but a
+       * privacy-conscious user pressing mute expects ALL mics to stop.
+       * Refuse to start the chain when muted. */
       if (s_chain_active) {
          return voice_m5_chain_stop();
+      }
+      if (tab5_settings_get_mic_mute()) {
+         extern void ui_home_show_toast(const char *text);
+         if (tab5_ui_try_lock(100)) {
+            ui_home_show_toast("Mic muted -- unmute to use Onboard");
+            tab5_ui_unlock();
+         }
+         return ESP_ERR_INVALID_STATE;
       }
       return voice_m5_chain_start();
    }

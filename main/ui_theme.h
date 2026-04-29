@@ -29,6 +29,7 @@
 #define TH_MODE_HYBRID    0xEAB308  /* Yellow */
 #define TH_MODE_CLOUD     0x3B82F6  /* Blue */
 #define TH_MODE_CLAW      0xF43F5E  /* Rose */
+#define TH_MODE_ONBOARD 0x8E5BFF    /* Violet — vmode=4 K144 onboard */
 
 #define TH_STATUS_GREEN   0x22C55E
 #define TH_STATUS_RED     0xEF4444

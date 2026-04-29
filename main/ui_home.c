@@ -150,15 +150,12 @@ static lv_obj_t   *s_toast         = NULL;
 static lv_timer_t *s_refresh_timer = NULL;
 
 /* Mode colors + labels */
-static const uint32_t s_mode_tint[4] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
+static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
 };
-static const char *s_mode_short[4]  = { "Local",   "Hybrid",  "Cloud",  "Claw"   };
-static const char *s_mode_tagline[4] = {
-    "ON-DEVICE",
-    "LOCAL + CLOUD",
-    "CLOUD ONLY",
-    "TINKERCLAW",
+static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
+static const char *s_mode_tagline[VOICE_MODE_COUNT] = {
+    "ON-DEVICE", "LOCAL + CLOUD", "CLOUD ONLY", "TINKERCLAW", "K144 ONBOARD",
 };
 
 static uint8_t s_badge_mode = 0;
@@ -949,6 +946,13 @@ void ui_home_update_status(void)
     if (s_sys_label) {
         const char *sys;
         uint32_t col = TH_TEXT_SECONDARY;
+        /* Audit #10: vmode=4 doesn't depend on Dragon.  Suppress
+         * "NO DRAGON" / "Reconnecting…" when the user has deliberately
+         * picked Onboard AND the K144 is healthy; show a calm "ONBOARD"
+         * word instead.  When K144 is unavailable in vmode=4 we fall
+         * through to normal degraded reasoning. */
+        const bool onboard_healthy = (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) &&
+                                     (voice_m5_failover_state() == 2 /* M5_FAIL_READY */);
         /* v4·D Gauntlet G7 fix: budget-capped state beats ONLINE so the
          * user sees it without looking for a missed toast.  Rose colour
          * matches the other "trust-broken" states (NO DRAGON, OFFLINE). */
@@ -963,20 +967,36 @@ void ui_home_update_status(void)
         const char *degraded = voice_get_degraded_reason();
         switch (state) {
             case ST_NO_WIFI:     sys = "OFFLINE";   col = TH_STATUS_RED; break;
-            case ST_DRAGON_DOWN: sys = "NO DRAGON"; col = TH_STATUS_RED; break;
+            case ST_DRAGON_DOWN:
+               if (onboard_healthy) {
+                  sys = "ONBOARD";
+                  col = TH_MODE_ONBOARD;
+               } else {
+                  sys = "NO DRAGON";
+                  col = TH_STATUS_RED;
+               }
+               break;
             case ST_MUTED:       sys = "MUTED";     col = 0x7A7A82;      break;
             case ST_QUIET:       sys = "QUIET";     col = 0x7A7A82;      break;
             default:
                 if (capped) {
                     sys = "CAPPED \xe2\x80\xa2 LOCAL TODAY";
                     col = TH_STATUS_RED;
+                } else if (onboard_healthy && degraded) {
+                   /* Onboard mode: Dragon-side degraded reasons aren't
+                    * relevant to user-facing chat — show ONBOARD. */
+                   sys = "ONBOARD";
+                   col = TH_MODE_ONBOARD;
                 } else if (degraded) {
-                    /* Reconnecting / Remote / Dragon-unreachable, etc. */
-                    sys = degraded;
-                    col = 0xFBBF24;  /* amber-hot -- attention, not error */
+                   /* Reconnecting / Remote / Dragon-unreachable, etc. */
+                   sys = degraded;
+                   col = 0xFBBF24; /* amber-hot -- attention, not error */
+                } else if (onboard_healthy) {
+                   sys = "ONBOARD";
+                   col = TH_MODE_ONBOARD;
                 } else {
-                    sys = "ONLINE";
-                    col = TH_TEXT_SECONDARY;
+                   sys = "ONLINE";
+                   col = TH_TEXT_SECONDARY;
                 }
                 break;
         }

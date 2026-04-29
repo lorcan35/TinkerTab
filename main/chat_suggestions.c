@@ -25,32 +25,22 @@ static const char *TAG = "suggestions";
  * the Dragon gateway (no Brave API key); there's no inbox/calendar/
  * car integration.  Previous Claw suggestions promised features that
  * immediately returned 'Sorry, I couldn't generate a response'. */
-static const char *s_prompts[4][4] = {
+static const char *s_prompts[VOICE_MODE_COUNT][4] = {
     /* Local (voice_mode 0) — Notes + datetime + local LLM */
-    { "What's the date?",
-      "Add a note about...",
-      "Summarize my last note",
-      "Help me remember..." },
+    {"What's the date?", "Add a note about...", "Summarize my last note", "Help me remember..."},
     /* Hybrid (voice_mode 1) — cloud STT+TTS, local LLM, no web */
-    { "Explain like I'm 5...",
-      "Translate this to...",
-      "Brainstorm ideas for...",
-      "Rewrite this to be..." },
+    {"Explain like I'm 5...", "Translate this to...", "Brainstorm ideas for...", "Rewrite this to be..."},
     /* Cloud (voice_mode 2) — Claude / GPT, full reasoning */
-    { "Write a Python script...",
-      "Compare X and Y",
-      "Draft a reply to...",
-      "Plan my day around..." },
+    {"Write a Python script...", "Compare X and Y", "Draft a reply to...", "Plan my day around..."},
     /* Claw (voice_mode 3) — MiniMax + MCP tools (time, memory,
      * sequential-thinking, git); NO web. */
-    { "Help me debug...",
-      "Explain this concept...",
-      "Write a code snippet...",
-      "Talk through a design..." },
+    {"Help me debug...", "Explain this concept...", "Write a code snippet...", "Talk through a design..."},
+    /* Onboard (voice_mode 4) — K144 stacked LLM, no Dragon needed */
+    {"Tell me a joke", "What time is it?", "Greet me politely", "Quick fact about Mars"},
 };
 
-static const uint32_t s_mode_tint[4] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
+static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
 };
 
 /* Local + Hybrid + Agent (TinkerClaw) leads are static -- they describe
@@ -59,13 +49,15 @@ static const uint32_t s_mode_tint[4] = {
  * ("Powered by gemini-3-flash-preview") instead of the old hardcoded
  * Claude/GPT-4o string. */
 static char        s_cloud_lead_buf[80] = "Powered by cloud LLM.";
-static const char *s_mode_lead[4] = {
+static const char *s_mode_lead[VOICE_MODE_COUNT] = {
     "Fast local AI -- private by default.",
     "Local model + cloud audio for clarity.",
     s_cloud_lead_buf,
     /* #111: web tools are disabled on Dragon (no Brave key).  The
      * agent still has memory + time + sequential-thinking + git MCPs. */
     "Your agent: memory + reasoning tools.",
+    /* Onboard (vmode=4) — K144 stacked LLM, fully Dragon-free. */
+    "On-device chat -- no cloud, no Dragon.",
 };
 
 struct chat_suggestions {
@@ -155,7 +147,7 @@ void chat_suggestions_destroy(chat_suggestions_t *s)
 void chat_suggestions_set_mode(chat_suggestions_t *s, uint8_t m)
 {
     if (!s) return;
-    if (m > 3) m = 0;
+    if (m >= VOICE_MODE_COUNT) m = 0;
     s->mode = m;
     /* Rebuild the Cloud lead from the live llm_model so it doesn't lie
      * when the user has picked, say, gemini or gpt-4o-mini.  Other modes

@@ -22,10 +22,10 @@ static const char *TAG = "chat_hdr";
 #define ACCENT_H       2
 #define HDR_TOUCH      44
 
-static const uint32_t s_mode_tint[4] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
+static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
 };
-static const char *s_mode_short[4] = { "Local", "Hybrid", "Cloud", "Claw" };
+static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
 
 struct chat_header {
     lv_obj_t *root;       /* 96-h bar */
@@ -212,7 +212,7 @@ void chat_header_set_title(chat_header_t *h, const char *title)
 void chat_header_set_mode(chat_header_t *h, uint8_t m, const char *llm)
 {
     if (!h) return;
-    if (m > 3) m = 0;
+    if (m >= VOICE_MODE_COUNT) m = 0;
     if (h->chip_dot) {
         lv_obj_set_style_bg_color(h->chip_dot, lv_color_hex(s_mode_tint[m]), 0);
     }
