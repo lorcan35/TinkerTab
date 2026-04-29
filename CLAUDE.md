@@ -15,12 +15,22 @@ Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scop
 - Plan: [`docs/PLAN-grove.md`](docs/PLAN-grove.md) · Tracking: [#316](https://github.com/lorcan35/TinkerTab/issues/316)
 - Status: parked, hardware on order.  Phase 1 = Port A I2C bring-up + EXT5V_EN pin discovery on the IO expanders.
 
-### M5Stack LLM Module Kit (K144) — DONE 2026-04-29 (Phases 0-5 + 5b)
+### M5Stack LLM Module Kit (K144) — DONE 2026-04-29 (Phases 0-6 + 7-wave hardening)
 - Plan: [`docs/PLAN-m5-llm-module.md`](docs/PLAN-m5-llm-module.md) · Tracking: [#317](https://github.com/lorcan35/TinkerTab/issues/317)
 - **Hardware topology — Mate carrier required:** stack the **Module13.2 LLM Mate** carrier between Tab5 and K144, plug the K144's top USB-C into power.  Direct K144-on-Tab5 stack causes M5-Bus 5V rail collisions that wedge the AX630C NPU silicon (LEARNINGS: "K144 must sit on the Module13.2 LLM Mate carrier").  Stack order:  `Tab5 base → Mate (USB-C powered) → K144`.
 - **Pins:**  UART_NUM_1, TX = GPIO 6, RX = GPIO 7 (Port C UART, M5-Bus pins 16/15 — Mate carrier passes these straight through to Tab5).  115200 8N1.  Avoid UART0 (G37/G38, M5-Bus 13/14) — collides with `idf.py monitor`.
-- **Code:**  [`bsp/tab5/uart_port_c.{c,h}`](bsp/tab5/uart_port_c.h) (Phase 1) → [`main/m5_stackflow.{c,h}`](main/m5_stackflow.h) marshalling (Phase 2) → [`main/voice_m5_llm.{c,h}`](main/voice_m5_llm.h) sidecar (Phase 3) → failover wiring in [`main/voice.c:voice_send_text`](main/voice.c) (Phase 4) → chat UI bubbles + `VMODE_LOCAL_ONBOARD` + reconnect-back toast (Phase 5) → Settings UI radio row (Phase 5b) → adaptive UART baud + TTS (Phase 6a/c).
-- **Phase 6 status:** UART baud verified clean to 1.5 Mbps (Phase 6a); K144 TTS verified speaking through Tab5's speaker (Phase 6c); **autonomous voice-assistant chain** (audio → asr → llm → tts) verified live end-to-end on hardware (Phase 6b, 2026-04-29).  User speaks at the K144 stack → on-device ASR + LLM + TTS → audio bytes stream back over UART → Tab5 upsamples 1:3 to 48 kHz → plays through Tab5's speaker.  Exposed via `m5chain [seconds]` serial REPL for bench validation.  K144's hardware mic is wired + working (RMS jumps 8× when user speaks, verified via `/opt/usr/bin/tinycap`).  See LEARNINGS "K144 voice-assistant chain runs autonomously" + "K144 has a working microphone".
+- **Code:**  [`bsp/tab5/uart_port_c.{c,h}`](bsp/tab5/uart_port_c.h) (Phase 1, mutex added Wave 1) → [`main/m5_stackflow.{c,h}`](main/m5_stackflow.h) marshalling (Phase 2) → [`main/voice_m5_llm.{c,h}`](main/voice_m5_llm.h) sidecar (Phase 3, chain APIs added Phase 6b) → [`main/voice_onboard.{c,h}`](main/voice_onboard.h) lifecycle module (Wave 4b extract — owns warmup + per-text failover + autonomous chain) → chat UI bubbles + `VMODE_LOCAL_ONBOARD` + reconnect-back toast (Phase 5) → Settings UI radio row (Phase 5b) → adaptive UART baud + TTS (Phase 6a/c) → chat-overlay mic-tap integration (Phase 6b chat).
+- **Phase 6 status:** UART baud verified clean to 1.5 Mbps (Phase 6a); K144 TTS verified speaking through Tab5's speaker (Phase 6c); **autonomous voice-assistant chain** (audio → asr → llm → per-utterance TTS) verified live end-to-end on hardware (Phase 6b, 2026-04-29).  User speaks at the K144 stack → on-device ASR + LLM → per-utterance TTS via `voice_m5_llm_tts` → audio bytes stream back over UART → Tab5 upsamples 1:3 to 48 kHz → plays through Tab5's speaker.  Exposed via `m5chain [seconds]` serial REPL for bench validation, AND via the chat overlay's mic orb tap when `vmode=4`.  K144's hardware mic is wired + working (RMS jumps 8× when user speaks, verified via `/opt/usr/bin/tinycap`).  See LEARNINGS "K144 voice-assistant chain runs autonomously" + "K144 has a working microphone".
+
+- **Wave 1-7 chain hardening (TT #327, 2026-04-29):** Three parallel audits (UI/UX, piping, architecture) of the chain integration surfaced 5 P0s + ~12 P1s.  Closed via 7 wave PRs on PR #326.  Notable artifacts:
+  - `bsp/tab5/uart_port_c` recursive mutex serialises every K144 UART transaction; chain_run takes/releases per outer-loop iteration
+  - [`main/voice_onboard.{c,h}`](main/voice_onboard.h) extracted from `voice.c` — owns the entire vmode=4 surface (warmup + per-text failover + autonomous chain)
+  - K144's `single_speaker_english_fast` SummerTTS crashes mid-stream in chained `tts.setup`; workaround is per-utterance synth via `voice_m5_llm_tts` posted to `tab5_worker` on every LLM `finish=true`
+  - `GET /m5` debug endpoint returns `{chain_active, chain_uptime_ms, failover_state, uart_baud}` — closes the diagnostic gap where "chain didn't start" required serial+adb
+  - Obs events: `m5.warmup` (start/ready/unavailable), `m5.chain` (start/stop) feed the existing `/events` ring + e2e harness
+  - `tests/e2e/scenarios/runner.py` `story_onboard` (14 steps) covers vmode=4 lifecycle
+  - Full retrospective: `LEARNINGS.md` "K144 chain hardening (audit 2026-04-29) — 7-wave program closes 14/18 audit findings"
+  - Plan + audit docs: [`docs/AUDIT-k144-chain-2026-04-29.md`](docs/AUDIT-k144-chain-2026-04-29.md), [`docs/PLAN-k144-chain-hardening.md`](docs/PLAN-k144-chain-hardening.md)
 - **Live performance:**  ~4.5s boot warm-up (cold-start NPU model load), ~2-3s per turn after warm.  K144 reply renders as a "TINKER" bubble in the chat overlay.
 - **Voice modes — five tiers now (was four):**
   - `vmode=0` Local — Dragon Q6A LLM (existing)
@@ -257,7 +267,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode
 curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
 curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=3"  # TinkerClaw
 
-# Navigation (force screen change — bypasses tileview)
+# Navigation (force screen change — uses async_navigate dispatcher with screen.navigate obs event)
 curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=settings"
 curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=notes"
 curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=chat"
@@ -279,6 +289,11 @@ curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/voice | pytho
 
 # Force voice WS reconnect
 curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/voice/reconnect
+
+# K144 / chain diagnostic snapshot (TT #327 Wave 5)
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/m5 | python3 -m json.tool
+# → {"chain_active":false,"chain_uptime_ms":0,"failover_state":2,
+#    "failover_state_name":"ready","uart_baud":115200}
 
 # Self-test (no auth needed)
 curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
@@ -344,6 +359,8 @@ export TAB5_TOKEN=05eed3b13bf62d92cfd8ac424438b9f2
 python3 tests/e2e/runner.py story_smoke    # ~2 min  — nav + voice + camera basics
 python3 tests/e2e/runner.py story_full     # ~2 min  — all 4 voice modes + photo + REC + cloud chat
 python3 tests/e2e/runner.py story_stress   # ~10 min — 6 cycles of mode×screen×chat with heap watchdog
+python3 tests/e2e/runner.py story_onboard  # ~30 sec — vmode=4 K144 chain lifecycle (TT #327 Wave 5)
+                                            #            (skips if /m5 reports failover_state != READY)
 python3 tests/e2e/runner.py all --reboot   # all 3 with a clean reboot first
 ```
 
@@ -425,7 +442,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw / Onboard (K144)**
 | Hybrid (1) | OpenRouter gpt-audio-mini | Local (unchanged) | OpenRouter gpt-audio-mini | 4-8s | ~$0.02/req |
 | Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
 | TinkerClaw (3) | Moonshine (or OpenRouter) | TinkerClaw Gateway | Piper (or OpenRouter) | varies | varies |
-| Onboard K144 (4) | (text only — voice still uses Local Dragon for now) | M5 K144 stacked LLM (qwen2.5-0.5B over UART) | (text only) | 2-3s | Free |
+| Onboard K144 (4) | K144 sherpa-ncnn ASR (chain) or text-only (failover) | M5 K144 stacked LLM (qwen2.5-0.5B over UART) | K144 single_speaker_english_fast (per-utterance synth) | 2-3s | Free |
 
 - **LLM Model Picker:** Settings dropdown: Local NPU / Local Ollama / Claude Haiku / Claude Sonnet / GPT-4o mini (enabled only in Full Cloud mode)
 - **Auto-Fallback (cloud STT/TTS):** If cloud STT/TTS fails, Dragon falls back to local for that request + sends `config_update` with `error` field → Tab5 auto-reverts to Local mode
@@ -781,7 +798,7 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 | Screen | File | Description |
 |--------|------|-------------|
 | Splash | ui_splash.c | Boot animation, shown during init |
-| Home | ui_home.c | 4-page tileview (Material Dark polish) |
+| Home | ui_home.c | v4·C Ambient Canvas — single screen with orb, mode pill, status strip, say-pill, nav-sheet menu chip (no tileview; the 4-page tileview was retired in v4·C) |
 | Chat | ui_chat.c | Fullscreen overlay on home (iMessage-style Material Dark). Live status bar (Ready/Processing/Speaking), tappable mode badge cycles Local/Hybrid/Cloud, New Chat button, thinking + tool indicator bubbles |
 | Notes | ui_notes.c | Separate lv_screen (loaded via lv_screen_load) |
 | Settings | ui_settings.c | Fullscreen overlay on home (Material Dark, 55 objects) |

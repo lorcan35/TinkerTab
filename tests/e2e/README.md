@@ -30,6 +30,7 @@ Each run lands in `tests/e2e/runs/<scenario>-<timestamp>/`:
 | `story_smoke`  | ~5 min  | Boot → mode set → home → text chat → camera screen → settings round-trip |
 | `story_full`   | ~10 min | All four voice modes + Local text turn + photo capture + REC start/stop + Cloud text turn |
 | `story_stress` | ~20 min | 6 cycles of (mode rotation × screen rotation × text chat) with heap watchdog assertions |
+| `story_onboard`| ~30 sec | TT #327 Wave 5 — vmode=4 K144 chain lifecycle (mode switch + chat nav + chain start via tap-mic + nav-away teardown + failover text path).  Skips if `/m5` reports `failover_state != READY`. |
 
 ## Adding a scenario
 
