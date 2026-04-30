@@ -8,24 +8,27 @@
  */
 
 #include "ui_camera.h"
-#include "ui_home.h"
-#include "ui_files.h"
-#include "ui_feedback.h"
-#include "camera.h"
-#include "sdcard.h"
-#include "voice.h"      /* U11 follow-up: voice_upload_chat_image() */
-#include "voice_video.h"/* #291: shared HW JPEG encoder (voice_video_encode_rgb565) */
-#include "settings.h"   /* #260: cam_rot NVS key */
-#include "config.h"
-#include "esp_log.h"
-#include "esp_timer.h"  /* #291: recording duration */
-#include "driver/jpeg_encode.h"   /* #291: jpeg_alloc_encoder_mem for DMA buffers */
-#include "esp_heap_caps.h"
-#include "esp_task_wdt.h"
+
+#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <dirent.h>
+
+#include "camera.h"
+#include "config.h"
+#include "driver/jpeg_encode.h" /* #291: jpeg_alloc_encoder_mem for DMA buffers */
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_task_wdt.h"
+#include "esp_timer.h" /* #291: recording duration */
+#include "sdcard.h"
+#include "settings.h" /* #260: cam_rot NVS key */
+#include "ui_core.h"  /* TT #328 Wave 5: ui_tap_gate */
+#include "ui_feedback.h"
+#include "ui_files.h"
+#include "ui_home.h"
+#include "voice.h"       /* U11 follow-up: voice_upload_chat_image() */
+#include "voice_video.h" /* #291: shared HW JPEG encoder (voice_video_encode_rgb565) */
 
 static const char *TAG = "ui_camera";
 
@@ -242,6 +245,7 @@ static void gallery_btn_cb(lv_event_t *e)
 static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
+    if (!ui_tap_gate("camera:back", 300)) return;
     ui_camera_destroy();
     lv_screen_load(ui_home_get_screen());
 }

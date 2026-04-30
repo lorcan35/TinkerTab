@@ -55,6 +55,25 @@ lv_result_t tab5_lv_async_call(lv_async_cb_t cb, void *user_data);
 /** Get LVGL rendering FPS (flush callbacks per second). Updated every 1s. */
 uint32_t ui_core_get_fps(void);
 
+/* TT #328 Wave 5 — universal tap-debounce gate.
+ *
+ *   if (!ui_tap_gate("chat:back", 300)) return;
+ *
+ * Returns true if this tap should fire, false if it should be swallowed
+ * because the same `site` fired within `ms` milliseconds.  Per-site
+ * cooldown so independent buttons don't share the same debounce window.
+ * Pre-Wave-5 only the home orb (ui_home.c:1342) and /navigate had any
+ * debounce — every other clickable was vulnerable to repeat-tap stacking
+ * (overlapping create/dismiss → SDIO TX copy_buff exhaustion).
+ *
+ * Site names are short string literals (compared by pointer via interning
+ * — pass the same string literal everywhere; we store char* not strdup).
+ * Up to UI_TAP_GATE_SITES sites tracked; older entries evict on overflow.
+ * Thread-safe via the LVGL mutex (callers must already be on the LVGL
+ * thread, which all CLICKED handlers are).
+ */
+bool ui_tap_gate(const char *site, int ms);
+
 /* Audit U2 (TinkerTab #206): auto-rotate plumbing.
  *
  *   ui_core_apply_auto_rotation(true) — start the IMU poll timer (1 Hz) +

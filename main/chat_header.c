@@ -5,22 +5,29 @@
  * 140×2 amber accent bar painted at y=96 in the parent.
  */
 #include "chat_header.h"
-#include "ui_theme.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #include "config.h"
 #include "esp_log.h"
-#include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
+#include "ui_core.h" /* TT #328 Wave 5: ui_tap_gate */
+#include "ui_theme.h"
 
 static const char *TAG = "chat_hdr";
 
 /* Pixel spec — raw px (720×1280 framebuffer, no DPI_SCALE since the spec
- * fixes these numbers). Touch targets are all ≥ 44. */
+ * fixes these numbers).
+ * TT #328 Wave 5: HDR_TOUCH bumped 44 → TOUCH_MIN (DPI_SCALE(44) = 60 px
+ * at 218 DPI).  Pre-Wave-5 the chat header back / chevron / plus all sat
+ * at the absolute minimum 44 px (= 6.5 mm), below the canonical
+ * 7 mm / TOUCH_MIN that the rest of the firmware uses.  Audit P0 #6. */
 #define HDR_H          96
 #define HDR_SIDE_PAD   40
 #define ACCENT_W       140
 #define ACCENT_H       2
-#define HDR_TOUCH      44
+#define HDR_TOUCH TOUCH_MIN
 
 static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
     TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
@@ -44,20 +51,26 @@ struct chat_header {
 };
 
 /* ── Event trampolines ─────────────────────────────────────────── */
+/* TT #328 Wave 5 — universal tap-debounce.  Repeat-tap on any of these
+ * stacked overlapping create/dismiss → SDIO TX copy_buff exhaustion
+ * before the gate. */
 static void ev_back(lv_event_t *e)
 {
-    chat_header_t *h = lv_event_get_user_data(e);
-    if (h && h->back_cb) h->back_cb(h->back_ud);
+   if (!ui_tap_gate("chat:back", 300)) return;
+   chat_header_t *h = lv_event_get_user_data(e);
+   if (h && h->back_cb) h->back_cb(h->back_ud);
 }
 static void ev_chev(lv_event_t *e)
 {
-    chat_header_t *h = lv_event_get_user_data(e);
-    if (h && h->chev_cb) h->chev_cb(h->chev_ud);
+   if (!ui_tap_gate("chat:chev", 300)) return;
+   chat_header_t *h = lv_event_get_user_data(e);
+   if (h && h->chev_cb) h->chev_cb(h->chev_ud);
 }
 static void ev_plus(lv_event_t *e)
 {
-    chat_header_t *h = lv_event_get_user_data(e);
-    if (h && h->plus_cb) h->plus_cb(h->plus_ud);
+   if (!ui_tap_gate("chat:new", 300)) return;
+   chat_header_t *h = lv_event_get_user_data(e);
+   if (h && h->plus_cb) h->plus_cb(h->plus_ud);
 }
 static void ev_chip_lp(lv_event_t *e)
 {

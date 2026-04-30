@@ -485,3 +485,59 @@ uint32_t ui_core_get_fps(void)
 {
     return s_fps;
 }
+
+/* TT #328 Wave 5 — per-site tap-debounce ledger.
+ *
+ * Keyed by interned const char* (string literal); equality is pointer-
+ * equality, NOT strcmp.  Callers must pass the SAME string literal at
+ * every call site (e.g., always "chat:back").  This makes the lookup
+ * O(N_SITES) with no hashing or strdup needed.  N_SITES is small (8
+ * tracked clickables fits the firmware's interactive-element budget);
+ * overflow LRU-evicts the oldest entry.
+ *
+ * Why not a hash table or LVGL event-aware solution?  The audit P0
+ * called out that pre-Wave-5 only the orb + /navigate had any debounce;
+ * the broad fix needed to be one-line opt-in at every CLICKED handler
+ * entry.  That argued for the simplest possible primitive.
+ */
+#define UI_TAP_GATE_SITES 8
+typedef struct {
+   const char *site; /* interned literal pointer */
+   uint32_t last_ms;
+} tap_gate_entry_t;
+static tap_gate_entry_t s_tap_gate[UI_TAP_GATE_SITES] = {0};
+static uint32_t s_tap_gate_seq = 0; /* monotonically increasing tie-breaker for LRU */
+
+bool ui_tap_gate(const char *site, int ms) {
+   if (!site || ms <= 0) return true;
+   uint32_t now = lv_tick_get();
+
+   /* Search for matching site (pointer equality on interned literals). */
+   int free_slot = -1;
+   int lru_slot = 0;
+   uint32_t lru_age = 0;
+   for (int i = 0; i < UI_TAP_GATE_SITES; i++) {
+      tap_gate_entry_t *e = &s_tap_gate[i];
+      if (e->site == site) {
+         if (now - e->last_ms < (uint32_t)ms) {
+            ESP_LOGI(TAG, "tap_gate '%s' debounced (dt=%lums)", site, (unsigned long)(now - e->last_ms));
+            return false;
+         }
+         e->last_ms = now;
+         return true;
+      }
+      if (e->site == NULL && free_slot < 0) free_slot = i;
+      uint32_t age = now - e->last_ms;
+      if (age > lru_age) {
+         lru_age = age;
+         lru_slot = i;
+      }
+   }
+
+   /* No match — install new entry, evicting LRU if full. */
+   int slot = (free_slot >= 0) ? free_slot : lru_slot;
+   s_tap_gate[slot].site = site;
+   s_tap_gate[slot].last_ms = now;
+   s_tap_gate_seq++;
+   return true;
+}

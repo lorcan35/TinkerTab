@@ -86,6 +86,7 @@ static int entry_cmp(const void *a, const void *b);
 static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
+    if (!ui_tap_gate("files:back", 300)) return;
     /* At root → destroy screen (go back to home) */
     if (strcmp(current_path, ROOT_PATH) == 0) {
         ui_files_destroy();

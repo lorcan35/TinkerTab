@@ -258,6 +258,12 @@ static void cb_back_btn(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
         if (dir != LV_DIR_RIGHT) return;
+    } else if (!ui_tap_gate("settings:back", 300)) {
+       /* TT #328 Wave 5 — only debounce CLICKED; gesture handler above
+        * already exits early on non-RIGHT dirs and is throttled by LVGL
+        * gesture state, so debouncing it would also drop legitimate
+        * RIGHT swipes. */
+       return;
     }
     /* Hide instead of destroy — destroy+recreate of 55 objects causes
      * internal SRAM heap fragmentation from LVGL alloc/free churn.
