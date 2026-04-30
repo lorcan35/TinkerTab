@@ -40,6 +40,7 @@ else()
              "settings.c" "ota.c" "media_cache.c"
              "widget_store.c"
              "widget_mode_dot.c"
+             "ui_chrome.c"
              "spring_anim.c"
              "task_worker.c"
              "tool_log.c"

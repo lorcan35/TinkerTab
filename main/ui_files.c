@@ -10,19 +10,21 @@
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #include "ui_files.h"
-#include "ui_home.h"
-#include "ui_audio.h"
-#include "ui_core.h"
-#include "sdcard.h"
-#include "config.h"
-#include "esp_log.h"
-#include "esp_heap_caps.h"
 
 #include <dirent.h>
-#include <sys/stat.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+#include "config.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "sdcard.h"
+#include "ui_audio.h"
+#include "ui_core.h"
+#include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
+#include "ui_home.h"
 
 static const char *TAG = "ui_files";
 
@@ -85,8 +87,13 @@ static int entry_cmp(const void *a, const void *b);
 
 static void cb_back_btn(lv_event_t *e)
 {
-    (void)e;
-    if (!ui_tap_gate("files:back", 300)) return;
+   /* TT #328 Wave 10 — same handler covers gesture (RIGHT swipe) and tap. */
+   if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
+      lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+      if (dir != LV_DIR_RIGHT) return;
+   } else if (!ui_tap_gate("files:back", 300)) {
+      return;
+   }
     /* At root → destroy screen (go back to home) */
     if (strcmp(current_path, ROOT_PATH) == 0) {
         ui_files_destroy();
@@ -737,10 +744,14 @@ static void show_file_info(const char *filepath, off_t size)
  * ================================================================ */
 lv_obj_t *ui_files_create(void)
 {
-    /* If already exists, just reload */
-    if (scr_files) {
-        lv_screen_load(scr_files);
-        return scr_files;
+   /* TT #328 Wave 10 — show persistent home button as escape hatch. */
+   extern void ui_chrome_set_home_visible(bool visible);
+   ui_chrome_set_home_visible(true);
+
+   /* If already exists, just reload */
+   if (scr_files) {
+      lv_screen_load(scr_files);
+      return scr_files;
     }
 
     strncpy(current_path, ROOT_PATH, MAX_PATH_LEN - 1);
@@ -757,6 +768,10 @@ lv_obj_t *ui_files_create(void)
     lv_obj_set_style_bg_opa(scr_files, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr_files, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* TT #328 Wave 10 — swipe-right-back gesture. */
+    lv_obj_add_event_cb(scr_files, cb_back_btn, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(scr_files, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
     /* ── Top bar ─────────────────────────────────────────────── */
     topbar = lv_obj_create(scr_files);
     lv_obj_set_size(topbar, SCREEN_W, TOPBAR_H);
@@ -769,9 +784,9 @@ lv_obj_t *ui_files_create(void)
     lv_obj_set_style_pad_right(topbar, 8, 0);
     lv_obj_clear_flag(topbar, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back button */
+    /* Back button — TT #328 Wave 10: was 56×48 (below TOUCH_MIN 60). */
     lv_obj_t *btn_back = lv_button_create(topbar);
-    lv_obj_set_size(btn_back, 56, 48);
+    lv_obj_set_size(btn_back, TOUCH_MIN, TOUCH_MIN);
     lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_style_bg_opa(btn_back, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(btn_back, 0, 0);
@@ -783,6 +798,7 @@ lv_obj_t *ui_files_create(void)
     lv_obj_center(lbl_back);
 
     lv_obj_add_event_cb(btn_back, cb_back_btn, LV_EVENT_CLICKED, NULL);
+    ui_fb_icon(btn_back); /* TT #328 Wave 10 */
 
     /* Path label */
     lbl_path = lv_label_create(topbar);

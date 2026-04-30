@@ -47,6 +47,7 @@
 #include "ui_agents.h"
 #include "ui_chat.h"
 #include "ui_core.h"
+#include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* visual pressed states */
 #include "ui_focus.h"
 #include "ui_keyboard.h"
 #include "ui_memory.h"
@@ -517,6 +518,7 @@ lv_obj_t *ui_home_create(void)
     lv_obj_add_flag(s_orb, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(s_orb, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_orb, orb_click_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_icon(s_orb); /* TT #328 Wave 10 — opacity dip on press */
     lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
     /* ── State word + greet line (below orb) ───────────────── */
@@ -561,6 +563,7 @@ lv_obj_t *ui_home_create(void)
      * chip looked broken to new users. */
     lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(s_mode_chip); /* TT #328 Wave 10 */
 
     /* TT #328 Wave 6 — shared mode-dot widget (was 6 lines of open-coded
      * LVGL primitives also duplicated in chat_header.c + drawer). */
@@ -673,6 +676,7 @@ lv_obj_t *ui_home_create(void)
     lv_obj_clear_flag(s_say_pill, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_say_pill, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_say_pill, orb_click_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_card(s_say_pill); /* TT #328 Wave 10 */
 
     /* 84 px amber mic disc — inner element, left-aligned inside pill */
     s_say_mic = lv_obj_create(s_say_pill);
@@ -740,6 +744,7 @@ lv_obj_t *ui_home_create(void)
          * 4-dot chip". */
         extern void menu_chip_click_cb(lv_event_t *e);
         lv_obj_add_event_cb(menu, menu_chip_click_cb, LV_EVENT_CLICKED, NULL);
+        ui_fb_card(menu); /* TT #328 Wave 10 */
         /* 2×2 dot grid -- draw 4 dim dots inside the chip */
         for (int r = 0; r < 2; r++) {
             for (int c = 0; c < 2; c++) {
@@ -799,6 +804,12 @@ lv_obj_t *ui_home_create(void)
      * (612..668, 1160..1216).  See ui_home_go_home for the rationale. */
     extern void ui_keyboard_set_trigger_visible(bool);
     ui_keyboard_set_trigger_visible(false);
+
+    /* TT #328 Wave 10 — hide the persistent floating home button.
+     * Home doesn't need an escape hatch to itself; the chip + say-pill
+     * + 4-dot menu chip already cover navigation intent here. */
+    extern void ui_chrome_set_home_visible(bool visible);
+    ui_chrome_set_home_visible(false);
 
     /* TT #328 Wave 9 — first-launch mode-chip discoverability hint.
      * Pre-Wave-9 the dials were reachable only via long-press on orb

@@ -181,6 +181,13 @@ static void paint_header_and_view_for_mode(uint8_t mode)
 
 static void on_back(void *ud)  { (void)ud; ui_chat_hide(); }
 
+/* TT #328 Wave 10 — swipe-right-back gesture on chat overlay. */
+static void on_chat_gesture(lv_event_t *e) {
+   (void)e;
+   lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+   if (dir == LV_DIR_RIGHT) ui_chat_hide();
+}
+
 static void on_chev(void *ud)
 {
     (void)ud;
@@ -537,6 +544,13 @@ lv_obj_t *ui_chat_create(void)
     lv_obj_set_style_bg_opa(s_overlay, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_foreground(s_overlay);
+
+    /* TT #328 Wave 10 — swipe-right-back on chat overlay.  Pre-Wave-10
+     * the chat overlay had no swipe gesture; users were stuck with the
+     * 60-px header back button or a deep nav.  GESTURE_BUBBLE clear
+     * keeps the gesture from propagating to the home screen below. */
+    lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(s_overlay, on_chat_gesture, LV_EVENT_GESTURE, NULL);
 
     s_hdr = chat_header_create(s_overlay, "Chat");
     chat_header_on_back(s_hdr, on_back, NULL);

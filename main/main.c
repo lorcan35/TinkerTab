@@ -105,6 +105,11 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
     ESP_LOGI(TAG, "Creating overlays (deferred)...");
     ui_keyboard_init(NULL);
     ui_voice_init();
+    /* TT #328 Wave 10 — persistent floating home button on lv_layer_top.
+     * Hidden by default; non-home screens toggle it via
+     * ui_chrome_set_home_visible(true) on show, (false) on destroy. */
+    extern void ui_chrome_init(void);
+    ui_chrome_init();
 
     /* Home screen is active at boot — hide floating buttons that are
      * redundant on home (orb + Ask Tinker handle voice). They'll be

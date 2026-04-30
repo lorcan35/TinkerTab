@@ -8,32 +8,33 @@
  * Each section has a unique accent color. Spacing used instead of dividers.
  */
 
-#include "esp_task_wdt.h"
-#include "ui_core.h"
 #include "ui_settings.h"
-#include "ui_home.h"
-#include "display.h"
-#include "battery.h"
-#include "wifi.h"
-#include "bluetooth.h"
-#include "tab5_rtc.h"
-#include "sdcard.h"
-#include "imu.h"
-#include "config.h"
-#include "settings.h"
-#include "audio.h"
-#include "voice.h"
-#include "ota.h"
-#include "ui_keyboard.h"
-
-#include "esp_log.h"
-#include "esp_heap_caps.h"
-#include "esp_system.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#include "audio.h"
+#include "battery.h"
+#include "bluetooth.h"
+#include "config.h"
+#include "display.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "imu.h"
+#include "ota.h"
+#include "sdcard.h"
+#include "settings.h"
+#include "tab5_rtc.h"
+#include "ui_core.h"
+#include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
+#include "ui_home.h"
+#include "ui_keyboard.h"
+#include "voice.h"
+#include "wifi.h"
 
 static const char *TAG = "ui_settings";
 
@@ -1200,13 +1201,19 @@ lv_obj_t *ui_settings_create(void)
     lv_obj_set_style_text_letter_space(title, -1, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 24, 0);
 
+    /* TT #328 Wave 10 — back btn was 140×TOPBAR_H (48 = below TOUCH_MIN
+     * 60).  Topbar height itself stays at 48 (full layout depends on
+     * it); set_ext_click_area grows ONLY the hit area to TOUCH_MIN
+     * without disturbing visual layout. */
     lv_obj_t *back_btn = lv_button_create(bar);
     lv_obj_set_size(back_btn, 140, TOPBAR_H);
+    lv_obj_set_ext_click_area(back_btn, (TOUCH_MIN - TOPBAR_H + 1) / 2);
     lv_obj_align(back_btn, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_shadow_width(back_btn, 0, 0);
     lv_obj_set_style_border_width(back_btn, 0, 0);
     lv_obj_add_event_cb(back_btn, cb_back_btn, LV_EVENT_CLICKED, NULL);
+    ui_fb_icon(back_btn); /* TT #328 Wave 10 */
 
     lv_obj_t *arrow = lv_label_create(back_btn);
     lv_label_set_text(arrow, LV_SYMBOL_LEFT "  HOME");

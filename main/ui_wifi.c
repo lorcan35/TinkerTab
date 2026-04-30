@@ -773,9 +773,13 @@ static void hide_password_dialog(void)
 
 lv_obj_t *ui_wifi_create(void)
 {
-    if (s_screen) {
-        ESP_LOGW(TAG, "WiFi screen already exists");
-        return s_screen;
+   /* TT #328 Wave 10 — show persistent home button as escape hatch. */
+   extern void ui_chrome_set_home_visible(bool visible);
+   ui_chrome_set_home_visible(true);
+
+   if (s_screen) {
+      ESP_LOGW(TAG, "WiFi screen already exists");
+      return s_screen;
     }
 
     /* ── Screen ────────────────────────────────────────────────────── */

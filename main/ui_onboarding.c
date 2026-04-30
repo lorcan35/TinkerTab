@@ -292,42 +292,53 @@ void ui_onboarding_force_show(void)
     ESP_LOGI(TAG, "onboarding shown (step 0/%d)", S_CARD_COUNT);
 }
 
-/* U22 (#206): post-finish round-trip verification.  The static
- * carousel doesn't actually exercise the device's connectivity, so a
- * user can finish onboarding while WiFi is mis-configured or Dragon is
- * unreachable and never know — they'll just hit "Hold to speak" and
- * wonder why nothing happens.
+/* TT #328 Wave 10 P0 #11 follow-up — Dragon RTT gate on set_onboarded.
+ * Pre-Wave-10 ui_onboarding_finish set onboarded=true immediately + a
+ * 3 s verify timer that just toasted the result.  Audit recommended
+ * that we GATE the NVS write on real Dragon connectivity so a brand-
+ * new device with mis-configured Wi-Fi or unreachable Dragon doesn't
+ * silently mark itself "done" and leave the user staring at a non-
+ * functional home.  New flow:
+ *   - finish() schedules the verify timer + DOES NOT write onboarded
+ *   - verify cb: if wifi+dragon are up → set_onboarded(true) + success
+ *     toast.  If not → leave onboarded=false (carousel will re-show on
+ *     next boot with the Wi-Fi CTA primed) + an actionable toast.
  *
- * 3 s after finish, check WiFi + voice-WS state.  Both up: silent
- * "Connected to Dragon ✓" confirmation.  Either down: visible
- * "Setup unfinished — check Settings → Network" toast.  Either way
- * onboarding stays marked done (no relooping), but the user gets a
- * clear signal about whether their setup actually works. */
+ * Tradeoff: a user on a flaky network may reboot into onboarding more
+ * than once.  Acceptable — CLAUDE.md's "5-min conversation" goal is
+ * literally unreachable without Dragon, so re-prompting is honest. */
 static void verify_round_trip_cb(lv_timer_t *t)
 {
     lv_timer_del(t);
     bool wifi   = tab5_wifi_connected();
     bool dragon = voice_is_connected();
     if (wifi && dragon) {
-        ESP_LOGI(TAG, "onboard verify: wifi=1 dragon=1 — round-trip OK");
-        ui_home_show_toast("Connected to Dragon");
+       ESP_LOGI(TAG, "onboard verify: wifi=1 dragon=1 — gating onboarded=true");
+       tab5_settings_set_onboarded(true);
+       ui_home_show_toast("Connected to Dragon");
     } else {
-        ESP_LOGW(TAG, "onboard verify: wifi=%d dragon=%d — round-trip incomplete",
-                 wifi, dragon);
-        ui_home_show_toast("Setup unfinished — check Settings");
+       ESP_LOGW(TAG,
+                "onboard verify: wifi=%d dragon=%d — onboarded stays false; "
+                "carousel will re-show next boot",
+                wifi, dragon);
+       /* Use the warn tone so the user actually notices — a generic
+        * info toast at boot is easy to miss. */
+       ui_home_show_toast_ex(
+           "Setup unfinished — Wi-Fi or Dragon unreachable. "
+           "Reboot once both are up.",
+           UI_TOAST_WARN);
     }
 }
 
 void ui_onboarding_finish(void)
 {
-    tab5_settings_set_onboarded(true);
-    destroy_overlay();
-    ESP_LOGI(TAG, "onboarding finished, NVS onboard=1");
-    /* U22 (#206): single-shot timer so the home screen is visible
-     * before the verify toast lands.  3 s gives wifi/voice a moment
-     * to settle if they were mid-connect during the carousel. */
-    lv_timer_t *vt = lv_timer_create(verify_round_trip_cb, 3000, NULL);
-    if (vt) lv_timer_set_repeat_count(vt, 1);
+   /* Note: NVS onboarded write deferred to verify_round_trip_cb. */
+   destroy_overlay();
+   ESP_LOGI(TAG, "onboarding carousel dismissed; verify timer pending");
+   /* 3 s delay so the home screen is visible before the toast +
+    * gives wifi/voice a moment to settle if they were mid-connect. */
+   lv_timer_t *vt = lv_timer_create(verify_round_trip_cb, 3000, NULL);
+   if (vt) lv_timer_set_repeat_count(vt, 1);
 }
 
 bool ui_onboarding_visible(void)

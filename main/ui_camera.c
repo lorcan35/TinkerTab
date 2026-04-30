@@ -244,8 +244,16 @@ static void gallery_btn_cb(lv_event_t *e)
 /* ── Back button callback ────────────────────────────────────── */
 static void cb_back_btn(lv_event_t *e)
 {
-    (void)e;
-    if (!ui_tap_gate("camera:back", 300)) return;
+   /* TT #328 Wave 10 — same handler covers gesture (RIGHT swipe) and
+    * tap.  Pre-Wave-10 the camera screen had no swipe-back gesture; the
+    * back button was the only escape.  Settings has done this since
+    * forever (ui_settings.c:259); finally extending the pattern here. */
+   if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
+      lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+      if (dir != LV_DIR_RIGHT) return;
+   } else if (!ui_tap_gate("camera:back", 300)) {
+      return;
+   }
     ui_camera_destroy();
     lv_screen_load(ui_home_get_screen());
 }
@@ -273,16 +281,20 @@ void cb_rotate_btn(lv_event_t *e)
  * ================================================================ */
 lv_obj_t *ui_camera_create(void)
 {
-    /* #172: idempotent re-entry.  Camera owns a ~1.8 MB PSRAM canvas
-     * buffer + a preview timer + a full LVGL screen tree.  If the
-     * create path is hit twice without an intervening destroy (debug
-     * /navigate racing with a tile tap, duplicate async navigation
-     * during screen churn), we'd overwrite \`scr_camera\` / \`canvas_buf\`
-     * and leak the previous instance + leave its preview timer firing
-     * on a dangling canvas.  Short-circuit when we're already live. */
-    if (scr_camera) {
-        lv_screen_load(scr_camera);
-        return scr_camera;
+   /* TT #328 Wave 10 — show persistent home button as escape hatch. */
+   extern void ui_chrome_set_home_visible(bool visible);
+   ui_chrome_set_home_visible(true);
+
+   /* #172: idempotent re-entry.  Camera owns a ~1.8 MB PSRAM canvas
+    * buffer + a preview timer + a full LVGL screen tree.  If the
+    * create path is hit twice without an intervening destroy (debug
+    * /navigate racing with a tile tap, duplicate async navigation
+    * during screen churn), we'd overwrite \`scr_camera\` / \`canvas_buf\`
+    * and leak the previous instance + leave its preview timer firing
+    * on a dangling canvas.  Short-circuit when we're already live. */
+   if (scr_camera) {
+      lv_screen_load(scr_camera);
+      return scr_camera;
     }
 
     bool cam_ok = tab5_camera_initialized();
@@ -349,6 +361,11 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_pad_all(scr_camera, 0, 0);
 
+    /* TT #328 Wave 10 — swipe-right-back gesture (same handler dispatches
+     * for tap + gesture). */
+    lv_obj_add_event_cb(scr_camera, cb_back_btn, LV_EVENT_GESTURE, NULL);
+    lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
     /* ── Top bar with back button ────────────────────────────── */
     {
         lv_obj_t *topbar = lv_obj_create(scr_camera);
@@ -360,7 +377,9 @@ lv_obj_t *ui_camera_create(void)
 
         lv_obj_t *btn_back = lv_button_create(topbar);
         lv_obj_remove_style_all(btn_back);
-        lv_obj_set_size(btn_back, 80, 48);
+        /* TT #328 Wave 10 — was 80×48 (below TOUCH_MIN 60).  Lifted height
+         * to TOUCH_MIN so the camera escape hatch meets the 7 mm floor. */
+        lv_obj_set_size(btn_back, 80, TOUCH_MIN);
         lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x1A1A24), 0);
         lv_obj_set_style_bg_opa(btn_back, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(btn_back, 12, 0);
