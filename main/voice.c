@@ -222,6 +222,33 @@ static volatile bool s_mic_running = false;
  * flagged as the eventual heap_wd reset trigger. */
 static SemaphoreHandle_t s_mic_event_sem = NULL;
 
+/* Persistent voice_conn task — mirrors the #284 mic_capture_task and
+ * playback_drain_task pattern.  Spawned once at voice_init, idles on
+ * s_conn_event_sem between connects.  voice_connect_async writes the
+ * latest connect args under s_conn_args_mutex, sets s_conn_args_dirty,
+ * gives the semaphore, and returns.  The task wakes, snapshots the
+ * args under the mutex, runs the connect, optionally auto-listens,
+ * then loops back to wait.
+ *
+ * Replaces the prior per-call `xTaskCreate(...) + vTaskSuspend(NULL)`
+ * pattern that locked 8 KB of stack forever after each connect (issue
+ * #20's TLSF crash on vTaskDelete forced the suspend workaround).  The
+ * stress-test smoking gun was the heap_watchdog sram_exhausted reboot
+ * after ~6 min of WS bounces (boot, mode flips, ws_drop fault inject,
+ * orb-tap-while-disconnected), each one leaking another 8 KB. */
+typedef struct {
+   char host[64];
+   uint16_t port;
+   bool auto_listen;
+} async_connect_args_t;
+
+static TaskHandle_t s_conn_task = NULL;
+static SemaphoreHandle_t s_conn_event_sem = NULL;
+static SemaphoreHandle_t s_conn_args_mutex = NULL;
+static async_connect_args_t s_conn_args = {0};
+static volatile bool s_conn_args_dirty = false;
+static void async_connect_task(void *arg);
+
 // Playback drain task — pulls from ring buffer, blocks on i2s_channel_write
 static TaskHandle_t      s_play_task    = NULL;
 static volatile bool     s_play_running = false;
@@ -2624,6 +2651,25 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         ESP_LOGW(TAG, "Failed to create playback drain task — audio may stutter");
     }
 
+    /* Persistent voice_conn task — see comment above async_connect_task
+     * for the rationale.  Replaces the per-call xTaskCreate +
+     * vTaskSuspend(NULL) zombie-leak that #328 stress-tested into the
+     * heap_watchdog sram_exhausted floor. */
+    s_conn_event_sem = xSemaphoreCreateBinary();
+    s_conn_args_mutex = xSemaphoreCreateMutex();
+    if (!s_conn_event_sem || !s_conn_args_mutex) {
+       ESP_LOGE(TAG, "Failed to create connector sync primitives");
+       return ESP_ERR_NO_MEM;
+    }
+    {
+       BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(async_connect_task, "voice_conn", 8192, NULL, 4, &s_conn_task, 1,
+                                                       MALLOC_CAP_SPIRAM);
+       if (ok != pdPASS) {
+          ESP_LOGE(TAG, "Failed to spawn persistent voice_conn task");
+          return ESP_ERR_NO_MEM;
+       }
+    }
+
     /* v4·D "fix once and for all": ngrok→LAN recovery probe task.
      *
      * The flakiness chain:
@@ -2995,93 +3041,93 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
     return voice_ws_start_client(dragon_host, dragon_port);
 }
 
-typedef struct {
-    char     host[64];
-    uint16_t port;
-    bool     auto_listen;
-} async_connect_args_t;
-
 static void async_connect_task(void *arg)
 {
-    async_connect_args_t *args = (async_connect_args_t *)arg;
+   (void)arg;
+   while (1) {
+      xSemaphoreTake(s_conn_event_sem, portMAX_DELAY);
 
-    ESP_LOGI(TAG, "async_connect_task: starting (host=%s:%d, auto_listen=%d)",
-             args->host, args->port, args->auto_listen);
+      /* Snapshot the latest pending args under the mutex.  If two
+       * voice_connect_async calls land back-to-back the binary sem
+       * collapses but the mutex guarantees we see the LATEST args. */
+      async_connect_args_t local = {0};
+      bool have_work = false;
+      if (s_conn_args_mutex && xSemaphoreTake(s_conn_args_mutex, portMAX_DELAY) == pdTRUE) {
+         if (s_conn_args_dirty) {
+            local = s_conn_args;
+            s_conn_args_dirty = false;
+            have_work = true;
+         }
+         xSemaphoreGive(s_conn_args_mutex);
+      }
+      if (!have_work) {
+         /* Spurious wake (sem given without dirty args) — loop. */
+         continue;
+      }
 
-    esp_err_t ret = voice_connect(args->host, args->port);
-    ESP_LOGI(TAG, "async_connect_task: voice_connect returned %s",
-             esp_err_to_name(ret));
+      ESP_LOGI(TAG, "async_connect_task: starting (host=%s:%d, auto_listen=%d)", local.host, local.port,
+               local.auto_listen);
 
-    if (ret == ESP_OK && args->auto_listen) {
-        /* Wait for WS + session_start → READY (up to 15s).
-         * Wave 13 H1: read s_state through voice_get_state() so the poll
-         * is torn-read-safe on multi-core ESP32-P4. */
-        for (int i = 0; i < 150 && voice_get_state() != VOICE_STATE_READY; i++) {
+      esp_err_t ret = voice_connect(local.host, local.port);
+      ESP_LOGI(TAG, "async_connect_task: voice_connect returned %s", esp_err_to_name(ret));
+
+      if (ret == ESP_OK && local.auto_listen) {
+         /* Wait for WS + session_start → READY (up to 15s).
+          * Wave 13 H1: read s_state through voice_get_state() so the poll
+          * is torn-read-safe on multi-core ESP32-P4. */
+         for (int i = 0; i < 150 && voice_get_state() != VOICE_STATE_READY; i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (voice_get_state() == VOICE_STATE_READY) {
+         }
+         if (voice_get_state() == VOICE_STATE_READY) {
             ESP_LOGI(TAG, "async_connect_task: calling voice_start_listening (auto_listen)");
             voice_start_listening();
-        } else {
+         } else {
             ESP_LOGW(TAG, "async_connect_task: never reached READY, skipping auto_listen");
-        }
-    }
-
-    free(args);
-    vTaskSuspend(NULL)  /* wave 13 C4: P4 TLSP crash on delete — suspend instead */;
+         }
+      }
+      /* Loop back to wait for the next connect request — task lives
+       * forever, no vTaskSuspend or vTaskDelete dance. */
+   }
 }
 
-esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
-                               bool auto_listen)
-{
-    if (!s_initialized) {
-        ESP_LOGE(TAG, "Not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (s_disconnecting) {
-        ESP_LOGW(TAG, "Disconnect in progress — refusing async connect");
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (s_ws && esp_websocket_client_is_connected(s_ws)) {
-        ESP_LOGW(TAG, "Already connected");
-        if (auto_listen) {
-            return voice_start_listening();
-        }
-        return ESP_OK;
-    }
+esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port, bool auto_listen) {
+   if (!s_initialized) {
+      ESP_LOGE(TAG, "Not initialized");
+      return ESP_ERR_INVALID_STATE;
+   }
+   if (s_disconnecting) {
+      ESP_LOGW(TAG, "Disconnect in progress — refusing async connect");
+      return ESP_ERR_INVALID_STATE;
+   }
+   if (s_ws && esp_websocket_client_is_connected(s_ws)) {
+      ESP_LOGW(TAG, "Already connected");
+      if (auto_listen) {
+         return voice_start_listening();
+      }
+      return ESP_OK;
+   }
+   if (!s_conn_task || !s_conn_event_sem || !s_conn_args_mutex) {
+      ESP_LOGE(TAG, "Connector task not running");
+      return ESP_ERR_INVALID_STATE;
+   }
 
-    voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
+   voice_set_state(VOICE_STATE_CONNECTING, dragon_host);
 
-    async_connect_args_t *args = malloc(sizeof(async_connect_args_t));
-    if (!args) {
-        voice_set_state(VOICE_STATE_IDLE, "out of memory");
-        return ESP_ERR_NO_MEM;
-    }
-    strncpy(args->host, dragon_host, sizeof(args->host) - 1);
-    args->host[sizeof(args->host) - 1] = '\0';
-    args->port = dragon_port;
-    args->auto_listen = auto_listen;
-
-    /* Stack must live in PSRAM. async_connect_task ends with
-     * vTaskSuspend(NULL) (P4 TLSF cleanup crash workaround for issue #20),
-     * so the 8 KB stack stays allocated forever after each call. With the
-     * default xTaskCreatePinnedToCore that's 8 KB of internal SRAM lost
-     * per voice_connect_async — and stress runs that bounce the WS (ws_drop
-     * fault inject, mode flips, orb-tap-while-disconnected) leak 30-50 KB
-     * over the run, drifting internal SRAM toward the heap_watchdog 20 KB
-     * sram_exhausted floor. Moving the stack to PSRAM eliminates ~95 % of
-     * the cost (the small TCB still leaks but it's ~360 B vs 8 KB). The
-     * proper fix is a persistent connector task + queue (matches the
-     * mic_capture_task / playback_drain_task pattern already used at the
-     * head of voice_init) — tracked separately. */
-    BaseType_t xret =
-        xTaskCreatePinnedToCoreWithCaps(async_connect_task, "voice_conn", 8192, args, 4, NULL, 1, MALLOC_CAP_SPIRAM);
-    if (xret != pdPASS) {
-        free(args);
-        voice_set_state(VOICE_STATE_IDLE, "task create failed");
-        return ESP_ERR_NO_MEM;
-    }
-    return ESP_OK;
+   /* Hand the latest args to the persistent connector task.  No malloc,
+    * no task spawn — the task is already alive and waiting on the sem. */
+   if (xSemaphoreTake(s_conn_args_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+      ESP_LOGE(TAG, "voice_connect_async: args mutex timeout");
+      voice_set_state(VOICE_STATE_IDLE, "args mutex timeout");
+      return ESP_ERR_TIMEOUT;
+   }
+   strncpy(s_conn_args.host, dragon_host, sizeof(s_conn_args.host) - 1);
+   s_conn_args.host[sizeof(s_conn_args.host) - 1] = '\0';
+   s_conn_args.port = dragon_port;
+   s_conn_args.auto_listen = auto_listen;
+   s_conn_args_dirty = true;
+   xSemaphoreGive(s_conn_args_mutex);
+   xSemaphoreGive(s_conn_event_sem);
+   return ESP_OK;
 }
 
 esp_err_t voice_start_listening(void)
