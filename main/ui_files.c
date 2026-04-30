@@ -750,6 +750,9 @@ lv_obj_t *ui_files_create(void)
    /* TT #328 Wave 10 — show persistent home button as escape hatch. */
    extern void ui_chrome_set_home_visible(bool visible);
    ui_chrome_set_home_visible(true);
+   /* TT #328 Wave 11 follow-up — hide error banner. */
+   extern void ui_home_set_error_banner_visible(bool);
+   ui_home_set_error_banner_visible(false);
 
    /* If already exists, just reload */
    if (scr_files) {

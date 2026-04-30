@@ -65,6 +65,14 @@ typedef void (*ui_banner_dismiss_cb_t)(void);
 void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_cb);
 void ui_home_clear_error_banner(void);
 
+/** TT #328 Wave 11 follow-up — toggle banner visibility WITHOUT
+ *  destroying it (so the text + dismiss-cb survive a screen change).
+ *  Non-home screens (Camera/Files/Notes/Wi-Fi/Settings) call this
+ *  with `false` on enter so the banner doesn't shadow their own
+ *  topbars/back-buttons; home screen calls `true` on enter to
+ *  restore visibility.  No-op when no banner is currently shown. */
+void ui_home_set_error_banner_visible(bool visible);
+
 /** Wave 7 F5 crash surface: brief rose pulse on the halo orb.
  *  Used when a mid-turn Dragon drop is detected so the user has a visual
  *  signal alongside the "Dragon dropped mid-turn" toast. Reverts to the

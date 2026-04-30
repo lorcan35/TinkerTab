@@ -884,6 +884,11 @@ lv_obj_t *ui_home_create(void)
      * + 4-dot menu chip already cover navigation intent here. */
     extern void ui_chrome_set_home_visible(bool visible);
     ui_chrome_set_home_visible(false);
+    /* TT #328 Wave 11 follow-up — restore the global error banner if
+     * one is up.  Non-home screens hide it on entry to keep their own
+     * topbars unshadowed; home shows it because the user might
+     * otherwise miss the K144-unavailable-style warning. */
+    ui_home_set_error_banner_visible(true);
 
     /* TT #328 Wave 9 — first-launch mode-chip discoverability hint.
      * Pre-Wave-9 the dials were reachable only via long-press on orb
@@ -2286,6 +2291,14 @@ void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_
 }
 
 void ui_home_clear_error_banner(void) { err_banner_destroy(); }
+
+void ui_home_set_error_banner_visible(bool visible) {
+   if (!s_err_banner) return;
+   if (visible)
+      lv_obj_clear_flag(s_err_banner, LV_OBJ_FLAG_HIDDEN);
+   else
+      lv_obj_add_flag(s_err_banner, LV_OBJ_FLAG_HIDDEN);
+}
 
 /* Wave 7 F5 crash surface: paint the orb rose for ~2.5 s so a mid-turn
  * Dragon drop has a visual signal beyond the toast. Restores the

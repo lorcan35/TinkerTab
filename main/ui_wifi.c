@@ -776,6 +776,9 @@ lv_obj_t *ui_wifi_create(void)
    /* TT #328 Wave 10 — show persistent home button as escape hatch. */
    extern void ui_chrome_set_home_visible(bool visible);
    ui_chrome_set_home_visible(true);
+   /* TT #328 Wave 11 follow-up — hide error banner. */
+   extern void ui_home_set_error_banner_visible(bool);
+   ui_home_set_error_banner_visible(false);
 
    if (s_screen) {
       ESP_LOGW(TAG, "WiFi screen already exists");

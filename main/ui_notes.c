@@ -2044,6 +2044,9 @@ lv_obj_t *ui_notes_create(void)
     /* TT #328 Wave 10 — show persistent home button as escape hatch. */
     extern void ui_chrome_set_home_visible(bool visible);
     ui_chrome_set_home_visible(true);
+    /* TT #328 Wave 11 follow-up — hide error banner. */
+    extern void ui_home_set_error_banner_visible(bool);
+    ui_home_set_error_banner_visible(false);
 
     /* #250 fix: notes is an overlay parented to home, not a separate
      * lv_screen.  When /navigate goes camera→notes, async_navigate calls
