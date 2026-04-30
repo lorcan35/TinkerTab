@@ -274,6 +274,39 @@ static void on_ball_tap(void *ud)
     }
 }
 
+/* TT #328 Wave 3 — chat-overlay dictation entry.  Pre-Wave-3 the only
+ * way to dictate was via the Notes screen Record button; chat had no
+ * affordance.  Long-press the orb-ball in the chat input bar = same
+ * gesture as the home-screen mic, same outcome (open dictation, mic
+ * streams unbounded, auto-stops on 5 s silence, post-process emits
+ * title + summary).  The dictation result lands in the existing
+ * stt-text path in voice.c so the user sees the transcript on the
+ * voice overlay; if they're in Notes context they get a Note, else
+ * they get the read-only transcript display.
+ *
+ * Future (separate audit item): wire the dictation-via-chat outcome
+ * into chat_msg_store as a user message + run it through the LLM.
+ * That changes Dragon-side behaviour (dictation mode = STT-only) and
+ * is bigger scope than the chat-entry gap closes here. */
+static void on_ball_long_press(void *ud) {
+   (void)ud;
+   voice_state_t st = voice_get_state();
+   if (voice_onboard_chain_active()) {
+      ESP_LOGI(TAG, "ball long-press ignored: K144 chain active");
+      return;
+   }
+   if (st != VOICE_STATE_READY && st != VOICE_STATE_IDLE) {
+      ESP_LOGI(TAG, "ball long-press ignored (state=%d)", (int)st);
+      return;
+   }
+   ESP_LOGI(TAG, "Chat orb long-press → starting dictation");
+   esp_err_t ret = voice_start_dictation();
+   if (ret != ESP_OK) {
+      ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(ret));
+      ui_home_show_toast("Cannot dictate — Dragon offline");
+   }
+}
+
 static void on_keyboard(void *ud)
 {
     (void)ud;
@@ -573,6 +606,8 @@ lv_obj_t *ui_chat_create(void)
     s_view = chat_msg_view_create(s_overlay, 0, CHAT_VIEW_Y, CHAT_W, CHAT_VIEW_H);
     s_input = chat_input_bar_create(s_overlay, CHAT_H - NAV_H);
     chat_input_bar_on_ball_tap(s_input, on_ball_tap, NULL);
+    /* TT #328 Wave 3 — long-press orb in chat opens dictation. */
+    chat_input_bar_on_ball_long_press(s_input, on_ball_long_press, NULL);
     chat_input_bar_on_keyboard(s_input, on_keyboard, NULL);
     chat_input_bar_on_pill_tap(s_input, on_pill_tap, NULL);
     chat_input_bar_on_text_submit(s_input, on_text_submit, NULL);

@@ -57,6 +57,11 @@ void chat_input_bar_clear(chat_input_bar_t *b);
 
 /* Event wiring */
 void chat_input_bar_on_ball_tap(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud);
+/** TT #328 Wave 3 — long-press on the orb-ball.  Mirrors the
+ *  home-screen mic long-press → dictation gesture so chat is no
+ *  longer Notes-exclusive for long-form voice input.  Caller owns
+ *  the action; typically calls voice_start_dictation(). */
+void chat_input_bar_on_ball_long_press(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud);
 void chat_input_bar_on_keyboard(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud);
 /** U11 (#206): tap on the camera affordance in the pill.  Caller
  *  decides what to do (typically open the camera screen). */

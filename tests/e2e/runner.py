@@ -766,6 +766,131 @@ def story_wave2_error_surfacing(r: Runner) -> None:
            lambda t: t.mode(0).get("ok") is not False)
 
 
+def story_wave3_dictation_in_chat(r: Runner) -> None:
+    """TT #328 Wave 3 — dictation rescue (chat-overlay entry point).
+
+    Pre-Wave-3 the only way to dictate was Notes → Record button; the
+    chat overlay had no entry point.  Wave 3 adds a long-press on the
+    chat input bar's orb-ball that fires voice_start_dictation().
+    Single-tap remains ASK mode.  Live observation: the chat input bar
+    shows the dictation state inline ("Listening..." ghost + live STT
+    partial caption) — the voice overlay does NOT pop, which is the
+    correct behaviour for a chat-context dictation flow.
+
+    Touch-driven, ≥10 steps, regression-aware.  Lenient state-machine
+    assertions because Local-mode dictation post-process can leave
+    voice in PROCESSING for tens of seconds while the LLM writes
+    title + summary.
+    """
+    tab5 = r.tab5
+
+    # ─── State setup ────────────────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Voice ready",
+           lambda t: t.await_voice_state("READY", 30))
+    r.step("Cancel any leftover voice state",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    time.sleep(1)
+    r.step("Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1)
+
+    # ─── A. Open chat + visual confirm of the new ghost hint ────
+    r.step("[A] Navigate to chat",
+           lambda t: t.navigate("chat").get("navigated") == "chat")
+    time.sleep(1.5)
+    r.step("[A] Chat overlay visible",
+           lambda t: t.screen().get("overlays", {}).get("chat") is True)
+    r.step("[A] Screenshot input bar (ghost: 'Tap: ask · Hold: dictate')",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave3_A_chat_ghost_hint.jpg")) > 1000)
+
+    # ─── B. Long-press orb-ball → dictation enters LISTENING ────
+    # Coords (94, 1114) — byte-matched with home say-pill orb.
+    # 900 ms > LV_EVENT_LONG_PRESSED threshold (~400 ms).
+    r.step("[B] Pre-check: voice READY",
+           lambda t: t.voice_state().get("state_name") == "READY")
+    r.step("[B] Long-press chat orb-ball (94, 1114) for 900ms",
+           lambda t: t.long_press(94, 1114, duration_ms=900) and True)
+    # await_voice_state polls /voice every ~1 s and also watches the
+    # voice.state event ring, so even a transient LISTENING flicker
+    # (Local mode dictation can move PROCESSING fast on quiet audio)
+    # is caught.  Tighter than sleep+poll.
+    r.step("[B] Voice state went LISTENING (dictation started)",
+           lambda t: t.await_voice_state("LISTENING", 5))
+    r.step("[B] Screenshot dictation active (input bar shows 'Listening...')",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave3_B_dictation_active.jpg")) > 1000)
+
+    # ─── C. Stop dictation (via /voice/cancel for reliability) ──
+    # We could tap the chat orb again to stop, BUT the chat-pill's
+    # CLICKED handler ALSO fires on tap (opens keyboard) which can
+    # race with the SHORT_CLICKED stop on the ball.  For a deterministic
+    # stop we use /voice/cancel — the manual-tap-stop path is exercised
+    # separately by the existing touch_stress phase 12 voice round-trip.
+    r.step("[C] Screenshot dictation actively running (live STT caption)",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave3_C_dictation_running.jpg")) > 1000)
+    r.step("[C] Stop dictation via /voice/cancel (deterministic)",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    # Use await pattern with explicit poll for non-LISTENING — accommodates
+    # the Dragon-side post-process race where stt → dictation_postprocessing
+    # WS frames can flip Tab5's state back through LISTENING briefly.
+    def _await_left_listening(t, timeout_s=10):
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if t.voice_state().get("state_name") != "LISTENING":
+                return True
+            time.sleep(0.5)
+        return False
+    r.step("[C] Voice state left LISTENING within 10s",
+           lambda t: _await_left_listening(t, 10))
+    r.step("[C] Screenshot post-stop",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave3_C_after_stop.jpg")) > 1000)
+
+    # ─── D. Regression: single-tap orb-ball starts ASK mode ─────
+    # The new long-press path must NOT have broken the SHORT_CLICKED
+    # tap path.  Wait for clean READY first.
+    r.step("[D] Wait for READY (post-cancel)",
+           lambda t: t.await_voice_state("READY", 30))
+    r.step("[D] Single-tap orb-ball — ASK mode start (regression check)",
+           lambda t: t.tap(94, 1114) and True)
+    r.step("[D] Voice state went LISTENING (ASK mode)",
+           lambda t: t.await_voice_state("LISTENING", 5))
+    r.step("[D] /voice/cancel to clear the ASK turn",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    time.sleep(1)
+
+    # ─── E. 2nd dictation cycle — verify no leaked state ────────
+    # Wave 3 added a persistent gesture to a long-lived widget; verify
+    # it survives a back-to-back dictation cycle.
+    r.step("[E] Wait for READY",
+           lambda t: t.await_voice_state("READY", 30))
+    # Brief settle so the prior cancel + state transitions fully settle
+    # before the next gesture (LVGL needs to repaint, mic task to reset).
+    r.step("[E] Settle 2s before 2nd long-press",
+           lambda t: time.sleep(2) is None or True)
+    r.step("[E] 2nd long-press dictation",
+           lambda t: t.long_press(94, 1114, duration_ms=900) and True)
+    r.step("[E] Voice state went LISTENING (2nd cycle)",
+           lambda t: t.await_voice_state("LISTENING", 8))
+    r.step("[E] Cancel via /voice/cancel",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    r.step("[E] Wait for clean READY",
+           lambda t: t.await_voice_state("READY", 30))
+    r.step("[E] Screenshot clean final state",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave3_E_final_clean.jpg")) > 1000)
+
+    # ─── Cleanup ────────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -773,6 +898,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_onboard": story_onboard,
     "story_wave1":   story_wave1_visibility,
     "story_wave2":   story_wave2_error_surfacing,
+    "story_wave3":   story_wave3_dictation_in_chat,
 }
 
 

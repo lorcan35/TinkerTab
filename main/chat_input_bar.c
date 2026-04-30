@@ -47,6 +47,8 @@ struct chat_input_bar {
     int default_pill_y;
 
     chat_input_evt_cb_t   ball_cb;     void *ball_ud;
+    chat_input_evt_cb_t ball_lp_cb;
+    void *ball_lp_ud; /* TT #328 Wave 3 */
     chat_input_evt_cb_t   kb_cb;       void *kb_ud;
     chat_input_evt_cb_t   cam_cb;      void *cam_ud;     /* U11 (#206) */
     chat_input_submit_cb_t submit_cb;   void *submit_ud;
@@ -137,6 +139,13 @@ static void ev_ball_tap(lv_event_t *e)
     chat_input_bar_t *b = lv_event_get_user_data(e);
     if (b && b->ball_cb) b->ball_cb(b->ball_ud);
 }
+/* TT #328 Wave 3 — orb-ball long-press → dictation entry from chat.
+ * Mirrors the home-screen mic long-press semantic so the gesture is
+ * consistent across surfaces. */
+static void ev_ball_long_press(lv_event_t *e) {
+   chat_input_bar_t *b = lv_event_get_user_data(e);
+   if (b && b->ball_lp_cb) b->ball_lp_cb(b->ball_lp_ud);
+}
 static void ev_kb_tap(lv_event_t *e)
 {
     chat_input_bar_t *b = lv_event_get_user_data(e);
@@ -212,7 +221,15 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, int parent_h)
     lv_obj_add_flag(b->ball, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(b->ball, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(b->ball, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_event_cb(b->ball, ev_ball_tap, LV_EVENT_CLICKED, b);
+    /* TT #328 Wave 3 — SHORT_CLICKED instead of CLICKED so the tap
+     * handler doesn't double-fire after a long-press release.  LVGL
+     * dispatches both LONG_PRESSED (at ~400 ms hold) AND CLICKED (on
+     * release, regardless of duration), which on Wave 3 was ending
+     * dictation as soon as the user released the long-press.
+     * SHORT_CLICKED only fires for a quick tap-and-release WITHOUT a
+     * long-press, so the two gestures are properly disjoint. */
+    lv_obj_add_event_cb(b->ball, ev_ball_tap, LV_EVENT_SHORT_CLICKED, b);
+    lv_obj_add_event_cb(b->ball, ev_ball_long_press, LV_EVENT_LONG_PRESSED, b);
 
     b->ball_mark = lv_label_create(b->ball);
     lv_label_set_text(b->ball_mark, "\xe2\x80\xa2");   /* U+2022 bullet */
@@ -249,9 +266,16 @@ chat_input_bar_t *chat_input_bar_create(lv_obj_t *parent, int parent_h)
     lv_obj_set_style_bg_color(b->cursor, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_bg_opa(b->cursor, LV_OPA_COVER, 0);
 
-    /* Ghost text to the right of the cursor. */
+    /* Ghost text to the right of the cursor.
+     *
+     * TT #328 Wave 3 — was "Hold to speak · or type", which lied
+     * twice: a single tap on the ball starts ASK mode (it isn't
+     * "hold"), and the bar advertised no path to dictation even
+     * though Wave 3 just added a long-press → dictation gesture.
+     * Compressed to "Tap: ask · Hold: dictate" (24 chars, same fit
+     * as before) so both gestures are discoverable from the bar. */
     b->ghost = lv_label_create(b->pill);
-    lv_label_set_text(b->ghost, "Hold to speak \xe2\x80\xa2 or type");
+    lv_label_set_text(b->ghost, "Tap: ask \xe2\x80\xa2 Hold: dictate");
     lv_obj_set_style_text_font(b->ghost, FONT_BODY, 0);
     lv_obj_set_style_text_color(b->ghost, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_set_pos(b->ghost, PILL_TEXT_X + 10, (PILL_H - 24) / 2);
@@ -343,8 +367,12 @@ void chat_input_bar_set_voice_state(chat_input_bar_t *b, int state)
             case 2: lv_label_set_text(b->ghost, "Thinking...");  break;
             case 3: lv_label_set_text(b->ghost, "Speaking...");  break;
             default:
-                lv_label_set_text(b->ghost, "Hold to speak \xe2\x80\xa2 or type");
-                break;
+               /* TT #328 Wave 3 — keep this in sync with the create-time
+                * default at line ~267.  Both must advertise the new
+                * long-press dictation gesture or the hint will revert
+                * to the old text every time voice returns to idle. */
+               lv_label_set_text(b->ghost, "Tap: ask \xe2\x80\xa2 Hold: dictate");
+               break;
         }
     }
 }
@@ -422,6 +450,13 @@ void chat_input_bar_clear(chat_input_bar_t *b)
 
 void chat_input_bar_on_ball_tap(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud)
 { if (b) { b->ball_cb = cb; b->ball_ud = ud; } }
+
+void chat_input_bar_on_ball_long_press(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud) {
+   if (b) {
+      b->ball_lp_cb = cb;
+      b->ball_lp_ud = ud;
+   }
+}
 
 void chat_input_bar_on_keyboard(chat_input_bar_t *b, chat_input_evt_cb_t cb, void *ud)
 { if (b) { b->kb_cb = cb; b->kb_ud = ud; } }
