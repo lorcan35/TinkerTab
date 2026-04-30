@@ -110,6 +110,14 @@ esp_err_t tab5_settings_set_session_id(const char *session_id);
 esp_err_t tab5_settings_get_ota_attempted(char *buf, size_t len);
 esp_err_t tab5_settings_set_ota_attempted(const char *version);
 
+/* ── First-launch UI hints (TT #328 Wave 9) ─────────────────────────── */
+
+/** Returns true if the mode-chip discoverability hint has already fired
+ *  on this device.  Used by ui_home to gate a single-shot toast that
+ *  tells the user the chip is tappable. */
+bool tab5_settings_mode_hint_seen(void);
+esp_err_t tab5_settings_set_mode_hint_seen(bool seen);
+
 /* ── Voice mode (three-tier) ──────────────────────────────────────────── */
 
 /** 0 = local (default), 1 = hybrid (cloud STT+TTS), 2 = full cloud */

@@ -666,6 +666,13 @@ esp_err_t tab5_settings_set_ota_attempted(const char *version) {
    return set_str(KEY_OTA_ATTEMPTED, version ? version : "");
 }
 
+/* ── First-launch UI hints (TT #328 Wave 9) ─────────────────────────── */
+
+#define KEY_MODE_HINT "mode_hint"
+
+bool tab5_settings_mode_hint_seen(void) { return get_u8(KEY_MODE_HINT, 0) != 0; }
+esp_err_t tab5_settings_set_mode_hint_seen(bool seen) { return set_u8(KEY_MODE_HINT, seen ? 1 : 0); }
+
 /* ── Auth token (debug server bearer auth) ───────────────────────────── */
 
 esp_err_t tab5_settings_get_auth_token(char *buf, size_t len)

@@ -21,6 +21,40 @@ Every entry here was learned the hard way. Read this before touching the codebas
 
 ---
 
+## TT #328 UI/UX hardening (audit 2026-04-29) — 9-wave program closes 14/16 audit P0s
+
+**Date:** 2026-04-30
+**Symptom:** User feedback that "navigation feels disjointed, touch interactions are off, the menu doesn't swipe to scroll, overlays appear unexpectedly."  Six parallel audits commissioned after the K144 chain hardening (PR #326) shipped surfaced 16 cross-audit P0s spanning a11y, IA, error UX, touch, and visual consistency.
+**Root Cause:** Years of point-fixes had let cross-cutting concerns drift — three open-coded mode-tint arrays, four amber-shade-only voice states (WCAG 1.4.1 fail), a globals-without-mutex touch injection state, a sticky cycle-without-undo orb, etc.  No single root cause; the audit class IS the cause.
+**Fix:** 9-wave PR program on `feat/k144-phase6a-baud-switch`:
+
+| Wave | Commit | Closes |
+|------|--------|--------|
+| 1 — token system + a11y contrast | a532964 | P0 #1 #5 #7 |
+| 2 — mic-button leak + atomic touch | c6c48ae | P0 #2 #3 |
+| 3 — toast tones + error obs + banner | 2ceeed0 | P0 #12 #13 #14 #15 |
+| 4 — voice-state icons + orb safe long-press + undo | 74ce08d | P0 #8 #9 |
+| 5 — universal tap-debounce + chat header lift | 96d54b1 | P0 #6 |
+| 6 — widget_mode_dot extract | 13df265 | structural |
+| 7 — nav 3×3 + dead-API removal | d87b32f | P0 #4 |
+| 8 — onboarding Wi-Fi + dual-mode collapse | 806fc0a | P0 #10 #11 |
+| 9 — mode-chip discoverability hint | (this commit) | discoverability gap |
+
+**Prevention:**
+- **Always run cross-perspective audits before broad UI work.**  A single-perspective audit misses the IA/a11y/error-UX clusters.  The 6-perspective audit pattern (UI/UX, piping, architecture, a11y, IA, error UX) caught issues a single pass would not have.
+- **Verify every audit P0 against code+runtime ground-truth before scoping fixes.**  Wave 0 included a per-P0 verification pass: read the cited file:line, compute the claimed value, runtime-confirm where applicable.  No false positives, no rework mid-wave.
+- **Wave-by-wave, not all-at-once.**  Each wave: build → flash → smoke 14/14 → commit + push → next.  Single-wave PRs land cleanly even if a later wave needs to rethink scope (Wave 6 scoped down from 5 widgets → 1; Wave 8 deferred K144-as-5th-tier).
+- **clang-format trap:** the project's `.clang-format` is Google-style 3-space indent + ColumnLimit 120.  Running `git-clang-format origin/main <files>` autofix on a function you only added 5 lines to will reflow the entire function from the project's pre-existing 4-space indent → 3-space, ballooning the diff.  Workaround: write new lines in 3-space indent from the start; revert autofix on lines you didn't touch (Wave 1 + Wave 4 hit this).
+- **clang-format alphabetises includes:** adding ANY include in a block re-flows the entire `#include` block.  When a new include would break alphabetic order in a file with mixed pre-existing ordering, prefer to define-via-literal at the call site rather than add the include (Wave 1 ui_settings.c took this route after a 2874-ins/2810-del autofix bloat).
+- **Two audit P0s deliberately deferred** as scope-larger-than-fits (K144 as 5th tier in 3-dial mode sheet — touches autonomy-dial product semantics; orb-overload across 4 surfaces — needs cross-team IA call).  Tracked in TT #328 with explicit follow-up notes.
+
+**Cross-references:**
+- `docs/AUDIT-ui-ux-2026-04-29.md` — source-of-truth audit doc
+- `docs/PLAN-ui-ux-hardening.md` — 9-wave plan doc
+- TT #328 — tracking issue with all 9 wave commits referenced
+
+---
+
 ## Hardware Gotchas
 
 ### Camera is SC202CS at 0x36, NOT SC2336 at 0x30

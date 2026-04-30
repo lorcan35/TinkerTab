@@ -196,6 +196,8 @@ static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
 static void orb_paint_for_mode(uint8_t mode);
 static void orb_paint_for_tone(widget_tone_t tone);
+/* TT #328 Wave 9 — first-launch mode-chip discoverability hint cb. */
+static void mode_hint_fire_cb(lv_timer_t *t);
 /* v4·D Phase 4g: widget_prompt hit-zone tap routing */
 static void prompt_choice_tap_cb(lv_event_t *e);
 static void refresh_prompt_hit_zones(const widget_t *w);
@@ -578,6 +580,18 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_color(s_mode_sub, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_set_style_text_letter_space(s_mode_sub, 2, 0);
 
+    /* TT #328 Wave 9 — discoverability chevron.  Pre-Wave-9 the mode
+     * chip looked like a passive status label — nothing on it
+     * communicated "I'm tappable, tap to switch tier."  Adding a
+     * subtle ▾ glyph at the right edge of the chip makes the
+     * tap-to-open affordance visible, matching the chevron pattern
+     * the chat header already uses (h->chev). */
+    lv_obj_t *chip_chev = lv_label_create(s_mode_chip);
+    lv_label_set_text(chip_chev, LV_SYMBOL_DOWN);
+    lv_obj_set_pos(chip_chev, 330, 19);
+    lv_obj_set_style_text_font(chip_chev, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(chip_chev, lv_color_hex(TH_TEXT_DIM), 0);
+
     /* ── Now-slot card ─────────────────────────────────────── */
     /* Live-line: no fill, 1 px borders on TOP + BOTTOM only (hairline rails) */
     s_now_card = lv_obj_create(s_screen);
@@ -785,6 +799,18 @@ lv_obj_t *ui_home_create(void)
      * (612..668, 1160..1216).  See ui_home_go_home for the rationale. */
     extern void ui_keyboard_set_trigger_visible(bool);
     ui_keyboard_set_trigger_visible(false);
+
+    /* TT #328 Wave 9 — first-launch mode-chip discoverability hint.
+     * Pre-Wave-9 the dials were reachable only via long-press on orb
+     * or chip; brand-new users had no signal that the mode chip was
+     * interactive at all.  Fires ONCE per device (NVS-gated), ~6 s
+     * after home renders so the user has settled in before the toast
+     * lands.  Covered by tap-to-dismiss replacement if anything else
+     * shows a toast in the interim. */
+    if (!tab5_settings_mode_hint_seen()) {
+       lv_timer_t *hint_t = lv_timer_create(mode_hint_fire_cb, 6000, NULL);
+       if (hint_t) lv_timer_set_repeat_count(hint_t, 1);
+    }
 
     ESP_LOGI(TAG, "v4 Ambient Canvas home created (orb %dpx, mode %d)",
              ORB_SIZE, s_badge_mode);
@@ -1615,6 +1641,9 @@ static void mode_chip_long_press_cb(lv_event_t *e)
     /* v4·D Sovereign Halo: open the triple-dial sheet instead of
      * cycling. The sheet persists tier changes + fires config_update
      * directly, so nothing else to do here. */
+    /* TT #328 Wave 9 — user has discovered the chip; suppress the
+     * pending hint toast so we don't tell them what they just did. */
+    tab5_settings_set_mode_hint_seen(true);
     extern void ui_mode_sheet_show(void);
     ui_mode_sheet_show();
 }
@@ -1988,6 +2017,20 @@ void ui_home_refresh_mode_badge(void)
 
 void ui_home_show_toast(const char *text) { show_toast_internal(text); }
 void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) { show_toast_internal_tone(text, tone); }
+
+/* ── TT #328 Wave 9 — first-launch mode-chip hint ─────────────── */
+
+static void mode_hint_fire_cb(lv_timer_t *t) {
+   lv_timer_delete(t);
+   /* Re-check: another caller may have racily marked it seen
+    * (e.g. user tapped the chip in the 6-s window — we don't want a
+    * "tap the chip" toast firing AFTER they already used it). */
+   if (tab5_settings_mode_hint_seen()) return;
+   /* Don't intrude on overlays — the user is doing something else. */
+   if (any_overlay_visible()) return;
+   show_toast_internal_tone("Tip: tap the mode chip to switch tier", UI_TOAST_INFO);
+   tab5_settings_set_mode_hint_seen(true);
+}
 
 /* ── TT #328 Wave 4 — undo-pill toast ─────────────────────────── */
 
