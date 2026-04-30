@@ -33,6 +33,12 @@ static const char *TAG = "settings";
 #define KEY_WIFI_PASS   "wifi_pass"
 #define KEY_DRAGON_HOST "dragon_host"
 #define KEY_DRAGON_PORT "dragon_port"
+/* TT #328 Wave 8 — Dragon REST API bearer token (separate from voice WS
+ * auth which is a different mechanism).  Required for Tab5 to call
+ * gated endpoints like /api/v1/tools, /api/v1/sessions, etc.  Empty by
+ * default; user provisions via POST /settings or Settings UI.
+ * NVS key length cap is 15 chars total — "dragon_tok" leaves room. */
+#define KEY_DRAGON_TOK "dragon_tok"
 #define KEY_BRIGHTNESS  "brightness"
 #define KEY_VOLUME      "volume"
 #define KEY_DEVICE_ID   "device_id"
@@ -341,6 +347,15 @@ esp_err_t tab5_settings_set_dragon_port(uint16_t port)
 {
     return set_u16(KEY_DRAGON_PORT, port);
 }
+
+/* TT #328 Wave 8 — Dragon REST API bearer token.  Default empty so
+ * shipping firmware doesn't carry a token; user provisions via
+ * POST /settings or Settings UI.  Anyone reading the NVS dump can
+ * see it (same as wifi_pass), so security relies on Tab5 not being
+ * physically compromised — which is true of the device anyway. */
+esp_err_t tab5_settings_get_dragon_api_token(char *buf, size_t len) { return get_str(KEY_DRAGON_TOK, buf, len, ""); }
+
+esp_err_t tab5_settings_set_dragon_api_token(const char *token) { return set_str(KEY_DRAGON_TOK, token ? token : ""); }
 
 /* ── Display ──────────────────────────────────────────────────────────── */
 

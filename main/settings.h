@@ -35,6 +35,17 @@ esp_err_t tab5_settings_set_dragon_host(const char *host);
 uint16_t  tab5_settings_get_dragon_port(void);
 esp_err_t tab5_settings_set_dragon_port(uint16_t port);
 
+/** TT #328 Wave 8 — Dragon REST API bearer token (separate from the
+ *  voice WS auth path).  Tab5 uses this to call gated endpoints like
+ *  /api/v1/tools, /api/v1/sessions, /api/v1/memory, etc.  Empty by
+ *  default; provisioned by the user via POST /settings.  Tab5 sends
+ *  as "Authorization: Bearer <token>" on outbound HTTP requests; if
+ *  empty, the request goes out without the header (Dragon will
+ *  return 401 for gated routes — Tab5 surfaces that as a graceful
+ *  fallback). */
+esp_err_t tab5_settings_get_dragon_api_token(char *buf, size_t len);
+esp_err_t tab5_settings_set_dragon_api_token(const char *token);
+
 /* ── v4·D Sovereign Halo mode dials ──────────────────────────────────── */
 /* Three orthogonal dials that replace the 4-mode pill.  Tab5 resolves the
  * triple into the legacy (voice_mode, llm_model) pair Dragon expects.

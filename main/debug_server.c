@@ -1179,6 +1179,20 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     cJSON_AddStringToObject(root, "dragon_host", buf);
     cJSON_AddNumberToObject(root, "dragon_port", tab5_settings_get_dragon_port());
     cJSON_AddNumberToObject(root, "conn_mode", tab5_settings_get_connection_mode());
+    /* TT #328 Wave 8 — surface dragon_api_token presence (NOT the
+     * value, since /settings is bearer-auth on the Tab5 debug server
+     * itself but the token is sensitive Dragon-side credential).  The
+     * caller can verify the token is set without exposing it.  POST
+     * setters accept a "dragon_api_token" key to write. */
+    {
+       /* 96-byte buffer accommodates 64-char tokens + null + headroom
+        * for future-format tokens (UUIDs, JWT prefixes).  The 64-char
+        * cap on the writer is the meaningful limit, not the reader. */
+       char tok[96] = {0};
+       tab5_settings_get_dragon_api_token(tok, sizeof(tok));
+       cJSON_AddBoolToObject(root, "dragon_api_token_set", tok[0] != '\0');
+       cJSON_AddNumberToObject(root, "dragon_api_token_len", (double)strlen(tok));
+    }
 
     /* Hardware */
     cJSON_AddNumberToObject(root, "brightness", tab5_settings_get_brightness());
@@ -1321,6 +1335,16 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
                 cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_port"));
             }
         }
+    }
+
+    /* TT #328 Wave 8 — Dragon REST API bearer token.  Empty string is
+     * valid (clears the token).  Length cap 64 is conservative for
+     * common secret formats (UUIDs, base64, hex). */
+    cJSON *tok = cJSON_GetObjectItem(req_json, "dragon_api_token");
+    if (cJSON_IsString(tok)) {
+       if (strlen(tok->valuestring) <= 64 && tab5_settings_set_dragon_api_token(tok->valuestring) == ESP_OK) {
+          cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_api_token"));
+       }
     }
 
     /* ── Hardware ───────────────────────────────────────────────── */

@@ -235,6 +235,24 @@ static void fetch_tools_job(void *arg) {
       return;
    }
 
+   /* TT #328 Wave 8 — Dragon REST endpoints (incl. /api/v1/tools)
+    * are bearer-auth gated.  Send the token if the user has
+    * provisioned one via Settings (`POST /settings` with
+    * dragon_api_token); otherwise the request goes out without the
+    * header and Dragon returns 401, which the fallback UI surfaces
+    * gracefully. */
+   char auth_header[128] = {0};
+   {
+      /* 96 bytes — 64-char token + null + headroom (matches the
+       * /settings handler and the writer's 64-char cap with margin). */
+      char tok[96] = {0};
+      tab5_settings_get_dragon_api_token(tok, sizeof(tok));
+      if (tok[0]) {
+         snprintf(auth_header, sizeof(auth_header), "Bearer %s", tok);
+         esp_http_client_set_header(client, "Authorization", auth_header);
+      }
+   }
+
    esp_err_t err = esp_http_client_open(client, 0);
    if (err != ESP_OK) {
       snprintf(p->err_msg, sizeof(p->err_msg), "open: %s", esp_err_to_name(err));
