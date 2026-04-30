@@ -175,6 +175,12 @@ static void paint_header_and_view_for_mode(uint8_t mode)
       chat_header_set_mode(s_hdr, mode, llm);
    }
    chat_msg_view_set_mode_color(s_view, s_mode_tint[mode]);
+   /* TT #328 Wave 1 — paint daily-spend badge so it's populated
+    * immediately on chat open / mode change, not just after the next
+    * receipt fires. */
+   if (s_hdr) {
+      chat_header_set_spend(s_hdr, tab5_budget_get_today_mils(), tab5_budget_get_cap_mils());
+   }
 }
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
@@ -715,6 +721,22 @@ void ui_chat_refresh_receipts(void)
      * when s_view is NULL and will simply repaint the existing bubbles
      * when it's mounted. */
     tab5_lv_async_call(async_refresh_receipts_cb, NULL);
+}
+
+/* TT #328 Wave 1 — daily-spend badge refresh.  Reads NVS state and
+ * paints chat_header's spend label.  Run on the LVGL thread (async
+ * hop) so callers from the WS rx task can fire it safely. */
+static void async_refresh_spend_cb(void *arg) {
+   (void)arg;
+   if (!s_hdr) return;
+   uint32_t mils = tab5_budget_get_today_mils();
+   uint32_t cap = tab5_budget_get_cap_mils();
+   chat_header_set_spend(s_hdr, mils, cap);
+}
+
+void ui_chat_refresh_spend(void) {
+   /* No-op when overlay isn't mounted (s_hdr NULL inside the cb). */
+   tab5_lv_async_call(async_refresh_spend_cb, NULL);
 }
 
 /* Optional helper — legacy API kept for voice.c compatibility. */

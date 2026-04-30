@@ -30,6 +30,17 @@ void chat_header_set_title(chat_header_t *h, const char *title);
  *  Also repaints the accent bar in the matching mode color. */
 void chat_header_set_mode(chat_header_t *h, uint8_t voice_mode, const char *llm_model);
 
+/** TT #328 Wave 1 (audit visibility) — paint the daily-spend badge.
+ *  `mils` = today's accumulated cost (1/1000 of a US cent), `cap_mils`
+ *  = the configured per-day cap.  When `cap_mils == 0` the cap is
+ *  unset and the slash-side is omitted ("$0.47").  Otherwise renders
+ *  "$0.47 / $1.00" with colour tinting:
+ *    < 80 % of cap : dim grey
+ *    80–100 %      : amber
+ *    over cap      : red
+ *  Pass `mils=0, cap_mils=0` to clear the badge entirely. */
+void chat_header_set_spend(chat_header_t *h, uint32_t mils, uint32_t cap_mils);
+
 /** Override the 140×2 accent bar color. */
 void chat_header_set_accent_color(chat_header_t *h, uint32_t hex);
 

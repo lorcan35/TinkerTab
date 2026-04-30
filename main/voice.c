@@ -1235,6 +1235,11 @@ static void handle_text_message(const char *data, int len)
             /* Nudge home to redraw its live-line spend readout. */
             extern void ui_home_update_status(void);
             tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
+            /* TT #328 Wave 1 — also refresh the chat-header spend badge
+             * so a turn that flipped the chip from dim → amber → red
+             * shows up the moment the receipt lands. */
+            extern void ui_chat_refresh_spend(void);
+            ui_chat_refresh_spend();
 
             /* Phase 3e auto-downgrade: once spent >= cap AND we're in a
              * cloud-cost-bearing mode (1=Hybrid or 2=Full Cloud), flip

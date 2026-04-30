@@ -47,6 +47,7 @@ struct chat_header {
     lv_obj_t *chip_sub;
     lv_obj_t *plus;
     lv_obj_t *accent;     /* 140×2 bar below root */
+    lv_obj_t *spend_lbl;  /* TT #328 Wave 1 — daily-spend badge */
 
     chat_header_evt_cb_t back_cb, chev_cb, plus_cb, mlp_cb;
     void *back_ud, *chev_ud, *plus_ud, *mlp_ud;
@@ -135,6 +136,18 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title)
     lv_obj_set_style_text_font(chev_lbl, FONT_SECONDARY, 0);
     lv_obj_set_style_text_color(chev_lbl, lv_color_hex(TH_TEXT_DIM), 0);
     lv_obj_center(chev_lbl);
+
+    /* TT #328 Wave 1 — daily-spend badge.  Lives below the chevron
+     * (small, dim, monospace) so it doesn't compete with the chip
+     * for horizontal pixels.  Hidden by default; populated by
+     * chat_header_set_spend() once we know the values. */
+    h->spend_lbl = lv_label_create(h->root);
+    lv_label_set_text(h->spend_lbl, "");
+    lv_obj_set_style_text_font(h->spend_lbl, FONT_CHAT_MONO, 0);
+    lv_obj_set_style_text_color(h->spend_lbl, lv_color_hex(TH_TEXT_DIM), 0);
+    /* Sit on the row of the title baseline + 30 px down so it tucks
+     * under "Chat ▾" without overlapping. */
+    lv_obj_set_pos(h->spend_lbl, HDR_SIDE_PAD + 44, (HDR_H - 40) / 2 + 38);
 
     /* "+" new chat button — elevated circular 44×44, amber glyph. */
     h->plus = lv_obj_create(h->root);
@@ -271,6 +284,39 @@ void chat_header_set_mode(chat_header_t *h, uint8_t m, const char *llm)
 void chat_header_set_accent_color(chat_header_t *h, uint32_t hex)
 {
     if (h && h->accent) lv_obj_set_style_bg_color(h->accent, lv_color_hex(hex), 0);
+}
+
+void chat_header_set_spend(chat_header_t *h, uint32_t mils, uint32_t cap_mils) {
+   if (!h || !h->spend_lbl) return;
+   if (mils == 0 && cap_mils == 0) {
+      lv_label_set_text(h->spend_lbl, "");
+      return;
+   }
+   /* Format: "$0.470 / $1.000" — three-digit precision matches the
+    * per-message receipt stamp in chat_msg_view.c so the eye can
+    * cross-check.  When cap is unset, drop the slash and denominator. */
+   char buf[40];
+   int s_dollars = (int)(mils / 100000);
+   int s_thousandths = (int)((mils / 100) % 1000);
+   if (cap_mils == 0) {
+      snprintf(buf, sizeof(buf), "$%d.%03d today", s_dollars, s_thousandths);
+   } else {
+      int c_dollars = (int)(cap_mils / 100000);
+      int c_thousandths = (int)((cap_mils / 100) % 1000);
+      snprintf(buf, sizeof(buf), "$%d.%03d / $%d.%03d", s_dollars, s_thousandths, c_dollars, c_thousandths);
+   }
+   lv_label_set_text(h->spend_lbl, buf);
+
+   /* Tinting: dim under 80% of cap, amber 80-100%, red over cap. */
+   uint32_t color = TH_TEXT_DIM;
+   if (cap_mils > 0) {
+      if (mils > cap_mils) {
+         color = TH_STATUS_RED;
+      } else if (mils * 100 >= cap_mils * 80) {
+         color = TH_AMBER;
+      }
+   }
+   lv_obj_set_style_text_color(h->spend_lbl, lv_color_hex(color), 0);
 }
 
 void chat_header_set_chevron_open(chat_header_t *h, bool open)

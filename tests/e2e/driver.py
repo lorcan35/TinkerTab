@@ -148,6 +148,23 @@ class Tab5Driver:
     def settings(self) -> dict:
         return self._get("/settings").json()
 
+    # ── Budget helpers (TT #328 Wave 1) ──────────────────────────
+    def budget(self) -> dict:
+        """Returns {spent_mils, cap_mils} from /settings."""
+        s = self.settings()
+        return {
+            "spent_mils": int(s.get("spent_mils", 0) or 0),
+            "cap_mils":   int(s.get("cap_mils",   0) or 0),
+        }
+
+    def set_cap_mils(self, cap: int) -> dict:
+        return self._post("/settings",
+                          json={"cap_mils": int(cap)}).json()
+
+    def reset_spent(self) -> dict:
+        return self._post("/settings",
+                          json={"reset_spent": True}).json()
+
     # ── Camera / video ────────────────────────────────────────────
     def camera_frame(self, save_path: str | None = None) -> bytes:
         r = self._get("/camera", timeout=15)

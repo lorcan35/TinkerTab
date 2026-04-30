@@ -79,6 +79,16 @@ void ui_chat_update_last_message(const char *text);
 void ui_chat_refresh_receipts(void);
 
 /**
+ * TT #328 Wave 1 (audit visibility) — repaint the chat header's
+ * daily-spend badge from current NVS budget state.  Thread-safe; no-op
+ * if the overlay is not mounted.  Call sites:
+ *   - on chat open / mode change (initial paint)
+ *   - from voice.c after tab5_budget_accumulate() to keep the badge
+ *     in sync with each LLM turn's receipt
+ */
+void ui_chat_refresh_spend(void);
+
+/**
  * U12 (#206): show/hide the live STT partial caption above the input
  * pill.  Pass NULL or "" to hide.  Thread-safe (lv_async_call hop) so
  * voice.c can call it from the WS task on every stt_partial frame.

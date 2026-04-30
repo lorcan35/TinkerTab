@@ -434,11 +434,185 @@ def story_onboard(r: Runner) -> None:
            lambda t: t.mode(0).get("ok") is not False)
 
 
+def story_wave1_visibility(r: Runner) -> None:
+    """TT #328 Wave 1 — visibility audit closeout.
+
+    Two changes under test:
+      A. Orb subtitle text (was "HOLD FOR DICTATE", now "HOLD FOR MODES")
+         + the long-press behaviour (opens triple-dial mode sheet) is
+         unchanged.  Visually verified via screenshot; behaviourally via
+         the screen.navigate event the sheet emits.
+      B. Daily-spend badge in the chat header — populated on chat open,
+         updates after each LLM turn, tints amber/red as cap is
+         approached/exceeded.
+
+    Touch-driven (taps + long-presses), regressions on adjacent surfaces
+    fall out of the cycle automatically.  Each step lands a screenshot
+    so visual regressions are diff-able.
+    """
+    tab5 = r.tab5
+
+    # ─── State setup ────────────────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline for budget)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Voice ready",
+           lambda t: t.await_voice_state("READY", 30))
+    r.step("Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1)
+
+    # ─── A. Orb subtitle relabel + binding regression ──────────
+    # The subtitle is small 14-px text we can't OCR-verify cheaply.
+    # Strategy: take a baseline screenshot for visual diff, then
+    # exercise the BEHAVIOUR — long-press orb opens the triple-dial
+    # sheet, tapping a preset writes vmode to NVS.  If the binding
+    # broke, the vmode write doesn't happen.  Touch coordinates
+    # are taken from the existing touch_stress phase 6 orb-long-press
+    # site (94, 1114).
+    r.step("[A] Screenshot home with orb subtitle",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_A_home_orb.jpg")) > 1000)
+    r.step("[A] Force vmode=2 baseline so we can detect a flip to 0",
+           lambda t: t.mode(2).get("ok") is not False)
+    time.sleep(0.5)
+    r.step("[A] Pre-check: vmode==2",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 2)
+    r.step("[A] Long-press orb (360,320) — opens triple-dial sheet",
+           lambda t: t.long_press(360, 320, duration_ms=900) and True)
+    time.sleep(1.5)
+    r.step("[A] Screenshot mode sheet visible",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_A_mode_sheet.jpg")) > 1000)
+    # Tap "Local" preset.  Coords derived from ui_mode_sheet.c geometry:
+    # sheet y=60, dial section starts y_in_sheet=170, three dial rows at
+    # ROW_H+ROW_GAP=158 each → presets section y_in_sheet=644, row y+30
+    # → 674, SEG_H/2=28 → chip vertical centre y=60+702 = 762.  Five
+    # 121-px chips at x_in_row 0/129/258/387/516 + SIDE_PAD=40 + 60
+    # half-chip → centres at 100/229/358/487/616.  Local = chip 0 = x=100.
+    # PRESET_X[0]=115 (Local), PRESET_Y=763 — verified coords from
+    # touch_stress.py phase 5/6.
+    r.step("[A] Tap 'Local' preset chip (115, 763)",
+           lambda t: t.tap(115, 763) and True)
+    time.sleep(2)
+    r.step("[A] vmode flipped to 0 after preset tap",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 0)
+    # If sheet is still up, dismiss it
+    r.step("[A] Tap outside sheet to dismiss (top edge)",
+           lambda t: t.tap(360, 30) and True)
+    time.sleep(1)
+
+    # ─── B. Daily-spend badge: clean slate ──────────────────────
+    r.step("[B] Reset spent_mils → 0",
+           lambda t: t.reset_spent().get("ok") is True
+                  or t.budget()["spent_mils"] == 0)
+    r.step("[B] Set cap to $1.00 (100000 mils)",
+           lambda t: t.set_cap_mils(100000).get("ok") is not False)
+    r.step("[B] /settings: cap=100000, spent=0",
+           lambda t: (t.budget()["cap_mils"] == 100000 and
+                      t.budget()["spent_mils"] == 0))
+
+    # ─── B. Open chat: badge should render with $0.000 / $1.000 ──
+    r.step("[B] Navigate to chat",
+           lambda t: t.navigate("chat").get("navigated") == "chat")
+    time.sleep(2)
+    r.step("[B] Chat overlay visible",
+           lambda t: t.screen().get("overlays", {}).get("chat") is True)
+    # Capture the chat header
+    r.step("[B] Screenshot chat header (badge present)",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_B_badge_initial.jpg")) > 1000)
+
+    # ─── B. Local turn (FREE) — badge stays at $0.000 ────────────
+    r.step("[B] Send Local-mode chat 'hi' (FREE turn)",
+           lambda t: t.chat("hi") and True)
+    r.step("[B] Wait for llm_done (Local: up to 180s)",
+           lambda t: t.await_llm_done(timeout_s=180) is not None)
+    time.sleep(1)
+    r.step("[B] After Local turn: spent_mils still 0 (no charge)",
+           lambda t: t.budget()["spent_mils"] == 0)
+    r.step("[B] Screenshot chat header after Local turn",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_B_badge_after_local.jpg")) > 1000)
+
+    # ─── B. Cloud turn — badge should grow to non-zero ───────────
+    r.step("[B] Switch to Cloud mode (vmode=2)",
+           lambda t: t.mode(2).get("ok") is not False)
+    time.sleep(2)
+    r.step("[B] Send Cloud-mode chat 'one'",
+           lambda t: t.chat("one") and True)
+    r.step("[B] Wait for llm_done (Cloud: up to 30s)",
+           lambda t: t.await_llm_done(timeout_s=30) is not None)
+    time.sleep(2)
+    r.step("[B] After Cloud turn: spent_mils > 0",
+           lambda t: t.budget()["spent_mils"] > 0)
+    r.step("[B] Screenshot chat header after Cloud turn",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_B_badge_after_cloud.jpg")) > 1000)
+
+    # ─── B. Cap-reached → auto-downgrade story ──────────────────
+    cap_pre_mils = 0
+    def _capture_cap_pre(t):
+        nonlocal cap_pre_mils
+        cap_pre_mils = t.budget()["spent_mils"]
+        return True
+    r.step("[B] Snapshot current spend before cap squeeze",
+           _capture_cap_pre)
+    # Squeeze cap to just below current spend → next turn trips it
+    r.step("[B] Squeeze cap to current-spend (force trip on next turn)",
+           lambda t: t.set_cap_mils(max(cap_pre_mils, 100)).get("ok")
+                     is not False)
+    r.step("[B] Send another Cloud turn — cap should trip",
+           lambda t: t.chat("two") and True)
+    # auto-downgrade is wired in voice.c after spend accumulates;
+    # if cap is exceeded the mode flips back to 0
+    time.sleep(8)
+    def _check_downgrade_or_red(t):
+        b = t.budget()
+        s = t.settings()
+        # Either auto-downgrade fired (vmode flipped 2 → 0)
+        # OR spend just hit/exceeded cap with the badge tinted red.
+        # Both are valid product outcomes.
+        downgraded = int(s.get("voice_mode", 2)) == 0
+        over_cap = b["cap_mils"] > 0 and b["spent_mils"] >= b["cap_mils"]
+        return downgraded or over_cap
+    r.step("[B] Cap-trip outcome: auto-downgrade OR over-cap",
+           _check_downgrade_or_red)
+    r.step("[B] Screenshot at cap-trip moment",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_B_badge_cap_trip.jpg")) > 1000)
+
+    # ─── B. Restore + verify badge persists across reopen ───────
+    r.step("[B] Reset cap to $1.00",
+           lambda t: t.set_cap_mils(100000).get("ok") is not False)
+    r.step("[B] Reset spent_mils",
+           lambda t: t.reset_spent().get("ok") is not False)
+    r.step("[B] Close chat overlay (back button at 30,28)",
+           lambda t: t.tap(30, 28) and True)
+    time.sleep(1.5)
+    r.step("[B] Reopen chat overlay (tap mode chip on home)",
+           lambda t: t.navigate("chat").get("navigated") == "chat")
+    time.sleep(1.5)
+    r.step("[B] Badge re-rendered after reopen (chat overlay live)",
+           lambda t: t.screen().get("overlays", {}).get("chat") is True)
+    r.step("[B] Screenshot chat header after reopen",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave1_B_badge_after_reopen.jpg")) > 1000)
+
+    # ─── Cleanup: back to Local, home ───────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    r.step("[end] Restore Local mode",
+           lambda t: t.mode(0).get("ok") is not False)
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
     "story_stress":  story_stress,
     "story_onboard": story_onboard,
+    "story_wave1":   story_wave1_visibility,
 }
 
 

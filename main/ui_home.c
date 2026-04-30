@@ -782,9 +782,17 @@ lv_obj_t *ui_home_create(void)
      * retired in #162 (TDM-slot mapping unworkable without a custom
      * "Hey Tinker" WakeNet model); the sub-pill text was stale and
      * promised a feature the firmware doesn't have.  Replaced with a
-     * concrete HOLD-vs-TAP hint that matches actual orb semantics. */
+     * concrete HOLD-vs-TAP hint that matches actual orb semantics.
+     *
+     * TT #328 Wave 1 (2026-04-30 audit) — was 'HOLD FOR DICTATE', but
+     * orb_long_press_cb at the bottom of this file actually opens the
+     * triple-dial mode sheet (Wave 8 of the prior audit landed that
+     * binding deliberately).  Dictation is reachable from Notes →
+     * Record (and from Wave 3 will land in chat).  The label was
+     * outright lying about the binding; renamed to match what the
+     * gesture actually does. */
     s_say_label_sub = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_sub, "HOLD FOR DICTATE");
+    lv_label_set_text(s_say_label_sub, "HOLD FOR MODES");
     lv_obj_set_pos(s_say_label_sub, 116, 60);
     lv_obj_set_style_text_font(s_say_label_sub, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_say_label_sub, lv_color_hex(TH_TEXT_DIM), 0);
