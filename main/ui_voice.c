@@ -31,17 +31,25 @@
 #include "task_worker.h"
 #include "ui_core.h" /* tab5_lv_async_call (#258) */
 #include "ui_notes.h"
+#include "ui_theme.h" /* TT #328 Wave 4: TH_MODE_*/ TH_STATUS_ *tokens for state - icon hues * /
 
 static const char *TAG = "ui_voice";
 
 /* Forward declarations for mode switch helper tasks */
 static void mode_switch_voice_job(void *arg);
 static void mode_switch_idle_job(void *arg);
+/* TT #328 Wave 4 — state icon helper, defined below near show_state_*. */
+static void set_state_icon(const char *glyph, uint32_t color_hex);
 
 /* ── Palette — Voice overlay (v5 Zero Interface — amber-led) ─────
    Names kept for minimal-diff; values map to the v5 ui_theme palette.
-   LISTENING / PROCESSING / SPEAKING all share the amber family — state is
-   conveyed by motion (ripple / rotate / breathe), not hue. */
+   TT #328 Wave 4 — pre-Wave-4 the state ball used motion alone to
+   convey LISTENING / PROCESSING / SPEAKING (all amber-family); a
+   colorblind-sim audit + still-screenshot check showed each state was
+   visually identical at rest, failing WCAG 1.4.1.  Now state is also
+   conveyed by a per-state icon glyph (s_lbl_state_icon: mic/refresh/
+   speaker/check) in distinct hues (green/violet/blue/green-check).
+   The amber palette below remains the orb's identity colour. */
 #define VO_BG              0x08080E   /* TH_BG — not pure black */
 #define VO_BG_OPA          LV_OPA_COVER
 
@@ -232,6 +240,14 @@ static bool       s_has_llm_text  = false;  /* whether LLM response has started 
 /* Recording duration label + timer */
 static lv_obj_t   *s_lbl_rec_time = NULL;
 static lv_obj_t   *s_lbl_sub      = NULL;   /* v5 spec shot-05 caption: "LISTENING • HOLD TO TALK" / "DICTATION • TAP TO STOP" */
+/* TT #328 Wave 4 — per-state icon glyph.  Audit P0 #8 flagged that the
+ * orb cycles through four amber shades (LISTENING/PROCESSING/SPEAKING/
+ * READY) — colorblind users + still screenshots can't distinguish state.
+ * Pre-Wave-4 the comment at line 43 openly said "state is conveyed by
+ * motion, not hue", which fails WCAG 1.4.1 (Use of Color).  Adding an
+ * icon next to the status word makes each state visually distinct in a
+ * still frame: mic / refresh / speaker / check. */
+static lv_obj_t *s_lbl_state_icon = NULL;
 static lv_timer_t *s_rec_timer    = NULL;
 static int         s_rec_seconds  = 0;
 
@@ -459,27 +475,28 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         start_pulse_anim();
         break;
     case VOICE_STATE_READY:
-        /* Dictation from anywhere: save note and hide overlay */
-        if (s_dictation_from_anywhere && detail
-            && (strcmp(detail, "dictation_done") == 0
-                || strcmp(detail, "dictation_summary") == 0)) {
-            const char *txt = voice_get_dictation_text();
-            if (txt && txt[0]) {
-                const char *title = voice_get_dictation_title();
-                if (title && title[0]) {
-                    char buf[600];
-                    snprintf(buf, sizeof(buf), "[%s] %s", title, txt);
-                    ui_notes_add(buf, true);
-                } else {
-                    ui_notes_add(txt, true);
-                }
-                ESP_LOGI(TAG, "Dictation note saved from anywhere (%u chars)",
-                         (unsigned)strlen(txt));
-            }
-            s_dictation_from_anywhere = false;
-            ui_voice_hide();
-            break;
-        }
+       /* TT #328 Wave 4: check icon for READY — green check matches the
+        * "task complete / waiting for next" semantic. */
+       set_state_icon(LV_SYMBOL_OK, TH_STATUS_GREEN);
+       /* Dictation from anywhere: save note and hide overlay */
+       if (s_dictation_from_anywhere && detail &&
+           (strcmp(detail, "dictation_done") == 0 || strcmp(detail, "dictation_summary") == 0)) {
+          const char *txt = voice_get_dictation_text();
+          if (txt && txt[0]) {
+             const char *title = voice_get_dictation_title();
+             if (title && title[0]) {
+                char buf[600];
+                snprintf(buf, sizeof(buf), "[%s] %s", title, txt);
+                ui_notes_add(buf, true);
+             } else {
+                ui_notes_add(txt, true);
+             }
+             ESP_LOGI(TAG, "Dictation note saved from anywhere (%u chars)", (unsigned)strlen(txt));
+          }
+          s_dictation_from_anywhere = false;
+          ui_voice_hide();
+          break;
+       }
 
         /* Clear boot connect flag — successfully connected */
         if (s_boot_connect) {
@@ -820,6 +837,17 @@ static void build_overlay(void)
         lv_obj_add_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
     }
 
+    /* TT #328 Wave 4 — state icon, sits just left of s_lbl_status.  Hidden
+     * by default; each show_state_* sets the glyph + colour (LV_SYMBOL_*
+     * resolves at compile time so the icon font is the same FONT_HEADING
+     * the LVGL built-in icons live in). */
+    s_lbl_state_icon = lv_label_create(s_overlay);
+    lv_label_set_text(s_lbl_state_icon, "");
+    lv_obj_set_style_text_font(s_lbl_state_icon, FONT_HEADING, 0);
+    lv_obj_set_style_text_color(s_lbl_state_icon, lv_color_hex(VO_TEXT_BRIGHT), 0);
+    lv_obj_align(s_lbl_state_icon, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET - 14);
+    lv_obj_add_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+
     /* v5 sub-caption: 'LISTENING • HOLD TO TALK' / 'DICTATION • TAP TO STOP'.
      * Appears below the main status, letter-spaced amber for v5 feel. */
     s_lbl_sub = lv_label_create(s_overlay);
@@ -1056,9 +1084,27 @@ static void build_send_button(lv_obj_t *parent)
  *  State visuals
  * ================================================================ */
 
+/* TT #328 Wave 4 — set the per-state icon glyph + colour + visibility.
+ * Pass NULL or empty string to hide.  Colour is hex only (callers don't
+ * need to think about lv_color_t). */
+static void set_state_icon(const char *glyph, uint32_t color_hex) {
+   if (!s_lbl_state_icon) return;
+   if (!glyph || !glyph[0]) {
+      lv_obj_add_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+      return;
+   }
+   lv_label_set_text(s_lbl_state_icon, glyph);
+   lv_obj_set_style_text_color(s_lbl_state_icon, lv_color_hex(color_hex), 0);
+   lv_obj_clear_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void show_state_listening(void)
 {
     stop_all_anims();
+    /* TT #328 Wave 4: distinct mic icon for LISTENING — green hue (matches
+     * "we're capturing audio") so colorblind users distinguish from the
+     * amber-family PROCESSING / SPEAKING. */
+    set_state_icon(LV_SYMBOL_AUDIO, TH_MODE_LOCAL);
 
     /* Clean up READY-state orb click handler if still attached */
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
@@ -1145,17 +1191,21 @@ static void render_queue_badge(void)
 
 static void show_state_processing(const char *detail)
 {
-    render_queue_badge();
-    /* Note: this is called repeatedly as LLM tokens arrive.
-     * detail = STT text (first call), then LLM text (subsequent calls).
-     * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */
-    const char *stt = voice_get_stt_text();
-    const char *llm = voice_get_llm_text();
+   /* TT #328 Wave 4: refresh icon for PROCESSING — violet hue so
+    * "thinking" reads visually distinct from listening (green) and
+    * speaking (blue). */
+   set_state_icon(LV_SYMBOL_REFRESH, 0xA78BFA);
+   render_queue_badge();
+   /* Note: this is called repeatedly as LLM tokens arrive.
+    * detail = STT text (first call), then LLM text (subsequent calls).
+    * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */
+   const char *stt = voice_get_stt_text();
+   const char *llm = voice_get_llm_text();
 
-    /* Only stop/restart anims on first entry to PROCESSING */
-    if (s_cur_state != VOICE_STATE_PROCESSING || !s_has_llm_text) {
-        /* First time or STT just arrived */
-    }
+   /* Only stop/restart anims on first entry to PROCESSING */
+   if (s_cur_state != VOICE_STATE_PROCESSING || !s_has_llm_text) {
+      /* First time or STT just arrived */
+   }
 
     /* Hide listening-only elements */
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
@@ -1239,6 +1289,10 @@ static void show_state_processing(const char *detail)
 static void show_state_speaking(void)
 {
     stop_all_anims();
+    /* TT #328 Wave 4: speaker icon for SPEAKING — blue (TH_MODE_CLOUD)
+     * so it reads as "audio-out" and is distinguishable from the
+     * listening-green and processing-violet glyphs. */
+    set_state_icon(LV_SYMBOL_VOLUME_MAX, TH_MODE_CLOUD);
 
     /* Hide listening-only elements */
     lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);

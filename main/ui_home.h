@@ -48,6 +48,15 @@ typedef enum {
  *  LVGL thread only. */
 void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone);
 
+/** TT #328 Wave 4 — undo-pill toast for cost-bearing or hard-to-reverse
+ *  user actions (orb long-press mode cycle, NVS mutation).  Renders
+ *  "{label} · Undo (Ns)" with a tappable affordance.  Auto-dismisses
+ *  after `seconds`; tap fires undo_cb on the LVGL thread.  If a second
+ *  undo toast is shown before the first expires, the first is finalized
+ *  WITHOUT firing its callback (the user moved on).  LVGL thread only. */
+typedef void (*ui_undo_cb_t)(void);
+void ui_home_show_undo_toast(const char *label, int seconds, ui_undo_cb_t undo_cb);
+
 /** TT #328 Wave 3 — persistent error banner.  Unlike toasts (~2 s), the
  *  banner sits below the sys-label area until either dismiss_cb is invoked
  *  via tap, or ui_home_clear_error_banner() is called by the recovery path.

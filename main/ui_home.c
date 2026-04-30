@@ -1332,10 +1332,30 @@ static void refresh_timer_cb(lv_timer_t *t)
 
 /* ── Interactions ────────────────────────────────────────────── */
 
+/* TT #328 Wave 4 — orb-overload swallow flag.  A borderline 380-450 ms tap
+ * that triggers LV_EVENT_LONG_PRESSED still fires LV_EVENT_CLICKED on
+ * release.  Pre-Wave-4 a 400 ms tap could simultaneously cycle the voice
+ * mode (long-press path) AND open the listening overlay (click path) —
+ * the user got a free Local→Hybrid jump and then immediately started
+ * recording against the wrong tier.  Audit P0 #9.  Set by orb_long_press_cb;
+ * consumed at orb_click_cb entry. */
+static bool s_orb_long_pressed = false;
+/* Snapshot of the pre-cycle mode + model so the undo-toast cb can revert
+ * NVS + WS without the user re-picking the prior tier. */
+static uint8_t s_orb_undo_prev_mode = 0;
+static char s_orb_undo_prev_model[64] = {0};
+
 static void orb_click_cb(lv_event_t *e)
 {
     (void)e;
     if (any_overlay_visible()) return;
+
+    /* TT #328 Wave 4 — swallow the trailing CLICKED that LVGL emits after
+     * a LONG_PRESSED.  See s_orb_long_pressed above for full rationale. */
+    if (s_orb_long_pressed) {
+       s_orb_long_pressed = false;
+       return;
+    }
 
     /* Tap debounce — prevents SDIO TX copy_buff exhaustion from repeat-taps.
      * Same 500 ms window as v5. */
@@ -1559,21 +1579,46 @@ static void refresh_media_image(const widget_t *w)
     }
 }
 
+/* TT #328 Wave 4 — undo callback: revert NVS + WS to the snapshot we
+ * took before cycling.  Fires at most once per long-press (the undo-
+ * toast clears its cb on tap or expiry). */
+static void orb_undo_mode_change(void) {
+   ESP_LOGI(TAG, "Undo mode change -> %u (%s)", (unsigned)s_orb_undo_prev_mode, s_orb_undo_prev_model);
+   tab5_settings_set_voice_mode(s_orb_undo_prev_mode);
+   voice_send_config_update(s_orb_undo_prev_mode, s_orb_undo_prev_model);
+   update_mode_ui(s_orb_undo_prev_mode);
+   char buf[48];
+   snprintf(buf, sizeof(buf), "Reverted to %s",
+            (s_orb_undo_prev_mode < VOICE_MODE_COUNT) ? s_mode_short[s_orb_undo_prev_mode] : "?");
+   show_toast_internal(buf);
+}
+
 static void orb_long_press_cb(lv_event_t *e)
 {
     (void)e;
     if (any_overlay_visible()) return;
     uint8_t next = (s_badge_mode + 1) % VOICE_MODE_COUNT;
     ESP_LOGI(TAG, "orb long-pressed -> cycle mode %d -> %d", s_badge_mode, next);
+
+    /* TT #328 Wave 4 P0 #9 — snapshot pre-state for undo BEFORE mutating. */
+    s_orb_undo_prev_mode = s_badge_mode;
+    tab5_settings_get_llm_model(s_orb_undo_prev_model, sizeof(s_orb_undo_prev_model));
+    /* Mark the swallow flag so the trailing CLICKED on release doesn't
+     * also open the listening overlay against the new tier. */
+    s_orb_long_pressed = true;
+
     tab5_settings_set_voice_mode(next);
     char model[64];
     tab5_settings_get_llm_model(model, sizeof(model));
     voice_send_config_update(next, model);
     update_mode_ui(next);
 
+    /* TT #328 Wave 4 P0 #9 — undo-pill toast.  Cost-bearing changes
+     * (Cloud is $0.03–0.08/turn) deserve a 5 s grace window before
+     * committing.  Tap the toast to revert; ignore to confirm. */
     char buf[48];
     snprintf(buf, sizeof(buf), "Mode: %s", s_mode_short[next]);
-    show_toast_internal(buf);
+    ui_home_show_undo_toast(buf, 5, orb_undo_mode_change);
 }
 
 static void mode_chip_long_press_cb(lv_event_t *e)
@@ -1957,6 +2002,104 @@ void ui_home_refresh_mode_badge(void)
 
 void ui_home_show_toast(const char *text) { show_toast_internal(text); }
 void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) { show_toast_internal_tone(text, tone); }
+
+/* ── TT #328 Wave 4 — undo-pill toast ─────────────────────────── */
+
+static ui_undo_cb_t s_undo_cb = NULL;
+static lv_obj_t *s_undo_obj = NULL;
+static lv_obj_t *s_undo_countdown = NULL;
+static lv_timer_t *s_undo_life_t = NULL; /* full-lifetime expiry */
+static lv_timer_t *s_undo_tick_t = NULL; /* 1Hz countdown updater */
+static int s_undo_secs_left = 0;
+static char s_undo_label_buf[48];
+
+static void undo_destroy(void) {
+   if (s_undo_tick_t) {
+      lv_timer_delete(s_undo_tick_t);
+      s_undo_tick_t = NULL;
+   }
+   if (s_undo_life_t) {
+      lv_timer_delete(s_undo_life_t);
+      s_undo_life_t = NULL;
+   }
+   if (s_undo_obj) {
+      lv_obj_del(s_undo_obj);
+      s_undo_obj = NULL;
+   }
+   s_undo_countdown = NULL;
+   s_undo_cb = NULL;
+   s_undo_label_buf[0] = '\0';
+}
+
+static void undo_expired_cb(lv_timer_t *t) {
+   (void)t;
+   /* Lifetime fired without a tap — finalize without invoking the cb. */
+   s_undo_life_t = NULL;
+   undo_destroy();
+}
+
+static void undo_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_undo_countdown) return;
+   if (s_undo_secs_left > 0) s_undo_secs_left--;
+   char buf[80];
+   snprintf(buf, sizeof(buf), "%s  \xc2\xb7  Undo (%ds)", s_undo_label_buf, s_undo_secs_left);
+   lv_label_set_text(s_undo_countdown, buf);
+}
+
+static void undo_click_cb(lv_event_t *e) {
+   (void)e;
+   ui_undo_cb_t cb = s_undo_cb;
+   undo_destroy();
+   if (cb) cb();
+}
+
+void ui_home_show_undo_toast(const char *label, int seconds, ui_undo_cb_t undo_cb) {
+   if (!label || !undo_cb || seconds <= 0) return;
+   /* Replace any in-flight undo toast WITHOUT firing its cb (user moved on). */
+   undo_destroy();
+   /* Replace any plain toast too — they share the same screen real estate. */
+   if (s_toast_ctx) {
+      toast_ctx_destroy(s_toast_ctx);
+      s_toast_ctx = NULL;
+      s_toast = NULL;
+   }
+
+   if (seconds > 30) seconds = 30;
+   strncpy(s_undo_label_buf, label, sizeof(s_undo_label_buf) - 1);
+   s_undo_label_buf[sizeof(s_undo_label_buf) - 1] = '\0';
+
+   lv_obj_t *t = lv_obj_create(lv_layer_top());
+   lv_obj_remove_style_all(t);
+   lv_obj_set_size(t, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+   lv_obj_set_style_bg_color(t, lv_color_hex(TH_CARD_ELEVATED), 0);
+   lv_obj_set_style_bg_opa(t, 240, 0);
+   lv_obj_set_style_radius(t, 18, 0);
+   lv_obj_set_style_pad_hor(t, 22, 0);
+   lv_obj_set_style_pad_ver(t, 14, 0);
+   lv_obj_set_style_border_width(t, 2, 0);
+   lv_obj_set_style_border_color(t, lv_color_hex(TH_AMBER), 0);
+   lv_obj_align(t, LV_ALIGN_CENTER, 0, TOAST_FINAL_Y);
+
+   s_undo_countdown = lv_label_create(t);
+   lv_obj_set_style_text_font(s_undo_countdown, FONT_SECONDARY, 0);
+   lv_obj_set_style_text_color(s_undo_countdown, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_set_style_text_letter_space(s_undo_countdown, 1, 0);
+   char buf[80];
+   snprintf(buf, sizeof(buf), "%s  \xc2\xb7  Undo (%ds)", label, seconds);
+   lv_label_set_text(s_undo_countdown, buf);
+
+   lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(t, undo_click_cb, LV_EVENT_CLICKED, NULL);
+
+   s_undo_obj = t;
+   s_undo_cb = undo_cb;
+   s_undo_secs_left = seconds;
+
+   s_undo_life_t = lv_timer_create(undo_expired_cb, seconds * 1000, NULL);
+   if (s_undo_life_t) lv_timer_set_repeat_count(s_undo_life_t, 1);
+   s_undo_tick_t = lv_timer_create(undo_tick_cb, 1000, NULL);
+}
 
 /* ── TT #328 Wave 3 — persistent error banner ─────────────────── */
 
