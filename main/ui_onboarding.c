@@ -68,11 +68,20 @@ static const onboard_card_t s_cards[] = {
     {
         .kicker = "\xe2\x80\xa2 HOW I THINK",
         .title = "Four ways to reply.",
-        .body = "Local: runs on the Dragon box next to you.\n"
-                "            Private, free, a little slower.\n\n"
-                "Hybrid: cloud ears + local brain.\n\n"
-                "Cloud: GPT/Claude/Gemini - fast, smart, billed.\n\n"
-                "Agent: the TinkerClaw gateway with tools + memory.\n"
+        /* TT #328 Wave 5 (audit Hybrid story) — pre-Wave-5 the list
+         * led with Local, which reads as "default": new users tried
+         * it, hit the ~60 s/turn latency, gave up before discovering
+         * Hybrid (the practical sweet spot for the privacy-conscious
+         * persona).  Reordered to lead with Hybrid + tagged as
+         * recommended.  Each line stamps the three decisive variables
+         * so the choice is decidable on first read. */
+        .body = "Hybrid (recommended): cloud ears, private brain.\n"
+                "            4-8s/turn, ~$0.02 - the practical pick.\n\n"
+                "Local: fully on the Dragon box.\n"
+                "            Private + free, slow (~60s/turn).\n\n"
+                "Cloud: GPT/Claude/Gemini.\n"
+                "            3-6s/turn, ~$0.04 - fastest & smartest.\n\n"
+                "Agent: TinkerClaw gateway with tools + memory.\n"
                 "            Long-press the mode chip to switch.",
         .primary = "Next",
         .secondary = "Skip",

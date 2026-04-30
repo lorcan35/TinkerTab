@@ -437,24 +437,27 @@ static void refresh_composite(void)
             }
         }
     }
+    /* TT #328 Wave 5 (audit Hybrid story) — captions now stamp three
+     * decisive variables per mode: latency, privacy, cost.  Pre-Wave-5
+     * the composite read "STUDIO VOICE · LOCAL BRAIN · ~$0.02" — true,
+     * but the user couldn't see WHY they'd pick Hybrid over Local
+     * (60 s vs. 4-8 s is the load-bearing reason).  Now every mode
+     * surfaces its sweet-spot in the same shape so cross-comparison
+     * is a glance, not an analysis. */
     switch (resolved) {
         case 0:
-            snprintf(sub_buf, sizeof(sub_buf),
-                     "ON-DEVICE \xe2\x80\xa2 FREE");
-            break;
+           snprintf(sub_buf, sizeof(sub_buf), "~60S \xe2\x80\xa2 100%% PRIVATE \xe2\x80\xa2 FREE");
+           break;
         case 1:
-            snprintf(sub_buf, sizeof(sub_buf),
-                     "STUDIO VOICE \xe2\x80\xa2 LOCAL BRAIN \xe2\x80\xa2 ~$0.02");
-            break;
+           snprintf(sub_buf, sizeof(sub_buf), "4-8S \xe2\x80\xa2 PRIVATE BRAIN \xe2\x80\xa2 ~$0.02");
+           break;
         case 2:
-            snprintf(sub_buf, sizeof(sub_buf),
-                     "%s \xe2\x80\xa2 STUDIO \xe2\x80\xa2 ~$0.04",
-                     short_model[0] ? short_model : "CLOUD");
-            break;
+           snprintf(sub_buf, sizeof(sub_buf), "3-6S \xe2\x80\xa2 %s \xe2\x80\xa2 ~$0.04",
+                    short_model[0] ? short_model : "CLOUD");
+           break;
         case 3:
-            snprintf(sub_buf, sizeof(sub_buf),
-                     "MEMORY BYPASSED \xe2\x80\xa2 GATEWAY TOOLS");
-            break;
+           snprintf(sub_buf, sizeof(sub_buf), "AGENT TOOLS \xe2\x80\xa2 MEMORY BYPASSED");
+           break;
     }
     lv_label_set_text(s_composite_sub, sub_buf);
 

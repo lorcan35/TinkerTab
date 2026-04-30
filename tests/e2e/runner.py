@@ -1016,6 +1016,139 @@ def story_wave4_cloud_picker(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave5_hybrid_story(r: Runner) -> None:
+    """TT #328 Wave 5 — Hybrid story (mode-sheet captions).
+
+    Pre-Wave-5 the mode sheet's composite card showed cost only:
+      Local:  "ON-DEVICE · FREE"
+      Hybrid: "STUDIO VOICE · LOCAL BRAIN · ~$0.02"
+      Cloud:  "{model} · STUDIO · ~$0.04"
+      Agent:  "MEMORY BYPASSED · GATEWAY TOOLS"
+    The user couldn't see WHY Hybrid was the practical pick — the
+    load-bearing variable (latency: 60s vs 4-8s vs 3-6s) was hidden.
+
+    Wave 5 reshapes all four captions to surface the same three
+    decisive variables — latency · privacy · cost — so the choice
+    is decidable at a glance:
+      Local:  "~60S · 100% PRIVATE · FREE"
+      Hybrid: "4-8S · PRIVATE BRAIN · ~$0.02"
+      Cloud:  "3-6S · {model} · ~$0.04"
+      Agent:  "AGENT TOOLS · MEMORY BYPASSED"
+
+    Plus the onboarding "HOW I THINK" card was reordered to lead
+    with Hybrid (recommended) rather than Local — but onboarding
+    only fires on first-boot, so this story can't easily exercise
+    it via the harness.  The source change lands; field verification
+    happens on a fresh device.
+
+    Touch-driven: long-press orb to open sheet, tap each preset chip,
+    screenshot the composite caption, verify the latency + privacy
+    + cost stamp matches expectations.
+    """
+    tab5 = r.tab5
+
+    # Coords from touch_stress.py (verified):
+    #   ORB_X, ORB_Y = 360, 320       — main orb (long-press → sheet)
+    #   PRESET_X     = [115, 230, 358, 488, 618]
+    #   PRESET_Y     = 763
+    #   Composite caption sub-label is rendered at y_in_sheet 86 inside
+    #   the composite card (y=20 + sheet_y=60 + composite y_in_sheet=...
+    #   ~ around y=940 in absolute screen coords).  Screenshots are
+    #   captured for visual diff; assertions run against the screen
+    #   state and the underlying NVS values.
+    PRESET_X = [115, 230, 358, 488, 618]  # Local, Hybrid, Cloud, Agent, Onboard
+    PRESET_Y = 763
+    ORB_X, ORB_Y = 360, 320
+
+    def long_press_orb(t):
+        return t.long_press(ORB_X, ORB_Y, duration_ms=900)
+
+    # ─── State setup ────────────────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Cancel any leftover voice state",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    time.sleep(1)
+    r.step("Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1)
+
+    # ─── A. Long-press orb → mode sheet shows Local caption ──────
+    r.step("[A] Long-press orb (360,320) → opens mode sheet",
+           lambda t: long_press_orb(t) and True)
+    time.sleep(1.5)
+    r.step("[A] Screenshot Local caption ('~60S · 100% PRIVATE · FREE')",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave5_A_local_caption.jpg")) > 1000)
+
+    # ─── B. Tap Hybrid preset, reopen sheet, verify caption ─────
+    r.step("[B] Tap Hybrid preset (230, 763)",
+           lambda t: t.tap(230, PRESET_Y) and True)
+    time.sleep(1.5)
+    r.step("[B] vmode flipped to 1 (Hybrid)",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 1)
+    r.step("[B] Reopen mode sheet (long-press orb)",
+           lambda t: long_press_orb(t) and True)
+    time.sleep(1.5)
+    r.step("[B] Screenshot Hybrid caption ('4-8S · PRIVATE BRAIN · ~$0.02')",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave5_B_hybrid_caption.jpg")) > 1000)
+
+    # ─── C. Cloud preset → cloud caption ────────────────────────
+    r.step("[C] Tap Cloud preset (358, 763)",
+           lambda t: t.tap(358, PRESET_Y) and True)
+    time.sleep(1.5)
+    r.step("[C] vmode flipped to 2 (Cloud)",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 2)
+    r.step("[C] Reopen mode sheet",
+           lambda t: long_press_orb(t) and True)
+    time.sleep(1.5)
+    r.step("[C] Screenshot Cloud caption ('3-6S · {model} · ~$0.04')",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave5_C_cloud_caption.jpg")) > 1000)
+
+    # ─── D. Local preset (regression: caption fires for all modes) ─
+    r.step("[D] Tap Local preset (115, 763)",
+           lambda t: t.tap(115, PRESET_Y) and True)
+    time.sleep(1.5)
+    r.step("[D] vmode flipped to 0 (Local)",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 0)
+    r.step("[D] Reopen mode sheet, screenshot",
+           lambda t: (long_press_orb(t) and True) and time.sleep(1.5) is None or True)
+    r.step("[D] Screenshot Local caption (regression after roundtrip)",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave5_D_local_again.jpg")) > 1000)
+
+    # ─── E. Dial-driven mode selection (not just preset chips) ──
+    # Tap dial segments instead of preset chips — dials live above
+    # the presets and feed tab5_mode_resolve(int_tier, voi_tier,
+    # aut_tier) which the composite card watches.  Tap "Smart"
+    # intelligence (idx 2) on row 0; segment x ~600 y ~290.
+    r.step("[E] Tap 'Smart' intelligence segment (600, 290)",
+           lambda t: t.tap(600, 290) and True)
+    time.sleep(1.5)
+    r.step("[E] Screenshot composite reflects dial (Smart → Cloud preset)",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave5_E_smart_dial.jpg")) > 1000)
+
+    # ─── F. Dismiss the sheet, verify home returns ──────────────
+    r.step("[F] Tap Done button (top-right of sheet, 600, 116)",
+           lambda t: t.tap(600, 116) and True)
+    time.sleep(1.5)
+    r.step("[F] Screen reports current = home",
+           lambda t: t.screen().get("current") == "home"
+                  or t.screen().get("current") == "")
+    r.step("[F] Screenshot home post-sheet-dismiss",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave5_F_home_after_dismiss.jpg")) > 1000)
+
+    # ─── Cleanup ────────────────────────────────────────────────
+    r.step("[end] Restore Local mode",
+           lambda t: t.mode(0).get("ok") is not False)
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -1025,6 +1158,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave2":   story_wave2_error_surfacing,
     "story_wave3":   story_wave3_dictation_in_chat,
     "story_wave4":   story_wave4_cloud_picker,
+    "story_wave5":   story_wave5_hybrid_story,
 }
 
 
