@@ -272,6 +272,9 @@ static void cb_back_btn(lv_event_t *e)
      * ~11KB from LVGL expand pool (PSRAM), zero internal SRAM impact. */
     ui_settings_hide();
     ui_home_go_home();
+    /* TT #328 Wave 10 follow-up — keep /screen in sync. */
+    extern void tab5_debug_set_nav_target(const char *);
+    tab5_debug_set_nav_target("home");
 }
 
 /* ── NVS debounce timer callbacks (US-HW17) ───────────────────────────

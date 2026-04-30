@@ -4,6 +4,7 @@
 #include "ui_chrome.h"
 
 #include "config.h" /* DPI_SCALE / TOUCH_MIN */
+#include "debug_server.h" /* tab5_debug_set_nav_target */
 #include "esp_log.h"
 #include "ui_core.h"
 #include "ui_feedback.h"
@@ -22,10 +23,15 @@ static bool s_inited = false;
 
 static void home_btn_click_cb(lv_event_t *e) {
    (void)e;
+   extern void tab5_debug_obs_event(const char *kind, const char *detail);
+   tab5_debug_obs_event("chrome.home", "click_in");
    /* Universal tap-debounce — the home button is reachable from every
     * non-home screen, so a slammed double-tap during a navigation
     * animation could otherwise stack two screen-loads. */
-   if (!ui_tap_gate("chrome:home", 300)) return;
+   if (!ui_tap_gate("chrome:home", 300)) {
+      tab5_debug_obs_event("chrome.home", "debounced");
+      return;
+   }
    ESP_LOGI(TAG, "persistent home -> ui_home_get_screen");
    lv_obj_t *home = ui_home_get_screen();
    if (home) lv_screen_load(home);
@@ -33,6 +39,11 @@ static void home_btn_click_cb(lv_event_t *e) {
     * mode chip, say-pill, and 4-dot menu chip already cover navigation
     * intent on home). */
    ui_chrome_set_home_visible(false);
+   /* Keep /screen's current-screen field in sync with what we just
+    * loaded.  Without this, the harness sees stale last-/navigate
+    * targets and the persistent-home-button assertion fails. */
+   tab5_debug_set_nav_target("home");
+   tab5_debug_obs_event("chrome.home", "loaded");
 }
 
 void ui_chrome_init(void) {

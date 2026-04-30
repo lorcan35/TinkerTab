@@ -256,6 +256,9 @@ static void cb_back_btn(lv_event_t *e)
    }
     ui_camera_destroy();
     lv_screen_load(ui_home_get_screen());
+    /* TT #328 Wave 10 follow-up — keep /screen in sync. */
+    extern void tab5_debug_set_nav_target(const char *);
+    tab5_debug_set_nav_target("home");
 }
 
 /* #286: live rotation cycle — 0→1→2→3→0.  Persists to NVS + tears

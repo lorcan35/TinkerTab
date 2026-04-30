@@ -98,6 +98,9 @@ static void cb_back_btn(lv_event_t *e)
     if (strcmp(current_path, ROOT_PATH) == 0) {
         ui_files_destroy();
         lv_screen_load(ui_home_get_screen());
+        /* TT #328 Wave 10 follow-up — keep /screen in sync. */
+        extern void tab5_debug_set_nav_target(const char *);
+        tab5_debug_set_nav_target("home");
         return;
     }
     /* Go up one directory */

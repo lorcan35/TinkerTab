@@ -40,6 +40,15 @@ esp_err_t tab5_debug_server_init(void);
 esp_err_t tab5_debug_server_stop(void);
 
 /**
+ * TT #328 Wave 10 follow-up — keep /screen's "current" field in sync
+ * when navigation happens via a non-/navigate path (the persistent
+ * floating home button in ui_chrome, swipe-right-back gestures, etc).
+ * Also fires a "screen.navigate" obs event so /events tracks the
+ * change.  Pass the screen name as a literal ("home", "camera", ...).
+ */
+void tab5_debug_set_nav_target(const char *name);
+
+/**
  * Check if the debug server is injecting a touch event.
  * Call from the LVGL touch read callback. If true, use the returned
  * coordinates instead of the physical touch controller.

@@ -544,6 +544,12 @@ void preset_click_cb(lv_event_t *e)
     refresh_segments();
     refresh_composite();
     persist_and_notify_dragon();
+    /* TT #328 Wave 10 follow-up — dismiss the sheet on every preset tap
+     * so the user immediately sees the change reflected on home + their
+     * next navigation isn't shadowed by a sheet that's still up.  Pre-
+     * fix only the Onboard preset (case 4) auto-dismissed; the other
+     * four required a manual "Done" tap. */
+    ui_mode_sheet_hide();
 }
 
 static void seg_click_cb(lv_event_t *e)

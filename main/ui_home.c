@@ -2241,12 +2241,18 @@ void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_
    /* Replace any existing banner. */
    err_banner_destroy();
 
-   /* Layout: full-width strip at top of lv_layer_top, 56 px tall.  Sits
-    * above all overlays so the user sees it from any screen.  Rose
-    * accent border so it reads as a fault state at a glance. */
+   /* Layout: full-width strip at top of lv_layer_top.  Sits above all
+    * overlays so the user sees it from any screen.  Rose accent border
+    * so it reads as a fault state at a glance.
+    *
+    * Wave 10 follow-up: was 56 px tall, which covered the top half of
+    * the chat header's 60-px back button (chat header lives at y=0..96,
+    * back button center at y=48).  Shrunk to 32 px so the banner sits
+    * above the back button's hit area; the K144-unavailable warning
+    * still reads cleanly at FONT_SECONDARY 18 px with 7 px ver padding. */
    lv_obj_t *b = lv_obj_create(lv_layer_top());
    lv_obj_remove_style_all(b);
-   lv_obj_set_size(b, 720, 56);
+   lv_obj_set_size(b, 720, 32);
    lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 0);
    lv_obj_set_style_bg_color(b, lv_color_hex(TH_CARD_ELEVATED), 0);
    lv_obj_set_style_bg_opa(b, 240, 0);
@@ -2254,7 +2260,7 @@ void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_
    lv_obj_set_style_border_width(b, 2, 0);
    lv_obj_set_style_border_color(b, lv_color_hex(TH_STATUS_RED), 0);
    lv_obj_set_style_pad_hor(b, 22, 0);
-   lv_obj_set_style_pad_ver(b, 12, 0);
+   lv_obj_set_style_pad_ver(b, 7, 0);
 
    lv_obj_t *lbl = lv_label_create(b);
    lv_label_set_text(lbl, text);

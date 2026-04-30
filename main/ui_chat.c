@@ -181,11 +181,17 @@ static void paint_header_and_view_for_mode(uint8_t mode)
 
 static void on_back(void *ud)  { (void)ud; ui_chat_hide(); }
 
-/* TT #328 Wave 10 — swipe-right-back gesture on chat overlay. */
+/* TT #328 Wave 10 — swipe-right-back gesture on chat overlay.
+ * Wave 10 follow-up: also reset /screen's nav target so the harness's
+ * `current` field reflects that we returned to home. */
 static void on_chat_gesture(lv_event_t *e) {
    (void)e;
    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
-   if (dir == LV_DIR_RIGHT) ui_chat_hide();
+   if (dir == LV_DIR_RIGHT) {
+      ui_chat_hide();
+      extern void tab5_debug_set_nav_target(const char *);
+      tab5_debug_set_nav_target("home");
+   }
 }
 
 static void on_chev(void *ud)

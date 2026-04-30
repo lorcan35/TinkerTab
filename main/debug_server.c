@@ -1582,6 +1582,21 @@ static char s_nav_target[16] = {0};
 
 static volatile bool s_navigating = false;
 
+/* TT #328 Wave 10 follow-up — public setter so non-/navigate code paths
+ * (the persistent home button in ui_chrome, swipe-right-back gestures
+ * in chat/camera/files) can keep s_nav_target in sync with the actually
+ * loaded screen.  Pre-fix /screen would return the stale last-/navigate
+ * target while the device was on a different screen, which broke the
+ * harness's persistent-home-button assertion. */
+void tab5_debug_set_nav_target(const char *name) {
+   if (!name || !name[0]) return;
+   size_t cap = sizeof(s_nav_target) - 1;
+   strncpy(s_nav_target, name, cap);
+   s_nav_target[cap] = '\0';
+   extern void tab5_debug_obs_event(const char *, const char *);
+   tab5_debug_obs_event("screen.navigate", s_nav_target);
+}
+
 static void async_navigate(void *arg)
 {
     (void)arg;
