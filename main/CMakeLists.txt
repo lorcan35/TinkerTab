@@ -39,6 +39,7 @@ else()
              "ui_core.c" ${UI_SRCS}
              "settings.c" "ota.c" "media_cache.c"
              "widget_store.c"
+             "widget_mode_dot.c"
              "spring_anim.c"
              "task_worker.c"
              "tool_log.c"

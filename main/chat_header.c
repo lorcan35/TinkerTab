@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "ui_core.h" /* TT #328 Wave 5: ui_tap_gate */
 #include "ui_theme.h"
+#include "widget_mode_dot.h" /* TT #328 Wave 6 */
 
 static const char *TAG = "chat_hdr";
 
@@ -173,12 +174,9 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title)
     lv_obj_set_ext_click_area(h->chip, 6);
     lv_obj_add_event_cb(h->chip, ev_chip_lp, LV_EVENT_LONG_PRESSED, h);
 
-    h->chip_dot = lv_obj_create(h->chip);
-    lv_obj_remove_style_all(h->chip_dot);
-    lv_obj_set_size(h->chip_dot, 8, 8);
-    lv_obj_set_style_radius(h->chip_dot, 4, 0);
-    lv_obj_set_style_bg_color(h->chip_dot, lv_color_hex(TH_MODE_LOCAL), 0);
-    lv_obj_set_style_bg_opa(h->chip_dot, LV_OPA_COVER, 0);
+    /* TT #328 Wave 6 — shared mode-dot widget. */
+    h->chip_dot = widget_mode_dot_create(h->chip, 8, 0 /* vmode=0 default;
+                                                          set_mode below */);
 
     h->chip_name = lv_label_create(h->chip);
     lv_label_set_text(h->chip_name, "Local");
@@ -226,9 +224,9 @@ void chat_header_set_mode(chat_header_t *h, uint8_t m, const char *llm)
 {
     if (!h) return;
     if (m >= VOICE_MODE_COUNT) m = 0;
-    if (h->chip_dot) {
-        lv_obj_set_style_bg_color(h->chip_dot, lv_color_hex(s_mode_tint[m]), 0);
-    }
+    /* TT #328 Wave 6 — recolor through the shared widget so any future
+     * change to mode-dot rendering (opacity, gradient) flows everywhere. */
+    if (h->chip_dot) widget_mode_dot_set_mode(h->chip_dot, m);
     if (h->chip_name) lv_label_set_text(h->chip_name, s_mode_short[m]);
     if (h->chip_sub) {
         /* v4·D connectivity polish: TinkerClaw mode talks to the openclaw

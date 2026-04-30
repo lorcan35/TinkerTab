@@ -10,19 +10,22 @@
  * aren't touched from Core 1.
  */
 #include "chat_session_drawer.h"
-#include "ui_core.h"
-#include "task_worker.h"
-#include "ui_theme.h"
-#include "config.h"
-#include "settings.h"
-#include "esp_log.h"
-#include "esp_http_client.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "cJSON.h"
+
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+
+#include "cJSON.h"
+#include "config.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "settings.h"
+#include "task_worker.h"
+#include "ui_core.h"
+#include "ui_theme.h"
+#include "widget_mode_dot.h" /* TT #328 Wave 6 */
 
 static const char *TAG = "chat_drawer";
 
@@ -153,15 +156,10 @@ static void row_create(chat_session_drawer_t *d, drawer_row_t *r,
         lv_obj_add_flag(r->left_bar, LV_OBJ_FLAG_HIDDEN);
     }
 
-    r->dot = lv_obj_create(r->row);
-    if (r->dot) {
-        lv_obj_remove_style_all(r->dot);
-        lv_obj_set_size(r->dot, DOT_SZ, DOT_SZ);
-        lv_obj_set_pos(r->dot, ROW_SIDE_PAD, (ROW_H - DOT_SZ) / 2);
-        lv_obj_set_style_radius(r->dot, DOT_SZ / 2, 0);
-        lv_obj_set_style_bg_color(r->dot, lv_color_hex(TH_MODE_LOCAL), 0);
-        lv_obj_set_style_bg_opa(r->dot, LV_OPA_COVER, 0);
-    }
+    /* TT #328 Wave 6 — shared mode-dot widget.  Default mode 0 (LOCAL);
+     * the per-row paint pass below recolors via widget_mode_dot_set_mode. */
+    r->dot = widget_mode_dot_create(r->row, DOT_SZ, 0);
+    if (r->dot) lv_obj_set_pos(r->dot, ROW_SIDE_PAD, (ROW_H - DOT_SZ) / 2);
 
     int info_x = ROW_SIDE_PAD + DOT_SZ + 16;
     r->info = lv_label_create(r->row);
@@ -245,9 +243,10 @@ static void render_rows(chat_session_drawer_t *d,
         r->in_use = true;
 
         /* TT #328 Wave 1: clamp moved from <=3 to <VOICE_MODE_COUNT — vmode=4
-         * Onboard sessions used to fall back to LOCAL green here. */
+         * Onboard sessions used to fall back to LOCAL green here.
+         * Wave 6: recolor through shared widget. */
         uint8_t mode = s->voice_mode < VOICE_MODE_COUNT ? s->voice_mode : 0;
-        lv_obj_set_style_bg_color(r->dot, lv_color_hex(s_mode_tint[mode]), 0);
+        widget_mode_dot_set_mode(r->dot, mode);
 
         char info[96];
         const char *model = s->llm_model[0] ? s->llm_model : "default";

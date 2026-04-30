@@ -57,6 +57,7 @@
 #include "voice.h"
 #include "voice_onboard.h"
 #include "widget.h"
+#include "widget_mode_dot.h" /* TT #328 Wave 6 */
 #include "wifi.h"
 
 static const char *TAG = "ui_home";
@@ -150,10 +151,11 @@ static lv_obj_t *s_say_label_sub   = NULL;
 static lv_obj_t   *s_toast         = NULL;
 static lv_timer_t *s_refresh_timer = NULL;
 
-/* Mode colors + labels */
-static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
-};
+/* TT #328 Wave 6: s_mode_tint removed — widget_mode_dot owns color
+ * resolution against the canonical th_mode_colors[] in ui_theme.c.
+ * Kept s_mode_short here because the home pill uses different short
+ * labels ("Local") than the canonical ui_theme th_mode_names[]
+ * ("Local") — actually identical, future cleanup TODO. */
 static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
 static const char *s_mode_tagline[VOICE_MODE_COUNT] = {
     "ON-DEVICE", "LOCAL + CLOUD", "CLOUD ONLY", "TINKERCLAW", "K144 ONBOARD",
@@ -356,9 +358,10 @@ static void update_mode_ui(uint8_t mode)
     if (mode >= 4) mode = 0;
     bool changed = (s_badge_mode != mode);
     s_badge_mode = mode;
-    if (s_mode_dot) {
-        lv_obj_set_style_bg_color(s_mode_dot, lv_color_hex(s_mode_tint[mode]), 0);
-    }
+    /* TT #328 Wave 6 — recolor through shared widget.  mode_dot_anim_cb
+     * still mutates size/radius directly for the pulse animation; that
+     * stays open-coded since it's not shared. */
+    if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
     if (s_mode_name) lv_label_set_text(s_mode_name, s_mode_short[mode]);
     if (s_mode_sub)  lv_label_set_text(s_mode_sub,  s_mode_tagline[mode]);
     orb_paint_for_mode(mode);
@@ -557,13 +560,10 @@ lv_obj_t *ui_home_create(void)
     lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
     lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_CLICKED, NULL);
 
-    s_mode_dot = lv_obj_create(s_mode_chip);
-    lv_obj_remove_style_all(s_mode_dot);
-    lv_obj_set_size(s_mode_dot, 10, 10);
-    lv_obj_set_pos(s_mode_dot, 24, 21);
-    lv_obj_set_style_radius(s_mode_dot, 5, 0);
-    lv_obj_set_style_bg_color(s_mode_dot, lv_color_hex(s_mode_tint[s_badge_mode]), 0);
-    lv_obj_set_style_bg_opa(s_mode_dot, LV_OPA_COVER, 0);
+    /* TT #328 Wave 6 — shared mode-dot widget (was 6 lines of open-coded
+     * LVGL primitives also duplicated in chat_header.c + drawer). */
+    s_mode_dot = widget_mode_dot_create(s_mode_chip, 10, s_badge_mode);
+    if (s_mode_dot) lv_obj_set_pos(s_mode_dot, 24, 21);
 
     s_mode_name = lv_label_create(s_mode_chip);
     lv_label_set_text(s_mode_name, s_mode_short[s_badge_mode]);
