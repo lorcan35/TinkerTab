@@ -3062,9 +3062,20 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port,
     args->port = dragon_port;
     args->auto_listen = auto_listen;
 
-    BaseType_t xret = xTaskCreatePinnedToCore(
-        async_connect_task, "voice_conn", 8192,
-        args, 4, NULL, 1);
+    /* Stack must live in PSRAM. async_connect_task ends with
+     * vTaskSuspend(NULL) (P4 TLSF cleanup crash workaround for issue #20),
+     * so the 8 KB stack stays allocated forever after each call. With the
+     * default xTaskCreatePinnedToCore that's 8 KB of internal SRAM lost
+     * per voice_connect_async — and stress runs that bounce the WS (ws_drop
+     * fault inject, mode flips, orb-tap-while-disconnected) leak 30-50 KB
+     * over the run, drifting internal SRAM toward the heap_watchdog 20 KB
+     * sram_exhausted floor. Moving the stack to PSRAM eliminates ~95 % of
+     * the cost (the small TCB still leaks but it's ~360 B vs 8 KB). The
+     * proper fix is a persistent connector task + queue (matches the
+     * mic_capture_task / playback_drain_task pattern already used at the
+     * head of voice_init) — tracked separately. */
+    BaseType_t xret =
+        xTaskCreatePinnedToCoreWithCaps(async_connect_task, "voice_conn", 8192, args, 4, NULL, 1, MALLOC_CAP_SPIRAM);
     if (xret != pdPASS) {
         free(args);
         voice_set_state(VOICE_STATE_IDLE, "task create failed");
