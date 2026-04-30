@@ -85,11 +85,16 @@ class StressMetrics:
     expected_events_missed: int = 0
     shots_dir: Path | None = None
     shot_count: int = 0
+    # Per-phase FPS samples — keyed by phase label ("phase1", etc).
+    phase_fps: dict[str, list[int]] = field(default_factory=dict)
+    current_phase: str = "boot"
 
     def add_sample(self, info: dict) -> None:
-        self.fps_samples.append(int(info.get("lvgl_fps", 0)))
+        fps = int(info.get("lvgl_fps", 0))
+        self.fps_samples.append(fps)
         self.heap_free_kb.append(info.get("heap_free", 0) // 1024)
         self.heap_min_kb.append(info.get("heap_min", 0) // 1024)
+        self.phase_fps.setdefault(self.current_phase, []).append(fps)
 
 
 def shoot(tab5: Tab5Driver, m: StressMetrics, label: str) -> str:
@@ -157,6 +162,7 @@ def measure_tap_latency(tab5: Tab5Driver, x: int, y: int,
 def phase1_edge_taps(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 1 — Edge-tap precision (TOUCH_MIN coverage)")
     results: dict[str, bool] = {}
+    m.current_phase = "phase1"
     fps = FPSMonitor(tab5, m); fps.start()
 
     # Each clickable: (label, cx, cy, half_w, half_h, target_screen, expect_kind)
@@ -204,6 +210,7 @@ def phase1_edge_taps(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase2_rapid_tap(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 2 — Rapid-tap debounce (Wave 5 ui_tap_gate)")
+    m.current_phase = "phase2"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
 
@@ -272,6 +279,7 @@ def phase2_rapid_tap(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase3_swipes(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 3 — Swipe variety (direction × speed × surface)")
+    m.current_phase = "phase3"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
 
@@ -279,11 +287,11 @@ def phase3_swipes(tab5: Tab5Driver, m: StressMetrics) -> dict:
     swipes = [
         ("chat slow",     "chat",     50, 640, 600, 640, 600),
         ("chat medium",   "chat",     50, 640, 600, 640, 250),
-        ("chat fast",     "chat",     50, 640, 600, 640, 80),
+        ("chat fast",     "chat",     50, 640, 600, 640, 150),
         ("camera slow",   "camera",   50, 640, 600, 640, 500),
-        ("camera fast",   "camera",   50, 640, 600, 640, 100),
+        ("camera fast",   "camera",   50, 640, 600, 640, 150),
         ("files slow",    "files",    50, 640, 600, 640, 500),
-        ("files fast",    "files",    50, 640, 600, 640, 100),
+        ("files fast",    "files",    50, 640, 600, 640, 150),
         ("settings slow", "settings", 50, 640, 600, 640, 500),
     ]
     for label, screen, x1, y1, x2, y2, dur in swipes:
@@ -333,6 +341,7 @@ def phase3_swipes(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase4_nav_churn(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 4 — Navigation churn (200 transitions)")
+    m.current_phase = "phase4"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
 
@@ -387,6 +396,7 @@ def phase4_nav_churn(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase5_preset_hammer(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 5 — Mode-sheet preset hammer (5 cycles × 5 presets)")
+    m.current_phase = "phase5"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
     # Clean state — earlier phases may have left voice overlay or
@@ -459,6 +469,7 @@ def phase5_preset_hammer(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase6_longpress(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 6 — Long-press surfaces")
+    m.current_phase = "phase6"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
     try:
@@ -522,6 +533,7 @@ def phase6_longpress(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase7_keyboard(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 7 — Keyboard typing storm")
+    m.current_phase = "phase7"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
 
@@ -570,6 +582,7 @@ def phase7_keyboard(tab5: Tab5Driver, m: StressMetrics) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 def phase8_concurrent(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 8 — Tap during animation (concurrency)")
+    m.current_phase = "phase8"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
     try:
@@ -623,10 +636,291 @@ def phase8_concurrent(tab5: Tab5Driver, m: StressMetrics) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────
+#  PHASE 12 — Voice PTT-like round-trip (state-machine traversal)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Real PTT involves mic capture + STT + LLM + TTS playback.  Without a
+# canned audio source we can't validate the actual transcription, but
+# we CAN validate the voice state machine traversal end-to-end:
+#   IDLE → READY → LISTENING (orb tap) → PROCESSING (release) →
+#   SPEAKING (TTS plays) → READY
+#
+# Since the mic captures real-room silence, Dragon's STT often returns
+# empty.  We accept any forward progression in the cycle as success.
+#
+# This phase ALSO tests the chat text-turn round-trip (which bypasses
+# STT but exercises the WS LLM + TTS path with a known prompt) so we
+# verify Dragon connectivity end-to-end.
+def phase12_voice_round_trip(tab5: Tab5Driver, m: StressMetrics) -> dict:
+    section("PHASE 12 — Voice PTT-like round-trip (state machine)")
+    results: dict[str, bool] = {}
+    m.current_phase = "phase12"
+    fps = FPSMonitor(tab5, m); fps.start()
+    try:
+        tab5.voice_cancel()
+    except Exception:
+        pass
+    tab5.mode(0); time.sleep(0.5)
+    tab5.navigate("home"); time.sleep(1)
+
+    # 1) Confirm voice WS is connected before starting
+    info = tab5.info()
+    voice_up = info.get("voice_connected", False)
+    results["voice WS connected"] = step(
+        "Dragon voice WS connected at phase start",
+        voice_up, f"voice_connected={voice_up}")
+    if not voice_up:
+        # Skip the rest — without WS we can't test the full path
+        fps.stop()
+        return results
+
+    # 2) Tap orb → state should go LISTENING (or CONNECTING first if
+    #    WS reconnects).  Use the say-pill since the orb on its own
+    #    sometimes opens the dictation overlay which we don't want.
+    tab5.reset_event_cursor()
+    shoot(tab5, m, "phase12_pre_orb_tap")
+    tab5.tap(ORB_X, ORB_Y)
+    # Wait for LISTENING state
+    listening = False
+    for _ in range(15):
+        ev = tab5.await_event("voice.state", timeout_s=1)
+        if ev and ev.detail == "LISTENING":
+            listening = True
+            break
+    results["voice → LISTENING"] = step(
+        "Orb tap drove voice.state → LISTENING",
+        listening)
+    shoot(tab5, m, "phase12_listening")
+
+    # 3) Wait ~3s recording silence, then stop via send button
+    #    (s_send_btn) at bottom center of voice overlay.
+    if listening:
+        time.sleep(3.0)
+        # Stop button is at (~360, 1050) per Wave 4 voice overlay
+        tab5.tap(360, 1050)
+        # Wait for PROCESSING state
+        processing = False
+        for _ in range(10):
+            ev = tab5.await_event("voice.state", timeout_s=1)
+            if ev and ev.detail == "PROCESSING":
+                processing = True
+                break
+        results["voice → PROCESSING"] = step(
+            "Stop tap drove voice.state → PROCESSING",
+            processing)
+        shoot(tab5, m, "phase12_processing")
+
+        # 4) Wait up to 30 s for next state transition.  Dragon STT on
+        #    real-room silence behaves non-deterministically — sometimes
+        #    returns empty + skips to READY fast, sometimes the LLM
+        #    hangs trying to interpret noise + we stay PROCESSING.
+        #    We accept ANY voice.state event after PROCESSING (READY,
+        #    SPEAKING, IDLE, RECONNECTING) as proof the state machine
+        #    is alive.  Hard cap = state machine deadlock if no event
+        #    in 30 s.
+        terminal_state = None
+        for _ in range(30):
+            ev = tab5.await_event("voice.state", timeout_s=1)
+            if ev:
+                terminal_state = ev.detail
+                if ev.detail in ("READY", "SPEAKING", "IDLE",
+                                 "RECONNECTING"):
+                    break
+        # If we never got an event we'll force a cancel + check that
+        # produces an IDLE event as a fallback.
+        if terminal_state is None:
+            try: tab5.voice_cancel()
+            except Exception: pass
+            time.sleep(1)
+            ev = tab5.await_event("voice.state", timeout_s=2)
+            if ev:
+                terminal_state = f"{ev.detail} (after cancel)"
+        results["voice state machine alive"] = step(
+            f"Post-PROCESSING transition observed",
+            terminal_state is not None,
+            f"final={terminal_state}")
+        try: tab5.voice_cancel()
+        except Exception: pass
+        time.sleep(1)
+
+    # 5) Independent verification — text turn via chat.  Switches to
+    #    Cloud (faster than Local Q6A) and confirms LLM done event.
+    tab5.mode(2); time.sleep(1)
+    tab5.reset_event_cursor()
+    tab5.chat("reply with one word: ok")
+    done = tab5.await_llm_done(timeout_s=60)
+    results["text turn LLM done"] = step(
+        "Cloud text turn completes",
+        done is not None,
+        f"llm_ms={done.detail if done else 'timeout'}")
+    shoot(tab5, m, "phase12_text_turn_done")
+
+    # Restore Local
+    tab5.mode(0); time.sleep(0.5)
+    fps.stop()
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  PHASE 11 — Fault-injection: error.* obs class coverage
+# ─────────────────────────────────────────────────────────────────────
+def phase11_error_injection(tab5: Tab5Driver, m: StressMetrics) -> dict:
+    section("PHASE 11 — Fault-injection (error.* obs classes)")
+    results: dict[str, bool] = {}
+    m.current_phase = "phase11"
+    fps = FPSMonitor(tab5, m); fps.start()
+    try:
+        tab5.voice_cancel()
+    except Exception:
+        pass
+    tab5.navigate("home"); time.sleep(1)
+
+    import requests
+    classes = [
+        ("dragon", "ws_drop",       "Dragon WS dropped (synthetic)"),
+        ("auth",   "ws_401_stop",   "Dragon rejected token (synthetic)"),
+        ("ota",    "rollback",      "OTA rolled back (synthetic)"),
+        ("sd",     "write_fail",    "SD write failure (synthetic)"),
+        ("k144",   "warmup_fail",   "K144 warmup failed (synthetic)"),
+    ]
+    for cls, detail, banner_text in classes:
+        tab5.reset_event_cursor()
+        r = requests.post(
+            f"{tab5.base_url}/debug/inject_error",
+            headers={"Authorization": f"Bearer {tab5.token}"},
+            json={"class": cls, "detail": detail,
+                  "banner": True, "banner_text": banner_text},
+            timeout=3)
+        time.sleep(1.5)
+        # 1) obs event landed
+        events = tab5.events()
+        kind = f"error.{cls}"
+        ev_seen = any(e.kind == kind and e.detail == detail for e in events)
+        results[f"obs event {kind}"] = step(
+            f"injected {kind} {detail}",
+            ev_seen, f"http={r.status_code} response={r.text[:60]}")
+        # 2) banner rendered (visual proof in screenshot)
+        shoot(tab5, m, f"phase11_{cls}_banner")
+        # 3) banner cleared by next inject (each call replaces banner)
+        time.sleep(0.5)
+
+    # 4) Final clear via dismiss (we used non-dismissable, so use the
+    # firmware's clear API via a /touch tap on the banner area — actually
+    # simpler: just navigate to home which doesn't clear, but the next
+    # boot/test will).  For now, dismiss by navigating to a non-home
+    # screen and back (Wave 11 follow-up auto-hides on non-home).
+    tab5.navigate("camera"); time.sleep(1)
+    tab5.tap(PERSISTENT_HOME_X, PERSISTENT_HOME_Y); time.sleep(1.5)
+    shoot(tab5, m, "phase11_after_clear")
+
+    fps.stop()
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  PHASE 10 — Real keyboard-widget tap (key-by-key)
+# ─────────────────────────────────────────────────────────────────────
+#
+# Keyboard panel layout (from ui_keyboard.c constants):
+#   panel y range:  900..1280 (KB_HEIGHT=380, anchored to bottom)
+#   keys_top:       20 (offset within panel)
+#   row 0 y:        920..992    (KEY_H=72, q..p)
+#   row 1 y:        1000..1072  (a..l)
+#   row 2 y:        1080..1152  (z..m + shift + backspace)
+#   row 3 y:        1160..1232  (?123, space, .,, return)
+# Row-0 keys are 65-px wide with 6-px gaps, ROW_PAD_X=8:
+#   q=40 w=111 e=182 r=253 t=324 y=395 u=466 i=537 o=608 p=679
+
+KEY_Y_ROW0 = 956    # row 0 (q..p)
+KEY_Y_ROW1 = 1036   # row 1 (a..l) — 9 keys
+# Row 0: 10 keys × 65 px each + 6 px gap, ROW_PAD_X=8
+# Row 1: 9 keys × 72 px each + 6 px gap, ROW_PAD_X=8
+KEY_X = {
+    # Row 0
+    "q": 40, "w": 111, "e": 182, "r": 253, "t": 324,
+    "y": 395, "u": 466, "i": 537, "o": 608, "p": 679,
+    # Row 1
+    "a": 44, "s": 122, "d": 200, "f": 278, "g": 356,
+    "h": 434, "j": 512, "k": 590, "l": 668,
+}
+KEY_Y = {ch: KEY_Y_ROW0 if ch in "qwertyuiop" else KEY_Y_ROW1
+         for ch in "qwertyuiopasdfghjkl"}
+
+
+def phase10_real_keyboard(tab5: Tab5Driver, m: StressMetrics) -> dict:
+    section("PHASE 10 — Real keyboard-widget key-by-key tap")
+    results: dict[str, bool] = {}
+    m.current_phase = "phase10"
+    fps = FPSMonitor(tab5, m); fps.start()
+    try:
+        tab5.voice_cancel()
+    except Exception:
+        pass
+    tab5.navigate("home"); time.sleep(1)
+
+    # 1. Open chat overlay.
+    tab5.navigate("chat"); time.sleep(1.8)
+    shoot(tab5, m, "phase10_chat_open")
+
+    # 2. Tap the keyboard ICON button on the chat input bar to bring
+    #    the keyboard up.  Per screenshot, that's at the right end of
+    #    the input bar (~640, 830).
+    KB_ICON_X, KB_ICON_Y = 640, 830
+    tab5.tap(KB_ICON_X, KB_ICON_Y)
+    time.sleep(1.5)
+    shoot(tab5, m, "phase10_keyboard_up")
+    # Visually verify keyboard is up by checking the screen state.  No
+    # /screen flag exists for keyboard — fall back to "no crash + still
+    # in chat overlay" as the soft signal; the screenshot is the proof.
+    sc = tab5.screen()
+    results["keyboard_trigger_works"] = step(
+        "keyboard icon tap kept us in chat overlay",
+        sc.get("overlays", {}).get("chat", False))
+
+    # 3. Type "halfsky" — 7 letters spanning rows 0 and 1 to exercise
+    #    both letter rows.  h/a/l = row 1, f/s = row 1, k/y = row 1+0.
+    word = "halfsky"
+    typed_count = 0
+    for ch in word:
+        if ch not in KEY_X:
+            print(f"  [!] no coord for '{ch}' — skipping")
+            continue
+        tab5.tap(KEY_X[ch], KEY_Y[ch])
+        typed_count += 1
+        time.sleep(0.30)  # let LVGL register each key press distinctly
+    time.sleep(0.8)
+    shoot(tab5, m, f"phase10_typed_{word}")
+    results["all letter taps issued"] = step(
+        f"Typed '{word}' via {typed_count} key taps",
+        typed_count == len(word))
+
+    # 4. Verify no crash + heap stable
+    info = tab5.info()
+    heap_min = info.get("heap_min", 0) // 1024
+    results["heap_intact_post_keyboard"] = step(
+        f"heap_min after typing: {heap_min} KB",
+        heap_min > 8000)
+
+    # 5. Confirm chat overlay still up + screen stable
+    sc = tab5.screen()
+    results["chat_overlay_still_active"] = step(
+        "chat overlay survived keyboard typing",
+        sc.get("overlays", {}).get("chat", False))
+
+    # 6. Dismiss keyboard via swipe-back (escapes chat too)
+    tab5.swipe(50, 640, 600, 640, duration_ms=300)
+    time.sleep(1)
+
+    fps.stop()
+    return results
+
+
+# ─────────────────────────────────────────────────────────────────────
 #  PHASE 9 — Sustained heap watermark loop (--full only)
 # ─────────────────────────────────────────────────────────────────────
 def phase9_sustained(tab5: Tab5Driver, m: StressMetrics) -> dict:
     section("PHASE 9 — Sustained 5-min loop (heap watermark)")
+    m.current_phase = "phase9"
     results: dict[str, bool] = {}
     fps = FPSMonitor(tab5, m); fps.start()
 
@@ -704,6 +998,9 @@ def main() -> int:
     all_results["phase6"] = phase6_longpress(tab5, metrics)
     all_results["phase7"] = phase7_keyboard(tab5, metrics)
     all_results["phase8"] = phase8_concurrent(tab5, metrics)
+    all_results["phase10"] = phase10_real_keyboard(tab5, metrics)
+    all_results["phase11"] = phase11_error_injection(tab5, metrics)
+    all_results["phase12"] = phase12_voice_round_trip(tab5, metrics)
     if full:
         all_results["phase9"] = phase9_sustained(tab5, metrics)
     elapsed = time.time() - t0
@@ -713,8 +1010,21 @@ def main() -> int:
         fps_min = min(metrics.fps_samples)
         fps_max = max(metrics.fps_samples)
         fps_mean = statistics.mean(metrics.fps_samples)
-        print(f"  LVGL FPS: min={fps_min}, mean={fps_mean:.1f}, max={fps_max} "
-              f"({len(metrics.fps_samples)} samples)")
+        print(f"  LVGL FPS overall: min={fps_min}, mean={fps_mean:.1f}, "
+              f"max={fps_max} ({len(metrics.fps_samples)} samples)")
+        # Per-phase breakdown — pinpoints which phase causes FPS dips.
+        if metrics.phase_fps:
+            print(f"  per-phase FPS:")
+            for phase in sorted(metrics.phase_fps):
+                samples = metrics.phase_fps[phase]
+                if not samples:
+                    continue
+                p_min = min(samples)
+                p_mean = statistics.mean(samples)
+                p_max = max(samples)
+                marker = " ⚠" if p_min < 5 else ""
+                print(f"    {phase:8s} min={p_min:>2} mean={p_mean:>4.1f} "
+                      f"max={p_max:>2} (n={len(samples)}){marker}")
     if metrics.heap_min_kb:
         h_start = metrics.heap_min_kb[0]
         h_end   = metrics.heap_min_kb[-1]

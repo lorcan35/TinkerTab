@@ -375,56 +375,58 @@ lv_obj_t *ui_camera_create(void)
 
     /* ── Top bar with back button ────────────────────────────── */
     {
-        lv_obj_t *topbar = lv_obj_create(scr_camera);
-        lv_obj_remove_style_all(topbar);
-        lv_obj_set_size(topbar, SCREEN_W, 48);
-        lv_obj_set_style_bg_color(topbar, lv_color_hex(COL_BAR_BG), 0);
-        lv_obj_set_style_bg_opa(topbar, LV_OPA_80, 0);
-        lv_obj_align(topbar, LV_ALIGN_TOP_LEFT, 0, 0);
+       /* TT #328 Wave 12 — topbar lifted from 48 to TOUCH_MIN so the
+        * back button's full TOUCH_MIN hit area isn't clipped by parent
+        * bounds.  Touch_stress phase 1 caught the original clip. */
+       lv_obj_t *topbar = lv_obj_create(scr_camera);
+       lv_obj_remove_style_all(topbar);
+       lv_obj_set_size(topbar, SCREEN_W, TOUCH_MIN);
+       lv_obj_set_style_bg_color(topbar, lv_color_hex(COL_BAR_BG), 0);
+       lv_obj_set_style_bg_opa(topbar, LV_OPA_80, 0);
+       lv_obj_align(topbar, LV_ALIGN_TOP_LEFT, 0, 0);
 
-        lv_obj_t *btn_back = lv_button_create(topbar);
-        lv_obj_remove_style_all(btn_back);
-        /* TT #328 Wave 10 — was 80×48 (below TOUCH_MIN 60).  Lifted height
-         * to TOUCH_MIN so the camera escape hatch meets the 7 mm floor. */
-        lv_obj_set_size(btn_back, 80, TOUCH_MIN);
-        lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x1A1A24), 0);
-        lv_obj_set_style_bg_opa(btn_back, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(btn_back, 12, 0);
-        lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 8, 0);
-        lv_obj_add_event_cb(btn_back, cb_back_btn, LV_EVENT_CLICKED, NULL);
-        ui_fb_button(btn_back);
+       lv_obj_t *btn_back = lv_button_create(topbar);
+       lv_obj_remove_style_all(btn_back);
+       /* TT #328 Wave 10 — was 80×48 (below TOUCH_MIN 60).  Lifted height
+        * to TOUCH_MIN so the camera escape hatch meets the 7 mm floor. */
+       lv_obj_set_size(btn_back, 80, TOUCH_MIN);
+       lv_obj_set_style_bg_color(btn_back, lv_color_hex(0x1A1A24), 0);
+       lv_obj_set_style_bg_opa(btn_back, LV_OPA_COVER, 0);
+       lv_obj_set_style_radius(btn_back, 12, 0);
+       lv_obj_align(btn_back, LV_ALIGN_LEFT_MID, 8, 0);
+       lv_obj_add_event_cb(btn_back, cb_back_btn, LV_EVENT_CLICKED, NULL);
+       ui_fb_button(btn_back);
 
-        lv_obj_t *arrow = lv_label_create(btn_back);
-        lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
-        lv_obj_center(arrow);
+       lv_obj_t *arrow = lv_label_create(btn_back);
+       lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+       lv_obj_set_style_text_color(arrow, lv_color_hex(COL_WHITE), 0);
+       lv_obj_set_style_text_font(arrow, &lv_font_montserrat_24, 0);
+       lv_obj_center(arrow);
 
-        /* #286: live rotate button — cycles cam_rot 0→1→2→3→0 in one
-         * tap and recreates the camera screen so the new rotation
-         * applies immediately.  Saves the user a trip to Settings. */
-        {
-            extern void cb_rotate_btn(lv_event_t *e);
-            lv_obj_t *btn_rot = lv_button_create(topbar);
-            lv_obj_remove_style_all(btn_rot);
-            lv_obj_set_size(btn_rot, 100, 48);
-            lv_obj_set_style_bg_color(btn_rot, lv_color_hex(0x1A1A24), 0);
-            lv_obj_set_style_bg_opa(btn_rot, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(btn_rot, 12, 0);
-            lv_obj_align(btn_rot, LV_ALIGN_LEFT_MID, 96, 0);
-            lv_obj_add_event_cb(btn_rot, cb_rotate_btn, LV_EVENT_CLICKED, NULL);
-            ui_fb_button(btn_rot);
-            lv_obj_t *rot_lbl = lv_label_create(btn_rot);
-            char buf[16];
-            /* Read NVS directly — s_cam_rot is snapshotted later in
-             * ui_camera_create's alloc_canvas_buffer step, so it's
-             * still stale at this point. */
-            snprintf(buf, sizeof(buf), "Rot %u",
-                     (unsigned)(tab5_settings_get_cam_rotation() & 0x03));
-            lv_label_set_text(rot_lbl, buf);
-            lv_obj_set_style_text_color(rot_lbl, lv_color_hex(COL_WHITE), 0);
-            lv_obj_set_style_text_font(rot_lbl, FONT_BODY, 0);
-            lv_obj_center(rot_lbl);
+       /* #286: live rotate button — cycles cam_rot 0→1→2→3→0 in one
+        * tap and recreates the camera screen so the new rotation
+        * applies immediately.  Saves the user a trip to Settings. */
+       {
+          extern void cb_rotate_btn(lv_event_t * e);
+          lv_obj_t *btn_rot = lv_button_create(topbar);
+          lv_obj_remove_style_all(btn_rot);
+          lv_obj_set_size(btn_rot, 100, 48);
+          lv_obj_set_style_bg_color(btn_rot, lv_color_hex(0x1A1A24), 0);
+          lv_obj_set_style_bg_opa(btn_rot, LV_OPA_COVER, 0);
+          lv_obj_set_style_radius(btn_rot, 12, 0);
+          lv_obj_align(btn_rot, LV_ALIGN_LEFT_MID, 96, 0);
+          lv_obj_add_event_cb(btn_rot, cb_rotate_btn, LV_EVENT_CLICKED, NULL);
+          ui_fb_button(btn_rot);
+          lv_obj_t *rot_lbl = lv_label_create(btn_rot);
+          char buf[16];
+          /* Read NVS directly — s_cam_rot is snapshotted later in
+           * ui_camera_create's alloc_canvas_buffer step, so it's
+           * still stale at this point. */
+          snprintf(buf, sizeof(buf), "Rot %u", (unsigned)(tab5_settings_get_cam_rotation() & 0x03));
+          lv_label_set_text(rot_lbl, buf);
+          lv_obj_set_style_text_color(rot_lbl, lv_color_hex(COL_WHITE), 0);
+          lv_obj_set_style_text_font(rot_lbl, FONT_BODY, 0);
+          lv_obj_center(rot_lbl);
         }
 
         /* v4·D Phase 4b vision chip — right-aligned violet pill that reads

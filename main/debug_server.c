@@ -3506,6 +3506,102 @@ static esp_err_t nvs_erase_handler(httpd_req_t *req)
     return ESP_OK;  /* unreachable */
 }
 
+/* TT #328 Wave 12 — async banner trampoline for /debug/inject_error.
+ * Fires on the LVGL thread; takes ownership of the heap-allocated
+ * argument struct. */
+typedef struct {
+   char txt[96];
+} debug_inject_banner_arg_t;
+void debug_inject_banner_async(void *arg) {
+   debug_inject_banner_arg_t *p = (debug_inject_banner_arg_t *)arg;
+   if (!p) return;
+   extern void ui_home_show_error_banner(const char *, void (*)(void));
+   ui_home_show_error_banner(p->txt, NULL /* non-dismissable */);
+   free(p);
+}
+
+/* TT #328 Wave 12 — synthesize Wave 3 error.* events + their banner/
+ * toast UX without needing real fault conditions.  POST body or query
+ * params:
+ *
+ *   {"class": "dragon" | "auth" | "ota" | "sd" | "k144",
+ *    "detail": "<obs detail>",
+ *    "banner": true|false,
+ *    "banner_text": "<optional override>"}
+ *
+ * Always fires the obs event "error.<class> <detail>".  When
+ * banner=true (default), also shows the persistent error banner with
+ * banner_text.  Returns {"ok":true,"fired":"error.<class>"}. */
+static esp_err_t debug_inject_error_handler_impl(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+
+   char body[256] = {0};
+   int total = 0;
+   if (req->content_len > 0 && req->content_len < (int)sizeof(body)) {
+      int n = httpd_req_recv(req, body, req->content_len);
+      total = n > 0 ? n : 0;
+   }
+   body[total] = '\0';
+
+   char err_class[16] = {0};
+   char err_detail[40] = {0};
+   char banner_text[96] = {0};
+   bool show_banner = true;
+
+   /* Body JSON parse if present, else fall through to query params. */
+   if (body[0] == '{') {
+      cJSON *root = cJSON_Parse(body);
+      if (root) {
+         cJSON *c = cJSON_GetObjectItem(root, "class");
+         cJSON *d = cJSON_GetObjectItem(root, "detail");
+         cJSON *b = cJSON_GetObjectItem(root, "banner");
+         cJSON *t = cJSON_GetObjectItem(root, "banner_text");
+         if (cJSON_IsString(c)) strncpy(err_class, c->valuestring, sizeof(err_class) - 1);
+         if (cJSON_IsString(d)) strncpy(err_detail, d->valuestring, sizeof(err_detail) - 1);
+         if (cJSON_IsBool(b)) show_banner = cJSON_IsTrue(b);
+         if (cJSON_IsString(t)) strncpy(banner_text, t->valuestring, sizeof(banner_text) - 1);
+         cJSON_Delete(root);
+      }
+   }
+   if (!err_class[0]) {
+      char q[128] = {0};
+      httpd_req_get_url_query_str(req, q, sizeof(q));
+      httpd_query_key_value(q, "class", err_class, sizeof(err_class));
+      httpd_query_key_value(q, "detail", err_detail, sizeof(err_detail));
+   }
+   if (!err_class[0]) {
+      cJSON *r = cJSON_CreateObject();
+      cJSON_AddStringToObject(r, "error", "missing class (dragon|auth|ota|sd|k144)");
+      return send_json_resp(req, r);
+   }
+
+   char kind[32];
+   snprintf(kind, sizeof(kind), "error.%s", err_class);
+   tab5_debug_obs_event(kind, err_detail[0] ? err_detail : "synthetic");
+
+   if (show_banner) {
+      const char *txt = banner_text[0] ? banner_text : "Synthetic error injection (debug)";
+      debug_inject_banner_arg_t *arg = malloc(sizeof(*arg));
+      if (arg) {
+         strncpy(arg->txt, txt, sizeof(arg->txt) - 1);
+         arg->txt[sizeof(arg->txt) - 1] = '\0';
+         /* Marshalled to LVGL thread.  Static cb avoids GCC nested-
+          * function trampoline (project avoids those per LEARNINGS). */
+         extern lv_result_t tab5_lv_async_call(lv_async_cb_t cb, void *user_data);
+         tab5_lv_async_call(debug_inject_banner_async, arg);
+      }
+   }
+
+   cJSON *r = cJSON_CreateObject();
+   cJSON_AddBoolToObject(r, "ok", true);
+   cJSON_AddStringToObject(r, "fired", kind);
+   cJSON_AddStringToObject(r, "detail", err_detail);
+   cJSON_AddBoolToObject(r, "banner", show_banner);
+   return send_json_resp(req, r);
+}
+
+esp_err_t debug_inject_error_handler(httpd_req_t *req) { return debug_inject_error_handler_impl(req); }
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -3529,7 +3625,13 @@ esp_err_t tab5_debug_server_init(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = DEBUG_PORT;
     config.stack_size  = 12288;
-    config.max_uri_handlers = 56;   /* #149: +16 PR β endpoints (see below) */
+    /* TT #328 Wave 12: bumped 56 → 72.  The 56 cap was set in #149
+     * for the PR-β endpoints; subsequent Waves added /m5 (#317),
+     * /events, /chat/messages, /chat/audio_clip, /chat/partial,
+     * /chat/llm_done, /tool_log/push, /keyboard/layout, /net/ping,
+     * /nvs/erase, /debug/inject_error, etc.  Without the bump, late
+     * registrations silently drop with httpd 404. */
+    config.max_uri_handlers = 72;
     config.lru_purge_enable = true;
     config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
@@ -3735,6 +3837,14 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_kb_layout      = { .uri = "/keyboard/layout",.method = HTTP_GET,  .handler = keyboard_layout_handler };
     const httpd_uri_t uri_net_ping       = { .uri = "/net/ping",       .method = HTTP_GET,  .handler = ping_handler };
     const httpd_uri_t uri_nvs_erase      = { .uri = "/nvs/erase",      .method = HTTP_POST, .handler = nvs_erase_handler };
+    /* TT #328 Wave 12 — synthesize Wave 3 error.* obs events + their
+     * banner/toast UX without needing real fault conditions.  Lets the
+     * harness validate the persistent banner + tone-aware toast paths
+     * for error.dragon / error.auth / error.ota / error.sd / error.k144
+     * end-to-end. */
+    extern esp_err_t debug_inject_error_handler(httpd_req_t * req);
+    const httpd_uri_t uri_inject_error = {
+        .uri = "/debug/inject_error", .method = HTTP_POST, .handler = debug_inject_error_handler};
 
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
@@ -3802,6 +3912,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_kb_layout);
     httpd_register_uri_handler(server, &uri_net_ping);
     httpd_register_uri_handler(server, &uri_nvs_erase);
+    httpd_register_uri_handler(server, &uri_inject_error);
 
     /* Log the URL */
     char ip[20];

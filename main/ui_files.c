@@ -43,7 +43,11 @@ static const char *TAG = "ui_files";
 /* ── Layout constants (720 x 1280) ───────────────────────────── */
 #define SCREEN_W        720
 #define SCREEN_H        1280
-#define TOPBAR_H        48
+/* TT #328 Wave 12 — was 48, lifted to TOUCH_MIN so the back button (also
+ * sized TOUCH_MIN) gets its full hit area instead of being clipped to 48
+ * by the parent topbar.  Touch_stress phase 1 caught the clip via an
+ * edge-tap at y=50 that hit no widget. */
+#define TOPBAR_H TOUCH_MIN
 #define ROW_H           64
 #define BOTTOMBAR_H     44
 #define LIST_H          (SCREEN_H - TOPBAR_H - BOTTOMBAR_H)

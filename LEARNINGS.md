@@ -55,6 +55,54 @@ Every entry here was learned the hard way. Read this before touching the codebas
 
 ---
 
+## TT #328 Wave 12 — Touch+swipe stress harness uncovered 4 real bugs
+
+**Date:** 2026-04-30
+**Symptom:** After the 11-wave UI/UX hardening + wave_acceptance harness shipped (commit `4ec197b`), I asked "what gaps remain in the test?" and built a comprehensive touch+swipe stress orchestrator (`tests/e2e/touch_stress.py`) covering 12 phases: edge-tap precision, rapid-tap debounce, swipe variety, navigation churn, mode-sheet preset hammer, long-press matrix, keyboard typing storm, tap-during-animation concurrency, sustained heap-watermark loop, real keyboard-widget key-by-key tap, fault-injection for `error.*` obs classes, and voice PTT-like state-machine traversal.  **The harness uncovered four real bugs** that none of the 11 prior waves caught.
+
+**Root Cause (per bug):**
+
+1. **Persistent error banner shadowed screen-specific topbars.**  Wave 3's banner sits on `lv_layer_top()` at y=0..32; camera/files/notes/wifi screens have their own 48 px topbars at y=0..48 with back buttons centred at y=24.  Banner z-order won → tapping camera/files back at y=30 hit the banner instead.  Phase 1 edge-tap reliably exposed it.  **Fix:** `ui_home_set_error_banner_visible(bool)` toggles the banner without destroying its content; non-home screens hide on entry, home restores on entry.
+
+2. **Files+camera topbar clipped lifted back-button hit area.**  Wave 10 lifted back-button SIZE to TOUCH_MIN (60 px) but the parent topbars stayed at 48 px.  The bottom 12 px of the button's bounding box was clipped from hit-testing.  **Fix:** `TOPBAR_H = TOUCH_MIN` in both ui_files.c and ui_camera.c.
+
+3. **Mode-sheet preset row inconsistent dismiss.**  Wave 9b's Onboard preset auto-dismissed but the original 4 (Local/Hybrid/Cloud/Agent) didn't — user tapped a preset, mode changed, but sheet stayed up; subsequent /navigate loaded UNDER the sheet.  Phase 5 mode-sheet hammer caught it.  **Fix:** all non-Agent presets call `ui_mode_sheet_hide()` after `persist_and_notify_dragon()`.  (Agent path defers to its consent modal, which has its own dismiss path.)
+
+4. **Debug `s_nav_target` reported stale screen for non-/navigate code paths.**  The persistent home button (Wave 10), swipe-right-back gestures, and settings overlay's swipe-back ALL bypassed `/navigate` to load home directly via `lv_screen_load`.  `/screen` reports `current` from `s_nav_target` which only `/navigate` POST updates → harness saw stale screen names.  **Fix:** `tab5_debug_set_nav_target(name)` public setter wired into all four offending paths.
+
+**Plus a tooling discovery:**
+
+5. **`max_uri_handlers=56` was silently dropping new endpoints.**  `httpd_register_uri_handler` has no error-out behaviour when the handler array is full; the call returns ESP_ERR_HTTPD_HANDLERS_FULL and the URI just doesn't route.  Project had grown to 66 handlers; my new `/debug/inject_error` was the 67th and silently 404'd.  Bumped cap to 72.  **Prevention:** count `httpd_register_uri_handler(server,` calls when adding endpoints; bump `max_uri_handlers` in lockstep.
+
+**Fix:** Wave 12 commit (`<TBD>`) shipped:
+- Banner-hide-on-non-home (firmware)
+- TOPBAR_H lift on camera + files (firmware)
+- Preset auto-dismiss on Local/Hybrid/Cloud (firmware, Wave 10 follow-up)
+- `tab5_debug_set_nav_target` setter + 5 wire-in points (firmware)
+- `/debug/inject_error` endpoint (firmware)
+- `max_uri_handlers` 56 → 72 (firmware)
+- `tests/e2e/touch_stress.py` 12-phase orchestrator with per-phase FPS, screenshots, and tap→event latency (test)
+
+**Live results:**
+- 44/45 steps PASS in 289 s on `--quick` (one flake on phase 2 camera:back rapid-tap, runs vary)
+- 66 screenshots per run for visual audit
+- LVGL FPS: min=1, mean=29, max=90 (FPS=1 dips correlate with mode-sheet animation churn in phases 5/6/8 — expected, now quantified)
+- Heap drift: < 20 KB across 12 phases
+- All 5 `error.*` classes fire end-to-end with banner verification
+
+**Prevention:**
+- **Cross-screen UI state collisions are the highest-ROI bug class.**  `lv_layer_top` siblings (banner, mic button, keyboard trigger, persistent home, voice overlay) MUST coordinate visibility per active screen.  When adding a layer_top widget, list every screen and decide its visibility there.  The shadowing bug repeats every time we add a layer_top widget without doing that audit.
+- **State pollution between test phases needs explicit reset.**  Phase 5 was tainted by a leftover voice-listening overlay from earlier in the run; phase 6's chip-long-press was tainted by phase 5's un-dismissed Agent consent modal.  Every phase now does `voice_cancel + mode(0) + navigate(home)` at entry.
+- **Per-phase FPS sampling > overall FPS.**  Overall mean was healthy (30) but per-phase exposed phases 5/6/8 at mean ≈ 22 with min=1 during animation churn.  Without the per-phase tag I'd never have known where the dip lived.
+- **Debug inject_error endpoint pattern is reusable.**  Future error.* classes (e.g. error.memory, error.battery) get free harness coverage by registering with the same endpoint.
+
+**Cross-references:**
+- `tests/e2e/touch_stress.py` — the orchestrator
+- `docs/AUDIT-ui-ux-2026-04-29.md`, `docs/PLAN-ui-ux-hardening.md` — Wave 1-11 context
+- "TT #328 UI/UX hardening (audit 2026-04-29) — 9-wave program" entry above for the 14/16 P0 backstory
+
+---
+
 ## Hardware Gotchas
 
 ### Camera is SC202CS at 0x36, NOT SC2336 at 0x30
