@@ -102,6 +102,14 @@ esp_err_t tab5_settings_get_hardware_id(char *buf, size_t len);
 esp_err_t tab5_settings_get_session_id(char *buf, size_t len);
 esp_err_t tab5_settings_set_session_id(const char *session_id);
 
+/* ── OTA rollback detection (TT #328 Wave 3 P0 #14) ─────────────────── */
+
+/** Persist the version string we just attempted to OTA-flash.  Compared
+ *  against the running TAB5_FIRMWARE_VER on next boot — mismatch means a
+ *  rollback fired (image crashed before mark_app_valid_cancel_rollback). */
+esp_err_t tab5_settings_get_ota_attempted(char *buf, size_t len);
+esp_err_t tab5_settings_set_ota_attempted(const char *version);
+
 /* ── Voice mode (three-tier) ──────────────────────────────────────────── */
 
 /** 0 = local (default), 1 = hybrid (cloud STT+TTS), 2 = full cloud */

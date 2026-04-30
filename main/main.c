@@ -20,6 +20,7 @@
 #include "cJSON.h" /* #182 follow-up: route cJSON allocs to PSRAM */
 #include "camera.h"
 #include "config.h"
+#include "debug_obs.h"
 #include "debug_server.h"
 #include "display.h"
 #include "driver/i2c_master.h"
@@ -60,6 +61,11 @@
 #include "wifi.h"
 
 static const char *TAG = "tab5";
+
+/* TT #328 Wave 3 P0 #14 — rollback detection state, set during boot,
+ * consumed once after home screen comes up to fire a toast. */
+static bool s_ota_rolled_back = false;
+static char s_ota_rolled_back_from[40] = {0};
 
 static i2c_master_bus_handle_t s_i2c_bus = NULL;
 static bool s_touch_ok = false;
@@ -602,6 +608,31 @@ void app_main(void)
     ESP_LOGI(TAG, "OTA: Running on partition '%s', marking valid...", tab5_ota_current_partition());
     tab5_ota_mark_valid();
 
+    /* TT #328 Wave 3 P0 #14 — rollback detection.  If we previously OTA-
+     * flashed a version that crashed before mark_valid, the bootloader has
+     * silently reverted us to the prior partition.  Compare the running
+     * firmware version against the last-attempted version persisted in NVS;
+     * mismatch == rollback fired.  Always clear the NVS key after the
+     * comparison so we only fire once per rollback.  The actual user-
+     * facing toast fires later (s_ota_rolled_back flag, picked up after
+     * home screen is created). */
+    {
+       char attempted[40] = {0};
+       if (tab5_settings_get_ota_attempted(attempted, sizeof(attempted)) == ESP_OK && attempted[0] &&
+           strncmp(attempted, TAB5_FIRMWARE_VER, sizeof(attempted)) != 0) {
+          ESP_LOGW(TAG, "OTA rollback detected: attempted %s, running %s — will surface toast", attempted,
+                   TAB5_FIRMWARE_VER);
+          tab5_debug_obs_event("error.ota", "rollback");
+          size_t copy = sizeof(s_ota_rolled_back_from) - 1;
+          strncpy(s_ota_rolled_back_from, attempted, copy);
+          s_ota_rolled_back_from[copy] = '\0';
+          s_ota_rolled_back = true;
+       }
+       if (attempted[0]) {
+          tab5_settings_set_ota_attempted("");
+       }
+    }
+
     // Print service status table
     tab5_services_print_status();
 
@@ -671,6 +702,16 @@ void app_main(void)
     /* Phase 1 instrumentation for docs/STABILITY-INVESTIGATION.md.
      * Removed after root cause is identified + fixed in Phase 3. */
     tab5_pool_probe_init();
+
+    /* TT #328 Wave 3 P0 #14 — fire one-shot rollback toast now that home is
+     * up.  Held off until here so the toast actually has a screen to land
+     * on (calling show_toast pre-home no-ops). */
+    if (s_ota_rolled_back) {
+       char buf[96];
+       snprintf(buf, sizeof(buf), "Update %s reverted — running %s", s_ota_rolled_back_from, TAB5_FIRMWARE_VER);
+       ui_home_show_toast_ex(buf, UI_TOAST_WARN);
+       s_ota_rolled_back = false;
+    }
 
     ESP_LOGI(TAG, "TinkerTab v1.0.0 running — WiFi=%s Touch=%s SD=%s Cam=%s Audio=%s Mic=%s IMU=%s RTC=%s Bat=%s",
              s_wifi_ok ? "Y" : "N", s_touch_ok ? "Y" : "N",

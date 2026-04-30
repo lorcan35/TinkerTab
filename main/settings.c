@@ -656,6 +656,16 @@ esp_err_t tab5_settings_set_session_id(const char *session_id)
     return set_str(KEY_SESSION_ID, session_id ? session_id : "");
 }
 
+/* ── OTA rollback detection (TT #328 Wave 3 P0 #14) ──────────────────── */
+
+#define KEY_OTA_ATTEMPTED "ota_try"
+
+esp_err_t tab5_settings_get_ota_attempted(char *buf, size_t len) { return get_str(KEY_OTA_ATTEMPTED, buf, len, ""); }
+
+esp_err_t tab5_settings_set_ota_attempted(const char *version) {
+   return set_str(KEY_OTA_ATTEMPTED, version ? version : "");
+}
+
 /* ── Auth token (debug server bearer auth) ───────────────────────────── */
 
 esp_err_t tab5_settings_get_auth_token(char *buf, size_t len)

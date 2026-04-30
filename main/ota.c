@@ -319,6 +319,22 @@ esp_err_t tab5_ota_apply(const char *url, const char *expected_sha256)
         return err;
     }
 
+    /* TT #328 Wave 3 P0 #14 — record what version we just flashed.  On the
+     * next boot, main.c compares this against TAB5_FIRMWARE_VER.  If they
+     * differ, the bootloader rolled back the new image (crash before
+     * tab5_ota_mark_valid) and we surface a toast + obs event instead of
+     * being silent about the regression.  Read the version from the just-
+     * flashed OTA partition's app descriptor — no need to thread version
+     * info through the call signature. */
+    {
+       const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+       esp_app_desc_t desc;
+       if (next && esp_ota_get_partition_description(next, &desc) == ESP_OK && desc.version[0]) {
+          tab5_settings_set_ota_attempted(desc.version);
+          ESP_LOGI(TAG, "OTA recorded attempted version=%.32s for rollback detection", desc.version);
+       }
+    }
+
     ESP_LOGI(TAG, "OTA update successful! Rebooting in 2 seconds...");
     report_progress(100, "reboot");
     vTaskDelay(pdMS_TO_TICKS(2000));

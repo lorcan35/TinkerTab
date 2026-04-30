@@ -32,6 +32,32 @@ void ui_home_refresh_mode_badge(void);
  *  Safe to call from LVGL thread only — use lv_async_call from other cores. */
 void ui_home_show_toast(const char *text);
 
+/** TT #328 Wave 3 — toast severity tones.  TONE_INFO is the legacy default
+ *  (amber border).  TONE_WARN draws a yellow border + slightly longer
+ *  baseline lifetime.  TONE_ERROR draws a rose border + the longest
+ *  baseline lifetime so the user has time to read.  Lifetimes are also
+ *  scaled by message length (60 ms/char on top of the baseline). */
+typedef enum {
+   UI_TOAST_INFO = 0,  /* amber  — legacy default */
+   UI_TOAST_WARN = 1,  /* yellow — non-fatal degradation */
+   UI_TOAST_ERROR = 2, /* rose   — failure user must notice */
+} ui_toast_tone_t;
+
+/** Show a toast with a severity tone + auto-scaled lifetime.
+ *  ui_home_show_toast(text) is equivalent to ui_home_show_toast_ex(text, UI_TOAST_INFO).
+ *  LVGL thread only. */
+void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone);
+
+/** TT #328 Wave 3 — persistent error banner.  Unlike toasts (~2 s), the
+ *  banner sits below the sys-label area until either dismiss_cb is invoked
+ *  via tap, or ui_home_clear_error_banner() is called by the recovery path.
+ *  Single-banner: a second show replaces the first.  Pass NULL dismiss_cb
+ *  to make the banner non-dismissable (system-driven only).
+ *  LVGL thread only. */
+typedef void (*ui_banner_dismiss_cb_t)(void);
+void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_cb);
+void ui_home_clear_error_banner(void);
+
 /** Wave 7 F5 crash surface: brief rose pulse on the halo orb.
  *  Used when a mid-turn Dragon drop is detected so the user has a visual
  *  signal alongside the "Dragon dropped mid-turn" toast. Reverts to the

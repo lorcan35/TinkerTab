@@ -84,6 +84,22 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
  * cold-start.  On success the failover gate flips to READY; on any
  * failure (probe timeout, infer hang, NPU stall) it flips to UNAVAILABLE
  * and stays there until the next reboot. */
+/* TT #328 Wave 3 P0 #12 — surface K144 warm-up failure so the user knows
+ * Onboard mode + Local-failover are dead until reboot.  Marshalled to the
+ * LVGL thread because the warmup job runs on tab5_worker. */
+static void k144_unavailable_banner_async(void *arg) {
+   (void)arg;
+   ui_home_show_error_banner("Onboard LLM unavailable until reboot — local failover disabled.",
+                             NULL /* non-dismissable: state is sticky for this boot */);
+}
+
+static void mark_k144_unavailable(const char *reason) {
+   s_m5_failover = M5_FAIL_UNAVAILABLE;
+   tab5_debug_obs_event("m5.warmup", "unavailable");
+   tab5_debug_obs_event("error.k144", reason);
+   tab5_lv_async_call(k144_unavailable_banner_async, NULL);
+}
+
 static void onboard_warmup_job(void *arg) {
    (void)arg;
    s_m5_failover = M5_FAIL_PROBING;
@@ -92,8 +108,7 @@ static void onboard_warmup_job(void *arg) {
    esp_err_t pe = voice_m5_llm_probe();
    if (pe != ESP_OK) {
       ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
-      s_m5_failover = M5_FAIL_UNAVAILABLE;
-      tab5_debug_obs_event("m5.warmup", "unavailable");
+      mark_k144_unavailable("probe_fail");
       return;
    }
    char scratch[64];
@@ -109,8 +124,7 @@ static void onboard_warmup_job(void *arg) {
                "K144 warm-up %s after %lldms — failover disabled (NPU likely hung; "
                "see LEARNINGS \"K144 cold-start model load can hang\")",
                esp_err_to_name(ie), dt_ms);
-      s_m5_failover = M5_FAIL_UNAVAILABLE;
-      tab5_debug_obs_event("m5.warmup", "unavailable");
+      mark_k144_unavailable("warmup_fail");
    }
 }
 

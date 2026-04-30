@@ -32,6 +32,7 @@
 #include "audio.h"
 #include "cJSON.h"
 #include "config.h"
+#include "debug_obs.h"
 #include "driver/i2s_common.h" /* US-C13: i2s_channel_disable/enable for safe mic task shutdown */
 #include "esp_cache.h"
 #include "esp_check.h"
@@ -770,6 +771,35 @@ static void voice_async_toast(char *text)
     t->gen = s_session_gen;
     t->text = text;
     tab5_lv_async_call(async_show_toast_cb, t);
+}
+
+/* TT #328 Wave 3 — async fire of ui_home_show_error_banner from voice WS
+ * task.  Persistent error banner survives across the 2-3 s toast lifetime
+ * so the user can't miss a fatal-state notification (auth lockout, device
+ * eviction, etc).  static-string variant: caller must pass a string literal
+ * or otherwise outlives the call (no malloc/free shuttle). */
+typedef struct {
+   const char *text; /* MUST outlive the async dispatch */
+} voice_banner_async_t;
+
+static void async_show_error_banner_cb(void *arg) {
+   voice_banner_async_t *b = (voice_banner_async_t *)arg;
+   if (!b) return;
+   if (b->text) {
+      ui_home_show_error_banner(b->text, NULL /* non-dismissable */);
+   }
+   free(b);
+}
+
+static void voice_async_error_banner(const char *static_text) {
+   if (!static_text) return;
+   voice_banner_async_t *b = malloc(sizeof(*b));
+   if (!b) {
+      ESP_LOGW(TAG, "voice_async_error_banner OOM — banner dropped");
+      return;
+   }
+   b->text = static_text;
+   tab5_lv_async_call(async_show_error_banner_cb, b);
 }
 
 static void voice_async_refresh_badge(void)
@@ -2113,13 +2143,20 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
                  * as the γ2-H8 device_evicted handler. */
                 tab5_worker_enqueue(_voice_auth_fail_stop_worker_fn, NULL,
                                     "auth_failed_stop");
-                /* Toast routes to LVGL via voice_async_toast (existing
-                 * helper used elsewhere in the file).  strdup so the
-                 * buffer outlives this stack frame. */
+                /* TT #328 Wave 3 P0 #15 — pre-Wave-3 this was a 2.2 s toast.
+                 * After 5 silent retries the user got a single transient
+                 * notice they could easily miss.  Upgraded to a persistent
+                 * error banner that stays until they tap it (and presumably
+                 * jump to Settings to fix the token).  Also fires the
+                 * error.auth obs event so /events surfaces the lockout. */
+                tab5_debug_obs_event("error.auth", "ws_401_stop");
                 char *toast = strdup("Invalid Dragon token — check Settings");
                 if (toast) {
                     voice_async_toast(toast);
                 }
+                voice_async_error_banner(
+                    "Dragon rejected your token (401). Reconnect paused — "
+                    "open Settings → Network to update.");
                 break;
             }
         }
@@ -2316,6 +2353,18 @@ static void mic_capture_task(void *arg)
                 }
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "WS send failed — continuing SD recording");
+                    /* TT #328 Wave 3 P0 #13 — surface mid-dictation drop.
+                     * Pre-Wave-3 the user only saw the live waveform freeze;
+                     * the SD-fallback promise was buried.  Fire a toast +
+                     * obs event ONCE per dictation so we don't spam if the
+                     * loop reconnects/disconnects flapping. */
+                    static bool s_dictate_drop_announced = false;
+                    if (!s_dictate_drop_announced && s_voice_mode != VOICE_MODE_ASK) {
+                       s_dictate_drop_announced = true;
+                       tab5_debug_obs_event("error.dragon", "dictate_drop");
+                       char *t = strdup("Dragon dropped — saving to SD; will sync when back");
+                       if (t) voice_async_toast(t);
+                    }
                     if (s_voice_mode == VOICE_MODE_ASK) break;
                 }
             } else {

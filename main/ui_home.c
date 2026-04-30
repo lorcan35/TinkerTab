@@ -1719,7 +1719,13 @@ static void screen_gesture_cb(lv_event_t *e)
  * tracked via s_toast_ctx and torn down together via toast_ctx_destroy. */
 #define TOAST_FINAL_Y 200 /* y-offset from CENTER when settled */
 #define TOAST_START_Y 250 /* spawn 50 px below final (slides up) */
-#define TOAST_LIFETIME_MS 2200
+/* TT #328 Wave 3 — baseline lifetime per tone, plus 60 ms/char read time.
+ * Capped at 8 s so a runaway long error doesn't lock the toast forever. */
+#define TOAST_LIFETIME_INFO_MS 2200
+#define TOAST_LIFETIME_WARN_MS 3500
+#define TOAST_LIFETIME_ERROR_MS 5000
+#define TOAST_LIFETIME_PER_CHAR_MS 60
+#define TOAST_LIFETIME_CAP_MS 8000
 #define TOAST_FRAME_MS 16 /* ~60 fps */
 
 typedef struct {
@@ -1729,9 +1735,34 @@ typedef struct {
    spring_anim_t spring;
 } toast_ctx_t;
 
+static uint32_t toast_lifetime_for(ui_toast_tone_t tone, const char *text) {
+   uint32_t base = TOAST_LIFETIME_INFO_MS;
+   if (tone == UI_TOAST_WARN) base = TOAST_LIFETIME_WARN_MS;
+   if (tone == UI_TOAST_ERROR) base = TOAST_LIFETIME_ERROR_MS;
+   uint32_t scale = text ? (uint32_t)strlen(text) * TOAST_LIFETIME_PER_CHAR_MS : 0;
+   uint32_t total = base + scale;
+   if (total > TOAST_LIFETIME_CAP_MS) total = TOAST_LIFETIME_CAP_MS;
+   return total;
+}
+
+static uint32_t toast_border_for(ui_toast_tone_t tone) {
+   if (tone == UI_TOAST_WARN) return TH_MODE_HYBRID; /* yellow */
+   if (tone == UI_TOAST_ERROR) return TH_STATUS_RED; /* rose-red */
+   return TH_CARD_BORDER;                            /* legacy subtle */
+}
+
 /* Track the currently-displayed toast so a back-to-back show_toast can
  * tear down BOTH timers + the obj before spawning the replacement. */
 static toast_ctx_t *s_toast_ctx = NULL;
+
+/* TT #328 Wave 3 — persistent error banner.  Sits at the top of the home
+ * screen (just below the sys-label area) until the user taps it (firing
+ * the dismiss callback if any) OR until ui_home_clear_error_banner()
+ * fires from the recovery code path.  Single banner — a second show
+ * replaces the first.  Lives on lv_layer_top so it survives screen
+ * navigations (banner is global, not home-specific). */
+static lv_obj_t *s_err_banner = NULL;
+static ui_banner_dismiss_cb_t s_err_banner_cb = NULL;
 
 static void toast_ctx_destroy(toast_ctx_t *ctx) {
    if (!ctx) return;
@@ -1780,56 +1811,62 @@ static void toast_remove_cb(lv_timer_t *t) {
    lv_timer_delete(t);
 }
 
-static void show_toast_internal(const char *text)
-{
-    if (!text) return;
-    /* Replace any in-flight toast: tear down ctx + both timers + obj,
-     * not just the obj (which the pre-#42 path leaked). */
-    if (s_toast_ctx) {
-       toast_ctx_destroy(s_toast_ctx);
-       s_toast_ctx = NULL;
-       s_toast = NULL;
-    } else if (s_toast) {
-       /* Defensive: an obj somehow exists without a ctx (shouldn't
-        * happen post-Phase-2, but ui_home_destroy may have nulled
-        * s_toast_ctx independently).  Free the obj to keep state
-        * consistent. */
-       lv_obj_del(s_toast);
-       s_toast = NULL;
-    }
+static void show_toast_internal_tone(const char *text, ui_toast_tone_t tone) {
+   if (!text) return;
+   /* Replace any in-flight toast: tear down ctx + both timers + obj,
+    * not just the obj (which the pre-#42 path leaked). */
+   if (s_toast_ctx) {
+      toast_ctx_destroy(s_toast_ctx);
+      s_toast_ctx = NULL;
+      s_toast = NULL;
+   } else if (s_toast) {
+      /* Defensive: an obj somehow exists without a ctx (shouldn't
+       * happen post-Phase-2, but ui_home_destroy may have nulled
+       * s_toast_ctx independently).  Free the obj to keep state
+       * consistent. */
+      lv_obj_del(s_toast);
+      s_toast = NULL;
+   }
 
-    lv_obj_t *t = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(t);
-    lv_obj_set_size(t, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(t, lv_color_hex(TH_CARD_ELEVATED), 0);
-    lv_obj_set_style_bg_opa(t, 240, 0);
-    lv_obj_set_style_radius(t, 18, 0);
-    lv_obj_set_style_pad_hor(t, 22, 0);
-    lv_obj_set_style_pad_ver(t, 14, 0);
-    lv_obj_set_style_border_width(t, 1, 0);
-    lv_obj_set_style_border_color(t, lv_color_hex(TH_CARD_BORDER), 0);
+   lv_obj_t *t = lv_obj_create(lv_layer_top());
+   lv_obj_remove_style_all(t);
+   lv_obj_set_size(t, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+   lv_obj_set_style_bg_color(t, lv_color_hex(TH_CARD_ELEVATED), 0);
+   lv_obj_set_style_bg_opa(t, 240, 0);
+   lv_obj_set_style_radius(t, 18, 0);
+   lv_obj_set_style_pad_hor(t, 22, 0);
+   lv_obj_set_style_pad_ver(t, 14, 0);
+   /* TT #328 Wave 3 — tone-aware border colour + width.  Warn/Error get a
+    * 2 px border in the matching mode-tone hue so they stand out without
+    * the full toast bg getting tinted (keeps text contrast unchanged). */
+   uint32_t border = toast_border_for(tone);
+   int bw = (tone == UI_TOAST_INFO) ? 1 : 2;
+   lv_obj_set_style_border_width(t, bw, 0);
+   lv_obj_set_style_border_color(t, lv_color_hex(border), 0);
 
-    lv_obj_t *lbl = lv_label_create(t);
-    lv_label_set_text(lbl, text);
-    lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_letter_space(lbl, 1, 0);
+   lv_obj_t *lbl = lv_label_create(t);
+   lv_label_set_text(lbl, text);
+   lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_set_style_text_letter_space(lbl, 1, 0);
 
-    /* Spawn at the start position so the first frame paints correctly
-     * even if the anim timer is delayed by a busy LVGL queue. */
-    lv_obj_align(t, LV_ALIGN_CENTER, 0, TOAST_START_Y);
-    s_toast = t;
+   /* Spawn at the start position so the first frame paints correctly
+    * even if the anim timer is delayed by a busy LVGL queue. */
+   lv_obj_align(t, LV_ALIGN_CENTER, 0, TOAST_START_Y);
+   s_toast = t;
 
-    toast_ctx_t *ctx = (toast_ctx_t *)calloc(1, sizeof(*ctx));
-    if (!ctx) return; /* OOM — toast still renders, just won't auto-remove. */
-    ctx->obj = t;
-    spring_anim_init(&ctx->spring, SPRING_SNAPPY);
-    spring_anim_retarget(&ctx->spring, (float)TOAST_START_Y, (float)TOAST_FINAL_Y, 0.0f);
-    ctx->anim_t = lv_timer_create(toast_anim_cb, TOAST_FRAME_MS, ctx);
-    ctx->life_t = lv_timer_create(toast_remove_cb, TOAST_LIFETIME_MS, ctx);
-    if (ctx->life_t) lv_timer_set_repeat_count(ctx->life_t, 1);
-    s_toast_ctx = ctx;
+   toast_ctx_t *ctx = (toast_ctx_t *)calloc(1, sizeof(*ctx));
+   if (!ctx) return; /* OOM — toast still renders, just won't auto-remove. */
+   ctx->obj = t;
+   spring_anim_init(&ctx->spring, SPRING_SNAPPY);
+   spring_anim_retarget(&ctx->spring, (float)TOAST_START_Y, (float)TOAST_FINAL_Y, 0.0f);
+   ctx->anim_t = lv_timer_create(toast_anim_cb, TOAST_FRAME_MS, ctx);
+   ctx->life_t = lv_timer_create(toast_remove_cb, toast_lifetime_for(tone, text), ctx);
+   if (ctx->life_t) lv_timer_set_repeat_count(ctx->life_t, 1);
+   s_toast_ctx = ctx;
 }
+
+static void show_toast_internal(const char *text) { show_toast_internal_tone(text, UI_TOAST_INFO); }
 
 /* ── Public API ──────────────────────────────────────────────── */
 
@@ -1919,6 +1956,69 @@ void ui_home_refresh_mode_badge(void)
 }
 
 void ui_home_show_toast(const char *text) { show_toast_internal(text); }
+void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) { show_toast_internal_tone(text, tone); }
+
+/* ── TT #328 Wave 3 — persistent error banner ─────────────────── */
+
+static void err_banner_destroy(void) {
+   if (s_err_banner) {
+      lv_obj_del(s_err_banner);
+      s_err_banner = NULL;
+   }
+   s_err_banner_cb = NULL;
+}
+
+static void err_banner_click_cb(lv_event_t *e) {
+   (void)e;
+   ui_banner_dismiss_cb_t cb = s_err_banner_cb;
+   err_banner_destroy();
+   if (cb) cb();
+}
+
+void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_cb) {
+   if (!text) return;
+   /* Replace any existing banner. */
+   err_banner_destroy();
+
+   /* Layout: full-width strip at top of lv_layer_top, 56 px tall.  Sits
+    * above all overlays so the user sees it from any screen.  Rose
+    * accent border so it reads as a fault state at a glance. */
+   lv_obj_t *b = lv_obj_create(lv_layer_top());
+   lv_obj_remove_style_all(b);
+   lv_obj_set_size(b, 720, 56);
+   lv_obj_align(b, LV_ALIGN_TOP_MID, 0, 0);
+   lv_obj_set_style_bg_color(b, lv_color_hex(TH_CARD_ELEVATED), 0);
+   lv_obj_set_style_bg_opa(b, 240, 0);
+   lv_obj_set_style_border_side(b, LV_BORDER_SIDE_BOTTOM, 0);
+   lv_obj_set_style_border_width(b, 2, 0);
+   lv_obj_set_style_border_color(b, lv_color_hex(TH_STATUS_RED), 0);
+   lv_obj_set_style_pad_hor(b, 22, 0);
+   lv_obj_set_style_pad_ver(b, 12, 0);
+
+   lv_obj_t *lbl = lv_label_create(b);
+   lv_label_set_text(lbl, text);
+   lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+   lv_obj_set_width(lbl, 600);
+   lv_obj_set_style_text_font(lbl, FONT_SECONDARY, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+   if (dismiss_cb) {
+      /* Tappable row + dismiss hint */
+      lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(b, err_banner_click_cb, LV_EVENT_CLICKED, NULL);
+      lv_obj_t *hint = lv_label_create(b);
+      lv_label_set_text(hint, "Tap to dismiss");
+      lv_obj_set_style_text_font(hint, FONT_SMALL, 0);
+      lv_obj_set_style_text_color(hint, lv_color_hex(TH_TEXT_DIM), 0);
+      lv_obj_align(hint, LV_ALIGN_RIGHT_MID, 0, 0);
+   }
+
+   s_err_banner = b;
+   s_err_banner_cb = dismiss_cb;
+}
+
+void ui_home_clear_error_banner(void) { err_banner_destroy(); }
 
 /* Wave 7 F5 crash surface: paint the orb rose for ~2.5 s so a mid-turn
  * Dragon drop has a visual signal beyond the toast. Restores the
