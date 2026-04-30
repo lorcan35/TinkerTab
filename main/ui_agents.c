@@ -1,21 +1,38 @@
 /*
  * ui_agents.c — v5 Agents overlay (minimal)
  *
- * Header + two agent entries rendered as typographic cards, separated by
- * hairlines. No live data yet — the entries are static so the surface is
- * navigable. Back-button swipe + tap both dismiss.
+ * TT #328 Wave 6 — was a dead surface (static placeholder cards),
+ * Wave 6 revives it by adding a live "TOOLS CATALOG" section below
+ * the existing AGENT ACTIVITY entry.  On show the overlay fires an
+ * HTTP fetch to Dragon's `GET /api/v1/tools`, parses the JSON list,
+ * and renders each tool as a typographic card with name + short
+ * description.  The user can finally see WHAT the agent can do
+ * (web_search, recall, datetime, …) and not just stale activity.
+ *
+ * Fetch happens on tab5_worker_enqueue so the LVGL thread doesn't
+ * block on the HTTP round-trip; parse runs on the worker, results
+ * are handed to the UI via tab5_lv_async_call which renders the
+ * cards.  Offline / fetch-fail states render a hint instead.
  */
 
 #include "ui_agents.h"
-#include "ui_theme.h"
-#include "ui_home.h"
-#include "ui_core.h"
-#include "config.h"
-#include "tool_log.h"
-#include "esp_log.h"
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "cJSON.h"
+#include "config.h"
+#include "esp_heap_caps.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "settings.h"
+#include "task_worker.h"
+#include "tool_log.h"
+#include "ui_core.h"
+#include "ui_home.h"
+#include "ui_theme.h"
 
 static const char *TAG = "ui_agents";
 
@@ -23,13 +40,40 @@ static const char *TAG = "ui_agents";
 #define SH        1280
 #define SIDE_PAD  52
 
+/* TT #328 Wave 6 — tools catalog cap.  Dragon currently registers 10
+ * built-in tools (web_search, remember, recall, datetime, calculator,
+ * unit_converter, weather, system, stock_ticker, timesense, quick_poll,
+ * note_tool — up to 12 incl. surface tools).  16 gives headroom and
+ * keeps the cap memory bound to <= 16 * 224 bytes ≈ 3.5 KB in PSRAM. */
+#define TOOLS_MAX 16
+#define TOOL_NAME_LEN 32
+#define TOOL_DESC_LEN 192
+
+typedef struct {
+   char name[TOOL_NAME_LEN];
+   char description[TOOL_DESC_LEN];
+} tool_card_t;
+
+typedef struct {
+   int n;
+   tool_card_t tools[TOOLS_MAX];
+   bool fetch_ok; /* false if HTTP error; true even when n==0 */
+   char err_msg[80];
+} tools_payload_t;
+
 static lv_obj_t *s_overlay       = NULL;
 static lv_obj_t *s_back_btn      = NULL;
 static lv_obj_t *s_count_lbl     = NULL;   /* U7 (#206): refreshed on each show */
 static lv_obj_t *s_entry_root    = NULL;   /* container for the live activity entry */
+static lv_obj_t *s_catalog_root = NULL;    /* TT #328 Wave 6: tools-catalog section */
 static bool      s_visible       = false;
+static volatile bool s_fetch_pending = false;
 
 static void render_live_content(void);
+static void render_catalog(const tools_payload_t *p);
+static void fetch_tools_job(void *arg);
+static void async_render_catalog_cb(void *arg);
+static void kick_off_tools_fetch(void);
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -135,6 +179,250 @@ static void build_agent_entry(lv_obj_t *parent, int y,
     }
 }
 
+/* ── Wave 6: tools-catalog HTTP fetch + render ──────────────────── */
+
+/* Worker job: GET /api/v1/tools, parse JSON, hand off to LVGL render
+ * via tab5_lv_async_call.  Runs on the shared task_worker thread so
+ * the LVGL UI thread doesn't block on the round-trip.  Output buffer
+ * lives in PSRAM (cheap to allocate / free, doesn't fragment internal
+ * SRAM). */
+static void fetch_tools_job(void *arg) {
+   (void)arg;
+   tools_payload_t *p = heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!p) {
+      ESP_LOGE(TAG, "tools_payload alloc failed");
+      s_fetch_pending = false;
+      return;
+   }
+
+   char dragon_host[64] = {0};
+   tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
+   if (!dragon_host[0]) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "Dragon host not configured");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+
+   char url[160];
+   snprintf(url, sizeof(url), "http://%s:%d/api/v1/tools", dragon_host, TAB5_VOICE_PORT);
+
+   /* PSRAM-backed response buffer.  Dragon's tools endpoint returns
+    * ~2-5 KB JSON; 16 KB is plenty headroom for the registry growing
+    * past current 10-12 tools. */
+   const size_t resp_cap = 16 * 1024;
+   char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!resp_buf) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "PSRAM alloc failed");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+
+   esp_http_client_config_t cfg = {
+       .url = url,
+       .method = HTTP_METHOD_GET,
+       .timeout_ms = 5000,
+       .buffer_size = 2048,
+       .crt_bundle_attach = NULL,
+   };
+   esp_http_client_handle_t client = esp_http_client_init(&cfg);
+   if (!client) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "http_client_init failed");
+      p->fetch_ok = false;
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+
+   esp_err_t err = esp_http_client_open(client, 0);
+   if (err != ESP_OK) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "open: %s", esp_err_to_name(err));
+      p->fetch_ok = false;
+      esp_http_client_cleanup(client);
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+   int content_len = esp_http_client_fetch_headers(client);
+   int status = esp_http_client_get_status_code(client);
+   if (status != 200) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "HTTP %d", status);
+      p->fetch_ok = false;
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+
+   int total = 0;
+   while (total < (int)resp_cap - 1) {
+      int n = esp_http_client_read(client, resp_buf + total, (int)resp_cap - 1 - total);
+      if (n <= 0) break;
+      total += n;
+   }
+   resp_buf[total] = '\0';
+   (void)content_len;
+   esp_http_client_close(client);
+   esp_http_client_cleanup(client);
+
+   /* Parse JSON shape:
+    *   { "tools": [ {"name":"web_search","description":"..."} , ... ] }
+    * The tools/ endpoint sometimes returns either {tools: [...]} or
+    * a bare array — accept both. */
+   cJSON *root = cJSON_Parse(resp_buf);
+   heap_caps_free(resp_buf);
+   if (!root) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "JSON parse failed");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+   cJSON *arr = cJSON_IsArray(root) ? root : cJSON_GetObjectItem(root, "tools");
+   if (!cJSON_IsArray(arr)) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "missing 'tools' array");
+      p->fetch_ok = false;
+      cJSON_Delete(root);
+      tab5_lv_async_call(async_render_catalog_cb, p);
+      return;
+   }
+
+   int count = cJSON_GetArraySize(arr);
+   if (count > TOOLS_MAX) count = TOOLS_MAX;
+   for (int i = 0; i < count; i++) {
+      cJSON *t = cJSON_GetArrayItem(arr, i);
+      cJSON *nm = cJSON_GetObjectItem(t, "name");
+      cJSON *dsc = cJSON_GetObjectItem(t, "description");
+      if (cJSON_IsString(nm)) {
+         strncpy(p->tools[p->n].name, nm->valuestring, TOOL_NAME_LEN - 1);
+      }
+      if (cJSON_IsString(dsc)) {
+         strncpy(p->tools[p->n].description, dsc->valuestring, TOOL_DESC_LEN - 1);
+      }
+      p->n++;
+   }
+   cJSON_Delete(root);
+   p->fetch_ok = true;
+   ESP_LOGI(TAG, "Fetched %d tools from %s", p->n, url);
+
+   tab5_lv_async_call(async_render_catalog_cb, p);
+}
+
+/* LVGL-thread render: takes ownership of the heap-allocated payload,
+ * builds the catalog cards, then frees it.  Idempotent — called on
+ * every show via kick_off_tools_fetch. */
+static void async_render_catalog_cb(void *arg) {
+   tools_payload_t *p = (tools_payload_t *)arg;
+   s_fetch_pending = false;
+   if (p && s_overlay && s_visible) {
+      render_catalog(p);
+   }
+   if (p) heap_caps_free(p);
+}
+
+static void kick_off_tools_fetch(void) {
+   if (s_fetch_pending) return;
+   s_fetch_pending = true;
+   if (tab5_worker_enqueue(fetch_tools_job, NULL, "agents_tools_fetch") != ESP_OK) {
+      ESP_LOGW(TAG, "tools_fetch worker enqueue failed");
+      s_fetch_pending = false;
+   }
+}
+
+static void render_catalog(const tools_payload_t *p) {
+   /* Lazy-create the catalog container.  Sits below the existing
+    * AGENT ACTIVITY entry at y ≈ 250 + (entry height ~250).  Use
+    * y=540 as a stable starting point; the entry above is dynamic
+    * but capped low. */
+   if (!s_catalog_root) {
+      s_catalog_root = lv_obj_create(s_overlay);
+      lv_obj_remove_style_all(s_catalog_root);
+      lv_obj_set_size(s_catalog_root, SW, LV_SIZE_CONTENT);
+      lv_obj_set_pos(s_catalog_root, 0, 540);
+      lv_obj_set_flex_flow(s_catalog_root, LV_FLEX_FLOW_COLUMN);
+      lv_obj_set_style_pad_row(s_catalog_root, 14, 0);
+      lv_obj_clear_flag(s_catalog_root, LV_OBJ_FLAG_SCROLLABLE);
+   } else {
+      lv_obj_clean(s_catalog_root);
+   }
+
+   /* Section header */
+   lv_obj_t *kicker = lv_label_create(s_catalog_root);
+   lv_label_set_text(kicker, "\xe2\x80\xa2 TOOLS CATALOG");
+   lv_obj_set_style_text_font(kicker, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(kicker, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(kicker, 4, 0);
+   lv_obj_set_style_pad_left(kicker, SIDE_PAD, 0);
+
+   if (!p->fetch_ok) {
+      lv_obj_t *e = lv_label_create(s_catalog_root);
+      lv_label_set_long_mode(e, LV_LABEL_LONG_WRAP);
+      char buf[256];
+      snprintf(buf, sizeof(buf),
+               "Couldn't reach Dragon's tool catalog (%s).\n\n"
+               "Once Dragon is online, reopen this screen to see "
+               "what tools the agent can call.",
+               p->err_msg[0] ? p->err_msg : "no detail");
+      lv_label_set_text(e, buf);
+      lv_obj_set_width(e, SW - 2 * SIDE_PAD);
+      lv_obj_set_style_pad_left(e, SIDE_PAD, 0);
+      lv_obj_set_style_text_font(e, FONT_BODY, 0);
+      lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
+      return;
+   }
+
+   if (p->n == 0) {
+      lv_obj_t *e = lv_label_create(s_catalog_root);
+      lv_label_set_text(e, "No tools registered on this Dragon yet.");
+      lv_obj_set_style_pad_left(e, SIDE_PAD, 0);
+      lv_obj_set_style_text_font(e, FONT_BODY, 0);
+      lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
+      return;
+   }
+
+   /* Count line */
+   lv_obj_t *count = lv_label_create(s_catalog_root);
+   char cbuf[40];
+   snprintf(cbuf, sizeof(cbuf), "%d TOOLS AVAILABLE", p->n);
+   lv_label_set_text(count, cbuf);
+   lv_obj_set_style_text_font(count, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(count, lv_color_hex(TH_TEXT_SECONDARY), 0);
+   lv_obj_set_style_text_letter_space(count, 3, 0);
+   lv_obj_set_style_pad_left(count, SIDE_PAD, 0);
+
+   /* Each tool: a typographic block — name in heading, description
+    * wrapped underneath, divider hairline below. */
+   for (int i = 0; i < p->n; i++) {
+      lv_obj_t *card = lv_obj_create(s_catalog_root);
+      lv_obj_remove_style_all(card);
+      lv_obj_set_size(card, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
+      lv_obj_set_style_margin_left(card, SIDE_PAD, 0);
+      lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+      lv_obj_set_style_pad_row(card, 4, 0);
+      lv_obj_set_style_pad_bottom(card, 12, 0);
+      lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
+      lv_obj_set_style_border_width(card, 1, 0);
+      lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0);
+      lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+      lv_obj_t *nm = lv_label_create(card);
+      lv_label_set_text(nm, p->tools[i].name);
+      lv_obj_set_style_text_font(nm, FONT_HEADING, 0);
+      lv_obj_set_style_text_color(nm, lv_color_hex(TH_TEXT_PRIMARY), 0);
+
+      if (p->tools[i].description[0]) {
+         lv_obj_t *ds = lv_label_create(card);
+         lv_label_set_long_mode(ds, LV_LABEL_LONG_WRAP);
+         lv_label_set_text(ds, p->tools[i].description);
+         lv_obj_set_width(ds, SW - 2 * SIDE_PAD);
+         lv_obj_set_style_text_font(ds, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(ds, lv_color_hex(TH_TEXT_BODY), 0);
+         lv_obj_set_style_text_line_space(ds, 3, 0);
+      }
+   }
+}
+
 /* ── Build + show ────────────────────────────────────────────── */
 
 void ui_agents_show(void)
@@ -155,6 +443,10 @@ void ui_agents_show(void)
          * tool_log on first show — refresh on every re-show so new
          * tool activity appears. */
         render_live_content();
+        /* TT #328 Wave 6 — also re-fetch the tool catalog so new
+         * tool registrations on Dragon (skill installs, plugin loads)
+         * surface without a Tab5 reboot. */
+        kick_off_tools_fetch();
         return;
     }
 
@@ -200,6 +492,10 @@ void ui_agents_show(void)
 
     render_live_content();
     s_visible = true;
+    /* TT #328 Wave 6 — kick off the tool-catalog fetch on first show.
+     * The HTTP round-trip happens on the worker thread; the LVGL paint
+     * lands a moment later via async_render_catalog_cb. */
+    kick_off_tools_fetch();
     ESP_LOGI(TAG, "agents overlay shown");
 }
 

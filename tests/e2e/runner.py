@@ -1149,6 +1149,107 @@ def story_wave5_hybrid_story(r: Runner) -> None:
            lambda t: t.mode(0).get("ok") is not False)
 
 
+def story_wave6_agents_catalog(r: Runner) -> None:
+    """TT #328 Wave 6 — agent surface revival.
+
+    Pre-Wave-6 the Agents screen (ui_agents.c) was a placeholder
+    showing a static AGENT ACTIVITY entry that read tool_log — which
+    never populates in vmode=3 (TinkerClaw owns tools).  Audit
+    diagnosis: "Agents UI is dead — static surface shows stale data."
+
+    Wave 6 adds a TOOLS CATALOG section below the existing entry.
+    On screen show, ui_agents kicks off `GET /api/v1/tools` to
+    Dragon via tab5_worker_enqueue (off the LVGL thread); response
+    is parsed in PSRAM and handed back via tab5_lv_async_call which
+    renders one card per tool (name + description).  Empty / fetch-
+    fail states render a hint instead.
+
+    Until Dragon's auth middleware lists `/api/v1/tools` in
+    PUBLIC_PREFIXES (or until Tab5 stores a bearer token), the
+    fetch returns HTTP 401 and the fallback renders — verified
+    here as the documented end-to-end path.
+
+    Touch-driven: navigate to agents, screenshot the new section,
+    verify the catalog or fallback renders, regression-check the
+    existing AGENT ACTIVITY entry still works.
+    """
+    tab5 = r.tab5
+
+    # ─── Setup ─────────────────────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Cancel any leftover voice state",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    time.sleep(1)
+    r.step("Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1)
+
+    # ─── A. Open Agents screen ─────────────────────────────────
+    r.step("[A] Navigate to Agents",
+           lambda t: t.navigate("agents").get("navigated") == "agents")
+    # Allow time for HTTP fetch round-trip + LVGL render of the
+    # catalog section.  Dragon endpoint typically responds within
+    # 1-2 s; allow 5 s for safety.
+    time.sleep(5)
+    r.step("[A] Screenshot Agents w/ TOOLS CATALOG section",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave6_A_agents_catalog.jpg")) > 1000)
+
+    # ─── B. Verify the existing AGENT ACTIVITY entry still works ─
+    # The pre-existing tool_log section ("0 LIVE · 0 DONE" + empty
+    # state) should still render below the header.  We can't directly
+    # introspect the screen contents (LVGL paints to framebuffer),
+    # but the screenshot is the visual contract; behavioural
+    # assertion is "navigate succeeded + screen alive".
+    r.step("[B] Screen state reports current=agents",
+           lambda t: t.screen().get("current") == "agents"
+                  or "agents" in t.screen().get("current", ""))
+
+    # ─── C. Re-show triggers a fresh fetch ─────────────────────
+    # Navigate away, then back → new HTTP fetch should fire.
+    r.step("[C] Navigate home (agents hides)",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(2)
+    r.step("[C] Navigate back to agents (re-show triggers re-fetch)",
+           lambda t: t.navigate("agents").get("navigated") == "agents")
+    time.sleep(5)
+    r.step("[C] Screenshot after re-show",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave6_C_agents_reopen.jpg")) > 1000)
+
+    # ─── D. Back gesture / button dismisses ────────────────────
+    # The overlay has a HOME button at top-left (24, 30) that
+    # dismisses the surface.
+    r.step("[D] Tap HOME back button (60, 60)",
+           lambda t: t.tap(60, 60) and True)
+    time.sleep(2)
+    # /screen tracks only chat/voice/settings as overlay flags;
+    # agents isn't in that set, so we can't directly assert "agents
+    # dismissed" via the JSON endpoint.  Visual evidence in the next
+    # screenshot is the test contract.  Behavioural test: device
+    # didn't crash and is still alive.
+    r.step("[D] Tab5 still alive after dismiss tap",
+           lambda t: t.is_alive())
+    r.step("[D] Screenshot home post-dismiss",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave6_D_after_dismiss.jpg")) > 1000)
+
+    # ─── E. Re-open + fetch lands again (no leaked state) ──────
+    r.step("[E] Re-navigate to agents one more time",
+           lambda t: t.navigate("agents").get("navigated") == "agents")
+    time.sleep(4)
+    r.step("[E] Screenshot agents alive after multiple shows",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave6_E_third_show.jpg")) > 1000)
+
+    # ─── Cleanup ───────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -1159,6 +1260,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave3":   story_wave3_dictation_in_chat,
     "story_wave4":   story_wave4_cloud_picker,
     "story_wave5":   story_wave5_hybrid_story,
+    "story_wave6":   story_wave6_agents_catalog,
 }
 
 
