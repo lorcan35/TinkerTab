@@ -291,6 +291,12 @@ lv_obj_t *ui_camera_create(void)
     * doesn't shadow our own topbar back button at y=0..32. */
    extern void ui_home_set_error_banner_visible(bool);
    ui_home_set_error_banner_visible(false);
+   /* TT #328 Wave 13 — sync /screen current with the screen we're
+    * loading.  Without this, callers that hit ui_camera_create
+    * directly (chat's "Send photo" button, gallery shortcut) leave
+    * /screen stuck reporting the prior screen. */
+   extern void tab5_debug_set_nav_target(const char *);
+   tab5_debug_set_nav_target("camera");
 
    /* #172: idempotent re-entry.  Camera owns a ~1.8 MB PSRAM canvas
     * buffer + a preview timer + a full LVGL screen tree.  If the

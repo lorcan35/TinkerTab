@@ -779,6 +779,9 @@ lv_obj_t *ui_wifi_create(void)
    /* TT #328 Wave 11 follow-up — hide error banner. */
    extern void ui_home_set_error_banner_visible(bool);
    ui_home_set_error_banner_visible(false);
+   /* TT #328 Wave 13 — sync /screen current. */
+   extern void tab5_debug_set_nav_target(const char *);
+   tab5_debug_set_nav_target("wifi");
 
    if (s_screen) {
       ESP_LOGW(TAG, "WiFi screen already exists");

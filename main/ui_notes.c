@@ -2047,6 +2047,9 @@ lv_obj_t *ui_notes_create(void)
     /* TT #328 Wave 11 follow-up — hide error banner. */
     extern void ui_home_set_error_banner_visible(bool);
     ui_home_set_error_banner_visible(false);
+    /* TT #328 Wave 13 — sync /screen current. */
+    extern void tab5_debug_set_nav_target(const char *);
+    tab5_debug_set_nav_target("notes");
 
     /* #250 fix: notes is an overlay parented to home, not a separate
      * lv_screen.  When /navigate goes camera→notes, async_navigate calls
