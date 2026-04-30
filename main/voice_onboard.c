@@ -20,6 +20,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "settings.h"     /* tab5_settings_get_mic_mute (Wave 7) */
 #include "task_worker.h"  /* tab5_worker_enqueue */
 #include "ui_chat.h"      /* ui_chat_add_message */
 #include "ui_core.h"      /* tab5_ui_try_lock / tab5_ui_unlock */
@@ -155,6 +156,18 @@ static void onboard_failover_text_job(void *arg) {
    if (ie == ESP_OK && reply[0] != '\0') {
       if (tab5_ui_try_lock(150)) {
          ui_chat_add_message(reply, /*is_user=*/false);
+         /* TT #328 Wave 7 — attach a synthetic receipt with
+          * model_short="K144" + mils=0 (free) so the bubble's
+          * timestamp row stamps "· K144 · FREE" the same way Cloud
+          * replies stamp "· HAIKU · $0.003".  Pre-Wave-7 the
+          * failover reply was visually indistinguishable from a
+          * Dragon-Local reply; users couldn't tell they got the
+          * smaller K144 model.  Reuses chat_msg_view's existing
+          * receipt-render path (no bubble-style refactor needed). */
+         extern int chat_store_attach_receipt_ex(uint32_t, uint16_t, uint16_t, const char *, bool);
+         chat_store_attach_receipt_ex(0, 0, 0, "K144", false);
+         extern void ui_chat_refresh_receipts(void);
+         ui_chat_refresh_receipts();
          tab5_ui_unlock();
       }
       ESP_LOGI(TAG, "K144 reply: '%s'", reply);
@@ -445,6 +458,19 @@ static void onboard_chain_drain_task(void *arg) {
 
 esp_err_t voice_onboard_chain_start(void) {
    if (s_chain_active) return ESP_ERR_INVALID_STATE;
+
+   /* TT #328 Wave 7 — defense-in-depth mic-mute guard.  voice.c's
+    * voice_start_listening already guards before this is called from
+    * the orb-tap path, but ANY future entry point (REST, debug, new
+    * user-input path) would bypass the check otherwise.  Mute is a
+    * privacy contract: when the user has set mic_mute=1, NO mic
+    * (Tab5's OR K144's onboard mic) should listen — the chain
+    * silently captures audio on the K144 even though Tab5's mic is
+    * blocked, which violates the contract.  Refuse here too. */
+   if (tab5_settings_get_mic_mute()) {
+      ESP_LOGW(TAG, "voice_onboard_chain_start: mic muted - refusing");
+      return ESP_ERR_INVALID_STATE;
+   }
 
    esp_err_t be = onboard_alloc_buffers();
    if (be != ESP_OK) {

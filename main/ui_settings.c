@@ -1415,6 +1415,54 @@ lv_obj_t *ui_settings_create(void)
           lv_obj_set_pos(dc, 44, 38);
           s_mode_row[i] = row;
           s_mode_row_dot[i] = dot;
+
+          /* TT #328 Wave 7 — health chip for the Onboard row.  Pre-Wave-7
+           * the user could tap the Onboard radio with no idea whether
+           * K144 was actually warm; the row would silently switch and
+           * the user would discover failure mid-turn.  Render the
+           * voice_onboard_failover_state() as a small right-aligned
+           * pill on row index 4 only (other modes don't have a
+           * comparable health gate that benefits from this surface). */
+          if (i == 4) {
+             extern int voice_onboard_failover_state(void);
+             int fs = voice_onboard_failover_state();
+             /* fs values: 0=UNKNOWN, 1=PROBING, 2=READY, 3=UNAVAILABLE */
+             const char *chip_glyph;
+             const char *chip_text;
+             uint32_t chip_col;
+             switch (fs) {
+                case 2:
+                   chip_glyph = "\xe2\x97\x8f"; /* ● filled */
+                   chip_text = " READY";
+                   chip_col = 0x10B981; /* emerald */
+                   break;
+                case 1:
+                   chip_glyph = "\xe2\x97\x8b"; /* ○ open */
+                   chip_text = " WARMING";
+                   chip_col = AMBER;
+                   break;
+                case 3:
+                   chip_glyph = "\xe2\x9c\x97"; /* ✗ */
+                   chip_text = " UNAVAILABLE";
+                   chip_col = 0xE5484D; /* rose */
+                   break;
+                default: /* 0 UNKNOWN — K144 not stacked or warm-up not posted */
+                   chip_glyph = "\xe2\x97\x8b";
+                   chip_text = " UNKNOWN";
+                   chip_col = 0x55555D; /* dim grey */
+                   break;
+             }
+             lv_obj_t *chip = lv_label_create(row);
+             char chip_buf[32];
+             snprintf(chip_buf, sizeof(chip_buf), "%s%s", chip_glyph, chip_text);
+             lv_label_set_text(chip, chip_buf);
+             lv_obj_set_style_text_font(chip, FONT_SMALL, 0);
+             lv_obj_set_style_text_color(chip, lv_color_hex(chip_col), 0);
+             lv_obj_set_style_text_letter_space(chip, 2, 0);
+             /* Right-aligned within the row, centred vertically. */
+             lv_obj_set_pos(chip, row_w - 180, (row_h - 14) / 2);
+          }
+
           if (i == s_active_tab) _mode_row_style(row, true);
           feed_wdt();
        }
