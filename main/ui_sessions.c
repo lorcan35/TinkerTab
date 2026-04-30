@@ -92,15 +92,22 @@ static void overlay_gesture_cb(lv_event_t *e)
 /* U1 (#206): voice_mode → tag/color mapping (matches chat header tints). */
 static void mode_to_tag(uint8_t vm, char *out, size_t n, uint32_t *color_out)
 {
-    const char *tag;
-    uint32_t    col;
-    switch (vm) {
-        case 0: tag = "LOCAL";  col = TH_MODE_LOCAL;  break;
-        case 1: tag = "HYBRID"; col = TH_MODE_HYBRID; break;
-        case 2: tag = "CLOUD";  col = TH_MODE_CLOUD;  break;
-        case 3: tag = "CLAW";   col = TH_MODE_CLAW;   break;
-        default: tag = "?";     col = 0x5C5C68;       break;
-    }
+   /* TT #328 Wave 1: previously a switch with default → grey "?".
+    * vmode=4 (Onboard) sessions rendered as grey before the mode arrays
+    * grew to VOICE_MODE_COUNT.  Now read straight from the canonical
+    * th_mode_names + th_mode_colors. */
+   static const char *s_tags[VOICE_MODE_COUNT] = {
+       "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD",
+   };
+   const char *tag;
+   uint32_t col;
+   if (vm < VOICE_MODE_COUNT) {
+      tag = s_tags[vm];
+      col = th_mode_colors[vm];
+   } else {
+      tag = "?";
+      col = 0x5C5C68;
+   }
     snprintf(out, n, "%s", tag);
     if (color_out) *color_out = col;
 }

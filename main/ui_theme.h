@@ -18,8 +18,13 @@
 
 #define TH_TEXT_PRIMARY   0xE8E8EF  /* Titles, headings */
 #define TH_TEXT_BODY      0xAAAAAA  /* Body text */
-#define TH_TEXT_SECONDARY 0x666666  /* Metadata, dates */
-#define TH_TEXT_DIM       0x444444  /* Timestamps, placeholders */
+/* TT #328 Wave 1 a11y lift: TH_TEXT_DIM was 0x444444 (2.11:1 — fails WCAG
+ * 1.4.3 minimum 4.5:1) and TH_TEXT_SECONDARY was 0x666666 (3.42:1 — same
+ * fail).  Bumped DIM → 0x808088 (5.05:1) and SECONDARY → 0x9A9AA3 (7.20:1)
+ * so mode-chip subtitles, ghost text, OFFLINE-hero body, Settings + Notes
+ * list metadata stay readable in low light. */
+#define TH_TEXT_SECONDARY 0x9A9AA3 /* Metadata, dates */
+#define TH_TEXT_DIM 0x808088       /* Timestamps, placeholders */
 
 #define TH_AMBER          0xF59E0B  /* Primary accent */
 #define TH_AMBER_DARK     0xD97706  /* Pressed / gradient end */
@@ -47,8 +52,11 @@
 #define TH_STATUS_H     DPI_SCALE(30)   /* 40px status bar height */
 
 /* ── Mode arrays ───────────────────────────────────────────── */
-extern const char     *th_mode_names[4];
-extern const uint32_t  th_mode_colors[4];
+/* TT #328 Wave 1: grew from [4] to [VOICE_MODE_COUNT] to include Onboard.
+ * Indexing with vm == 4 was previously UB (read past array end) on
+ * Sessions/Drawer call-sites. */
+extern const char *th_mode_names[VOICE_MODE_COUNT];
+extern const uint32_t th_mode_colors[VOICE_MODE_COUNT];
 
 /* ── Shared styles (initialized once by ui_theme_init) ─────── */
 extern lv_style_t s_style_card;

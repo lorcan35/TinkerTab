@@ -35,10 +35,16 @@ static const char *TAG = "chat_drawer";
 #define DOT_SZ          12
 #define MAX_ROWS        10
 
-static const uint32_t s_mode_tint[4] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW,
+/* TT #328 Wave 1: grew from [4] to [VOICE_MODE_COUNT] so vmode=4 (Onboard)
+ * sessions get the violet ONBOARD tint+label instead of falling off the
+ * end of the array (UB).  Drawer call-sites index by vm without bounds-
+ * checking via the helper below. */
+static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
 };
-static const char *s_mode_short[4] = { "LOCAL", "HYBRID", "CLOUD", "CLAW" };
+static const char *s_mode_short[VOICE_MODE_COUNT] = {
+    "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD",
+};
 
 typedef struct {
     lv_obj_t *row;
@@ -238,7 +244,9 @@ static void render_rows(chat_session_drawer_t *d,
         r->data = *s;
         r->in_use = true;
 
-        uint8_t mode = s->voice_mode <= 3 ? s->voice_mode : 0;
+        /* TT #328 Wave 1: clamp moved from <=3 to <VOICE_MODE_COUNT — vmode=4
+         * Onboard sessions used to fall back to LOCAL green here. */
+        uint8_t mode = s->voice_mode < VOICE_MODE_COUNT ? s->voice_mode : 0;
         lv_obj_set_style_bg_color(r->dot, lv_color_hex(s_mode_tint[mode]), 0);
 
         char info[96];

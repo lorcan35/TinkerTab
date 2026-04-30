@@ -11,9 +11,14 @@
 static const char *TAG = "ui_theme";
 
 /* ── Mode arrays ───────────────────────────────────────────── */
-const char *th_mode_names[4] = {"Local", "Hybrid", "Cloud", "TinkerClaw"};
-const uint32_t th_mode_colors[4] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW
+/* TT #328 Wave 1: bumped from [4] → [VOICE_MODE_COUNT].  Pre-Wave-1 the
+ * vmode=4 (Onboard) row in Sessions/Drawer rendered as grey "?" because
+ * callers indexed [4] arrays with vm=4. */
+const char *th_mode_names[VOICE_MODE_COUNT] = {
+    "Local", "Hybrid", "Cloud", "TinkerClaw", "Onboard",
+};
+const uint32_t th_mode_colors[VOICE_MODE_COUNT] = {
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
 };
 
 /* ── Shared styles ─────────────────────────────────────────── */

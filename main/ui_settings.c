@@ -74,12 +74,17 @@ static inline void feed_wdt(void) {
 #define ACC_BATTERY  AMBER
 #define ACC_ABOUT    AMBER
 
-/* Voice tab colors */
+/* Voice tab colors — TT #328 Wave 1: HYBRID + ONBOARD literals had drifted
+ * from canonical ui_theme.h tokens (TH_MODE_HYBRID = 0xEAB308 was 0xF59E0B
+ * amber here; TH_MODE_ONBOARD = 0x8E5BFF was 0x8B5CF6 here).  Settings
+ * radio preview disagreed with dots/chips everywhere else (Sessions
+ * drawer, Home pill, mode_to_tag).  Realigned; mirror any future change
+ * in ui_theme.h here too. */
 #define TAB_LOCAL    0x22C55E
-#define TAB_HYBRID   0xF59E0B
+#define TAB_HYBRID 0xEAB308
 #define TAB_CLOUD    0x3B82F6
 #define TAB_TINKERCLAW 0xF43F5E
-#define TAB_ONBOARD 0x8B5CF6 /* P5b: violet — distinct from existing four */
+#define TAB_ONBOARD 0x8E5BFF /* P5b: violet — distinct from existing four */
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;

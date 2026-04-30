@@ -42,7 +42,10 @@ static const char *TAG = "ui_notes";
 #define COL_CARD       0x1A1A2E
 #define COL_CARD2      0x2C2C2E
 #define COL_AMBER      0xF59E0B
-#define COL_CYAN       0xF59E0B
+/* TT #328 Wave 1: COL_CYAN was an alias for COL_AMBER (0xF59E0B) — clearly
+ * a copy-paste bug from the v3 palette pull-out.  No call-site references
+ * it (verified via grep), so dropping it cleanly rather than fixing the
+ * hex.  If a real cyan is needed later, alias it through ui_theme.h. */
 #define COL_MINT       0x22C55E
 #define COL_RED        0xEF4444
 #define COL_WHITE      0xE8E8EF
