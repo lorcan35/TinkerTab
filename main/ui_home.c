@@ -122,6 +122,15 @@ static lv_obj_t *s_ring_outer      = NULL;
 static lv_obj_t *s_ring_mid        = NULL;
 static lv_obj_t *s_ring_inner      = NULL;
 static lv_obj_t *s_orb             = NULL;
+/* TT #328 Wave 11 — orb status pip.  P0 #16 said "the orb has 4 contracts
+ * branching invisibly on voice_mode / chain_active."  This small badge
+ * sits in the orb's top-right corner and flips glyph+color based on what
+ * the next tap will actually do, so the contract is no longer hidden:
+ *   muted     → red mute glyph     (tap will toast "mic muted")
+ *   dragon ↓  → amber refresh      (tap will reconnect, not record)
+ *   onboard A → violet loop        (tap will STOP an active K144 chain)
+ *   normal    → hidden             (default tap-to-listen, no surprise) */
+static lv_obj_t *s_orb_pip = NULL;
 
 /* State word + greet line */
 static lv_obj_t *s_state_word      = NULL;  /* "listening" / "offline" */
@@ -199,6 +208,8 @@ static void orb_paint_for_mode(uint8_t mode);
 static void orb_paint_for_tone(widget_tone_t tone);
 /* TT #328 Wave 9 — first-launch mode-chip discoverability hint cb. */
 static void mode_hint_fire_cb(lv_timer_t *t);
+/* TT #328 Wave 11 — orb status pip painter (P0 #16). */
+static void paint_orb_pip_for_context(void);
 /* v4·D Phase 4g: widget_prompt hit-zone tap routing */
 static void prompt_choice_tap_cb(lv_event_t *e);
 static void refresh_prompt_hit_zones(const widget_t *w);
@@ -274,6 +285,48 @@ static void orb_paint_for_mode(uint8_t mode)
     lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+}
+
+/* TT #328 Wave 11 P0 #16 — paint the orb status pip based on what the
+ * next tap will actually do.  Hidden when the default tap-to-listen
+ * contract holds; visible when something else will happen so the
+ * branching is no longer invisible. */
+static void paint_orb_pip_for_context(void) {
+   if (!s_orb_pip) return;
+   lv_obj_t *lbl = lv_obj_get_child(s_orb_pip, 0);
+   if (!lbl) return;
+
+   bool muted = tab5_settings_get_mic_mute() != 0;
+   bool dragon = voice_is_connected();
+   uint8_t vmode = tab5_settings_get_voice_mode();
+   bool chain_active = (vmode == VOICE_MODE_ONBOARD) && voice_onboard_chain_active();
+
+   /* Priority order: muted > chain-active > dragon-down > hidden.
+    * Muted wins because privacy state is the most user-load-bearing
+    * signal — even in vmode=4 a muted mic should override the
+    * chain indicator. */
+   const char *glyph = NULL;
+   uint32_t border = TH_AMBER;
+   if (muted) {
+      glyph = LV_SYMBOL_MUTE;
+      border = TH_STATUS_RED;
+   } else if (chain_active) {
+      glyph = LV_SYMBOL_LOOP;
+      border = TH_MODE_ONBOARD; /* violet — matches Onboard chip */
+   } else if (!dragon && vmode != VOICE_MODE_ONBOARD) {
+      /* Dragon down + Onboard NOT active: tap will reconnect, not record. */
+      glyph = LV_SYMBOL_REFRESH;
+      border = TH_AMBER;
+   }
+
+   if (!glyph) {
+      lv_obj_add_flag(s_orb_pip, LV_OBJ_FLAG_HIDDEN);
+      return;
+   }
+   lv_label_set_text(lbl, glyph);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(border), 0);
+   lv_obj_set_style_border_color(s_orb_pip, lv_color_hex(border), 0);
+   lv_obj_clear_flag(s_orb_pip, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* Widget-tone orb override — used when a live widget claims the slot.
@@ -520,6 +573,27 @@ lv_obj_t *ui_home_create(void)
     lv_obj_add_event_cb(s_orb, orb_click_cb, LV_EVENT_CLICKED, NULL);
     ui_fb_icon(s_orb); /* TT #328 Wave 10 — opacity dip on press */
     lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+
+    /* TT #328 Wave 11 P0 #16 — orb status pip.  Small circular badge
+     * anchored to the top-right of the orb that flips glyph+color
+     * based on what the next tap will actually do.  Hidden by default
+     * (the common case is "tap to listen" — no badge needed).  Refreshed
+     * by paint_orb_pip_for_context() from ui_home_update_status. */
+    s_orb_pip = lv_obj_create(s_orb);
+    lv_obj_remove_style_all(s_orb_pip);
+    lv_obj_set_size(s_orb_pip, 36, 36);
+    lv_obj_align(s_orb_pip, LV_ALIGN_TOP_RIGHT, -8, 8);
+    lv_obj_set_style_radius(s_orb_pip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_orb_pip, lv_color_hex(TH_BG), 0);
+    lv_obj_set_style_bg_opa(s_orb_pip, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_orb_pip, 2, 0);
+    lv_obj_set_style_border_color(s_orb_pip, lv_color_hex(TH_AMBER), 0);
+    lv_obj_clear_flag(s_orb_pip, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_orb_pip, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *pip_lbl = lv_label_create(s_orb_pip);
+    lv_label_set_text(pip_lbl, "");
+    lv_obj_set_style_text_font(pip_lbl, FONT_SMALL, 0);
+    lv_obj_center(pip_lbl);
 
     /* ── State word + greet line (below orb) ───────────────── */
     s_state_word = lv_label_create(s_screen);
@@ -908,6 +982,10 @@ void ui_home_update_status(void)
         const char *cur = lv_label_get_text(s_time_label);
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_time_label, buf);
     }
+
+    /* TT #328 Wave 11 P0 #16 — keep the orb status pip in sync with the
+     * branching state so the user sees what tap will do at a glance. */
+    paint_orb_pip_for_context();
 
     /* Edge-state detection — same priority as v5. */
     bool wifi_ok = tab5_wifi_connected();
