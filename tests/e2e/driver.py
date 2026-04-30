@@ -165,6 +165,15 @@ class Tab5Driver:
         return self._post("/settings",
                           json={"reset_spent": True}).json()
 
+    # ── WS-frame inject (TT #328 Wave 2) ─────────────────────────
+    def inject_ws(self, frame: dict) -> dict:
+        """POST /debug/inject_ws — pipe a synthetic WS frame through
+        voice.c's text dispatcher.  Tests can fire fake
+        config_update.error / dictation_postprocessing_cancelled /
+        llm_done frames to exercise toast/banner UX without needing
+        Dragon to actually misbehave."""
+        return self._post("/debug/inject_ws", json=frame).json()
+
     # ── Camera / video ────────────────────────────────────────────
     def camera_frame(self, save_path: str | None = None) -> bytes:
         r = self._get("/camera", timeout=15)

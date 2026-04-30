@@ -607,12 +607,172 @@ def story_wave1_visibility(r: Runner) -> None:
            lambda t: t.mode(0).get("ok") is not False)
 
 
+def story_wave2_error_surfacing(r: Runner) -> None:
+    """TT #328 Wave 2 — error-surfacing audit closeout.
+
+    Three changes under test, all driven through the new /debug/inject_ws
+    endpoint (synthetic WS frames):
+      A. dictation_postprocessing_cancelled now resets voice state to
+         READY so the "Generating summary..." caption clears even when
+         no follow-up _postprocessing fires (Dragon shutdown / abort).
+      B. config_update.error fires a PERSISTENT dismissable banner in
+         addition to the existing transient toast — user can't miss
+         the auto-downgrade event by glancing away.
+      C. The next successful llm_done auto-clears the banner (recovery
+         signal).
+
+    Touch verified: the banner is dismissable by tap, AND the dismiss
+    path doesn't crash the device.  Each step lands a screenshot for
+    visual diff.
+    """
+    tab5 = r.tab5
+
+    # ─── State setup ────────────────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Voice ready",
+           lambda t: t.await_voice_state("READY", 30))
+    r.step("Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1)
+
+    # ─── A. dictation_postprocessing_cancelled clears caption ───
+    # Force voice state into PROCESSING via dictation_postprocessing,
+    # then fire _cancelled and verify state returns to READY.  Pre-Wave-2
+    # _cancelled was log-only and the state stayed PROCESSING forever
+    # if no follow-up _postprocessing ever came.
+    r.step("[A] Inject dictation_postprocessing → state goes PROCESSING",
+           lambda t: t.inject_ws({"type": "dictation_postprocessing"})
+                     .get("ok") is True)
+    time.sleep(0.5)
+    r.step("[A] /voice reports state_name=PROCESSING",
+           lambda t: t.voice_state().get("state_name") == "PROCESSING")
+    r.step("[A] Inject dictation_postprocessing_cancelled (no follow-up)",
+           lambda t: t.inject_ws({"type": "dictation_postprocessing_cancelled"})
+                     .get("ok") is True)
+    time.sleep(0.5)
+    r.step("[A] /voice state returns to READY (caption cleared)",
+           lambda t: t.voice_state().get("state_name") == "READY")
+    r.step("[A] Screenshot home (no stuck 'Generating summary...')",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_A_after_cancel.jpg")) > 1000)
+
+    # ─── B. config_update.error fires persistent banner + toast ─
+    # Set vmode=2 first so the auto-downgrade-to-Local path fires,
+    # which exercises the FULL config_update.error code path (badge
+    # refresh + toast + banner + state reset all together).
+    r.step("[B] Force vmode=2 (so error path will downgrade us)",
+           lambda t: t.mode(2).get("ok") is not False)
+    time.sleep(1)
+    r.step("[B] Pre-check: vmode==2",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 2)
+    r.step("[B] Inject config_update.error (Cloud STT down)",
+           lambda t: t.inject_ws({
+               "type": "config_update",
+               "error": "Cloud STT unavailable, using local"
+           }).get("ok") is True)
+    time.sleep(2)
+    r.step("[B] Auto-downgrade fired: vmode flipped 2 → 0",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 0)
+    r.step("[B] Screenshot banner + toast",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_B_banner_visible.jpg")) > 1000)
+    # Banner is on lv_layer_top.  We can't introspect its presence via
+    # /screen overlays (which only tracks chat/voice/settings), so the
+    # screenshot is the visual assertion.  Behaviour-wise we already
+    # verified the auto-downgrade fired which is gated behind the same
+    # if-block as the banner emit.
+
+    # ─── C. Banner auto-clears on next llm_done (recovery signal) ─
+    r.step("[C] Inject synthetic llm_done (recovery signal)",
+           lambda t: t.inject_ws({
+               "type": "llm_done",
+               "llm_ms": 1234
+           }).get("ok") is True)
+    # The async lvgl-clear hop takes a frame or two.
+    time.sleep(2)
+    r.step("[C] Screenshot home (banner auto-cleared)",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_C_after_recovery.jpg")) > 1000)
+
+    # ─── D. Repeat error → banner re-fires (state machine sanity) ─
+    r.step("[D] Force vmode=2 again",
+           lambda t: t.mode(2).get("ok") is not False)
+    time.sleep(0.5)
+    r.step("[D] Inject 2nd config_update.error (TTS variant)",
+           lambda t: t.inject_ws({
+               "type": "config_update",
+               "error": "Cloud TTS timeout — falling back"
+           }).get("ok") is True)
+    time.sleep(1.5)
+    r.step("[D] Screenshot 2nd-error banner",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_D_second_error.jpg")) > 1000)
+
+    # ─── E. Manual dismiss via tap (touch-verified) ─────────────
+    # Banner sits at top of lv_layer_top, full-width, 32 px tall.
+    # Tap the right side where "Tap to dismiss" hint lives.
+    r.step("[E] Tap banner right-edge to dismiss",
+           lambda t: t.tap(640, 16) and True)
+    time.sleep(1.5)
+    r.step("[E] Screenshot after manual dismiss",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_E_after_tap_dismiss.jpg")) > 1000)
+
+    # ─── F. Banner survives a screen change (chat-overlay regression) ─
+    # The banner is on lv_layer_top so it intentionally stays visible
+    # across overlays — degraded-state info should not disappear when
+    # the user opens chat.  Visual evidence in the screenshots; the
+    # assertion here is the behavioural one (navigate succeeded, no
+    # crash, banner+overlay co-exist).
+    r.step("[F] Force vmode=2 + inject error (3rd time)",
+           lambda t: (t.mode(2).get("ok") is not False and
+                      t.inject_ws({
+                          "type": "config_update",
+                          "error": "OpenRouter rate-limited"
+                      }).get("ok") is True))
+    time.sleep(1.5)
+    r.step("[F] Screenshot home with banner",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_F_home_with_banner.jpg")) > 1000)
+    r.step("[F] Navigate to chat (banner stays on lv_layer_top)",
+           lambda t: t.navigate("chat").get("navigated") == "chat")
+    time.sleep(2)
+    r.step("[F] Screenshot chat WITH banner co-existing",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_F_chat_with_banner.jpg")) > 1000)
+    r.step("[F] Back to home — chat dismissed, banner persists",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1.5)
+    r.step("[F] Screenshot home — banner still visible after roundtrip",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_F_home_banner_after_roundtrip.jpg")) > 1000)
+
+    # ─── G. Recovery clears it ─────────────────────────────────
+    r.step("[G] Inject llm_done — banner clears via recovery hook",
+           lambda t: t.inject_ws({
+               "type": "llm_done",
+               "llm_ms": 567
+           }).get("ok") is True)
+    time.sleep(2)
+    r.step("[G] Screenshot — final clean home",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave2_G_final_clean.jpg")) > 1000)
+
+    # ─── Cleanup ────────────────────────────────────────────────
+    r.step("[end] Restore Local mode",
+           lambda t: t.mode(0).get("ok") is not False)
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
     "story_stress":  story_stress,
     "story_onboard": story_onboard,
     "story_wave1":   story_wave1_visibility,
+    "story_wave2":   story_wave2_error_surfacing,
 }
 
 

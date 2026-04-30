@@ -3669,6 +3669,51 @@ static esp_err_t debug_inject_error_handler_impl(httpd_req_t *req) {
 
 esp_err_t debug_inject_error_handler(httpd_req_t *req) { return debug_inject_error_handler_impl(req); }
 
+/* TT #328 Wave 2 — POST /debug/inject_ws.  Body is a JSON string that
+ * gets routed through voice.c's WS text dispatcher as if Dragon had
+ * sent it.  Lets the e2e harness exercise toast/banner UX paths
+ * without needing Dragon to genuinely fail (e.g. fire a fake
+ * config_update.error → assert banner → fire a fake llm_done → assert
+ * banner cleared).  Body size capped at 2 KB; bigger frames don't
+ * fit through the WS path either. */
+static esp_err_t debug_inject_ws_handler_impl(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   if (req->content_len <= 0 || req->content_len > 2048) {
+      cJSON *r = cJSON_CreateObject();
+      cJSON_AddStringToObject(r, "error", "POST body must be JSON, 1..2048 bytes");
+      return send_json_resp(req, r);
+   }
+   char *buf = heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!buf) {
+      cJSON *r = cJSON_CreateObject();
+      cJSON_AddStringToObject(r, "error", "PSRAM alloc failed");
+      return send_json_resp(req, r);
+   }
+   int total = 0;
+   while (total < req->content_len) {
+      int n = httpd_req_recv(req, buf + total, req->content_len - total);
+      if (n <= 0) break;
+      total += n;
+   }
+   buf[total] = '\0';
+   if (total != req->content_len) {
+      heap_caps_free(buf);
+      cJSON *r = cJSON_CreateObject();
+      cJSON_AddStringToObject(r, "error", "short read");
+      return send_json_resp(req, r);
+   }
+   extern void voice_debug_inject_text(const char *data, int len);
+   voice_debug_inject_text(buf, total);
+   heap_caps_free(buf);
+   cJSON *r = cJSON_CreateObject();
+   cJSON_AddBoolToObject(r, "ok", true);
+   cJSON_AddNumberToObject(r, "bytes", total);
+   tab5_debug_obs_event("debug.inject_ws", "done");
+   return send_json_resp(req, r);
+}
+
+esp_err_t debug_inject_ws_handler(httpd_req_t *req) { return debug_inject_ws_handler_impl(req); }
+
 /* ======================================================================== */
 /*  Server init                                                              */
 /* ======================================================================== */
@@ -3916,6 +3961,13 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_inject_audio = {
         .uri = "/debug/inject_audio", .method = HTTP_POST, .handler = debug_inject_audio_handler};
 
+    /* TT #328 Wave 2 — synthetic WS-frame injector for error-surfacing
+     * user-story tests (config_update.error, dictation_postprocessing_*,
+     * generic `error`-type frames). */
+    extern esp_err_t debug_inject_ws_handler(httpd_req_t * req);
+    const httpd_uri_t uri_inject_ws = {
+        .uri = "/debug/inject_ws", .method = HTTP_POST, .handler = debug_inject_ws_handler};
+
     httpd_register_uri_handler(server, &uri_index);
     httpd_register_uri_handler(server, &uri_screenshot);
     httpd_register_uri_handler(server, &uri_screenshot_jpg);
@@ -3984,6 +4036,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_nvs_erase);
     httpd_register_uri_handler(server, &uri_inject_error);
     httpd_register_uri_handler(server, &uri_inject_audio);
+    httpd_register_uri_handler(server, &uri_inject_ws);
 
     /* Log the URL */
     char ip[20];

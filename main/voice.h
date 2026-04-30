@@ -125,6 +125,14 @@ esp_err_t voice_send_text(const char *text);
  *  (e.g. voice_video.c prefixes a 4-byte type magic). */
 esp_err_t voice_ws_send_binary_public(const void *data, size_t len);
 
+/** TT #328 Wave 2 — debug-only entry point for the e2e harness.  Routes
+ *  a JSON string through the WS-text dispatcher as if it had arrived
+ *  on the rx path, so user-story scenarios can fire synthetic
+ *  config_update.error / dictation_postprocessing_cancelled / error
+ *  frames and assert the resulting toast/banner without needing Dragon
+ *  to actually misbehave.  No-op when len <= 0. */
+void voice_debug_inject_text(const char *data, int len);
+
 /** #272 Phase 3E: start / stop in-call audio.  Spawns the mic capture
  *  task in VOICE_MODE_CALL — chunks are wrapped with the AUD0 magic
  *  prefix so Dragon broadcasts them to the call peer instead of

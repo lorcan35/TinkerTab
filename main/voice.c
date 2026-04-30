@@ -829,6 +829,67 @@ static void voice_async_error_banner(const char *static_text) {
    tab5_lv_async_call(async_show_error_banner_cb, b);
 }
 
+/* TT #328 Wave 2 — dynamic-string banner variant.  Dragon-side error
+ * messages (config_update.error, transient `error` frames with
+ * non-static strings) need a heap-owned copy so the WS rx task can
+ * safely return before LVGL processes the async call.  Strdups into
+ * a heap-owned struct, the cb shows the banner + frees both.  Pass
+ * `dismissable=true` to allow user-tap dismiss (the standard recovery
+ * path); `false` for system-cleared-only banners. */
+typedef struct {
+   char *text; /* heap, freed in cb after lvgl reads it */
+   bool dismissable;
+} voice_banner_dyn_t;
+
+static void async_dismiss_banner_cb(void) {
+   /* Wave 2: tap-to-dismiss handler.  ui_home_show_error_banner installs
+    * us as the cb when dismissable=true; firing means the user
+    * acknowledged so we just clear. */
+   ui_home_clear_error_banner();
+}
+
+static void async_show_error_banner_dyn_cb(void *arg) {
+   voice_banner_dyn_t *b = (voice_banner_dyn_t *)arg;
+   if (!b) return;
+   if (b->text) {
+      ui_home_show_error_banner(b->text, b->dismissable ? async_dismiss_banner_cb : NULL);
+      free(b->text);
+   }
+   free(b);
+}
+
+static void voice_async_error_banner_dyn(const char *text, bool dismissable) {
+   if (!text || !text[0]) return;
+   voice_banner_dyn_t *b = heap_caps_malloc(sizeof(*b), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!b) {
+      ESP_LOGW(TAG, "voice_async_error_banner_dyn OOM (struct) — banner dropped");
+      return;
+   }
+   size_t len = strlen(text) + 1;
+   b->text = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!b->text) {
+      ESP_LOGW(TAG, "voice_async_error_banner_dyn OOM (text) — banner dropped");
+      free(b);
+      return;
+   }
+   memcpy(b->text, text, len);
+   b->dismissable = dismissable;
+   tab5_lv_async_call(async_show_error_banner_dyn_cb, b);
+}
+
+/* TT #328 Wave 2 — recovery-aware banner state.  When config_update.error
+ * fires we mark the fallback banner active; on the next successful
+ * llm_done we auto-clear it (recovery signal).  Volatile because the
+ * flag is written from the WS rx task and read from llm_done handling
+ * on the same task — no contention, but the compiler might reorder
+ * across the lv_async_call boundary otherwise. */
+static volatile bool s_fallback_banner_active = false;
+
+static void async_clear_banner_cb(void *arg) {
+   (void)arg;
+   ui_home_clear_error_banner();
+}
+
 static void voice_async_refresh_badge(void)
 {
     voice_async_badge_t *b = malloc(sizeof(voice_async_badge_t));
@@ -843,6 +904,17 @@ static void voice_async_refresh_badge(void)
 // ---------------------------------------------------------------------------
 // JSON message handling (Dragon -> Tab5)
 // ---------------------------------------------------------------------------
+
+/* TT #328 Wave 2 — debug entry-point exposed via voice.h so the e2e
+ * harness can fire synthetic WS frames into the dispatcher without
+ * needing Dragon to misbehave.  Tiny wrapper, no validation beyond
+ * the len > 0 guard — the JSON parser inside handle_text_message
+ * already rejects malformed input. */
+void voice_debug_inject_text(const char *data, int len) {
+   if (!data || len <= 0) return;
+   handle_text_message(data, len);
+}
+
 static void handle_text_message(const char *data, int len)
 {
     cJSON *root = cJSON_ParseWithLength(data, len);
@@ -1133,11 +1205,21 @@ static void handle_text_message(const char *data, int len)
         voice_async_toast(strdup(buf));
         voice_set_state(VOICE_STATE_READY, "dictation_done");
     } else if (strcmp(type_str, "dictation_postprocessing_cancelled") == 0) {
-        /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
-         * post-process.  The new dictation will emit its own
-         * `dictation_postprocessing` event a few ms later — silently log
-         * here so we don't fight the new caption. */
-        ESP_LOGI(TAG, "Dictation post-process cancelled (superseded by new dictation)");
+       /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
+        * post-process.  The new dictation will emit its own
+        * `dictation_postprocessing` event a few ms later — silently log
+        * here so we don't fight the new caption.
+        *
+        * TT #328 Wave 2 (audit error-surfacing) — the original handler
+        * was log-only, but on the cancellation-WITHOUT-followup path
+        * (Dragon shut down, user disconnected mid-dictation, failover
+        * race) the user is left staring at "Generating summary..."
+        * forever because no dictation_postprocessing comes to override
+        * it.  Reset to READY so the caption clears; if a legitimate
+        * follow-up _postprocessing fires it'll re-set the caption a
+        * few ms later anyway, no UI flicker visible. */
+       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
+       voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
     } else if (strcmp(type_str, "dictation_summary") == 0) {
         cJSON *title = cJSON_GetObjectItem(root, "title");
         cJSON *summary = cJSON_GetObjectItem(root, "summary");
@@ -1163,6 +1245,17 @@ static void handle_text_message(const char *data, int len)
                  cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        /* TT #328 Wave 2 — recovery hook.  The fallback banner that fires
+         * on config_update.error sticks until the user dismisses or until
+         * a successful turn comes back through.  llm_done is the
+         * canonical "things are working again" signal — clear it here so
+         * the user sees the "things are back to normal" state without
+         * having to manually tap the banner. */
+        if (s_fallback_banner_active) {
+           ESP_LOGI(TAG, "Wave 2: clearing fallback banner (recovery via llm_done)");
+           s_fallback_banner_active = false;
+           tab5_lv_async_call(async_clear_banner_cb, NULL);
+        }
         /* #293: emit obs event for e2e harness. */
         {
             extern void tab5_debug_obs_event(const char *kind, const char *detail);
@@ -1353,6 +1446,15 @@ static void handle_text_message(const char *data, int len)
                     voice_async_toast(toast_msg);
                 }
             }
+            /* TT #328 Wave 2 (audit error-surfacing) — toast was the
+             * only surface; auto-dismissed in 3 s.  Users glancing
+             * away missed the fact that they got auto-downgraded to
+             * Local + lost cloud STT/TTS quality.  Pair the toast
+             * with a persistent dismissable error banner that sits
+             * until the user acknowledges OR until the next
+             * successful llm_done auto-clears it (recovery signal). */
+            voice_async_error_banner_dyn(error->valuestring, true /* dismissable */);
+            s_fallback_banner_active = true;
             voice_set_state(VOICE_STATE_READY, error->valuestring);
         }
         cJSON *vmode = cJSON_GetObjectItem(root, "voice_mode");
