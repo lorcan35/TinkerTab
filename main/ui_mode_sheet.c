@@ -292,10 +292,16 @@ void ui_mode_sheet_show(void)
         lv_obj_set_size(row, MS_W - 2 * SIDE_PAD, SEG_H);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        const int gap = 10;
-        const int chip_count = 4;
+        /* TT #328 Wave 9 follow-up — Onboard added as a 5th preset.
+         * vmode=4 (K144) doesn't fit the int/voi/aut dial taxonomy
+         * (it's an entirely different runtime — on-device chip, no
+         * Dragon involvement); preset_click_cb's case 4 takes a
+         * direct-write path that bypasses tab5_mode_resolve.  Closes
+         * the "K144 unreachable from mode-sheet" half of audit P0 #10. */
+        const int gap = 8;
+        const int chip_count = 5;
         const int chip_w = ((MS_W - 2 * SIDE_PAD) - gap * (chip_count - 1)) / chip_count;
-        const char *labels[4] = { "Local", "Hybrid", "Cloud", "Agent" };
+        const char *labels[5] = {"Local", "Hybrid", "Cloud", "Agent", "Onboard"};
         extern void preset_click_cb(lv_event_t *e);
         for (int c = 0; c < chip_count; c++) {
             lv_obj_t *chip = lv_obj_create(row);
@@ -520,6 +526,19 @@ void preset_click_cb(lv_event_t *e)
             refresh_composite();
             show_agent_consent(prev_aut);
             return;  /* do NOT persist yet — modal commits or reverts */
+        case 4:      /* Onboard — TT #328 Wave 9 follow-up.  Direct vmode=4
+                      * write that bypasses tab5_mode_resolve (which only
+                      * maps to 0..3).  K144 is its own runtime — the dial
+                      * taxonomy doesn't apply, so the dials' visual state
+                      * stays at whatever the user last picked.  Closes the
+                      * "K144 unreachable from sheet" half of audit P0 #10. */
+           tab5_settings_set_voice_mode(VOICE_MODE_ONBOARD);
+           char model[64] = {0};
+           tab5_settings_get_llm_model(model, sizeof(model));
+           voice_send_config_update(VOICE_MODE_ONBOARD, model);
+           ESP_LOGI(TAG, "Onboard preset -> voice_mode=%d (K144)", VOICE_MODE_ONBOARD);
+           ui_mode_sheet_hide();
+           return;
         default: return;
     }
     refresh_segments();
