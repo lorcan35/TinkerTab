@@ -77,7 +77,7 @@ TAB5_TOKEN=... python3 tests/e2e/runner.py story_smoke story_onboard
 - Open chat keyboard → close → nav home; mic button stays hidden (manual)
 - `/navigate?screen=chat` followed within 100 ms by an injected tap on the orb fires `voice_onboard_chain_start` reliably (e2e check)
 - `story_onboard` step 9 ("chain_active or transitional after tap") flake-free for 5 consecutive runs
-- Persistent home button visible on Camera / Files / Notes / Wifi (escape hatch closes a11y #11 finding)
+- ~~Persistent home button visible on Camera / Files / Notes / Wifi (escape hatch closes a11y #11 finding)~~ — **deferred** to a follow-up; not a P0 fix.  The Wave 2 PR closes the two audit P0s only (mic-button leak + touch-after-nav race).  Persistent-home-button is a feature add and will land in Wave 7 (nav polish) or as an independent micro-PR.
 
 ---
 

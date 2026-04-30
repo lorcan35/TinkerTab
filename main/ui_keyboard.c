@@ -242,9 +242,18 @@ void ui_keyboard_hide(void)
         switch_layer(false);
     }
 
-    /* Restore mic button */
-    lv_obj_t *mic_btn = ui_voice_get_mic_btn();
-    if (mic_btn) lv_obj_clear_flag(mic_btn, LV_OBJ_FLAG_HIDDEN);
+    /* TT #328 Wave 2: removed unconditional mic-button restore here.
+     * Pre-Wave-2 this clear_flag fired regardless of which screen owned
+     * the chrome — open keyboard inside chat → close it → nav home and
+     * the mic stayed visible, shadowing the home menu chip's hitbox at
+     * (612..668, 1160..1216).  No screen explicitly *shows* the floating
+     * mic button (the orb + chat input bar own voice triggers), so the
+     * net behaviour is: mic stays hidden as main.c set it at boot.  If
+     * a future screen wants the floating mic, it must call
+     * lv_obj_clear_flag on ui_voice_get_mic_btn() in its own _show().
+     *
+     * Keyboard trigger is NOT restored here either — its visibility is
+     * also a per-screen concern (see ui_home.c:782 boot hide). */
 
     ESP_LOGI(TAG, "Keyboard hiding");
 }

@@ -150,19 +150,14 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
 
-    /* Check for debug server touch injection first */
-    int32_t inj_x, inj_y;
-    bool inj_pressed;
-    if (tab5_debug_touch_override(&inj_x, &inj_y, &inj_pressed)) {
-        data->point.x = inj_x;
-        data->point.y = inj_y;
-        data->state = inj_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        return;
-    }
-
+    /* TT #328 Wave 2 — read real touch FIRST so a finger on the glass wins
+     * over any debug inject in flight.  Pre-Wave-2 the inject branch always
+     * pre-empted real input; an HTTP injected tap fired during a real swipe
+     * would shadow the user's finger and either miss its target or force
+     * LVGL to dispatch the inject coords as if they were the real touch.
+     * Audit P0 #3 traced the symptom to this priority inversion. */
     tab5_touch_point_t points[TAB5_TOUCH_MAX_POINTS];
     uint8_t count = 0;
-
     bool touched = tab5_touch_read(points, &count);
     if (touched && count > 0) {
         int32_t x = points[0].x;
@@ -171,14 +166,24 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         data->point.x = x;
         data->point.y = y;
         data->state = LV_INDEV_STATE_PRESSED;
-        /* Log first 20 touches for debug */
         if (s_touch_debug_counter < 20) {
             ESP_LOGI(TAG, "TOUCH: x=%d y=%d s=%d", points[0].x, points[0].y, points[0].strength);
             s_touch_debug_counter++;
         }
-    } else {
-        data->state = LV_INDEV_STATE_RELEASED;
+        return;
     }
+
+    /* No real finger — debug inject (atomic seqlock-published) can drive. */
+    int32_t inj_x, inj_y;
+    bool inj_pressed;
+    if (tab5_debug_touch_override(&inj_x, &inj_y, &inj_pressed)) {
+       data->point.x = inj_x;
+       data->point.y = inj_y;
+       data->state = inj_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+       return;
+    }
+
+    data->state = LV_INDEV_STATE_RELEASED;
 }
 
 /* ========================================================================= */

@@ -13,6 +13,7 @@
 
 #include <dirent.h>
 #include <netinet/tcp.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -160,18 +161,58 @@ static bool check_auth(httpd_req_t *req)
 /* ======================================================================== */
 /*  Touch injection state — read by the LVGL indev read callback             */
 /* ======================================================================== */
-static volatile bool     s_inject_active = false;
-static volatile int32_t  s_inject_x = 0;
-static volatile int32_t  s_inject_y = 0;
-static volatile bool     s_inject_pressed = false;
+/* TT #328 Wave 2 — atomic-CAS read.  Pre-Wave-2 the four globals were read
+ * independently in tab5_debug_touch_override; the LVGL thread could observe
+ * a torn snapshot mid-write from the HTTP handler thread (e.g. swipe step
+ * lands x=midpoint while pressed=false from the previous release).  Story
+ * #294 + audit P0 #3 traced flaky story_onboard step 9 ("inject tap on orb
+ * 100 ms after /navigate to chat") to exactly this race.
+ *
+ * Fix: seqlock pattern.  Writer increments seq twice around the four-field
+ * publish (odd = mid-write, even = published).  Reader spins until seq is
+ * even AND unchanged across the field read — guarantees a self-consistent
+ * snapshot without taking a mutex on the LVGL hot path. */
+typedef struct {
+   int32_t x;
+   int32_t y;
+   bool active;
+   bool pressed;
+} debug_inject_state_t;
+
+static debug_inject_state_t s_inject_state = {0};
+static _Atomic uint32_t s_inject_seq = 0; /* odd while writing, even when stable */
+
+static inline void inject_publish(int32_t x, int32_t y, bool active, bool pressed) {
+   /* Begin write — make seq odd. */
+   atomic_fetch_add_explicit(&s_inject_seq, 1, memory_order_relaxed);
+   atomic_thread_fence(memory_order_release);
+   s_inject_state.x = x;
+   s_inject_state.y = y;
+   s_inject_state.active = active;
+   s_inject_state.pressed = pressed;
+   atomic_thread_fence(memory_order_release);
+   /* End write — make seq even. */
+   atomic_fetch_add_explicit(&s_inject_seq, 1, memory_order_relaxed);
+}
 
 bool tab5_debug_touch_override(int32_t *x, int32_t *y, bool *pressed)
 {
-    if (!s_inject_active) return false;
-    *x = s_inject_x;
-    *y = s_inject_y;
-    *pressed = s_inject_pressed;
-    return true;
+   debug_inject_state_t snap = {0};
+   uint32_t seq_before = 0, seq_after = 0;
+   /* Spin until seq is even (writer not in progress) and stable across read. */
+   do {
+      seq_before = atomic_load_explicit(&s_inject_seq, memory_order_acquire);
+      if (seq_before & 1u) continue; /* writer mid-publish */
+      snap = s_inject_state;
+      atomic_thread_fence(memory_order_acquire);
+      seq_after = atomic_load_explicit(&s_inject_seq, memory_order_relaxed);
+   } while (seq_before != seq_after);
+
+   if (!snap.active) return false;
+   *x = snap.x;
+   *y = snap.y;
+   *pressed = snap.pressed;
+   return true;
 }
 
 #define FB_W       TAB5_DISPLAY_WIDTH   /* 720  */
@@ -534,19 +575,17 @@ static esp_err_t touch_handler(httpd_req_t *req)
         int steps = dur / step_ms;
         if (steps < 5) steps = 5;
 
-        s_inject_x = x1;
-        s_inject_y = y1;
-        s_inject_pressed = true;
-        s_inject_active = true;
+        inject_publish(x1, y1, /*active=*/true, /*pressed=*/true);
         vTaskDelay(pdMS_TO_TICKS(40));   /* settle — let LVGL see the press */
         for (int i = 1; i <= steps; i++) {
-            s_inject_x = x1 + (x2 - x1) * i / steps;
-            s_inject_y = y1 + (y2 - y1) * i / steps;
-            vTaskDelay(pdMS_TO_TICKS(step_ms));
+           int32_t sx = x1 + (x2 - x1) * i / steps;
+           int32_t sy = y1 + (y2 - y1) * i / steps;
+           inject_publish(sx, sy, /*active=*/true, /*pressed=*/true);
+           vTaskDelay(pdMS_TO_TICKS(step_ms));
         }
-        s_inject_pressed = false;
+        inject_publish(s_inject_state.x, s_inject_state.y, /*active=*/true, /*pressed=*/false);
         vTaskDelay(pdMS_TO_TICKS(100));  /* release + LVGL gesture dispatch */
-        s_inject_active = false;
+        inject_publish(0, 0, /*active=*/false, /*pressed=*/false);
 
         cJSON_Delete(root);
         httpd_resp_set_type(req, "application/json");
@@ -568,20 +607,16 @@ static esp_err_t touch_handler(httpd_req_t *req)
 
     ESP_LOGI(TAG, "Touch inject: x=%d y=%d action=%s", x, y, action);
 
-    /* Inject via shared override variables (polled by LVGL touch read callback) */
+    /* Inject via atomic seqlock-published state (polled by LVGL touch_read_cb).
+     * TT #328 Wave 2: each transition is published atomically so the reader
+     * never observes torn (x, y, active, pressed) tuples. */
     if (strcmp(action, "release") == 0) {
-        s_inject_x = x;
-        s_inject_y = y;
-        s_inject_pressed = false;
-        s_inject_active = true;
-        vTaskDelay(pdMS_TO_TICKS(100));
-        s_inject_active = false;
+       inject_publish(x, y, /*active=*/true, /*pressed=*/false);
+       vTaskDelay(pdMS_TO_TICKS(100));
+       inject_publish(0, 0, /*active=*/false, /*pressed=*/false);
     } else if (strcmp(action, "press") == 0) {
-        s_inject_x = x;
-        s_inject_y = y;
-        s_inject_pressed = true;
-        s_inject_active = true;
-        /* Leave active — caller must POST release to end it */
+       inject_publish(x, y, /*active=*/true, /*pressed=*/true);
+       /* Leave active — caller must POST release to end it */
     } else if (strcmp(action, "long_press") == 0) {
         /* Hold long enough for LVGL LV_EVENT_LONG_PRESSED (default 400 ms) +
            a little slack so LONG_PRESSED_REPEAT doesn't mis-fire. Caller can
@@ -590,24 +625,18 @@ static esp_err_t touch_handler(httpd_req_t *req)
         int dur = (jdur && cJSON_IsNumber(jdur)) ? jdur->valueint : 800;
         if (dur < 500)  dur = 500;
         if (dur > 5000) dur = 5000;
-        s_inject_x = x;
-        s_inject_y = y;
-        s_inject_pressed = true;
-        s_inject_active = true;
+        inject_publish(x, y, /*active=*/true, /*pressed=*/true);
         vTaskDelay(pdMS_TO_TICKS(dur));
-        s_inject_pressed = false;
+        inject_publish(x, y, /*active=*/true, /*pressed=*/false);
         vTaskDelay(pdMS_TO_TICKS(100));
-        s_inject_active = false;
+        inject_publish(0, 0, /*active=*/false, /*pressed=*/false);
     } else {
         /* tap: press, hold 200ms, release (needs 2+ LVGL ticks for CLICKED) */
-        s_inject_x = x;
-        s_inject_y = y;
-        s_inject_pressed = true;
-        s_inject_active = true;
+        inject_publish(x, y, /*active=*/true, /*pressed=*/true);
         vTaskDelay(pdMS_TO_TICKS(200));
-        s_inject_pressed = false;
+        inject_publish(x, y, /*active=*/true, /*pressed=*/false);
         vTaskDelay(pdMS_TO_TICKS(100));
-        s_inject_active = false;
+        inject_publish(0, 0, /*active=*/false, /*pressed=*/false);
     }
 
     cJSON_Delete(root);
