@@ -686,8 +686,13 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(s_say_label_main, FONT_HEADING, 0);
     lv_obj_set_style_text_color(s_say_label_main, lv_color_hex(TH_TEXT_PRIMARY), 0);
 
+    /* TT #328 Wave 7 — was 'OR SAY "DRAGON"'.  Wake-word stack was
+     * retired in #162 (TDM-slot mapping unworkable without a custom
+     * "Hey Tinker" WakeNet model); the sub-pill text was stale and
+     * promised a feature the firmware doesn't have.  Replaced with a
+     * concrete HOLD-vs-TAP hint that matches actual orb semantics. */
     s_say_label_sub = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_sub, "OR SAY \"DRAGON\"");
+    lv_label_set_text(s_say_label_sub, "HOLD FOR DICTATE");
     lv_obj_set_pos(s_say_label_sub, 116, 60);
     lv_obj_set_style_text_font(s_say_label_sub, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_say_label_sub, lv_color_hex(TH_TEXT_DIM), 0);
@@ -1974,12 +1979,11 @@ void ui_home_go_home(void)
     ui_keyboard_set_trigger_visible(false);
 }
 
-lv_obj_t *ui_home_get_tileview(void) { return NULL; }
-
-lv_obj_t *ui_home_get_tile(int page)
-{
-    return (page == 0) ? s_screen : NULL;
-}
+/* TT #328 Wave 7 — ui_home_get_tileview / ui_home_get_tile removed.
+ * Both were already neutered (return NULL / return s_screen on page=0)
+ * since v4·C retired the 4-page tileview in favour of the single-screen
+ * Ambient Canvas (CLAUDE.md "4-page tileview" line was stale).  Deleting
+ * the hollow shells now that no caller has used them since #155. */
 
 void ui_home_nav_settings(void)
 {

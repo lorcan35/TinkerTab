@@ -59,10 +59,11 @@ static void go_settings(void) { extern lv_obj_t *ui_settings_create(void); ui_se
 static void go_camera(void)   { extern lv_obj_t *ui_camera_create(void); ui_camera_create(); }
 static void go_files(void)    { extern lv_obj_t *ui_files_create(void);  ui_files_create();  }
 static void go_memory(void)   { ui_memory_show();   }
-/* U1 (#206): Sessions / Agents / Focus were reachable only via the
- * /navigate debug endpoint — no on-device entry point.  Wire them into
- * the nav sheet's tile grid so users can actually open them. */
-static void go_sessions(void) { ui_sessions_show(); }
+/* U1 (#206): Agents / Focus were reachable only via the /navigate debug
+ * endpoint — no on-device entry point.  Wire them into the nav sheet's
+ * tile grid so users can actually open them.
+ * TT #328 Wave 7 P0 #4: Sessions removed from the tile grid (chat-header
+ * chevron drawer is the canonical entry); see s_tiles comment. */
 static void go_agents(void)   { ui_agents_show();   }
 static void go_focus(void)    { ui_focus_show();    }
 /* #270 Phase 3D: opens an in-call pane (remote video full-screen +
@@ -72,17 +73,25 @@ static void go_focus(void)    { ui_focus_show();    }
  * the local feed and vice versa. */
 static void go_call(void)     { voice_video_start_call(5); }
 
+/* TT #328 Wave 7 P0 #4 — pre-Wave-7 the nav sheet had 10 tiles in a
+ * 3×3 grid; the 10th ("Focus") sat at row 3 / y=770 → bottom=954, but
+ * the sheet is only 820 px tall.  Focus was clipped 134 px below the
+ * sheet edge and physically unreachable via tap.
+ *
+ * Fix: drop "Sessions" from this list — it's already reachable via the
+ * chat header's chevron (chat_session_drawer pulls down with full
+ * session list + amber-active marker).  Net result is 9 tiles in a
+ * clean 3×3 grid that fits the 820-px sheet (row 2 bottom = 754). */
 static const nav_tile_t s_tiles[] = {
-    { "Chat",     "Threads \xE2\x80\xA2 history",  go_chat     },
-    { "Notes",    "Voice & text",                  go_notes    },
-    { "Call",     "Live video",                    go_call     },
-    { "Settings", "Mode \xE2\x80\xA2 cap \xE2\x80\xA2 WiFi",  go_settings },
-    { "Camera",   "Viewfinder",                    go_camera   },
-    { "Files",    "SD card",                       go_files    },
-    { "Memory",   "Facts \xE2\x80\xA2 recall",      go_memory   },
-    { "Sessions", "Past conversations",            go_sessions },
-    { "Agents",   "TinkerClaw status",             go_agents   },
-    { "Focus",    "Pomodoro \xE2\x80\xA2 timers",   go_focus    },
+    {"Chat", "Threads \xE2\x80\xA2 history", go_chat},
+    {"Notes", "Voice & text", go_notes},
+    {"Call", "Live video", go_call},
+    {"Settings", "Mode \xE2\x80\xA2 cap \xE2\x80\xA2 WiFi", go_settings},
+    {"Camera", "Viewfinder", go_camera},
+    {"Files", "SD card", go_files},
+    {"Memory", "Facts \xE2\x80\xA2 recall", go_memory},
+    {"Agents", "TinkerClaw status", go_agents},
+    {"Focus", "Pomodoro \xE2\x80\xA2 timers", go_focus},
 };
 #define NAV_TILE_COUNT (sizeof(s_tiles) / sizeof(s_tiles[0]))
 
