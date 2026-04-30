@@ -1344,11 +1344,10 @@ static void refresh_timer_cb(lv_timer_t *t)
  * the user got a free Local→Hybrid jump and then immediately started
  * recording against the wrong tier.  Audit P0 #9.  Set by orb_long_press_cb;
  * consumed at orb_click_cb entry. */
+/* Wave 8 P0 #10: the long-press now opens the mode-sheet (was: cycled
+ * NVS directly with an undo pill).  Swallow flag still needed so the
+ * trailing CLICKED doesn't also open the listening overlay. */
 static bool s_orb_long_pressed = false;
-/* Snapshot of the pre-cycle mode + model so the undo-toast cb can revert
- * NVS + WS without the user re-picking the prior tier. */
-static uint8_t s_orb_undo_prev_mode = 0;
-static char s_orb_undo_prev_model[64] = {0};
 
 static void orb_click_cb(lv_event_t *e)
 {
@@ -1584,46 +1583,29 @@ static void refresh_media_image(const widget_t *w)
     }
 }
 
-/* TT #328 Wave 4 — undo callback: revert NVS + WS to the snapshot we
- * took before cycling.  Fires at most once per long-press (the undo-
- * toast clears its cb on tap or expiry). */
-static void orb_undo_mode_change(void) {
-   ESP_LOGI(TAG, "Undo mode change -> %u (%s)", (unsigned)s_orb_undo_prev_mode, s_orb_undo_prev_model);
-   tab5_settings_set_voice_mode(s_orb_undo_prev_mode);
-   voice_send_config_update(s_orb_undo_prev_mode, s_orb_undo_prev_model);
-   update_mode_ui(s_orb_undo_prev_mode);
-   char buf[48];
-   snprintf(buf, sizeof(buf), "Reverted to %s",
-            (s_orb_undo_prev_mode < VOICE_MODE_COUNT) ? s_mode_short[s_orb_undo_prev_mode] : "?");
-   show_toast_internal(buf);
-}
-
+/* TT #328 Wave 8 P0 #10 — orb long-press now opens the mode-sheet
+ * (same as chip long-press) instead of cycling NVS directly.
+ * Pre-Wave-8 there were two parallel mode-control systems:
+ *   - orb long-press cycle (vmode 0..4 % VOICE_MODE_COUNT)
+ *   - mode-sheet (3-dial: int_tier × voi_tier × aut_tier)
+ * Both wrote the same NVS state via different math; user couldn't tell
+ * which was source of truth.  K144 mode (4) was unreachable via the
+ * dial sheet.  Audit P0 #10 (WCAG 3.3.4 + IA).
+ *
+ * Collapse: orb long-press = open the mode-sheet.  No NVS write until
+ * the user actually picks a tier in the sheet.  Wave-4's undo-pill +
+ * snapshot machinery is no longer needed — cancellation is "tap
+ * outside the sheet" — so the s_orb_undo_prev_* state + cb are
+ * removed.  The s_orb_long_pressed swallow flag stays (still needed
+ * to suppress the trailing CLICKED from opening the listening
+ * overlay on long-press release). */
 static void orb_long_press_cb(lv_event_t *e)
 {
     (void)e;
     if (any_overlay_visible()) return;
-    uint8_t next = (s_badge_mode + 1) % VOICE_MODE_COUNT;
-    ESP_LOGI(TAG, "orb long-pressed -> cycle mode %d -> %d", s_badge_mode, next);
-
-    /* TT #328 Wave 4 P0 #9 — snapshot pre-state for undo BEFORE mutating. */
-    s_orb_undo_prev_mode = s_badge_mode;
-    tab5_settings_get_llm_model(s_orb_undo_prev_model, sizeof(s_orb_undo_prev_model));
-    /* Mark the swallow flag so the trailing CLICKED on release doesn't
-     * also open the listening overlay against the new tier. */
     s_orb_long_pressed = true;
-
-    tab5_settings_set_voice_mode(next);
-    char model[64];
-    tab5_settings_get_llm_model(model, sizeof(model));
-    voice_send_config_update(next, model);
-    update_mode_ui(next);
-
-    /* TT #328 Wave 4 P0 #9 — undo-pill toast.  Cost-bearing changes
-     * (Cloud is $0.03–0.08/turn) deserve a 5 s grace window before
-     * committing.  Tap the toast to revert; ignore to confirm. */
-    char buf[48];
-    snprintf(buf, sizeof(buf), "Mode: %s", s_mode_short[next]);
-    ui_home_show_undo_toast(buf, 5, orb_undo_mode_change);
+    extern void ui_mode_sheet_show(void);
+    ui_mode_sheet_show();
 }
 
 static void mode_chip_long_press_cb(lv_event_t *e)

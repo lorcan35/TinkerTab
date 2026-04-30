@@ -6,15 +6,17 @@
  */
 
 #include "ui_onboarding.h"
+
+#include <stdio.h>
+
+#include "config.h"
+#include "esp_log.h"
+#include "settings.h"
 #include "ui_home.h"
 #include "ui_theme.h"
-#include "settings.h"
+#include "ui_wifi.h" /* TT #328 Wave 8 P0 #11: Wi-Fi setup from onboarding */
 #include "voice.h"
 #include "wifi.h"
-#include "config.h"
-
-#include "esp_log.h"
-#include <stdio.h>
 
 static const char *TAG = "ui_onboarding";
 
@@ -43,38 +45,47 @@ typedef struct {
     const char *secondary;
 } onboard_card_t;
 
+/* TT #328 Wave 8 P0 #11 — first card now varies based on whether Wi-Fi
+ * is up.  If Wi-Fi is NOT connected (factory default — config.h's
+ * compile-time SSID/password don't match the user's network), the
+ * welcome card's secondary button routes to ui_wifi_create() so the
+ * brand-new user can pick their network on-device.  Once Wi-Fi is up
+ * the secondary button reverts to "Skip" (legacy behavior).  Pre-Wave-8
+ * the brand-new user had no on-device path to Wi-Fi setup before
+ * hitting Home — CLAUDE.md's "5-min conversation" goal was structurally
+ * unreachable on factory hardware. */
 static const onboard_card_t s_cards[] = {
     {
-        .kicker    = "\xe2\x80\xa2 WELCOME",
-        .title     = "Hey, I'm Tinker.",
-        .body      = "Hold the amber orb to talk - any screen, any time.\n"
-                     "I'll listen, think, and either speak back or paint\n"
-                     "something useful on the home screen.\n\n"
-                     "No wake word needed. No typing unless you want to.",
-        .primary   = "Next",
+        .kicker = "\xe2\x80\xa2 WELCOME",
+        .title = "Hey, I'm Tinker.",
+        .body = "Hold the amber orb to talk - any screen, any time.\n"
+                "I'll listen, think, and either speak back or paint\n"
+                "something useful on the home screen.\n\n"
+                "No wake word needed. No typing unless you want to.",
+        .primary = "Next",
+        .secondary = "Skip", /* render_step swaps to "Set up Wi-Fi" if needed */
+    },
+    {
+        .kicker = "\xe2\x80\xa2 HOW I THINK",
+        .title = "Four ways to reply.",
+        .body = "Local: runs on the Dragon box next to you.\n"
+                "            Private, free, a little slower.\n\n"
+                "Hybrid: cloud ears + local brain.\n\n"
+                "Cloud: GPT/Claude/Gemini - fast, smart, billed.\n\n"
+                "Agent: the TinkerClaw gateway with tools + memory.\n"
+                "            Long-press the mode chip to switch.",
+        .primary = "Next",
         .secondary = "Skip",
     },
     {
-        .kicker    = "\xe2\x80\xa2 HOW I THINK",
-        .title     = "Four ways to reply.",
-        .body      = "Local: runs on the Dragon box next to you.\n"
-                     "            Private, free, a little slower.\n\n"
-                     "Hybrid: cloud ears + local brain.\n\n"
-                     "Cloud: GPT/Claude/Gemini - fast, smart, billed.\n\n"
-                     "Agent: the TinkerClaw gateway with tools + memory.\n"
-                     "            Long-press the mode chip to switch.",
-        .primary   = "Next",
-        .secondary = "Skip",
-    },
-    {
-        .kicker    = "\xe2\x80\xa2 YOUR DATA",
-        .title     = "Memory is yours.",
-        .body      = "Everything you say sits on the Dragon box on your\n"
-                     "network, not in someone's data center. Ask me to\n"
-                     "forget anything at any time.\n\n"
-                     "Agent mode bypasses your local memory - I run from\n"
-                     "the gateway's context. You'll see a warning first.",
-        .primary   = "Get started",
+        .kicker = "\xe2\x80\xa2 YOUR DATA",
+        .title = "Memory is yours.",
+        .body = "Everything you say sits on the Dragon box on your\n"
+                "network, not in someone's data center. Ask me to\n"
+                "forget anything at any time.\n\n"
+                "Agent mode bypasses your local memory - I run from\n"
+                "the gateway's context. You'll see a warning first.",
+        .primary = "Get started",
         .secondary = NULL,
     },
 };
@@ -207,11 +218,21 @@ static void render_step(int step)
             lv_color_hex(i == step ? TH_AMBER : 0x2A2A3A), 0);
     }
 
-    if (c->secondary) {
-        lv_obj_clear_flag(s_secondary_btn, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(s_secondary_lbl, c->secondary);
+    /* TT #328 Wave 8 P0 #11 — on the welcome card, swap the secondary
+     * button to "Set up Wi-Fi" when not yet connected.  This is the
+     * factory-fresh path: user lands here with compile-time creds that
+     * don't match their network, and now has an on-device way to fix
+     * it before "Get started" lands them on a non-functional home. */
+    if (step == 0 && !tab5_wifi_connected()) {
+       lv_obj_clear_flag(s_secondary_btn, LV_OBJ_FLAG_HIDDEN);
+       lv_label_set_text(s_secondary_lbl, "Set up Wi-Fi");
+       lv_obj_set_style_text_color(s_secondary_lbl, lv_color_hex(TH_AMBER), 0);
+    } else if (c->secondary) {
+       lv_obj_clear_flag(s_secondary_btn, LV_OBJ_FLAG_HIDDEN);
+       lv_label_set_text(s_secondary_lbl, c->secondary);
+       lv_obj_set_style_text_color(s_secondary_lbl, lv_color_hex(TH_TEXT_DIM), 0);
     } else {
-        lv_obj_add_flag(s_secondary_btn, LV_OBJ_FLAG_HIDDEN);
+       lv_obj_add_flag(s_secondary_btn, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -229,6 +250,21 @@ static void primary_cb(lv_event_t *e)
 static void secondary_cb(lv_event_t *e)
 {
     (void)e;
+    /* TT #328 Wave 8 P0 #11 — on the welcome card with Wi-Fi down, the
+     * secondary button is "Set up Wi-Fi"; route to ui_wifi_create() and
+     * call ui_onboarding_finish so the carousel doesn't relaunch when
+     * the user dismisses the Wi-Fi screen back to home.  The
+     * verify-round-trip toast still fires 3 s later so the user gets a
+     * concrete signal about whether their setup landed (it'll usually
+     * read "Setup unfinished" if Wi-Fi is still associating, which
+     * matches the in-flight Wi-Fi screen UI).  All other cards /
+     * Wi-Fi-up state preserve the legacy "Skip" = finish behaviour. */
+    if (s_step == 0 && !tab5_wifi_connected()) {
+       ESP_LOGI(TAG, "onboarding: routing to Wi-Fi setup");
+       ui_onboarding_finish();
+       ui_wifi_create();
+       return;
+    }
     ui_onboarding_finish();
 }
 
