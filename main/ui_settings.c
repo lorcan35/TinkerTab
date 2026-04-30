@@ -172,6 +172,47 @@ static lv_obj_t *s_tinkerclaw_card   = NULL;
 static lv_obj_t *s_tinkerclaw_content[4] = {NULL};
 static uint8_t   s_active_tab     = 0;
 
+/* TT #328 Wave 4 — Cloud LLM picker.
+ *
+ * Pre-Wave-4 the Cloud row's description showed the live llm_model
+ * NVS value as a read-only suffix; Settings had no UI to actually
+ * choose between cloud models.  Users had to SSH Dragon and edit
+ * config.yaml to switch between Haiku / Sonnet / GPT-4o / etc.
+ *
+ * Wave 4 adds a curated 5-chip picker rendered just below the mode
+ * rows.  Tap a chip → write NVS llm_mdl + send config_update so
+ * Dragon hot-swaps the backend.  Always visible (not gated on Cloud
+ * being the active tab) so users can pre-select a model before
+ * flipping to Cloud.  Selected chip gets the same amber-wash style
+ * the active mode row uses for visual continuity.
+ *
+ * Selection of which models to expose: pulled from the multi-model
+ * router's catalog (`dragon_voice/llm/openrouter_llm.py`
+ * `_OPENROUTER_CAPS`).  We bias toward the practical sweet-spot
+ * for a voice-first device:
+ *   - Haiku 3.5  : cheapest text+vision+tools, good default
+ *   - Sonnet 4.6 : quality vision, mid-cost
+ *   - GPT-4o     : multimodal incl. audio I/O
+ *   - Gemini 3 F : video-capable + 1 M context
+ *   - DS Flash   : cheapest text-only (no vision)
+ *
+ * Adding more models later = grow the array; UI re-flows automatically. */
+typedef struct {
+   const char *short_label; /* fits in chip ~120 px wide */
+   const char *full_label;  /* shown as description under chip */
+   const char *model_id;    /* what we send to Dragon as llm_model */
+} cloud_model_spec_t;
+static const cloud_model_spec_t s_cloud_models[] = {
+    {"Haiku", "claude-3.5-haiku", "anthropic/claude-3.5-haiku"},
+    {"Sonnet", "claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
+    {"GPT-4o", "gpt-4o", "openai/gpt-4o"},
+    {"Gemini", "gemini-3-flash-preview", "google/gemini-3-flash-preview"},
+    {"DS Flash", "deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
+};
+#define CLOUD_MODEL_COUNT (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
+static lv_obj_t *s_model_chip[CLOUD_MODEL_COUNT] = {NULL};
+static int s_active_model_idx = -1; /* -1 = current NVS value not in our curated list */
+
 /* ══════════════════════════════════════════════════════════════════════
  *  Material Dark Helper Functions
  * ══════════════════════════════════════════════════════════════════════ */
@@ -481,6 +522,69 @@ static void consent_cancel_tc_cb(void *ctx)
 {
     (void)ctx;
     /* No-op — voice_tab_switch never ran, so nothing to revert. */
+}
+
+/* TT #328 Wave 4 — model-chip styling.  Mirrors _mode_row_style so
+ * the picker reads as part of the same composition. */
+static void _model_chip_style(lv_obj_t *chip, bool selected) {
+   if (!chip) return;
+   if (selected) {
+      lv_obj_set_style_border_width(chip, 2, 0);
+      lv_obj_set_style_border_color(chip, lv_color_hex(AMBER), 0);
+      lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_color(chip, lv_color_hex(AMBER), 0);
+      lv_obj_set_style_bg_opa(chip, 18, 0); /* ~7 % wash */
+   } else {
+      lv_obj_set_style_border_width(chip, 1, 0);
+      lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
+      lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_opa(chip, LV_OPA_TRANSP, 0);
+   }
+}
+
+/* TT #328 Wave 4 — repaint the Cloud-row description so it reflects
+ * the freshly-picked model.  s_mode_row[2] is the Cloud row; child
+ * label index 2 is the description (idx 0 = dot, idx 1 = name). */
+static void _cloud_row_refresh_desc(void) {
+   if (s_active_model_idx < 0 || s_active_model_idx >= (int)CLOUD_MODEL_COUNT) return;
+   if (!s_mode_row[2]) return;
+   /* The description is the second LABEL child of the row.  Linear
+    * scan because rows host the dot + 2 labels and we don't store
+    * the label pointer directly. */
+   int label_seen = 0;
+   int n = lv_obj_get_child_count(s_mode_row[2]);
+   for (int i = 0; i < n; i++) {
+      lv_obj_t *c = lv_obj_get_child(s_mode_row[2], i);
+      if (!lv_obj_check_type(c, &lv_label_class)) continue;
+      if (label_seen == 1) {
+         lv_label_set_text(c, s_cloud_models[s_active_model_idx].full_label);
+         return;
+      }
+      label_seen++;
+   }
+}
+
+/* TT #328 Wave 4 — model-chip tap handler. */
+static void cb_model_pick(lv_event_t *e) {
+   intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= (int)CLOUD_MODEL_COUNT) return;
+   if (idx == s_active_model_idx) return; /* no-op tap */
+
+   /* Persist + send to Dragon. */
+   tab5_settings_set_llm_model(s_cloud_models[idx].model_id);
+   ESP_LOGI(TAG, "Wave 4: picked cloud model %s (%s)", s_cloud_models[idx].short_label, s_cloud_models[idx].model_id);
+
+   /* Repaint chips (deselect old, select new) */
+   if (s_active_model_idx >= 0) _model_chip_style(s_model_chip[s_active_model_idx], false);
+   s_active_model_idx = (int)idx;
+   _model_chip_style(s_model_chip[idx], true);
+
+   /* Cloud-row description refresh + send config_update.  The
+    * config_update is a no-op when Dragon WS is down (logged + skipped
+    * in send_voice_config); the NVS value still persists so the next
+    * connect picks it up via session_start. */
+   _cloud_row_refresh_desc();
+   send_voice_config();
 }
 
 /* Single click handler for all 5 radio rows. Mode index comes via user_data. */
@@ -1317,6 +1421,67 @@ lv_obj_t *ui_settings_create(void)
        y += 5 * (row_h + 2) + 12;
     }
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
+
+    /* TT #328 Wave 4 — Cloud LLM picker chips.
+     * Five horizontal chips below the mode rows.  Always rendered
+     * (not gated on Cloud being active) so users can pre-select a
+     * model before flipping to Cloud.  Selection persists to NVS
+     * llm_mdl + sends config_update to Dragon — Dragon hot-swaps
+     * the OpenRouter backend without a session restart. */
+    {
+       /* Resolve current llm_model NVS value to an index in our
+        * curated list.  -1 means the saved value is something we
+        * don't surface in this picker (legacy / power-user / off-
+        * catalog).  In that case the chip row renders all
+        * unselected, with a small "(custom)" caption above. */
+       char cur_model[64] = {0};
+       tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+       s_active_model_idx = -1;
+       for (int i = 0; i < (int)CLOUD_MODEL_COUNT; i++) {
+          if (strcmp(cur_model, s_cloud_models[i].model_id) == 0) {
+             s_active_model_idx = i;
+             break;
+          }
+       }
+
+       /* Section caption — reuses the amber accent from the parent
+        * VOICE MODE section, so it reads as a continuation. */
+       lv_obj_t *cap = lv_label_create(s_scroll);
+       lv_label_set_text(cap, s_active_model_idx >= 0 ? "CLOUD LLM" : "CLOUD LLM (custom — tap to override)");
+       lv_obj_set_pos(cap, SIDE_PAD, y);
+       lv_obj_set_style_text_color(cap, lv_color_hex(AMBER), 0);
+       lv_obj_set_style_text_font(cap, FONT_SECONDARY, 0);
+       lv_obj_set_style_text_letter_space(cap, 4, 0);
+       y += 26;
+
+       const int chip_w = (CONTENT_W - 4 * 8) / (int)CLOUD_MODEL_COUNT; /* 4 gaps of 8 px */
+       const int chip_h = 56;
+       const int gap = 8;
+       for (int i = 0; i < (int)CLOUD_MODEL_COUNT; i++) {
+          lv_obj_t *chip = lv_obj_create(s_scroll);
+          lv_obj_remove_style_all(chip);
+          lv_obj_set_size(chip, chip_w, chip_h);
+          lv_obj_set_pos(chip, SIDE_PAD + i * (chip_w + gap), y);
+          lv_obj_set_style_bg_color(chip, lv_color_hex(CARD_COLOR), 0);
+          lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+          lv_obj_set_style_radius(chip, 12, 0);
+          lv_obj_set_style_border_width(chip, 1, 0);
+          lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
+          lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+          lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+          lv_obj_add_event_cb(chip, cb_model_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+          lv_obj_t *lbl = lv_label_create(chip);
+          lv_label_set_text(lbl, s_cloud_models[i].short_label);
+          lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+          lv_obj_set_style_text_color(lbl, lv_color_hex(TEXT_PRIMARY), 0);
+          lv_obj_center(lbl);
+
+          s_model_chip[i] = chip;
+          if (i == s_active_model_idx) _model_chip_style(chip, true);
+       }
+       y += chip_h + 16;
+    }
 
     /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
      * section visually — single amber caption, rows straight below). */

@@ -891,6 +891,131 @@ def story_wave3_dictation_in_chat(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave4_cloud_picker(r: Runner) -> None:
+    """TT #328 Wave 4 — Cloud LLM picker.
+
+    Pre-Wave-4 the Settings Cloud row showed the live llm_model value
+    as a read-only suffix; users had to SSH Dragon and edit
+    config.yaml to swap models.  Wave 4 ships a 5-chip picker
+    (Haiku / Sonnet / GPT-4o / Gemini / DS Flash) that:
+      - writes NVS llm_mdl on tap
+      - sends config_update to Dragon (hot-swap)
+      - highlights the selected chip with amber wash
+      - updates the Cloud-row description to match
+
+    Touch-driven across all 5 chips + regression on the
+    mode-row picker.  Chip coordinates derived from ui_settings.c
+    geometry (SIDE_PAD=20, CONTENT_W=680, 5 chips, 8 px gaps,
+    chip_w=129).  Section sits at y≈458 (5 mode rows × 66 +
+    section caption); chip-center y ≈ 484.
+    """
+    tab5 = r.tab5
+
+    # Curated model catalog matches s_cloud_models in ui_settings.c.
+    MODELS = [
+        # (chip_x, label,    expected_nvs_value)
+        (84,  "Haiku",   "anthropic/claude-3.5-haiku"),
+        (222, "Sonnet",  "anthropic/claude-sonnet-4.6"),
+        (359, "GPT-4o",  "openai/gpt-4o"),
+        (496, "Gemini",  "google/gemini-3-flash-preview"),
+        (633, "DS Flash", "deepseek/deepseek-v4-flash"),
+    ]
+    CHIP_Y = 484
+
+    # ─── State setup ────────────────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Cancel any leftover voice state",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    time.sleep(1)
+
+    # ─── A. Open Settings + screenshot the picker ───────────────
+    r.step("[A] Navigate to Settings",
+           lambda t: t.navigate("settings").get("navigated") == "settings")
+    time.sleep(2)
+    r.step("[A] Settings overlay visible",
+           lambda t: t.screen().get("overlays", {}).get("settings") is True)
+    r.step("[A] Screenshot Settings showing CLOUD LLM picker",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave4_A_picker_visible.jpg")) > 1000)
+
+    # ─── B. Cycle through every model chip (touch-driven) ───────
+    for i, (chip_x, label, model_id) in enumerate(MODELS):
+        r.step(f"[B{i+1}] Tap '{label}' chip ({chip_x}, {CHIP_Y})",
+               lambda t, x=chip_x: t.tap(x, CHIP_Y) and True)
+        # The cb_model_pick handler is synchronous: NVS write + Dragon
+        # config_update fire on the LVGL thread; both are observable
+        # on /settings within ~50 ms.  Sleep 0.5 s for safety.
+        time.sleep(0.5)
+        r.step(f"[B{i+1}] /settings.llm_model now {model_id}",
+               lambda t, mid=model_id: t.settings().get("llm_model") == mid)
+        r.step(f"[B{i+1}] Screenshot '{label}' selected",
+               lambda t, lab=label: t.screenshot(
+                   os.path.join(r.run_dir,
+                                f"wave4_B_{i+1}_{lab.replace(' ', '_')}.jpg"))
+                                > 1000)
+
+    # ─── C. Regression: tapping mode rows still works ───────────
+    # Verify the new chip section didn't break the mode-row tap path.
+    # Mode rows live above the picker at the standard radio-row
+    # geometry (44h dot + 64h row).  Rough y centers of the 5 mode
+    # rows: 122, 188, 254, 320, 386.  Tap Local (122) to flip vmode
+    # 2 → 0 (we left it at Cloud after the picker tests, since
+    # picking a Cloud model implicitly stays on cloud preference).
+    r.step("[C] Pre-check: vmode after picker tests",
+           lambda t: int(t.settings().get("voice_mode", -1)) in (0, 1, 2))
+    r.step("[C] Tap 'Local' mode row (360, 122)",
+           lambda t: t.tap(360, 122) and True)
+    time.sleep(1)
+    r.step("[C] vmode flipped to 0 (mode-row regression OK)",
+           lambda t: int(t.settings().get("voice_mode", -1)) == 0)
+    r.step("[C] Screenshot post mode-row tap",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave4_C_mode_row_regression.jpg")) > 1000)
+
+    # ─── D. End-to-end: Cloud mode + picked model + chat receipt ─
+    # Pick Haiku, switch to Cloud, send a chat, verify the receipt
+    # stamp shows HAIKU as the model.
+    r.step("[D] Tap 'Haiku' chip (84, 484)",
+           lambda t: t.tap(84, CHIP_Y) and True)
+    time.sleep(0.5)
+    r.step("[D] /settings.llm_model = anthropic/claude-3.5-haiku",
+           lambda t: t.settings().get("llm_model") == "anthropic/claude-3.5-haiku")
+    r.step("[D] Switch to Cloud mode (vmode=2)",
+           lambda t: t.mode(2).get("ok") is not False)
+    time.sleep(1)
+    r.step("[D] Pre-check: voice WS ready",
+           lambda t: t.await_voice_state("READY", 30))
+    r.step("[D] Send Cloud chat 'hi'",
+           lambda t: t.chat("hi") and True)
+    r.step("[D] Wait for llm_done",
+           lambda t: t.await_llm_done(timeout_s=30) is not None)
+    time.sleep(2)
+    # The receipt-stamp model verification depends on Dragon being
+    # on the multi-model router with a real OpenRouter key — we can
+    # see the request flowed (response body is non-empty), but the
+    # exact model that responded is a Dragon-side concern.  Tab5's
+    # responsibility is to send the right config_update; verified by
+    # /settings.llm_model in step [B1] above.
+    def _has_assistant_reply(t):
+        msgs = t._get("/chat/messages?n=4").json().get("messages", [])
+        return any(m.get("role") == "assistant" and m.get("text", "")
+                   for m in msgs)
+    r.step("[D] Dragon delivered an assistant reply",
+           _has_assistant_reply)
+    r.step("[D] Screenshot final Cloud-Haiku turn complete",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave4_D_haiku_turn.jpg")) > 1000)
+
+    # ─── Cleanup ────────────────────────────────────────────────
+    r.step("[end] Restore Local mode",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("[end] Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -899,6 +1024,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave1":   story_wave1_visibility,
     "story_wave2":   story_wave2_error_surfacing,
     "story_wave3":   story_wave3_dictation_in_chat,
+    "story_wave4":   story_wave4_cloud_picker,
 }
 
 
