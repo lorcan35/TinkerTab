@@ -1197,9 +1197,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
      * via /api/v1/tools so exposing the list is fine + lets the
      * harness verify the toggle round-trip via /settings GET. */
     {
-        char stars[256] = {0};
-        tab5_settings_get_starred_skills(stars, sizeof(stars));
-        cJSON_AddStringToObject(root, "starred_skills", stars);
+       char stars[256] = {0};
+       tab5_settings_get_starred_skills(stars, sizeof(stars));
+       cJSON_AddStringToObject(root, "starred_skills", stars);
     }
 
     /* Hardware */
@@ -1362,8 +1362,7 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
      * path is fine up to ~4 KB but 240 keeps the JSON tidy). */
     cJSON *stars_in = cJSON_GetObjectItem(req_json, "starred_skills");
     if (cJSON_IsString(stars_in)) {
-       if (strlen(stars_in->valuestring) <= 240 &&
-           tab5_settings_set_starred_skills(stars_in->valuestring) == ESP_OK) {
+       if (strlen(stars_in->valuestring) <= 240 && tab5_settings_set_starred_skills(stars_in->valuestring) == ESP_OK) {
           cJSON_AddItemToArray(updated, cJSON_CreateString("starred_skills"));
        }
     }
@@ -2455,6 +2454,36 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    cJSON_AddStringToObject(root, "failover_state_name", (fs >= 0 && fs <= 3) ? fs_names[fs] : "?");
    cJSON_AddNumberToObject(root, "uart_baud", (double)voice_m5_llm_get_baud());
 
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+   esp_err_t ret = httpd_resp_sendstr(req, json);
+   free(json);
+   return ret;
+}
+
+/* TT #328 Wave 13 — POST /m5/reset.  Triggers
+ * voice_onboard_reset_failover(), which sends sys.reset to the K144
+ * StackFlow daemon, waits for it to come back, and re-runs the warmup
+ * probe.  The actual reset happens asynchronously on tab5_worker; the
+ * caller can poll GET /m5 to observe state cycle PROBING → READY (or
+ * UNAVAILABLE on continued failure).
+ *
+ * Useful for both the e2e harness (verifies recovery round-trip
+ * without UI tap geometry) and dashboard / remote-operator debugging
+ * (a Tab5 stuck in UNAVAILABLE can be unstuck without a reboot or a
+ * physical tap on the Settings health chip). */
+static esp_err_t m5_reset_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   esp_err_t qe = voice_onboard_reset_failover();
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddStringToObject(root, "status", qe == ESP_OK ? "queued" : "rejected");
+   cJSON_AddStringToObject(root, "detail",
+                           qe == ESP_OK ? "K144 reset job enqueued — poll GET /m5"
+                                        : "Probe already in flight — try again "
+                                          "after current cycle finishes");
+   cJSON_AddNumberToObject(root, "failover_state", voice_onboard_failover_state());
    char *json = cJSON_PrintUnformatted(root);
    cJSON_Delete(root);
    httpd_resp_set_type(req, "application/json");
@@ -3921,6 +3950,8 @@ esp_err_t tab5_debug_server_init(void)
     };
     /* TT #327 Wave 5: K144 / chain diagnostic snapshot. */
     const httpd_uri_t uri_m5_status = {.uri = "/m5", .method = HTTP_GET, .handler = m5_status_handler};
+    /* TT #328 Wave 13: K144 software reset (sys.reset + re-warmup). */
+    const httpd_uri_t uri_m5_reset = {.uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
     /* #266: live video streaming control.  #268 adds /video/show + hide. */
     const httpd_uri_t uri_video_start = {
         .uri = "/video/start", .method = HTTP_POST, .handler = video_start_handler
@@ -4043,6 +4074,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_voice_state);
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_m5_status);
+    httpd_register_uri_handler(server, &uri_m5_reset);
     httpd_register_uri_handler(server, &uri_video_start);
     httpd_register_uri_handler(server, &uri_video_stop);
     httpd_register_uri_handler(server, &uri_video_state);

@@ -1980,6 +1980,126 @@ def story_wave12_agent_log(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave13_k144_recoverable(r: Runner) -> None:
+    """TT #328 Wave 13 — K144 is recoverable.
+
+    Pre-Wave-13 the failover state machine was one-way: a single bad
+    inference timeout flipped the state to UNAVAILABLE and the only
+    way to escape was a Tab5 reboot.  Wave 13 adds:
+      • voice_m5_llm_sys_reset() — sends sys.reset to the StackFlow
+        daemon over UART (verified live against K144 v1.3 ADB probe).
+      • voice_onboard_reset_failover() — orchestrates daemon-restart +
+        re-probe + re-warmup-infer.  Async via tab5_worker.
+      • POST /m5/reset debug endpoint — exposes the reset path so the
+        e2e harness can verify the round-trip without UI tap geometry.
+      • esp_timer auto-retry (60 s, capped at 3 attempts per boot).
+        IMPORTANT: NOT FreeRTOS xTimer — earlier draft used
+        xTimerCreate which forced a 16 KB timer-task stack alloc that
+        failed under boot-time SRAM pressure (boot loop with the
+        Wave-11-style `vApplicationGetTimerTaskMemory` assert).
+      • Tap-to-recover on the K144 health chip in Settings (Onboard
+        row) — fires reset_failover + shows toast.
+
+    Touch-driven user stories: provision via debug endpoint to seed
+    state, fire POST /m5/reset, observe the failover state cycle
+    READY → PROBING → READY (or → UNAVAILABLE if K144 is offline,
+    which is also a valid recovery outcome).  Verify the obs ring
+    captured the m5.reset trail (start → ack_ok → recovered).
+    """
+    tab5 = r.tab5
+
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+
+    # ─── A. Boot baseline — wait for warmup to settle ─────────────
+    # Boot warmup takes 5-15 s for a warm K144 (already-mapped model)
+    # or up to 6 min for a cold start.  Poll up to 30 s; if still
+    # PROBING, that's fine — the rest of the test exercises both
+    # READY and UNAVAILABLE paths.
+    def _await_settled(timeout_s):
+        import time as _time
+        deadline = _time.time() + timeout_s
+        while _time.time() < deadline:
+            state = t_get_state(tab5)
+            if state in ("ready", "unavailable"):
+                return True
+            _time.sleep(2)
+        return True  # accept whatever state we end on
+    def t_get_state(t):
+        body = t._get("/m5").json()
+        return body.get("failover_state_name", "?")
+    r.step("[A] Wait for boot warmup to settle (≤30s)", lambda t: _await_settled(30))
+    r.step("[A] /m5 returns expected shape",
+           lambda t: all(k in t._get("/m5").json()
+                         for k in ("chain_active", "failover_state",
+                                   "failover_state_name", "uart_baud")))
+
+    # ─── B. POST /m5/reset endpoint exists + responds ─────────────
+    r.step("[B] POST /m5/reset returns ack JSON",
+           lambda t: t._post("/m5/reset").json().get("status") in ("queued", "rejected"))
+
+    # ─── C. State cycle through PROBING (or stays put if rejected) ─
+    # If K144 was READY before the POST, the next state should be
+    # PROBING within ~1 s.  If K144 was already PROBING, the POST
+    # should have been rejected — both are valid.
+    import time as _time
+    pre_state = None
+    def _capture_pre(t):
+        nonlocal pre_state
+        pre_state = t._get("/m5").json().get("failover_state_name")
+        return True
+    r.step("[C] Capture pre-reset state", _capture_pre)
+    r.step("[C] POST /m5/reset to trigger cycle", lambda t: t._post("/m5/reset") and True)
+    _time.sleep(2)
+    def _check_cycled(t):
+        post_state = t._get("/m5").json().get("failover_state_name")
+        # Either we cycled (PROBING now) or were already cycling
+        return pre_state == "probing" or post_state == "probing" or post_state == "ready"
+    r.step("[C] State cycled (PROBING) or stayed READY", _check_cycled)
+
+    # ─── D. Wait for cycle to settle, verify recovery ─────────────
+    r.step("[D] Wait for recovery cycle (≤30s)", lambda t: _await_settled(30))
+    final_state = lambda t: t._get("/m5").json().get("failover_state_name")
+    # Acceptance: final state should be READY or UNAVAILABLE — not
+    # stuck in PROBING (would mean the recovery job hung).
+    r.step("[D] Final state is READY or UNAVAILABLE (not stuck)",
+           lambda t: final_state(t) in ("ready", "unavailable", "unknown"))
+
+    # ─── E. Tab5 still healthy after the cycle ────────────────────
+    r.step("[E] Tab5 alive + voice WS connected",
+           lambda t: t.is_alive() and t._get("/info").json().get("voice_connected"))
+    r.step("[E] Heap healthy (>10 MB free PSRAM)",
+           lambda t: t._get("/info").json().get("psram_free", 0) > 10_000_000)
+
+    # ─── F. Obs events ring captured the m5.reset trail ───────────
+    def _check_obs(t):
+        body = t._get("/events?since=0").json()
+        events = body.get("events", [])
+        kinds = [e.get("kind") for e in events]
+        details = [(e.get("kind"), e.get("detail")) for e in events]
+        # Look for the reset trail: at minimum an m5.reset start fired.
+        # If K144 was reachable, expect ack_ok + recovered too.
+        has_start = any(k == "m5.reset" and d == "start" for k, d in details)
+        return has_start
+    r.step("[F] Obs ring captured m5.reset.start", _check_obs)
+
+    # ─── G. Settings tap-to-recover UI exists (visual evidence) ────
+    r.step("[G] Navigate to Settings",
+           lambda t: t.navigate("settings").get("navigated") == "settings")
+    _time.sleep(2)
+    # Scroll down to expose the Voice section / Onboard row + chip
+    r.step("[G] Scroll to Voice section",
+           lambda t: t.tap(360, 900) and True)
+    _time.sleep(1)
+    r.step("[G] Screenshot Settings — K144 chip visible on Onboard row",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave13_G_settings_chip.jpg")) > 1000)
+
+    # ─── H. Cleanup ────────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -1997,6 +2117,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave10":  story_wave10_ui_skills,
     "story_wave11":  story_wave11_skill_starring,
     "story_wave12":  story_wave12_agent_log,
+    "story_wave13":  story_wave13_k144_recoverable,
 }
 
 

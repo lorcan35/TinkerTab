@@ -37,6 +37,24 @@ extern "C" {
  *  once after `tab5_worker_init()` in app_main(). */
 esp_err_t voice_onboard_start_warmup(void);
 
+/** Recover from a sticky `M5_FAIL_UNAVAILABLE` (or any other state) by
+ *  sending `sys.reset` to the K144 daemon and re-running the warm-up
+ *  probe.  Wave 13 main feature — pre-Wave-13 once the failover flipped
+ *  to UNAVAILABLE, the only escape was a Tab5 reboot.
+ *
+ *  Idempotent + thread-safe — safe to call from the auto-retry timer,
+ *  the debug `POST /m5/reset` endpoint, or a UI tap callback.  Returns
+ *  immediately if a probe is already in flight (`M5_FAIL_PROBING`).
+ *
+ *  The actual reset+wait+re-probe sequence runs asynchronously on
+ *  tab5_worker — caller doesn't block.  Observe completion via
+ *  @ref voice_onboard_failover_state() (READY on success, UNAVAILABLE
+ *  on continued failure) or via the `m5.reset` obs event.
+ *
+ *  @return ESP_OK if the reset job was queued;
+ *          ESP_ERR_INVALID_STATE if a probe is currently running. */
+esp_err_t voice_onboard_reset_failover(void);
+
 /** Failover gate state.  Returns one of:
  *    0 = UNKNOWN     — warm-up not posted yet
  *    1 = PROBING     — warm-up in flight

@@ -87,6 +87,24 @@ static inline void feed_wdt(void) {
 #define TAB_TINKERCLAW 0xF43F5E
 #define TAB_ONBOARD 0x8E5BFF /* P5b: violet — distinct from existing four */
 
+/* TT #328 Wave 13 — tap callback for the K144 health chip on the Onboard
+ * voice-mode row.  Triggers voice_onboard_reset_failover() which sends
+ * sys.reset to the K144 daemon + re-runs the warmup probe.  Pre-Wave-13
+ * the chip was display-only; the user had no software path to escape an
+ * UNAVAILABLE state without rebooting Tab5. */
+static void k144_chip_tap_cb(lv_event_t *e) {
+   (void)e;
+   extern esp_err_t voice_onboard_reset_failover(void);
+   extern void ui_home_show_toast(const char *msg);
+   esp_err_t qe = voice_onboard_reset_failover();
+   if (qe == ESP_OK) {
+      ui_home_show_toast("Re-probing K144…");
+   } else {
+      /* Already in flight — be honest. */
+      ui_home_show_toast("K144 probe already running — try again in a few sec");
+   }
+}
+
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
 static lv_obj_t *s_screen          = NULL;
 static lv_obj_t *s_scroll          = NULL;
@@ -1422,7 +1440,12 @@ lv_obj_t *ui_settings_create(void)
            * the user would discover failure mid-turn.  Render the
            * voice_onboard_failover_state() as a small right-aligned
            * pill on row index 4 only (other modes don't have a
-           * comparable health gate that benefits from this surface). */
+           * comparable health gate that benefits from this surface).
+           *
+           * TT #328 Wave 13 — the chip is now tappable + triggers a
+           * software reset of the K144 daemon (sys.reset + re-warmup).
+           * Pre-Wave-13 there was no way to escape an UNAVAILABLE
+           * state without rebooting Tab5 itself. */
           if (i == 4) {
              extern int voice_onboard_failover_state(void);
              int fs = voice_onboard_failover_state();
@@ -1453,14 +1476,32 @@ lv_obj_t *ui_settings_create(void)
                    break;
              }
              lv_obj_t *chip = lv_label_create(row);
-             char chip_buf[32];
-             snprintf(chip_buf, sizeof(chip_buf), "%s%s", chip_glyph, chip_text);
+             char chip_buf[40];
+             /* Wave 13 — append a tap hint when the chip is the only
+              * affordance to recovery (UNAVAILABLE / UNKNOWN states).
+              * READY/WARMING chips are informational only — tap still
+              * works (forces a re-probe), but the hint is omitted to
+              * avoid implying the user *needs* to do something. */
+             if (fs == 3 || fs == 0) {
+                snprintf(chip_buf, sizeof(chip_buf), "%s%s · TAP", chip_glyph, chip_text);
+             } else {
+                snprintf(chip_buf, sizeof(chip_buf), "%s%s", chip_glyph, chip_text);
+             }
              lv_label_set_text(chip, chip_buf);
              lv_obj_set_style_text_font(chip, FONT_SMALL, 0);
              lv_obj_set_style_text_color(chip, lv_color_hex(chip_col), 0);
              lv_obj_set_style_text_letter_space(chip, 2, 0);
              /* Right-aligned within the row, centred vertically. */
-             lv_obj_set_pos(chip, row_w - 180, (row_h - 14) / 2);
+             lv_obj_set_pos(chip, row_w - 200, (row_h - 14) / 2);
+             /* Wave 13 — make the chip tappable.  Internal padding
+              * gives ~30 px tall × 200 px wide hit area, generous
+              * enough for fat-fingered users.  Default LVGL 9
+              * doesn't bubble events from a CLICKABLE child to the
+              * parent row, so the tap doesn't also flip the radio
+              * to Onboard mode (which would be confusing). */
+             lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+             lv_obj_set_style_pad_all(chip, 8, 0);
+             lv_obj_add_event_cb(chip, k144_chip_tap_cb, LV_EVENT_CLICKED, NULL);
           }
 
           if (i == s_active_tab) _mode_row_style(row, true);

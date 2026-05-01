@@ -456,6 +456,65 @@ void voice_m5_llm_release(void) {
 
 bool voice_m5_llm_is_ready(void) { return s_setup_work_id[0] != '\0'; }
 
+esp_err_t voice_m5_llm_sys_reset(void) {
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   /* Wave 13 — soft restart of the StackFlow daemon on K144.  Verified
+    * live against v1.3 (2026-05-01 ADB probe): the daemon emits one
+    * synchronous ack with `{"data":"None", "error":{"code":0, "message":
+    * "llm server restarting ..."}}` before going silent for ~4 s while
+    * it reconnects MQTT internally.  Caller (voice_onboard layer) is
+    * responsible for the post-reset wait + re-warmup re-trigger. */
+   M5_LOCK_OR_RETURN(2000);
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "rst-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "reset",
+   };
+
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   /* Generous 1500 ms — daemon answers within a few hundred ms typical
+    * but a loaded NPU on first sys.reset can be slower.  Fail fast
+    * past that — caller will treat as ESP_ERR_TIMEOUT and proceed. */
+   int frame_len = send_and_recv_one_frame(tx, tx_len, 1500);
+   if (frame_len < 0) {
+      M5_UNLOCK();
+      ESP_LOGW(TAG, "sys.reset: no ack frame (timeout)");
+      return ESP_ERR_TIMEOUT;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp);
+   if (pe != ESP_OK) {
+      M5_UNLOCK();
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+
+   bool match = m5_stackflow_response_matches(&resp, request_id);
+   bool ok = match && resp.error_code == 0;
+   if (ok) {
+      ESP_LOGI(TAG, "sys.reset acked: %s", resp.error_message ? resp.error_message : "(no msg)");
+      /* All K144-side work_ids are invalidated by the daemon restart.
+       * Clear our cache so the next infer call re-issues llm.setup. */
+      s_setup_work_id[0] = '\0';
+   } else {
+      ESP_LOGW(TAG, "sys.reset returned error_code=%d msg=%s", resp.error_code,
+               resp.error_message ? resp.error_message : "(none)");
+   }
+   m5_stackflow_response_free(&resp);
+   M5_UNLOCK();
+   return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
 /* ---------------------------------------------------------------------- */
 /*  Phase 6a — adaptive baud negotiation                                  */
 /* ---------------------------------------------------------------------- */

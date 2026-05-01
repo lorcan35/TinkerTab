@@ -51,6 +51,34 @@ extern "C" {
 esp_err_t voice_m5_llm_probe(void);
 
 /**
+ * @brief Send a `sys.reset` to the K144 and wait briefly for the ACK.
+ *
+ * Soft-restarts the StackFlow daemon on the AX630C — clears all
+ * cached work_ids, NPU memory, and any hung inference state without
+ * cycling the Linux kernel.  Recovery typically completes in ~4 s
+ * (vs ~30 s for a full `sys.reboot`).
+ *
+ * Use this as the first-line recovery path when the K144 fails
+ * inference timeouts, gets stuck in a hung work_id, or accumulates
+ * stale state across many turns.  The internal `s_setup_work_id`
+ * cache is cleared so the next `voice_m5_llm_infer` call will
+ * re-issue `llm.setup`.
+ *
+ * Verified live against K144 v1.3 (2026-05-01 ADB probe — see
+ * `docs/PLAN-k144-recovery.md` Provenance section): the daemon
+ * acks with `{"data":"None","error":{"code":0,"message":"llm
+ * server restarting ..."}}` and goes silent for ~4 s while it
+ * reconnects MQTT internally; subsequent calls succeed once it
+ * comes back.
+ *
+ * @return ESP_OK on a clean ack with `error.code == 0`;
+ *         ESP_ERR_TIMEOUT on no response within the helper window;
+ *         ESP_ERR_INVALID_RESPONSE on a parse failure or non-zero error code;
+ *         propagated esp_err_t on UART init failure.
+ */
+esp_err_t voice_m5_llm_sys_reset(void);
+
+/**
  * @brief Generate a reply for @p prompt, append into @p output (NUL-terminated).
  *
  * Performs the full setup→inference→stream-collect loop:

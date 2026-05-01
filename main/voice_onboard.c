@@ -53,6 +53,25 @@ static volatile bool s_m5_failover_engaged_during_down = false; /* triggers "Dra
 #define M5_FAILOVER_INFER_TIMEOUT_S 60                          /* per-turn budget */
 #define M5_FAILOVER_WARMUP_TIMEOUT_S 360                        /* cold-start budget — 6 min cap */
 
+/* Wave 13 — auto-retry from UNAVAILABLE.  When mark_k144_unavailable()
+ * fires, schedule a one-shot 60 s timer that calls
+ * voice_onboard_reset_failover().  Cap retries at 3 per Tab5 boot —
+ * after that, the state stays sticky and the banner asks the user for
+ * a power-cycle.  Counter resets on Tab5 reboot (static int, no NVS).
+ *
+ * IMPORTANT — uses esp_timer, NOT FreeRTOS xTimerCreate.  An earlier
+ * draft used xTimerCreate which forced a FreeRTOS timer-service task
+ * stack alloc (16 KB calloc from MALLOC_CAP_INTERNAL); under boot-time
+ * SRAM pressure the calloc fails and trips
+ * `vApplicationGetTimerTaskMemory: pxStackBufferTemp != NULL` — same
+ * boot-loop class as the Wave 11 BSS-static incident.  esp_timer
+ * shares one global dispatcher task so adding new timers stays cheap. */
+#define M5_AUTO_RETRY_DELAY_US (60ULL * 1000ULL * 1000ULL) /* 60 s */
+#define M5_AUTO_RETRY_MAX 3
+static esp_timer_handle_t s_auto_retry_timer = NULL;
+static int s_auto_retry_count = 0;
+static volatile bool s_auto_retry_exhausted = false;
+
 /* ---------------------------------------------------------------------- */
 /*  Chain state                                                           */
 /* ---------------------------------------------------------------------- */
@@ -87,18 +106,86 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
  * and stays there until the next reboot. */
 /* TT #328 Wave 3 P0 #12 — surface K144 warm-up failure so the user knows
  * Onboard mode + Local-failover are dead until reboot.  Marshalled to the
- * LVGL thread because the warmup job runs on tab5_worker. */
+ * LVGL thread because the warmup job runs on tab5_worker.
+ *
+ * Wave 13 — banner copy adapts to retry-budget state.  While retries
+ * remain, tell the user we'll keep trying and where to manually retry.
+ * Once exhausted, fall back to the original "needs power-cycle" guidance. */
 static void k144_unavailable_banner_async(void *arg) {
+   bool exhausted = (bool)(uintptr_t)arg;
+   if (exhausted) {
+      ui_home_show_error_banner("Onboard LLM unavailable — power-cycle K144 to retry.",
+                                NULL /* non-dismissable until next reboot */);
+   } else {
+      ui_home_show_error_banner(
+          "Onboard LLM offline — auto-retrying every 60s. Tap Settings → Onboard for "
+          "manual retry.",
+          NULL);
+   }
+}
+
+/* esp_timer callback — fires off the esp_timer dispatcher task.  Must
+ * NOT block; we simply enqueue the worker job that does the real
+ * sys.reset + re-warmup.  Caller (mark_k144_unavailable) schedules
+ * this so it runs M5_AUTO_RETRY_DELAY_US later. */
+static void auto_retry_timer_cb(void *arg) {
    (void)arg;
-   ui_home_show_error_banner("Onboard LLM unavailable until reboot — local failover disabled.",
-                             NULL /* non-dismissable: state is sticky for this boot */);
+   /* Recheck state — manual reset_failover via UI/debug may have
+    * already recovered us; if so, skip the auto-retry. */
+   if (s_m5_failover == M5_FAIL_READY || s_m5_failover == M5_FAIL_PROBING) {
+      return;
+   }
+   if (s_auto_retry_count >= M5_AUTO_RETRY_MAX) {
+      return;
+   }
+   s_auto_retry_count++;
+   ESP_LOGI(TAG, "K144 auto-retry %d/%d firing...", s_auto_retry_count, M5_AUTO_RETRY_MAX);
+   tab5_debug_obs_event("m5.reset", "auto_retry");
+   /* Best-effort enqueue.  If the worker queue is full, the auto-retry
+    * is dropped silently — next UNAVAILABLE event re-arms the timer. */
+   (void)voice_onboard_reset_failover();
 }
 
 static void mark_k144_unavailable(const char *reason) {
    s_m5_failover = M5_FAIL_UNAVAILABLE;
    tab5_debug_obs_event("m5.warmup", "unavailable");
    tab5_debug_obs_event("error.k144", reason);
-   tab5_lv_async_call(k144_unavailable_banner_async, NULL);
+
+   /* Wave 13 — schedule the next auto-retry if we haven't exhausted
+    * the budget.  Lazy-create the esp_timer on first use (saves the
+    * ~16 bytes of timer struct for boards that boot with K144 already
+    * healthy). */
+   bool exhausted = (s_auto_retry_count >= M5_AUTO_RETRY_MAX);
+   s_auto_retry_exhausted = exhausted;
+   if (!exhausted) {
+      if (s_auto_retry_timer == NULL) {
+         const esp_timer_create_args_t cfg = {
+             .callback = &auto_retry_timer_cb,
+             .arg = NULL,
+             .dispatch_method = ESP_TIMER_TASK,
+             .name = "m5_auto_retry",
+             .skip_unhandled_events = true,
+         };
+         esp_err_t te = esp_timer_create(&cfg, &s_auto_retry_timer);
+         if (te != ESP_OK) {
+            ESP_LOGW(TAG, "esp_timer_create failed (%s) — auto-retry disabled", esp_err_to_name(te));
+            s_auto_retry_timer = NULL;
+         }
+      }
+      if (s_auto_retry_timer != NULL) {
+         /* Stop-then-start re-arms the timer cleanly.  Stop on a
+          * non-running timer is ESP_ERR_INVALID_STATE — ignore. */
+         (void)esp_timer_stop(s_auto_retry_timer);
+         esp_err_t se = esp_timer_start_once(s_auto_retry_timer, M5_AUTO_RETRY_DELAY_US);
+         if (se == ESP_OK) {
+            ESP_LOGI(TAG, "K144 auto-retry scheduled in 60s (%d/%d remaining)", M5_AUTO_RETRY_MAX - s_auto_retry_count,
+                     M5_AUTO_RETRY_MAX);
+         } else {
+            ESP_LOGW(TAG, "esp_timer_start_once failed (%s)", esp_err_to_name(se));
+         }
+      }
+   }
+   tab5_lv_async_call(k144_unavailable_banner_async, (void *)(uintptr_t)exhausted);
 }
 
 static void onboard_warmup_job(void *arg) {
@@ -194,6 +281,72 @@ static void onboard_failover_text_job(void *arg) {
 esp_err_t voice_onboard_start_warmup(void) {
    if (s_m5_failover != M5_FAIL_UNKNOWN) return ESP_ERR_INVALID_STATE;
    return tab5_worker_enqueue(onboard_warmup_job, NULL, "m5_warmup");
+}
+
+/* Wave 13 — recovery job.  Sends sys.reset, waits for daemon to come
+ * back, re-runs the warmup probe + hi-infer.  Same async shape as
+ * onboard_warmup_job — runs on tab5_worker so the LVGL caller doesn't
+ * block on the ~5-10 s round-trip. */
+static void onboard_reset_failover_job(void *arg) {
+   (void)arg;
+   ESP_LOGI(TAG, "K144 reset_failover: requesting daemon restart...");
+   tab5_debug_obs_event("m5.reset", "start");
+   /* Flip to PROBING immediately so concurrent send_text calls bounce
+    * back ESP_ERR_INVALID_STATE instead of racing the reset. */
+   s_m5_failover = M5_FAIL_PROBING;
+
+   esp_err_t re = voice_m5_llm_sys_reset();
+   if (re != ESP_OK) {
+      ESP_LOGW(TAG,
+               "sys.reset failed (%s) — proceeding to re-probe anyway "
+               "(K144 may already be down)",
+               esp_err_to_name(re));
+      tab5_debug_obs_event("m5.reset", "ack_fail");
+   } else {
+      tab5_debug_obs_event("m5.reset", "ack_ok");
+   }
+
+   /* Daemon needs ~4 s to reconnect MQTT internally after a soft reset.
+    * 5 s wait is conservative — verified on the live ADB probe. */
+   vTaskDelay(pdMS_TO_TICKS(5000));
+
+   /* Re-run the probe + warmup-infer.  Inline-equivalent to
+    * onboard_warmup_job but reuses the same observability events for
+    * monitoring continuity (one m5.warmup ready/unavailable event per
+    * recovery cycle). */
+   tab5_debug_obs_event("m5.warmup", "start");
+   esp_err_t pe = voice_m5_llm_probe();
+   if (pe != ESP_OK) {
+      ESP_LOGW(TAG, "K144 re-probe after reset failed (%s)", esp_err_to_name(pe));
+      mark_k144_unavailable("reset_probe_fail");
+      tab5_debug_obs_event("m5.reset", "fail");
+      return;
+   }
+   char scratch[64];
+   int64_t t0 = esp_timer_get_time();
+   esp_err_t ie = voice_m5_llm_infer("hi", scratch, sizeof(scratch), M5_FAILOVER_WARMUP_TIMEOUT_S);
+   int64_t dt_ms = (esp_timer_get_time() - t0) / 1000;
+   if (ie == ESP_OK) {
+      ESP_LOGI(TAG, "K144 recovered in %lldms — failover available again", dt_ms);
+      s_m5_failover = M5_FAIL_READY;
+      tab5_debug_obs_event("m5.warmup", "ready");
+      tab5_debug_obs_event("m5.reset", "recovered");
+   } else {
+      ESP_LOGW(TAG, "K144 re-warmup %s after %lldms — still unavailable", esp_err_to_name(ie), dt_ms);
+      mark_k144_unavailable("reset_warmup_fail");
+      tab5_debug_obs_event("m5.reset", "fail");
+   }
+}
+
+esp_err_t voice_onboard_reset_failover(void) {
+   /* Refuse if a probe (initial warmup OR a prior reset) is already in
+    * flight — callers (timer, UI tap, debug endpoint) all converge on
+    * the same job which is fine to run once at a time. */
+   if (s_m5_failover == M5_FAIL_PROBING) {
+      ESP_LOGI(TAG, "reset_failover: already probing — caller can poll state");
+      return ESP_ERR_INVALID_STATE;
+   }
+   return tab5_worker_enqueue(onboard_reset_failover_job, NULL, "m5_reset");
 }
 
 int voice_onboard_failover_state(void) { return (int)s_m5_failover; }
