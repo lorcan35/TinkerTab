@@ -155,7 +155,21 @@ static void res_to_dimensions(tab5_cam_resolution_t res,
  * ================================================================ */
 static void alloc_canvas_buffer(uint16_t w, uint16_t h)
 {
-    free_canvas_buffer();
+   /* TT #247 Wave 17 — idempotent re-alloc.  When the camera screen is
+    * hidden via lv_obj_clean (Wave 17 lazy-rebuild) and re-shown, the
+    * canvas_buf survives at its old dimensions.  Reuse it if dimensions
+    * match (zeroes already match a fresh-alloc state from the prior
+    * destroy memset); otherwise free + realloc with the new size.
+    * This is the path the rotation button (cb_rotate_btn) takes when
+    * 90°/270° rotations swap the canvas dimensions. */
+   if (canvas_buf && canvas_w == w && canvas_h == h) {
+      memset(canvas_buf, 0, canvas_buf_size);
+      ESP_LOGI(TAG, "Canvas buffer reused: %ux%u (%" PRIu32 " B in PSRAM, no realloc)", w, h, canvas_buf_size);
+      return;
+   }
+   if (canvas_buf) {
+      free_canvas_buffer();
+   }
 
     /* RGB565: 2 bytes per pixel */
     canvas_w = w;
@@ -305,10 +319,19 @@ lv_obj_t *ui_camera_create(void)
     * during screen churn), we'd overwrite \`scr_camera\` / \`canvas_buf\`
     * and leak the previous instance + leave its preview timer firing
     * on a dangling canvas.  Short-circuit when we're already live. */
-   if (scr_camera) {
+   /* TT #247 Wave 17 — `ui_camera_destroy` no longer deletes
+    * scr_camera or frees canvas_buf; it lazy-cleans the inner
+    * widget tree via lv_obj_clean and leaves the screen + canvas
+    * resident.  Detect that "shell-only" state by checking the
+    * child count: > 0 means children are present (true idempotent
+    * re-entry, take the fast path); == 0 means scr_camera is just
+    * a clean shell awaiting widget rebuild — fall through to the
+    * widget creation below.  Both `scr_camera` and `canvas_buf`
+    * (if dimensions still match) are reused. */
+   if (scr_camera && lv_obj_get_child_cnt(scr_camera) > 0) {
       lv_screen_load(scr_camera);
       return scr_camera;
-    }
+   }
 
     bool cam_ok = tab5_camera_initialized();
 
@@ -363,21 +386,29 @@ lv_obj_t *ui_camera_create(void)
     }
 
     /* ── Screen ──────────────────────────────────────────────── */
-    scr_camera = lv_obj_create(NULL);
+    /* TT #247 Wave 17 — only create the screen object on a true
+     * first-time create.  When reusing a clean shell from a prior
+     * destroy, scr_camera is already non-NULL with all its style +
+     * gesture-cb already attached; child widgets get rebuilt below. */
     if (!scr_camera) {
-        ESP_LOGE(TAG, "OOM: failed to create camera screen");
-        return NULL;
-    }
-    lv_obj_set_size(scr_camera, SCREEN_W, SCREEN_H);
-    lv_obj_set_style_bg_color(scr_camera, lv_color_hex(COL_BG), 0);
-    lv_obj_set_style_bg_opa(scr_camera, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_pad_all(scr_camera, 0, 0);
+       scr_camera = lv_obj_create(NULL);
+       if (!scr_camera) {
+          ESP_LOGE(TAG, "OOM: failed to create camera screen");
+          return NULL;
+       }
+       lv_obj_set_size(scr_camera, SCREEN_W, SCREEN_H);
+       lv_obj_set_style_bg_color(scr_camera, lv_color_hex(COL_BG), 0);
+       lv_obj_set_style_bg_opa(scr_camera, LV_OPA_COVER, 0);
+       lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_SCROLLABLE);
+       lv_obj_set_style_pad_all(scr_camera, 0, 0);
 
-    /* TT #328 Wave 10 — swipe-right-back gesture (same handler dispatches
-     * for tap + gesture). */
-    lv_obj_add_event_cb(scr_camera, cb_back_btn, LV_EVENT_GESTURE, NULL);
-    lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_GESTURE_BUBBLE);
+       /* TT #328 Wave 10 — swipe-right-back gesture (same handler dispatches
+        * for tap + gesture). */
+       lv_obj_add_event_cb(scr_camera, cb_back_btn, LV_EVENT_GESTURE, NULL);
+       lv_obj_clear_flag(scr_camera, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    } else {
+       ESP_LOGI(TAG, "Camera screen rebuilding widget tree on reused shell");
+    }
 
     /* ── Top bar with back button ────────────────────────────── */
     {
@@ -1118,7 +1149,30 @@ static void toast_timer_cb(lv_timer_t *t)
 }
 
 /* ================================================================
- * ui_camera_destroy
+ * ui_camera_destroy — TT #247 Wave 17 lazy-clean variant
+ *
+ * Pre-Wave-17 this fully deleted scr_camera + freed canvas_buf, so
+ * every nav-into / nav-out cycle did:
+ *   - 30 widget destroys + 30 widget allocs through the LVGL TLSF
+ *     pool (mostly into the 64 KB BSS pool, where churn fragments
+ *     the block list and eventually corrupts it — issue #247)
+ *   - 1.8 MB PSRAM alloc + memset zero on every re-open (~50 ms)
+ *
+ * Wave 17 strategy: keep `scr_camera` (the LV screen wrapper) and
+ * `canvas_buf` (1.8 MB PSRAM backing) RESIDENT across hide cycles.
+ * `lv_obj_clean(scr_camera)` deletes the full inner widget tree —
+ * so we don't permanently pin those 30 widgets in BSS the way the
+ * naive hide/show fix did (which exhausted the SRAM watchdog) —
+ * but we save the canvas alloc/memset round trip on every re-open.
+ * The pool churn from widget create/destroy is unchanged in count
+ * but 1.8 MB worth of PSRAM allocations are eliminated per cycle.
+ *
+ * `ui_camera_create` detects the "scr_camera is non-NULL but child
+ * count is 0" state and rebuilds the widget tree.  When dimensions
+ * stay constant, `alloc_canvas_buffer` is now idempotent + memsets
+ * the existing buffer instead of realloc'ing.  When dimensions
+ * change (cb_rotate_btn cycles 0→1→2→3), it falls through to the
+ * free + realloc path automatically.
  * ================================================================ */
 void ui_camera_destroy(void)
 {
@@ -1128,8 +1182,8 @@ void ui_camera_destroy(void)
         preview_timer = NULL;
     }
 
-    /* #291: tear down any in-flight recording before deleting the
-     * screen — rec_timer_cb references widgets we're about to free. */
+    /* #291: tear down any in-flight recording before cleaning the
+     * widget tree — rec_timer_cb references widgets we're about to free. */
     if (s_rec_active) {
         s_rec_active = false;
         if (s_rec_timer) { lv_timer_delete(s_rec_timer); s_rec_timer = NULL; }
@@ -1144,27 +1198,34 @@ void ui_camera_destroy(void)
         toast_timer = NULL;
     }
 
-    /* Delete the screen (frees all child objects) */
+    /* TT #247 Wave 17 — lv_obj_clean deletes ALL children of
+     * scr_camera (recursive) but leaves scr_camera itself + its
+     * styles + its event callbacks intact.  All widget pointers
+     * become dangling — explicitly NULL them so the next
+     * ui_camera_create rebuild path doesn't read them. */
     if (scr_camera) {
-        lv_obj_delete(scr_camera);
-        scr_camera     = NULL;
-        canvas_preview = NULL;
-        lbl_no_camera  = NULL;
-        btn_capture    = NULL;
-        lbl_no_sd      = NULL;
-        dd_resolution  = NULL;
-        btn_gallery    = NULL;
-        lbl_gallery    = NULL;
-        toast_obj      = NULL;
-        s_rec_btn      = NULL;
-        s_rec_btn_lbl  = NULL;
-        s_rec_overlay  = NULL;
-        s_rec_overlay_lbl = NULL;
-        ESP_LOGI(TAG, "Camera screen destroyed");
+       lv_obj_clean(scr_camera);
+       canvas_preview = NULL;
+       lbl_no_camera = NULL;
+       btn_capture = NULL;
+       lbl_no_sd = NULL;
+       dd_resolution = NULL;
+       btn_gallery = NULL;
+       lbl_gallery = NULL;
+       toast_obj = NULL;
+       s_rec_btn = NULL;
+       s_rec_btn_lbl = NULL;
+       s_rec_overlay = NULL;
+       s_rec_overlay_lbl = NULL;
+       ESP_LOGI(TAG, "Camera screen cleaned (kept resident; canvas %u KB PSRAM reused)",
+                (unsigned)(canvas_buf_size / 1024));
     }
 
-    /* Free PSRAM canvas buffer */
-    free_canvas_buffer();
+    /* TT #247 Wave 17 — DON'T free canvas_buf.  alloc_canvas_buffer
+     * is now idempotent and will memset-zero the existing buffer on
+     * the next create when dimensions match, or free + realloc when
+     * they don't.  Saves 1.8 MB PSRAM alloc + memset per hide/show
+     * cycle (~50 ms wall clock). */
 
     /* #291: release DMA-aligned scratch buffers.  The HW JPEG encoder
      * itself stays alive — it's owned by voice_video and shared. */
