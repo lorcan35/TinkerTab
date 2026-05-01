@@ -314,7 +314,7 @@ Each sub-phase of Phase 1 is:
 TinkerTab:
 - `feat(widget): widget_live protocol + Tab5 renderer`
 - `feat(widget): widget_action back-channel + home integration`
-- `feat(widget): icon library render path`
+- ✅ `feat(widget): icon library render path` — SHIPPED `c6fc98a` (TT #69 / Wave 18).  16-icon library (clock/briefcase/laundry/coffee/book/car/pot/person/droplet/check/alert/sun/moon/cloud/calendar/star) rendered via lv_canvas + ARGB8888 buffer.  Tone-driven color (calm→emerald, active→amber, urgent→rose).
 - `feat(widget): phase-2 card action + phase-3 list/prompt`
 
 TinkerBox:
