@@ -116,6 +116,15 @@ static void k144_chip_tap_cb(lv_event_t *e) {
 #include "voice_m5_llm.h"  /* voice_m5_hwinfo_t + sys_hwinfo + sys_version + sys_lsmode */
 static lv_obj_t *s_k144_gauge_lbl = NULL;
 static lv_obj_t *s_k144_models_lbl = NULL;
+/* Wave 16 — chip widget tracked at file-scope so ui_settings_update()
+ * can re-render its text + color when the K144 failover state
+ * transitions across hide/show cycles.  Pre-Wave-16 the chip was a
+ * local var inside the radio-row creation loop; it captured the
+ * state at first build and never updated, so a Tab5 navigated away
+ * during UNAVAILABLE and back after recovery still showed the stale
+ * red chip until the user rebooted. */
+static lv_obj_t *s_k144_chip_lbl = NULL;
+static int s_k144_last_chip_fs = -1; /* sentinel: force refresh on first call */
 
 typedef struct {
    voice_m5_hwinfo_t hw;
@@ -167,6 +176,68 @@ static void k144_gauge_async_render(void *arg) {
       lv_label_set_text(s_k144_models_lbl, buf);
    }
    if (p != NULL) free(p);
+}
+
+static void k144_gauge_fetch_job(void *arg); /* fwd — defined just below */
+
+/* TT #328 Wave 16 — re-render the K144 health chip from the current
+ * voice_onboard_failover_state().  Idempotent + cheap (early-exits
+ * when state is unchanged from last call).  Called from the chip
+ * creation site at first Settings build AND from ui_settings_update()
+ * every 2 s so a state transition while Settings is hidden becomes
+ * visible immediately on next show. */
+static void refresh_k144_chip(void) {
+   if (s_k144_chip_lbl == NULL) return;
+   extern int voice_onboard_failover_state(void);
+   int fs = voice_onboard_failover_state();
+   if (fs == s_k144_last_chip_fs) return; /* no-op when state hasn't moved */
+   s_k144_last_chip_fs = fs;
+
+   const char *chip_glyph;
+   const char *chip_text;
+   uint32_t chip_col;
+   switch (fs) {
+      case 2:
+         chip_glyph = "\xe2\x97\x8f"; /* ● filled */
+         chip_text = " READY";
+         chip_col = 0x10B981;
+         break;
+      case 1:
+         chip_glyph = "\xe2\x97\x8b"; /* ○ open */
+         chip_text = " WARMING";
+         chip_col = AMBER;
+         break;
+      case 3:
+         chip_glyph = "\xe2\x9c\x97"; /* ✗ */
+         chip_text = " UNAVAILABLE";
+         chip_col = 0xE5484D;
+         break;
+      default:
+         chip_glyph = "\xe2\x97\x8b";
+         chip_text = " UNKNOWN";
+         chip_col = 0x55555D;
+         break;
+   }
+   char chip_buf[40];
+   if (fs == 3 || fs == 0) {
+      snprintf(chip_buf, sizeof(chip_buf), "%s%s \xc2\xb7 TAP", chip_glyph, chip_text);
+   } else {
+      snprintf(chip_buf, sizeof(chip_buf), "%s%s", chip_glyph, chip_text);
+   }
+   lv_label_set_text(s_k144_chip_lbl, chip_buf);
+   lv_obj_set_style_text_color(s_k144_chip_lbl, lv_color_hex(chip_col), 0);
+
+   /* If we just transitioned to READY, re-fire the worker fetch so
+    * the gauge + inventory line populate (worker bails when state
+    * isn't READY, so a transition is exactly when we want to retry). */
+   if (fs == 2) {
+      (void)tab5_worker_enqueue(k144_gauge_fetch_job, NULL, "k144_gauge");
+   } else {
+      /* Reset gauge + inventory to placeholder when leaving READY so
+       * stale numbers don't mislead the user during a recovery cycle. */
+      if (s_k144_gauge_lbl != NULL) lv_label_set_text(s_k144_gauge_lbl, "—");
+      if (s_k144_models_lbl != NULL) lv_label_set_text(s_k144_models_lbl, "—");
+   }
 }
 
 static void k144_gauge_fetch_job(void *arg) {
@@ -1547,49 +1618,21 @@ lv_obj_t *ui_settings_create(void)
            * Pre-Wave-13 there was no way to escape an UNAVAILABLE
            * state without rebooting Tab5 itself. */
           if (i == 4) {
-             extern int voice_onboard_failover_state(void);
-             int fs = voice_onboard_failover_state();
-             /* fs values: 0=UNKNOWN, 1=PROBING, 2=READY, 3=UNAVAILABLE */
-             const char *chip_glyph;
-             const char *chip_text;
-             uint32_t chip_col;
-             switch (fs) {
-                case 2:
-                   chip_glyph = "\xe2\x97\x8f"; /* ● filled */
-                   chip_text = " READY";
-                   chip_col = 0x10B981; /* emerald */
-                   break;
-                case 1:
-                   chip_glyph = "\xe2\x97\x8b"; /* ○ open */
-                   chip_text = " WARMING";
-                   chip_col = AMBER;
-                   break;
-                case 3:
-                   chip_glyph = "\xe2\x9c\x97"; /* ✗ */
-                   chip_text = " UNAVAILABLE";
-                   chip_col = 0xE5484D; /* rose */
-                   break;
-                default: /* 0 UNKNOWN — K144 not stacked or warm-up not posted */
-                   chip_glyph = "\xe2\x97\x8b";
-                   chip_text = " UNKNOWN";
-                   chip_col = 0x55555D; /* dim grey */
-                   break;
-             }
+             /* Wave 16 — track the chip widget at file scope so
+              * `ui_settings_update()` can re-render its label/color
+              * when the failover state transitions during a Settings-
+              * hidden interval.  refresh_k144_chip() handles ALL
+              * label/color logic + the worker-fetch trigger; we just
+              * place + style the widget here.  Pre-Wave-16 the chip
+              * was a local var captured at first build and never
+              * updated, so a Tab5 navigated away during UNAVAILABLE
+              * and back after recovery showed the stale red chip
+              * until a full Tab5 reboot. */
              lv_obj_t *chip = lv_label_create(row);
-             char chip_buf[40];
-             /* Wave 13 — append a tap hint when the chip is the only
-              * affordance to recovery (UNAVAILABLE / UNKNOWN states).
-              * READY/WARMING chips are informational only — tap still
-              * works (forces a re-probe), but the hint is omitted to
-              * avoid implying the user *needs* to do something. */
-             if (fs == 3 || fs == 0) {
-                snprintf(chip_buf, sizeof(chip_buf), "%s%s · TAP", chip_glyph, chip_text);
-             } else {
-                snprintf(chip_buf, sizeof(chip_buf), "%s%s", chip_glyph, chip_text);
-             }
-             lv_label_set_text(chip, chip_buf);
+             s_k144_chip_lbl = chip;
+             s_k144_last_chip_fs = -1; /* force refresh_k144_chip to run */
+             lv_label_set_text(chip, "—");
              lv_obj_set_style_text_font(chip, FONT_SMALL, 0);
-             lv_obj_set_style_text_color(chip, lv_color_hex(chip_col), 0);
              lv_obj_set_style_text_letter_space(chip, 2, 0);
              /* Right-aligned within the row, centred vertically. */
              lv_obj_set_pos(chip, row_w - 200, (row_h - 14) / 2);
@@ -1637,14 +1680,11 @@ lv_obj_t *ui_settings_create(void)
               * by 5 * (row_h + 2) + 12 there). */
              lv_obj_set_pos(s_k144_models_lbl, SIDE_PAD, y + 5 * (row_h + 2) - 4);
 
-             /* Kick off the fetch only when the K144 is READY — no
-              * point hammering the UART when state is UNAVAILABLE
-              * (sys.hwinfo would just time out and waste 1.5 s).
-              * The worker fetches hwinfo + version + lsmode in one
-              * pass and updates both labels via the async callback. */
-             if (fs == 2 /* M5_FAIL_READY */) {
-                (void)tab5_worker_enqueue(k144_gauge_fetch_job, NULL, "k144_gauge");
-             }
+             /* Wave 16 — initial chip render + (when READY) kick off
+              * the worker fetch.  Both responsibilities now live in
+              * refresh_k144_chip so they stay synchronized with the
+              * post-build update path. */
+             refresh_k144_chip();
           }
 
           if (i == s_active_tab) _mode_row_style(row, true);
@@ -2008,6 +2048,11 @@ lv_obj_t *ui_settings_create(void)
 void ui_settings_update(void)
 {
     if (!s_screen) return;
+
+    /* TT #328 Wave 16 — re-render the K144 health chip + kick off
+     * the worker fetch when state has transitioned.  Cheap when no
+     * change (early-exit on s_k144_last_chip_fs match). */
+    refresh_k144_chip();
 
     /* WiFi status */
     if (s_lbl_wifi) {

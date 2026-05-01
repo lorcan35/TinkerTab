@@ -188,6 +188,35 @@ static void mark_k144_unavailable(const char *reason) {
    tab5_lv_async_call(k144_unavailable_banner_async, (void *)(uintptr_t)exhausted);
 }
 
+/* TT #328 Wave 16 — centralised "K144 transitioned to READY" hook.
+ * Marshals ui_home_clear_error_banner() to the LVGL thread via
+ * tab5_lv_async_call so the auto-retry banner posted in
+ * mark_k144_unavailable() actually disappears once recovery
+ * succeeds.  Pre-Wave-16 the banner stayed pinned indefinitely
+ * because no path called clear_error_banner. */
+extern void ui_home_clear_error_banner(void);
+static void k144_recovered_banner_async(void *arg) {
+   (void)arg;
+   ui_home_clear_error_banner();
+}
+
+static void mark_k144_recovered(void) {
+   /* Reset the auto-retry budget so the NEXT failure starts fresh.
+    * The 3-attempt cap protects against infinite retry storms during
+    * a single outage; once the K144 has come back, that storm is
+    * over and a future outage deserves its own 3 attempts. */
+   s_auto_retry_count = 0;
+   s_auto_retry_exhausted = false;
+   /* Cancel any pending auto-retry timer — recovery already happened
+    * (likely manual via tap-to-recover or POST /m5/reset; the timer
+    * was set by an earlier mark_k144_unavailable and should not
+    * fire post-recovery). */
+   if (s_auto_retry_timer != NULL) {
+      (void)esp_timer_stop(s_auto_retry_timer);
+   }
+   tab5_lv_async_call(k144_recovered_banner_async, NULL);
+}
+
 static void onboard_warmup_job(void *arg) {
    (void)arg;
    s_m5_failover = M5_FAIL_PROBING;
@@ -207,6 +236,7 @@ static void onboard_warmup_job(void *arg) {
       ESP_LOGI(TAG, "K144 warm in %lldms — failover available: '%s'", dt_ms, scratch);
       s_m5_failover = M5_FAIL_READY;
       tab5_debug_obs_event("m5.warmup", "ready");
+      mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
    } else {
       ESP_LOGW(TAG,
                "K144 warm-up %s after %lldms — failover disabled (NPU likely hung; "
@@ -331,6 +361,7 @@ static void onboard_reset_failover_job(void *arg) {
       s_m5_failover = M5_FAIL_READY;
       tab5_debug_obs_event("m5.warmup", "ready");
       tab5_debug_obs_event("m5.reset", "recovered");
+      mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
    } else {
       ESP_LOGW(TAG, "K144 re-warmup %s after %lldms — still unavailable", esp_err_to_name(ie), dt_ms);
       mark_k144_unavailable("reset_warmup_fail");
