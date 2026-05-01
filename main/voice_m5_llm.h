@@ -140,6 +140,71 @@ esp_err_t voice_m5_llm_sys_hwinfo(voice_m5_hwinfo_t *out);
  */
 esp_err_t voice_m5_llm_sys_version(char *buf, size_t buf_cap);
 
+/* ---------------------------------------------------------------------- */
+/*  Wave 15 — model registry (sys.lsmode)                                 */
+/*                                                                        */
+/*  Returns the K144's installed model inventory.  Verified shape against */
+/*  K144 v1.3 (live ADB probe 2026-05-01):                                */
+/*    {"data": [                                                          */
+/*       {"mode":"qwen2.5-0.5B-prefill-20e",                              */
+/*        "capabilities":["text_generation","chat"],                      */
+/*        "input_type":["llm.utf-8"],                                     */
+/*        "mode_param":{...}                                              */
+/*       },                                                               */
+/*       {"mode":"melotts_zh-cn", "capabilities":["tts"], ...},           */
+/*       {"mode":"sherpa-ncnn-streaming-zipformer-20M-2023-02-17",        */
+/*        "capabilities":["Automatic_Speech_Recognition","English"]},    */
+/*       ... (11 entries total on default install)                       */
+/*    ], ...}                                                             */
+/*                                                                        */
+/*  K144 capability vocabulary observed:                                  */
+/*    text_generation, chat — LLM units                                   */
+/*    tts — speech synthesis                                              */
+/*    Automatic_Speech_Recognition — ASR (paired with English/Chinese)    */
+/*    Keyword_spotting — KWS (paired with English/Chinese)                */
+/*    Pose, Segmentation, Detection — YOLO vision units                   */
+/* ---------------------------------------------------------------------- */
+
+#define VOICE_M5_MODEL_NAME_MAX 64
+#define VOICE_M5_CAP_MAX 32
+#define VOICE_M5_LANG_MAX 16
+#define VOICE_M5_MODELLIST_MAX 16 /* K144 has 11 today; 16 for headroom */
+
+/**
+ * @brief Single entry in the K144 model registry.
+ *
+ * `primary_cap` is the first item from the `capabilities` array — typically
+ * the unit type ("tts", "text_generation", "Automatic_Speech_Recognition",
+ * "Keyword_spotting", "Pose", "Segmentation", "Detection").
+ *
+ * `language` is the second item if it's a known language tag ("English" /
+ * "Chinese") — otherwise empty.
+ */
+typedef struct {
+   char mode[VOICE_M5_MODEL_NAME_MAX];
+   char primary_cap[VOICE_M5_CAP_MAX];
+   char language[VOICE_M5_LANG_MAX];
+} voice_m5_model_t;
+
+typedef struct {
+   int n;
+   voice_m5_model_t models[VOICE_M5_MODELLIST_MAX];
+   bool valid;
+} voice_m5_modelist_t;
+
+/**
+ * @brief Snapshot the K144 model registry via `sys.lsmode`.
+ *
+ * Synchronous + slow — the K144 enumerates units from disk; allow up to
+ * 3 s.  Caller-allocated @p out is populated on ESP_OK.
+ *
+ * @return ESP_OK on a clean ack with parsed entries;
+ *         ESP_ERR_TIMEOUT on no response;
+ *         ESP_ERR_INVALID_RESPONSE on parse failure or non-zero error code;
+ *         ESP_ERR_INVALID_ARG if @p out is NULL.
+ */
+esp_err_t voice_m5_llm_sys_lsmode(voice_m5_modelist_t *out);
+
 /**
  * @brief Generate a reply for @p prompt, append into @p output (NUL-terminated).
  *

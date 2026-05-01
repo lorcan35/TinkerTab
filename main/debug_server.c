@@ -2557,6 +2557,88 @@ static esp_err_t m5_refresh_handler(httpd_req_t *req) {
    return m5_status_handler(req);
 }
 
+/* TT #328 Wave 15 — GET /m5/models.  Surfaces the K144 model registry
+ * (sys.lsmode response) so the dashboard + e2e harness can see what's
+ * installed.  Cached for 5 min — sys.lsmode is ~50 ms warm but the
+ * registry doesn't change between K144 reboots, so re-fetching often
+ * is wasteful.  ?force=1 bypasses the cache for a fresh fetch.
+ *
+ * Cache lives in PSRAM (heap_caps_calloc, lazy on first request) —
+ * NOT BSS-static.  An earlier draft used a BSS-static
+ * voice_m5_modelist_t (~1.8 KB) and tripped the same boot-loop
+ * `vApplicationGetTimerTaskMemory` assert as Wave 11 / Wave 13's
+ * first attempt.  See LEARNINGS "BSS-static caches >3 KB push Tab5
+ * over a boot SRAM threshold" — same lesson, different size band:
+ * we hit the threshold around ~1.8 KB on top of Wave 14's BSS
+ * additions.  Lazy PSRAM is the universal fix. */
+static voice_m5_modelist_t *s_m5_modelist_cache = NULL;
+static int64_t s_m5_modelist_refreshed_us = 0;
+#define M5_MODELLIST_CACHE_TTL_US (5LL * 60LL * 1000LL * 1000LL) /* 5 min */
+
+static void m5_refresh_modelist_if_stale(bool force) {
+   int64_t now = esp_timer_get_time();
+   if (!force && s_m5_modelist_cache != NULL && s_m5_modelist_cache->valid &&
+       (now - s_m5_modelist_refreshed_us) < M5_MODELLIST_CACHE_TTL_US) {
+      return;
+   }
+   if (voice_onboard_failover_state() != 2 /* M5_FAIL_READY */) {
+      return; /* Don't waste 3 s on UART timeout when K144 is offline */
+   }
+   if (s_m5_modelist_cache == NULL) {
+      s_m5_modelist_cache = heap_caps_calloc(1, sizeof(*s_m5_modelist_cache), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (s_m5_modelist_cache == NULL) {
+         ESP_LOGE(TAG, "modelist PSRAM alloc failed");
+         return;
+      }
+   }
+   voice_m5_modelist_t fresh = {0};
+   if (voice_m5_llm_sys_lsmode(&fresh) == ESP_OK && fresh.valid) {
+      memcpy(s_m5_modelist_cache, &fresh, sizeof(fresh));
+      s_m5_modelist_refreshed_us = now;
+   }
+}
+
+static esp_err_t m5_models_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   bool force = false;
+   {
+      char qbuf[64];
+      if (httpd_req_get_url_query_str(req, qbuf, sizeof(qbuf)) == ESP_OK) {
+         char val[8];
+         if (httpd_query_key_value(qbuf, "force", val, sizeof(val)) == ESP_OK && (val[0] == '1' || val[0] == 't')) {
+            force = true;
+         }
+      }
+   }
+   m5_refresh_modelist_if_stale(force);
+
+   cJSON *root = cJSON_CreateObject();
+   bool valid = (s_m5_modelist_cache != NULL && s_m5_modelist_cache->valid);
+   cJSON_AddBoolToObject(root, "valid", valid);
+   cJSON_AddNumberToObject(root, "count", valid ? (double)s_m5_modelist_cache->n : 0.0);
+   cJSON *arr = cJSON_AddArrayToObject(root, "models");
+   if (valid) {
+      for (int i = 0; i < s_m5_modelist_cache->n; i++) {
+         cJSON *m = cJSON_CreateObject();
+         cJSON_AddStringToObject(m, "mode", s_m5_modelist_cache->models[i].mode);
+         cJSON_AddStringToObject(m, "primary_cap", s_m5_modelist_cache->models[i].primary_cap);
+         cJSON_AddStringToObject(m, "language", s_m5_modelist_cache->models[i].language);
+         cJSON_AddItemToArray(arr, m);
+      }
+   }
+   if (s_m5_modelist_refreshed_us != 0) {
+      int64_t age_s = (esp_timer_get_time() - s_m5_modelist_refreshed_us) / 1000000;
+      cJSON_AddNumberToObject(root, "cache_age_s", (double)age_s);
+   }
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+   esp_err_t ret = httpd_resp_sendstr(req, json);
+   free(json);
+   return ret;
+}
+
 /* TT #328 Wave 13 — POST /m5/reset.  Triggers
  * voice_onboard_reset_failover(), which sends sys.reset to the K144
  * StackFlow daemon, waits for it to come back, and re-runs the warmup
@@ -4048,6 +4130,8 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_m5_reset = {.uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
     /* TT #328 Wave 14: K144 hwinfo cache refresh (forces sys.hwinfo + sys.version). */
     const httpd_uri_t uri_m5_refresh = {.uri = "/m5/refresh", .method = HTTP_POST, .handler = m5_refresh_handler};
+    /* TT #328 Wave 15: K144 model registry (sys.lsmode). */
+    const httpd_uri_t uri_m5_models = {.uri = "/m5/models", .method = HTTP_GET, .handler = m5_models_handler};
     /* #266: live video streaming control.  #268 adds /video/show + hide. */
     const httpd_uri_t uri_video_start = {
         .uri = "/video/start", .method = HTTP_POST, .handler = video_start_handler
@@ -4172,6 +4256,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_m5_status);
     httpd_register_uri_handler(server, &uri_m5_reset);
     httpd_register_uri_handler(server, &uri_m5_refresh);
+    httpd_register_uri_handler(server, &uri_m5_models);
     httpd_register_uri_handler(server, &uri_video_start);
     httpd_register_uri_handler(server, &uri_video_stop);
     httpd_register_uri_handler(server, &uri_video_state);

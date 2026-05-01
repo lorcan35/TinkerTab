@@ -616,6 +616,86 @@ esp_err_t voice_m5_llm_sys_version(char *buf, size_t buf_cap) {
    return result;
 }
 
+esp_err_t voice_m5_llm_sys_lsmode(voice_m5_modelist_t *out) {
+   if (out == NULL) return ESP_ERR_INVALID_ARG;
+   memset(out, 0, sizeof(*out));
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(3000);
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "lsm-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "lsmode",
+   };
+
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   /* sys.lsmode response is ~3 KB on K144 v1.3 (11 entries × ~250 B
+    * each).  Daemon enumerates units from disk so 3 s allows the slow
+    * path; warm path returns in ~50-100 ms. */
+   int frame_len = send_and_recv_one_frame(tx, tx_len, 3000);
+   if (frame_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_TIMEOUT;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp);
+   if (pe != ESP_OK) {
+      M5_UNLOCK();
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+
+   esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+   if (m5_stackflow_response_matches(&resp, request_id) && resp.error_code == 0 && resp.data != NULL &&
+       cJSON_IsArray(resp.data)) {
+      int count = cJSON_GetArraySize(resp.data);
+      if (count > VOICE_M5_MODELLIST_MAX) count = VOICE_M5_MODELLIST_MAX;
+      for (int i = 0; i < count; i++) {
+         cJSON *entry = cJSON_GetArrayItem(resp.data, i);
+         if (!cJSON_IsObject(entry)) continue;
+         voice_m5_model_t *m = &out->models[out->n];
+         cJSON *mode = cJSON_GetObjectItemCaseSensitive(entry, "mode");
+         if (cJSON_IsString(mode)) {
+            strncpy(m->mode, mode->valuestring, sizeof(m->mode) - 1);
+         }
+         cJSON *caps = cJSON_GetObjectItemCaseSensitive(entry, "capabilities");
+         if (cJSON_IsArray(caps)) {
+            cJSON *primary = cJSON_GetArrayItem(caps, 0);
+            if (cJSON_IsString(primary)) {
+               strncpy(m->primary_cap, primary->valuestring, sizeof(m->primary_cap) - 1);
+            }
+            cJSON *secondary = cJSON_GetArrayItem(caps, 1);
+            if (cJSON_IsString(secondary)) {
+               /* Only store as language if it's a recognised language
+                * tag — otherwise leave empty.  K144 uses "English",
+                * "Chinese" today; "chat" appears as secondary on the
+                * LLM unit which is NOT a language. */
+               const char *s = secondary->valuestring;
+               if (strcmp(s, "English") == 0 || strcmp(s, "Chinese") == 0) {
+                  strncpy(m->language, s, sizeof(m->language) - 1);
+               }
+            }
+         }
+         out->n++;
+      }
+      out->valid = true;
+      result = ESP_OK;
+   }
+   m5_stackflow_response_free(&resp);
+   M5_UNLOCK();
+   return result;
+}
+
 /* ---------------------------------------------------------------------- */
 /*  Phase 6a — adaptive baud negotiation                                  */
 /* ---------------------------------------------------------------------- */

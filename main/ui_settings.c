@@ -108,25 +108,38 @@ static void k144_chip_tap_cb(lv_event_t *e) {
 
 /* TT #328 Wave 14 — K144 hardware gauge.  Small label below the chip
  * showing NPU temperature + load + StackFlow daemon version.
- * Populated via a worker job (UART round-trip is ~150 ms; can't run
- * on the LVGL thread).  Gauge text rebuilds every Settings show. */
-#include "voice_m5_llm.h" /* voice_m5_hwinfo_t + sys_hwinfo + sys_version */
+ * Wave 15 extends this with a model inventory line summarising the
+ * sys.lsmode registry ("11 MODELS · 1 LLM · 2 ASR · 3 TTS · 2 KWS · 3 vision").
+ * Populated via a worker job (UART round-trips ~150 ms each; can't
+ * run on the LVGL thread).  Both labels rebuild every Settings show. */
+#include "esp_heap_caps.h" /* heap_caps_calloc for the modelist scratch */
+#include "voice_m5_llm.h"  /* voice_m5_hwinfo_t + sys_hwinfo + sys_version + sys_lsmode */
 static lv_obj_t *s_k144_gauge_lbl = NULL;
+static lv_obj_t *s_k144_models_lbl = NULL;
 
 typedef struct {
    voice_m5_hwinfo_t hw;
    char version[16];
-   bool ok;
+   bool hw_ok;
+   /* Wave 15 — capability counts for the inventory line.  Heap-allocated
+    * via calloc + freed in the async render so the full ~1.8 KB
+    * voice_m5_modelist_t doesn't ride along — only the summary. */
+   int n_total;
+   int n_llm;
+   int n_asr;
+   int n_tts;
+   int n_kws;
+   int n_vision;
+   bool models_ok;
 } k144_gauge_payload_t;
 
 static void k144_gauge_async_render(void *arg) {
    k144_gauge_payload_t *p = (k144_gauge_payload_t *)arg;
    if (s_k144_gauge_lbl != NULL && p != NULL) {
       char buf[64];
-      if (p->ok && p->hw.valid) {
+      if (p->hw_ok && p->hw.valid) {
          double temp_c = (double)p->hw.temperature_milli_c / 1000.0;
-         /* Compact one-line gauge:  "NPU 39.4°C · load 0 · v1.3"
-          * Truncated at 64 to fit the chip-row right-edge area. */
+         /* Compact one-line gauge:  "NPU 39.4°C · load 0 · v1.3" */
          snprintf(buf, sizeof(buf),
                   "NPU %.1f\xc2\xb0"
                   "C \xc2\xb7 load %d \xc2\xb7 %s",
@@ -135,6 +148,23 @@ static void k144_gauge_async_render(void *arg) {
          snprintf(buf, sizeof(buf), "—");
       }
       lv_label_set_text(s_k144_gauge_lbl, buf);
+   }
+   if (s_k144_models_lbl != NULL && p != NULL) {
+      char buf[96];
+      if (p->models_ok && p->n_total > 0) {
+         /* Compact inventory: "11 MODELS · 1 LLM · 2 ASR · 3 TTS · 2 KWS · 3 vision".
+          * Categories with zero entries are elided so the line stays scannable. */
+         int n = 0;
+         n += snprintf(buf + n, sizeof(buf) - n, "%d MODEL%s", p->n_total, p->n_total == 1 ? "" : "S");
+         if (p->n_llm > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d LLM", p->n_llm);
+         if (p->n_asr > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d ASR", p->n_asr);
+         if (p->n_tts > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d TTS", p->n_tts);
+         if (p->n_kws > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d KWS", p->n_kws);
+         if (p->n_vision > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d vision", p->n_vision);
+      } else {
+         snprintf(buf, sizeof(buf), "—");
+      }
+      lv_label_set_text(s_k144_models_lbl, buf);
    }
    if (p != NULL) free(p);
 }
@@ -145,7 +175,33 @@ static void k144_gauge_fetch_job(void *arg) {
    if (p == NULL) return;
    esp_err_t he = voice_m5_llm_sys_hwinfo(&p->hw);
    (void)voice_m5_llm_sys_version(p->version, sizeof(p->version));
-   p->ok = (he == ESP_OK);
+   p->hw_ok = (he == ESP_OK);
+   /* Wave 15 — fetch the model registry too.  PSRAM allocation because
+    * voice_m5_modelist_t is ~1.8 KB and we don't want it on the worker
+    * stack.  Counts are summarised into the payload + the full list
+    * freed before the LVGL async-render callback. */
+   voice_m5_modelist_t *ml = heap_caps_calloc(1, sizeof(*ml), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (ml != NULL) {
+      esp_err_t le = voice_m5_llm_sys_lsmode(ml);
+      if (le == ESP_OK && ml->valid) {
+         p->n_total = ml->n;
+         for (int i = 0; i < ml->n; i++) {
+            const char *cap = ml->models[i].primary_cap;
+            if (strcmp(cap, "text_generation") == 0)
+               p->n_llm++;
+            else if (strcmp(cap, "Automatic_Speech_Recognition") == 0)
+               p->n_asr++;
+            else if (strcmp(cap, "tts") == 0)
+               p->n_tts++;
+            else if (strcmp(cap, "Keyword_spotting") == 0)
+               p->n_kws++;
+            else if (strcmp(cap, "Pose") == 0 || strcmp(cap, "Segmentation") == 0 || strcmp(cap, "Detection") == 0)
+               p->n_vision++;
+         }
+         p->models_ok = true;
+      }
+      heap_caps_free(ml);
+   }
    tab5_lv_async_call(k144_gauge_async_render, p);
 }
 
@@ -1562,9 +1618,30 @@ lv_obj_t *ui_settings_create(void)
               * gauge sits ~24 px below — fits inside the 90 px row
               * without overflowing into the next radio row). */
              lv_obj_set_pos(s_k144_gauge_lbl, row_w - 240, (row_h - 14) / 2 + 22);
+
+             /* TT #328 Wave 15 — model inventory line.  Lives in the
+              * parent scroll container (NOT the row) because row_h=64
+              * is too tight to fit chip + gauge + inventory without
+              * clipping past the row bottom.  Positioned with x=SIDE_PAD
+              * (left-aligned full-width) just below the rows section
+              * by deferring `lv_obj_set_pos` until after the layout
+              * advance below.  See line where `s_k144_models_lbl`
+              * gets repositioned with the final y. */
+             s_k144_models_lbl = lv_label_create(s_scroll);
+             lv_label_set_text(s_k144_models_lbl, "—");
+             lv_obj_set_style_text_font(s_k144_models_lbl, FONT_SMALL, 0);
+             lv_obj_set_style_text_color(s_k144_models_lbl, lv_color_hex(TEXT_DIM), 0);
+             lv_obj_set_style_text_letter_space(s_k144_models_lbl, 1, 0);
+             /* Provisional position; overwritten right below the
+              * VOICE MODE rows are laid out (we know `y` advances
+              * by 5 * (row_h + 2) + 12 there). */
+             lv_obj_set_pos(s_k144_models_lbl, SIDE_PAD, y + 5 * (row_h + 2) - 4);
+
              /* Kick off the fetch only when the K144 is READY — no
               * point hammering the UART when state is UNAVAILABLE
-              * (sys.hwinfo would just time out and waste 1.5 s). */
+              * (sys.hwinfo would just time out and waste 1.5 s).
+              * The worker fetches hwinfo + version + lsmode in one
+              * pass and updates both labels via the async callback. */
              if (fs == 2 /* M5_FAIL_READY */) {
                 (void)tab5_worker_enqueue(k144_gauge_fetch_job, NULL, "k144_gauge");
              }
@@ -1574,6 +1651,14 @@ lv_obj_t *ui_settings_create(void)
           feed_wdt();
        }
        y += 5 * (row_h + 2) + 12;
+       /* TT #328 Wave 15 — re-position the inventory label here, where
+        * `y` finally points at the post-rows region.  Advance `y` by
+        * one FONT_SMALL line + 6 px gap so subsequent sections
+        * (CLOUD LLM caption) don't collide with it. */
+       if (s_k144_models_lbl != NULL) {
+          lv_obj_set_pos(s_k144_models_lbl, SIDE_PAD, y - 6);
+          y += 18;
+       }
     }
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
 

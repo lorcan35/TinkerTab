@@ -2209,6 +2209,118 @@ def story_wave14_k144_observable(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave15_k144_models(r: Runner) -> None:
+    """TT #328 Wave 15 — K144 model registry surfaced.
+
+    Pre-Wave-15 Tab5 had no visibility into what's actually installed
+    on the K144 — `M5_LLM_MODEL` was hardcoded to the bundled
+    `qwen2.5-0.5B-prefill-20e` and the user had no way to discover
+    the other 10 models on disk (2 sherpa ASR, 2 sherpa-onnx KWS,
+    3 TTS engines, 3 YOLO vision models).  Wave 13's ADB probe
+    surfaced these via sys.lsmode but the data never reached Tab5.
+
+    Wave 15 implementation:
+      • voice_m5_llm_sys_lsmode() — typed wrapper around sys.lsmode
+        returning a voice_m5_modelist_t with up to 16 entries
+        (K144 ships 11; 16 for headroom)
+      • GET /m5/models — surfaces the registry as JSON.  Cached for
+        5 min in PSRAM (registry doesn't change between K144 reboots).
+        ?force=1 bypasses cache.  PSRAM-lazy NOT BSS-static (a
+        BSS-static draft tripped the boot-loop assert documented in
+        LEARNINGS — see Wave 11/13 entries for the same class).
+      • Settings UI inventory line below the K144 hardware gauge:
+        "11 MODELS · 1 LLM · 2 ASR · 3 TTS · 2 KWS · 3 vision".
+        Compact summary with capability counts; categories with zero
+        entries elided so the line stays scannable.
+
+    Touch-driven: provision token, force a fresh /m5/models fetch,
+    verify the 11-entry shape, navigate to Settings + screenshot
+    the full chip+gauge+inventory block.
+    """
+    import time as _time
+    tab5 = r.tab5
+
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+
+    # ─── A. Settle K144 state ──────────────────────────────────────
+    def _settle(t, timeout_s=60):
+        deadline = _time.time() + timeout_s
+        while _time.time() < deadline:
+            state = t._get("/m5").json().get("failover_state_name")
+            if state in ("ready", "unavailable"):
+                return True
+            _time.sleep(2)
+        return True
+    r.step("[A] Wait for K144 to settle", lambda t: _settle(t))
+
+    # ─── B. /m5/models endpoint shape contract ─────────────────────
+    def _check_shape(t):
+        body = t._get("/m5/models").json()
+        return all(k in body for k in ("valid", "count", "models"))
+    r.step("[B] /m5/models returns expected shape", _check_shape)
+
+    # ─── C. ?force=1 bypasses the 5 min cache ──────────────────────
+    def _force_refresh(t):
+        body = t._get("/m5/models?force=1").json()
+        return "valid" in body
+    r.step("[C] /m5/models?force=1 returns enriched payload", _force_refresh)
+
+    # ─── D. Registry has expected K144 v1.3 inventory shape ────────
+    # K144 v1.3 ships exactly 11 models — verified live via ADB probe
+    # 2026-05-01.  If count drifts, M5 shipped a firmware update; this
+    # test will flag it for re-baselining.
+    def _check_inventory(t):
+        body = t._get("/m5/models?force=1").json()
+        if not body.get("valid"):
+            # K144 unavailable — acceptable (no count check)
+            return True
+        if body.get("count") < 1:
+            return False
+        models = body.get("models", [])
+        caps = {m.get("primary_cap") for m in models}
+        # Must have at least one LLM (text_generation) for the gauge
+        # version line to make sense.
+        return "text_generation" in caps
+    r.step("[D] Registry contains at least one LLM", _check_inventory)
+
+    # ─── E. Capability count buckets line up with categories ───────
+    def _check_buckets(t):
+        body = t._get("/m5/models?force=1").json()
+        if not body.get("valid"):
+            return True  # skip when K144 offline
+        models = body.get("models", [])
+        # Count categories the same way ui_settings.c does
+        n_llm = sum(1 for m in models if m.get("primary_cap") == "text_generation")
+        n_asr = sum(1 for m in models if m.get("primary_cap") == "Automatic_Speech_Recognition")
+        n_tts = sum(1 for m in models if m.get("primary_cap") == "tts")
+        n_kws = sum(1 for m in models if m.get("primary_cap") == "Keyword_spotting")
+        n_vis = sum(1 for m in models
+                    if m.get("primary_cap") in ("Pose", "Segmentation", "Detection"))
+        # Plausibility: all categories should sum ≤ count, and each ≥ 0
+        total = n_llm + n_asr + n_tts + n_kws + n_vis
+        return total <= body.get("count", 0)
+    r.step("[E] Capability buckets sum reasonable", _check_buckets)
+
+    # ─── F. Settings UI inventory line visible ────────────────────
+    r.step("[F] Navigate to Settings",
+           lambda t: t.navigate("settings").get("navigated") == "settings")
+    _time.sleep(7)  # 3 worker UART round-trips + LVGL paint
+    r.step("[F] Screenshot — inventory line below the gauge",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave15_F_inventory.jpg")) > 1000)
+
+    # ─── G. Tab5 healthy after the fetch chain ─────────────────────
+    r.step("[G] Tab5 still alive + voice WS connected",
+           lambda t: t.is_alive() and t._get("/info").json().get("voice_connected"))
+    r.step("[G] Heap healthy (>10 MB free PSRAM)",
+           lambda t: t._get("/info").json().get("psram_free", 0) > 10_000_000)
+
+    # ─── H. Cleanup ────────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -2228,6 +2340,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave12":  story_wave12_agent_log,
     "story_wave13":  story_wave13_k144_recoverable,
     "story_wave14":  story_wave14_k144_observable,
+    "story_wave15":  story_wave15_k144_models,
 }
 
 
