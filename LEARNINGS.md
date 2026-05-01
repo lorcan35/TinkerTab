@@ -1449,3 +1449,21 @@ Every entry here was learned the hard way. Read this before touching the codebas
   1. **A "last operation" timestamp is two timestamps in disguise.**  Rate-limiting attempts and TTL on success are separate concerns; using one variable for both is a bug waiting to surface on a state transition.  Default to two variables.
   2. **Cache-freshness lies break consumer trust.**  If the JSON says `cache_age_ms: 1200`, the consumer assumes data ≤ 1.2 s old.  Make the field reflect actual data age, not "time since we last looked at the cache."
   3. **State-transition test cases should be on every UART-fronted cache.**  The unit-test surface here would be: prime the cache with K144 in state X, force transition to Y, verify the cache freshens within the rate-limit window.  Caught this Wave 14 bug 30 minutes after the first deploy + smoke; would have caught it pre-flash with a unit test.
+
+---
+
+## TT #328 Wave 16 — Sticky UI from one-shot creation: track widgets at file scope, refresh in periodic update
+
+- **Date:** 2026-05-01
+- **Symptom:** Wave 13 made the K144 failover state recoverable.  Wave 14 added a Settings UI gauge below the K144 chip.  But: a user who opened Settings during UNAVAILABLE and stayed there past a successful recovery still saw the stale red `✗ UNAVAILABLE · TAP` chip until the next Tab5 reboot — even though `/m5` correctly reported READY.  Separately, the home-screen "auto-retrying every 60s" banner stayed pinned forever after recovery succeeded.
+- **Root Cause:** Both bugs share the same shape — UI artifacts created at one moment in time and never updated when underlying state transitioned out of that moment.
+  - The chip was a local `lv_obj_t *chip` inside the radio-row creation loop.  Captured fs at first `ui_settings_create()` call, never tracked, never updated.
+  - The banner was created via `ui_home_show_error_banner()` from `mark_k144_unavailable()`.  Wave 13 added a "now there's a recovery path" feature but didn't add a corresponding "now clear the banner" call when state went back to READY.
+- **Fix:** Two centralisations:
+  1. **`refresh_k144_chip()` helper** — track `s_k144_chip_lbl` at file scope, factor out all label-text + color logic into one helper that early-exits when state hasn't moved.  Hook into the existing `ui_settings_update()` 2 s periodic refresh + call it once at chip creation.  On transition TO READY: kick off the worker fetch.  On transition AWAY from READY: reset gauge + inventory to em-dash placeholders so stale numbers don't mislead.
+  2. **`mark_k144_recovered()` hook** — central "transition to READY" path.  Resets auto-retry budget (next outage gets a fresh 3 attempts), cancels any pending `esp_timer` retry, and calls `ui_home_clear_error_banner()` via `tab5_lv_async_call`.  Wired into both READY-transition sites (boot warmup + Wave 13 reset path).
+- **Prevention:**
+  1. **One-shot UI render is a bug class to recognise.**  If you `lv_label_set_text(x, "static text from snapshot")` and never write to `x` again, you're shipping a UI that lies on state transitions.  Track every widget that displays a derived value at file scope and re-render on the upstream-state-change signal.
+  2. **`ui_*_update()` is the right hook for periodic resync.**  This codebase already runs Settings update every 2 s via `s_refresh_timer` for live values (battery, heap, SD card).  Adding the K144 chip refresh there cost 1 line of code in `ui_settings_update` + a dedicated `refresh_*` helper.  No new timer, no new task, no new IPC.
+  3. **Centralise transition hooks at the source, not the consumer.**  The original Wave 13 design had `s_m5_failover = M5_FAIL_READY; tab5_debug_obs_event(...)` inline at every recovery site.  Wave 16 extracted `mark_k144_recovered()` so banner-clear + retry-budget-reset + obs are one atomic, named operation.  Future recovery sites (Wave 17+ KWS, etc.) plug in for free; can't accidentally forget the banner-clear or the budget-reset.
+  4. **For non-dismissable UX (banners, toasts pinned until clear), every code path that creates the UX must have a paired clear path.**  The audit signal: grep for `show_*_banner(` and verify every site has a corresponding `clear_*_banner(` reachable from the recovery state-machine.  Missing pairs are bugs waiting to surface.
