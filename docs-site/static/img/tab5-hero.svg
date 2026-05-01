@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 480" fill="none">
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0a0e0c"/>
+      <stop offset="100%" stop-color="#11171a"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f2937"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <radialGradient id="orb" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="60%" stop-color="#047857"/>
+      <stop offset="100%" stop-color="#024c39"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Outer bezel -->
+  <rect x="20" y="10" width="280" height="460" rx="28" fill="url(#bezel)" stroke="#374151" stroke-width="1.5"/>
+  <!-- Screen area -->
+  <rect x="36" y="34" width="248" height="412" rx="14" fill="url(#screen)"/>
+
+  <!-- Status bar -->
+  <text x="48" y="58" fill="#9ca3af" font-family="Inter, sans-serif" font-size="11" font-weight="500">10:30</text>
+  <circle cx="262" cy="54" r="3" fill="#34d399"/>
+  <text x="244" y="58" fill="#9ca3af" font-family="Inter, sans-serif" font-size="11" font-weight="500">LAN</text>
+
+  <!-- Greeting -->
+  <text x="48" y="120" fill="#e5e7eb" font-family="Inter, sans-serif" font-size="22" font-weight="700">Good morning</text>
+  <text x="48" y="148" fill="#9ca3af" font-family="Inter, sans-serif" font-size="13">Tap the orb to start</text>
+
+  <!-- Voice orb -->
+  <circle cx="160" cy="270" r="78" fill="url(#orb)" opacity="0.95"/>
+  <circle cx="160" cy="270" r="64" fill="none" stroke="#10b981" stroke-opacity="0.45" stroke-width="1"/>
+  <circle cx="160" cy="270" r="92" fill="none" stroke="#10b981" stroke-opacity="0.20" stroke-width="1"/>
+
+  <!-- Now-card -->
+  <rect x="48" y="380" width="224" height="48" rx="12" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+  <circle cx="68" cy="404" r="10" fill="#34d399" fill-opacity="0.18"/>
+  <text x="86" y="400" fill="#e5e7eb" font-family="Inter, sans-serif" font-size="12" font-weight="600">Coffee timer</text>
+  <text x="86" y="416" fill="#9ca3af" font-family="Inter, sans-serif" font-size="11">3 min remaining</text>
+
+  <!-- Home button hint -->
+  <rect x="140" y="450" width="40" height="3" rx="1.5" fill="#4b5563"/>
+</svg>

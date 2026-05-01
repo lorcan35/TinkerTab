@@ -1,0 +1,25 @@
+[Unit]
+Description=Publish "tinker.local" mDNS alias for the TinkerTab docs site
+Documentation=https://github.com/lorcan35/TinkerTab/tree/main/docs-site
+After=network-online.target avahi-daemon.service
+Wants=avahi-daemon.service network-online.target
+
+# Pre-flight: figure out the primary LAN IPv4 address.  We only publish
+# the alias if we have a real LAN address (not 127.0.0.1, not 10.0.3.*
+# bridge addresses) so it stays correct after DHCP renewals.
+[Service]
+Type=simple
+ExecStart=/bin/sh -c '\
+  IP=$(ip -4 -o addr show | awk "\\$2 !~ /^lo|^docker|^br-|^veth|^lxc|^ztux/ && \\$4 !~ /^127\\./ && \\$4 !~ /^10\\.0\\.3\\./ {print \\$4; exit}" | cut -d/ -f1); \
+  if [ -z "$IP" ]; then \
+    echo "no LAN IPv4 found, refusing to publish tinker.local alias"; \
+    exit 1; \
+  fi; \
+  echo "publishing tinker.local → $IP"; \
+  exec /usr/bin/avahi-publish-address -R tinker.local "$IP"'
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
