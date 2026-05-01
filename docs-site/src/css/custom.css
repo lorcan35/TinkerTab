@@ -1,0 +1,91 @@
+/**
+ * TinkerTab docs theme — emerald-accent palette tuned to match
+ * widget_icons tone map (calm/done/success → emerald-700).
+ * Inspired visually by the Seeed SenseCAP Watcher wiki layout.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --ifm-color-primary: #047857;
+  --ifm-color-primary-dark: #036249;
+  --ifm-color-primary-darker: #035c45;
+  --ifm-color-primary-darkest: #024c39;
+  --ifm-color-primary-light: #058c66;
+  --ifm-color-primary-lighter: #05926b;
+  --ifm-color-primary-lightest: #10b981;
+
+  --ifm-background-color: #ffffff;
+  --ifm-background-surface-color: #f9fafb;
+  --ifm-color-content: #111827;
+  --ifm-color-content-secondary: #4b5563;
+
+  --ifm-font-family-base: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto,
+    sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', 'SFMono-Regular', Consolas,
+    monospace;
+  --ifm-code-background: #f3f4f6;
+  --ifm-code-font-size: 90%;
+
+  --docusaurus-highlighted-code-line-bg: rgba(4, 120, 87, 0.10);
+
+  --tt-hero-gradient: radial-gradient(
+      circle at 20% 20%,
+      rgba(16, 185, 129, 0.18),
+      transparent 55%
+    ),
+    radial-gradient(
+      circle at 80% 80%,
+      rgba(4, 120, 87, 0.16),
+      transparent 60%
+    );
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #34d399;
+  --ifm-color-primary-dark: #28c08a;
+  --ifm-color-primary-darker: #25b682;
+  --ifm-color-primary-darkest: #1f9a6e;
+  --ifm-color-primary-light: #4ed8a4;
+  --ifm-color-primary-lighter: #5cdcaa;
+  --ifm-color-primary-lightest: #86e6c1;
+
+  --ifm-background-color: #0a0e0c;
+  --ifm-background-surface-color: #11171a;
+  --ifm-color-content: #e5e7eb;
+  --ifm-color-content-secondary: #9ca3af;
+  --ifm-code-background: #1f2937;
+
+  --docusaurus-highlighted-code-line-bg: rgba(52, 211, 153, 0.12);
+
+  --tt-hero-gradient: radial-gradient(
+      circle at 20% 20%,
+      rgba(52, 211, 153, 0.18),
+      transparent 55%
+    ),
+    radial-gradient(
+      circle at 80% 80%,
+      rgba(4, 120, 87, 0.22),
+      transparent 60%
+    );
+}
+
+/* Slightly tighter line-height + nicer headings */
+body {
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+}
+
+h1, h2, h3, h4, h5, h6 {
+  letter-spacing: -0.01em;
+}
+
+.menu__link--active,
+.menu__link--active:hover {
+  font-weight: 600;
+}
+
+/* Make admonitions feel a little less boxy */
+.theme-admonition {
+  border-radius: 12px;
+  border-left-width: 3px;
+}

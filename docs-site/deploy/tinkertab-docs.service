@@ -1,0 +1,22 @@
+[Unit]
+Description=TinkerTab documentation site (Caddy)
+Documentation=https://github.com/lorcan35/TinkerTab/tree/main/docs-site
+After=network.target avahi-daemon.service
+Wants=avahi-daemon.service
+
+[Service]
+Type=simple
+User=rebelforce
+ExecStart=/usr/bin/caddy run --config /home/rebelforce/projects/TinkerTab/docs-site/deploy/Caddyfile
+ExecReload=/usr/bin/caddy reload --config /home/rebelforce/projects/TinkerTab/docs-site/deploy/Caddyfile
+Restart=on-failure
+RestartSec=5
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
