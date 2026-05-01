@@ -61,19 +61,56 @@ typedef struct {
    char err_msg[80];
 } tools_payload_t;
 
+/* TT #328 Wave 12 — cross-session agent activity feed.
+ *
+ * Tab5's local `tool_log` ring only captures activity since the last
+ * boot.  Dragon serves a wider, persistent ring (last 64 invocations)
+ * via /api/v1/agent_log so the user can see "what has the agent been
+ * doing" even after a Tab5 reboot.  Fetched on every overlay show;
+ * rendered below the empty-state copy when local has nothing to show. */
+/* AGENT_LOG_MAX caps the rendered list at 5 entries — each card is
+ * roughly 70px tall (heading + preview line + divider), so 5 fits in
+ * the ~400px gap between the activity entry container (y=420) and the
+ * catalog section (y=820) without overlap. */
+#define AGENT_LOG_MAX 5
+#define AGENT_LOG_TOOL_LEN 32
+#define AGENT_LOG_PREVIEW_LEN 96
+
+typedef struct {
+   uint32_t id;
+   uint32_t ts;
+   char tool[AGENT_LOG_TOOL_LEN];
+   bool done;
+   uint32_t execution_ms;
+   char preview[AGENT_LOG_PREVIEW_LEN];
+} agent_log_entry_t;
+
+typedef struct {
+   int n;
+   agent_log_entry_t entries[AGENT_LOG_MAX];
+   bool fetch_ok;
+   char err_msg[80];
+} agent_log_payload_t;
+
 static lv_obj_t *s_overlay       = NULL;
 static lv_obj_t *s_back_btn      = NULL;
 static lv_obj_t *s_count_lbl     = NULL;   /* U7 (#206): refreshed on each show */
 static lv_obj_t *s_entry_root    = NULL;   /* container for the live activity entry */
 static lv_obj_t *s_catalog_root = NULL;    /* TT #328 Wave 6: tools-catalog section */
+static lv_obj_t *s_agent_log_root = NULL;  /* Wave 12: cross-session feed section */
 static bool      s_visible       = false;
 static volatile bool s_fetch_pending = false;
+static volatile bool s_log_fetch_pending = false;
 
 static void render_live_content(void);
 static void render_catalog(const tools_payload_t *p);
 static void fetch_tools_job(void *arg);
 static void async_render_catalog_cb(void *arg);
 static void kick_off_tools_fetch(void);
+static void render_agent_log(const agent_log_payload_t *p);
+static void fetch_agent_log_job(void *arg);
+static void async_render_agent_log_cb(void *arg);
+static void kick_off_agent_log_fetch(void);
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -348,6 +385,167 @@ static void kick_off_tools_fetch(void) {
    }
 }
 
+/* ── Wave 12: cross-session agent_log fetch + render ─────────────── */
+
+/* Worker job: GET /api/v1/agent_log, parse JSON, hand the most-recent
+ * AGENT_LOG_MAX entries to LVGL via tab5_lv_async_call.  Same shape
+ * as fetch_tools_job — bearer auth, PSRAM-backed response, cJSON parse. */
+static void fetch_agent_log_job(void *arg) {
+   (void)arg;
+   agent_log_payload_t *p = heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!p) {
+      ESP_LOGE(TAG, "agent_log_payload alloc failed");
+      s_log_fetch_pending = false;
+      return;
+   }
+
+   char dragon_host[64] = {0};
+   tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
+   if (!dragon_host[0]) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "Dragon host not configured");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+
+   char url[160];
+   snprintf(url, sizeof(url), "http://%s:%d/api/v1/agent_log?limit=%d", dragon_host, TAB5_VOICE_PORT, AGENT_LOG_MAX);
+
+   const size_t resp_cap = 16 * 1024;
+   char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!resp_buf) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "PSRAM alloc failed");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+
+   esp_http_client_config_t cfg = {
+       .url = url,
+       .method = HTTP_METHOD_GET,
+       .timeout_ms = 5000,
+       .buffer_size = 2048,
+       .crt_bundle_attach = NULL,
+   };
+   esp_http_client_handle_t client = esp_http_client_init(&cfg);
+   if (!client) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "http_client_init failed");
+      p->fetch_ok = false;
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+
+   /* Same bearer-auth path as Wave 6 — empty token = unauth request,
+    * Dragon returns 401, fallback UI surfaces the message. */
+   char auth_header[128] = {0};
+   {
+      char tok[96] = {0};
+      tab5_settings_get_dragon_api_token(tok, sizeof(tok));
+      if (tok[0]) {
+         snprintf(auth_header, sizeof(auth_header), "Bearer %s", tok);
+         esp_http_client_set_header(client, "Authorization", auth_header);
+      }
+   }
+
+   esp_err_t err = esp_http_client_open(client, 0);
+   if (err != ESP_OK) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "open: %s", esp_err_to_name(err));
+      p->fetch_ok = false;
+      esp_http_client_cleanup(client);
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+   esp_http_client_fetch_headers(client);
+   int status = esp_http_client_get_status_code(client);
+   if (status != 200) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "HTTP %d", status);
+      p->fetch_ok = false;
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+
+   int total = 0;
+   while (total < (int)resp_cap - 1) {
+      int n = esp_http_client_read(client, resp_buf + total, (int)resp_cap - 1 - total);
+      if (n <= 0) break;
+      total += n;
+   }
+   resp_buf[total] = '\0';
+   esp_http_client_close(client);
+   esp_http_client_cleanup(client);
+
+   /* { "items": [{id, ts, tool, status, result, execution_ms, args}, ...],
+    *   "count":N, "head_id":H, "tail_id":T, "ring_size":S }                */
+   cJSON *root = cJSON_Parse(resp_buf);
+   heap_caps_free(resp_buf);
+   if (!root) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "JSON parse failed");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+   cJSON *arr = cJSON_GetObjectItem(root, "items");
+   if (!cJSON_IsArray(arr)) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "missing 'items' array");
+      p->fetch_ok = false;
+      cJSON_Delete(root);
+      tab5_lv_async_call(async_render_agent_log_cb, p);
+      return;
+   }
+
+   int count = cJSON_GetArraySize(arr);
+   if (count > AGENT_LOG_MAX) count = AGENT_LOG_MAX;
+   for (int i = 0; i < count; i++) {
+      cJSON *e = cJSON_GetArrayItem(arr, i);
+      cJSON *id = cJSON_GetObjectItem(e, "id");
+      cJSON *ts = cJSON_GetObjectItem(e, "ts");
+      cJSON *tool = cJSON_GetObjectItem(e, "tool");
+      cJSON *status_j = cJSON_GetObjectItem(e, "status");
+      cJSON *result = cJSON_GetObjectItem(e, "result");
+      cJSON *exec_ms = cJSON_GetObjectItem(e, "execution_ms");
+      agent_log_entry_t *out = &p->entries[p->n];
+      if (cJSON_IsNumber(id)) out->id = (uint32_t)id->valuedouble;
+      if (cJSON_IsNumber(ts)) out->ts = (uint32_t)ts->valuedouble;
+      if (cJSON_IsString(tool)) {
+         strncpy(out->tool, tool->valuestring, AGENT_LOG_TOOL_LEN - 1);
+      }
+      out->done = cJSON_IsString(status_j) && strcmp(status_j->valuestring, "done") == 0;
+      if (cJSON_IsNumber(exec_ms)) out->execution_ms = (uint32_t)exec_ms->valuedouble;
+      if (cJSON_IsString(result)) {
+         strncpy(out->preview, result->valuestring, AGENT_LOG_PREVIEW_LEN - 1);
+      }
+      p->n++;
+   }
+   cJSON_Delete(root);
+   p->fetch_ok = true;
+   ESP_LOGI(TAG, "Fetched %d agent_log entries from %s", p->n, url);
+
+   tab5_lv_async_call(async_render_agent_log_cb, p);
+}
+
+static void async_render_agent_log_cb(void *arg) {
+   agent_log_payload_t *p = (agent_log_payload_t *)arg;
+   s_log_fetch_pending = false;
+   if (p && s_overlay && s_visible) {
+      render_agent_log(p);
+   }
+   if (p) heap_caps_free(p);
+}
+
+static void kick_off_agent_log_fetch(void) {
+   if (s_log_fetch_pending) return;
+   s_log_fetch_pending = true;
+   if (tab5_worker_enqueue(fetch_agent_log_job, NULL, "agents_log_fetch") != ESP_OK) {
+      ESP_LOGW(TAG, "agent_log_fetch worker enqueue failed");
+      s_log_fetch_pending = false;
+   }
+}
+
 static void render_catalog(const tools_payload_t *p) {
    /* Lazy-create the catalog container.  Sits below the existing
     * AGENT ACTIVITY entry at y ≈ 250 + (entry height ~250).  Use
@@ -357,7 +555,10 @@ static void render_catalog(const tools_payload_t *p) {
       s_catalog_root = lv_obj_create(s_overlay);
       lv_obj_remove_style_all(s_catalog_root);
       lv_obj_set_size(s_catalog_root, SW, LV_SIZE_CONTENT);
-      lv_obj_set_pos(s_catalog_root, 0, 540);
+      /* Wave 12 — push catalog further down to leave room for the
+       * cross-session agent_log section at y=420.  Overlay scrolls
+       * vertically so going past 1280 is safe. */
+      lv_obj_set_pos(s_catalog_root, 0, 820);
       lv_obj_set_flex_flow(s_catalog_root, LV_FLEX_FLOW_COLUMN);
       lv_obj_set_style_pad_row(s_catalog_root, 14, 0);
       lv_obj_clear_flag(s_catalog_root, LV_OBJ_FLAG_SCROLLABLE);
@@ -441,6 +642,145 @@ static void render_catalog(const tools_payload_t *p) {
    }
 }
 
+/* TT #328 Wave 12 — render the cross-session agent_log feed.
+ *
+ * Sits between the local-activity entry (y≈250) and the tools catalog
+ * (y=540 → pushed to y=820 when this section renders).  Hidden when
+ * the local tool_log already has entries — under that condition, the
+ * live entry above is the freshest activity surface and a duplicate
+ * historical feed would only add noise.  Shown in two cases:
+ *   • local empty + Dragon ring populated → "Recent agent activity"
+ *     section listing the last N invocations
+ *   • local empty + Dragon unreachable    → fallback hint sourced from
+ *     err_msg (typically "HTTP 401" if no token, "open: …" if offline) */
+static void render_agent_log(const agent_log_payload_t *p) {
+   /* Skip rendering if the local activity log already has live data —
+    * the existing entry above carries the freshest signal. */
+   bool local_empty = (tool_log_count() == 0);
+
+   if (!s_agent_log_root) {
+      s_agent_log_root = lv_obj_create(s_overlay);
+      lv_obj_remove_style_all(s_agent_log_root);
+      lv_obj_set_size(s_agent_log_root, SW, LV_SIZE_CONTENT);
+      lv_obj_set_pos(s_agent_log_root, 0, 420);
+      lv_obj_set_flex_flow(s_agent_log_root, LV_FLEX_FLOW_COLUMN);
+      lv_obj_set_style_pad_row(s_agent_log_root, 8, 0);
+      lv_obj_clear_flag(s_agent_log_root, LV_OBJ_FLAG_SCROLLABLE);
+   } else {
+      lv_obj_clean(s_agent_log_root);
+   }
+
+   /* When local has live entries, hide this section entirely.  We
+    * still create + clean the container so future re-renders (after
+    * a New Chat clears tool_log) don't end up with stale children. */
+   if (!local_empty) {
+      lv_obj_add_flag(s_agent_log_root, LV_OBJ_FLAG_HIDDEN);
+      return;
+   }
+   lv_obj_remove_flag(s_agent_log_root, LV_OBJ_FLAG_HIDDEN);
+
+   lv_obj_t *kicker = lv_label_create(s_agent_log_root);
+   lv_label_set_text(kicker, "\xe2\x80\xa2 RECENT AGENT ACTIVITY (DRAGON)");
+   lv_obj_set_style_text_font(kicker, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(kicker, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(kicker, 4, 0);
+   lv_obj_set_style_pad_left(kicker, SIDE_PAD, 0);
+
+   if (!p->fetch_ok) {
+      lv_obj_t *e = lv_label_create(s_agent_log_root);
+      lv_label_set_long_mode(e, LV_LABEL_LONG_WRAP);
+      char buf[256];
+      snprintf(buf, sizeof(buf),
+               "Couldn't fetch Dragon's recent activity (%s).\n\n"
+               "Configure the Dragon API token via Settings to see "
+               "cross-session tool history.",
+               p->err_msg[0] ? p->err_msg : "no detail");
+      lv_label_set_text(e, buf);
+      lv_obj_set_width(e, SW - 2 * SIDE_PAD);
+      lv_obj_set_style_pad_left(e, SIDE_PAD, 0);
+      lv_obj_set_style_text_font(e, FONT_BODY, 0);
+      lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
+      return;
+   }
+
+   if (p->n == 0) {
+      lv_obj_t *e = lv_label_create(s_agent_log_root);
+      lv_label_set_text(e, "No tool activity recorded on Dragon yet.");
+      lv_obj_set_style_pad_left(e, SIDE_PAD, 0);
+      lv_obj_set_style_text_font(e, FONT_BODY, 0);
+      lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
+      return;
+   }
+
+   /* Compact card per entry: status dot + tool name (heading) + result
+    * preview (small body).  Same hairline-divider treatment as the
+    * tools catalog so the two sections feel like a single design. */
+   for (int i = 0; i < p->n; i++) {
+      const agent_log_entry_t *en = &p->entries[i];
+      lv_obj_t *card = lv_obj_create(s_agent_log_root);
+      lv_obj_remove_style_all(card);
+      lv_obj_set_size(card, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
+      lv_obj_set_style_margin_left(card, SIDE_PAD, 0);
+      lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+      lv_obj_set_style_pad_row(card, 4, 0);
+      lv_obj_set_style_pad_bottom(card, 10, 0);
+      lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
+      lv_obj_set_style_border_width(card, 1, 0);
+      lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0);
+      lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+      /* Header row: status dot + tool name + execution timing. */
+      lv_obj_t *head = lv_obj_create(card);
+      lv_obj_remove_style_all(head);
+      lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+      lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+      lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+      lv_obj_set_style_pad_column(head, 8, 0);
+      lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_clear_flag(head, LV_OBJ_FLAG_CLICKABLE);
+
+      lv_obj_t *dot = lv_obj_create(head);
+      lv_obj_remove_style_all(dot);
+      lv_obj_set_size(dot, 6, 6);
+      lv_obj_set_style_radius(dot, 3, 0);
+      lv_obj_set_style_bg_color(dot, lv_color_hex(en->done ? TH_STATUS_GREEN : TH_AMBER), 0);
+      lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+
+      lv_obj_t *nm = lv_label_create(head);
+      lv_label_set_text(nm, en->tool[0] ? en->tool : "(unknown)");
+      lv_obj_set_style_text_font(nm, FONT_HEADING, 0);
+      lv_obj_set_style_text_color(nm, lv_color_hex(TH_TEXT_PRIMARY), 0);
+
+      lv_obj_t *sp = lv_obj_create(head);
+      lv_obj_remove_style_all(sp);
+      lv_obj_set_flex_grow(sp, 1);
+      lv_obj_set_height(sp, 1);
+      lv_obj_clear_flag(sp, LV_OBJ_FLAG_CLICKABLE);
+
+      char tbuf[24] = {0};
+      if (en->done) {
+         snprintf(tbuf, sizeof(tbuf), "%lums", (unsigned long)en->execution_ms);
+      } else {
+         snprintf(tbuf, sizeof(tbuf), "RUNNING");
+      }
+      lv_obj_t *tlbl = lv_label_create(head);
+      lv_label_set_text(tlbl, tbuf);
+      lv_obj_set_style_text_font(tlbl, FONT_CAPTION, 0);
+      lv_obj_set_style_text_color(tlbl, lv_color_hex(TH_TEXT_DIM), 0);
+      lv_obj_set_style_text_letter_space(tlbl, 2, 0);
+
+      if (en->preview[0]) {
+         lv_obj_t *prev = lv_label_create(card);
+         lv_label_set_long_mode(prev, LV_LABEL_LONG_WRAP);
+         lv_label_set_text(prev, en->preview);
+         lv_obj_set_width(prev, SW - 2 * SIDE_PAD);
+         lv_obj_set_style_text_font(prev, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(prev, lv_color_hex(TH_TEXT_BODY), 0);
+         lv_obj_set_style_text_line_space(prev, 3, 0);
+      }
+   }
+}
+
 /* ── Build + show ────────────────────────────────────────────── */
 
 void ui_agents_show(void)
@@ -465,6 +805,8 @@ void ui_agents_show(void)
          * tool registrations on Dragon (skill installs, plugin loads)
          * surface without a Tab5 reboot. */
         kick_off_tools_fetch();
+        /* TT #328 Wave 12 — refresh cross-session activity feed. */
+        kick_off_agent_log_fetch();
         return;
     }
 
@@ -514,6 +856,9 @@ void ui_agents_show(void)
      * The HTTP round-trip happens on the worker thread; the LVGL paint
      * lands a moment later via async_render_catalog_cb. */
     kick_off_tools_fetch();
+    /* TT #328 Wave 12 — fetch cross-session agent_log in parallel.
+     * Renders below the local activity entry when local is empty. */
+    kick_off_agent_log_fetch();
     ESP_LOGI(TAG, "agents overlay shown");
 }
 

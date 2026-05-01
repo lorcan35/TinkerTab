@@ -1862,6 +1862,124 @@ def story_wave11_skill_starring(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave12_agent_log(r: Runner) -> None:
+    """TT #328 Wave 12 — cross-session agent activity feed.
+
+    Closes the audit gap "Agents screen has no historical activity":
+    pre-Wave-12 ui_agents only surfaced tool calls from the current
+    Tab5 session via the local `tool_log` ring buffer.  After a Tab5
+    reboot, the screen showed "No tool activity yet" even if Dragon
+    had run 50 tool invocations from the dashboard or another client.
+
+    Wave 12 implementation:
+      • Dragon: new /api/v1/agent_log endpoint backed by a 64-slot
+        in-memory ring populated at the ToolRegistry.execute()
+        chokepoint.  Captures every tool invocation regardless of
+        caller (WS conversations, REST /tools/{name}/execute,
+        dashboard).  Returns {items, count, head_id, tail_id,
+        ring_size}.
+      • Tab5 ui_agents: parallel HTTP fetch on every overlay show
+        (worker thread, bearer-auth via Wave 8 token), renders
+        below the local empty-state with status dots + tool name
+        + execution_ms + result preview.  Hidden when local
+        tool_log has live entries (no duplicate noise).
+      • Catalog section pushed from y=540 to y=820 to fit the
+        cross-session feed at y=420 without overlap.
+
+    Touch-driven user stories: provision Dragon token, trigger
+    cross-session tool calls via Dragon REST, navigate to /agents,
+    verify the activity feed renders and matches the recent tool
+    invocations.
+    """
+    import os as _os
+    tab5 = r.tab5
+    dragon_token = _os.environ.get("DRAGON_API_TOKEN", "")
+    dragon_host = _os.environ.get("DRAGON_HOST", "192.168.1.91")
+    if not dragon_token:
+        r.step("[setup] DRAGON_API_TOKEN env required — skipping",
+               lambda t: True)
+        return
+
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+
+    # ─── A. Provision Dragon token on Tab5 (enables the fetch) ────
+    r.step("[A] Set Dragon API token in Tab5 NVS",
+           lambda t: "dragon_api_token" in
+                     t._post("/settings",
+                             json={"dragon_api_token": dragon_token}
+                             ).json().get("updated", []))
+
+    # ─── B. Verify endpoint reachable directly ────────────────────
+    def _check_endpoint(t):
+        import requests
+        url = f"http://{dragon_host}:3502/api/v1/agent_log"
+        resp = requests.get(url, timeout=5,
+                            headers={"Authorization": f"Bearer {dragon_token}"})
+        body = resp.json()
+        return all(k in body for k in ("items", "count", "head_id", "tail_id", "ring_size"))
+    r.step("[B] /api/v1/agent_log returns expected shape", _check_endpoint)
+
+    # ─── C. Trigger 3 cross-session tool calls via Dragon REST ────
+    def _trigger(tool, body=None):
+        def _go(t):
+            import requests
+            url = f"http://{dragon_host}:3502/api/v1/tools/{tool}/execute"
+            resp = requests.post(
+                url, timeout=10,
+                headers={"Authorization": f"Bearer {dragon_token}",
+                         "Content-Type": "application/json"},
+                json={"args": body or {}})
+            return resp.status_code == 200
+        return _go
+    r.step("[C] Trigger datetime tool", _trigger("datetime"))
+    r.step("[C] Trigger calculator tool", _trigger("calculator", {"expression": "7*8"}))
+    r.step("[C] Trigger weather tool (will error — that's fine, still rings)",
+           _trigger("weather", {"location": "NYC"}))
+
+    # ─── D. Verify Dragon ring captured them ──────────────────────
+    def _check_ring(t):
+        import requests
+        url = f"http://{dragon_host}:3502/api/v1/agent_log"
+        resp = requests.get(url, timeout=5,
+                            headers={"Authorization": f"Bearer {dragon_token}"})
+        body = resp.json()
+        tools = {it.get("tool") for it in body.get("items", [])}
+        # All three tools should be in the ring
+        return {"datetime", "calculator", "weather"} <= tools
+    r.step("[D] Ring captured datetime/calculator/weather", _check_ring)
+
+    # ─── E. Navigate to /agents — fetch fires + renders ───────────
+    r.step("[E] Force Local mode", lambda t: t.mode(0).get("ok") is not False)
+    r.step("[E] Navigate to /agents",
+           lambda t: t.navigate("agents").get("navigated") == "agents")
+    time.sleep(6)  # allow fetch worker + LVGL paint
+    r.step("[E] Screenshot — RECENT AGENT ACTIVITY visible",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave12_E_activity_feed.jpg")) > 1000)
+
+    # ─── F. Tab5 still alive after fetch ──────────────────────────
+    r.step("[F] Tab5 still alive after agent_log fetch",
+           lambda t: t.is_alive())
+    r.step("[F] Heap healthy (>10 MB free PSRAM)",
+           lambda t: t._get("/info").json().get("psram_free", 0) > 10_000_000)
+
+    # ─── G. Re-show round-trip — second fetch lands cleanly ───────
+    r.step("[G] Navigate home", lambda t: t.navigate("home")
+                                           .get("navigated") == "home")
+    time.sleep(1)
+    r.step("[G] Re-navigate to /agents (re-show triggers re-fetch)",
+           lambda t: t.navigate("agents").get("navigated") == "agents")
+    time.sleep(5)
+    r.step("[G] Screenshot — re-fetched feed renders without leaks",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave12_G_reopen.jpg")) > 1000)
+
+    # ─── Cleanup ───────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -1878,6 +1996,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave9":   story_wave9_sd_dictation,
     "story_wave10":  story_wave10_ui_skills,
     "story_wave11":  story_wave11_skill_starring,
+    "story_wave12":  story_wave12_agent_log,
 }
 
 
