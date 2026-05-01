@@ -1369,3 +1369,67 @@ Every entry here was learned the hard way. Read this before touching the codebas
   1. **For multi-day audit follow-ups, write the plan doc on disk + file the tracking issue before any code changes.**  PR commits reference the issue, the plan doc evolves as scopes shift, and the durable record survives branch deletion.  This audit's `docs/AUDIT-k144-chain-2026-04-29.md` + `docs/PLAN-k144-chain-hardening.md` were referenced in every wave's commit message and PR description.
   2. **A 5-P0 audit doesn't mean 5 sequential PRs — group by dependency.**  Wave 1's mutex unblocked Wave 3's TTS workaround.  Wave 2 (UI polish) and Wave 4b (extract) were decoupled and shippable in parallel.  Wave 5 (observability) lands AFTER the structural changes so the test harness is checking the final shape.
   3. **Verification cadence: build + flash + smoke after every wave, not just at end.**  Each wave's commit message documents the verification result (`story_smoke 14/14 + story_onboard 14/14`).  Catches regressions while context is fresh, not in a final integration crunch.
+
+---
+
+## TT #328 Wave 11 — BSS-static caches >3 KB push Tab5 over a boot SRAM threshold
+
+- **Date:** 2026-05-01
+- **Symptom:** First-pass implementation of skill-starring in `ui_skills.c` added a `static skills_payload_t s_kept_payload = {0};` (3.6 KB BSS) so the tap-toggle callback had a stable read source after `async_render_cb` freed the fetch buffer.  Build was clean; flash succeeded.  On boot, Tab5 looped indefinitely at `cpu_start: Multicore app` → never reached WiFi/HTTP server init.  Serial showed `assert failed: vApplicationGetTimerTaskMemory port_common.c:97 (pxStackBufferTemp != NULL)` followed by `Core dump has been saved to flash` repeating every ~1.2 s.
+- **Root Cause:** The 3.6 KB BSS addition pushed internal SRAM pressure past a soft limit at boot.  The FreeRTOS timer service's `vApplicationGetTimerTaskMemory` calls `heap_caps_calloc(stackdepth, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)` for the timer-task stack on first xTimer use; under SRAM pressure that calloc returns NULL → the assert trips → reboot.  The same failure mode is documented inline at `voice_onboard.c:65-69` for `CHAIN_ASR_CAP` (dropped from BSS to PSRAM for the same reason) and at `ui_sessions.c` (per the existing comment).  The 96 KB LVGL pool in BSS + DMA descriptors + WiFi buffers + 19+ static UI overlay state structs collectively leave very little contiguous internal SRAM at boot.
+- **Fix:** Replaced the BSS-static struct with a lazy PSRAM allocation: `static skills_payload_t *s_kept_payload = NULL;` + `heap_caps_calloc(1, sizeof(*s_kept_payload), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` on first render.  Allocation deferred until the user actually opens the Skills screen — boards that never visit it pay zero memory cost.  Wave 11 shipped clean as commit `bcf05d9` after recovery.
+- **Recovery sequence** (write down — same playbook saved Wave 13's later boot loop too):
+  1. `git stash push -m "wave-N-bootloop" -- <files>` to safely park the bad code
+  2. `idf.py build && idf.py -p /dev/ttyACM0 flash` from the now-clean commit to re-flash a working firmware
+  3. ~12 s wait, then `curl http://192.168.1.90:8080/info` to confirm WiFi+voice are back
+  4. Re-apply the stash by hand, replacing the BSS-static with the PSRAM-lazy pattern
+- **Prevention:**
+  1. **Any BSS struct ≥ ~2 KB on Tab5 should default to PSRAM-lazy.**  The cost is one `if (ptr == NULL) { ptr = heap_caps_calloc(...); }` block on first use; the savings are guaranteed boot stability.
+  2. **Build size is NOT a useful signal for this class of failure.**  Wave 11's binary was 18% free in the app partition (same as Wave 10) — the partition is irrelevant; internal SRAM is what matters.
+  3. **A new `static T s_x = {0};` in any TinkerTab module is a code smell.**  Grep `static.*\\[.*\\]` and `static.*= {0}` on changed files in PR review; if any new static aggregate ≥ 1 KB lands without a `MALLOC_CAP_SPIRAM` justification in comments, push back.
+  4. **Boot-loop signature to recognize fast:** `cpu_start: Multicore app` → no further log → `Core dump has been saved` → reset.  When you see this pattern, the failure is internal SRAM exhaustion, NOT your business logic.
+
+---
+
+## TT #328 Wave 13 — esp_timer over xTimerCreate avoids same boot-loop class
+
+- **Date:** 2026-05-01
+- **Symptom:** Wave 13's auto-retry timer used `xTimerCreate(...)` for a one-shot 60 s callback.  Same boot-loop signature as Wave 11 (`cpu_start: Multicore app` → silent → reset → repeat), with a different but related assert: `vApplicationGetTimerTaskMemory port_common.c:97 (pxStackBufferTemp != NULL)`.
+- **Root Cause:** `xTimerCreate` lazily forces FreeRTOS to spin up its timer service task on first use.  The timer service task needs a 16 KB stack allocated from `MALLOC_CAP_INTERNAL` via `vApplicationGetTimerTaskMemory`'s calloc.  That allocation fails under boot-time SRAM pressure → NULL → assert.  Critically, this is the SAME class of failure as Wave 11, just a different allocation site — both are "internal SRAM exhausted at boot."
+- **Fix:** Switched to `esp_timer_create()` + `esp_timer_start_once()` (esp_timer.h).  `esp_timer` uses a single global dispatcher task that's already created at boot for system services; new timers add a small ~16-byte struct, no per-timer task spin-up.  Wave 13 shipped clean as `4352e9e` after recovery.
+- **Prevention:**
+  1. **Default to `esp_timer` for any one-shot or low-frequency periodic callback on TinkerTab.**  `xTimerCreate` is fine on systems with abundant internal SRAM, but on Tab5's tight boot budget it's a footgun.  See `voice_onboard.c:62-68` for inline rationale.
+  2. **`xTimerCreate` is ONLY warranted when you need its specific features:** queue-driven dispatch with priority-based ordering, dynamic period changes, or auto-reload tied to a FreeRTOS-managed lifecycle.  None of those apply to "fire a callback in N seconds."
+  3. **The decision lives at first xTimer use, not at boot.**  A codebase that never calls xTimer never spins up the timer task — which is what kept us safe before Wave 13.  Adding even one xTimer is enough to trigger the failure.
+
+---
+
+## TT #328 Wave 13 — K144 sys.reset is a real verb (live-probe finding)
+
+- **Date:** 2026-05-01
+- **Symptom:** Pre-Wave-13 the K144 failover state machine was one-way: `M5_FAIL_UNAVAILABLE` was sticky until Tab5 reboot.  My initial control-surface audit assumed there was no software path to clear hung K144 state — "PCB rework on Module13.2 LLM Mate carrier needed for a hardware reset GPIO" was the recommendation.
+- **Root Cause:** I'd never actually probed the K144 daemon's verb surface beyond what M5Module-LLM Arduino library publicly documents.  The library's lifecycle docs only describe `setup` / `inference` / `exit` / `ping` / `uartsetup` for unit-level ops.  There's no `sys.reset` or `sys.reboot` documented.
+- **Fix:** Did a 10-minute live ADB probe (`sudo adb forward tcp:10001 tcp:10001` + raw JSON via `nc`) and discovered the daemon answers FIVE undocumented `sys.*` verbs:
+  - `sys.reset` — soft restart of the StackFlow daemon (~4 s recovery, returns "llm server restarting ...")
+  - `sys.reboot` — full Linux reboot (~30 s)
+  - `sys.hwinfo` — `{cpu_loadavg, mem, temperature: <milli-°C>}` on demand
+  - `sys.lsmode` — full registry of installed models with capabilities
+  - `sys.version` — daemon version string
+  
+  Plus 6 verbs that DO NOT exist: `sys.list`, `sys.status`, `sys.cpuload`, `sys.diskinfo`, `sys.uptime`, `sys.log` all return `"action match false"`.  See `docs/PLAN-k144-recovery.md` "Provenance" section for the verbatim probe results.
+- **Prevention:**
+  1. **For any vendor module accessed via JSON-over-TCP/UART, write a 50-line probe script before scoping a feature that depends on its verb surface.**  The K144 has been on this dev workstation for weeks; the probe took 10 minutes.  Skipping it would have led me to recommend a hardware fix instead of a software one.
+  2. **The Arduino library's published API is not the whole truth.**  K144's daemon implements verbs that the M5Stack reference Arduino lib doesn't surface, presumably because they're considered internal.  They're still real and reachable from any client that knows the protocol.
+  3. **Bonus discovery during the same probe:** `sys.lsmode` revealed 11 installed models on the K144 we don't currently use — including 2 sherpa-onnx KWS models that are open-vocabulary (no custom training needed for "Hey Tinker") and 3 YOLO vision models.  Logged as Wave 16+ candidate.
+
+---
+
+## Sherpa-onnx KWS is open-vocabulary (kws-zipformer-gigaspeech-3.3M)
+
+- **Date:** 2026-05-01
+- **Symptom:** TT #162 retired the "Hey Tinker" wake-word feature after the ESP32-P4 TDM slot mapping for the AEC reference channel never produced reliable detection.  The retire commit + LEARNINGS entry above said "revival path requires procuring a custom 'Hey Tinker' WakeNet model from Espressif."  I repeated that assumption in the Wave 13 audit response: "KWS revival would need a custom model trained on 'Hey Tinker'."
+- **Root Cause:** That assumption was wrong for a different KWS model class.  Espressif's WakeNet models are CLOSED-vocabulary — trained per phrase, model file IS the wake word.  But sherpa-onnx KWS uses CTC-based "open-vocabulary keyword spotting" — you provide the keyword list at runtime as text, the model scores phonetic matches against the audio stream.  The K144 ships with `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01` (English) and a Chinese counterpart, both trained on 10,000+ hours of speech.  Custom keywords like "Hey Tinker" work without retraining.
+- **Fix:** None yet — Wave 13 deferred KWS revival to Wave 16+ as a separate scope (touches voice mode semantics + mic routing).  But the cost estimate dropped dramatically: from "procure a custom model + train" (months + vendor dependency) to "wire up sherpa-onnx KWS on K144 + pass keyword list at setup" (1 wave).
+- **Prevention:**
+  1. **WakeNet ≠ KWS in general.**  Espressif's WakeNet is closed-vocab; sherpa-onnx KWS, OpenWakeWord, Picovoice Porcupine v3.0+ are open-vocab.  When recommending a wake-word path, identify which model class is on the table.
+  2. **Re-check retired-feature assumptions when a new device with adjacent capability lands.**  TT #162 retired wake-word in 2025 when the Tab5 was the only voice surface.  Stacking the K144 in 2026 changed the reference architecture — wake-word can now live on a different MCU with a different model class.  The original retire decision was correct for its time; it just needs a re-evaluation now.

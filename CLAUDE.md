@@ -42,7 +42,7 @@ Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scop
   - `vmode=3` TinkerClaw — TinkerClaw Gateway (existing)
   - `vmode=4` Onboard — **K144 LLM, no Dragon needed** (new in Phase 5)
 - **Failover behavior:**  In Local mode (`vmode=0`), if Dragon WS is unreachable for ≥30s AND the K144 is warm AND the user sends a text turn, voice.c routes to the K144 automatically.  Toast: "Using onboard LLM".  When Dragon comes back, next text turn returns to Dragon and shows "Dragon reconnected" toast.
-- **K144 cold-start guard:**  Boot warm-up posts a probe + one synchronous `voice_m5_llm_infer("hi", ...)` to map the model into NPU memory.  Up to 6 minutes (cold-start budget).  On success the failover gate flips READY; on any failure (probe timeout, NPU hang) it flips UNAVAILABLE — failover stays disabled until next reboot.  User-facing flows are NEVER blocked by K144 hang behaviors.
+- **K144 cold-start guard:**  Boot warm-up posts a probe + one synchronous `voice_m5_llm_infer("hi", ...)` to map the model into NPU memory.  Up to 6 minutes (cold-start budget).  On success the failover gate flips READY; on any failure (probe timeout, NPU hang) it flips UNAVAILABLE.  **TT #328 Wave 13 (`4352e9e`) made UNAVAILABLE recoverable in software** — `voice_onboard_reset_failover()` sends `sys.reset` to the StackFlow daemon, waits for re-init, re-runs the warmup probe.  Auto-retries every 60 s (capped at 3 attempts/boot via `esp_timer`); manual recovery available via tap on the K144 health chip in Settings or `POST /m5/reset` debug endpoint.  Live timing: 9.6 s end-to-end on hardware.  See [`docs/PLAN-k144-recovery.md`](docs/PLAN-k144-recovery.md) for the verified `sys.*` verb surface (probed 2026-05-01) — `sys.reset`, `sys.reboot`, `sys.hwinfo`, `sys.lsmode`, `sys.version` are real; `sys.list`, `sys.status`, `sys.uptime`, `sys.log` are not.  User-facing flows are NEVER blocked by K144 hang behaviors.
 
 ### Talking to a stacked K144 from the dev host (debugging)
 
@@ -298,6 +298,15 @@ curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/m5 | python3 
 # → {"chain_active":false,"chain_uptime_ms":0,"failover_state":2,
 #    "failover_state_name":"ready","uart_baud":115200}
 
+# K144 software reset (TT #328 Wave 13) — sends sys.reset to the StackFlow daemon
+# on the AX630C, waits for re-init, re-runs the warm-up probe.  Recovers a
+# sticky UNAVAILABLE state in ~10 s without needing to power-cycle the K144 or
+# reboot Tab5.  Async — returns immediately + flips state machine to PROBING.
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/reset
+# → {"status":"queued","detail":"K144 reset job enqueued — poll GET /m5",
+#    "failover_state":2}
+# → {"status":"rejected","detail":"Probe already in flight — ..."}  (if already cycling)
+
 # Self-test (no auth needed)
 curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 
@@ -345,6 +354,10 @@ ring; `GET /events?since=N` returns everything with `ms >= N`.  Each entry has
 | `display.brightness` | `POST /display/brightness` handler | percentage |
 | `audio.volume` / `audio.mic_mute` | `POST /audio` handler | new value |
 | `nvs` | `POST /nvs/erase` | `"erase"` |
+| `m5.warmup` | `voice_onboard_warmup_job` + `reset_failover_job` | `start` / `ready` / `unavailable` |
+| `m5.chain` | `voice_onboard_chain_start` / `_chain_stop` | `start` / `stop` |
+| `m5.reset` | `voice_onboard_reset_failover` (Wave 13) | `start` / `ack_ok` / `ack_fail` / `auto_retry` / `recovered` / `fail` |
+| `error.k144` | `mark_k144_unavailable` | reason: `probe_fail` / `warmup_fail` / `reset_probe_fail` / `reset_warmup_fail` |
 
 The `kind` buffer is 32 chars; `detail` is 48 chars (silently truncated past those).
 Ring is 256 entries, FIFO eviction.
@@ -582,6 +595,8 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `spent_day` | u32 | 0 | 0-UINT32_MAX | Days-since-epoch of the last `spent_mils` write — the dayroll guard. |
 | `cap_mils` | u32 | 100000 | 0-UINT32_MAX | Per-day spend cap in mils (default $1.00/day). Exceeding it triggers cap_downgrade in voice_send_config_update_ex. |
 | `cam_rot` | u8 | 0 | 0-3 | Camera frame rotation in 90° steps applied in software after capture (0=none, 1=90° CW, 2=180°, 3=270° CW). Settings dropdown. Added in #261. |
+| `dragon_tok` | str | `""` | — | Dragon REST API bearer token.  Used for outbound HTTP calls to gated endpoints (`/api/v1/tools`, `/api/v1/agent_log`, `/api/v1/sessions`, `/api/v1/memory`).  Empty by default; provisioned via `POST /settings`.  Wave 8 (`9f51804`). |
+| `star_skills` | str | `""` | — | Comma-separated list of starred (pinned) skill / tool names.  Read by `ui_skills.c` on render to sort starred tools first + apply amber tint + "PINNED" caption.  Toggled by tap on a skill card or via `POST /settings`.  Wave 11 (`bcf05d9`). |
 
 ### ⚠️ LVGL Configuration — CRITICAL
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
@@ -852,12 +867,22 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 2. OPUS audio encoding (TT #262 — encoder gated off; SILK NSQ crash on ESP32-P4 → TT #264)
 3. ~~OTA firmware updates~~ — DONE; production has SHA256-verified OTA + auto-rollback (see "OTA Firmware Updates" section)
 
-**Late-April 2026 sprint — shipped during waves 1-11:**
+**Late-April 2026 sprint — shipped during waves 1-10:**
 - Spring animation engine + 3 wirings (toast slide-in / orb size transitions / mode-dot pulse) — `main/spring_anim.{c,h}` (closes #42)
 - Audio playback at 1.5× speed bug — `UPSAMPLE_BUF_CAPACITY` was halving the upsample buffer's high-half capacity, dropping 33 % of every TTS chunk.  Fix: bumped from 8192 → 16384 samples (LEARNINGS entry covers the symptom-class)
 - UX honesty audit — killed hardcoded "EARLIER TODAY" demo strings in `ui_focus.c`, gated now-card → Agents nav on `tool_log_count() > 0` (closes 23/24 of #206 audit)
 - mypy strict on a curated clean list — `dragon_voice/api/{__init__,utils,system}.py` (TinkerBox PR #199)
 - Multi-model router + 35 OpenRouter models (TinkerBox #185-#188)
+
+**Early-May 2026 — waves 11-13 shipped:**
+- **Wave 11** (`bcf05d9`) — Skill starring/pinning in `ui_skills.c`.  New NVS key `star_skills` (comma-separated tool names); tap-to-toggle on each catalog card; starred tools sort to the top with amber tint + "PINNED" caption.  PSRAM-allocated kept_payload (NOT BSS — see LEARNINGS "BSS-static caches >3 KB push Tab5 over a boot SRAM threshold").  24/24 e2e steps pass.
+- **Wave 12** (`67b9989` Tab5 + `d9a18e4` Dragon) — Cross-session agent activity feed.  Dragon side: new `/api/v1/agent_log` REST endpoint backed by a 64-slot ring populated at the `ToolRegistry.execute` chokepoint (captures WS conversations + REST + dashboard tools uniformly).  Tab5 side: `ui_agents` fetches the feed on every overlay show and renders it below the local empty-state when `tool_log_count() == 0`.  17/17 e2e + 13/13 pytest pass.
+- **Wave 13** (`4352e9e`) — K144 is recoverable.  Closes audit gap "UNAVAILABLE state is sticky" — pre-Wave-13 a single failed warmup probe required Tab5 reboot to escape.  Implementation: `voice_m5_llm_sys_reset()` + `voice_onboard_reset_failover()` + `POST /m5/reset` debug endpoint + `esp_timer` 60s auto-retry (capped at 3 attempts/boot, NOT FreeRTOS xTimer per the LEARNINGS entry on that class of failure) + tap-to-recover on the K144 health chip in Settings.  Live timing: 9.6s reset round-trip on hardware.  17/17 e2e pass.  See `docs/PLAN-k144-recovery.md` for the anchor doc + ADB-probe provenance for verified `sys.*` verbs.
+
+**Early-May 2026 sprint queued (next):**
+- **Wave 14** — K144 observability.  `sys.hwinfo` + `sys.version` plumbing through UART; enriched `GET /m5` exposes AX630C temp/mem/cpu/version/last_error; Settings UI thermal+memory gauge.  Provenance: live ADB probe verified the verbs return `{cpu_loadavg, mem, temperature: <milli-°C>}`.
+- **Wave 15** — K144 model picker.  `sys.lsmode` plumbing (returns 11 installed models); Settings dropdown for "Onboard model" parameterizes the currently-hardcoded `M5_LLM_MODEL` constant.  Surfaces unused models including 2 KWS, alternate TTS, and YOLO vision.
+- **Wave 16+ candidate** — KWS revival on K144.  Sherpa-onnx-kws-zipformer-gigaspeech is open-vocabulary (no custom training needed for "Hey Tinker"), resurrects the feature TT #162 retired.  Touches voice mode semantics + mic routing.  See LEARNINGS "Sherpa-onnx KWS is open-vocabulary."
 
 **External-hardware push parked for next sprint:**
 - Grove sensor support (TT #316 / `docs/PLAN-grove.md`)
