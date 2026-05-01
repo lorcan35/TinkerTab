@@ -1696,17 +1696,21 @@ static void async_navigate(void *arg)
     } else if (strcmp(s_nav_target, "agents") == 0) {
         extern void ui_agents_show(void);
         ui_agents_show();
+    } else if (strcmp(s_nav_target, "skills") == 0) {
+       /* TT #328 Wave 10 — dedicated tools-catalog viewer. */
+       extern void ui_skills_show(void);
+       ui_skills_show();
     } else if (strcmp(s_nav_target, "memory") == 0) {
-        extern void ui_memory_show(void);
-        ui_memory_show();
+       extern void ui_memory_show(void);
+       ui_memory_show();
     } else if (strcmp(s_nav_target, "focus") == 0) {
-        extern void ui_focus_show(void);
-        ui_focus_show();
+       extern void ui_focus_show(void);
+       ui_focus_show();
     } else if (strcmp(s_nav_target, "wifi") == 0) {
-        /* #148: folded in from the removed /open endpoint so /navigate
-         * is the single source of truth for all screen lists. */
-        extern lv_obj_t *ui_wifi_create(void);
-        ui_wifi_create();
+       /* #148: folded in from the removed /open endpoint so /navigate
+        * is the single source of truth for all screen lists. */
+       extern lv_obj_t *ui_wifi_create(void);
+       ui_wifi_create();
     }
     s_navigating = false;
 }

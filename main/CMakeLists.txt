@@ -3,7 +3,7 @@ set(UI_SRCS
     "ui_splash.c" "ui_home.c" "ui_settings.c"
     "ui_camera.c" "ui_files.c" "ui_audio.c" "ui_keyboard.c" "ui_voice.c" "ui_wifi.c"
     "ui_video_pane.c"
-    "ui_chat.c" "ui_notes.c" "ui_feedback.c" "ui_agents.c" "ui_memory.c" "ui_focus.c" "ui_sessions.c"
+    "ui_chat.c" "ui_notes.c" "ui_feedback.c" "ui_agents.c" "ui_memory.c" "ui_focus.c" "ui_sessions.c" "ui_skills.c"
     "ui_mode_sheet.c"
     "ui_nav_sheet.c"
     "ui_onboarding.c"

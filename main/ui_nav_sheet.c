@@ -65,7 +65,15 @@ static void go_memory(void)   { ui_memory_show();   }
  * TT #328 Wave 7 P0 #4: Sessions removed from the tile grid (chat-header
  * chevron drawer is the canonical entry); see s_tiles comment. */
 static void go_agents(void)   { ui_agents_show();   }
-static void go_focus(void)    { ui_focus_show();    }
+/* TT #328 Wave 10 — go_focus removed from this file: Skills
+ * replaces Focus in the nav grid (audit P0 "Skills are
+ * undiscoverable").  ui_focus_show() is still wired in
+ * debug_server.c for /navigate?screen=focus; power users + the
+ * timesense skill keep their entry point. */
+static void go_skills(void) {
+   extern void ui_skills_show(void);
+   ui_skills_show();
+}
 /* #270 Phase 3D: opens an in-call pane (remote video full-screen +
  * local-camera PIP + End Call button) and starts outbound JPEG
  * streaming at 5 fps.  Pairs with the Dragon-side broadcast relay
@@ -91,7 +99,14 @@ static const nav_tile_t s_tiles[] = {
     {"Files", "SD card", go_files},
     {"Memory", "Facts \xE2\x80\xA2 recall", go_memory},
     {"Agents", "TinkerClaw status", go_agents},
-    {"Focus", "Pomodoro \xE2\x80\xA2 timers", go_focus},
+    /* TT #328 Wave 10 — Skills catalog tile.  Replaces the Focus
+     * tile (Pomodoro timers, low-traffic surface that's already
+     * reachable via TinkerClaw's timesense skill) so the audit's
+     * "Skills are undiscoverable" P0 closes with a discoverable
+     * one-tap entry to Dragon's tool registry.  ui_focus_show()
+     * is still wired and reachable via /navigate?screen=focus
+     * for power users. */
+    {"Skills", "Tools \xE2\x80\xA2 catalog", go_skills},
 };
 #define NAV_TILE_COUNT (sizeof(s_tiles) / sizeof(s_tiles[0]))
 
