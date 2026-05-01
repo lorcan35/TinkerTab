@@ -307,6 +307,15 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/re
 #    "failover_state":2}
 # → {"status":"rejected","detail":"Probe already in flight — ..."}  (if already cycling)
 
+# K144 hwinfo cache refresh (TT #328 Wave 14) — forces a fresh sys.hwinfo +
+# sys.version round-trip outside the 30 s cache TTL.  Returns the same shape as
+# GET /m5 with the cache freshly populated.  GET /m5 itself now also surfaces
+# the cached hwinfo block on every call.
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/refresh
+# → {..., "hwinfo": {"valid":true,"temp_celsius":39.35,"temp_milli_c":39350,
+#                    "cpu_loadavg":0,"mem":27,"cache_age_ms":1125},
+#       "version":"v1.3"}
+
 # Self-test (no auth needed)
 curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
 
@@ -878,9 +887,9 @@ The Tab5 has 7 full screens + 2 overlays, managed by ui_core.c:
 - **Wave 11** (`bcf05d9`) — Skill starring/pinning in `ui_skills.c`.  New NVS key `star_skills` (comma-separated tool names); tap-to-toggle on each catalog card; starred tools sort to the top with amber tint + "PINNED" caption.  PSRAM-allocated kept_payload (NOT BSS — see LEARNINGS "BSS-static caches >3 KB push Tab5 over a boot SRAM threshold").  24/24 e2e steps pass.
 - **Wave 12** (`67b9989` Tab5 + `d9a18e4` Dragon) — Cross-session agent activity feed.  Dragon side: new `/api/v1/agent_log` REST endpoint backed by a 64-slot ring populated at the `ToolRegistry.execute` chokepoint (captures WS conversations + REST + dashboard tools uniformly).  Tab5 side: `ui_agents` fetches the feed on every overlay show and renders it below the local empty-state when `tool_log_count() == 0`.  17/17 e2e + 13/13 pytest pass.
 - **Wave 13** (`4352e9e`) — K144 is recoverable.  Closes audit gap "UNAVAILABLE state is sticky" — pre-Wave-13 a single failed warmup probe required Tab5 reboot to escape.  Implementation: `voice_m5_llm_sys_reset()` + `voice_onboard_reset_failover()` + `POST /m5/reset` debug endpoint + `esp_timer` 60s auto-retry (capped at 3 attempts/boot, NOT FreeRTOS xTimer per the LEARNINGS entry on that class of failure) + tap-to-recover on the K144 health chip in Settings.  Live timing: 9.6s reset round-trip on hardware.  17/17 e2e pass.  See `docs/PLAN-k144-recovery.md` for the anchor doc + ADB-probe provenance for verified `sys.*` verbs.
+- **Wave 14** (`fcb5d1e`) — K144 is observable.  `voice_m5_llm_sys_hwinfo()` + `voice_m5_llm_sys_version()` typed wrappers; `GET /m5` enriched with `hwinfo` block (temp_celsius, cpu_loadavg, mem, cache_age_ms) + top-level `version` field; new `POST /m5/refresh` forces fresh fetch outside the 30s TTL.  Settings UI gauge below the K144 chip shows live `NPU 38.4°C · load 0 · v1.3`.  Two-tier caching (30s success TTL + 5s attempt rate-limit) avoids UART hammering under poll spam.  12/12 e2e pass.
 
 **Early-May 2026 sprint queued (next):**
-- **Wave 14** — K144 observability.  `sys.hwinfo` + `sys.version` plumbing through UART; enriched `GET /m5` exposes AX630C temp/mem/cpu/version/last_error; Settings UI thermal+memory gauge.  Provenance: live ADB probe verified the verbs return `{cpu_loadavg, mem, temperature: <milli-°C>}`.
 - **Wave 15** — K144 model picker.  `sys.lsmode` plumbing (returns 11 installed models); Settings dropdown for "Onboard model" parameterizes the currently-hardcoded `M5_LLM_MODEL` constant.  Surfaces unused models including 2 KWS, alternate TTS, and YOLO vision.
 - **Wave 16+ candidate** — KWS revival on K144.  Sherpa-onnx-kws-zipformer-gigaspeech is open-vocabulary (no custom training needed for "Hey Tinker"), resurrects the feature TT #162 retired.  Touches voice mode semantics + mic routing.  See LEARNINGS "Sherpa-onnx KWS is open-vocabulary."
 

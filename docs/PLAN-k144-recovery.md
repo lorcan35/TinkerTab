@@ -32,9 +32,9 @@ ADB access, and the existing K144 file map.
 
 | Wave | Theme | Status | Closes |
 |---|---|---|---|
-| 13 | K144 is recoverable — `sys.reset` plumbing + `voice_onboard_reset_failover()` + tap-to-recover on the Settings health chip + auto-retry-from-UNAVAILABLE timer | **In progress** | Audit gap #1 (sticky UNAVAILABLE), gap #4 (mid-session unrecoverability) |
-| 14 | K144 is observable — `sys.hwinfo` + `sys.version` verbs + enriched `GET /m5` (temp/mem/cpu/version/last_error) + Settings UI thermal+memory gauge | Deferred (post-13 ship) | Audit gap #2 (observability blind), gap #5 (no proactive thermal awareness) |
-| 15 | K144 model picker — `sys.lsmode` + Settings dropdown sourced from K144 registry + parameterized `M5_LLM_MODEL` (currently hardcoded) | Deferred (post-14 ship) | Audit gap #3 (no model swap), unlocks 11 installed models we don't surface |
+| 13 | K144 is recoverable — `sys.reset` plumbing + `voice_onboard_reset_failover()` + tap-to-recover on the Settings health chip + auto-retry-from-UNAVAILABLE timer | **SHIPPED** `4352e9e` | Audit gap #1 (sticky UNAVAILABLE), gap #4 (mid-session unrecoverability) |
+| 14 | K144 is observable — `sys.hwinfo` + `sys.version` verbs + enriched `GET /m5` (temp/mem/cpu/version) + `POST /m5/refresh` + Settings UI thermal+load+version gauge.  Two-tier caching: 30 s success TTL + 5 s attempt rate-limit. | **SHIPPED** `fcb5d1e` | Audit gap #2 (observability blind), gap #5 (no proactive thermal awareness) |
+| 15 | K144 model picker — `sys.lsmode` + Settings dropdown sourced from K144 registry + parameterized `M5_LLM_MODEL` (currently hardcoded) | **In progress** | Audit gap #3 (no model swap), unlocks 11 installed models we don't surface |
 
 **Out of scope (parked):**
 - KWS revival via K144 sherpa-onnx-kws — the gigaspeech model is open-vocabulary and can detect "Hey Tinker" without retraining.  Bigger surface (touches voice mode semantics + mic routing).  File as Wave 16+ candidate after Wave 15 lands.

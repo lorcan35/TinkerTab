@@ -1433,3 +1433,19 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Prevention:**
   1. **WakeNet ≠ KWS in general.**  Espressif's WakeNet is closed-vocab; sherpa-onnx KWS, OpenWakeWord, Picovoice Porcupine v3.0+ are open-vocab.  When recommending a wake-word path, identify which model class is on the table.
   2. **Re-check retired-feature assumptions when a new device with adjacent capability lands.**  TT #162 retired wake-word in 2025 when the Tab5 was the only voice surface.  Stacking the K144 in 2026 changed the reference architecture — wake-word can now live on a different MCU with a different model class.  The original retire decision was correct for its time; it just needs a re-evaluation now.
+
+---
+
+## TT #328 Wave 14 — UART-fronted caches need separate "attempted" vs "succeeded" timestamps
+
+- **Date:** 2026-05-01
+- **Symptom:** Wave 14's `GET /m5` cached the K144 `sys.hwinfo` snapshot for 30 s to avoid hammering the UART under poll spam.  When K144 was UNAVAILABLE, the handler skipped the actual sys.hwinfo call (would just time out and waste 1.5 s) and returned the previous (or empty) cache.  Bug: when K144 transitioned UNAVAILABLE → READY, the next /m5 call STILL returned `valid: false` for ~30 seconds because the cache was reported as "fresh" even though no successful fetch had happened recently.
+- **Root Cause:** A single `s_m5_hwinfo_refreshed_us` timestamp was conflating two distinct things — "when was the cache last successfully populated" (used for TTL) and "when did we last try to fetch" (used for rate-limiting).  The skip-when-not-READY branch updated `refreshed_us = now` so /m5 wouldn't keep re-trying every call; but that lie made the cache look fresh even though the underlying data was stale or empty.
+- **Fix:** Split into two timestamps:
+  - `s_m5_hwinfo_refreshed_us` — only updated on a successful sys.hwinfo response.  This drives the 30 s TTL.
+  - `s_m5_hwinfo_attempted_us` — updated on EVERY call attempt (success or skip).  Drives the 5 s rate-limit on attempts.
+  - The skip-when-not-READY branch updates `attempted_us` (rate-limits the polling) but does NOT touch `refreshed_us` (so the next /m5 call after K144 returns to READY refreshes within the 5 s window).
+- **Prevention:**
+  1. **A "last operation" timestamp is two timestamps in disguise.**  Rate-limiting attempts and TTL on success are separate concerns; using one variable for both is a bug waiting to surface on a state transition.  Default to two variables.
+  2. **Cache-freshness lies break consumer trust.**  If the JSON says `cache_age_ms: 1200`, the consumer assumes data ≤ 1.2 s old.  Make the field reflect actual data age, not "time since we last looked at the cache."
+  3. **State-transition test cases should be on every UART-fronted cache.**  The unit-test surface here would be: prime the cache with K144 in state X, force transition to Y, verify the cache freshens within the rate-limit window.  Caught this Wave 14 bug 30 minutes after the first deploy + smoke; would have caught it pre-flash with a unit test.
