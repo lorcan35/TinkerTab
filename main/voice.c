@@ -3315,16 +3315,56 @@ esp_err_t voice_start_listening(void)
 esp_err_t voice_start_dictation(void)
 {
     bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
-    if (!s_initialized || !ws_live) {
-        ESP_LOGE(TAG, "Not connected for dictation");
-        return ESP_ERR_INVALID_STATE;
+    if (!s_initialized) {
+       ESP_LOGE(TAG, "Not initialized");
+       return ESP_ERR_INVALID_STATE;
     }
-    if (s_state != VOICE_STATE_READY) {
-        ESP_LOGW(TAG, "Cannot start dictation in state %d", s_state);
-        return ESP_ERR_INVALID_STATE;
+    /* TT #328 Wave 9 — when WS is up, require READY state (existing
+     * behaviour).  When WS is DOWN (offline-fallback path), accept
+     * READY or IDLE or RECONNECTING since those are all valid
+     * "Dragon-isn't-here" states the user could legitimately start
+     * an offline dictation from.  Refusing in those states would
+     * defeat the whole point of the SD-card fallback. */
+    if (ws_live && s_state != VOICE_STATE_READY) {
+       ESP_LOGW(TAG, "Cannot start dictation in state %d (online path)", s_state);
+       return ESP_ERR_INVALID_STATE;
+    }
+    /* Offline path accepts any non-active state.  After a failed
+     * voice_connect attempt voice is typically CONNECTING (still
+     * trying) or RECONNECTING (back-off); IDLE happens after an
+     * explicit disconnect.  All three are valid "Dragon-isn't-here"
+     * states the user could legitimately start an offline dictation
+     * from.  Reject only when something else is already happening
+     * (LISTENING / PROCESSING / SPEAKING / DICTATING). */
+    if (!ws_live && s_state != VOICE_STATE_READY && s_state != VOICE_STATE_IDLE &&
+        s_state != VOICE_STATE_RECONNECTING && s_state != VOICE_STATE_CONNECTING) {
+       ESP_LOGW(TAG, "Cannot start dictation in state %d (offline path)", s_state);
+       return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Starting dictation mode (unlimited, STT-only)");
+    /* TT #328 Wave 9 (audit dictation rescue) — when Dragon WS is
+     * unreachable at dictation start, fall back to a local SD-card
+     * recording instead of refusing.  The mic_capture_task already
+     * writes every chunk to SD via ui_notes_write_audio() (line 2453,
+     * unconditional), and ui_notes' background transcription queue
+     * picks up RECORDED notes and uploads them to Dragon's
+     * /api/v1/transcribe when the WS comes back.  So all the moving
+     * parts already exist — Wave 9 just stops voice_start_dictation
+     * from rejecting at the door.
+     *
+     * Behaviour difference vs the WS-up path:
+     *   - We DO start ui_notes_start_recording() to create a Note
+     *     slot so ui_notes_stop_recording() finalises it on stop.
+     *   - We DON'T send the WS "start" frame (Dragon never sees the
+     *     mic stream — the SD WAV is the only artefact).
+     *   - State still goes LISTENING + voice mode is DICTATE so the
+     *     overlay caption + waveform behave normally.
+     *   - Toast tells the user what happened so the silent SD save
+     *     isn't surprising.
+     */
+    bool offline = !ws_live;
+
+    ESP_LOGI(TAG, "Starting dictation mode (%s)", offline ? "OFFLINE / SD fallback" : "online / unlimited / STT-only");
     s_voice_mode = VOICE_MODE_DICTATE;
 
     if (!s_dictation_text) {
@@ -3336,10 +3376,27 @@ esp_err_t voice_start_dictation(void)
     }
     s_dictation_text[0] = '\0';
 
-    esp_err_t err = voice_ws_send_text("{\"type\":\"start\",\"mode\":\"dictate\"}");
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send dictation start");
-        return err;
+    if (offline) {
+       /* Pre-create the Note slot + WAV file before mic starts so
+        * the mic_capture_task's first ui_notes_write_audio() call
+        * lands somewhere.  The Note will be in RECORDED state when
+        * we stop, which the existing transcription queue picks up
+        * automatically once Dragon is back. */
+       extern const char *ui_notes_start_recording(void);
+       const char *path = ui_notes_start_recording();
+       if (!path) {
+          ESP_LOGE(TAG, "Offline dictation: SD recording start failed");
+          return ESP_ERR_NO_MEM;
+       }
+       ESP_LOGI(TAG, "Offline dictation recording -> %s", path);
+       extern void ui_home_show_toast(const char *text);
+       ui_home_show_toast("Dragon offline — recording to SD; will transcribe when back");
+    } else {
+       esp_err_t err = voice_ws_send_text("{\"type\":\"start\",\"mode\":\"dictate\"}");
+       if (err != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to send dictation start");
+          return err;
+       }
     }
 
     s_transcript[0] = '\0';
@@ -3350,7 +3407,7 @@ esp_err_t voice_start_dictation(void)
     /* #284: signal persistent mic task. */
     if (s_mic_event_sem) xSemaphoreGive(s_mic_event_sem);
 
-    voice_set_state(VOICE_STATE_LISTENING, NULL);
+    voice_set_state(VOICE_STATE_LISTENING, offline ? "offline" : NULL);
     return ESP_OK;
 }
 
@@ -3460,27 +3517,62 @@ esp_err_t voice_stop_listening(void)
       return voice_onboard_chain_stop();
    }
 
-    if (s_state != VOICE_STATE_LISTENING) {
-        ESP_LOGW(TAG, "Not listening (state=%d)", s_state);
-        return ESP_ERR_INVALID_STATE;
-    }
+   /* TT #328 Wave 9 — detect the offline-dictation case for the
+    * stop-side handshake.  When a dictation was started while WS
+    * was down, the WS "stop" frame would fail (no socket) and
+    * we'd return ESP_FAIL → IDLE state, leaving the recording in
+    * limbo (file open on SD, mic_running cleared, but the Note
+    * never finalised by ui_notes_stop_recording()).  Detect via
+    * voice_mode == DICTATE + WS down at stop time and route to
+    * the offline finalise path instead.  The reconnect watchdog
+    * also flips state from LISTENING → RECONNECTING after 2-3 s
+    * while the mic continues to write SD chunks, so the s_state
+    * check below has to accept BOTH states for the offline path. */
+   bool offline_dictate = (s_voice_mode == VOICE_MODE_DICTATE) && !(s_ws && esp_websocket_client_is_connected(s_ws));
 
-    ESP_LOGI(TAG, "Stopping push-to-talk");
+   if (offline_dictate) {
+      /* Permissive — mic is running, recording valid, stop should
+       * succeed regardless of where the WS reconnect watchdog has
+       * pushed the state.  Accept any state that has the mic
+       * actively writing chunks. */
+      if (!s_mic_running) {
+         ESP_LOGW(TAG, "Offline dictation stop: mic not running (state=%d)", s_state);
+         return ESP_ERR_INVALID_STATE;
+      }
+   } else if (s_state != VOICE_STATE_LISTENING) {
+      ESP_LOGW(TAG, "Not listening (state=%d)", s_state);
+      return ESP_ERR_INVALID_STATE;
+   }
 
-    s_mic_running = false;
+   ESP_LOGI(TAG, "Stopping push-to-talk%s", offline_dictate ? " (offline dictation finalise)" : "");
 
-    i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
-    if (rx_h) {
-        i2s_channel_disable(rx_h);
-    }
+   s_mic_running = false;
 
-    for (int i = 0; i < 120 && s_mic_running; i++) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
+   i2s_chan_handle_t rx_h = tab5_audio_get_i2s_rx();
+   if (rx_h) {
+      i2s_channel_disable(rx_h);
+   }
 
-    if (rx_h) {
-        i2s_channel_enable(rx_h);
-    }
+   for (int i = 0; i < 120 && s_mic_running; i++) {
+      vTaskDelay(pdMS_TO_TICKS(10));
+   }
+
+   if (rx_h) {
+      i2s_channel_enable(rx_h);
+   }
+
+   if (offline_dictate) {
+      /* Finalise the SD WAV → Note state RECORDED.  The transcription
+       * queue picks it up automatically when Dragon's back. */
+      extern void ui_notes_stop_recording(const char *transcript);
+      ui_notes_stop_recording(NULL);
+      extern void ui_home_show_toast(const char *text);
+      ui_home_show_toast("Saved offline — will sync to Notes when Dragon's back");
+      voice_reset_activity_timestamp();
+      voice_set_state(VOICE_STATE_READY, "offline_saved");
+      s_voice_mode = VOICE_MODE_ASK;
+      return ESP_OK;
+   }
 
     esp_err_t err = voice_ws_send_text("{\"type\":\"stop\"}");
     if (err != ESP_OK) {

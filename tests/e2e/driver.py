@@ -165,6 +165,20 @@ class Tab5Driver:
         return self._post("/settings",
                           json={"reset_spent": True}).json()
 
+    # ── Dictation control (TT #328 Wave 9) ───────────────────────
+    def dictation_start(self) -> dict:
+        return self._post("/dictation?action=start").json()
+
+    def dictation_stop(self) -> dict:
+        return self._post("/dictation?action=stop").json()
+
+    def dictation_status(self) -> dict:
+        return self._get("/dictation").json()
+
+    # ── SD card (TT #328 Wave 9) ─────────────────────────────────
+    def sdcard(self) -> dict:
+        return self._get("/sdcard").json()
+
     # ── WS-frame inject (TT #328 Wave 2) ─────────────────────────
     def inject_ws(self, frame: dict) -> dict:
         """POST /debug/inject_ws — pipe a synthetic WS frame through

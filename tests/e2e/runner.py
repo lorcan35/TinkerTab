@@ -1493,6 +1493,147 @@ def story_wave8_dragon_token(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave9_sd_dictation(r: Runner) -> None:
+    """TT #328 Wave 9 — SD-card fallback for WS-down dictation.
+
+    Pre-Wave-9 voice_start_dictation rejected with
+    ESP_ERR_INVALID_STATE when Dragon WS was unreachable, even
+    though mic_capture_task was already writing every chunk to SD
+    via ui_notes_write_audio() (voice.c:2453, unconditional).  All
+    the moving parts existed except the front-door check that
+    bounced offline dictations at the door.
+
+    Wave 9 lets voice_start_dictation through when WS is down:
+      - calls ui_notes_start_recording() to create a Note slot
+      - skips the WS "start" frame (Dragon never sees the stream)
+      - state still transitions to LISTENING + voice_mode=DICTATE
+      - toast tells the user "Dragon offline — recording to SD"
+    voice_stop_listening on the offline path:
+      - calls ui_notes_stop_recording(NULL) to finalise the WAV
+      - the Note enters RECORDED state which the existing
+        transcription queue picks up automatically when WS recovers
+      - toast: "Saved offline — will sync to Notes when Dragon's back"
+
+    Touch-driven story:
+      [A] Online dictation regression — /dictation start while WS
+          up still works the same as before (state goes LISTENING)
+      [B] Force WS unreachable by setting dragon_host="0.0.0.0"
+          and forcing a reconnect; voice goes IDLE / RECONNECTING
+      [C] /dictation start while WS down → succeeds (returns ok)
+          + state goes LISTENING + s_voice_mode=DICTATE
+      [D] /dictation stop while WS still down → succeeds
+          (offline finalise path)
+      [E] /sdcard endpoint shows new WAV file in /sdcard/rec
+      [F] Restore dragon_host + force reconnect; verify Tab5
+          recovers cleanly
+    """
+    tab5 = r.tab5
+
+    # Save current dragon_host so we can restore at the end.
+    saved_host = tab5.settings().get("dragon_host", "192.168.1.91")
+
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+    r.step("Force Local mode (clean baseline)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Cancel any leftover voice state",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    r.step("Wait for voice ready",
+           lambda t: t.await_voice_state("READY", 30))
+    time.sleep(1)
+
+    # ─── A. Online dictation regression ─────────────────────────
+    r.step("[A] /dictation start (online) — should succeed",
+           lambda t: t.dictation_start().get("ok") is True)
+    time.sleep(2)
+    r.step("[A] State went LISTENING (online dictation active)",
+           lambda t: t.voice_state().get("state_name") == "LISTENING")
+    r.step("[A] Stop online dictation",
+           lambda t: t.dictation_stop().get("ok") is True)
+    time.sleep(2)
+    r.step("[A] Cancel any pending post-process",
+           lambda t: t._post("/voice/cancel").json() is not None)
+    r.step("[A] Wait for clean READY",
+           lambda t: t.await_voice_state("READY", 30))
+
+    # ─── B. Snapshot SD WAV count BEFORE offline test ───────────
+    rec_count_before = 0
+    def _count_recs_before(t):
+        nonlocal rec_count_before
+        sd = t.sdcard()
+        rec_count_before = len(sd.get("recordings", []))
+        return True
+    r.step("[B] Snapshot SD recording count (pre-test)",
+           _count_recs_before)
+
+    # ─── C. Induce WS-down by repointing dragon_host ────────────
+    r.step("[C] Set dragon_host='0.0.0.0' (force WS unreachable)",
+           lambda t: t._post("/settings",
+                             json={"dragon_host": "0.0.0.0"}).json() is not None)
+    r.step("[C] Force voice WS reconnect (will fail to invalid host)",
+           lambda t: t._post("/voice/reconnect").json() is not None)
+    # Allow time for the failed reconnect to drop us out of READY.
+    time.sleep(8)
+    r.step("[C] Voice no longer connected to Dragon",
+           lambda t: bool(t.voice_state().get("connected")) is False)
+
+    # ─── D. Offline dictation start should succeed ──────────────
+    r.step("[D] /dictation start while WS down — should succeed",
+           lambda t: t.dictation_start().get("ok") is True)
+    # The reconnect watchdog flips state LISTENING → RECONNECTING
+    # after 2-3 s of failed-reconnect retries while the mic stays
+    # active and writing SD chunks.  Accept either: the WAV count
+    # in step [E] is the real evidence the recording happened.
+    time.sleep(0.5)
+    r.step("[D] State went LISTENING (offline path active)",
+           lambda t: t.voice_state().get("state_name") in
+                     ("LISTENING", "RECONNECTING", "CONNECTING"))
+    r.step("[D] Screenshot offline-dictation toast/state",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave9_D_offline_active.jpg")) > 1000)
+
+    # Hold the offline recording for ~3 s of silence so the WAV has
+    # actual content (mic chunks are 20 ms each → ~150 chunks).
+    r.step("[D] Hold offline recording 3 s",
+           lambda t: time.sleep(3) is None or True)
+
+    # ─── E. Offline stop finalises the WAV ──────────────────────
+    r.step("[E] /dictation stop (offline finalise)",
+           lambda t: t.dictation_stop().get("ok") is True)
+    time.sleep(2)
+    # After offline stop voice_set_state(READY) fires, but the
+    # reconnect watchdog can immediately flip it back to RECONNECTING.
+    # Both indicate "no longer in active dictation" → success.
+    r.step("[E] State left active dictation (any non-LISTENING)",
+           lambda t: t.voice_state().get("state_name") != "LISTENING")
+    r.step("[E] Screenshot post-offline-save",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave9_E_offline_saved.jpg")) > 1000)
+
+    def _verify_rec_grew(t):
+        sd = t.sdcard()
+        recs = sd.get("recordings", [])
+        return len(recs) > rec_count_before
+    r.step("[E] /sdcard.recordings count grew (new WAV present)",
+           _verify_rec_grew)
+
+    # ─── F. Restore dragon_host + recover ───────────────────────
+    r.step("[F] Restore dragon_host",
+           lambda t: t._post("/settings",
+                             json={"dragon_host": saved_host}).json()
+                     is not None)
+    r.step("[F] Force voice WS reconnect (now to real Dragon)",
+           lambda t: t._post("/voice/reconnect").json() is not None)
+    r.step("[F] Wait for voice connected again",
+           lambda t: t.await_voice_state("READY", 60))
+    r.step("[F] /voice.connected is True after recovery",
+           lambda t: bool(t.voice_state().get("connected")) is True)
+
+    # ─── Cleanup ───────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -1506,6 +1647,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave6":   story_wave6_agents_catalog,
     "story_wave7":   story_wave7_onboard_polish,
     "story_wave8":   story_wave8_dragon_token,
+    "story_wave9":   story_wave9_sd_dictation,
 }
 
 
