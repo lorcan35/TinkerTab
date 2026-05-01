@@ -1488,3 +1488,26 @@ Every entry here was learned the hard way. Read this before touching the codebas
   2. **Idempotent allocators FOR FREE.**  When you add a "is this already allocated?" check that handles dimension match → reuse + dimension change → free+realloc, you make `alloc_canvas_buffer` re-entry-safe.  No more "did the caller free first?" coupling.  Apply this pattern to other PSRAM-backed buffers across the codebase.
   3. **Use `lv_obj_get_child_cnt` as a "shell vs filled" sentinel.**  When a pointer survives across lifecycle boundaries but its contents don't, the child count is the cheapest valid-state check available.  Same trick can apply to chat overlay, settings overlay, etc. when they need re-shell-able semantics.
   4. **Don't accept "won't fix, severity LOW" for stress-class bugs without trying the third option.**  The issue analysis dismissed lazy-rebuild as "trades pool churn for slightly slower re-open" without measuring.  Live measurement showed it actually solves the symptom in the test envelope.  When a published analysis says "this won't help," still measure if the cost is bounded — analysis isn't the same as data.
+
+---
+
+## TT #264 Wave 19 — "Not stack overflow" was wrong: bisect actual minimum, don't conclude from one bump
+
+- **Date:** 2026-05-01
+- **Symptom:** OPUS encoder reproducibly panicked inside SILK Noise Shaping Quantizer functions on every dictation cycle.  Three different crash sites captured (`silk_encode_frame_FIX+90`, `silk_NSQ_del_dec_c+108`, `silk_NSQ_c+118`) suggested the bug "moves around" depending on encoder complexity setting.  The original investigator (PR #263) bumped voice_mic stack 8 KB → 16 KB, observed the panic still reproduce, concluded "not stack overflow," and filed #264 with theories about SIMD alignment / DMA-capable working buffers.  The encoder shipped gated OFF.
+- **Root Cause:** Plain stack overflow — bisecting via a synthetic encoder smoke-test endpoint shows SILK NSQ needs ~24 KB peak on this build:
+  - 22 KB → panic
+  - 24 KB → barely survives
+  - 32 KB → comfortable
+  - The original 16 KB bump was just under the watermark.
+  - The MCAUSE 0x1b on ESP32-P4 RISC-V is *specifically* "Stack protection fault" — the per-task stack-canary check.  The crash site moves around between SILK NSQ functions because the encoder's call depth varies with complexity setting + input statistics; the canary catches at whichever frame happens to push past the boundary.
+- **Fix:** `MIC_TASK_STACK_SIZE` 16 KB → 32 KB in `voice.c`.  Stack is PSRAM-backed via `xTaskCreatePinnedToCoreWithCaps(... MALLOC_CAP_SPIRAM)` so the cost is essentially free.  Encoder works cleanly on the first try; 200 frames of synthetic audio stream through with no errors.
+- **Why the original investigator missed it:**
+  - Looked at the symptom ("crashes in SILK NSQ functions") and reasoned forward to "must be a SILK NSQ bug" — when the right read was "the canary catches AT the SILK NSQ frame because that's when peak stack usage happens."
+  - Bumped 8 → 16 KB once, didn't see it work, concluded the variable was eliminated.  Single data point isn't a bisect.
+  - Got distracted by alignment / SIMD theories that fit the "exotic" feel of an ESP32-P4 RVV port issue, even though the MCAUSE was a clear stack signal.
+- **Prevention:**
+  1. **MCAUSE 0x1b on ESP32-P4 RISC-V means stack overflow.**  Always.  It's the per-task canary check.  If you see this code, your task stack is too small for whatever it's currently doing — even if the panic site is a complex DSP function deep in a vendor library.
+  2. **One bump isn't a bisect.**  If a stack overflow theory is dismissed because "I bumped it and it still crashed," check whether you bumped past the actual watermark — many stack-greedy operations need 24-48 KB peak, way above ESP-IDF's typical 4-8 KB defaults.  Bisect upward in 8 KB steps until it works, then halve to find the boundary.
+  3. **A debug endpoint that drives the suspect code in isolation is faster than reading vendor source.**  `/codec/opus_test` (added in this commit) lets us bisect stack/heap/alignment combinations in 30 seconds per round trip.  Vendor sources for esp_audio_codec are shipped as prebuilt static libs (no source available) — without the endpoint, the only diagnostic was "watch for panic" which has 12 s of build+flash latency per attempt.
+  4. **Crash-site jitter is not entropy.**  When a crash moves between functions in the same module, that's evidence the failure is at a *thresholded resource boundary* (stack canary, heap watermark, deadline timer), not a bug in the functions themselves.  The functions are all running just before the resource runs out.
