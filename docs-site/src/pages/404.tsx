@@ -5,43 +5,89 @@ import styles from './404.module.css';
 
 export default function NotFound() {
   return (
-    <Layout title="Not found" description="404 — page not found on TinkerTab docs">
+    <Layout title="404 — page not found" description="404 — TinkerTab Journal">
       <main className={styles.main}>
         <div className={styles.inner}>
-          <div className={styles.code}>404</div>
-          <h1 className={styles.title}>This page doesn&apos;t exist (yet).</h1>
-          <p className={styles.body}>
-            Three reasons this might happen on a docs site that&apos;s still settling in:
+          <div className={styles.masthead}>
+            <span className={styles.mastheadVol}>VOL. 01 · ERRATA</span>
+            <span className={styles.mastheadCenter}>
+              T H E &nbsp; T I N K E R T A B &nbsp; J O U R N A L
+            </span>
+            <span className={styles.mastheadDate}>STATUS · 404</span>
+          </div>
+
+          <div className={styles.rule} aria-hidden="true" />
+
+          <span className={styles.eyebrow}>NO. 404 · MISSING PAGE</span>
+
+          <h1 className={styles.title}>
+            <span className={styles.line1}>This page is not</span>
+            <span className={styles.line2}>
+              in <em>this volume.</em>
+            </span>
+          </h1>
+
+          <p className={styles.lede}>
+            We checked the index, the appendices, and the marginalia. The
+            page you asked for is not bound here. Three honest reasons that
+            tends to happen on a publication still going to press:
           </p>
-          <ul className={styles.list}>
+
+          <ol className={styles.reasons}>
             <li>
-              You followed a link from an older revision of the firmware or server. Most internal
-              docs moved into <Link to="/docs/intro">the canonical sidebar</Link>.
+              <span className={styles.reasonNum}>I.</span>
+              <span className={styles.reasonBody}>
+                <strong>You followed an old citation.</strong> Internal docs
+                were re-folded into{' '}
+                <Link to="/docs/intro">the canonical sidebar</Link> when the
+                journal went to press; some older URLs no longer resolve.
+              </span>
             </li>
             <li>
-              You typed a URL by hand. The path is case-sensitive and uses kebab-case
-              (e.g. <code>/docs/firmware-reference/build-flash</code>).
+              <span className={styles.reasonNum}>II.</span>
+              <span className={styles.reasonBody}>
+                <strong>You typed the URL by hand.</strong> Paths use
+                kebab-case, e.g. <code>/docs/firmware-reference/build-flash</code>.
+                The casing is exact.
+              </span>
             </li>
             <li>
-              You hit search for something that hasn&apos;t been written up yet. File an issue
-              on{' '}
-              <Link href="https://github.com/lorcan35/TinkerTab/issues">TinkerTab</Link> or{' '}
-              <Link href="https://github.com/lorcan35/TinkerBox/issues">TinkerBox</Link> and
-              we&apos;ll add it.
+              <span className={styles.reasonNum}>III.</span>
+              <span className={styles.reasonBody}>
+                <strong>The page hasn&apos;t been written yet.</strong> File
+                an issue on{' '}
+                <Link href="https://github.com/lorcan35/TinkerTab/issues">
+                  TinkerTab
+                </Link>{' '}
+                or{' '}
+                <Link href="https://github.com/lorcan35/TinkerBox/issues">
+                  TinkerBox
+                </Link>{' '}
+                and we&apos;ll set it.
+              </span>
             </li>
-          </ul>
+          </ol>
+
           <div className={styles.ctaRow}>
             <Link
               className={`button button--primary button--lg ${styles.cta}`}
               to="/">
-              ← Back to home
+              ← Back to the front page
             </Link>
             <Link
               className={`button button--secondary button--lg ${styles.cta}`}
               to="/docs/intro">
-              Browse the docs
+              Browse the volume
             </Link>
           </div>
+
+          <div className={styles.rule} aria-hidden="true" />
+
+          <p className={styles.colophon}>
+            The journal sends its apologies. If this page should exist, write
+            to the editors via the issue trackers above. Errata is filed every
+            sprint.
+          </p>
         </div>
       </main>
     </Layout>
