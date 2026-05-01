@@ -46,6 +46,14 @@ esp_err_t tab5_settings_set_dragon_port(uint16_t port);
 esp_err_t tab5_settings_get_dragon_api_token(char *buf, size_t len);
 esp_err_t tab5_settings_set_dragon_api_token(const char *token);
 
+/** TT #328 Wave 11 — starred skills.  Comma-separated list of tool
+ *  names that the user has pinned in the Skills catalog.  ui_skills
+ *  reads this on render to (a) stamp a ★ glyph on starred cards and
+ *  (b) sort starred entries to the top of the list.  Empty by
+ *  default; tap toggles individual entries. */
+esp_err_t tab5_settings_get_starred_skills(char *buf, size_t len);
+esp_err_t tab5_settings_set_starred_skills(const char *list);
+
 /* ── v4·D Sovereign Halo mode dials ──────────────────────────────────── */
 /* Three orthogonal dials that replace the 4-mode pill.  Tab5 resolves the
  * triple into the legacy (voice_mode, llm_model) pair Dragon expects.

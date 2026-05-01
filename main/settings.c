@@ -39,6 +39,13 @@ static const char *TAG = "settings";
  * default; user provisions via POST /settings or Settings UI.
  * NVS key length cap is 15 chars total — "dragon_tok" leaves room. */
 #define KEY_DRAGON_TOK "dragon_tok"
+/* TT #328 Wave 11 — comma-separated list of starred (pinned) skill
+ * names.  Empty by default.  Used by ui_skills to sort starred tools
+ * to the top of the catalog and stamp a star glyph on the card.
+ * Single-string format keeps the NVS schema small (no per-skill keys
+ * to enumerate).  Cap at ~256 chars: tool names are typically 8-16
+ * chars, so 256 holds 16-32 stars — well above any sane user need. */
+#define KEY_STAR_SKILLS "star_skills"
 #define KEY_BRIGHTNESS  "brightness"
 #define KEY_VOLUME      "volume"
 #define KEY_DEVICE_ID   "device_id"
@@ -354,6 +361,18 @@ esp_err_t tab5_settings_set_dragon_port(uint16_t port)
  * see it (same as wifi_pass), so security relies on Tab5 not being
  * physically compromised — which is true of the device anyway. */
 esp_err_t tab5_settings_get_dragon_api_token(char *buf, size_t len) { return get_str(KEY_DRAGON_TOK, buf, len, ""); }
+
+/* TT #328 Wave 11 — starred skills.  Comma-separated list of tool
+ * names (the same `name` field the Dragon /api/v1/tools endpoint
+ * returns).  Empty by default; user toggles via tap on a skill card
+ * in ui_skills. */
+esp_err_t tab5_settings_get_starred_skills(char *buf, size_t len) {
+    return get_str(KEY_STAR_SKILLS, buf, len, "");
+}
+
+esp_err_t tab5_settings_set_starred_skills(const char *list) {
+    return set_str(KEY_STAR_SKILLS, list ? list : "");
+}
 
 esp_err_t tab5_settings_set_dragon_api_token(const char *token) { return set_str(KEY_DRAGON_TOK, token ? token : ""); }
 

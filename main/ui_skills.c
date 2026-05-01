@@ -68,6 +68,79 @@ static void render_payload(const skills_payload_t *p);
 static void fetch_skills_job(void *arg);
 static void async_render_cb(void *arg);
 
+/* ── Wave 11 — starred-skills helpers ────────────────────────── */
+/* Star list format: comma-separated tool names in NVS (KEY_STAR_SKILLS).
+ * On every render we read the list, then per-card check `is_starred(name)`
+ * to decide sort order + amber tint + tap toggle.  256 B is enough for
+ * 16-32 star entries (tool names are 8-16 chars typical). */
+static char s_star_buf[256] = {0};
+
+/* Wave 11 — kept payload survives the async_render_cb free of the
+ * fetch result so the tap callback can re-render against a stable
+ * copy without a fresh HTTP fetch.
+ *
+ * IMPORTANT — allocated lazily in PSRAM via heap_caps_calloc, NOT
+ * BSS-static.  An earlier wave 11 attempt used `static
+ * skills_payload_t s_kept_payload = {0};` which adds ~3.6 KB to
+ * BSS and pushed the firmware over a boot-time SRAM threshold —
+ * Tab5 boot-looped before reaching WiFi init.  PSRAM allocation
+ * keeps internal SRAM untouched. */
+static skills_payload_t *s_kept_payload = NULL;
+static bool s_kept_valid = false;
+
+static void load_stars(void) {
+   tab5_settings_get_starred_skills(s_star_buf, sizeof(s_star_buf));
+}
+
+/* Membership check.  Names bounded to TOOL_NAME_LEN-1; 16 entries
+ * × 32 chars = 512 char scan worst-case — trivial. */
+static bool is_starred(const char *name) {
+   if (!name || !name[0]) return false;
+   if (!s_star_buf[0]) return false;
+   size_t nlen = strlen(name);
+   const char *p = s_star_buf;
+   while (*p) {
+      const char *e = strchr(p, ',');
+      size_t segl = e ? (size_t)(e - p) : strlen(p);
+      if (segl == nlen && memcmp(p, name, nlen) == 0) return true;
+      if (!e) break;
+      p = e + 1;
+   }
+   return false;
+}
+
+/* Walks s_star_buf, copies every entry that ISN'T `name` into out[].
+ * If add=true and `name` wasn't already in the list, appends it. */
+static void rebuild_stars_string(const char *name, bool add, char *out, size_t outlen) {
+   size_t nlen = strlen(name);
+   out[0] = '\0';
+   size_t pos = 0;
+   bool found = false;
+   const char *p = s_star_buf;
+   while (*p) {
+      const char *e = strchr(p, ',');
+      size_t segl = e ? (size_t)(e - p) : strlen(p);
+      bool match = (segl == nlen && memcmp(p, name, nlen) == 0);
+      if (match) found = true;
+      if (!match && segl > 0 && pos + segl + 2 < outlen) {
+         if (pos > 0) out[pos++] = ',';
+         memcpy(out + pos, p, segl);
+         pos += segl;
+         out[pos] = '\0';
+      }
+      if (!e) break;
+      p = e + 1;
+   }
+   if (add && !found && nlen > 0 && pos + nlen + 2 < outlen) {
+      if (pos > 0) out[pos++] = ',';
+      memcpy(out + pos, name, nlen);
+      pos += nlen;
+      out[pos] = '\0';
+   }
+}
+
+static void star_toggle_cb(lv_event_t *e); /* fwd, defined after render */
+
 /* ── Helpers ─────────────────────────────────────────────────── */
 
 static void back_click_cb(lv_event_t *e) {
@@ -217,7 +290,11 @@ static void async_render_cb(void *arg) {
    if (p && s_overlay && s_visible) {
       render_payload(p);
    }
-   if (p) heap_caps_free(p);
+   /* Wave 11 — render_payload memcpy'd p into s_kept_payload, so
+    * we can safely free the fetch buffer.  Guard against the rare
+    * tap-cb-driven re-render that passes &s_kept_payload back in
+    * (we never want to free our own kept buffer here). */
+   if (p && p != s_kept_payload) heap_caps_free(p);
 }
 
 static void kick_off_fetch(void) {
@@ -272,17 +349,50 @@ static void render_payload(const skills_payload_t *p) {
       return;
    }
 
+   /* Wave 11 — refresh star membership from NVS, then build a sort
+    * order putting starred tools first.  Save a PSRAM-allocated
+    * copy of the payload so the tap-callback has a stable read
+    * source after async_render_cb frees the fetch buffer. */
+   load_stars();
+   if (!s_kept_payload) {
+      s_kept_payload =
+          heap_caps_calloc(1, sizeof(*s_kept_payload), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   }
+   if (s_kept_payload && p != s_kept_payload) {
+      memcpy(s_kept_payload, p, sizeof(*s_kept_payload));
+      s_kept_valid = true;
+   }
+   int order[TOOLS_MAX];
+   int n_starred = 0, n_normal = 0;
+   for (int i = 0; i < p->n; i++) {
+      if (is_starred(p->tools[i].name)) order[n_starred++] = i;
+   }
+   for (int i = 0; i < p->n; i++) {
+      if (!is_starred(p->tools[i].name)) order[n_starred + n_normal++] = i;
+   }
+
    if (s_count_lbl) {
-      char cbuf[40];
-      snprintf(cbuf, sizeof(cbuf), "%d SKILL%s AVAILABLE", p->n, p->n == 1 ? "" : "S");
+      char cbuf[64];
+      if (n_starred > 0) {
+         snprintf(cbuf, sizeof(cbuf), "%d SKILL%s \xe2\x80\xa2 %d STARRED", p->n,
+                  p->n == 1 ? "" : "S", n_starred);
+      } else {
+         snprintf(cbuf, sizeof(cbuf), "%d SKILL%s AVAILABLE", p->n, p->n == 1 ? "" : "S");
+      }
       lv_label_set_text(s_count_lbl, cbuf);
    }
 
    /* One typographic card per tool — name in title font, description
     * wrapped in body font, hairline divider below.  Bigger / more
     * readable than ui_agents's catalog cards (those share row-space
-    * with the activity feed; here we have the whole screen). */
-   for (int i = 0; i < p->n; i++) {
+    * with the activity feed; here we have the whole screen).
+    *
+    * Wave 11 — sorted by `order[]` (starred first, then everything
+    * else preserving original Dragon order).  Tap on a card toggles
+    * star state via star_toggle_cb. */
+   for (int oi = 0; oi < p->n; oi++) {
+      int i = order[oi];
+      bool starred = is_starred(p->tools[i].name);
       lv_obj_t *card = lv_obj_create(s_list_root);
       lv_obj_remove_style_all(card);
       lv_obj_set_size(card, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
@@ -290,26 +400,93 @@ static void render_payload(const skills_payload_t *p) {
       lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
       lv_obj_set_style_pad_row(card, 6, 0);
       lv_obj_set_style_pad_bottom(card, 18, 0);
+      lv_obj_set_style_pad_top(card, 8, 0);
+      lv_obj_set_style_pad_left(card, 8, 0);
+      lv_obj_set_style_pad_right(card, 8, 0);
       lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
       lv_obj_set_style_border_width(card, 1, 0);
       lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0);
+      if (starred) {
+         lv_obj_set_style_bg_color(card, lv_color_hex(TH_AMBER), 0);
+         lv_obj_set_style_bg_opa(card, 14, 0); /* ~5 % wash */
+         lv_obj_set_style_radius(card, 8, 0);
+      }
       lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+      /* Pack source-array index into user_data so the cb can look
+       * up the tool name without a back-pointer. */
+      lv_obj_add_event_cb(card, star_toggle_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
-      lv_obj_t *nm = lv_label_create(card);
+      /* Name row.  Wave 11 starred semantic: amber-tinted name +
+       * faint amber wash on the card + "PINNED" caption right.
+       * No Unicode-glyph indicator because the stock LVGL Montserrat
+       * builds don't carry ★ (U+2605) so it rendered as a missing-
+       * glyph box; colour + caption is universal.
+       *
+       * LVGL 9 quirk: lv_obj_create defaults to LV_OBJ_FLAG_CLICKABLE.
+       * Without explicitly clearing it, the inner row would capture
+       * the tap and the card's CLICKED handler would never fire. */
+      lv_obj_t *name_row = lv_obj_create(card);
+      lv_obj_remove_style_all(name_row);
+      lv_obj_set_size(name_row, lv_pct(100), LV_SIZE_CONTENT);
+      lv_obj_set_flex_flow(name_row, LV_FLEX_FLOW_ROW);
+      lv_obj_set_flex_align(name_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                            LV_FLEX_ALIGN_CENTER);
+      lv_obj_set_style_pad_column(name_row, 10, 0);
+      lv_obj_clear_flag(name_row, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_clear_flag(name_row, LV_OBJ_FLAG_CLICKABLE);
+
+      lv_obj_t *nm = lv_label_create(name_row);
       lv_label_set_text(nm, p->tools[i].name);
       lv_obj_set_style_text_font(nm, FONT_TITLE, 0);
-      lv_obj_set_style_text_color(nm, lv_color_hex(TH_TEXT_PRIMARY), 0);
+      lv_obj_set_style_text_color(nm, lv_color_hex(starred ? TH_AMBER : TH_TEXT_PRIMARY), 0);
+
+      if (starred) {
+         lv_obj_t *sp = lv_obj_create(name_row);
+         lv_obj_remove_style_all(sp);
+         lv_obj_set_flex_grow(sp, 1);
+         lv_obj_set_height(sp, 1);
+         lv_obj_clear_flag(sp, LV_OBJ_FLAG_CLICKABLE);
+
+         lv_obj_t *pinned = lv_label_create(name_row);
+         lv_label_set_text(pinned, "PINNED");
+         lv_obj_set_style_text_font(pinned, FONT_CAPTION, 0);
+         lv_obj_set_style_text_color(pinned, lv_color_hex(TH_AMBER), 0);
+         lv_obj_set_style_text_letter_space(pinned, 3, 0);
+         lv_obj_set_style_pad_right(pinned, 6, 0);
+      }
 
       if (p->tools[i].description[0]) {
          lv_obj_t *ds = lv_label_create(card);
          lv_label_set_long_mode(ds, LV_LABEL_LONG_WRAP);
          lv_label_set_text(ds, p->tools[i].description);
-         lv_obj_set_width(ds, SW - 2 * SIDE_PAD);
+         lv_obj_set_width(ds, SW - 2 * SIDE_PAD - 16);
          lv_obj_set_style_text_font(ds, FONT_BODY, 0);
          lv_obj_set_style_text_color(ds, lv_color_hex(TH_TEXT_BODY), 0);
          lv_obj_set_style_text_line_space(ds, 4, 0);
       }
    }
+}
+
+/* TT #328 Wave 11 — tap callback on each skill card.  Reads the index
+ * from user_data, looks up the tool name in the PSRAM-cached payload
+ * (s_kept_payload — survives async_render_cb's free of the original),
+ * toggles its membership in the NVS comma-separated list, and re-
+ * renders against the same cached copy so the new sort + tint state
+ * are visible immediately.  No second HTTP fetch. */
+static void star_toggle_cb(lv_event_t *e) {
+   if (!s_kept_valid || !s_kept_payload) return;
+   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= s_kept_payload->n) return;
+   const char *name = s_kept_payload->tools[idx].name;
+   if (!name || !name[0]) return;
+   load_stars();
+   bool was = is_starred(name);
+   char new_buf[256];
+   rebuild_stars_string(name, !was, new_buf, sizeof(new_buf));
+   tab5_settings_set_starred_skills(new_buf);
+   ESP_LOGI(TAG, "skill '%s' %s", name, was ? "unstarred" : "starred");
+   render_payload(s_kept_payload);
 }
 
 /* ── Public API ──────────────────────────────────────────────── */

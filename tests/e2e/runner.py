@@ -1735,6 +1735,133 @@ def story_wave10_ui_skills(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave11_skill_starring(r: Runner) -> None:
+    """TT #328 Wave 11 — Skill starring / pinning.
+
+    The Wave 10 catalog had no concept of *user-curated order*.  All
+    14 tools were rendered in whatever order Dragon's /api/v1/tools
+    response listed them, which on a long catalog means the user has
+    to scroll past noise (calculator, convert, datetime…) every time
+    to reach the few they actually use (web_search, recall…).  Wave
+    11 adds tap-to-pin so users float their high-traffic skills to
+    the top.
+
+    Implementation:
+      - new NVS key `star_skills` (comma-separated tool names);
+        get/set in settings.c, exposed in /settings GET + POST.
+      - ui_skills.c: tap on a card toggles its membership; starred
+        cards are sorted to the top of the list, get an amber tint
+        + "PINNED" caption right of the name.  The kept-payload is
+        PSRAM-allocated lazily (an earlier attempt used BSS-static
+        and pushed firmware over the boot SRAM threshold — Tab5
+        boot-looped; PSRAM allocation keeps internal SRAM clean).
+      - debug_server.c: /settings GET reports `starred_skills`,
+        POST accepts it.  Lets the harness seed/clear without an
+        on-device tap, then verify the round-trip.
+
+    Touch-driven user stories: seed the list via POST, navigate to
+    /skills, screenshot the rendered ordering (starred cards first,
+    amber-tinted), tap a card to demote it, verify NVS round-trip
+    and re-render.
+    """
+    import os as _os
+    tab5 = r.tab5
+
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+
+    # ─── A. Clean baseline ─────────────────────────────────────
+    r.step("[A] Clear starred_skills (clean baseline)",
+           lambda t: t._post("/settings",
+                             json={"starred_skills": ""}).json()
+                     .get("updated") is not None)
+    r.step("[A] Verify NVS read-back is empty",
+           lambda t: not t._get("/settings").json().get("starred_skills"))
+
+    # ─── B. Seed two stars via POST ────────────────────────────
+    r.step("[B] POST starred_skills='web_search,recall'",
+           lambda t: "starred_skills" in
+                     t._post("/settings",
+                             json={"starred_skills": "web_search,recall"}
+                             ).json().get("updated", []))
+    r.step("[B] Verify NVS persisted exact string",
+           lambda t: t._get("/settings").json().get("starred_skills")
+                     == "web_search,recall")
+
+    # ─── C. Render — starred cards first ───────────────────────
+    r.step("[C] Force Local mode", lambda t: t.mode(0).get("ok") is not False)
+    r.step("[C] Navigate to /skills",
+           lambda t: t.navigate("skills").get("navigated") == "skills")
+    time.sleep(5)
+    r.step("[C] Screenshot — pinned cards at top with amber tint",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave11_C_two_pinned.jpg")) > 1000)
+
+    # ─── D. Tap a non-starred card → it gets starred ───────────
+    # `datetime` is the third visible card (positions 1+2 are
+    # web_search + recall PINNED).  Card centres are roughly
+    # y=200/300/420 — y=420 lands cleanly on the third card.
+    r.step("[D] Tap third card (datetime) at (360, 420)",
+           lambda t: t.tap(360, 420) and True)
+    time.sleep(2)
+    # Note: the geometry-based tap may hit `recall` on some
+    # rendered layouts (recall is the second pinned card and
+    # spans down to y~370).  Either outcome is a valid round-
+    # trip.  Just verify the NVS state changed.
+    r.step("[D] NVS list mutated by tap",
+           lambda t: t._get("/settings").json().get("starred_skills")
+                     != "web_search,recall")
+    r.step("[D] Tab5 still alive after tap",
+           lambda t: t.is_alive())
+    r.step("[D] Screenshot — re-rendered with new pinned set",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave11_D_after_tap.jpg")) > 1000)
+
+    # ─── E. Multi-toggle survives without leaks ────────────────
+    r.step("[E] Tap (360, 420) again",
+           lambda t: t.tap(360, 420) and True)
+    time.sleep(1)
+    r.step("[E] Tap (360, 540) (4th card)",
+           lambda t: t.tap(360, 540) and True)
+    time.sleep(1)
+    r.step("[E] Tab5 still alive after rapid taps",
+           lambda t: t.is_alive())
+    r.step("[E] Screenshot — multi-toggle stable",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave11_E_multi_toggle.jpg")) > 1000)
+
+    # ─── F. POST clears all stars → catalog reverts ────────────
+    r.step("[F] POST starred_skills='' (clear all)",
+           lambda t: "starred_skills" in
+                     t._post("/settings",
+                             json={"starred_skills": ""}
+                             ).json().get("updated", []))
+    r.step("[F] NVS empty",
+           lambda t: not t._get("/settings").json().get("starred_skills"))
+
+    # Re-navigate to force re-render with empty stars
+    r.step("[F] Navigate home", lambda t: t.navigate("home")
+                                          .get("navigated") == "home")
+    time.sleep(1)
+    r.step("[F] Re-navigate to /skills (fresh fetch)",
+           lambda t: t.navigate("skills").get("navigated") == "skills")
+    time.sleep(4)
+    r.step("[F] Screenshot — no PINNED captions (empty stars)",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave11_F_empty.jpg")) > 1000)
+
+    # ─── G. Restore canonical baseline for downstream tests ────
+    r.step("[G] Restore web_search,recall as baseline",
+           lambda t: "starred_skills" in
+                     t._post("/settings",
+                             json={"starred_skills": "web_search,recall"}
+                             ).json().get("updated", []))
+
+    # ─── Cleanup ───────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -1750,6 +1877,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave8":   story_wave8_dragon_token,
     "story_wave9":   story_wave9_sd_dictation,
     "story_wave10":  story_wave10_ui_skills,
+    "story_wave11":  story_wave11_skill_starring,
 }
 
 

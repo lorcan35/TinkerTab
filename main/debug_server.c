@@ -1193,6 +1193,14 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
        cJSON_AddBoolToObject(root, "dragon_api_token_set", tok[0] != '\0');
        cJSON_AddNumberToObject(root, "dragon_api_token_len", (double)strlen(tok));
     }
+    /* TT #328 Wave 11 — starred-skills list.  Tool names are public
+     * via /api/v1/tools so exposing the list is fine + lets the
+     * harness verify the toggle round-trip via /settings GET. */
+    {
+        char stars[256] = {0};
+        tab5_settings_get_starred_skills(stars, sizeof(stars));
+        cJSON_AddStringToObject(root, "starred_skills", stars);
+    }
 
     /* Hardware */
     cJSON_AddNumberToObject(root, "brightness", tab5_settings_get_brightness());
@@ -1344,6 +1352,19 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     if (cJSON_IsString(tok)) {
        if (strlen(tok->valuestring) <= 64 && tab5_settings_set_dragon_api_token(tok->valuestring) == ESP_OK) {
           cJSON_AddItemToArray(updated, cJSON_CreateString("dragon_api_token"));
+       }
+    }
+
+    /* TT #328 Wave 11 — starred-skills list (comma-separated tool
+     * names).  Lets the test harness seed/clear the list; users
+     * normally toggle individual entries via tap on a skill card.
+     * Empty string clears.  Cap 240 chars (the NVS string write
+     * path is fine up to ~4 KB but 240 keeps the JSON tidy). */
+    cJSON *stars_in = cJSON_GetObjectItem(req_json, "starred_skills");
+    if (cJSON_IsString(stars_in)) {
+       if (strlen(stars_in->valuestring) <= 240 &&
+           tab5_settings_set_starred_skills(stars_in->valuestring) == ESP_OK) {
+          cJSON_AddItemToArray(updated, cJSON_CreateString("starred_skills"));
        }
     }
 
