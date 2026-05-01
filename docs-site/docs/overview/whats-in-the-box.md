@@ -67,4 +67,4 @@ The K144 hosts an Axera AX630C NPU running `qwen2.5-0.5B` at ~8 tok/s and a `she
 - A microphone — the Tab5 has 4 of them.
 - A keyboard — the on-screen keyboard handles text input. SSH into Dragon for server admin.
 - Cloud subscriptions — everything runs locally by default. Hybrid + Full Cloud modes need an OpenRouter API key, but they're opt-in.
-- A wake word — there's a push-to-talk orb. (See [no wake word](/docs/glossary#wake-word) for why.)
+- A wake word — there's a push-to-talk orb. (See the [glossary's wake-word entry](/docs/glossary) for why.)

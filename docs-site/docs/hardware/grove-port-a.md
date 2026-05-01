@@ -29,7 +29,7 @@ Any **passive I2C peripheral** with a documented register map. We're particularl
 
 ## What doesn't work
 
-- **Active modules** that are themselves microcontrollers (ESP32-CAM, Arduino-based modules) — they don't speak I2C-slave and would need custom firmware on both ends. See [the FAQ](/docs/glossary#esp32-cam) for why.
+- **Active modules** that are themselves microcontrollers (ESP32-CAM, Arduino-based modules) — they don't speak I2C-slave and would need custom firmware on both ends. See [the glossary's ESP32-CAM entry](/docs/glossary) for why.
 - **3.3 V-only sensors that don't tolerate 5 V VCC** — the EXT5V rail is 5 V. Most sensor breakouts have a level-shift / regulator on board, but bare chips don't.
 - **High-current peripherals** (>500 mA on the 5 V rail) — `EXT5V_EN` switches a 500 mA budget; over that and you'll trip the IO-expander's protection.
 
