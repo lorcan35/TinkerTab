@@ -58,6 +58,7 @@
 #include "voice.h"
 #include "voice_onboard.h"
 #include "widget.h"
+#include "widget_icons.h"    /* TT #69 — icon library + render */
 #include "widget_mode_dot.h" /* TT #328 Wave 6 */
 #include "wifi.h"
 
@@ -149,6 +150,13 @@ static lv_obj_t *s_now_kicker      = NULL;
 static lv_obj_t *s_now_lede        = NULL;
 static lv_obj_t *s_stat_k[3]       = {NULL, NULL, NULL};
 static lv_obj_t *s_stat_v[3]       = {NULL, NULL, NULL};
+/* TT #69 — icon slot top-right of the live card.  Container only;
+ * `widget_icons_render` materialises the canvas + draws the
+ * primitives inside on every refresh.  We track which icon id is
+ * currently rendered so refresh is a no-op when unchanged. */
+static lv_obj_t *s_now_icon = NULL;
+static int s_now_icon_id = 0;         /* widget_icon_id_t value */
+static uint32_t s_now_icon_color = 0; /* last render color (for change detect) */
 
 /* Bottom strip */
 static lv_obj_t *s_say_pill        = NULL;
@@ -724,6 +732,20 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(s_now_lede, FONT_BODY, 0);
     lv_obj_set_style_text_color(s_now_lede, lv_color_hex(TH_TEXT_PRIMARY), 0);
 
+    /* TT #69 — icon slot top-right of the live card.  Empty on
+     * boot; populated when a LIVE widget arrives with widget.icon
+     * set.  WIDGET_ICONS_SIZE (48 px) container; right-aligned with
+     * CARD_PAD margin from the card edge. */
+    s_now_icon = lv_obj_create(s_now_card);
+    lv_obj_remove_style_all(s_now_icon);
+    lv_obj_set_size(s_now_icon, WIDGET_ICONS_SIZE, WIDGET_ICONS_SIZE);
+    lv_obj_set_pos(s_now_icon, CARD_W - WIDGET_ICONS_SIZE - CARD_PAD, (CARD_H - WIDGET_ICONS_SIZE) / 2);
+    lv_obj_set_style_bg_opa(s_now_icon, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(s_now_icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_now_icon, LV_OBJ_FLAG_CLICKABLE);
+    /* Hidden until a widget with a known icon name arrives. */
+    lv_obj_add_flag(s_now_icon, LV_OBJ_FLAG_HIDDEN);
+
     /* Stats row removed in Sovereign Halo live-line. Pointers kept as
      * hidden sinks so orb/mode update code that writes to them is a no-op. */
     for (int i = 0; i < 3; i++) {
@@ -1202,6 +1224,35 @@ void ui_home_update_status(void)
      * kicks off a FreeRTOS fetch task if the URL changed, and hides the
      * image when the live slot isn't a MEDIA widget. */
     refresh_media_image(live_w);
+
+    /* TT #69 — icon refresh.  When a live widget is active and its
+     * `icon` field names one of the 16 built-in glyphs, render it
+     * top-right of the card.  Cheap when unchanged (early-exit on
+     * matching id + color) — re-render only fires when the widget
+     * changes its icon or tone. */
+    if (s_now_icon) {
+       widget_icon_id_t want_id = WIDGET_ICON_NONE;
+       lv_color_t want_color = lv_color_hex(0xC0C0C8);
+       if (live_w && live_w->icon[0]) {
+          want_id = widget_icons_lookup(live_w->icon);
+          want_color = widget_icons_color_for_tone(live_w->tone);
+       }
+       uint32_t want_color_v = lv_color_to_int(want_color);
+       if ((int)want_id != s_now_icon_id || want_color_v != s_now_icon_color) {
+          s_now_icon_id = (int)want_id;
+          s_now_icon_color = want_color_v;
+          /* Clean any prior rendering.  lv_obj_clean cascades through
+           * the canvas's DELETE event which frees the PSRAM pixel
+           * buffer (canvas_delete_cb in widget_icons.c). */
+          lv_obj_clean(s_now_icon);
+          if (want_id != WIDGET_ICON_NONE) {
+             widget_icons_render(s_now_icon, want_id, want_color, 0);
+             lv_obj_remove_flag(s_now_icon, LV_OBJ_FLAG_HIDDEN);
+          } else {
+             lv_obj_add_flag(s_now_icon, LV_OBJ_FLAG_HIDDEN);
+          }
+       }
+    }
 
     if (live_w) {
         /* v4·D Gauntlet G5 fix: reveal suppressed widgets.
