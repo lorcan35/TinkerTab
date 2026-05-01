@@ -89,3 +89,52 @@ h1, h2, h3, h4, h5, h6 {
   border-radius: 12px;
   border-left-width: 3px;
 }
+
+/* Note + tip variants tuned to the emerald palette */
+.theme-admonition-note,
+.alert--secondary {
+  --ifm-alert-background-color: color-mix(in srgb, var(--ifm-color-primary) 5%, var(--ifm-background-color));
+  --ifm-alert-border-color: var(--ifm-color-primary);
+}
+
+/* Mermaid diagrams — match site palette */
+.docusaurus-mermaid-container {
+  background: var(--ifm-background-surface-color);
+  border-radius: 12px;
+  padding: 1rem;
+  margin: 1.5rem 0;
+  overflow-x: auto;
+}
+
+[data-theme='dark'] .docusaurus-mermaid-container svg {
+  filter: brightness(0.92);
+}
+
+/* Search modal — tighten the visual treatment */
+.DocSearch-Button,
+.searchBar_RVTs {
+  background: var(--ifm-background-surface-color);
+  border-radius: 999px;
+}
+
+/* Sidebar category emoji prefixes look better at slightly larger size */
+.menu__list-item-collapsible .menu__link {
+  font-weight: 500;
+}
+
+/* Sidebar group labels — slightly tighter line-height */
+.theme-doc-sidebar-item-category > .menu__list-item-collapsible {
+  margin-bottom: 0.1rem;
+}
+
+/* Reading-area max width — wider than default for table-heavy reference pages */
+.theme-doc-markdown {
+  max-width: 920px;
+}
+
+/* Last-updated stamp — softer color */
+.theme-last-updated {
+  color: var(--ifm-color-content-secondary);
+  font-style: normal;
+  font-size: 0.85rem;
+}

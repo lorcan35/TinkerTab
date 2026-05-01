@@ -30,7 +30,23 @@ const config: Config = {
       onBrokenMarkdownLinks: 'warn',
     },
   },
-  themes: ['@docusaurus/theme-mermaid'],
+  themes: [
+    '@docusaurus/theme-mermaid',
+    [
+      // Local-only search — no Algolia signup needed.  Indexes the
+      // built site at `npm run build` time + serves the index from the
+      // same Caddy host.  Algolia DocSearch can swap in later if the
+      // site goes public.
+      '@easyops-cn/docusaurus-search-local',
+      {
+        hashed: true,
+        indexBlog: false,
+        docsRouteBasePath: '/docs',
+        highlightSearchTermsOnTargetPage: true,
+        searchResultLimits: 10,
+      },
+    ],
+  ],
 
   presets: [
     [

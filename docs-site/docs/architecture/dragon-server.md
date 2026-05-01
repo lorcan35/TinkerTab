@@ -11,6 +11,25 @@ This page is curated from the project's `CLAUDE.md` runbook + `LEARNINGS.md` + `
 
 The Dragon Q6A server (`tinkerclaw-voice` systemd unit, port 3502) is the **brain** half. Python 3.12, FastAPI/aiohttp WebSocket server, SQLite storage, ~54 REST endpoints, 11-tab dashboard SPA on port 3500. Hosts STT + LLM + TTS + memory + skills + scheduler + multi-model router.
 
+```mermaid
+flowchart LR
+  Tab5 -- "WS :3502" --> Server[server.py]
+  Browser -- "/call" --> Server
+  Server --> Pipeline[pipeline.py<br/>STT → LLM → TTS]
+  Server --> Conv[conversation.py<br/>ConversationEngine]
+  Conv --> Memory[(memory.py<br/>facts + RAG)]
+  Conv --> Tools[tools/<br/>13 skills]
+  Conv --> Router{router.py<br/>capability-aware}
+  Router --> Ollama[ollama_llm]
+  Router --> OpenRouter[openrouter_llm]
+  Router --> LMStudio[lmstudio_llm]
+  Router --> NPU[npu_genie]
+  Router --> Claw[tinkerclaw_llm]
+  Server --> Store[(messages.py<br/>SQLite)]
+  Tools --> AgentLog[(agent_log<br/>ring buffer)]
+  Server -.-> Dashboard[dashboard.py :3500]
+```
+
 ## Module layout
 
 ```
