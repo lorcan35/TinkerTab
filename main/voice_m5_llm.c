@@ -515,6 +515,107 @@ esp_err_t voice_m5_llm_sys_reset(void) {
    return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
 }
 
+esp_err_t voice_m5_llm_sys_hwinfo(voice_m5_hwinfo_t *out) {
+   if (out == NULL) return ESP_ERR_INVALID_ARG;
+   memset(out, 0, sizeof(*out));
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(2000);
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "hwi-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "hwinfo",
+   };
+
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   int frame_len = send_and_recv_one_frame(tx, tx_len, 1500);
+   if (frame_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_TIMEOUT;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp);
+   if (pe != ESP_OK) {
+      M5_UNLOCK();
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+
+   esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+   if (m5_stackflow_response_matches(&resp, request_id) && resp.error_code == 0 && resp.data != NULL &&
+       cJSON_IsObject(resp.data)) {
+      cJSON *t = cJSON_GetObjectItemCaseSensitive(resp.data, "temperature");
+      cJSON *cpu = cJSON_GetObjectItemCaseSensitive(resp.data, "cpu_loadavg");
+      cJSON *mem = cJSON_GetObjectItemCaseSensitive(resp.data, "mem");
+      if (cJSON_IsNumber(t)) out->temperature_milli_c = (int32_t)t->valuedouble;
+      if (cJSON_IsNumber(cpu)) out->cpu_loadavg = (int32_t)cpu->valuedouble;
+      if (cJSON_IsNumber(mem)) out->mem = (int32_t)mem->valuedouble;
+      out->valid = 1;
+      result = ESP_OK;
+   }
+   m5_stackflow_response_free(&resp);
+   M5_UNLOCK();
+   return result;
+}
+
+esp_err_t voice_m5_llm_sys_version(char *buf, size_t buf_cap) {
+   if (buf == NULL || buf_cap == 0) return ESP_ERR_INVALID_ARG;
+   buf[0] = '\0';
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(2000);
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "ver-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "version",
+   };
+
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   int frame_len = send_and_recv_one_frame(tx, tx_len, 1500);
+   if (frame_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_TIMEOUT;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp);
+   if (pe != ESP_OK) {
+      M5_UNLOCK();
+      return ESP_ERR_INVALID_RESPONSE;
+   }
+
+   esp_err_t result = ESP_ERR_INVALID_RESPONSE;
+   if (m5_stackflow_response_matches(&resp, request_id) && resp.error_code == 0 && resp.data != NULL &&
+       cJSON_IsString(resp.data)) {
+      strncpy(buf, resp.data->valuestring, buf_cap - 1);
+      buf[buf_cap - 1] = '\0';
+      result = ESP_OK;
+   }
+   m5_stackflow_response_free(&resp);
+   M5_UNLOCK();
+   return result;
+}
+
 /* ---------------------------------------------------------------------- */
 /*  Phase 6a — adaptive baud negotiation                                  */
 /* ---------------------------------------------------------------------- */

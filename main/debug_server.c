@@ -2440,8 +2440,66 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
  * GET /m5 — diagnostic snapshot of K144 LLM Module state.  Closes audit
  * #18 (no remote diagnostic for "chain didn't start" / "is K144 warm").
  */
+/* Wave 14 — cached hwinfo + version snapshot.  GET /m5 may be polled
+ * by the dashboard / harness every few seconds; refreshing sys.hwinfo
+ * on every call would saturate the UART (~150 ms per round-trip ×
+ * concurrent polls = head-of-line blocking on llm.infer calls).  Cache
+ * for 30 s; clients that want fresh data poll less often or use
+ * POST /m5/refresh to force an update.
+ *
+ * Also avoids the worst-case path where K144 is hung mid-NPU-load and
+ * sys.hwinfo silently stalls — every /m5 GET would otherwise block
+ * 1.5 s on the timeout.  The cache bounds this to once per 30 s. */
+static voice_m5_hwinfo_t s_m5_hwinfo_cache = {0};
+static char s_m5_version_cache[16] = {0};
+static int64_t s_m5_hwinfo_refreshed_us = 0; /* time of last SUCCESS */
+static int64_t s_m5_hwinfo_attempted_us = 0; /* time of last ATTEMPT (success OR skip) */
+#define M5_HWINFO_CACHE_TTL_US (30LL * 1000LL * 1000LL)
+#define M5_HWINFO_RETRY_GATE_US (5LL * 1000LL * 1000LL) /* 5 s — bounds rate when K144 not READY */
+
+static void m5_refresh_hwinfo_if_stale(bool force) {
+   int64_t now = esp_timer_get_time();
+   /* Cache hit fast-path — last successful fetch within TTL window. */
+   if (!force && s_m5_hwinfo_refreshed_us != 0 && (now - s_m5_hwinfo_refreshed_us) < M5_HWINFO_CACHE_TTL_US) {
+      return;
+   }
+   /* Even if cache is stale, throttle attempts (avoids hammering the
+    * UART when /m5 is polled rapidly during a recovery cycle).  5 s
+    * is short enough that a UNAVAILABLE→READY transition picks up new
+    * data within ~10 s; long enough that 50 polls/sec from a script
+    * don't queue 50 sys.hwinfo round-trips. */
+   if (!force && s_m5_hwinfo_attempted_us != 0 && (now - s_m5_hwinfo_attempted_us) < M5_HWINFO_RETRY_GATE_US) {
+      return;
+   }
+   s_m5_hwinfo_attempted_us = now;
+
+   /* Skip the actual sys.hwinfo if K144 isn't READY — it would just
+    * time out and waste 1.5 s.  Cached values stay; client sees old
+    * data with `cache_age_ms` shown so they can decide what to trust. */
+   int fs = voice_onboard_failover_state();
+   if (fs != 2 /* M5_FAIL_READY */) {
+      return;
+   }
+
+   voice_m5_hwinfo_t fresh = {0};
+   esp_err_t he = voice_m5_llm_sys_hwinfo(&fresh);
+   if (he == ESP_OK && fresh.valid) {
+      s_m5_hwinfo_cache = fresh;
+      s_m5_hwinfo_refreshed_us = now;
+   }
+   /* Version is fixed per K144 firmware install — read once and cache.
+    * Cache survives sys.reset (daemon restart, version unchanged) but
+    * does NOT survive a Tab5 reboot. */
+   if (s_m5_version_cache[0] == '\0') {
+      (void)voice_m5_llm_sys_version(s_m5_version_cache, sizeof(s_m5_version_cache));
+   }
+}
+
 static esp_err_t m5_status_handler(httpd_req_t *req) {
    if (!check_auth(req)) return ESP_OK;
+
+   /* Wave 14 — refresh hwinfo cache (no-op if warm + fresh enough). */
+   m5_refresh_hwinfo_if_stale(false);
 
    cJSON *root = cJSON_CreateObject();
    cJSON_AddBoolToObject(root, "chain_active", voice_onboard_chain_active());
@@ -2454,6 +2512,32 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    cJSON_AddStringToObject(root, "failover_state_name", (fs >= 0 && fs <= 3) ? fs_names[fs] : "?");
    cJSON_AddNumberToObject(root, "uart_baud", (double)voice_m5_llm_get_baud());
 
+   /* Wave 14 — hardware status.  `valid` is true only when the cache
+    * holds a successfully-parsed sys.hwinfo response; `cache_age_ms`
+    * tells the client how stale the snapshot is.  `temp_celsius`
+    * comes from the milli-degree field divided by 1000 (preserving
+    * one decimal — JSON consumer can format). */
+   cJSON *hw = cJSON_CreateObject();
+   bool hw_valid = (s_m5_hwinfo_cache.valid != 0);
+   cJSON_AddBoolToObject(hw, "valid", hw_valid);
+   if (hw_valid) {
+      double temp_c = (double)s_m5_hwinfo_cache.temperature_milli_c / 1000.0;
+      cJSON_AddNumberToObject(hw, "temp_celsius", temp_c);
+      cJSON_AddNumberToObject(hw, "temp_milli_c", (double)s_m5_hwinfo_cache.temperature_milli_c);
+      cJSON_AddNumberToObject(hw, "cpu_loadavg", (double)s_m5_hwinfo_cache.cpu_loadavg);
+      cJSON_AddNumberToObject(hw, "mem", (double)s_m5_hwinfo_cache.mem);
+   }
+   if (s_m5_hwinfo_refreshed_us != 0) {
+      int64_t age_ms = (esp_timer_get_time() - s_m5_hwinfo_refreshed_us) / 1000;
+      cJSON_AddNumberToObject(hw, "cache_age_ms", (double)age_ms);
+   }
+   cJSON_AddItemToObject(root, "hwinfo", hw);
+
+   /* Wave 14 — daemon version (read once on first hwinfo refresh,
+    * empty until then).  Surfaces "is K144 firmware up-to-date" + lets
+    * remote diagnostics correlate behavior with daemon version. */
+   cJSON_AddStringToObject(root, "version", s_m5_version_cache);
+
    char *json = cJSON_PrintUnformatted(root);
    cJSON_Delete(root);
    httpd_resp_set_type(req, "application/json");
@@ -2461,6 +2545,16 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    esp_err_t ret = httpd_resp_sendstr(req, json);
    free(json);
    return ret;
+}
+
+/* TT #328 Wave 14 — POST /m5/refresh.  Forces a sys.hwinfo refresh
+ * regardless of the 30 s cache TTL.  Useful when a remote operator or
+ * the e2e harness wants a guaranteed-fresh reading.  Returns the same
+ * shape as GET /m5 with the cache freshly populated. */
+static esp_err_t m5_refresh_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   m5_refresh_hwinfo_if_stale(true);
+   return m5_status_handler(req);
 }
 
 /* TT #328 Wave 13 — POST /m5/reset.  Triggers
@@ -3952,6 +4046,8 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_m5_status = {.uri = "/m5", .method = HTTP_GET, .handler = m5_status_handler};
     /* TT #328 Wave 13: K144 software reset (sys.reset + re-warmup). */
     const httpd_uri_t uri_m5_reset = {.uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
+    /* TT #328 Wave 14: K144 hwinfo cache refresh (forces sys.hwinfo + sys.version). */
+    const httpd_uri_t uri_m5_refresh = {.uri = "/m5/refresh", .method = HTTP_POST, .handler = m5_refresh_handler};
     /* #266: live video streaming control.  #268 adds /video/show + hide. */
     const httpd_uri_t uri_video_start = {
         .uri = "/video/start", .method = HTTP_POST, .handler = video_start_handler
@@ -4075,6 +4171,7 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_voice_reconnect);
     httpd_register_uri_handler(server, &uri_m5_status);
     httpd_register_uri_handler(server, &uri_m5_reset);
+    httpd_register_uri_handler(server, &uri_m5_refresh);
     httpd_register_uri_handler(server, &uri_video_start);
     httpd_register_uri_handler(server, &uri_video_stop);
     httpd_register_uri_handler(server, &uri_video_state);

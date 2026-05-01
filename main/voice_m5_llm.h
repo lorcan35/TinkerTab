@@ -79,6 +79,68 @@ esp_err_t voice_m5_llm_probe(void);
 esp_err_t voice_m5_llm_sys_reset(void);
 
 /**
+ * @brief K144 hardware status snapshot (Wave 14).
+ *
+ * Returned by `sys.hwinfo`.  Verified shape against K144 v1.3:
+ *   { "data": { "cpu_loadavg": <int>,
+ *               "eth_info":    [...],
+ *               "mem":         <int>,           // MB free or % free
+ *               "temperature": <int>            // milli-degrees Celsius
+ *             }, ... }
+ *
+ * Field interpretation (per live ADB probe 2026-05-01 — see
+ * `docs/PLAN-k144-recovery.md` Provenance):
+ *   - `temperature_milli_c`: 1/1000 °C.  Divide by 1000 for whole
+ *     degrees.  Example: 41350 → 41.35 °C.  AX630C NPU operates
+ *     ~30-55 °C under nominal load, ~70-80 °C under sustained
+ *     inference; thermal throttle ~85 °C.
+ *   - `mem`: K144 reports a number whose semantics drift between
+ *     firmware versions (sometimes MB free, sometimes % free).
+ *     Treat as opaque + surface raw; don't compute derived metrics.
+ *   - `cpu_loadavg`: 1-min load average, integer.  AX630C is 4-core
+ *     so values ≤ 4 mean the system is keeping up.
+ *   - `eth_info`: ethernet interface descriptors.  K144 has no
+ *     ethernet; always `[]` in practice.
+ */
+typedef struct {
+   int32_t temperature_milli_c; /* 1/1000 °C — divide by 1000 for whole degrees */
+   int32_t cpu_loadavg;         /* 1-min load average (int) */
+   int32_t mem;                 /* opaque mem field */
+   int32_t valid;               /* non-zero iff the response parsed cleanly */
+} voice_m5_hwinfo_t;
+
+/**
+ * @brief Snapshot K144 hardware status via `sys.hwinfo`.
+ *
+ * Cheap, synchronous, doesn't touch the LLM unit.  Caller-allocated
+ * @p out is populated on ESP_OK; on failure @p out has `valid = 0`.
+ *
+ * @return ESP_OK on a clean ack with parsed fields;
+ *         ESP_ERR_TIMEOUT on no response within ~1.5 s;
+ *         ESP_ERR_INVALID_RESPONSE on parse failure or non-zero error code;
+ *         ESP_ERR_INVALID_ARG if @p out is NULL;
+ *         propagated esp_err_t on UART init failure.
+ */
+esp_err_t voice_m5_llm_sys_hwinfo(voice_m5_hwinfo_t *out);
+
+/**
+ * @brief Read K144 StackFlow daemon version via `sys.version`.
+ *
+ * Verified live: K144 v1.3 returns `{"data":"v1.3"}`.  Cheap probe;
+ * no LLM unit involvement.
+ *
+ * @param buf      Caller buffer for the version string (NUL-terminated
+ *                 on success).
+ * @param buf_cap  Capacity of @p buf in bytes.
+ *
+ * @return ESP_OK on clean ack;
+ *         ESP_ERR_TIMEOUT on no response;
+ *         ESP_ERR_INVALID_RESPONSE on parse failure or non-zero error_code;
+ *         ESP_ERR_INVALID_ARG if buf NULL or buf_cap == 0.
+ */
+esp_err_t voice_m5_llm_sys_version(char *buf, size_t buf_cap);
+
+/**
  * @brief Generate a reply for @p prompt, append into @p output (NUL-terminated).
  *
  * Performs the full setup→inference→stream-collect loop:

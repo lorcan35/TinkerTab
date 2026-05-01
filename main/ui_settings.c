@@ -29,6 +29,7 @@
 #include "sdcard.h"
 #include "settings.h"
 #include "tab5_rtc.h"
+#include "task_worker.h" /* TT #328 Wave 14 — async K144 hwinfo fetch */
 #include "ui_core.h"
 #include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
 #include "ui_home.h"
@@ -103,6 +104,49 @@ static void k144_chip_tap_cb(lv_event_t *e) {
       /* Already in flight — be honest. */
       ui_home_show_toast("K144 probe already running — try again in a few sec");
    }
+}
+
+/* TT #328 Wave 14 — K144 hardware gauge.  Small label below the chip
+ * showing NPU temperature + load + StackFlow daemon version.
+ * Populated via a worker job (UART round-trip is ~150 ms; can't run
+ * on the LVGL thread).  Gauge text rebuilds every Settings show. */
+#include "voice_m5_llm.h" /* voice_m5_hwinfo_t + sys_hwinfo + sys_version */
+static lv_obj_t *s_k144_gauge_lbl = NULL;
+
+typedef struct {
+   voice_m5_hwinfo_t hw;
+   char version[16];
+   bool ok;
+} k144_gauge_payload_t;
+
+static void k144_gauge_async_render(void *arg) {
+   k144_gauge_payload_t *p = (k144_gauge_payload_t *)arg;
+   if (s_k144_gauge_lbl != NULL && p != NULL) {
+      char buf[64];
+      if (p->ok && p->hw.valid) {
+         double temp_c = (double)p->hw.temperature_milli_c / 1000.0;
+         /* Compact one-line gauge:  "NPU 39.4°C · load 0 · v1.3"
+          * Truncated at 64 to fit the chip-row right-edge area. */
+         snprintf(buf, sizeof(buf),
+                  "NPU %.1f\xc2\xb0"
+                  "C \xc2\xb7 load %d \xc2\xb7 %s",
+                  temp_c, (int)p->hw.cpu_loadavg, p->version[0] ? p->version : "—");
+      } else {
+         snprintf(buf, sizeof(buf), "—");
+      }
+      lv_label_set_text(s_k144_gauge_lbl, buf);
+   }
+   if (p != NULL) free(p);
+}
+
+static void k144_gauge_fetch_job(void *arg) {
+   (void)arg;
+   k144_gauge_payload_t *p = calloc(1, sizeof(*p));
+   if (p == NULL) return;
+   esp_err_t he = voice_m5_llm_sys_hwinfo(&p->hw);
+   (void)voice_m5_llm_sys_version(p->version, sizeof(p->version));
+   p->ok = (he == ESP_OK);
+   tab5_lv_async_call(k144_gauge_async_render, p);
 }
 
 /* ── Screen-lifetime state ──────────────────────────────────────────── */
@@ -1502,6 +1546,28 @@ lv_obj_t *ui_settings_create(void)
              lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
              lv_obj_set_style_pad_all(chip, 8, 0);
              lv_obj_add_event_cb(chip, k144_chip_tap_cb, LV_EVENT_CLICKED, NULL);
+
+             /* TT #328 Wave 14 — K144 hardware gauge.  Sits below the
+              * chip showing live NPU temp + load + daemon version.
+              * Populated async via tab5_worker job (UART round-trip
+              * is ~150 ms; can't run on LVGL thread).  Pre-fill with
+              * em-dash placeholder so the row layout doesn't shift
+              * when the worker callback lands a few hundred ms later. */
+             s_k144_gauge_lbl = lv_label_create(row);
+             lv_label_set_text(s_k144_gauge_lbl, "—");
+             lv_obj_set_style_text_font(s_k144_gauge_lbl, FONT_SMALL, 0);
+             lv_obj_set_style_text_color(s_k144_gauge_lbl, lv_color_hex(TEXT_DIM), 0);
+             lv_obj_set_style_text_letter_space(s_k144_gauge_lbl, 1, 0);
+             /* Position below the chip (chip is at y=(row_h-14)/2 ≈ 38;
+              * gauge sits ~24 px below — fits inside the 90 px row
+              * without overflowing into the next radio row). */
+             lv_obj_set_pos(s_k144_gauge_lbl, row_w - 240, (row_h - 14) / 2 + 22);
+             /* Kick off the fetch only when the K144 is READY — no
+              * point hammering the UART when state is UNAVAILABLE
+              * (sys.hwinfo would just time out and waste 1.5 s). */
+             if (fs == 2 /* M5_FAIL_READY */) {
+                (void)tab5_worker_enqueue(k144_gauge_fetch_job, NULL, "k144_gauge");
+             }
           }
 
           if (i == s_active_tab) _mode_row_style(row, true);

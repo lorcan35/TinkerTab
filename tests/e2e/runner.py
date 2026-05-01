@@ -2100,6 +2100,115 @@ def story_wave13_k144_recoverable(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_wave14_k144_observable(r: Runner) -> None:
+    """TT #328 Wave 14 — K144 is observable.
+
+    Pre-Wave-14 the GET /m5 endpoint exposed only chain_active /
+    failover_state / uart_baud — no AX630C thermal data, no NPU
+    load, no daemon version.  The audit gap "K144 thermal awareness
+    is silent — NPU throttle hits without warning" was on the
+    Wave 13 audit follow-up list.
+
+    Wave 14 implementation:
+      • voice_m5_llm_sys_hwinfo() — typed wrapper around sys.hwinfo
+        returning {temperature_milli_c, cpu_loadavg, mem, valid}
+      • voice_m5_llm_sys_version() — fetches StackFlow daemon version
+      • GET /m5 hwinfo block — surfaces temp_celsius (one decimal),
+        cpu_loadavg, mem, version, plus a cache_age_ms field so
+        consumers know how stale the snapshot is
+      • POST /m5/refresh — forces a sys.hwinfo re-fetch outside the
+        30s cache TTL.  Useful for the e2e harness + dashboard
+      • Settings UI — a small one-line gauge below the K144 health
+        chip on the Onboard row showing live NPU temp + load +
+        version.  Populated via tab5_worker job (UART round-trip is
+        ~150ms; can't run on LVGL thread).
+
+    Caching: 30 s TTL on success, 5 s rate-limit on attempts even
+    when stale.  Skips sys.hwinfo entirely when K144 isn't READY
+    (would just time out on UART and waste 1.5 s).
+
+    Touch-driven: navigate to Settings, screenshot the gauge, force
+    a refresh via POST, verify hwinfo round-trip + cache mechanics.
+    """
+    import time as _time
+    tab5 = r.tab5
+
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor", lambda t: t.reset_event_cursor() and None)
+
+    # ─── A. Wait for K144 to settle into a known state ─────────────
+    def _settle(t, timeout_s=60):
+        deadline = _time.time() + timeout_s
+        while _time.time() < deadline:
+            state = t._get("/m5").json().get("failover_state_name")
+            if state in ("ready", "unavailable"):
+                return True
+            _time.sleep(2)
+        return True
+    r.step("[A] Wait for K144 to settle", lambda t: _settle(t))
+
+    # ─── B. /m5 surface contract ───────────────────────────────────
+    def _check_shape(t):
+        body = t._get("/m5").json()
+        # Wave 14 fields that must always exist regardless of state
+        return ("hwinfo" in body and "version" in body
+                and "cache_age_ms" in body["hwinfo"])
+    r.step("[B] /m5 has new hwinfo block + version field", _check_shape)
+
+    # ─── C. POST /m5/refresh forces a fresh sys.hwinfo ─────────────
+    def _refresh(t):
+        body = t._post("/m5/refresh").json()
+        return "hwinfo" in body
+    r.step("[C] POST /m5/refresh returns enriched payload", _refresh)
+
+    # ─── D. If K144 is READY, hwinfo should be populated ────────────
+    def _check_hwinfo(t):
+        body = t._post("/m5/refresh").json()
+        state = body.get("failover_state_name")
+        hw = body.get("hwinfo", {})
+        if state != "ready":
+            # Acceptable — K144 not warm; valid=false expected
+            return hw.get("valid") is False
+        # K144 READY → hwinfo MUST be valid + temp in plausible range
+        if not hw.get("valid"):
+            return False
+        temp = hw.get("temp_celsius", 0)
+        return 10 <= temp <= 100  # AX630C operates ~25-85 °C
+    r.step("[D] hwinfo populated + temp in plausible range when READY", _check_hwinfo)
+
+    # ─── E. Cache TTL — second call within 5 s should be cached ─────
+    # cache_age_ms should be > 0 (not freshly fetched) on the second GET
+    r.step("[E] First GET /m5", lambda t: t._get("/m5").json() and True)
+    _time.sleep(1)
+    def _cache_age(t):
+        body = t._get("/m5").json()
+        age = body.get("hwinfo", {}).get("cache_age_ms", 0)
+        # After 1 s sleep, age should be ≥ 1000 ms (cached, not fresh)
+        return age >= 800  # leave slack for clock drift
+    r.step("[E] cache_age_ms reflects TTL behavior", _cache_age)
+
+    # ─── F. Version field populates when READY ─────────────────────
+    def _version_check(t):
+        body = t._post("/m5/refresh").json()
+        if body.get("failover_state_name") != "ready":
+            # Version not fetched until K144 reaches READY at least once
+            return True  # don't fail on cold UNAVAILABLE
+        return body.get("version", "").startswith("v")
+    r.step("[F] version field populated (v*) when K144 READY", _version_check)
+
+    # ─── G. Settings UI gauge visible ──────────────────────────────
+    r.step("[G] Navigate to Settings",
+           lambda t: t.navigate("settings").get("navigated") == "settings")
+    _time.sleep(3)  # wait for worker fetch + async render
+    r.step("[G] Screenshot — K144 gauge below chip on Onboard row",
+           lambda t: t.screenshot(
+               os.path.join(r.run_dir, "wave14_G_gauge.jpg")) > 1000)
+
+    # ─── H. Cleanup ────────────────────────────────────────────────
+    r.step("[end] Back to home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -2118,6 +2227,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave11":  story_wave11_skill_starring,
     "story_wave12":  story_wave12_agent_log,
     "story_wave13":  story_wave13_k144_recoverable,
+    "story_wave14":  story_wave14_k144_observable,
 }
 
 
