@@ -136,7 +136,15 @@ static const char *TAG = "tab5_voice";
 // + TDM diagnostics + OPUS encoder (silk_Encode is the heavy consumer,
 // ~4 KB of locals — 8 KB was insufficient and panicked in
 // silk_encode_frame_FIX, see #262 follow-up).
-#define MIC_TASK_STACK_SIZE    16384
+/* TT #264 — bumped from 16 KB → 32 KB.  The SILK NSQ
+ * (Noise Shaping Quantizer) inside esp_audio_codec's OPUS encoder
+ * needs ~24 KB of stack for its working storage; 16 KB tripped a
+ * stack-protection-fault PANIC (MCAUSE 0x1b) on the first encoded
+ * frame.  Bisected the minimum on hardware via /codec/opus_test:
+ * 22 KB panics, 24 KB barely survives, 32 KB is comfortable.
+ * Stack is PSRAM-backed via `xTaskCreatePinnedToCoreWithCaps`
+ * (MALLOC_CAP_SPIRAM) so the bump is essentially free. */
+#define MIC_TASK_STACK_SIZE (32 * 1024)
 #define MIC_TASK_PRIORITY      5
 #define MIC_TASK_CORE          1
 

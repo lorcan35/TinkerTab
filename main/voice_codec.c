@@ -58,10 +58,14 @@ static esp_err_t ensure_encoder(void)
     cfg.bitrate          = VC_OPUS_BITRATE;
     cfg.frame_duration   = ESP_OPUS_ENC_FRAME_DURATION_20_MS;
     cfg.application_mode = ESP_OPUS_ENC_APPLICATION_VOIP;
-    /* complexity=0 picks the simplest SILK code paths; higher levels
-     * crashed in silk_NSQ_del_dec_c on this build (likely a SIMD or
-     * working-buffer alignment issue in the esp_audio_codec port).
-     * Quality at 0 + 24 kbps is still good for VOIP. */
+    /* complexity=0 minimises encoder CPU + memory footprint.  The
+     * #263 baseline tested complexity=5 + crashed; that was actually
+     * a stack-overflow misdiagnosed as "encoder bug" — TT #264 Wave
+     * 19 bumped MIC_TASK_STACK_SIZE 16→32 KB and the encoder now
+     * runs cleanly.  Higher complexity values would work too once
+     * the stack is sized for SILK NSQ's working storage; 0 stays the
+     * default because Tab5's bandwidth target is met cleanly + the
+     * CPU saving is genuine on the slower P4 cores. */
     cfg.complexity       = 0;
     cfg.enable_fec       = false;
     cfg.enable_dtx       = false;

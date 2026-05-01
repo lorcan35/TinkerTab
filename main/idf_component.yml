@@ -16,4 +16,9 @@ dependencies:
   # esp_audio_codec (#262): OPUS encoder/decoder for the voice WS path.
   # 16 kHz mono PCM <-> ~24 kbps OPUS = ~10x bandwidth cut on the mic
   # uplink and TTS downlink.
-  espressif/esp_audio_codec: ^2.4.1
+  #
+  # 2.5.0 (released 2026-04-29) is the next version after the 2.4.1
+  # baseline that was crashing inside silk_NSQ_c on the encoder path
+  # (TT #264).  Bumping here is investigation step 3 from the issue
+  # ("Check esp_audio_codec 2.5+ release notes for ESP32-P4 SILK fixes").
+  espressif/esp_audio_codec: ^2.5.0

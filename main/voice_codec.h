@@ -22,18 +22,32 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-/* Compile-time gate for the OPUS uplink (mic) path.  The
- * espressif/esp_audio_codec OPUS encoder crashes reproducibly inside
- * silk_NSQ_c / silk_NSQ_del_dec_c on this build (PSRAM-backed PCM
- * input + complexity 0 or 5 both reproduce; suspect a SIMD alignment
- * or working-buffer issue specific to the ESP32-P4 port).  Until that
- * is root-caused we keep the encoder turned off — Tab5 only advertises
- * PCM uplink in capabilities, the encode helper short-circuits to PCM
- * even if voice_codec_set_uplink(OPUS) is called.
+/* TT #264 Wave 19 — OPUS uplink encoder ENABLED.
  *
- * Decoder is unaffected (different SILK / CELT code paths) so the
- * downlink path is left enabled — Phase 2B will exercise it. */
-#define VOICE_CODEC_OPUS_UPLINK_ENABLED 0
+ * History: PR #263 wired the encoder into the mic uplink and shipped
+ * with the gate at 0 because every dictation cycle reproducibly
+ * panicked inside `silk_NSQ_c` / `silk_NSQ_del_dec_c`.  Three crashes
+ * were captured (8 KB internal-SRAM stack → silk_encode_frame_FIX;
+ * 16 KB PSRAM stack → silk_NSQ_del_dec_c; complexity-0 → silk_NSQ_c)
+ * — all in the SILK Noise Shaping Quantizer.  The investigator
+ * concluded "not stack overflow" because 16 KB seemed plenty.
+ *
+ * Wave 19 root-caused it: SILK NSQ's working storage on ESP32-P4
+ * needs ~24 KB of stack peak; 16 KB silently shaved past the per-task
+ * stack canary and tripped MCAUSE 0x1b (stack protection fault).
+ * Bisected via the new `/codec/opus_test` endpoint — 22 KB panics,
+ * 24 KB barely survives, 32 KB is comfortable.  Bumped
+ * MIC_TASK_STACK_SIZE 16 → 32 KB in voice.c (PSRAM-backed stack via
+ * xTaskCreatePinnedToCoreWithCaps so the cost is essentially free).
+ *
+ * Decoder was unaffected throughout (SILK/CELT decode paths use
+ * smaller working buffers) and the downlink path has been live since
+ * the encoder was introduced.
+ *
+ * If a future esp_audio_codec release changes the SILK working-set
+ * size and 32 KB becomes too tight, re-bisect via the same endpoint
+ * and bump MIC_TASK_STACK_SIZE accordingly. */
+#define VOICE_CODEC_OPUS_UPLINK_ENABLED 1
 
 typedef enum {
     VOICE_CODEC_PCM  = 0,   /* raw int16_t LE @ 16 kHz mono — default */
