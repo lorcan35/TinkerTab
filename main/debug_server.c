@@ -60,6 +60,7 @@
 #include "debug_server_codec.h"
 #include "debug_server_internal.h"
 #include "debug_server_m5.h"
+#include "debug_server_mode.h"
 #include "debug_server_ota.h"
 #include "debug_server_voice.h"
 #include "widget.h" /* Audit C4 (#202): widget_store_evictions_total */
@@ -1179,13 +1180,6 @@ static esp_err_t settings_get_handler(httpd_req_t *req)
     return ret;
 }
 
-/* Async wrapper for lv_async_call — refreshes home mode badge on LVGL thread */
-static void async_refresh_mode_badge(void *arg)
-{
-    (void)arg;
-    extern void ui_home_refresh_mode_badge(void);
-    ui_home_refresh_mode_badge();
-}
 
 /* POST /settings — update NVS keys via JSON body.
  * Accepts any combination of: wifi_ssid, wifi_pass, dragon_host, dragon_port,
@@ -1478,70 +1472,8 @@ static esp_err_t settings_set_handler(httpd_req_t *req)
     return ret;
 }
 
-/* POST /mode?m=0|1|2|3&model=... — switch voice mode (3=TinkerClaw) */
-static esp_err_t mode_set_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
+/* ── /mode endpoint family extracted to debug_server_mode.c (Wave 23b, #332) ─ */
 
-    /* Parse query string */
-    char query[128] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, "{\"error\":\"use ?m=0|1|2|3&model=... (3=TinkerClaw)\"}");
-        return ESP_OK;
-    }
-
-    char val[8] = {0};
-    char model[64] = {0};
-    httpd_query_key_value(query, "m", val, sizeof(val));
-    httpd_query_key_value(query, "model", model, sizeof(model));
-
-    int mode = atoi(val);
-    /* TT #317 Phase 5: vmode=4 added for VMODE_LOCAL_ONBOARD (K144). */
-    if (mode < 0 || mode > 4) mode = 0;
-
-    /* Save to NVS */
-    tab5_settings_set_voice_mode((uint8_t)mode);
-    if (model[0]) {
-        tab5_settings_set_llm_model(model);
-    }
-
-    ESP_LOGI("debug", "Mode switch: voice_mode=%d, llm_model=%s", mode, model[0] ? model : "(unchanged)");
-
-    /* Send config_update to Dragon via voice WS — except for vmode=4
-     * (VMODE_LOCAL_ONBOARD) which is a Tab5-side-only tier.  Dragon
-     * doesn't understand it and would ACK with an error that reverts our
-     * NVS write back to 0.  When user picks ONBOARD, tell Dragon we're
-     * still in "local" (mode=0) so its STT/TTS stay on local backends;
-     * Tab5 then bypasses Dragon for the LLM turn via voice_send_text. */
-    if (voice_is_connected()) {
-       int dragon_mode = (mode == 4) ? 0 : mode;
-       voice_send_config_update(dragon_mode, model[0] ? model : NULL);
-    }
-
-    /* Refresh home screen mode badge (runs on LVGL thread) */
-    tab5_lv_async_call(async_refresh_mode_badge, NULL);
-
-    /* Return current state */
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "voice_mode", mode);
-    const char *mode_names[] = {"local", "hybrid", "cloud", "tinkerclaw", "local_onboard"};
-    cJSON_AddStringToObject(root, "mode_name", mode <= 4 ? mode_names[mode] : "unknown");
-    char cur_model[64];
-    tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
-    cJSON_AddStringToObject(root, "llm_model", cur_model);
-    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
-    cJSON_AddStringToObject(root, "status", "applied");
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
-    esp_err_t ret = httpd_resp_sendstr(req, json);
-    free(json);
-    return ret;
-}
 
 /* POST /navigate?screen=settings|notes|chat|camera|files|home
  * Uses lv_async_call to avoid LVGL lock deadlock from HTTP context */
@@ -3705,9 +3637,8 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_settings_set = {
         .uri = "/settings", .method = HTTP_POST, .handler = settings_set_handler
     };
-    const httpd_uri_t uri_mode_set = {
-        .uri = "/mode", .method = HTTP_POST, .handler = mode_set_handler
-    };
+    /* Wave 23b (#332): /mode endpoint registered en-bloc via
+     * debug_server_mode_register() below. */
     const httpd_uri_t uri_navigate = {
         .uri = "/navigate", .method = HTTP_POST, .handler = navigate_handler
     };
@@ -3845,7 +3776,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_sdcard);
     httpd_register_uri_handler(server, &uri_settings_get);
     httpd_register_uri_handler(server, &uri_settings_set);
-    httpd_register_uri_handler(server, &uri_mode_set);
+    /* Wave 23b (#332): /mode endpoint family registered en-bloc. */
+    debug_server_mode_register(server);
     httpd_register_uri_handler(server, &uri_navigate);
     httpd_register_uri_handler(server, &uri_widget);
     httpd_register_uri_handler(server, &uri_camera);
