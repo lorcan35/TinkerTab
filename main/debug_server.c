@@ -2358,6 +2358,10 @@ static esp_err_t voice_state_handler(httpd_req_t *req)
 }
 
 /* ── K144 endpoint family extracted to debug_server_m5.c (Wave 23b, #332) ─ */
+<<<<<<< HEAD
+=======
+
+>>>>>>> 1a235fa (refactor(debug_server): extract K144 endpoint family to debug_server_m5.{c,h} (refs #332, Wave 23b))
 
 /* ── Voice reconnect endpoint ─────────────────────────────────────────── */
 
