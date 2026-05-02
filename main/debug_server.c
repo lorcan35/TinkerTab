@@ -59,6 +59,7 @@
 /* Wave 23b (#332): per-family endpoint extracts + auth shim. */
 #include "debug_server_codec.h"
 #include "debug_server_internal.h"
+#include "debug_server_codec.h"
 #include "debug_server_m5.h"
 #include "debug_server_ota.h"
 #include "widget.h" /* Audit C4 (#202): widget_store_evictions_total */

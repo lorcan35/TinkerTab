@@ -26,3 +26,14 @@
  * `check_auth` static so the historic call sites stay untouched.
  */
 bool tab5_debug_check_auth(httpd_req_t *req);
+
+/* Forward decl for cJSON — keep this header self-sufficient without
+ * pulling cJSON.h into every consumer just for the prototype. */
+struct cJSON;
+
+/* Build-and-send-JSON helper.  Takes ownership of `root` (calls
+ * cJSON_Delete after PrintUnformatted) and emits with
+ * Content-Type: application/json + the standard CORS headers.
+ * Used by ~57 handlers in debug_server.c and growing — each
+ * per-family extract gains access without re-implementing. */
+esp_err_t tab5_debug_send_json_resp(httpd_req_t *req, struct cJSON *root);
