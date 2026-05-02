@@ -37,3 +37,11 @@ struct cJSON;
  * Used by ~57 handlers in debug_server.c and growing — each
  * per-family extract gains access without re-implementing. */
 esp_err_t tab5_debug_send_json_resp(httpd_req_t *req, struct cJSON *root);
+
+/* Factory-reset confirm-token check.  POST /nvs/erase?confirm=<token>
+ * requires the first 8 hex chars of the bearer auth token as a guard
+ * against accidental triggering.  Returns true iff `confirm` matches.
+ * The auth token itself is a file-static inside debug_server.c — this
+ * wrapper lets the settings family extract validate without leaking
+ * the secret through the internal header. */
+bool tab5_debug_check_factory_reset_confirm(const char *confirm);
