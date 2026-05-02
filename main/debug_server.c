@@ -64,6 +64,7 @@
 #include "debug_server_ota.h"
 #include "debug_server_settings.h"
 #include "debug_server_voice.h"
+#include "debug_server_wifi.h"
 #include "widget.h" /* Audit C4 (#202): widget_store_evictions_total */
 #include "wifi.h"
 
@@ -1760,50 +1761,8 @@ static esp_err_t input_text_handler(httpd_req_t *req)
 }
 
 /* ── Wi-Fi kick endpoint (test harness) ──────────────────────────────── */
-/* POST /wifi/kick?mode=soft|hard|reboot — force the escalation tiers
- * from #146.  Used by the test harness to verify recovery paths without
- * waiting 2-3 min of actual flap.  mode=soft is safe; hard costs ~1-2 s
- * of downtime; reboot is self-explanatory. */
-#include "wifi.h"
-static esp_err_t wifi_kick_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-
-    char query[64] = {0};
-    char mode[16]  = "soft";
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "mode", mode, sizeof(mode));
-    }
-
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "mode", mode);
-
-    if (strcmp(mode, "hard") == 0) {
-        esp_err_t r = tab5_wifi_hard_kick();
-        cJSON_AddBoolToObject(root, "ok", r == ESP_OK);
-        if (r != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
-    } else if (strcmp(mode, "reboot") == 0) {
-        cJSON_AddBoolToObject(root, "ok", true);
-        cJSON_AddStringToObject(root, "note", "rebooting in 100 ms");
-        char *json = cJSON_PrintUnformatted(root);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_sendstr(req, json);
-        free(json);
-        cJSON_Delete(root);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_restart();
-        return ESP_OK;  /* unreachable */
-    } else {
-        tab5_wifi_kick();
-        cJSON_AddBoolToObject(root, "ok", true);
-    }
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
-    return ESP_OK;
-}
+/* ── /wifi/kick + /wifi/status family extracted to debug_server_wifi.c
+ *    (Wave 23b, #332) — handlers + register live there now. ─────────── */
 
 /* ── Dictation endpoint ───────────────────────────────────────────────── */
 /* POST /dictation?action=start|stop — remote dictation driver for the
@@ -2398,39 +2357,7 @@ static esp_err_t voice_text_handler(httpd_req_t *req)
     return chat_handler(req);
 }
 
-
-/* ── GET /wifi/status ──────────────────────────────────────────── */
-static esp_err_t wifi_status_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "connected", tab5_wifi_connected());
-
-    char ip[20]; get_wifi_ip(ip, sizeof(ip));
-    cJSON_AddStringToObject(root, "ip", ip);
-
-    wifi_ap_record_t ap = {0};
-    esp_err_t r = esp_wifi_sta_get_ap_info(&ap);
-    if (r == ESP_OK) {
-        char bssid[18];
-        snprintf(bssid, sizeof(bssid), "%02x:%02x:%02x:%02x:%02x:%02x",
-                 ap.bssid[0], ap.bssid[1], ap.bssid[2],
-                 ap.bssid[3], ap.bssid[4], ap.bssid[5]);
-        cJSON_AddStringToObject(root, "ssid", (const char *)ap.ssid);
-        cJSON_AddStringToObject(root, "bssid", bssid);
-        cJSON_AddNumberToObject(root, "channel", ap.primary);
-        cJSON_AddNumberToObject(root, "rssi", ap.rssi);
-        const char *auths[] = {"open","wep","wpa_psk","wpa2_psk","wpa_wpa2_psk",
-                               "wpa2_enterprise","wpa3_psk","wpa2_wpa3_psk",
-                               "wapi_psk","owe","wpa3_enterprise","wpa3_ent_192"};
-        int am = (int)ap.authmode;
-        cJSON_AddStringToObject(root, "authmode",
-            (am >= 0 && am < (int)(sizeof(auths)/sizeof(auths[0]))) ? auths[am] : "?");
-    } else {
-        cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
-    }
-    return send_json_resp(req, root);
-}
+/* /wifi/status extracted to debug_server_wifi.c (Wave 23b, #332). */
 
 /* ── GET /battery ──────────────────────────────────────────────── */
 static esp_err_t battery_handler(httpd_req_t *req)
@@ -3306,9 +3233,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_dictation_get = {
         .uri = "/dictation", .method = HTTP_GET, .handler = dictation_handler
     };
-    const httpd_uri_t uri_wifi_kick = {
-        .uri = "/wifi/kick", .method = HTTP_POST, .handler = wifi_kick_handler
-    };
+    /* /wifi/kick registered en-bloc via debug_server_wifi_register() below. */
     const httpd_uri_t uri_selftest = {
         .uri = "/selftest", .method = HTTP_GET, .handler = selftest_handler
     };
@@ -3322,7 +3247,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_logs_tail      = { .uri = "/logs/tail",      .method = HTTP_GET,  .handler = logs_tail_handler };
     const httpd_uri_t uri_voice_text     = { .uri = "/voice/text",     .method = HTTP_POST, .handler = voice_text_handler };
     /* Wave 23b (#332): /voice/cancel + /voice/clear moved to debug_server_voice.c. */
-    const httpd_uri_t uri_wifi_status    = { .uri = "/wifi/status",    .method = HTTP_GET,  .handler = wifi_status_handler };
+    /* /wifi/status registered en-bloc via debug_server_wifi_register() below. */
     const httpd_uri_t uri_battery        = { .uri = "/battery",        .method = HTTP_GET,  .handler = battery_handler };
     const httpd_uri_t uri_disp_bright    = { .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler };
     const httpd_uri_t uri_audio_get      = { .uri = "/audio",          .method = HTTP_GET,  .handler = audio_handler };
@@ -3402,7 +3327,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_call_restore);
     httpd_register_uri_handler(server, &uri_dictation_post);
     httpd_register_uri_handler(server, &uri_dictation_get);
-    httpd_register_uri_handler(server, &uri_wifi_kick);
+    /* Wave 23b (#332): WiFi diagnostic + recovery family registered en-bloc. */
+    debug_server_wifi_register(server);
     httpd_register_uri_handler(server, &uri_selftest);
     httpd_register_uri_handler(server, &uri_heap);
     /* #149 PR β registrations. */
@@ -3410,8 +3336,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_logs_tail);
     httpd_register_uri_handler(server, &uri_voice_text);
     /* Wave 23b (#332): /voice/cancel + /voice/clear registered via
-     * debug_server_voice_register() above. */
-    httpd_register_uri_handler(server, &uri_wifi_status);
+     * debug_server_voice_register() above; /wifi/status registered via
+     * debug_server_wifi_register() above. */
     httpd_register_uri_handler(server, &uri_battery);
     httpd_register_uri_handler(server, &uri_disp_bright);
     httpd_register_uri_handler(server, &uri_audio_get);
