@@ -61,6 +61,7 @@
 #include "debug_server_codec.h"
 #include "debug_server_m5.h"
 #include "debug_server_ota.h"
+#include "debug_server_voice.h"
 #include "widget.h"        /* Audit C4 (#202): widget_store_evictions_total */
 #include "wifi.h"
 
@@ -2322,69 +2323,8 @@ static esp_err_t screen_state_handler(httpd_req_t *req)
     return ret;
 }
 
-static esp_err_t voice_state_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
+/* ── Voice endpoint family extracted to debug_server_voice.c (Wave 23b, #332) ─ */
 
-    /* GET /voice — full voice pipeline state */
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "connected", voice_is_connected());
-    cJSON_AddNumberToObject(root, "state", (int)voice_get_state());
-
-    const char *state_names[] = {"IDLE", "CONNECTING", "READY", "LISTENING", "PROCESSING", "SPEAKING", "RECONNECTING", "DICTATING"};
-    int st = (int)voice_get_state();
-    /* State enum has 8 values (0..7); the old bound stopped at 6 which
-     * reported DICTATING as "UNKNOWN" — fix alongside the /dictation
-     * endpoint so test harness sees the right label. */
-    cJSON_AddStringToObject(root, "state_name", (st >= 0 && st <= 7) ? state_names[st] : "UNKNOWN");
-
-    /* Wave 14 W14-M01: the debug httpd task races with voice.c's
-     * WS RX task.  Use the copy-under-mutex variants to avoid
-     * observing a mid-strcat string. */
-    char llm_buf[512];
-    if (voice_get_llm_text_copy(llm_buf, sizeof(llm_buf)) && llm_buf[0]) {
-        cJSON_AddStringToObject(root, "last_llm_text", llm_buf);
-    }
-
-    char stt_buf[512];
-    if (voice_get_stt_text_copy(stt_buf, sizeof(stt_buf)) && stt_buf[0]) {
-        cJSON_AddStringToObject(root, "last_stt_text", stt_buf);
-    }
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
-    esp_err_t ret = httpd_resp_sendstr(req, json);
-    free(json);
-    return ret;
-}
-
-/* ── K144 endpoint family extracted to debug_server_m5.c (Wave 23b, #332) ─ */
-
-
-/* ── Voice reconnect endpoint ─────────────────────────────────────────── */
-
-static esp_err_t voice_reconnect_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-
-    /* POST /voice/reconnect — force voice WS reconnect */
-    ESP_LOGI(TAG, "Debug: forcing voice reconnect");
-    voice_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(500));
-    /* Reconnect using current NVS settings + voice port (3502, not dragon_port which is 3501 for CDP) */
-    char host[64] = {0};
-    tab5_settings_get_dragon_host(host, sizeof(host));
-    voice_connect(host, TAB5_VOICE_PORT);
-
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Headers", "Authorization");
-    httpd_resp_sendstr(req, "{\"status\":\"reconnecting\"}");
-    return ESP_OK;
-}
 
 /* ── #266: live video streaming control (POST /video/start, /video/stop,
  *           GET /video).  #268 adds /video/show + /video/hide for the
@@ -2900,31 +2840,6 @@ static esp_err_t voice_text_handler(httpd_req_t *req)
     return chat_handler(req);
 }
 
-/* ── POST /voice/cancel ─────────────────────────────────────────── */
-static esp_err_t voice_cancel_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-    esp_err_t r = voice_cancel();
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "ok", r == ESP_OK);
-    if (r != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
-    return send_json_resp(req, root);
-}
-
-/* ── POST /voice/clear — clear Dragon conversation history ────── */
-static esp_err_t voice_clear_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-    esp_err_t r = voice_clear_history();
-    /* Also wipe Tab5 side so UI matches. */
-    extern void chat_store_clear(void);
-    chat_store_clear();
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "ok", r == ESP_OK);
-    cJSON_AddBoolToObject(root, "store_cleared", true);
-    if (r != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
-    return send_json_resp(req, root);
-}
 
 /* ── GET /wifi/status ──────────────────────────────────────────── */
 static esp_err_t wifi_status_handler(httpd_req_t *req)
@@ -3820,12 +3735,9 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_screen = {
         .uri = "/screen", .method = HTTP_GET, .handler = screen_state_handler
     };
-    const httpd_uri_t uri_voice_state = {
-        .uri = "/voice", .method = HTTP_GET, .handler = voice_state_handler
-    };
-    const httpd_uri_t uri_voice_reconnect = {
-        .uri = "/voice/reconnect", .method = HTTP_POST, .handler = voice_reconnect_handler
-    };
+    /* Wave 23b (#332): voice endpoint family (/voice, /voice/reconnect,
+     * /voice/cancel, /voice/clear) registered en-bloc via
+     * debug_server_voice_register() below. */
     /* Wave 23b (#332): K144 endpoint family — the 4 URIs (/m5, /m5/reset,
      * /m5/refresh, /m5/models) are registered via debug_server_m5_register()
      * below so the handlers + their cache layers live in their own .c file. */
@@ -3887,8 +3799,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_tasks          = { .uri = "/tasks",          .method = HTTP_GET,  .handler = tasks_handler };
     const httpd_uri_t uri_logs_tail      = { .uri = "/logs/tail",      .method = HTTP_GET,  .handler = logs_tail_handler };
     const httpd_uri_t uri_voice_text     = { .uri = "/voice/text",     .method = HTTP_POST, .handler = voice_text_handler };
-    const httpd_uri_t uri_voice_cancel   = { .uri = "/voice/cancel",   .method = HTTP_POST, .handler = voice_cancel_handler };
-    const httpd_uri_t uri_voice_clear    = { .uri = "/voice/clear",    .method = HTTP_POST, .handler = voice_clear_handler };
+    /* Wave 23b (#332): /voice/cancel + /voice/clear moved to debug_server_voice.c. */
     const httpd_uri_t uri_wifi_status    = { .uri = "/wifi/status",    .method = HTTP_GET,  .handler = wifi_status_handler };
     const httpd_uri_t uri_battery        = { .uri = "/battery",        .method = HTTP_GET,  .handler = battery_handler };
     const httpd_uri_t uri_disp_bright    = { .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler };
@@ -3950,8 +3861,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_chat);
     httpd_register_uri_handler(server, &uri_input_text);
     httpd_register_uri_handler(server, &uri_screen);
-    httpd_register_uri_handler(server, &uri_voice_state);
-    httpd_register_uri_handler(server, &uri_voice_reconnect);
+    /* Wave 23b (#332): voice endpoint family registered en-bloc. */
+    debug_server_voice_register(server);
     /* Wave 23b (#332): K144 endpoint family registered en-bloc. */
     debug_server_m5_register(server);
     httpd_register_uri_handler(server, &uri_video_start);
@@ -3975,8 +3886,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_tasks);
     httpd_register_uri_handler(server, &uri_logs_tail);
     httpd_register_uri_handler(server, &uri_voice_text);
-    httpd_register_uri_handler(server, &uri_voice_cancel);
-    httpd_register_uri_handler(server, &uri_voice_clear);
+    /* Wave 23b (#332): /voice/cancel + /voice/clear registered via
+     * debug_server_voice_register() above. */
     httpd_register_uri_handler(server, &uri_wifi_status);
     httpd_register_uri_handler(server, &uri_battery);
     httpd_register_uri_handler(server, &uri_disp_bright);
