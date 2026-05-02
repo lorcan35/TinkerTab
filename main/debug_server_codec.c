@@ -18,11 +18,12 @@
 
 #include "debug_server_codec.h"
 
-#include <math.h>   /* TT #264 sin() for OPUS encoder synthetic test */
+#include <math.h> /* TT #264 sin() for OPUS encoder synthetic test */
 #include <stdlib.h>
 #include <string.h>
 
 #include "cJSON.h"
+#include "debug_server_internal.h" /* tab5_debug_check_auth + send_json_resp */
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -30,9 +31,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-
-#include "debug_server_internal.h" /* tab5_debug_check_auth + send_json_resp */
-#include "voice_codec.h"           /* voice_codec_encode_uplink + set_uplink */
+#include "voice_codec.h" /* voice_codec_encode_uplink + set_uplink */
 
 /* TT #264 — synthetic OPUS encoder smoke test.  Drives
  * voice_codec_encode_uplink directly with N frames of synthetic
