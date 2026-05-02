@@ -54,9 +54,10 @@
 #include "ui_home.h" /* TT #317 Phase 4: ui_home_show_toast for failover UX */
 #include "ui_notes.h"
 #include "ui_voice.h"
-#include "voice_codec.h"  /* #262: OPUS encode/decode wrapper */
-#include "voice_m5_llm.h" /* TT #317 Phase 4: K144 LLM Module failover */
-#include "voice_video.h"  /* #266: live JPEG streaming */
+#include "voice_codec.h"     /* #262: OPUS encode/decode wrapper */
+#include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
+#include "voice_video.h"     /* #266: live JPEG streaming */
+#include "voice_widget_ws.h" /* SOLID-audit SRP-2: widget WS verb dispatch */
 #include "widget.h"
 #include "wifi.h"
 
@@ -1593,276 +1594,25 @@ static void handle_text_message(const char *data, int len)
             ESP_LOGI(TAG, "Card: %s", title);
             ui_chat_push_card(title, sub, img, desc);
         }
-    } else if (strcmp(type_str, "widget_card") == 0) {
-        /* Audit B2 (2026-04-20): widget_card from Tab5Surface.card()
-         * is a different shape than the legacy "card" message used by
-         * rich-media turns — title + body + tone + optional image_url.
-         * Route it to the same chat bubble renderer so skills can push
-         * context cards into the conversation.
-         *
-         * Phase 2 (#70): also read card_id + action.{label,event} so the
-         * chat renderer can draw a tappable button that round-trips a
-         * widget_action back to the skill. */
-        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-        const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-        const char *img = cJSON_GetStringValue(cJSON_GetObjectItem(root, "image_url"));
-        const char *card_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        const char *action_label = NULL;
-        const char *action_event = NULL;
-        cJSON *action = cJSON_GetObjectItem(root, "action");
-        if (cJSON_IsObject(action)) {
-            action_label = cJSON_GetStringValue(cJSON_GetObjectItem(action, "label"));
-            action_event = cJSON_GetStringValue(cJSON_GetObjectItem(action, "event"));
-        }
-        if (title) {
-            ESP_LOGI(TAG, "widget_card: %s%s", title,
-                     (action_label && action_label[0]) ? " [+action]" : "");
-            /* chat_push_card_action takes (title, subtitle, image_url,
-             * description, card_id, action_label, action_event).
-             * Map body → description for read-order; subtitle stays NULL.
-             * Action fields gated behind all-three-present in the helper. */
-            ui_chat_push_card_action(title, NULL, img, body,
-                                     card_id, action_label, action_event);
-        }
+        /* Wave 23b SOLID-audit SRP-2: nine widget WS verbs (widget_card,
+         * widget_live, widget_live_update, widget_list, widget_chart,
+         * widget_media, widget_prompt, widget_live_dismiss, widget_dismiss)
+         * extracted to voice_widget_ws.{c,h}.  Returns true iff the verb
+         * was recognized + handled; false falls through to the unknown-
+         * verb log below. */
+    } else if (voice_widget_ws_dispatch(type_str, root)) {
+       /* widget verb handled inside voice_widget_ws.c */
     } else if (strcmp(type_str, "audio_clip") == 0) {
-        const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
-        cJSON *dur_item = cJSON_GetObjectItem(root, "duration_s");
-        float dur = cJSON_IsNumber(dur_item) ? (float)dur_item->valuedouble : 0.0f;
-        const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(root, "label"));
-        if (url) {
-            ESP_LOGI(TAG, "Audio clip: %s (%.1fs)", label ? label : "", dur);
-            ui_chat_push_audio_clip(url, dur, label);
-        }
-    } else if (strcmp(type_str, "widget_live") == 0 ||
-               strcmp(type_str, "widget_live_update") == 0) {
-        extern widget_t *widget_store_upsert(const widget_t *in);
-        extern widget_t *widget_store_update(const char *card_id,
-                                             const char *body,
-                                             widget_tone_t tone,
-                                             float progress,
-                                             const char *action_label,
-                                             const char *action_event);
-        extern widget_tone_t widget_tone_from_str(const char *s);
-        extern void ui_home_update_status(void);
-
-        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        if (!cid) {
-            ESP_LOGW(TAG, "widget_live missing card_id");
-        } else if (strcmp(type_str, "widget_live_update") == 0) {
-            const char *body = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
-            cJSON *prog_j = cJSON_GetObjectItem(root, "progress");
-            float progress = cJSON_IsNumber(prog_j) ? (float)prog_j->valuedouble : -1.0f;
-            cJSON *act = cJSON_GetObjectItem(root, "action");
-            const char *al = act ? cJSON_GetStringValue(cJSON_GetObjectItem(act, "label")) : NULL;
-            const char *ae = act ? cJSON_GetStringValue(cJSON_GetObjectItem(act, "event")) : NULL;
-            widget_store_update(cid, body,
-                                tone_s ? widget_tone_from_str(tone_s) : WIDGET_TONE_CALM,
-                                progress, al, ae);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-        } else {
-            widget_t w = {0};
-            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
-            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
-            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
-            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
-            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
-            const char *icn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "icon"));
-            if (icn) strncpy(w.icon, icn, WIDGET_ICON_LEN - 1);
-            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
-            w.tone = widget_tone_from_str(tone_s);
-            cJSON *prog_j = cJSON_GetObjectItem(root, "progress");
-            w.progress = cJSON_IsNumber(prog_j) ? (float)prog_j->valuedouble : 0.0f;
-            cJSON *pri = cJSON_GetObjectItem(root, "priority");
-            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
-            cJSON *act = cJSON_GetObjectItem(root, "action");
-            if (cJSON_IsObject(act)) {
-                const char *al = cJSON_GetStringValue(cJSON_GetObjectItem(act, "label"));
-                const char *ae = cJSON_GetStringValue(cJSON_GetObjectItem(act, "event"));
-                if (al) strncpy(w.action_label, al, WIDGET_ACTION_LBL_LEN - 1);
-                if (ae) strncpy(w.action_event, ae, WIDGET_ACTION_EVT_LEN - 1);
-            }
-            w.type = WIDGET_TYPE_LIVE;
-            widget_store_upsert(&w);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            ESP_LOGI(TAG, "widget_live upsert: %s/%s tone=%s", w.skill_id, cid,
-                     tone_s ? tone_s : "calm");
-        }
-    } else if (strcmp(type_str, "widget_list") == 0) {
-        /* v4·D Phase 4c: ranked list widget.  Same upsert shape as
-         * widget_live but with an "items" array carrying up to 5 rows
-         * of {text, value} displayed stacked on the home live slot.
-         * Skills like web_search, memory recall, daily agenda, etc.
-         * should emit this instead of cramming rows into a body blob. */
-        extern widget_t *widget_store_upsert(const widget_t *in);
-        extern widget_tone_t widget_tone_from_str(const char *s);
-        extern void ui_home_update_status(void);
-        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        if (!cid) {
-            ESP_LOGW(TAG, "widget_list missing card_id");
-        } else {
-            widget_t w = {0};
-            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
-            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
-            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
-            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
-            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
-            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
-            w.tone = widget_tone_from_str(tone_s);
-            cJSON *pri = cJSON_GetObjectItem(root, "priority");
-            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
-            cJSON *items = cJSON_GetObjectItem(root, "items");
-            if (cJSON_IsArray(items)) {
-                int cnt = cJSON_GetArraySize(items);
-                if (cnt > WIDGET_LIST_MAX_ITEMS) cnt = WIDGET_LIST_MAX_ITEMS;
-                for (int i = 0; i < cnt; i++) {
-                    cJSON *it = cJSON_GetArrayItem(items, i);
-                    if (!cJSON_IsObject(it)) continue;
-                    const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
-                    const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(it, "value"));
-                    if (t) strncpy(w.items[i].text,  t, WIDGET_LIST_ITEM_TEXT_LEN - 1);
-                    if (v) strncpy(w.items[i].value, v, WIDGET_LIST_ITEM_VALUE_LEN - 1);
-                }
-                w.items_count = (uint8_t)cnt;
-            }
-            w.type = WIDGET_TYPE_LIST;
-            widget_store_upsert(&w);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            ESP_LOGI(TAG, "widget_list upsert: %s/%s items=%u",
-                     w.skill_id, cid, w.items_count);
-        }
-    } else if (strcmp(type_str, "widget_chart") == 0) {
-        /* v4·D Phase 4f: mini bar chart widget.  Same upsert shape as
-         * widget_list; "values" array carries up to 12 floats, optional
-         * "max" bound for normalization, optional "body" for a summary
-         * line below the bars. */
-        extern widget_t *widget_store_upsert(const widget_t *in);
-        extern widget_tone_t widget_tone_from_str(const char *s);
-        extern void ui_home_update_status(void);
-        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        if (!cid) {
-            ESP_LOGW(TAG, "widget_chart missing card_id");
-        } else {
-            widget_t w = {0};
-            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
-            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
-            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
-            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
-            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
-            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
-            w.tone = widget_tone_from_str(tone_s);
-            cJSON *pri = cJSON_GetObjectItem(root, "priority");
-            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
-            cJSON *mx = cJSON_GetObjectItem(root, "max");
-            w.chart_max = cJSON_IsNumber(mx) ? (float)mx->valuedouble : 0.0f;
-            cJSON *vals = cJSON_GetObjectItem(root, "values");
-            if (cJSON_IsArray(vals)) {
-                int cnt = cJSON_GetArraySize(vals);
-                if (cnt > WIDGET_CHART_MAX_POINTS) cnt = WIDGET_CHART_MAX_POINTS;
-                for (int i = 0; i < cnt; i++) {
-                    cJSON *v = cJSON_GetArrayItem(vals, i);
-                    w.chart_values[i] = cJSON_IsNumber(v)
-                                        ? (float)v->valuedouble : 0.0f;
-                }
-                w.chart_count = (uint8_t)cnt;
-            }
-            w.type = WIDGET_TYPE_CHART;
-            widget_store_upsert(&w);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            ESP_LOGI(TAG, "widget_chart upsert: %s/%s pts=%u max=%.2f",
-                     w.skill_id, cid, w.chart_count, w.chart_max);
-        }
-    } else if (strcmp(type_str, "widget_media") == 0) {
-        /* v4·D Phase 4g: media widget (image + caption in the live slot). */
-        extern widget_t *widget_store_upsert(const widget_t *in);
-        extern widget_tone_t widget_tone_from_str(const char *s);
-        extern void ui_home_update_status(void);
-        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        if (!cid) {
-            ESP_LOGW(TAG, "widget_media missing card_id");
-        } else {
-            widget_t w = {0};
-            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
-            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
-            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
-            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
-            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
-            const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
-            if (url) strncpy(w.media_url, url, WIDGET_MEDIA_URL_LEN - 1);
-            const char *alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
-            if (alt) strncpy(w.media_alt, alt, WIDGET_MEDIA_ALT_LEN - 1);
-            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
-            w.tone = widget_tone_from_str(tone_s);
-            cJSON *pri = cJSON_GetObjectItem(root, "priority");
-            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 50;
-            w.type = WIDGET_TYPE_MEDIA;
-            widget_store_upsert(&w);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            ESP_LOGI(TAG, "widget_media upsert: %s/%s alt=%s",
-                     w.skill_id, cid, w.media_alt);
-        }
-    } else if (strcmp(type_str, "widget_prompt") == 0) {
-        /* v4·D Phase 4g: multi-choice prompt widget.  Up to 3 choices;
-         * Tab5 renders each as a button.  Tap fires widget_action. */
-        extern widget_t *widget_store_upsert(const widget_t *in);
-        extern widget_tone_t widget_tone_from_str(const char *s);
-        extern void ui_home_update_status(void);
-        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        if (!cid) {
-            ESP_LOGW(TAG, "widget_prompt missing card_id");
-        } else {
-            widget_t w = {0};
-            strncpy(w.card_id, cid, WIDGET_ID_LEN - 1);
-            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "skill_id"));
-            if (sid) strncpy(w.skill_id, sid, WIDGET_SKILL_ID_LEN - 1);
-            const char *ttl = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-            if (ttl) strncpy(w.title, ttl, WIDGET_TITLE_LEN - 1);
-            const char *bdy = cJSON_GetStringValue(cJSON_GetObjectItem(root, "body"));
-            if (bdy) strncpy(w.body, bdy, WIDGET_BODY_LEN - 1);
-            const char *tone_s = cJSON_GetStringValue(cJSON_GetObjectItem(root, "tone"));
-            w.tone = widget_tone_from_str(tone_s);
-            cJSON *pri = cJSON_GetObjectItem(root, "priority");
-            w.priority = cJSON_IsNumber(pri) ? (uint8_t)pri->valueint : 60;
-            cJSON *choices = cJSON_GetObjectItem(root, "choices");
-            if (cJSON_IsArray(choices)) {
-                int cnt = cJSON_GetArraySize(choices);
-                if (cnt > WIDGET_PROMPT_MAX_CHOICES) cnt = WIDGET_PROMPT_MAX_CHOICES;
-                for (int i = 0; i < cnt; i++) {
-                    cJSON *it = cJSON_GetArrayItem(choices, i);
-                    if (!cJSON_IsObject(it)) continue;
-                    const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(it, "text"));
-                    const char *ev = cJSON_GetStringValue(cJSON_GetObjectItem(it, "event"));
-                    if (t)  strncpy(w.choices[i].text,  t,  WIDGET_PROMPT_CHOICE_LEN - 1);
-                    if (ev) strncpy(w.choices[i].event, ev, WIDGET_PROMPT_EVENT_LEN  - 1);
-                }
-                w.choices_count = (uint8_t)cnt;
-            }
-            w.type = WIDGET_TYPE_PROMPT;
-            widget_store_upsert(&w);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            ESP_LOGI(TAG, "widget_prompt upsert: %s/%s choices=%u",
-                     w.skill_id, cid, w.choices_count);
-        }
-    } else if (strcmp(type_str, "widget_live_dismiss") == 0 ||
-               strcmp(type_str, "widget_dismiss") == 0) {
-        extern void widget_store_dismiss(const char *card_id);
-        extern void ui_home_update_status(void);
-        const char *cid = cJSON_GetStringValue(cJSON_GetObjectItem(root, "card_id"));
-        if (cid) {
-            widget_store_dismiss(cid);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            ESP_LOGI(TAG, "widget_live_dismiss: %s", cid);
-        }
+       const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
+       cJSON *dur_item = cJSON_GetObjectItem(root, "duration_s");
+       float dur = cJSON_IsNumber(dur_item) ? (float)dur_item->valuedouble : 0.0f;
+       const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(root, "label"));
+       if (url) {
+          ESP_LOGI(TAG, "Audio clip: %s (%.1fs)", label ? label : "", dur);
+          ui_chat_push_audio_clip(url, dur, label);
+       }
     } else {
-        ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
+       ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
     }
 
     cJSON_Delete(root);
