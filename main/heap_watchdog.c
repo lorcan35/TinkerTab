@@ -166,29 +166,26 @@ static void heap_watchdog_task(void *arg)
                      internal_frag_count, HEAP_WD_INT_FRAG_REBOOT_COUNT);
 
             if (internal_frag_count >= HEAP_WD_INT_FRAG_REBOOT_COUNT) {
-                /* v4·D audit P1 fix: don't tear the device down while
-                 * the user is mid-turn.  Voice states SPEAKING / LISTENING
-                 * / PROCESSING / DICTATE all deserve a grace window --
-                 * fragmentation will still be there in 60 s when the
-                 * turn ends and we'll reboot then instead. */
-                extern voice_state_t voice_get_state(void);
-                voice_state_t vs = voice_get_state();
-                if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING
-                    || vs == VOICE_STATE_PROCESSING) {
-                    ESP_LOGW(TAG, "Heap watchdog: deferring reboot, voice active (state=%d)", vs);
-                } else {
-                    /* Log a detailed summary BEFORE the restart so a
-                     * future "esptool read_flash" of the coredump
-                     * partition + this log tail give enough context
-                     * to post-mortem the fragmentation trigger. */
-                    ESP_LOGE(TAG, "Heap watchdog: SRAM fragmentation %d min; internal free=%uKB largest=%u DMA free=%uKB PSRAM free=%uKB",
-                             HEAP_WD_INT_FRAG_REBOOT_COUNT,
-                             (unsigned)(internal_free / 1024),
-                             (unsigned)internal_largest,
-                             (unsigned)(dma_free / 1024),
-                             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
-                    hw_restart_with_coredump("sram_frag");
-                }
+               /* v4·D audit P1 fix: don't tear the device down while
+                * the user is mid-turn.  Voice states SPEAKING / LISTENING
+                * / PROCESSING / DICTATE all deserve a grace window --
+                * fragmentation will still be there in 60 s when the
+                * turn ends and we'll reboot then instead. */
+               voice_state_t vs = voice_get_state();
+               if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING || vs == VOICE_STATE_PROCESSING) {
+                  ESP_LOGW(TAG, "Heap watchdog: deferring reboot, voice active (state=%d)", vs);
+               } else {
+                  /* Log a detailed summary BEFORE the restart so a
+                   * future "esptool read_flash" of the coredump
+                   * partition + this log tail give enough context
+                   * to post-mortem the fragmentation trigger. */
+                  ESP_LOGE(TAG,
+                           "Heap watchdog: SRAM fragmentation %d min; internal free=%uKB largest=%u DMA free=%uKB "
+                           "PSRAM free=%uKB",
+                           HEAP_WD_INT_FRAG_REBOOT_COUNT, (unsigned)(internal_free / 1024), (unsigned)internal_largest,
+                           (unsigned)(dma_free / 1024), (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+                  hw_restart_with_coredump("sram_frag");
+               }
             }
         } else {
             if (internal_frag_count > 0) {
@@ -227,20 +224,18 @@ static void heap_watchdog_task(void *arg)
                      internal_exhaust_count, HEAP_WD_INT_EXHAUST_REBOOT_COUNT);
 
             if (internal_exhaust_count >= HEAP_WD_INT_EXHAUST_REBOOT_COUNT) {
-                extern voice_state_t voice_get_state(void);
-                voice_state_t vs = voice_get_state();
-                if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING
-                    || vs == VOICE_STATE_PROCESSING) {
-                    ESP_LOGW(TAG, "Heap watchdog: deferring exhaustion reboot, voice active (state=%d)", vs);
-                } else {
-                    ESP_LOGE(TAG, "Heap watchdog: SRAM exhausted %d min; internal free=%uKB largest=%uKB DMA free=%uKB PSRAM free=%uKB",
-                             HEAP_WD_INT_EXHAUST_REBOOT_COUNT,
-                             (unsigned)(internal_free / 1024),
-                             (unsigned)(internal_largest / 1024),
-                             (unsigned)(dma_free / 1024),
-                             (unsigned)(psram_free / 1024));
-                    hw_restart_with_coredump("sram_exhausted");
-                }
+               voice_state_t vs = voice_get_state();
+               if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING || vs == VOICE_STATE_PROCESSING) {
+                  ESP_LOGW(TAG, "Heap watchdog: deferring exhaustion reboot, voice active (state=%d)", vs);
+               } else {
+                  ESP_LOGE(TAG,
+                           "Heap watchdog: SRAM exhausted %d min; internal free=%uKB largest=%uKB DMA free=%uKB PSRAM "
+                           "free=%uKB",
+                           HEAP_WD_INT_EXHAUST_REBOOT_COUNT, (unsigned)(internal_free / 1024),
+                           (unsigned)(internal_largest / 1024), (unsigned)(dma_free / 1024),
+                           (unsigned)(psram_free / 1024));
+                  hw_restart_with_coredump("sram_exhausted");
+               }
             }
         } else {
             if (internal_exhaust_count > 0) {
@@ -263,26 +258,23 @@ static void heap_watchdog_task(void *arg)
                      dma_free, dma_largest,
                      dma_critical_count, HEAP_WD_DMA_REBOOT_COUNT);
             if (dma_critical_count >= HEAP_WD_DMA_REBOOT_COUNT) {
-                extern voice_state_t voice_get_state(void);
-                voice_state_t vs = voice_get_state();
-                /* W15-C05: include CONNECTING + RECONNECTING in the grace
-                 * list.  Dragon-side restarts briefly leave Tab5 in
-                 * RECONNECTING state — rebooting during that window
-                 * caused the "Dragon unreachable → Tab5 panic-reboot"
-                 * production regression. */
-                if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING
-                    || vs == VOICE_STATE_PROCESSING
-                    || vs == VOICE_STATE_CONNECTING
-                    || vs == VOICE_STATE_RECONNECTING) {
-                    ESP_LOGW(TAG, "Heap watchdog: deferring DMA reboot, voice active (state=%d)", vs);
-                } else {
-                    ESP_LOGE(TAG, "Heap watchdog: DMA exhausted %d min; free=%zuKB largest=%zu internal=%uKB PSRAM=%uKB — rebooting to restore WiFi",
-                             HEAP_WD_DMA_REBOOT_COUNT,
-                             dma_free / 1024, dma_largest,
-                             (unsigned)(internal_free / 1024),
-                             (unsigned)(psram_free / 1024));
-                    hw_restart_with_coredump("dma_exhausted");
-                }
+               voice_state_t vs = voice_get_state();
+               /* W15-C05: include CONNECTING + RECONNECTING in the grace
+                * list.  Dragon-side restarts briefly leave Tab5 in
+                * RECONNECTING state — rebooting during that window
+                * caused the "Dragon unreachable → Tab5 panic-reboot"
+                * production regression. */
+               if (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_SPEAKING || vs == VOICE_STATE_PROCESSING ||
+                   vs == VOICE_STATE_CONNECTING || vs == VOICE_STATE_RECONNECTING) {
+                  ESP_LOGW(TAG, "Heap watchdog: deferring DMA reboot, voice active (state=%d)", vs);
+               } else {
+                  ESP_LOGE(TAG,
+                           "Heap watchdog: DMA exhausted %d min; free=%zuKB largest=%zu internal=%uKB PSRAM=%uKB — "
+                           "rebooting to restore WiFi",
+                           HEAP_WD_DMA_REBOOT_COUNT, dma_free / 1024, dma_largest, (unsigned)(internal_free / 1024),
+                           (unsigned)(psram_free / 1024));
+                  hw_restart_with_coredump("dma_exhausted");
+               }
             }
         } else {
             if (dma_critical_count > 0) {
