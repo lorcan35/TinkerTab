@@ -395,14 +395,12 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
       }
       /* Always poke the home screen — ui_home_refresh_sys_label() uses
        * tab5_lv_async_call(), lock-free and thread-safe. */
-      extern void ui_home_refresh_sys_label(void);
       ui_home_refresh_sys_label();
 
       /* #293: emit a debug obs event on every state transition so the
        * e2e harness can subscribe to /events instead of polling
        * /voice every 200ms. */
       if (old != new_state) {
-         extern void tab5_debug_obs_event(const char *kind, const char *detail);
          const char *names[] = {
              "IDLE", "CONNECTING", "READY", "LISTENING", "PROCESSING", "SPEAKING", "RECONNECTING",
          };
@@ -727,11 +725,9 @@ static void async_show_toast_cb(void *arg)
     voice_async_toast_t *t = (voice_async_toast_t *)arg;
     if (!t) return;
     if (t->gen == s_session_gen && t->text) {
-        extern void ui_home_show_toast(const char *text);
-        ui_home_show_toast(t->text);
+       ui_home_show_toast(t->text);
     } else if (t->text) {
-        ESP_LOGD(TAG, "Stale async toast dropped (gen %lu vs %lu)",
-                 (unsigned long)t->gen, (unsigned long)s_session_gen);
+       ESP_LOGD(TAG, "Stale async toast dropped (gen %lu vs %lu)", (unsigned long)t->gen, (unsigned long)s_session_gen);
     }
     free(t->text);
     free(t);
@@ -742,11 +738,10 @@ static void async_refresh_badge_cb(void *arg)
     voice_async_badge_t *b = (voice_async_badge_t *)arg;
     if (!b) return;
     if (b->gen == s_session_gen) {
-        extern void ui_home_refresh_mode_badge(void);
-        ui_home_refresh_mode_badge();
+       ui_home_refresh_mode_badge();
     } else {
-        ESP_LOGD(TAG, "Stale async badge refresh dropped (gen %lu vs %lu)",
-                 (unsigned long)b->gen, (unsigned long)s_session_gen);
+       ESP_LOGD(TAG, "Stale async badge refresh dropped (gen %lu vs %lu)", (unsigned long)b->gen,
+                (unsigned long)s_session_gen);
     }
     free(b);
 }
@@ -1226,11 +1221,9 @@ static void handle_text_message(const char *data, int len)
         }
         /* #293: emit obs event for e2e harness. */
         {
-            extern void tab5_debug_obs_event(const char *kind, const char *detail);
-            char latency_str[24];
-            snprintf(latency_str, sizeof(latency_str), "%.0f",
-                     cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
-            tab5_debug_obs_event("chat.llm_done", latency_str);
+           char latency_str[24];
+           snprintf(latency_str, sizeof(latency_str), "%.0f", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
+           tab5_debug_obs_event("chat.llm_done", latency_str);
         }
         /* Prefer the full text field in llm_done (TC bypass uses it)
          * falling back to the accumulated streamed tokens. */
@@ -1605,7 +1598,6 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
     case WEBSOCKET_EVENT_CONNECTED: {
         ESP_LOGI(TAG, "WS: CONNECTED — sending register frame");
         /* #293: emit obs event for e2e harness. */
-        extern void tab5_debug_obs_event(const char *kind, const char *detail);
         tab5_debug_obs_event("ws.connect", "");
         /* TT #317 Phase 4: stamp WS-alive so the K144 failover gate can
          * measure how long Dragon's been down before engaging. */
@@ -1651,10 +1643,7 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WS: DISCONNECTED");
-        {
-            extern void tab5_debug_obs_event(const char *kind, const char *detail);
-            tab5_debug_obs_event("ws.disconnect", "");
-        }
+        { tab5_debug_obs_event("ws.disconnect", ""); }
         /* Flush playback so we don't keep speaking into a dead pipe. */
         playback_buf_reset();
         tab5_audio_speaker_enable(false);
@@ -1674,13 +1663,9 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
          * orb paint via an LVGL one-shot timer. */
         {
             voice_state_t cur = s_state;
-            if ((cur == VOICE_STATE_PROCESSING || cur == VOICE_STATE_SPEAKING)
-                && !s_disconnecting) {
-                extern void ui_home_show_toast(const char *text);
-                extern void ui_home_pulse_orb_alert(void);
-                tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast,
-                              (void *)"Dragon dropped mid-turn - reconnecting");
-                tab5_lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
+            if ((cur == VOICE_STATE_PROCESSING || cur == VOICE_STATE_SPEAKING) && !s_disconnecting) {
+               tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast, (void *)"Dragon dropped mid-turn - reconnecting");
+               tab5_lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
             }
         }
         /* T1.1: bump attempt counter + apply exponential-with-full-jitter
@@ -2878,7 +2863,6 @@ esp_err_t voice_start_listening(void)
          return voice_onboard_chain_stop();
       }
       if (tab5_settings_get_mic_mute()) {
-         extern void ui_home_show_toast(const char *text);
          if (tab5_ui_try_lock(100)) {
             ui_home_show_toast("Mic muted -- unmute to use Onboard");
             tab5_ui_unlock();
@@ -2896,10 +2880,9 @@ esp_err_t voice_start_listening(void)
              s_initialized, ws_live, cur_state);
 
     if (tab5_settings_get_mic_mute()) {
-        ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
-        extern void ui_home_show_toast(const char *text);
-        ui_home_show_toast("Mic is muted -- unmute in Settings");
-        return ESP_ERR_INVALID_STATE;
+       ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
+       ui_home_show_toast("Mic is muted -- unmute in Settings");
+       return ESP_ERR_INVALID_STATE;
     }
 
     if (!s_initialized || !ws_live) {
@@ -3006,14 +2989,12 @@ esp_err_t voice_start_dictation(void)
         * lands somewhere.  The Note will be in RECORDED state when
         * we stop, which the existing transcription queue picks up
         * automatically once Dragon is back. */
-       extern const char *ui_notes_start_recording(void);
        const char *path = ui_notes_start_recording();
        if (!path) {
           ESP_LOGE(TAG, "Offline dictation: SD recording start failed");
           return ESP_ERR_NO_MEM;
        }
        ESP_LOGI(TAG, "Offline dictation recording -> %s", path);
-       extern void ui_home_show_toast(const char *text);
        ui_home_show_toast("Dragon offline — recording to SD; will transcribe when back");
     } else {
        esp_err_t err = voice_ws_send_text("{\"type\":\"start\",\"mode\":\"dictate\"}");
@@ -3188,9 +3169,7 @@ esp_err_t voice_stop_listening(void)
    if (offline_dictate) {
       /* Finalise the SD WAV → Note state RECORDED.  The transcription
        * queue picks it up automatically when Dragon's back. */
-      extern void ui_notes_stop_recording(const char *transcript);
       ui_notes_stop_recording(NULL);
-      extern void ui_home_show_toast(const char *text);
       ui_home_show_toast("Saved offline — will sync to Notes when Dragon's back");
       voice_reset_activity_timestamp();
       voice_set_state(VOICE_STATE_READY, "offline_saved");
