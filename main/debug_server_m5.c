@@ -18,14 +18,13 @@
 #include "debug_server_m5.h"
 
 #include "cJSON.h"
+#include "debug_server_internal.h" /* tab5_debug_check_auth */
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-
-#include "debug_server_internal.h" /* tab5_debug_check_auth */
-#include "voice_m5_llm.h"          /* TT #327 Wave 5: K144 baud accessor for /m5 */
-#include "voice_onboard.h"         /* TT #327 Wave 4b: chain_active + failover_state */
+#include "voice_m5_llm.h"  /* TT #327 Wave 5: K144 baud accessor for /m5 */
+#include "voice_onboard.h" /* TT #327 Wave 4b: chain_active + failover_state */
 
 static const char *TAG = "debug_m5";
 
@@ -265,14 +264,10 @@ static esp_err_t m5_reset_handler(httpd_req_t *req) {
  * URI structs are local to this function (matching the inline pattern
  * the rest of debug_server.c still uses for the other families). */
 void debug_server_m5_register(httpd_handle_t server) {
-   const httpd_uri_t uri_m5_status = {
-       .uri = "/m5", .method = HTTP_GET, .handler = m5_status_handler};
-   const httpd_uri_t uri_m5_reset = {
-       .uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
-   const httpd_uri_t uri_m5_refresh = {
-       .uri = "/m5/refresh", .method = HTTP_POST, .handler = m5_refresh_handler};
-   const httpd_uri_t uri_m5_models = {
-       .uri = "/m5/models", .method = HTTP_GET, .handler = m5_models_handler};
+   const httpd_uri_t uri_m5_status = {.uri = "/m5", .method = HTTP_GET, .handler = m5_status_handler};
+   const httpd_uri_t uri_m5_reset = {.uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
+   const httpd_uri_t uri_m5_refresh = {.uri = "/m5/refresh", .method = HTTP_POST, .handler = m5_refresh_handler};
+   const httpd_uri_t uri_m5_models = {.uri = "/m5/models", .method = HTTP_GET, .handler = m5_models_handler};
 
    httpd_register_uri_handler(server, &uri_m5_status);
    httpd_register_uri_handler(server, &uri_m5_reset);
