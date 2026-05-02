@@ -54,6 +54,7 @@
 #include "ui_home.h" /* TT #317 Phase 4: ui_home_show_toast for failover UX */
 #include "ui_notes.h"
 #include "ui_voice.h"
+#include "voice_billing.h"   /* SOLID-audit SRP-3: receipt + budget + cap-downgrade */
 #include "voice_codec.h"     /* #262: OPUS encode/decode wrapper */
 #include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
 #include "voice_video.h"     /* #266: live JPEG streaming */
@@ -308,11 +309,11 @@ static char s_llm_text[MAX_TRANSCRIPT_LEN]   = {0};
 static char s_queued_text[MAX_TRANSCRIPT_LEN] = {0};
 static bool s_queue_pending = false;
 
-/* v4·D Phase 3b: cached per-turn receipt from Dragon. */
-static int  s_last_receipt_mils       = 0;
-static int  s_last_receipt_prompt_tok = 0;
-static int  s_last_receipt_compl_tok  = 0;
-static char s_last_receipt_model[64]  = {0};
+/* v4·D Phase 3b: per-turn receipt cache moved to voice_billing.c
+ * (SOLID-audit SRP-3 extract).  The pre-extract `s_last_receipt_*`
+ * statics here were write-only — never read from anywhere — so they
+ * are not preserved on the way over.  Add a public accessor on
+ * voice_billing.h if a future caller needs them. */
 
 /* v4·D Phase 4b: cached vision capability from Dragon (camera screen). */
 static bool s_vision_capable   = false;
@@ -365,51 +366,9 @@ static void voice_build_local_uri(char *out, size_t out_cap,
                                    const char *host, uint16_t port);
 
 // ---------------------------------------------------------------------------
-// Deferred receipt attach — hops from voice WS rx task onto LVGL thread so
-// it queues AFTER ui_chat_push_message("assistant", …) from llm_done.
+// Deferred receipt attach: extracted to voice_billing.c (SOLID-audit SRP-3).
+// Public callers (TinkerClaw bypass etc.) use voice_billing.h directly.
 // ---------------------------------------------------------------------------
-typedef struct {
-    uint32_t mils;
-    uint16_t ptok;
-    uint16_t ctok;
-    bool     retried;
-    char     model_short[16];
-} receipt_attach_async_t;
-
-static void receipt_attach_async_cb(void *arg)
-{
-    receipt_attach_async_t *r = (receipt_attach_async_t *)arg;
-    if (!r) return;
-    extern int  chat_store_attach_receipt_ex(uint32_t, uint16_t, uint16_t,
-                                              const char *, bool);
-    extern void ui_chat_refresh_receipts(void);
-    chat_store_attach_receipt_ex(r->mils, r->ptok, r->ctok,
-                                  r->model_short, r->retried);
-    ui_chat_refresh_receipts();
-    free(r);
-}
-
-void voice_defer_receipt_attach(uint32_t mils,
-                                uint16_t ptok, uint16_t ctok,
-                                const char *model_short, bool retried)
-{
-    receipt_attach_async_t *r = calloc(1, sizeof(*r));
-    if (!r) {
-        /* Wave 14 W14-M08: log the drop so "my cost tracking is off"
-         * bug reports have a trail. */
-        ESP_LOGW(TAG, "voice_defer_receipt_attach OOM — dropped receipt (mils=%lu)",
-                 (unsigned long)mils);
-        return;
-    }
-    r->mils    = mils;
-    r->ptok    = ptok;
-    r->ctok    = ctok;
-    r->retried = retried;
-    if (model_short) {
-        snprintf(r->model_short, sizeof(r->model_short), "%s", model_short);
-    }
-    tab5_lv_async_call(receipt_attach_async_cb, r);
-}
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -1304,111 +1263,18 @@ static void handle_text_message(const char *data, int len)
             voice_set_state(VOICE_STATE_READY, "llm_done");
         }
     } else if (strcmp(type_str, "receipt") == 0) {
-        /* v4·D Phase 3b: Dragon emits a receipt after each LLM turn on
-         * the cloud path.  Logged here for now; rendering the stamp
-         * beneath the chat bubble is a follow-up that lives in
-         * chat_msg_view.c when the store grows a receipt field.  Cost
-         * is in mils (1/1000 USD cent) so divide by 100000 for dollars
-         * or 1000 for cents. */
-        const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(root, "model"));
-        cJSON *ptok = cJSON_GetObjectItem(root, "prompt_tokens");
-        cJSON *ctok = cJSON_GetObjectItem(root, "completion_tokens");
-        cJSON *mils = cJSON_GetObjectItem(root, "cost_mils");
-        int pt = cJSON_IsNumber(ptok) ? (int)ptok->valuedouble : 0;
-        int ct = cJSON_IsNumber(ctok) ? (int)ctok->valuedouble : 0;
-        int m  = cJSON_IsNumber(mils) ? (int)mils->valuedouble : 0;
-        ESP_LOGI(TAG, "Receipt: model=%s tok=%d+%d cost=%d mils ($%d.%05d)",
-                 model ? model : "?", pt, ct, m, m / 100000, m % 100000);
-        /* Cache for UI consumption. Accessed via voice_get_last_receipt(). */
-        s_last_receipt_mils       = m;
-        s_last_receipt_prompt_tok = pt;
-        s_last_receipt_compl_tok  = ct;
-        snprintf(s_last_receipt_model, sizeof(s_last_receipt_model),
-                 "%s", model ? model : "");
-        /* Phase 3c: accumulate into the daily spend counter. NVS write is
-         * serialised by the settings mutex; this runs in the voice WS rx
-         * task so the LVGL thread won't block. */
-        if (m > 0) {
-            tab5_budget_accumulate((uint32_t)m);
-            uint32_t spent = tab5_budget_get_today_mils();
-            uint32_t cap   = tab5_budget_get_cap_mils();
-            ESP_LOGI(TAG, "Budget: today=%lu mils / cap=%lu mils",
-                     (unsigned long)spent, (unsigned long)cap);
-            /* Nudge home to redraw its live-line spend readout. */
-            extern void ui_home_update_status(void);
-            tab5_lv_async_call((lv_async_cb_t)ui_home_update_status, NULL);
-            /* TT #328 Wave 1 — also refresh the chat-header spend badge
-             * so a turn that flipped the chip from dim → amber → red
-             * shows up the moment the receipt lands. */
-            extern void ui_chat_refresh_spend(void);
-            ui_chat_refresh_spend();
-
-            /* Phase 3e auto-downgrade: once spent >= cap AND we're in a
-             * cloud-cost-bearing mode (1=Hybrid or 2=Full Cloud), flip
-             * back to Local (voice_mode=0) + notify Dragon + surface a
-             * toast so the user knows why their next turn is free.
-             * Agent (mode 3) goes via TinkerClaw which has its own
-             * billing -- we don't auto-change it here. */
-            if (cap > 0 && spent >= cap) {
-                uint8_t cur = tab5_settings_get_voice_mode();
-                if (cur == 1 || cur == 2) {
-                    ESP_LOGW(TAG, "Budget cap reached -- auto-downgrading %d -> 0 (Local)", cur);
-                    tab5_settings_set_voice_mode(0);
-                    /* Clear llm_model override so Dragon reverts to local.
-                     * Leaving the NVS llm_model alone keeps the user's
-                     * cloud preference for when they raise the cap. */
-                    char lm[64] = {0};
-                    tab5_settings_get_llm_model(lm, sizeof(lm));
-                    /* G7-F: tag this downgrade so Dragon speaks a short TTS
-                     * alert -- the user hears the switch even with the screen
-                     * off. */
-                    voice_send_config_update_ex(0, lm, "cap_downgrade");
-                    /* Also reset the three Sovereign tiers so the mode
-                     * sheet visually reflects the downgrade. */
-                    tab5_settings_set_int_tier(0);
-                    tab5_settings_set_voi_tier(0);
-                    extern void ui_home_show_toast(const char *text);
-                    tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast,
-                                  (void *)"Budget cap hit — Local mode");
-                }
-            }
-        }
-        /* Phase 3d + 4a: attach the receipt to the most-recent assistant
-         * bubble in the chat store so chat_msg_view can render a per-turn
-         * stamp.  Attach regardless of cost_mils so LOCAL turns (Ollama
-         * qwen3, cost=0) also get a "qwen3 · FREE" stamp -- engine-used
-         * transparency on every bubble, not just billable ones. */
-        cJSON *retried_j = cJSON_GetObjectItem(root, "retried");
-        bool retried = cJSON_IsTrue(retried_j);
-        /* v4·D audit P1 fix: always stamp the bubble, even when model is
-         * missing -- a blank model still tells the user the turn finished
-         * and the cost was zero.  Previously the null/empty-model path
-         * silently swallowed the receipt and the user never saw any
-         * stamp on a local turn that Dragon forgot to name. */
-        {
-            char short_model[16] = {0};
-            const char *mp = (model && model[0]) ? model : "local";
-            const char *slash = strchr(mp, '/');
-            const char *tail = slash ? slash + 1 : mp;
-            const char *hyphen = strchr(tail, '-');  /* skip vendor prefix "claude-" */
-            const char *start = hyphen ? hyphen + 1 : tail;
-            snprintf(short_model, sizeof(short_model), "%s", start);
-            /* Defer the attach onto the LVGL thread.  ui_chat_push_message
-             * ("assistant", …) from llm_done enqueues via lv_async_call a
-             * few ms before this handler runs; if we attach synchronously
-             * here (on the voice WS rx task) the assistant bubble is not
-             * yet in chat_store, attach returns -1, and the stamp is
-             * silently dropped.  Queuing via lv_async_call after the push
-             * preserves FIFO order — push lands first, attach lands
-             * second — and both run on the LVGL thread. */
-            extern void voice_defer_receipt_attach(uint32_t mils,
-                                                    uint16_t ptok,
-                                                    uint16_t ctok,
-                                                    const char *model_short,
-                                                    bool retried);
-            voice_defer_receipt_attach((uint32_t)m, (uint16_t)pt,
-                                        (uint16_t)ct, short_model, retried);
-        }
+       /* SOLID-audit SRP-3 (2026-05-03): receipt accounting + cap-downgrade
+        * policy + chat-bubble stamp deferral all moved to voice_billing.c.
+        * Voice.c parses the JSON fields and hands them in typed; the
+        * billing module owns the rest of the chain. */
+       const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(root, "model"));
+       cJSON *ptok = cJSON_GetObjectItem(root, "prompt_tokens");
+       cJSON *ctok = cJSON_GetObjectItem(root, "completion_tokens");
+       cJSON *mils = cJSON_GetObjectItem(root, "cost_mils");
+       cJSON *retried_j = cJSON_GetObjectItem(root, "retried");
+       voice_billing_record_receipt(model, cJSON_IsNumber(ptok) ? (int)ptok->valuedouble : 0,
+                                    cJSON_IsNumber(ctok) ? (int)ctok->valuedouble : 0,
+                                    cJSON_IsNumber(mils) ? (int)mils->valuedouble : 0, cJSON_IsTrue(retried_j));
     } else if (strcmp(type_str, "text_update") == 0) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
         if (text) {
