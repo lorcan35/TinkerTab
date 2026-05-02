@@ -16,6 +16,8 @@
 
 #include "camera.h"
 #include "config.h"
+#include "debug_obs.h"          /* DIP-1: tab5_debug_obs_event */
+#include "debug_server.h"       /* DIP-1: tab5_debug_set_nav_target */
 #include "driver/jpeg_encode.h" /* #291: jpeg_alloc_encoder_mem for DMA buffers */
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -23,6 +25,7 @@
 #include "esp_timer.h" /* #291: recording duration */
 #include "sdcard.h"
 #include "settings.h" /* #260: cam_rot NVS key */
+#include "ui_chrome.h" /* DIP-1: ui_chrome_set_home_visible */
 #include "ui_core.h"  /* TT #328 Wave 5: ui_tap_gate */
 #include "ui_feedback.h"
 #include "ui_files.h"
@@ -271,7 +274,6 @@ static void cb_back_btn(lv_event_t *e)
     ui_camera_destroy();
     lv_screen_load(ui_home_get_screen());
     /* TT #328 Wave 10 follow-up — keep /screen in sync. */
-    extern void tab5_debug_set_nav_target(const char *);
     tab5_debug_set_nav_target("home");
 }
 
@@ -289,7 +291,6 @@ void cb_rotate_btn(lv_event_t *e)
     /* Recreate the screen so alloc_canvas_buffer picks up the new
      * dimensions.  Cheap — destroy+create round trip is ~50 ms. */
     ui_camera_destroy();
-    extern lv_obj_t *ui_camera_create(void);
     ui_camera_create();
 }
 
@@ -299,17 +300,14 @@ void cb_rotate_btn(lv_event_t *e)
 lv_obj_t *ui_camera_create(void)
 {
    /* TT #328 Wave 10 — show persistent home button as escape hatch. */
-   extern void ui_chrome_set_home_visible(bool visible);
    ui_chrome_set_home_visible(true);
    /* TT #328 Wave 11 follow-up — hide global error banner so it
     * doesn't shadow our own topbar back button at y=0..32. */
-   extern void ui_home_set_error_banner_visible(bool);
    ui_home_set_error_banner_visible(false);
    /* TT #328 Wave 13 — sync /screen current with the screen we're
     * loading.  Without this, callers that hit ui_camera_create
     * directly (chat's "Send photo" button, gallery shortcut) leave
     * /screen stuck reporting the prior screen. */
-   extern void tab5_debug_set_nav_target(const char *);
    tab5_debug_set_nav_target("camera");
 
    /* #172: idempotent re-entry.  Camera owns a ~1.8 MB PSRAM canvas
@@ -473,40 +471,39 @@ lv_obj_t *ui_camera_create(void)
          * top bar stays clean.  See system-d-modes.html M8 mockup +
          * system-d-sovereign.html camera screen. */
         {
-            extern bool voice_get_vision_capability(char *, size_t, int *);
-            char vm[64] = {0};
-            int per_frame_mils = 0;
-            bool vcap = voice_get_vision_capability(vm, sizeof(vm), &per_frame_mils);
-            if (vcap && vm[0]) {
-                /* Shorten model ID for chip: "anthropic/claude-3.5-haiku"
-                 * -> "haiku-3.5".  Same recipe as chat receipt stamp. */
-                char short_vm[24] = {0};
-                const char *slash = strchr(vm, '/');
-                const char *tail  = slash ? slash + 1 : vm;
-                const char *hy    = strchr(tail, '-');
-                const char *start = hy ? hy + 1 : tail;
-                snprintf(short_vm, sizeof(short_vm), "%s", start);
+           char vm[64] = {0};
+           int per_frame_mils = 0;
+           bool vcap = voice_get_vision_capability(vm, sizeof(vm), &per_frame_mils);
+           if (vcap && vm[0]) {
+              /* Shorten model ID for chip: "anthropic/claude-3.5-haiku"
+               * -> "haiku-3.5".  Same recipe as chat receipt stamp. */
+              char short_vm[24] = {0};
+              const char *slash = strchr(vm, '/');
+              const char *tail = slash ? slash + 1 : vm;
+              const char *hy = strchr(tail, '-');
+              const char *start = hy ? hy + 1 : tail;
+              snprintf(short_vm, sizeof(short_vm), "%s", start);
 
-                lv_obj_t *vchip = lv_obj_create(topbar);
-                lv_obj_remove_style_all(vchip);
-                lv_obj_set_size(vchip, 280, 40);
-                lv_obj_set_style_bg_color(vchip, lv_color_hex(0x1A1020), 0);
-                lv_obj_set_style_bg_opa(vchip, LV_OPA_COVER, 0);
-                lv_obj_set_style_radius(vchip, 20, 0);
-                lv_obj_set_style_border_width(vchip, 1, 0);
-                lv_obj_set_style_border_color(vchip, lv_color_hex(0xA78BFA), 0);
-                lv_obj_align(vchip, LV_ALIGN_RIGHT_MID, -8, 0);
-                lv_obj_clear_flag(vchip, LV_OBJ_FLAG_SCROLLABLE);
+              lv_obj_t *vchip = lv_obj_create(topbar);
+              lv_obj_remove_style_all(vchip);
+              lv_obj_set_size(vchip, 280, 40);
+              lv_obj_set_style_bg_color(vchip, lv_color_hex(0x1A1020), 0);
+              lv_obj_set_style_bg_opa(vchip, LV_OPA_COVER, 0);
+              lv_obj_set_style_radius(vchip, 20, 0);
+              lv_obj_set_style_border_width(vchip, 1, 0);
+              lv_obj_set_style_border_color(vchip, lv_color_hex(0xA78BFA), 0);
+              lv_obj_align(vchip, LV_ALIGN_RIGHT_MID, -8, 0);
+              lv_obj_clear_flag(vchip, LV_OBJ_FLAG_SCROLLABLE);
 
-                lv_obj_t *vlbl = lv_label_create(vchip);
-                char buf[64];
-                snprintf(buf, sizeof(buf), "\xe2\x80\xa2 VISION  %s  READY", short_vm);
-                lv_label_set_text(vlbl, buf);
-                lv_obj_set_style_text_font(vlbl, FONT_CHAT_MONO, 0);
-                lv_obj_set_style_text_color(vlbl, lv_color_hex(0xA78BFA), 0);
-                lv_obj_set_style_text_letter_space(vlbl, 2, 0);
-                lv_obj_center(vlbl);
-            }
+              lv_obj_t *vlbl = lv_label_create(vchip);
+              char buf[64];
+              snprintf(buf, sizeof(buf), "\xe2\x80\xa2 VISION  %s  READY", short_vm);
+              lv_label_set_text(vlbl, buf);
+              lv_obj_set_style_text_font(vlbl, FONT_CHAT_MONO, 0);
+              lv_obj_set_style_text_color(vlbl, lv_color_hex(0xA78BFA), 0);
+              lv_obj_set_style_text_letter_space(vlbl, 2, 0);
+              lv_obj_center(vlbl);
+           }
         }
     }
 
@@ -843,10 +840,7 @@ void cb_record_btn(lv_event_t *e)
         }
         if (!s_rec_timer) s_rec_timer = lv_timer_create(rec_timer_cb, REC_FPS_MS, NULL);
         ESP_LOGI(TAG, "rec: start -> %s", s_rec_path);
-        {
-            extern void tab5_debug_obs_event(const char *kind, const char *detail);
-            tab5_debug_obs_event("camera.record_start", s_rec_path);
-        }
+        { tab5_debug_obs_event("camera.record_start", s_rec_path); }
         return;
     }
 
@@ -865,16 +859,13 @@ void cb_record_btn(lv_event_t *e)
     ESP_LOGI(TAG, "rec: stop %s frames=%u bytes=%u",
              s_rec_path, s_rec_frame_count, s_rec_bytes_total);
     {
-        extern void tab5_debug_obs_event(const char *kind, const char *detail);
-        char detail[160];
-        snprintf(detail, sizeof(detail), "%s frames=%u bytes=%u",
-                 s_rec_path, (unsigned)s_rec_frame_count,
-                 (unsigned)s_rec_bytes_total);
-        tab5_debug_obs_event("camera.record_stop", detail);
+       char detail[160];
+       snprintf(detail, sizeof(detail), "%s frames=%u bytes=%u", s_rec_path, (unsigned)s_rec_frame_count,
+                (unsigned)s_rec_bytes_total);
+       tab5_debug_obs_event("camera.record_stop", detail);
     }
     /* Send-to-Dragon — fire-and-forget HTTP upload via voice's existing
      * /api/media/upload helper. */
-    extern void voice_upload_chat_image(const char *filepath);
     voice_upload_chat_image(s_rec_path);
 }
 
@@ -998,10 +989,7 @@ static void capture_btn_cb(lv_event_t *e)
 
     capture_counter++;
     ESP_LOGI(TAG, "Photo saved: %s", path);
-    {
-        extern void tab5_debug_obs_event(const char *kind, const char *detail);
-        tab5_debug_obs_event("camera.capture", path);
-    }
+    { tab5_debug_obs_event("camera.capture", path); }
 
     /* Update gallery button text */
     if (lbl_gallery) {

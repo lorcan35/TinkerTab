@@ -27,6 +27,7 @@
 #include "chat_session_drawer.h"
 #include "chat_suggestions.h"
 #include "config.h"
+#include "debug_server.h" /* DIP-1: tab5_debug_set_nav_target */
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -37,14 +38,13 @@
 #include "tab5_rtc.h"
 #include "task_worker.h"
 #include "ui_audio.h"
-#include "ui_core.h" /* tab5_lv_async_call (#258) */
+#include "ui_camera.h" /* DIP-1: ui_camera_create, ui_camera_arm_chat_share */
+#include "ui_core.h"   /* tab5_lv_async_call (#258) */
+#include "ui_home.h"   /* DIP-1: ui_home_get_screen, ui_home_show_toast */
 #include "ui_keyboard.h"
 #include "ui_theme.h"
 #include "voice.h"
 #include "voice_onboard.h"
-
-extern lv_obj_t *ui_home_get_screen(void);
-extern void      ui_home_show_toast(const char *text);
 
 static const char *TAG = "ui_chat";
 
@@ -195,7 +195,6 @@ static void on_chat_gesture(lv_event_t *e) {
    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
    if (dir == LV_DIR_RIGHT) {
       ui_chat_hide();
-      extern void tab5_debug_set_nav_target(const char *);
       tab5_debug_set_nav_target("home");
    }
 }
@@ -326,13 +325,11 @@ static void on_pill_tap(void *ud)
  * renderer picks that up and draws an inline image bubble). */
 static void on_camera_tap(void *ud)
 {
-    (void)ud;
-    extern lv_obj_t *ui_camera_create(void);
-    extern void      ui_camera_arm_chat_share(void);
-    ui_camera_arm_chat_share();
-    /* Hide chat first so the camera viewfinder owns the screen. */
-    ui_chat_hide();
-    ui_camera_create();
+   (void)ud;
+   ui_camera_arm_chat_share();
+   /* Hide chat first so the camera viewfinder owns the screen. */
+   ui_chat_hide();
+   ui_camera_create();
 }
 
 static void on_text_submit(const char *text, void *ud)
@@ -1154,10 +1151,9 @@ static void audio_clip_dl_job(void *arg)
         char *path = strdup(AUDIO_CLIP_TMP_PATH);
         if (path) tab5_lv_async_call(async_open_audio_player_cb, path);
     } else {
-        /* Soft-fail: a single toast is friendlier than silently doing
-         * nothing.  ui_home_show_toast is the global toast surface. */
-        extern void ui_home_show_toast(const char *text);
-        ui_home_show_toast("Couldn't fetch audio");
+       /* Soft-fail: a single toast is friendlier than silently doing
+        * nothing.  ui_home_show_toast is the global toast surface. */
+       ui_home_show_toast("Couldn't fetch audio");
     }
 }
 
