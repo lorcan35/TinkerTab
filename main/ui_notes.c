@@ -10,29 +10,32 @@
  */
 
 #include "ui_notes.h"
-#include "ui_home.h"
-#include "ui_core.h"
-#include "ui_voice.h"
-#include "ui_keyboard.h"
-#include "voice.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h> /* strcasestr */
+#include <sys/stat.h>
+#include <unistd.h> /* wave 13 H8: fsync() */
+
 #include "audio.h"
 #include "config.h"
-#include "mode_manager.h"
-#include "tab5_rtc.h"
-#include "settings.h"
-#include "nvs_flash.h"
-#include "nvs.h"
+#include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include <stdlib.h>
-#include <string.h>
-#include <strings.h>  /* strcasestr */
-#include <stdio.h>
-#include <errno.h>
-#include <sys/stat.h>
-#include <unistd.h>  /* wave 13 H8: fsync() */
-#include "esp_http_client.h"
+#include "mode_manager.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#include "settings.h"
+#include "tab5_rtc.h"
+#include "ui_core.h"
+#include "ui_home.h"
+#include "ui_keyboard.h"
+#include "ui_voice.h"
+#include "voice.h"
 #include "wifi.h"
 
 static const char *TAG = "ui_notes";
@@ -97,10 +100,28 @@ typedef struct {
     bool needs_sync;  /* S6: true if not yet synced to Dragon */
 } note_entry_t;
 
-static note_entry_t s_notes[MAX_NOTES];
+/* Wave 20 (closes #330): s_notes was a BSS-static array (~17.7 KB) that
+ * eats internal SRAM at boot — same failure class as the recurring
+ * vApplicationGetTimerTaskMemory assert hit in Waves 11 / 13 / 15.
+ * PSRAM-lazy: allocate on first use via ensure_notes_buf().  Every public
+ * entry point (notes_load + the few callers that bypass it) calls the
+ * helper before touching the buffer, so the rest of the file's index
+ * arithmetic stays unchanged. */
+static note_entry_t *s_notes = NULL;
 static int s_note_count = 0;
-static int s_next_slot  = 0;
-static bool s_loaded    = false;   /* NVS loaded at least once */
+static int s_next_slot = 0;
+static bool s_loaded = false; /* NVS loaded at least once */
+
+static bool ensure_notes_buf(void) {
+   if (s_notes) return true;
+   s_notes = heap_caps_calloc(MAX_NOTES, sizeof(*s_notes), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!s_notes) {
+      ESP_LOGE(TAG, "PSRAM alloc for s_notes (%u bytes) failed", (unsigned)(MAX_NOTES * sizeof(*s_notes)));
+      return false;
+   }
+   ESP_LOGI(TAG, "s_notes PSRAM-allocated: %u bytes", (unsigned)(MAX_NOTES * sizeof(*s_notes)));
+   return true;
+}
 
 /* ── Persistence — SD card JSON file ────────────────────── */
 /*
@@ -321,6 +342,13 @@ static void notes_save(void)
 static void notes_load(void)
 {
     if (s_loaded) return;
+    /* Wave 20: ensure the PSRAM buffer exists before any read/write below.
+     * If the alloc fails we still flip s_loaded so we don't loop, but
+     * every subsequent operation will short-circuit via the same guard. */
+    if (!ensure_notes_buf()) {
+       s_loaded = true;
+       return;
+    }
     s_loaded = true;
 
     char *json = NULL;
@@ -376,7 +404,7 @@ static void notes_load(void)
         return;
     }
 
-    memset(s_notes, 0, sizeof(s_notes));
+    memset(s_notes, 0, MAX_NOTES * sizeof(*s_notes)); /* Wave 20: pointer */
     s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
     s_next_slot  = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
 
