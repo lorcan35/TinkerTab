@@ -58,6 +58,7 @@
 #include "voice.h"
 /* Wave 23b (#332): per-family endpoint extracts + auth shim. */
 #include "debug_server_codec.h"
+#include "debug_server_dictation.h"
 #include "debug_server_internal.h"
 #include "debug_server_m5.h"
 #include "debug_server_mode.h"
@@ -1764,49 +1765,8 @@ static esp_err_t input_text_handler(httpd_req_t *req)
 /* ── /wifi/kick + /wifi/status family extracted to debug_server_wifi.c
  *    (Wave 23b, #332) — handlers + register live there now. ─────────── */
 
-/* ── Dictation endpoint ───────────────────────────────────────────────── */
-/* POST /dictation?action=start|stop — remote dictation driver for the
- * long-duration pipeline tests (5 / 10 / 30 min).  GET also returns the
- * current accumulated transcript so the test harness can snapshot it
- * mid-run.  Long-press mic is the user-facing trigger; this endpoint
- * is the automation equivalent. */
-static esp_err_t dictation_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) return ESP_OK;
-
-    char query[128] = {0};
-    char action[16] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        httpd_query_key_value(query, "action", action, sizeof(action));
-    }
-
-    cJSON *root = cJSON_CreateObject();
-    if (req->method == HTTP_POST && strcmp(action, "start") == 0) {
-        esp_err_t err = voice_start_dictation();
-        cJSON_AddBoolToObject(root, "ok", err == ESP_OK);
-        cJSON_AddStringToObject(root, "action", "start");
-        if (err != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(err));
-    } else if (req->method == HTTP_POST && strcmp(action, "stop") == 0) {
-        esp_err_t err = voice_stop_listening();
-        cJSON_AddBoolToObject(root, "ok", err == ESP_OK);
-        cJSON_AddStringToObject(root, "action", "stop");
-        if (err != ESP_OK) cJSON_AddStringToObject(root, "error", esp_err_to_name(err));
-    } else {
-        /* GET — snapshot of current transcript + state */
-        cJSON_AddBoolToObject(root, "ok", true);
-        cJSON_AddStringToObject(root, "action", "status");
-    }
-    const char *txt = voice_get_dictation_text();
-    cJSON_AddStringToObject(root, "transcript", txt ? txt : "");
-    cJSON_AddNumberToObject(root, "transcript_len", txt ? (int)strlen(txt) : 0);
-    cJSON_AddNumberToObject(root, "state", (int)voice_get_state());
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, json);
-    free(json);
-    return ESP_OK;
-}
+/* ── /dictation family extracted to debug_server_dictation.c
+ *    (Wave 23b, #332). ─────────────────────────────────────────── */
 
 /* ── Voice state endpoint ─────────────────────────────────────────────── */
 
@@ -3227,12 +3187,7 @@ esp_err_t tab5_debug_server_init(void)
     const httpd_uri_t uri_call_restore = {
         .uri = "/call/restore",     .method = HTTP_POST, .handler = call_restore_handler
     };
-    const httpd_uri_t uri_dictation_post = {
-        .uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler
-    };
-    const httpd_uri_t uri_dictation_get = {
-        .uri = "/dictation", .method = HTTP_GET, .handler = dictation_handler
-    };
+    /* /dictation (POST + GET) registered en-bloc via debug_server_dictation_register() below. */
     /* /wifi/kick registered en-bloc via debug_server_wifi_register() below. */
     const httpd_uri_t uri_selftest = {
         .uri = "/selftest", .method = HTTP_GET, .handler = selftest_handler
@@ -3325,8 +3280,8 @@ esp_err_t tab5_debug_server_init(void)
     httpd_register_uri_handler(server, &uri_call_unmute);
     httpd_register_uri_handler(server, &uri_call_minimize);
     httpd_register_uri_handler(server, &uri_call_restore);
-    httpd_register_uri_handler(server, &uri_dictation_post);
-    httpd_register_uri_handler(server, &uri_dictation_get);
+    /* Wave 23b (#332): /dictation family registered en-bloc. */
+    debug_server_dictation_register(server);
     /* Wave 23b (#332): WiFi diagnostic + recovery family registered en-bloc. */
     debug_server_wifi_register(server);
     httpd_register_uri_handler(server, &uri_selftest);
