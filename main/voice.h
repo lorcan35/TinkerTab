@@ -13,9 +13,69 @@
  */
 #pragma once
 
-#include "esp_err.h"
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "esp_err.h"
+#include "esp_websocket_client.h" /* g_voice_ws extern below (TT #331 Wave 23) */
+
+/* TT #331 Wave 23 (SRP-A1): the WS client handle was promoted from
+ * static in voice.c so voice_ws_proto.c can read/use it without
+ * per-call getter churn.  volatile because it's written on Core 1's
+ * WS task (connect/disconnect) and read on Core 0's LVGL thread. */
+extern esp_websocket_client_handle_t volatile g_voice_ws;
+
+/* TT #331 Wave 23 (SRP-A1) — additional voice-subsystem statics promoted
+ * out of voice.c so voice_ws_proto.c can read/write them.  Names kept
+ * with the legacy `s_` prefix to minimise diff churn across the rename
+ * surface; they are now non-static and shared inside the voice
+ * subsystem.  All declared/initialised in voice.c, used in
+ * voice_ws_proto.c.
+ *
+ * SemaphoreHandle_t externs (s_state_mutex, s_play_sem) are declared
+ * directly in the consuming TU (voice_ws_proto.c) to avoid pulling
+ * <freertos/semphr.h> into voice.h's public surface. */
+extern volatile bool s_disconnecting;   /* US-C21 connect/disconnect guard */
+extern volatile int s_auth_fail_cnt;    /* γ3 401 retry threshold */
+extern volatile uint32_t s_session_gen; /* US-C02 async-call gen guard */
+extern volatile bool s_tts_done;        /* set by tts_end RX, read by playback drain */
+extern char *s_dictation_text;          /* PSRAM, DICTATION_TEXT_SIZE */
+extern char s_dictation_title[128];
+extern char s_dictation_summary[512];
+extern char s_transcript[];
+extern char s_stt_text[];
+extern char s_llm_text[];
+extern bool s_vision_capable;
+extern int s_vision_per_frame_mils;
+extern char s_vision_model[64];
+
+/* TT #331 Wave 23 SRP-A1: promoted from voice.c so voice_ws_proto.c can
+ * size its (transient) buffer copies + write into the shared transcript
+ * arrays.  Sizes match the voice.c internal definitions. */
+#define MAX_TRANSCRIPT_LEN 2048
+#define DICTATION_TEXT_SIZE 65536
+
+/* TT #331 Wave 23 SRP-A1: voice_ws_proto.c calls these from the JSON RX
+ * dispatcher (tts_start clears the playback ring before new TTS audio)
+ * and the binary RX dispatcher (writes upsampled PCM into the ring).
+ * Implementations stay in voice.c next to the playback ring buffer they
+ * touch — these are just the public-API exposures for cross-TU access. */
+void voice_playback_buf_reset(void);
+size_t voice_playback_buf_write(const int16_t *data, size_t samples);
+
+/* Additional voice-subsystem statics the WS event handler needs.
+ * Declared as voice_ws_proto.c-local externs (not in voice.h) to keep
+ * the public voice.h surface narrow and to dodge the collision with
+ * ui_voice.c's own `s_initialized`. */
+extern volatile int s_handshake_fail_cnt;
+extern volatile int s_connect_attempt;
+extern volatile bool s_using_ngrok;
+extern volatile int64_t s_last_activity_us;
+extern int64_t s_ws_last_alive_us;
+extern char s_dragon_host[64];
+extern uint16_t s_dragon_port;
+/* (s_rx_reasm_buf + _cap are FUNCTION-LOCAL statics inside the WS event
+ *  handler — they move with it, no extern needed.) */
 
 // Voice states
 typedef enum {
