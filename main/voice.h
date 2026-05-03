@@ -55,6 +55,11 @@ extern char s_vision_model[64];
 #define MAX_TRANSCRIPT_LEN 2048
 #define DICTATION_TEXT_SIZE 65536
 
+/* TT #331 Wave 23 SRP-A2: WS-down grace before VMODE_LOCAL routes a text
+ * turn through the K144 failover.  Promoted from voice.c so
+ * voice_modes_route_text in voice_modes.c can apply the same threshold. */
+#define M5_FAILOVER_GRACE_MS 30000
+
 /* TT #331 Wave 23 SRP-A1: voice_ws_proto.c calls these from the JSON RX
  * dispatcher (tts_start clears the playback ring before new TTS audio)
  * and the binary RX dispatcher (writes upsampled PCM into the ring).
