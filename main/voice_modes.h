@@ -21,21 +21,21 @@ extern "C" {
 #endif
 
 typedef enum {
-    /* VMODE_LOCAL_ONBOARD active + chain currently running — caller must
-     * surface a "Stop onboard chat first" toast and refuse the send. */
-    VOICE_MODES_ROUTE_K144_CHAIN_BUSY = 0,
-    /* Routed text to K144 successfully (vmode=4 OR Local-mode failover hit). */
-    VOICE_MODES_ROUTE_K144_OK,
-    /* Routed text to K144 but K144 returned an error — caller should
-     * surface a toast (failure detail in `err`). */
-    VOICE_MODES_ROUTE_K144_FAILED,
-    /* Default — caller should send the text via the Dragon WS path. */
-    VOICE_MODES_ROUTE_DRAGON_PATH,
+   /* VMODE_LOCAL_ONBOARD active + chain currently running — caller must
+    * surface a "Stop onboard chat first" toast and refuse the send. */
+   VOICE_MODES_ROUTE_K144_CHAIN_BUSY = 0,
+   /* Routed text to K144 successfully (vmode=4 OR Local-mode failover hit). */
+   VOICE_MODES_ROUTE_K144_OK,
+   /* Routed text to K144 but K144 returned an error — caller should
+    * surface a toast (failure detail in `err`). */
+   VOICE_MODES_ROUTE_K144_FAILED,
+   /* Default — caller should send the text via the Dragon WS path. */
+   VOICE_MODES_ROUTE_DRAGON_PATH,
 } voice_modes_route_kind_t;
 
 typedef struct {
-    voice_modes_route_kind_t kind;
-    esp_err_t err; /* set when kind == K144_FAILED */
+   voice_modes_route_kind_t kind;
+   esp_err_t err; /* set when kind == K144_FAILED */
 } voice_modes_route_result_t;
 
 /* Pure routing decision.  Called by voice_send_text BEFORE building any
@@ -51,8 +51,7 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out);
 
 /* config_update frame senders (formerly voice_send_config_update*). */
 esp_err_t voice_send_config_update(int voice_mode, const char *llm_model);
-esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
-                                      const char *reason);
+esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model, const char *reason);
 
 /* Internal mode setter — voice.c calls this from voice_start_listening
  * (sets ASK), voice_start_dictation (sets DICTATE),
