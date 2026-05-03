@@ -48,6 +48,8 @@ The firmware is **well-layered with strong boundaries** between BSP, business lo
 
 ### A2 [P1] — God-file: debug_server.c (4.5 KLOC) with 72 endpoints
 
+**Status:** **SHIPPED** — closed 2026-05-04 across 18 per-family extracts.  9 of those landed today (PRs #359 #360 #361 #362 #363 #364 #365 #366 #367); the prior 9 (codec, dictation, m5, mode, ota, settings, voice, wifi families + nvs/erase consolidation) landed across earlier sessions (PRs #338 through #348).  debug_server.c thinned from **4,520 LOC → 849 LOC (-81.2%)**, with the remaining surface being the irreducible HTTP-server core (httpd lifecycle + bearer-token auth + send_json_resp helper + /info/index/selftest + 18 family register calls).  Every family extract verified on physical Tab5 (192.168.1.90) with `idf.py build` clean, `git-clang-format --diff` empty, `story_smoke 14/14`, and per-family curl sweep against the moved endpoints.
+
 **Dimension:** god-file, endpoint sprawl
 
 **Where:** `main/debug_server.c:1-4520` (4,520 LOC)

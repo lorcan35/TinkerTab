@@ -744,8 +744,42 @@ main/service_network.c    — Wi-Fi service (STA, connect, reconnect)
 main/service_storage.c    — SD card + NVS storage service
 main/task_worker.{c,h}    — Shared FreeRTOS job queue (W14-H06) — kills per-action task leaks
 main/heap_watchdog.{c,h}  — Periodic heap + PSRAM monitoring, logs to /heap debug endpoint
-main/debug_server.{c,h}   — HTTP debug server (bearer-auth except /info /selftest);
-                             count endpoints with: grep -c 'httpd_register_uri_handler' main/debug_server.c
+main/debug_server.{c,h}   — HTTP debug server core: httpd lifecycle, bearer-token
+                             auth (init_auth_token + tab5_debug_check_auth), shared
+                             send_json_resp helper, /info /index /selftest, plus the
+                             18 family register calls.  Wave 23b (#332) thinned this
+                             from 4,520 LOC → 849 LOC (-81.2%) by extracting per-
+                             family modules.  Endpoint count:
+                               grep -c 'httpd_register_uri_handler' main/debug_server*.c
+main/debug_server_admin.c     — /reboot, /sdcard, /widget injection
+main/debug_server_call.c      — /video/* + /call/* (12 video-call endpoints)
+main/debug_server_camera.c    — /screenshot, /screenshot.jpg, /camera + JPEG encoder
+main/debug_server_chat.c      — /chat, /chat/messages, /chat/llm_done, /chat/partial,
+                                 /chat/audio_clip, /voice/text alias
+main/debug_server_codec.c     — /codec/opus_test
+main/debug_server_dictation.c — /dictation (POST + GET)
+main/debug_server_inject.c    — /debug/inject_audio, _error, _ws (test-harness only)
+main/debug_server_input.c     — /touch, /input/text + LVGL touch-injection seqlock
+                                 (tab5_debug_touch_override is the LVGL touch_read_cb
+                                 reader)
+main/debug_server_m5.c        — /m5, /m5/reset, /m5/refresh, /m5/models (K144)
+main/debug_server_metrics.c   — /tasks, /logs/tail, /battery, /display/brightness,
+                                 /audio (GET+POST), /metrics (Prometheus), /events,
+                                 /heap/history, /heap/probe-csv, /keyboard/layout,
+                                 /tool_log/push, /net/ping
+main/debug_server_mode.c      — /mode (voice mode + LLM model picker)
+main/debug_server_nav.c       — /navigate, /screen + tab5_debug_set_nav_target
+                                 (called from ui_chrome / ui_chat / ui_camera /
+                                 ui_files / ui_notes / ui_settings / ui_wifi on
+                                 swipe-back / back-button / home-button paths)
+main/debug_server_obs.c       — /log, /crashlog, /coredump, /heap_trace_*, /heap
+main/debug_server_ota.c       — /ota/check, /ota/apply
+main/debug_server_settings.c  — /settings (GET+POST), /nvs/erase
+main/debug_server_voice.c     — /voice (state), /voice/reconnect, /voice/cancel,
+                                 /voice/clear
+main/debug_server_wifi.c      — /wifi/kick, /wifi/status
+main/debug_server_internal.h  — shared check_auth + send_json_resp helpers used by
+                                 every family module
 ```
 
 ### Hardware
