@@ -54,11 +54,13 @@ extern char                  s_vision_model[64];
 #define MAX_TRANSCRIPT_LEN     2048
 #define DICTATION_TEXT_SIZE    65536
 
-/* TT #331 Wave 23 SRP-A1: voice_ws_proto.c calls this from the JSON RX
- * dispatcher (tts_start clears the playback ring before new TTS audio).
- * Implementation stays in voice.c next to the playback ring buffer it
- * resets — this is just the public-API exposure for cross-TU access. */
-void voice_playback_buf_reset(void);
+/* TT #331 Wave 23 SRP-A1: voice_ws_proto.c calls these from the JSON RX
+ * dispatcher (tts_start clears the playback ring before new TTS audio)
+ * and the binary RX dispatcher (writes upsampled PCM into the ring).
+ * Implementations stay in voice.c next to the playback ring buffer they
+ * touch — these are just the public-API exposures for cross-TU access. */
+void   voice_playback_buf_reset(void);
+size_t voice_playback_buf_write(const int16_t *data, size_t samples);
 
 /* Additional voice-subsystem statics the WS event handler needs.
  * Declared as voice_ws_proto.c-local externs (not in voice.h) to keep

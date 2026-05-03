@@ -282,7 +282,7 @@ static SemaphoreHandle_t s_play_mutex    = NULL;
  * with headroom and matches the call-audio (AUD0) path's pre-existing
  * "max_out ≤ UPSAMPLE_BUF_CAPACITY" check shape. */
 #define UPSAMPLE_BUF_CAPACITY (8192 * 2) /* samples — 32 KB PSRAM */
-static int16_t          *s_upsample_buf  = NULL;
+int16_t                 *s_upsample_buf  = NULL;
 
 // Last transcript from Dragon STT
 char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
@@ -343,7 +343,7 @@ static void mic_capture_task(void *arg);
 static void playback_drain_task(void *arg);
 /* handle_text_message → voice_ws_proto_handle_text (voice_ws_proto.h, TT #331). */
 /* voice_playback_buf_reset is now public — see voice.h */
-static size_t playback_buf_write(const int16_t *data, size_t samples);
+/* voice_playback_buf_write is now public — see voice.h */
 static size_t playback_buf_read(int16_t *data, size_t max_samples);
 /* TT #331 Wave 23: voice_ws_send_text + voice_ws_send_register +
  * voice_ws_event_handler + voice_build_local_uri were moved to
@@ -457,7 +457,7 @@ void voice_playback_buf_reset(void)
     xSemaphoreGive(s_play_mutex);
 }
 
-static size_t playback_buf_write(const int16_t *data, size_t samples)
+size_t voice_playback_buf_write(const int16_t *data, size_t samples)
 {
     xSemaphoreTake(s_play_mutex, portMAX_DELAY);
 
@@ -530,107 +530,10 @@ void voice_reset_activity_timestamp(void)
 
 
 // ---------------------------------------------------------------------------
-// Binary frame handling (TTS audio from Dragon) — called from event handler.
-// Dragon sends PCM int16 mono at 16kHz; I2S TX runs at 48kHz, so we upsample
-// 1:3 before writing to the playback ring buffer. Playback drain task
-// handles I2S writes.
+// Binary frame handling (voice_ws_proto_handle_binary): extracted to
+// voice_ws_proto.c (TT #331 Wave 23 SRP-A1, Task 1.7).
 // ---------------------------------------------------------------------------
-static size_t upsample_16k_to_48k(const int16_t *in, size_t in_samples,
-                                    int16_t *out, size_t out_capacity)
-{
-    size_t out_idx = 0;
-    for (size_t i = 0; i < in_samples && out_idx + UPSAMPLE_RATIO <= out_capacity; i++) {
-        int16_t curr = in[i];
-        int16_t next = (i + 1 < in_samples) ? in[i + 1] : curr;
-        for (int j = 0; j < UPSAMPLE_RATIO; j++) {
-            out[out_idx++] = (int16_t)(curr + (int32_t)(next - curr) * j / UPSAMPLE_RATIO);
-        }
-    }
-    return out_idx;
-}
 
-void handle_binary_message(const char *data, int len)
-{
-    /* #268: video frames carry the 4-byte "VID0" magic.  Route them
-     * to voice_video before any audio-state checks — video plays
-     * regardless of voice state (unlike TTS, which only plays in
-     * SPEAKING/PROCESSING).  Audio frames (no magic) fall through. */
-    if (voice_video_peek_downlink_magic(data, (size_t)len)) {
-        voice_video_on_downlink_frame((const uint8_t *)data, (size_t)len);
-        return;
-    }
-
-    /* #272 Phase 3E: call-audio frames carry the 4-byte "AUD0" magic.
-     * Strip the header + write the int16 PCM body straight to the
-     * playback buffer with the same upsample 16k->48k as TTS.  No
-     * state guards — call audio plays even when voice is READY. */
-    if (voice_codec_peek_call_audio_magic(data, (size_t)len)) {
-        const uint8_t *body = NULL;
-        size_t body_len = 0;
-        if (voice_codec_unpack_call_audio((const uint8_t *)data, (size_t)len,
-                                          &body, &body_len) && body_len >= 2 &&
-            s_upsample_buf) {
-            tab5_audio_speaker_enable(true);
-            const size_t in_samples = body_len / sizeof(int16_t);
-            const size_t max_out    = in_samples * UPSAMPLE_RATIO;
-            if (max_out <= UPSAMPLE_BUF_CAPACITY) {
-                size_t out_n = upsample_16k_to_48k((const int16_t *)body, in_samples,
-                                                    s_upsample_buf, max_out);
-                playback_buf_write(s_upsample_buf, out_n);
-            }
-        }
-        return;
-    }
-
-    /* v4·D audit P0 fix: snapshot s_state under the mutex so we never
-     * race with voice_set_state on another task.  The checks below
-     * formerly read s_state twice without locking -- second read could
-     * see a newer value mid-TTS-frame. */
-    voice_state_t cur;
-    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-    cur = s_state;
-    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-
-
-    if (cur != VOICE_STATE_SPEAKING && cur != VOICE_STATE_PROCESSING) {
-        return;
-    }
-    if (cur == VOICE_STATE_PROCESSING) {
-        voice_playback_buf_reset();
-        voice_set_state(VOICE_STATE_SPEAKING, NULL);
-    }
-
-    /* #262: decode through voice_codec.  PCM is a memcpy-shaped passthrough
-     * (out_samples == in_samples), keeping the existing upsample 16k->48k
-     * path unchanged.  OPUS produces variable-length PCM (typ 320 samples
-     * per 20 ms packet) which then upsamples the same way. */
-    if (!s_upsample_buf) {
-        ESP_LOGW(TAG, "handle_binary: upsample_buf not initialized");
-        return;
-    }
-
-    /* Decode straight into a temp area in s_upsample_buf, low half;
-     * upsample reads from there and writes to the high half.
-     * Splitting avoids an extra malloc per chunk. */
-    int16_t *dec_pcm = s_upsample_buf;                          /* low half */
-    int16_t *up_out  = s_upsample_buf + (UPSAMPLE_BUF_CAPACITY / 2);  /* high half */
-    size_t dec_cap   = UPSAMPLE_BUF_CAPACITY / 2;
-    size_t in_samples = 0;
-    if (voice_codec_decode_downlink((const uint8_t *)data, (size_t)len,
-                                    dec_pcm, dec_cap, &in_samples) != ESP_OK ||
-        in_samples == 0) {
-        ESP_LOGW(TAG, "handle_binary: codec decode failed (len=%d)", len);
-        return;
-    }
-    size_t max_out = in_samples * UPSAMPLE_RATIO;
-    if (max_out > dec_cap) {
-        ESP_LOGW(TAG, "handle_binary: upsample would exceed half-buf — truncating");
-        max_out = dec_cap;
-    }
-    size_t out_samples = upsample_16k_to_48k(dec_pcm, in_samples,
-                                              up_out, max_out);
-    playback_buf_write(up_out, out_samples);
-}
 
 // ---------------------------------------------------------------------------
 // WebSocket event handler + URI helper: extracted to voice_ws_proto.c

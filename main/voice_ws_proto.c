@@ -37,6 +37,7 @@
 #include "voice_billing.h"    /* receipt + budget */
 #include "voice_codec.h"      /* VOICE_CODEC_OPUS_UPLINK_ENABLED */
 #include "voice_onboard.h"    /* K144 failover hooks */
+#include "voice_video.h"      /* VID0 magic peek + downlink decode */
 #include "voice_widget_ws.h"  /* widget_* WS dispatch */
 #include "widget.h"           /* widget_live_update / widget_live_dismiss */
 
@@ -1090,10 +1091,130 @@ void voice_ws_proto_handle_text(const char *data, int len)
 }
 
 
-/* Forward decl: handle_binary_message still lives in voice.c until
- * Task 1.7 moves it.  voice_ws_proto_event_handler dispatches binary
- * frames through this thunk for now. */
-extern void handle_binary_message(const char *data, int len);
+/* TT #331 Wave 23 SRP-A1: mirror voice.c's UPSAMPLE_* macros so
+ * voice_ws_proto_handle_binary can size its half-buffers.  These MUST
+ * match the voice.c definitions — the upsample buffer (s_upsample_buf,
+ * allocated in voice_init) is sized by UPSAMPLE_BUF_CAPACITY there. */
+#define UPSAMPLE_RATIO          (TAB5_AUDIO_SAMPLE_RATE / TAB5_VOICE_SAMPLE_RATE)
+#define UPSAMPLE_BUF_CAPACITY   (8192 * 2)
+
+/* PSRAM upsample buffer — owned + allocated in voice.c voice_init,
+ * referenced here from voice_ws_proto_handle_binary. */
+extern int16_t *s_upsample_buf;
+
+// ---------------------------------------------------------------------------
+// Task 1.7: Binary frame handling (voice_ws_proto_handle_binary).
+// Dragon sends PCM int16 mono at 16kHz; I2S TX runs at 48kHz, so we
+// upsample 1:3 before writing to the playback ring.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Binary frame handling (TTS audio from Dragon) — called from event handler.
+// Dragon sends PCM int16 mono at 16kHz; I2S TX runs at 48kHz, so we upsample
+// 1:3 before writing to the playback ring buffer. Playback drain task
+// handles I2S writes.
+// ---------------------------------------------------------------------------
+/* TT #331 Wave 23 SRP-A1: was static — file-scope inside voice_ws_proto.c. */
+static size_t voice_ws_proto_upsample_16k_to_48k(const int16_t *in, size_t in_samples,
+                                    int16_t *out, size_t out_capacity)
+{
+    size_t out_idx = 0;
+    for (size_t i = 0; i < in_samples && out_idx + UPSAMPLE_RATIO <= out_capacity; i++) {
+        int16_t curr = in[i];
+        int16_t next = (i + 1 < in_samples) ? in[i + 1] : curr;
+        for (int j = 0; j < UPSAMPLE_RATIO; j++) {
+            out[out_idx++] = (int16_t)(curr + (int32_t)(next - curr) * j / UPSAMPLE_RATIO);
+        }
+    }
+    return out_idx;
+}
+
+/* TT #331 Wave 23 SRP-A1: was handle_binary_message (non-static after task 1.6 promotion). */
+void voice_ws_proto_handle_binary(const char *data, int len)
+{
+    /* #268: video frames carry the 4-byte "VID0" magic.  Route them
+     * to voice_video before any audio-state checks — video plays
+     * regardless of voice state (unlike TTS, which only plays in
+     * SPEAKING/PROCESSING).  Audio frames (no magic) fall through. */
+    if (voice_video_peek_downlink_magic(data, (size_t)len)) {
+        voice_video_on_downlink_frame((const uint8_t *)data, (size_t)len);
+        return;
+    }
+
+    /* #272 Phase 3E: call-audio frames carry the 4-byte "AUD0" magic.
+     * Strip the header + write the int16 PCM body straight to the
+     * playback buffer with the same upsample 16k->48k as TTS.  No
+     * state guards — call audio plays even when voice is READY. */
+    if (voice_codec_peek_call_audio_magic(data, (size_t)len)) {
+        const uint8_t *body = NULL;
+        size_t body_len = 0;
+        if (voice_codec_unpack_call_audio((const uint8_t *)data, (size_t)len,
+                                          &body, &body_len) && body_len >= 2 &&
+            s_upsample_buf) {
+            tab5_audio_speaker_enable(true);
+            const size_t in_samples = body_len / sizeof(int16_t);
+            const size_t max_out    = in_samples * UPSAMPLE_RATIO;
+            if (max_out <= UPSAMPLE_BUF_CAPACITY) {
+                size_t out_n = voice_ws_proto_upsample_16k_to_48k((const int16_t *)body, in_samples,
+                                                    s_upsample_buf, max_out);
+                voice_playback_buf_write(s_upsample_buf, out_n);
+            }
+        }
+        return;
+    }
+
+    /* v4·D audit P0 fix: snapshot voice_get_state() so we never race
+     * with voice_set_state on another task.  The checks below formerly
+     * read s_state twice without locking — voice_get_state takes the
+     * state mutex internally so a single call is atomic.
+     *
+     * TT #331 Wave 23 SRP-A1: pre-extract this site held s_state_mutex
+     * directly while reading the static.  Re-locking around
+     * voice_get_state() (which takes the same non-recursive mutex)
+     * deadlocked → TASK_WDT reset.  Single getter call is the fix. */
+    voice_state_t cur = voice_get_state();
+
+
+    if (cur != VOICE_STATE_SPEAKING && cur != VOICE_STATE_PROCESSING) {
+        return;
+    }
+    if (cur == VOICE_STATE_PROCESSING) {
+        voice_playback_buf_reset();
+        voice_set_state(VOICE_STATE_SPEAKING, NULL);
+    }
+
+    /* #262: decode through voice_codec.  PCM is a memcpy-shaped passthrough
+     * (out_samples == in_samples), keeping the existing upsample 16k->48k
+     * path unchanged.  OPUS produces variable-length PCM (typ 320 samples
+     * per 20 ms packet) which then upsamples the same way. */
+    if (!s_upsample_buf) {
+        ESP_LOGW(TAG, "handle_binary: upsample_buf not initialized");
+        return;
+    }
+
+    /* Decode straight into a temp area in s_upsample_buf, low half;
+     * upsample reads from there and writes to the high half.
+     * Splitting avoids an extra malloc per chunk. */
+    int16_t *dec_pcm = s_upsample_buf;                          /* low half */
+    int16_t *up_out  = s_upsample_buf + (UPSAMPLE_BUF_CAPACITY / 2);  /* high half */
+    size_t dec_cap   = UPSAMPLE_BUF_CAPACITY / 2;
+    size_t in_samples = 0;
+    if (voice_codec_decode_downlink((const uint8_t *)data, (size_t)len,
+                                    dec_pcm, dec_cap, &in_samples) != ESP_OK ||
+        in_samples == 0) {
+        ESP_LOGW(TAG, "handle_binary: codec decode failed (len=%d)", len);
+        return;
+    }
+    size_t max_out = in_samples * UPSAMPLE_RATIO;
+    if (max_out > dec_cap) {
+        ESP_LOGW(TAG, "handle_binary: upsample would exceed half-buf — truncating");
+        max_out = dec_cap;
+    }
+    size_t out_samples = voice_ws_proto_upsample_16k_to_48k(dec_pcm, in_samples,
+                                              up_out, max_out);
+    voice_playback_buf_write(up_out, out_samples);
+}
+
 
 // ---------------------------------------------------------------------------
 // Task 1.6/1.8/1.9: WebSocket event handler + URI helper.
@@ -1321,7 +1442,7 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base,
             const int frag_len   = data->data_len;
             if (frag_total <= 0 || frag_total == frag_len) {
                 /* Single-fragment frame — current behavior. */
-                handle_binary_message(data->data_ptr, frag_len);
+                voice_ws_proto_handle_binary(data->data_ptr, frag_len);
             } else {
                 /* Multi-fragment frame.  Lazy-init reassembly buffer
                  * in PSRAM, sized to the same ceiling voice_video uses. */
@@ -1346,7 +1467,7 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base,
                 }
                 memcpy(s_rx_reasm_buf + frag_off, data->data_ptr, frag_len);
                 if (frag_off + frag_len == frag_total) {
-                    handle_binary_message((const char *)s_rx_reasm_buf, frag_total);
+                    voice_ws_proto_handle_binary((const char *)s_rx_reasm_buf, frag_total);
                 }
             }
         } else if (data->op_code == WS_TRANSPORT_OPCODES_PING) {
