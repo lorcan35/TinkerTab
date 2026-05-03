@@ -185,25 +185,26 @@ volatile uint32_t s_session_gen = 0;
 esp_websocket_client_handle_t volatile g_voice_ws = NULL;
 
 // Dragon connection info (last-known, updated on each connect)
-char     s_dragon_host[64] = {0};
-uint16_t s_dragon_port     = TAB5_VOICE_PORT;
+char s_dragon_host[64] = {0};
+uint16_t s_dragon_port = TAB5_VOICE_PORT;
 
 // Connection tracking
-volatile bool s_initialized        = false;
+volatile bool s_initialized = false;
 static volatile bool s_started            = false;  /* esp_websocket_client_start() has been called */
-volatile bool s_disconnecting      = false;  /* US-C21: guard against connect-during-disconnect race */
-volatile int  s_handshake_fail_cnt = 0;      /* consecutive handshake failures — trigger ngrok fallback in auto mode */
-volatile int  s_auth_fail_cnt      = 0;      /* γ3-Tab5 (issue #198): consecutive 401s — trigger stop-retry after WS_AUTH_FAIL_THRESHOLD */
+volatile bool s_disconnecting = false;              /* US-C21: guard against connect-during-disconnect race */
+volatile int s_handshake_fail_cnt = 0; /* consecutive handshake failures — trigger ngrok fallback in auto mode */
+volatile int s_auth_fail_cnt =
+    0; /* γ3-Tab5 (issue #198): consecutive 401s — trigger stop-retry after WS_AUTH_FAIL_THRESHOLD */
 /* v4·D connectivity audit T1.1: reconnect backoff state.  Counts
  * attempts since the last successful CONNECTED event.  Applied via
  * esp_websocket_client_set_reconnect_timeout inside the ERROR /
  * DISCONNECTED handlers; reset on CONNECTED.  */
-volatile int  s_connect_attempt   = 0;
+volatile int s_connect_attempt = 0;
 /* v4·D connectivity audit T1.3: link health published by probe task. */
 static volatile bool s_lan_tcp_ok        = false;
 static volatile bool s_ngrok_tcp_ok      = false;
 static volatile uint32_t s_last_probe_ms = 0;
-volatile bool s_using_ngrok        = false;  /* true once we've switched to the ngrok URI */
+volatile bool s_using_ngrok = false; /* true once we've switched to the ngrok URI */
 
 // Mic capture task
 static TaskHandle_t  s_mic_task    = NULL;
@@ -248,8 +249,8 @@ static void async_connect_task(void *arg);
 // Playback drain task — pulls from ring buffer, blocks on i2s_channel_write
 static TaskHandle_t      s_play_task    = NULL;
 static volatile bool     s_play_running = false;
-volatile bool     s_tts_done     = false;  // set by tts_end, drain task transitions to READY
-SemaphoreHandle_t s_play_sem     = NULL;   // signalled when data is written to ring buf
+volatile bool s_tts_done = false;     // set by tts_end, drain task transitions to READY
+SemaphoreHandle_t s_play_sem = NULL;  // signalled when data is written to ring buf
 
 // Playback ring buffer — allocated in PSRAM
 static int16_t          *s_play_buf      = NULL;
@@ -282,12 +283,12 @@ static SemaphoreHandle_t s_play_mutex    = NULL;
  * with headroom and matches the call-audio (AUD0) path's pre-existing
  * "max_out ≤ UPSAMPLE_BUF_CAPACITY" check shape. */
 #define UPSAMPLE_BUF_CAPACITY (8192 * 2) /* samples — 32 KB PSRAM */
-int16_t                 *s_upsample_buf  = NULL;
+int16_t *s_upsample_buf = NULL;
 
 // Last transcript from Dragon STT
 char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
-char s_stt_text[MAX_TRANSCRIPT_LEN]   = {0};
-char s_llm_text[MAX_TRANSCRIPT_LEN]   = {0};
+char s_stt_text[MAX_TRANSCRIPT_LEN] = {0};
+char s_llm_text[MAX_TRANSCRIPT_LEN] = {0};
 
 /* v4·D Gauntlet G1: single-slot queued-turn buffer.  When voice_send_text
  * is invoked while the pipeline is busy, the new text is stashed here
@@ -302,8 +303,8 @@ static bool s_queue_pending = false;
  * voice_billing.h if a future caller needs them. */
 
 /* v4·D Phase 4b: cached vision capability from Dragon (camera screen). */
-bool s_vision_capable   = false;
-int  s_vision_per_frame_mils = 0;
+bool s_vision_capable = false;
+int s_vision_per_frame_mils = 0;
 char s_vision_model[64] = {0};
 
 // Dictation mode
@@ -311,10 +312,10 @@ static voice_mode_t   s_voice_mode        = VOICE_MODE_ASK;
 /* #280: in-call mute flag (definition near other state; the body
  * lives next to voice_call_audio_set_muted/_is_muted further down). */
 static volatile bool s_call_muted = false;
-char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
+char *s_dictation_text = NULL; /* PSRAM-allocated, DICTATION_TEXT_SIZE */
 static volatile float s_current_rms       = 0.0f;
-char           s_dictation_title[128]   = {0};
-char           s_dictation_summary[512] = {0};
+char s_dictation_title[128] = {0};
+char s_dictation_summary[512] = {0};
 
 /* Drop counter for audio frames lost under back-pressure (US-C04) was
  * moved to voice_ws_proto.c alongside voice_ws_send_binary (the only
@@ -448,38 +449,35 @@ static void _drain_queued_text_job(void *arg)
 // ---------------------------------------------------------------------------
 // Playback ring buffer
 // ---------------------------------------------------------------------------
-void voice_playback_buf_reset(void)
-{
-    xSemaphoreTake(s_play_mutex, portMAX_DELAY);
-    s_play_wr = 0;
-    s_play_rd = 0;
-    s_play_count = 0;
-    xSemaphoreGive(s_play_mutex);
+void voice_playback_buf_reset(void) {
+   xSemaphoreTake(s_play_mutex, portMAX_DELAY);
+   s_play_wr = 0;
+   s_play_rd = 0;
+   s_play_count = 0;
+   xSemaphoreGive(s_play_mutex);
 }
 
-size_t voice_playback_buf_write(const int16_t *data, size_t samples)
-{
-    xSemaphoreTake(s_play_mutex, portMAX_DELAY);
+size_t voice_playback_buf_write(const int16_t *data, size_t samples) {
+   xSemaphoreTake(s_play_mutex, portMAX_DELAY);
 
-    size_t written = 0;
-    while (written < samples && s_play_count < PLAY_BUF_CAPACITY) {
-        s_play_buf[s_play_wr] = data[written];
-        s_play_wr = (s_play_wr + 1) % PLAY_BUF_CAPACITY;
-        s_play_count++;
-        written++;
-    }
+   size_t written = 0;
+   while (written < samples && s_play_count < PLAY_BUF_CAPACITY) {
+      s_play_buf[s_play_wr] = data[written];
+      s_play_wr = (s_play_wr + 1) % PLAY_BUF_CAPACITY;
+      s_play_count++;
+      written++;
+   }
 
-    xSemaphoreGive(s_play_mutex);
+   xSemaphoreGive(s_play_mutex);
 
-    if (written < samples) {
-        ESP_LOGW(TAG, "Playback buffer overflow, dropped %zu samples",
-                 samples - written);
-    }
+   if (written < samples) {
+      ESP_LOGW(TAG, "Playback buffer overflow, dropped %zu samples", samples - written);
+   }
 
-    if (written > 0 && s_play_sem) {
-        xSemaphoreGive(s_play_sem);
-    }
-    return written;
+   if (written > 0 && s_play_sem) {
+      xSemaphoreGive(s_play_sem);
+   }
+   return written;
 }
 
 static size_t playback_buf_read(int16_t *data, size_t max_samples)
@@ -528,19 +526,16 @@ void voice_reset_activity_timestamp(void)
 // s_dictation_summary, s_vision_capable, s_vision_per_frame_mils, s_vision_model.
 // ---------------------------------------------------------------------------
 
-
 // ---------------------------------------------------------------------------
 // Binary frame handling (voice_ws_proto_handle_binary): extracted to
 // voice_ws_proto.c (TT #331 Wave 23 SRP-A1, Task 1.7).
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // WebSocket event handler + URI helper: extracted to voice_ws_proto.c
 // (TT #331 Wave 23 SRP-A1, Tasks 1.6/1.8/1.9 combined for dep-closure).
 // Statics promoted to extern for cross-TU access (see voice.h).
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Mic capture task — reads 4-ch TDM at 48kHz, extracts MIC1, downsamples
@@ -790,11 +785,10 @@ static void mic_capture_task(void *arg)
      * reuses them across sessions.  They're freed only at process
      * shutdown (which never happens on the firmware side). */
 
-    if (s_voice_mode == VOICE_MODE_DICTATE && had_speech
-        && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES
-        && g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
-        voice_ws_send_text("{\"type\":\"stop\"}");
-        voice_set_state(VOICE_STATE_PROCESSING, NULL);
+    if (s_voice_mode == VOICE_MODE_DICTATE && had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES &&
+        g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
+       voice_ws_send_text("{\"type\":\"stop\"}");
+       voice_set_state(VOICE_STATE_PROCESSING, NULL);
     }
 
     ESP_LOGI(TAG, "Mic session end (frames=%d) — back to idle",
@@ -1219,33 +1213,33 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
         s_dragon_port = TAB5_NGROK_PORT;
         s_using_ngrok = true;
     } else {
-        voice_ws_proto_build_local_uri(uri, sizeof(uri), dragon_host, dragon_port);
-        strncpy(s_dragon_host, dragon_host, sizeof(s_dragon_host) - 1);
-        s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
-        s_dragon_port = dragon_port;
-        s_using_ngrok = false;
+       voice_ws_proto_build_local_uri(uri, sizeof(uri), dragon_host, dragon_port);
+       strncpy(s_dragon_host, dragon_host, sizeof(s_dragon_host) - 1);
+       s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
+       s_dragon_port = dragon_port;
+       s_using_ngrok = false;
     }
     s_handshake_fail_cnt = 0;
 
     /* If client already exists, just re-target the URI.  The managed
      * component requires stop() before set_uri() when started. */
     if (g_voice_ws) {
-        ESP_LOGI(TAG, "Re-using existing WS client; set_uri=%s", uri);
-        if (s_started) {
-            esp_websocket_client_stop(g_voice_ws);
-        }
-        esp_err_t ur = esp_websocket_client_set_uri(g_voice_ws, uri);
-        if (ur != ESP_OK) {
-            ESP_LOGE(TAG, "set_uri failed: %s", esp_err_to_name(ur));
-            return ur;
-        }
-        esp_err_t sr = esp_websocket_client_start(g_voice_ws);
-        if (sr != ESP_OK) {
-            ESP_LOGE(TAG, "client_start failed: %s", esp_err_to_name(sr));
-            return sr;
-        }
-        s_started = true;
-        return ESP_OK;
+       ESP_LOGI(TAG, "Re-using existing WS client; set_uri=%s", uri);
+       if (s_started) {
+          esp_websocket_client_stop(g_voice_ws);
+       }
+       esp_err_t ur = esp_websocket_client_set_uri(g_voice_ws, uri);
+       if (ur != ESP_OK) {
+          ESP_LOGE(TAG, "set_uri failed: %s", esp_err_to_name(ur));
+          return ur;
+       }
+       esp_err_t sr = esp_websocket_client_start(g_voice_ws);
+       if (sr != ESP_OK) {
+          ESP_LOGE(TAG, "client_start failed: %s", esp_err_to_name(sr));
+          return sr;
+       }
+       s_started = true;
+       return ESP_OK;
     }
 
     /* Wave 14 W14-C04: attach `Authorization: Bearer <token>` to the
@@ -1302,12 +1296,11 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
 
     g_voice_ws = esp_websocket_client_init(&cfg);
     if (!g_voice_ws) {
-        ESP_LOGE(TAG, "esp_websocket_client_init failed");
-        return ESP_FAIL;
+       ESP_LOGE(TAG, "esp_websocket_client_init failed");
+       return ESP_FAIL;
     }
 
-    esp_err_t er = esp_websocket_register_events(g_voice_ws, WEBSOCKET_EVENT_ANY,
-                                                  voice_ws_proto_event_handler, NULL);
+    esp_err_t er = esp_websocket_register_events(g_voice_ws, WEBSOCKET_EVENT_ANY, voice_ws_proto_event_handler, NULL);
     if (er != ESP_OK) {
         ESP_LOGE(TAG, "register_events failed: %s", esp_err_to_name(er));
         esp_websocket_client_destroy(g_voice_ws);
@@ -1338,8 +1331,8 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         return ESP_ERR_INVALID_STATE;
     }
     if (g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
-        ESP_LOGW(TAG, "Already connected");
-        return ESP_OK;
+       ESP_LOGW(TAG, "Already connected");
+       return ESP_OK;
     }
 
     if (s_state != VOICE_STATE_IDLE && s_state != VOICE_STATE_CONNECTING) {
@@ -1467,18 +1460,17 @@ esp_err_t voice_start_listening(void)
       return voice_onboard_chain_start();
    }
 
-    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
-    /* Wave 13 H1: snapshot state once under the mutex so the log and the
-     * guard below see the same value, and neither races the WS RX callback. */
-    voice_state_t cur_state = voice_get_state();
-    ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_live=%d, state=%d",
-             s_initialized, ws_live, cur_state);
+   bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
+   /* Wave 13 H1: snapshot state once under the mutex so the log and the
+    * guard below see the same value, and neither races the WS RX callback. */
+   voice_state_t cur_state = voice_get_state();
+   ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_live=%d, state=%d", s_initialized, ws_live, cur_state);
 
-    if (tab5_settings_get_mic_mute()) {
-       ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
-       ui_home_show_toast("Mic is muted -- unmute in Settings");
-       return ESP_ERR_INVALID_STATE;
-    }
+   if (tab5_settings_get_mic_mute()) {
+      ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
+      ui_home_show_toast("Mic is muted -- unmute in Settings");
+      return ESP_ERR_INVALID_STATE;
+   }
 
     if (!s_initialized || !ws_live) {
         ESP_LOGE(TAG, "Not connected (initialized=%d, ws_live=%d)",
@@ -1516,11 +1508,11 @@ esp_err_t voice_start_listening(void)
 
 esp_err_t voice_start_dictation(void)
 {
-    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
-    if (!s_initialized) {
-       ESP_LOGE(TAG, "Not initialized");
-       return ESP_ERR_INVALID_STATE;
-    }
+   bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
+   if (!s_initialized) {
+      ESP_LOGE(TAG, "Not initialized");
+      return ESP_ERR_INVALID_STATE;
+   }
     /* TT #328 Wave 9 — when WS is up, require READY state (existing
      * behaviour).  When WS is DOWN (offline-fallback path), accept
      * READY or IDLE or RECONNECTING since those are all valid
@@ -1625,11 +1617,11 @@ voice_mode_t voice_get_mode(void)
  * voice_video_start_call which calls us here. */
 esp_err_t voice_call_audio_start(void)
 {
-    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
-    if (!s_initialized || !ws_live) {
-        ESP_LOGE(TAG, "voice_call_audio_start: not connected");
-        return ESP_ERR_INVALID_STATE;
-    }
+   bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
+   if (!s_initialized || !ws_live) {
+      ESP_LOGE(TAG, "voice_call_audio_start: not connected");
+      return ESP_ERR_INVALID_STATE;
+   }
     /* #284: persistent task pattern — `s_mic_task != NULL` is now
      * always true after voice_init (one task lives forever), so the
      * old guard would always block.  Gate on s_mic_running only. */
@@ -1702,9 +1694,9 @@ const char *voice_get_dictation_text(void)
 
 esp_err_t voice_clear_history(void)
 {
-    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
-    ESP_LOGI(TAG, "Clearing conversation history on Dragon");
-    return voice_ws_send_text("{\"type\":\"clear\"}");
+   if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
+   ESP_LOGI(TAG, "Clearing conversation history on Dragon");
+   return voice_ws_send_text("{\"type\":\"clear\"}");
 }
 
 esp_err_t voice_stop_listening(void)
@@ -1728,7 +1720,8 @@ esp_err_t voice_stop_listening(void)
     * also flips state from LISTENING → RECONNECTING after 2-3 s
     * while the mic continues to write SD chunks, so the s_state
     * check below has to accept BOTH states for the offline path. */
-   bool offline_dictate = (s_voice_mode == VOICE_MODE_DICTATE) && !(g_voice_ws && esp_websocket_client_is_connected(g_voice_ws));
+   bool offline_dictate =
+       (s_voice_mode == VOICE_MODE_DICTATE) && !(g_voice_ws && esp_websocket_client_is_connected(g_voice_ws));
 
    if (offline_dictate) {
       /* Permissive — mic is running, recording valid, stop should
@@ -1873,8 +1866,8 @@ esp_err_t voice_disconnect(void)
      * re-creating everything. Destroy happens never in practice — the
      * client lives for the lifetime of the process. */
     if (g_voice_ws && s_started) {
-        esp_websocket_client_stop(g_voice_ws);
-        s_started = false;
+       esp_websocket_client_stop(g_voice_ws);
+       s_started = false;
     }
 
     voice_playback_buf_reset();
@@ -2077,15 +2070,15 @@ esp_err_t voice_send_text(const char *text)
 esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
                                       const char *reason)
 {
-    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
+   if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
 
-    cJSON *msg = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg, "type", "config_update");
-    cJSON_AddNumberToObject(msg, "voice_mode", voice_mode);
-    cJSON_AddBoolToObject(msg, "cloud_mode", voice_mode >= 1);
-    if (voice_mode == 2 && llm_model && llm_model[0]) {
-        cJSON_AddStringToObject(msg, "llm_model", llm_model);
-    }
+   cJSON *msg = cJSON_CreateObject();
+   cJSON_AddStringToObject(msg, "type", "config_update");
+   cJSON_AddNumberToObject(msg, "voice_mode", voice_mode);
+   cJSON_AddBoolToObject(msg, "cloud_mode", voice_mode >= 1);
+   if (voice_mode == 2 && llm_model && llm_model[0]) {
+      cJSON_AddStringToObject(msg, "llm_model", llm_model);
+   }
     if (reason && reason[0]) {
         cJSON_AddStringToObject(msg, "reason", reason);
     }
@@ -2202,8 +2195,8 @@ void voice_force_reconnect(void)
     /* Stop + start: the managed client will immediately re-attempt the
      * connect handshake, bypassing any pending reconnect_timeout_ms delay. */
     if (!s_initialized || !g_voice_ws) {
-        ESP_LOGW(TAG, "voice_force_reconnect: client not ready");
-        return;
+       ESP_LOGW(TAG, "voice_force_reconnect: client not ready");
+       return;
     }
     ESP_LOGI(TAG, "Force reconnect");
     esp_websocket_client_stop(g_voice_ws);
@@ -2352,12 +2345,11 @@ static void upload_chat_image_job(void *arg)
     cJSON_Delete(frame);
     if (!txt) return;
     if (g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
-        size_t txtlen = strlen(txt);
-        esp_websocket_client_send_text(g_voice_ws, txt, (int)txtlen,
-                                       portMAX_DELAY);
-        ESP_LOGI(TAG, "user_image: announced media_id=%s", media_id);
+       size_t txtlen = strlen(txt);
+       esp_websocket_client_send_text(g_voice_ws, txt, (int)txtlen, portMAX_DELAY);
+       ESP_LOGI(TAG, "user_image: announced media_id=%s", media_id);
     } else {
-        ESP_LOGW(TAG, "user_image: WS not connected, skipping announce");
+       ESP_LOGW(TAG, "user_image: WS not connected, skipping announce");
     }
     free(txt);
 }
@@ -2384,10 +2376,10 @@ void voice_upload_chat_image(const char *filepath)
  * stop-set_uri-start dance. */
 void voice_reapply_connection_mode(void)
 {
-    if (!s_initialized || !g_voice_ws) {
-        ESP_LOGW(TAG, "reapply_connection_mode: client not ready");
-        return;
-    }
+   if (!s_initialized || !g_voice_ws) {
+      ESP_LOGW(TAG, "reapply_connection_mode: client not ready");
+      return;
+   }
     char host[64] = {0};
     tab5_settings_get_dragon_host(host, sizeof(host));
     if (!host[0]) {
@@ -2399,7 +2391,4 @@ void voice_reapply_connection_mode(void)
     voice_ws_start_client(host, port);
 }
 
-bool voice_is_connected(void)
-{
-    return g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
-}
+bool voice_is_connected(void) { return g_voice_ws && esp_websocket_client_is_connected(g_voice_ws); }

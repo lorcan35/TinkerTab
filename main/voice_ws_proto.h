@@ -14,11 +14,12 @@
  */
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_websocket_client.h"
-#include <stddef.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,18 +36,15 @@ void voice_ws_proto_handle_binary(const char *data, int len);
 
 /* esp_websocket_client event callback — register with
  * esp_websocket_register_events from voice_ws_start_client in voice.c. */
-void voice_ws_proto_event_handler(void *arg, esp_event_base_t base,
-                                  int32_t event_id, void *event_data);
+void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data);
 
 /* URI helper (LAN target builder).  out_cap must be at least 64. */
-void voice_ws_proto_build_local_uri(char *out, size_t out_cap,
-                                    const char *dragon_host,
-                                    uint16_t dragon_port);
+void voice_ws_proto_build_local_uri(char *out, size_t out_cap, const char *dragon_host, uint16_t dragon_port);
 
 /* UI-async helpers (formerly voice.c statics).  Used by mic_capture_task
  * (in voice.c) and the JSON RX dispatcher to schedule LVGL-thread
  * notifications without taking the LVGL lock from a worker task. */
-void voice_async_toast(char *text);   /* takes ownership of text */
+void voice_async_toast(char *text); /* takes ownership of text */
 
 #ifdef __cplusplus
 }
