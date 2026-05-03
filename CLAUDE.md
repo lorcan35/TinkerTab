@@ -761,10 +761,21 @@ main/settings.{c,h}       — NVS-backed settings (see "NVS Settings Keys" table
 
 ### Dragon voice link
 ```
-main/voice.{c,h}          — Voice WS client (port 3502), mic capture, TTS playback,
-                             dictation, reconnect watchdog, three-tier mode, tool events,
-                             rich-media handlers, VOICE_MODE_CALL (AUD0-tagged mic).
-                             Tab5 talks to Dragon only via this path.
+main/voice.{c,h}          — Voice public API + state machine + mic capture task +
+                             playback drain task + listening/dictation/call lifecycles +
+                             reconnect watchdog.  Wave 23 thinned voice.c from ~3,668 LOC
+                             to ~2,287 LOC by extracting voice_ws_proto (RX/TX dispatch +
+                             event handler) and voice_modes (five-tier routing).
+main/voice_ws_proto.{c,h} — WS frame routing layer: JSON RX dispatcher + binary magic
+                             VID0/AUD0/untagged-PCM dispatcher + esp_websocket_client
+                             event callback + send wrappers + REGISTER frame builder +
+                             UI-async helpers (toast / banner / badge dispatchers) +
+                             eviction/auth-fail stop workers.  Wave 23 SRP closure for
+                             TT #331-A (PR #355).
+main/voice_modes.{c,h}    — Five-tier voice-mode dispatcher: voice_send_config_update*
+                             senders + voice_modes_route_text decision (LOCAL / HYBRID /
+                             CLOUD / TINKERCLAW / LOCAL_ONBOARD) + s_voice_mode
+                             ownership.  Wave 23 SRP closure for TT #331-B (PR #356).
 main/voice_video.{c,h}    — Two-way video call module: HW JPEG uplink + TJPGD downlink
                              decode, VID0 framing, voice_video_start_call/end_call atomics.
 main/voice_codec.{c,h}    — OPUS capability negotiation (decoder ready, encoder gated off
