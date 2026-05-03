@@ -14,8 +14,15 @@
 #pragma once
 
 #include "esp_err.h"
+#include "esp_websocket_client.h"   /* g_voice_ws extern below (TT #331 Wave 23) */
 #include <stdbool.h>
 #include <stdint.h>
+
+/* TT #331 Wave 23 (SRP-A1): the WS client handle was promoted from
+ * static in voice.c so voice_ws_proto.c can read/use it without
+ * per-call getter churn.  volatile because it's written on Core 1's
+ * WS task (connect/disconnect) and read on Core 0's LVGL thread. */
+extern esp_websocket_client_handle_t volatile g_voice_ws;
 
 // Voice states
 typedef enum {

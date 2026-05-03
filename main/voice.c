@@ -59,6 +59,7 @@
 #include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
 #include "voice_video.h"     /* #266: live JPEG streaming */
 #include "voice_widget_ws.h" /* SOLID-audit SRP-2: widget WS verb dispatch */
+#include "voice_ws_proto.h"  /* TT #331 Wave 23 SRP-A1: WS proto layer */
 #include "widget.h"
 #include "wifi.h"
 
@@ -191,12 +192,15 @@ static SemaphoreHandle_t s_state_mutex = NULL;
 static volatile uint32_t s_session_gen = 0;
 
 // WebSocket client (esp_websocket_client managed component)
-/* Wave 14 W14-M03: volatile because s_ws is written on Core 1's WS
+/* Wave 14 W14-M03: volatile because g_voice_ws is written on Core 1's WS
  * task (connect/disconnect) and read on Core 0's LVGL thread
  * (voice_send_text, voice_start_listening, async_connect_task poll).
  * Without volatile the compiler may cache the load across a
- * disconnect and use-after-free the freed WS client. */
-static esp_websocket_client_handle_t volatile s_ws = NULL;
+ * disconnect and use-after-free the freed WS client.
+ * Wave 23 SRP-A1 (TT #331): promoted from static so voice_ws_proto.c
+ * can reach the handle without per-call getter churn.  Declared in
+ * voice.h. */
+esp_websocket_client_handle_t volatile g_voice_ws = NULL;
 
 // Dragon connection info (last-known, updated on each connect)
 static char     s_dragon_host[64] = {0};
@@ -330,8 +334,9 @@ static volatile float s_current_rms       = 0.0f;
 static char           s_dictation_title[128]   = {0};
 static char           s_dictation_summary[512] = {0};
 
-// Drop counter for audio frames lost under back-pressure (US-C04)
-static int s_audio_drop_count = 0;
+/* Drop counter for audio frames lost under back-pressure (US-C04) was
+ * moved to voice_ws_proto.c alongside voice_ws_send_binary (the only
+ * writer). */
 
 /* TT #327 Wave 4b: K144 failover state + autonomous chain were extracted
  * into main/voice_onboard.{c,h}.  voice.c only needs the WS-down grace
@@ -358,12 +363,9 @@ static void handle_text_message(const char *data, int len);
 static void playback_buf_reset(void);
 static size_t playback_buf_write(const int16_t *data, size_t samples);
 static size_t playback_buf_read(int16_t *data, size_t max_samples);
-static esp_err_t voice_ws_send_text(const char *msg);
-static esp_err_t voice_ws_send_register(void);
-static void voice_ws_event_handler(void *arg, esp_event_base_t base,
-                                    int32_t event_id, void *event_data);
-static void voice_build_local_uri(char *out, size_t out_cap,
-                                   const char *host, uint16_t port);
+/* TT #331 Wave 23: voice_ws_send_text + voice_ws_send_register +
+ * voice_ws_event_handler + voice_build_local_uri were moved to
+ * voice_ws_proto.c.  Their prototypes live in voice_ws_proto.h. */
 
 // ---------------------------------------------------------------------------
 // Deferred receipt attach: extracted to voice_billing.c (SOLID-audit SRP-3).
@@ -520,156 +522,10 @@ void voice_reset_activity_timestamp(void)
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket send helpers (wrapping esp_websocket_client_send_*)
+// WebSocket send helpers + device registration: extracted to voice_ws_proto.c
+// (TT #331 Wave 23 SRP-A1).  voice.c now consumes voice_ws_send_text /
+// voice_ws_send_binary / voice_ws_send_register via voice_ws_proto.h.
 // ---------------------------------------------------------------------------
-static esp_err_t voice_ws_send_text(const char *msg)
-{
-    if (!s_ws) return ESP_ERR_INVALID_STATE;
-    if (!esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
-    if (!msg) return ESP_ERR_INVALID_ARG;
-
-    size_t len = strlen(msg);
-    /* Wave 14 W14-L02: bound the size_t→int cast.  Realistic messages
-     * are <256 bytes but an unchecked cast would silently truncate on
-     * an accidental >2 GB string (e.g. a corrupted LLM response
-     * flowing through text_update). */
-    if (len > INT_MAX) return ESP_ERR_INVALID_ARG;
-    int w = esp_websocket_client_send_text(s_ws, msg, (int)len, pdMS_TO_TICKS(1000));
-    if (w < 0) {
-        ESP_LOGW(TAG, "WS text send failed (%zu bytes)", len);
-        return ESP_FAIL;
-    }
-    return ESP_OK;
-}
-
-static esp_err_t voice_ws_send_binary(const void *data, size_t len)
-{
-    if (!s_ws) return ESP_ERR_INVALID_STATE;
-    if (!esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
-    if (!data) return ESP_ERR_INVALID_ARG;
-    /* W14-L02: same bound as text. */
-    if (len > INT_MAX) return ESP_ERR_INVALID_ARG;
-
-    /* Short 100 ms timeout — we drop frames under pressure rather than
-     * block the mic task. If WiFi stalls, I2S DMA would overflow. */
-    int w = esp_websocket_client_send_bin(s_ws, (const char *)data, (int)len,
-                                          pdMS_TO_TICKS(100));
-    if (w < 0) {
-        s_audio_drop_count++;
-        if (s_audio_drop_count % 10 == 1) {
-            ESP_LOGW(TAG, "WS binary send dropped — %d frames lost", s_audio_drop_count);
-        }
-        return ESP_ERR_TIMEOUT;
-    }
-    if (s_audio_drop_count > 0) {
-        ESP_LOGI(TAG, "WS binary send recovered after %d drops", s_audio_drop_count);
-        s_audio_drop_count = 0;
-    }
-    return ESP_OK;
-}
-
-/* #266: thin public wrapper for voice_video.c (and any future binary
- * sender).  Behavior is identical to voice_ws_send_binary — same
- * 100 ms send timeout, same drop accounting. */
-esp_err_t voice_ws_send_binary_public(const void *data, size_t len)
-{
-    return voice_ws_send_binary(data, len);
-}
-
-// ---------------------------------------------------------------------------
-// Device registration — sent as FIRST text frame from the CONNECTED handler.
-// This is the #76 fix: register is sent from inside the event handler, AFTER
-// the client's event task is running and ready to dispatch the server's
-// session_start reply. The legacy code sent register synchronously before
-// spawning the receive task, which opened a 50–500ms window where Dragon's
-// reply arrived while nothing was draining the SDIO RX buffer.
-// ---------------------------------------------------------------------------
-static esp_err_t voice_ws_send_register(void)
-{
-    char device_id[16]   = {0};
-    char hardware_id[20] = {0};
-    char session_id[64]  = {0};
-
-    tab5_settings_get_device_id(device_id, sizeof(device_id));
-    tab5_settings_get_hardware_id(hardware_id, sizeof(hardware_id));
-    tab5_settings_get_session_id(session_id, sizeof(session_id));
-
-    cJSON *root = cJSON_CreateObject();
-    if (!root) return ESP_ERR_NO_MEM;
-
-    cJSON_AddStringToObject(root, "type", "register");
-    cJSON_AddStringToObject(root, "device_id", device_id);
-    cJSON_AddStringToObject(root, "hardware_id", hardware_id);
-    cJSON_AddStringToObject(root, "name", "Tab5");
-    cJSON_AddStringToObject(root, "firmware_ver", TAB5_FIRMWARE_VER);
-    cJSON_AddStringToObject(root, "platform", TAB5_PLATFORM);
-
-    if (session_id[0] != '\0') {
-        cJSON_AddStringToObject(root, "session_id", session_id);
-    } else {
-        cJSON_AddNullToObject(root, "session_id");
-    }
-
-    cJSON *caps = cJSON_AddObjectToObject(root, "capabilities");
-    cJSON_AddBoolToObject(caps, "mic", true);
-    cJSON_AddBoolToObject(caps, "speaker", true);
-    cJSON_AddBoolToObject(caps, "screen", true);
-    cJSON_AddBoolToObject(caps, "camera", true);
-    cJSON_AddBoolToObject(caps, "sd_card", true);
-    cJSON_AddBoolToObject(caps, "touch", true);
-    /* #266: live JPEG video uplink.  Tab5 sends per-frame binary WS
-     * frames prefixed with the "VID0" 4-byte magic + 4-byte length.
-     * Dragon detects the magic to route video vs audio. */
-    cJSON_AddBoolToObject(caps, "video_send", true);
-    cJSON_AddBoolToObject(caps, "video_recv", true);   /* #268 Phase 3B */
-    cJSON_AddNumberToObject(caps, "video_max_fps", 10);
-    cJSON_AddNumberToObject(caps, "video_format", 0);  /* 0 = JPEG */
-    /* #262: advertise audio codec support.  Dragon picks one and replies
-     * via config_update.audio_codec.  Tab5 stays on PCM (current behavior)
-     * until Dragon switches it.  Per-direction so the broken uplink
-     * encoder (#262 follow-up: silk_NSQ_c crashes on this build) doesn't
-     * starve the working downlink decoder; until the encoder ships,
-     * advertise opus only on the downlink. */
-    cJSON *acodecs = cJSON_AddArrayToObject(caps, "audio_codec");
-    cJSON_AddItemToArray(acodecs, cJSON_CreateString("pcm"));
-#if VOICE_CODEC_OPUS_UPLINK_ENABLED
-    cJSON_AddItemToArray(acodecs, cJSON_CreateString("opus"));
-#endif
-    cJSON *acodecs_dl = cJSON_AddArrayToObject(caps, "audio_downlink_codec");
-    cJSON_AddItemToArray(acodecs_dl, cJSON_CreateString("pcm"));
-    cJSON_AddItemToArray(acodecs_dl, cJSON_CreateString("opus"));
-    /* v4·D audit P0 fix: widget_capability was spec-only -- now wired.
-     * Skills can downgrade widget content for low-end clients (smaller
-     * list, lower image res).  Match the actual Tab5 limits we've
-     * built out across widget_store.c / ui_home.c. */
-    cJSON *widgets = cJSON_AddObjectToObject(caps, "widgets");
-    cJSON *types = cJSON_AddArrayToObject(widgets, "types");
-    cJSON_AddItemToArray(types, cJSON_CreateString("live"));
-    cJSON_AddItemToArray(types, cJSON_CreateString("card"));
-    cJSON_AddItemToArray(types, cJSON_CreateString("list"));
-    cJSON_AddItemToArray(types, cJSON_CreateString("chart"));
-    cJSON_AddItemToArray(types, cJSON_CreateString("media"));
-    cJSON_AddItemToArray(types, cJSON_CreateString("prompt"));
-    cJSON_AddNumberToObject(widgets, "list_max_items", 5);
-    cJSON_AddNumberToObject(widgets, "chart_max_points", 12);
-    cJSON_AddNumberToObject(widgets, "prompt_max_choices", 3);
-    cJSON_AddNumberToObject(widgets, "screen_w", 720);
-    cJSON_AddNumberToObject(widgets, "screen_h", 1280);
-    cJSON_AddNumberToObject(widgets, "media_max_w", 660);
-    cJSON_AddNumberToObject(widgets, "media_max_h", 440);
-    cJSON_AddNumberToObject(widgets, "action_rate_per_sec", 4);
-
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!json) return ESP_ERR_NO_MEM;
-
-    ESP_LOGI(TAG, "Sending register: device=%s hw=%s session=%s",
-             device_id, hardware_id, session_id[0] ? session_id : "(new)");
-
-    esp_err_t err = voice_ws_send_text(json);
-    cJSON_free(json);
-    return err;
-}
 
 // ---------------------------------------------------------------------------
 // US-C02: Generation-guarded async call wrappers.
@@ -697,9 +553,9 @@ typedef struct {
 static void _voice_stop_ws_worker_fn(void *arg)
 {
     (void)arg;
-    if (s_ws) {
+    if (g_voice_ws) {
         ESP_LOGW(TAG, "device_evicted worker: stopping WS client now");
-        esp_websocket_client_stop(s_ws);
+        esp_websocket_client_stop(g_voice_ws);
     }
 }
 
@@ -713,10 +569,10 @@ static void _voice_stop_ws_worker_fn(void *arg)
 static void _voice_auth_fail_stop_worker_fn(void *arg)
 {
     (void)arg;
-    if (s_ws) {
+    if (g_voice_ws) {
         ESP_LOGW(TAG, "auth_failed worker: stopping WS after %d consecutive 401s",
                  s_auth_fail_cnt);
-        esp_websocket_client_stop(s_ws);
+        esp_websocket_client_stop(g_voice_ws);
     }
 }
 
@@ -1074,7 +930,7 @@ static void handle_text_message(const char *data, int len)
             /* FATAL → existing caption path. */
             playback_buf_reset();
             tab5_audio_speaker_enable(false);
-            bool connected = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
+            bool connected = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
             voice_set_state(connected ? VOICE_STATE_READY : VOICE_STATE_IDLE, err_buf);
 
             /* device_evicted: don't loop the eviction.  Stop the WS
@@ -1088,7 +944,7 @@ static void handle_text_message(const char *data, int len)
              * stopped from websocket task" and no-ops).  Hop to the
              * shared worker queue (task_worker.{c,h}) so the stop
              * runs on a non-WS task. */
-            if (strcmp(code_src, "device_evicted") == 0 && s_ws) {
+            if (strcmp(code_src, "device_evicted") == 0 && g_voice_ws) {
                 ESP_LOGW(TAG, "device_evicted: scheduling WS stop to prevent reconnect loop");
                 s_disconnecting = true;
                 tab5_worker_enqueue(_voice_stop_ws_worker_fn, NULL,
@@ -1628,7 +1484,7 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
          * long-running healthy session doesn't get hit with a 30 s
          * delay on its first blip. */
         s_connect_attempt = 0;
-        esp_websocket_client_set_reconnect_timeout(s_ws, WS_CLIENT_BACKOFF_MIN_MS);
+        esp_websocket_client_set_reconnect_timeout(g_voice_ws, WS_CLIENT_BACKOFF_MIN_MS);
 
         esp_err_t reg_err = voice_ws_send_register();
         if (reg_err != ESP_OK) {
@@ -1685,7 +1541,7 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
             ESP_LOGI(TAG, "WS: reconnect attempt=%d backoff=%lums (exp=%lums)",
                      s_connect_attempt, (unsigned long)delay_ms,
                      (unsigned long)exp_ms);
-            esp_websocket_client_set_reconnect_timeout(s_ws, delay_ms);
+            esp_websocket_client_set_reconnect_timeout(g_voice_ws, delay_ms);
         }
         /* #146: WS-level escalation.  If Wi-Fi probes claim we're fine
          * (probe task still sees lan=1/ngrok=1) but the voice WS keeps
@@ -1756,7 +1612,7 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
          * that Tab5 is actively trying, not dead.  The managed WS
          * client's auto-reconnect picks up the new timeout. */
         ESP_LOGI(TAG, "WS: CLOSED — scheduling reconnect");
-        if (s_ws && !s_disconnecting) {
+        if (g_voice_ws && !s_disconnecting) {
             s_connect_attempt++;
             int shift = s_connect_attempt - 1;
             if (shift < 0) shift = 0;
@@ -1768,7 +1624,7 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
             uint32_t delay_ms = half + jitter;
             ESP_LOGI(TAG, "WS: CLOSED reconnect attempt=%d backoff=%lums",
                      s_connect_attempt, (unsigned long)delay_ms);
-            esp_websocket_client_set_reconnect_timeout(s_ws, delay_ms);
+            esp_websocket_client_set_reconnect_timeout(g_voice_ws, delay_ms);
             if (tab5_wifi_connected()) {
                 voice_set_state(VOICE_STATE_RECONNECTING, "closed");
             } else {
@@ -1852,7 +1708,7 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
             if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
             uint32_t half = exp_ms / 2;
             uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
-            esp_websocket_client_set_reconnect_timeout(s_ws, half + jitter);
+            esp_websocket_client_set_reconnect_timeout(g_voice_ws, half + jitter);
         }
 
         /* γ3-Tab5 (issue #198): 401 specifically means auth failed —
@@ -1922,12 +1778,12 @@ static void voice_ws_event_handler(void *arg, esp_event_base_t base,
                 /* set_uri requires a stopped client. The client is
                  * currently between reconnect attempts; stop+set+start
                  * to force it onto the new URI immediately. */
-                esp_websocket_client_stop(s_ws);
-                esp_websocket_client_set_uri(s_ws, ngrok_uri);
+                esp_websocket_client_stop(g_voice_ws);
+                esp_websocket_client_set_uri(g_voice_ws, ngrok_uri);
                 strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
                 s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
                 s_dragon_port = TAB5_NGROK_PORT;
-                esp_websocket_client_start(s_ws);
+                esp_websocket_client_start(g_voice_ws);
             }
         }
         break;
@@ -2002,7 +1858,7 @@ static void mic_capture_task(void *arg)
     int cal_count = 0;
     float dictation_threshold = DICTATION_SILENCE_THRESHOLD;
 
-    bool ws_live = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
+    bool ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
 
     while (s_mic_running && (ws_live || s_voice_mode == VOICE_MODE_DICTATE || s_voice_mode == VOICE_MODE_CALL)) {
         esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
@@ -2057,7 +1913,7 @@ static void mic_capture_task(void *arg)
 
         /* Re-check connection each loop — esp_websocket_client may
          * have reconnected (or gone away) in the background. */
-        ws_live = (s_ws != NULL) && esp_websocket_client_is_connected(s_ws);
+        ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
 
         ui_notes_write_audio(mono_buf, out_idx);
 
@@ -2197,7 +2053,7 @@ static void mic_capture_task(void *arg)
 
     if (s_voice_mode == VOICE_MODE_DICTATE && had_speech
         && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES
-        && s_ws && esp_websocket_client_is_connected(s_ws)) {
+        && g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
         voice_ws_send_text("{\"type\":\"stop\"}");
         voice_set_state(VOICE_STATE_PROCESSING, NULL);
     }
@@ -2587,15 +2443,15 @@ void voice_lan_probe_task(void *arg)
                      lan_host, (unsigned)(lan_port ? lan_port : 3502),
                      TAB5_VOICE_WS_PATH);
             ESP_LOGI(TAG, "Link probe: swapping ngrok -> LAN (%s)", lan_uri);
-            esp_websocket_client_stop(s_ws);
-            esp_websocket_client_set_uri(s_ws, lan_uri);
+            esp_websocket_client_stop(g_voice_ws);
+            esp_websocket_client_set_uri(g_voice_ws, lan_uri);
             strncpy(s_dragon_host, lan_host, sizeof(s_dragon_host) - 1);
             s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
             s_dragon_port = lan_port ? lan_port : 3502;
             s_using_ngrok = false;
             s_handshake_fail_cnt = 0;
             s_connect_attempt = 0;
-            esp_websocket_client_start(s_ws);
+            esp_websocket_client_start(g_voice_ws);
         }
     }
 }
@@ -2634,17 +2490,17 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
 
     /* If client already exists, just re-target the URI.  The managed
      * component requires stop() before set_uri() when started. */
-    if (s_ws) {
+    if (g_voice_ws) {
         ESP_LOGI(TAG, "Re-using existing WS client; set_uri=%s", uri);
         if (s_started) {
-            esp_websocket_client_stop(s_ws);
+            esp_websocket_client_stop(g_voice_ws);
         }
-        esp_err_t ur = esp_websocket_client_set_uri(s_ws, uri);
+        esp_err_t ur = esp_websocket_client_set_uri(g_voice_ws, uri);
         if (ur != ESP_OK) {
             ESP_LOGE(TAG, "set_uri failed: %s", esp_err_to_name(ur));
             return ur;
         }
-        esp_err_t sr = esp_websocket_client_start(s_ws);
+        esp_err_t sr = esp_websocket_client_start(g_voice_ws);
         if (sr != ESP_OK) {
             ESP_LOGE(TAG, "client_start failed: %s", esp_err_to_name(sr));
             return sr;
@@ -2705,26 +2561,26 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
         .crt_bundle_attach      = esp_crt_bundle_attach,
     };
 
-    s_ws = esp_websocket_client_init(&cfg);
-    if (!s_ws) {
+    g_voice_ws = esp_websocket_client_init(&cfg);
+    if (!g_voice_ws) {
         ESP_LOGE(TAG, "esp_websocket_client_init failed");
         return ESP_FAIL;
     }
 
-    esp_err_t er = esp_websocket_register_events(s_ws, WEBSOCKET_EVENT_ANY,
+    esp_err_t er = esp_websocket_register_events(g_voice_ws, WEBSOCKET_EVENT_ANY,
                                                   voice_ws_event_handler, NULL);
     if (er != ESP_OK) {
         ESP_LOGE(TAG, "register_events failed: %s", esp_err_to_name(er));
-        esp_websocket_client_destroy(s_ws);
-        s_ws = NULL;
+        esp_websocket_client_destroy(g_voice_ws);
+        g_voice_ws = NULL;
         return er;
     }
 
-    esp_err_t sr = esp_websocket_client_start(s_ws);
+    esp_err_t sr = esp_websocket_client_start(g_voice_ws);
     if (sr != ESP_OK) {
         ESP_LOGE(TAG, "client_start failed: %s", esp_err_to_name(sr));
-        esp_websocket_client_destroy(s_ws);
-        s_ws = NULL;
+        esp_websocket_client_destroy(g_voice_ws);
+        g_voice_ws = NULL;
         return sr;
     }
     s_started = true;
@@ -2742,7 +2598,7 @@ esp_err_t voice_connect(const char *dragon_host, uint16_t dragon_port)
         ESP_LOGW(TAG, "Disconnect in progress — refusing connect");
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_ws && esp_websocket_client_is_connected(s_ws)) {
+    if (g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
         ESP_LOGW(TAG, "Already connected");
         return ESP_OK;
     }
@@ -2815,7 +2671,7 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port, boo
       ESP_LOGW(TAG, "Disconnect in progress — refusing async connect");
       return ESP_ERR_INVALID_STATE;
    }
-   if (s_ws && esp_websocket_client_is_connected(s_ws)) {
+   if (g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
       ESP_LOGW(TAG, "Already connected");
       if (auto_listen) {
          return voice_start_listening();
@@ -2872,7 +2728,7 @@ esp_err_t voice_start_listening(void)
       return voice_onboard_chain_start();
    }
 
-    bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
+    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
     /* Wave 13 H1: snapshot state once under the mutex so the log and the
      * guard below see the same value, and neither races the WS RX callback. */
     voice_state_t cur_state = voice_get_state();
@@ -2921,7 +2777,7 @@ esp_err_t voice_start_listening(void)
 
 esp_err_t voice_start_dictation(void)
 {
-    bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
+    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
     if (!s_initialized) {
        ESP_LOGE(TAG, "Not initialized");
        return ESP_ERR_INVALID_STATE;
@@ -3030,7 +2886,7 @@ voice_mode_t voice_get_mode(void)
  * voice_video_start_call which calls us here. */
 esp_err_t voice_call_audio_start(void)
 {
-    bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
+    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
     if (!s_initialized || !ws_live) {
         ESP_LOGE(TAG, "voice_call_audio_start: not connected");
         return ESP_ERR_INVALID_STATE;
@@ -3107,7 +2963,7 @@ const char *voice_get_dictation_text(void)
 
 esp_err_t voice_clear_history(void)
 {
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
+    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
     ESP_LOGI(TAG, "Clearing conversation history on Dragon");
     return voice_ws_send_text("{\"type\":\"clear\"}");
 }
@@ -3133,7 +2989,7 @@ esp_err_t voice_stop_listening(void)
     * also flips state from LISTENING → RECONNECTING after 2-3 s
     * while the mic continues to write SD chunks, so the s_state
     * check below has to accept BOTH states for the offline path. */
-   bool offline_dictate = (s_voice_mode == VOICE_MODE_DICTATE) && !(s_ws && esp_websocket_client_is_connected(s_ws));
+   bool offline_dictate = (s_voice_mode == VOICE_MODE_DICTATE) && !(g_voice_ws && esp_websocket_client_is_connected(g_voice_ws));
 
    if (offline_dictate) {
       /* Permissive — mic is running, recording valid, stop should
@@ -3216,7 +3072,7 @@ esp_err_t voice_cancel(void)
     playback_buf_reset();
     tab5_audio_speaker_enable(false);
 
-    bool ws_live = s_ws && esp_websocket_client_is_connected(s_ws);
+    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
     if (ws_live) {
         voice_ws_send_text("{\"type\":\"cancel\"}");
     }
@@ -3277,8 +3133,8 @@ esp_err_t voice_disconnect(void)
      * future voice_connect/_async calls can set_uri + start without
      * re-creating everything. Destroy happens never in practice — the
      * client lives for the lifetime of the process. */
-    if (s_ws && s_started) {
-        esp_websocket_client_stop(s_ws);
+    if (g_voice_ws && s_started) {
+        esp_websocket_client_stop(g_voice_ws);
         s_started = false;
     }
 
@@ -3401,7 +3257,7 @@ esp_err_t voice_send_text(const char *text)
        return fe;
     }
 
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) {
+    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) {
        /* TT #317 Phase 4: WS unreachable — try the K144 failover when
         * the user is in Local mode and the K144 is warm.  Falling back
         * to ESP_ERR_INVALID_STATE if any precondition fails preserves
@@ -3479,7 +3335,7 @@ esp_err_t voice_send_widget_action(const char *card_id, const char *event,
                                    const char *payload_json)
 {
     if (!card_id || !event) return ESP_ERR_INVALID_ARG;
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
+    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
 
     /* Rate limit: 4/sec max (see docs/WIDGETS.md §11). */
     static uint32_t s_action_bucket = 4;
@@ -3518,7 +3374,7 @@ esp_err_t voice_send_widget_action(const char *card_id, const char *event,
 esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
                                       const char *reason)
 {
-    if (!s_ws || !esp_websocket_client_is_connected(s_ws)) return ESP_ERR_INVALID_STATE;
+    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
 
     cJSON *msg = cJSON_CreateObject();
     cJSON_AddStringToObject(msg, "type", "config_update");
@@ -3642,13 +3498,13 @@ void voice_force_reconnect(void)
 {
     /* Stop + start: the managed client will immediately re-attempt the
      * connect handshake, bypassing any pending reconnect_timeout_ms delay. */
-    if (!s_initialized || !s_ws) {
+    if (!s_initialized || !g_voice_ws) {
         ESP_LOGW(TAG, "voice_force_reconnect: client not ready");
         return;
     }
     ESP_LOGI(TAG, "Force reconnect");
-    esp_websocket_client_stop(s_ws);
-    esp_websocket_client_start(s_ws);
+    esp_websocket_client_stop(g_voice_ws);
+    esp_websocket_client_start(g_voice_ws);
     s_started = true;
 }
 
@@ -3792,9 +3648,9 @@ static void upload_chat_image_job(void *arg)
     char *txt = cJSON_PrintUnformatted(frame);
     cJSON_Delete(frame);
     if (!txt) return;
-    if (s_ws && esp_websocket_client_is_connected(s_ws)) {
+    if (g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
         size_t txtlen = strlen(txt);
-        esp_websocket_client_send_text(s_ws, txt, (int)txtlen,
+        esp_websocket_client_send_text(g_voice_ws, txt, (int)txtlen,
                                        portMAX_DELAY);
         ESP_LOGI(TAG, "user_image: announced media_id=%s", media_id);
     } else {
@@ -3825,7 +3681,7 @@ void voice_upload_chat_image(const char *filepath)
  * stop-set_uri-start dance. */
 void voice_reapply_connection_mode(void)
 {
-    if (!s_initialized || !s_ws) {
+    if (!s_initialized || !g_voice_ws) {
         ESP_LOGW(TAG, "reapply_connection_mode: client not ready");
         return;
     }
@@ -3842,5 +3698,5 @@ void voice_reapply_connection_mode(void)
 
 bool voice_is_connected(void)
 {
-    return s_ws && esp_websocket_client_is_connected(s_ws);
+    return g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
 }
