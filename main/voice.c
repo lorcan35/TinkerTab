@@ -57,6 +57,7 @@
 #include "voice_billing.h"   /* SOLID-audit SRP-3: receipt + budget + cap-downgrade */
 #include "voice_codec.h"     /* #262: OPUS encode/decode wrapper */
 #include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
+#include "voice_modes.h"     /* TT #331 Wave 23 SRP-A2: 5-tier mode dispatch */
 #include "voice_video.h"     /* #266: live JPEG streaming */
 #include "voice_widget_ws.h" /* SOLID-audit SRP-2: widget WS verb dispatch */
 #include "voice_ws_proto.h"  /* TT #331 Wave 23 SRP-A1: WS proto layer */
@@ -308,7 +309,8 @@ int s_vision_per_frame_mils = 0;
 char s_vision_model[64] = {0};
 
 // Dictation mode
-static voice_mode_t   s_voice_mode        = VOICE_MODE_ASK;
+/* voice_get_mode() ownership moved to voice_modes.c (TT #331 Wave 23 SRP-A2).
+ * Use voice_modes_set_internal(...) to write, voice_get_mode() to read. */
 /* #280: in-call mute flag (definition near other state; the body
  * lives next to voice_call_audio_set_muted/_is_muted further down). */
 static volatile bool s_call_muted = false;
@@ -327,7 +329,8 @@ char s_dictation_summary[512] = {0};
  * voice_send_text below) and a forward declaration for voice_onboard's
  * public API. */
 int64_t s_ws_last_alive_us = 0;
-#define M5_FAILOVER_GRACE_MS 30000 /* WS down this long before vmode=0 routes to K144 */
+/* M5_FAILOVER_GRACE_MS moved to voice.h (TT #331 Wave 23 SRP-A2) so
+ * voice_modes.c can use it in voice_modes_route_text. */
 
 #include "voice_onboard.h"
 
@@ -579,7 +582,7 @@ static void mic_capture_task(void *arg)
             /* Spurious wakeup — go back to sleep. */
             continue;
         }
-        ESP_LOGI(TAG, "Mic session start (mode=%d)", s_voice_mode);
+        ESP_LOGI(TAG, "Mic session start (mode=%d)", voice_get_mode());
     int frames_sent = 0;
 
     int silence_frames = 0;
@@ -594,7 +597,7 @@ static void mic_capture_task(void *arg)
 
     bool ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
 
-    while (s_mic_running && (ws_live || s_voice_mode == VOICE_MODE_DICTATE || s_voice_mode == VOICE_MODE_CALL)) {
+    while (s_mic_running && (ws_live || voice_get_mode() == VOICE_MODE_DICTATE || voice_get_mode() == VOICE_MODE_CALL)) {
         esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
@@ -660,7 +663,7 @@ static void mic_capture_task(void *arg)
                                                        enc_buf, VOICE_CHUNK_BYTES,
                                                        &send_bytes);
             if (cerr == ESP_OK && send_bytes > 0) {
-                if (s_voice_mode == VOICE_MODE_CALL) {
+                if (voice_get_mode() == VOICE_MODE_CALL) {
                     /* #280: drop the chunk silently when muted.  Mic
                      * loop continues running so RMS / counters stay
                      * fresh — only the WS send is suppressed.  Peer
@@ -692,13 +695,13 @@ static void mic_capture_task(void *arg)
                      * obs event ONCE per dictation so we don't spam if the
                      * loop reconnects/disconnects flapping. */
                     static bool s_dictate_drop_announced = false;
-                    if (!s_dictate_drop_announced && s_voice_mode != VOICE_MODE_ASK) {
+                    if (!s_dictate_drop_announced && voice_get_mode() != VOICE_MODE_ASK) {
                        s_dictate_drop_announced = true;
                        tab5_debug_obs_event("error.dragon", "dictate_drop");
                        char *t = strdup("Dragon dropped — saving to SD; will sync when back");
                        if (t) voice_async_toast(t);
                     }
-                    if (s_voice_mode == VOICE_MODE_ASK) break;
+                    if (voice_get_mode() == VOICE_MODE_ASK) break;
                 }
             } else {
                 ESP_LOGW(TAG, "voice_codec_encode_uplink failed (%d) — dropping chunk",
@@ -707,7 +710,7 @@ static void mic_capture_task(void *arg)
         }
         frames_sent++;
 
-        if (s_voice_mode == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
+        if (voice_get_mode() == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
             ESP_LOGI(TAG, "Max recording duration reached (%ds)",
                      MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
             voice_set_state(VOICE_STATE_LISTENING, "max_duration");
@@ -730,7 +733,7 @@ static void mic_capture_task(void *arg)
             s_current_rms = rms;
         }
 
-        if (s_voice_mode == VOICE_MODE_DICTATE) {
+        if (voice_get_mode() == VOICE_MODE_DICTATE) {
             /* Re-read the just-computed RMS rather than recomputing. */
             float rms = s_current_rms;
 
@@ -785,7 +788,7 @@ static void mic_capture_task(void *arg)
      * reuses them across sessions.  They're freed only at process
      * shutdown (which never happens on the firmware side). */
 
-    if (s_voice_mode == VOICE_MODE_DICTATE && had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES &&
+    if (voice_get_mode() == VOICE_MODE_DICTATE && had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES &&
         g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
        voice_ws_send_text("{\"type\":\"stop\"}");
        voice_set_state(VOICE_STATE_PROCESSING, NULL);
@@ -1483,7 +1486,7 @@ esp_err_t voice_start_listening(void)
     }
 
     ESP_LOGI(TAG, "Starting push-to-talk (ask mode)");
-    s_voice_mode = VOICE_MODE_ASK;
+    voice_modes_set_internal(VOICE_MODE_ASK);
 
     ESP_LOGI(TAG, "Sending {\"type\":\"start\"} to Dragon...");
     esp_err_t err = voice_ws_send_text("{\"type\":\"start\"}");
@@ -1559,7 +1562,7 @@ esp_err_t voice_start_dictation(void)
     bool offline = !ws_live;
 
     ESP_LOGI(TAG, "Starting dictation mode (%s)", offline ? "OFFLINE / SD fallback" : "online / unlimited / STT-only");
-    s_voice_mode = VOICE_MODE_DICTATE;
+    voice_modes_set_internal(VOICE_MODE_DICTATE);
 
     if (!s_dictation_text) {
         s_dictation_text = heap_caps_malloc(DICTATION_TEXT_SIZE, MALLOC_CAP_SPIRAM);
@@ -1603,10 +1606,8 @@ esp_err_t voice_start_dictation(void)
     return ESP_OK;
 }
 
-voice_mode_t voice_get_mode(void)
-{
-    return s_voice_mode;
-}
+/* voice_get_mode moved to voice_modes.c (TT #331 Wave 23 SRP-A2)
+ * — public symbol unchanged; voice.h decl + ABI preserved. */
 
 /* #272 Phase 3E: in-call audio.  Spawns the existing mic capture task
  * in VOICE_MODE_CALL — the loop wraps each chunk with the AUD0 magic
@@ -1627,7 +1628,7 @@ esp_err_t voice_call_audio_start(void)
      * old guard would always block.  Gate on s_mic_running only. */
     if (s_mic_running) {
         ESP_LOGW(TAG, "voice_call_audio_start: mic already running (mode=%d)",
-                 s_voice_mode);
+                 voice_get_mode());
         return ESP_OK;
     }
     if (tab5_settings_get_mic_mute()) {
@@ -1636,7 +1637,7 @@ esp_err_t voice_call_audio_start(void)
     }
 
     ESP_LOGI(TAG, "Starting call audio (VOICE_MODE_CALL)");
-    s_voice_mode = VOICE_MODE_CALL;
+    voice_modes_set_internal(VOICE_MODE_CALL);
     s_mic_running = true;
     if (s_mic_event_sem) xSemaphoreGive(s_mic_event_sem);
     return ESP_OK;
@@ -1649,7 +1650,7 @@ esp_err_t voice_call_audio_start(void)
 
 bool voice_call_audio_set_muted(bool muted)
 {
-    if (s_voice_mode != VOICE_MODE_CALL) {
+    if (voice_get_mode() != VOICE_MODE_CALL) {
         return false;     /* no-op outside a call */
     }
     s_call_muted = muted;
@@ -1664,7 +1665,7 @@ bool voice_call_audio_is_muted(void)
 
 esp_err_t voice_call_audio_stop(void)
 {
-    if (s_voice_mode != VOICE_MODE_CALL || !s_mic_running) {
+    if (voice_get_mode() != VOICE_MODE_CALL || !s_mic_running) {
         return ESP_OK;
     }
     ESP_LOGI(TAG, "Stopping call audio");
@@ -1683,7 +1684,7 @@ esp_err_t voice_call_audio_stop(void)
     }
     if (rx_h) i2s_channel_enable(rx_h);
 
-    s_voice_mode = VOICE_MODE_ASK;   /* return to default for next listen */
+    voice_modes_set_internal(VOICE_MODE_ASK);   /* return to default for next listen */
     return ESP_OK;
 }
 
@@ -1721,7 +1722,7 @@ esp_err_t voice_stop_listening(void)
     * while the mic continues to write SD chunks, so the s_state
     * check below has to accept BOTH states for the offline path. */
    bool offline_dictate =
-       (s_voice_mode == VOICE_MODE_DICTATE) && !(g_voice_ws && esp_websocket_client_is_connected(g_voice_ws));
+       (voice_get_mode() == VOICE_MODE_DICTATE) && !(g_voice_ws && esp_websocket_client_is_connected(g_voice_ws));
 
    if (offline_dictate) {
       /* Permissive — mic is running, recording valid, stop should
@@ -1761,7 +1762,7 @@ esp_err_t voice_stop_listening(void)
       ui_home_show_toast("Saved offline — will sync to Notes when Dragon's back");
       voice_reset_activity_timestamp();
       voice_set_state(VOICE_STATE_READY, "offline_saved");
-      s_voice_mode = VOICE_MODE_ASK;
+      voice_modes_set_internal(VOICE_MODE_ASK);
       return ESP_OK;
    }
 
@@ -1958,53 +1959,35 @@ esp_err_t voice_send_text(const char *text)
 {
     if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
 
-    /* TT #317 Phase 5: VMODE_LOCAL_ONBOARD always routes through the K144,
-     * regardless of WS state.  Lets users go fully Dragon-free for chat;
-     * Dragon WS may still be up (used for things like tool calls in a
-     * future Phase 6) but text turns bypass it entirely. */
-    if (tab5_settings_get_voice_mode() == VMODE_LOCAL_ONBOARD) {
-       /* Audit #3: chain owns the K144 LLM unit while active.  A
-        * concurrent voice_onboard_send_text races the chain on the same
-        * UART (now mutex-serialised post-Wave-1 but still produces
-        * duplicate replies the user didn't ask for).  Refuse cleanly. */
-       if (voice_onboard_chain_active()) {
-          ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD: chain active, refusing text turn");
-          if (tab5_ui_try_lock(100)) {
-             ui_home_show_toast("Stop onboard chat first to send text");
-             tab5_ui_unlock();
-          }
-          return ESP_ERR_INVALID_STATE;
-       }
-
-       esp_err_t fe = voice_onboard_send_text(text);
-       if (fe == ESP_OK) {
-          ESP_LOGI(TAG, "VMODE_LOCAL_ONBOARD — routed to K144");
-          return ESP_OK;
-       }
-       ESP_LOGW(TAG, "VMODE_LOCAL_ONBOARD but K144 unavailable (%s) — refusing send", esp_err_to_name(fe));
-       if (tab5_ui_try_lock(100)) {
-          ui_home_show_toast("Onboard LLM not ready");
-          tab5_ui_unlock();
-       }
-       return fe;
+    /* TT #331 Wave 23 SRP-A2: five-tier routing decision lives in
+     * voice_modes.c.  voice_send_text consumes the result + dispatches. */
+    voice_modes_route_result_t route;
+    voice_modes_route_text(text, &route);
+    switch (route.kind) {
+    case VOICE_MODES_ROUTE_K144_CHAIN_BUSY:
+        if (tab5_ui_try_lock(100)) {
+            ui_home_show_toast("Stop onboard chat first to send text");
+            tab5_ui_unlock();
+        }
+        return route.err;
+    case VOICE_MODES_ROUTE_K144_OK:
+        return ESP_OK;
+    case VOICE_MODES_ROUTE_K144_FAILED:
+        if (tab5_ui_try_lock(100)) {
+            ui_home_show_toast("Onboard LLM not ready");
+            tab5_ui_unlock();
+        }
+        return route.err;
+    case VOICE_MODES_ROUTE_DRAGON_PATH:
+        /* fall through to Dragon WS send below */
+        break;
     }
 
     if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) {
-       /* TT #317 Phase 4: WS unreachable — try the K144 failover when
-        * the user is in Local mode and the K144 is warm.  Falling back
-        * to ESP_ERR_INVALID_STATE if any precondition fails preserves
-        * the existing contract for callers that don't yet handle K144. */
-       const int64_t now_us = esp_timer_get_time();
-       const int64_t down_ms = (s_ws_last_alive_us == 0) ? INT64_MAX : (now_us - s_ws_last_alive_us) / 1000;
-       if (down_ms >= M5_FAILOVER_GRACE_MS && tab5_settings_get_voice_mode() == VMODE_LOCAL) {
-          esp_err_t fe = voice_onboard_send_text(text);
-          if (fe == ESP_OK) {
-             ESP_LOGI(TAG, "WS down %lldms — routed to K144 failover", down_ms);
-             return ESP_OK;
-          }
-          ESP_LOGW(TAG, "WS down but K144 failover unavailable (%s)", esp_err_to_name(fe));
-       }
-       return ESP_ERR_INVALID_STATE;
+        /* Failover already attempted by voice_modes_route_text — if we
+         * reach here in DRAGON_PATH mode the WS is genuinely down and no
+         * K144 fallback was viable.  Surface the existing contract. */
+        return ESP_ERR_INVALID_STATE;
     }
 
     /* Wave 13 H1: snapshot state once so the LISTENING branch and the
@@ -2067,37 +2050,8 @@ esp_err_t voice_send_text(const char *text)
  * SRP-A1) — pure WS-proto concern: builds a JSON frame + calls
  * voice_ws_send_text. */
 
-esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
-                                      const char *reason)
-{
-   if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
-
-   cJSON *msg = cJSON_CreateObject();
-   cJSON_AddStringToObject(msg, "type", "config_update");
-   cJSON_AddNumberToObject(msg, "voice_mode", voice_mode);
-   cJSON_AddBoolToObject(msg, "cloud_mode", voice_mode >= 1);
-   if (voice_mode == 2 && llm_model && llm_model[0]) {
-      cJSON_AddStringToObject(msg, "llm_model", llm_model);
-   }
-    if (reason && reason[0]) {
-        cJSON_AddStringToObject(msg, "reason", reason);
-    }
-    char *json = cJSON_PrintUnformatted(msg);
-    cJSON_Delete(msg);
-    if (!json) return ESP_ERR_NO_MEM;
-
-    ESP_LOGI(TAG, "Sending config_update: voice_mode=%d llm_model=%s reason=%s",
-             voice_mode, (llm_model && llm_model[0]) ? llm_model : "(local)",
-             (reason && reason[0]) ? reason : "(none)");
-    esp_err_t ret = voice_ws_send_text(json);
-    cJSON_free(json);
-    return ret;
-}
-
-esp_err_t voice_send_config_update(int voice_mode, const char *llm_model)
-{
-    return voice_send_config_update_ex(voice_mode, llm_model, NULL);
-}
+/* voice_send_config_update + _ex moved to voice_modes.c (TT #331 Wave 23
+ * SRP-A2). */
 
 float voice_get_current_rms(void)
 {
