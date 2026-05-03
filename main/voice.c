@@ -111,29 +111,10 @@ static const char *TAG = "tab5_voice";
  * us from killing the session while Ollama is genuinely thinking. */
 #define WS_CLIENT_PONG_SEC     180
 
-/* v4·D connectivity audit T1.1: exponential backoff + full jitter on
- * WS reconnect.  Formula per the audit:
- *   exp = min(BACKOFF_CAP_MS, BACKOFF_MIN_MS << min(attempt, 5))
- *   delay = esp_random() % (exp/2) + exp/2   // full jitter [exp/2, exp)
- * attempt resets to 0 on WEBSOCKET_EVENT_CONNECTED.
- * Before: fixed 2 s reconnect -> thundering herd on Dragon reboot. */
-#define WS_CLIENT_BACKOFF_MIN_MS 1000
-#define WS_CLIENT_BACKOFF_CAP_MS 30000
-
-// Ngrok fallback is attempted after this many consecutive failed handshakes
-// against the local LAN URI (only in conn_mode=0 "auto").
-// Raised from 2 to 4 per connectivity audit: co-boot with Dragon almost
-// always fails the first 2 LAN handshakes while Dragon is still loading
-// Moonshine/Piper/Ollama -- raising the threshold stops us from
-// immediately pinning to ngrok on a simple server restart.
-#define NGROK_FALLBACK_THRESHOLD 4
-
-/* γ3-Tab5 (issue #198): stop retrying after this many consecutive
- * 401 handshake failures.  3 is tight enough that a misconfigured
- * device doesn't burn battery / log noise / ngrok bandwidth, but
- * loose enough to absorb a transient 401 during a token-rotation
- * race on Dragon restart. */
-#define WS_AUTH_FAIL_THRESHOLD 3
+/* WS_CLIENT_BACKOFF_MIN_MS, WS_CLIENT_BACKOFF_CAP_MS,
+ * NGROK_FALLBACK_THRESHOLD, WS_AUTH_FAIL_THRESHOLD moved to
+ * voice_ws_proto.c (TT #331 Wave 23 SRP-A1) — only the event handler
+ * inside that TU consumes them. */
 
 // Mic capture task — needs room for AFE feed buffer (960 int16 = 1.9KB)
 // + TDM diagnostics + OPUS encoder (silk_Encode is the heavy consumer,
@@ -167,8 +148,7 @@ static const char *TAG = "tab5_voice";
 #define PLAY_TASK_PRIORITY     9
 #define PLAY_TASK_CORE         1
 
-// Max transcript length
-#define MAX_TRANSCRIPT_LEN     2048
+/* MAX_TRANSCRIPT_LEN moved to voice.h (TT #331 Wave 23 SRP-A1). */
 
 // Dictation mode constants
 #define DICTATION_SILENCE_THRESHOLD  800
@@ -176,7 +156,7 @@ static const char *TAG = "tab5_voice";
 #define DICTATION_AUTO_STOP_FRAMES   250
 #define DICTATION_WARN_3S_FRAMES     150
 #define DICTATION_WARN_4S_FRAMES     200
-#define DICTATION_TEXT_SIZE          65536
+/* DICTATION_TEXT_SIZE moved to voice.h (TT #331 Wave 23 SRP-A1). */
 #define MAX_RECORD_FRAMES_ASK        1500
 
 // ---------------------------------------------------------------------------
@@ -184,12 +164,14 @@ static const char *TAG = "tab5_voice";
 // ---------------------------------------------------------------------------
 static voice_state_t     s_state = VOICE_STATE_IDLE;
 static voice_state_cb_t  s_state_cb = NULL;
-static SemaphoreHandle_t s_state_mutex = NULL;
+/* TT #331 Wave 23 SRP-A1: promoted to non-static so voice_ws_proto.c
+ * can take/give the lock from inside the JSON RX dispatcher. */
+SemaphoreHandle_t s_state_mutex = NULL;
 
 // US-C02: Session generation counter — monotonically increasing.
 // Every lv_async_call from voice tasks captures this value; the callback
 // checks it against the current generation and silently drops stale calls.
-static volatile uint32_t s_session_gen = 0;
+volatile uint32_t s_session_gen = 0;
 
 // WebSocket client (esp_websocket_client managed component)
 /* Wave 14 W14-M03: volatile because g_voice_ws is written on Core 1's WS
@@ -203,25 +185,25 @@ static volatile uint32_t s_session_gen = 0;
 esp_websocket_client_handle_t volatile g_voice_ws = NULL;
 
 // Dragon connection info (last-known, updated on each connect)
-static char     s_dragon_host[64] = {0};
-static uint16_t s_dragon_port     = TAB5_VOICE_PORT;
+char     s_dragon_host[64] = {0};
+uint16_t s_dragon_port     = TAB5_VOICE_PORT;
 
 // Connection tracking
-static volatile bool s_initialized        = false;
+volatile bool s_initialized        = false;
 static volatile bool s_started            = false;  /* esp_websocket_client_start() has been called */
-static volatile bool s_disconnecting      = false;  /* US-C21: guard against connect-during-disconnect race */
-static volatile int  s_handshake_fail_cnt = 0;      /* consecutive handshake failures — trigger ngrok fallback in auto mode */
-static volatile int  s_auth_fail_cnt      = 0;      /* γ3-Tab5 (issue #198): consecutive 401s — trigger stop-retry after WS_AUTH_FAIL_THRESHOLD */
+volatile bool s_disconnecting      = false;  /* US-C21: guard against connect-during-disconnect race */
+volatile int  s_handshake_fail_cnt = 0;      /* consecutive handshake failures — trigger ngrok fallback in auto mode */
+volatile int  s_auth_fail_cnt      = 0;      /* γ3-Tab5 (issue #198): consecutive 401s — trigger stop-retry after WS_AUTH_FAIL_THRESHOLD */
 /* v4·D connectivity audit T1.1: reconnect backoff state.  Counts
  * attempts since the last successful CONNECTED event.  Applied via
  * esp_websocket_client_set_reconnect_timeout inside the ERROR /
  * DISCONNECTED handlers; reset on CONNECTED.  */
-static volatile int  s_connect_attempt   = 0;
+volatile int  s_connect_attempt   = 0;
 /* v4·D connectivity audit T1.3: link health published by probe task. */
 static volatile bool s_lan_tcp_ok        = false;
 static volatile bool s_ngrok_tcp_ok      = false;
 static volatile uint32_t s_last_probe_ms = 0;
-static volatile bool s_using_ngrok        = false;  /* true once we've switched to the ngrok URI */
+volatile bool s_using_ngrok        = false;  /* true once we've switched to the ngrok URI */
 
 // Mic capture task
 static TaskHandle_t  s_mic_task    = NULL;
@@ -266,8 +248,8 @@ static void async_connect_task(void *arg);
 // Playback drain task — pulls from ring buffer, blocks on i2s_channel_write
 static TaskHandle_t      s_play_task    = NULL;
 static volatile bool     s_play_running = false;
-static volatile bool     s_tts_done     = false;  // set by tts_end, drain task transitions to READY
-static SemaphoreHandle_t s_play_sem     = NULL;   // signalled when data is written to ring buf
+volatile bool     s_tts_done     = false;  // set by tts_end, drain task transitions to READY
+SemaphoreHandle_t s_play_sem     = NULL;   // signalled when data is written to ring buf
 
 // Playback ring buffer — allocated in PSRAM
 static int16_t          *s_play_buf      = NULL;
@@ -303,9 +285,9 @@ static SemaphoreHandle_t s_play_mutex    = NULL;
 static int16_t          *s_upsample_buf  = NULL;
 
 // Last transcript from Dragon STT
-static char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
-static char s_stt_text[MAX_TRANSCRIPT_LEN]   = {0};
-static char s_llm_text[MAX_TRANSCRIPT_LEN]   = {0};
+char s_transcript[MAX_TRANSCRIPT_LEN] = {0};
+char s_stt_text[MAX_TRANSCRIPT_LEN]   = {0};
+char s_llm_text[MAX_TRANSCRIPT_LEN]   = {0};
 
 /* v4·D Gauntlet G1: single-slot queued-turn buffer.  When voice_send_text
  * is invoked while the pipeline is busy, the new text is stashed here
@@ -320,19 +302,19 @@ static bool s_queue_pending = false;
  * voice_billing.h if a future caller needs them. */
 
 /* v4·D Phase 4b: cached vision capability from Dragon (camera screen). */
-static bool s_vision_capable   = false;
-static int  s_vision_per_frame_mils = 0;
-static char s_vision_model[64] = {0};
+bool s_vision_capable   = false;
+int  s_vision_per_frame_mils = 0;
+char s_vision_model[64] = {0};
 
 // Dictation mode
 static voice_mode_t   s_voice_mode        = VOICE_MODE_ASK;
 /* #280: in-call mute flag (definition near other state; the body
  * lives next to voice_call_audio_set_muted/_is_muted further down). */
 static volatile bool s_call_muted = false;
-static char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
+char          *s_dictation_text    = NULL;  /* PSRAM-allocated, DICTATION_TEXT_SIZE */
 static volatile float s_current_rms       = 0.0f;
-static char           s_dictation_title[128]   = {0};
-static char           s_dictation_summary[512] = {0};
+char           s_dictation_title[128]   = {0};
+char           s_dictation_summary[512] = {0};
 
 /* Drop counter for audio frames lost under back-pressure (US-C04) was
  * moved to voice_ws_proto.c alongside voice_ws_send_binary (the only
@@ -343,13 +325,13 @@ static char           s_dictation_summary[512] = {0};
  * window for the Local-mode-failover routing decision (see
  * voice_send_text below) and a forward declaration for voice_onboard's
  * public API. */
-static int64_t s_ws_last_alive_us = 0;
+int64_t s_ws_last_alive_us = 0;
 #define M5_FAILOVER_GRACE_MS 30000 /* WS down this long before vmode=0 routes to K144 */
 
 #include "voice_onboard.h"
 
 // Activity timestamp shared with stop_listening for response timeout
-static volatile int64_t s_last_activity_us = 0;
+volatile int64_t s_last_activity_us = 0;
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -359,8 +341,8 @@ static volatile int64_t s_last_activity_us = 0;
 static void _drain_queued_text_job(void *arg);   /* #133 */
 static void mic_capture_task(void *arg);
 static void playback_drain_task(void *arg);
-static void handle_text_message(const char *data, int len);
-static void playback_buf_reset(void);
+/* handle_text_message → voice_ws_proto_handle_text (voice_ws_proto.h, TT #331). */
+/* voice_playback_buf_reset is now public — see voice.h */
 static size_t playback_buf_write(const int16_t *data, size_t samples);
 static size_t playback_buf_read(int16_t *data, size_t max_samples);
 /* TT #331 Wave 23: voice_ws_send_text + voice_ws_send_register +
@@ -466,7 +448,7 @@ static void _drain_queued_text_job(void *arg)
 // ---------------------------------------------------------------------------
 // Playback ring buffer
 // ---------------------------------------------------------------------------
-static void playback_buf_reset(void)
+void voice_playback_buf_reset(void)
 {
     xSemaphoreTake(s_play_mutex, portMAX_DELAY);
     s_play_wr = 0;
@@ -528,810 +510,24 @@ void voice_reset_activity_timestamp(void)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// US-C02: Generation-guarded async call wrappers.
-// ---------------------------------------------------------------------------
-typedef struct {
-    uint32_t gen;
-    char    *text;
-} voice_async_toast_t;
-
-typedef struct {
-    uint32_t gen;
-} voice_async_badge_t;
-
-/* γ2-H8 (issue #196): worker to stop the WS client off the WS task.
- * esp_websocket_client_stop() rejects calls from inside the WS task
- * itself (logs "Client cannot be stopped from websocket task" and
- * no-ops).  This worker runs on the shared task_worker queue, so
- * the stop happens on a different task and actually takes effect.
- *
- * Triggered when Tab5 receives a `device_evicted` error frame —
- * another device claimed our slot, and auto-reconnect would just
- * trigger another eviction.  s_disconnecting was already set in
- * the WS handler so the WEBSOCKET_EVENT_DISCONNECTED branch won't
- * try to reconnect when the stop completes. */
-static void _voice_stop_ws_worker_fn(void *arg)
-{
-    (void)arg;
-    if (g_voice_ws) {
-        ESP_LOGW(TAG, "device_evicted worker: stopping WS client now");
-        esp_websocket_client_stop(g_voice_ws);
-    }
-}
-
-/* γ3-Tab5 (issue #198): worker for the auth-failed stop path.
- * Same task-hop pattern as _voice_stop_ws_worker_fn — must run
- * off the WS task or esp_websocket_client_stop() no-ops.
- * Separate function (not shared with the eviction worker) so the
- * ESP_LOG line clearly identifies WHICH path triggered the stop —
- * makes ops triage on a misconfigured-token device much easier
- * than a generic "stop_ws" trace. */
-static void _voice_auth_fail_stop_worker_fn(void *arg)
-{
-    (void)arg;
-    if (g_voice_ws) {
-        ESP_LOGW(TAG, "auth_failed worker: stopping WS after %d consecutive 401s",
-                 s_auth_fail_cnt);
-        esp_websocket_client_stop(g_voice_ws);
-    }
-}
-
-static void async_show_toast_cb(void *arg)
-{
-    voice_async_toast_t *t = (voice_async_toast_t *)arg;
-    if (!t) return;
-    if (t->gen == s_session_gen && t->text) {
-       ui_home_show_toast(t->text);
-    } else if (t->text) {
-       ESP_LOGD(TAG, "Stale async toast dropped (gen %lu vs %lu)", (unsigned long)t->gen, (unsigned long)s_session_gen);
-    }
-    free(t->text);
-    free(t);
-}
-
-static void async_refresh_badge_cb(void *arg)
-{
-    voice_async_badge_t *b = (voice_async_badge_t *)arg;
-    if (!b) return;
-    if (b->gen == s_session_gen) {
-       ui_home_refresh_mode_badge();
-    } else {
-       ESP_LOGD(TAG, "Stale async badge refresh dropped (gen %lu vs %lu)", (unsigned long)b->gen,
-                (unsigned long)s_session_gen);
-    }
-    free(b);
-}
-
-static void voice_async_toast(char *text)
-{
-    voice_async_toast_t *t = malloc(sizeof(voice_async_toast_t));
-    if (!t) {
-        /* Wave 14 W14-M08: log the silent-drop so ops can see we
-         * squeezed internal SRAM and a user-facing toast never reached
-         * LVGL. */
-        ESP_LOGW(TAG, "voice_async_toast OOM — dropping toast (text=%.40s)",
-                 text ? text : "");
-        free(text);
-        return;
-    }
-    t->gen = s_session_gen;
-    t->text = text;
-    tab5_lv_async_call(async_show_toast_cb, t);
-}
-
-/* TT #328 Wave 3 — async fire of ui_home_show_error_banner from voice WS
- * task.  Persistent error banner survives across the 2-3 s toast lifetime
- * so the user can't miss a fatal-state notification (auth lockout, device
- * eviction, etc).  static-string variant: caller must pass a string literal
- * or otherwise outlives the call (no malloc/free shuttle). */
-typedef struct {
-   const char *text; /* MUST outlive the async dispatch */
-} voice_banner_async_t;
-
-static void async_show_error_banner_cb(void *arg) {
-   voice_banner_async_t *b = (voice_banner_async_t *)arg;
-   if (!b) return;
-   if (b->text) {
-      ui_home_show_error_banner(b->text, NULL /* non-dismissable */);
-   }
-   free(b);
-}
-
-static void voice_async_error_banner(const char *static_text) {
-   if (!static_text) return;
-   voice_banner_async_t *b = malloc(sizeof(*b));
-   if (!b) {
-      ESP_LOGW(TAG, "voice_async_error_banner OOM — banner dropped");
-      return;
-   }
-   b->text = static_text;
-   tab5_lv_async_call(async_show_error_banner_cb, b);
-}
-
-/* TT #328 Wave 2 — dynamic-string banner variant.  Dragon-side error
- * messages (config_update.error, transient `error` frames with
- * non-static strings) need a heap-owned copy so the WS rx task can
- * safely return before LVGL processes the async call.  Strdups into
- * a heap-owned struct, the cb shows the banner + frees both.  Pass
- * `dismissable=true` to allow user-tap dismiss (the standard recovery
- * path); `false` for system-cleared-only banners. */
-typedef struct {
-   char *text; /* heap, freed in cb after lvgl reads it */
-   bool dismissable;
-} voice_banner_dyn_t;
-
-static void async_dismiss_banner_cb(void) {
-   /* Wave 2: tap-to-dismiss handler.  ui_home_show_error_banner installs
-    * us as the cb when dismissable=true; firing means the user
-    * acknowledged so we just clear. */
-   ui_home_clear_error_banner();
-}
-
-static void async_show_error_banner_dyn_cb(void *arg) {
-   voice_banner_dyn_t *b = (voice_banner_dyn_t *)arg;
-   if (!b) return;
-   if (b->text) {
-      ui_home_show_error_banner(b->text, b->dismissable ? async_dismiss_banner_cb : NULL);
-      free(b->text);
-   }
-   free(b);
-}
-
-static void voice_async_error_banner_dyn(const char *text, bool dismissable) {
-   if (!text || !text[0]) return;
-   voice_banner_dyn_t *b = heap_caps_malloc(sizeof(*b), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!b) {
-      ESP_LOGW(TAG, "voice_async_error_banner_dyn OOM (struct) — banner dropped");
-      return;
-   }
-   size_t len = strlen(text) + 1;
-   b->text = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!b->text) {
-      ESP_LOGW(TAG, "voice_async_error_banner_dyn OOM (text) — banner dropped");
-      free(b);
-      return;
-   }
-   memcpy(b->text, text, len);
-   b->dismissable = dismissable;
-   tab5_lv_async_call(async_show_error_banner_dyn_cb, b);
-}
-
-/* TT #328 Wave 2 — recovery-aware banner state.  When config_update.error
- * fires we mark the fallback banner active; on the next successful
- * llm_done we auto-clear it (recovery signal).  Volatile because the
- * flag is written from the WS rx task and read from llm_done handling
- * on the same task — no contention, but the compiler might reorder
- * across the lv_async_call boundary otherwise. */
-static volatile bool s_fallback_banner_active = false;
-
-static void async_clear_banner_cb(void *arg) {
-   (void)arg;
-   ui_home_clear_error_banner();
-}
-
-static void voice_async_refresh_badge(void)
-{
-    voice_async_badge_t *b = malloc(sizeof(voice_async_badge_t));
-    if (!b) {
-        ESP_LOGW(TAG, "voice_async_refresh_badge OOM — badge will lag a tick");
-        return;
-    }
-    b->gen = s_session_gen;
-    tab5_lv_async_call(async_refresh_badge_cb, b);
-}
-
-// ---------------------------------------------------------------------------
-// JSON message handling (Dragon -> Tab5)
+// JSON RX dispatcher + UI-async helpers + worker-fn machinery: extracted to
+// voice_ws_proto.c (TT #331 Wave 23 SRP-A1, Task 1.6).
+//
+// Moved out of voice.c:
+//   - voice_async_toast_t / voice_async_badge_t / voice_banner_async_t / voice_banner_dyn_t typedefs
+//   - _voice_stop_ws_worker_fn / _voice_auth_fail_stop_worker_fn (γ2-H8 / γ3-Tab5)
+//   - async_show_toast_cb / async_refresh_badge_cb / voice_async_toast / voice_async_refresh_badge
+//   - async_show_error_banner_cb / voice_async_error_banner / voice_async_error_banner_dyn
+//   - async_dismiss_banner_cb / async_clear_banner_cb / s_fallback_banner_active
+//   - voice_debug_inject_text (public; declared in voice.h, defined in voice_ws_proto.c)
+//   - handle_text_message (now voice_ws_proto_handle_text in voice_ws_proto.h)
+//
+// Statics promoted out of voice.c via externs in voice.h: s_state_mutex,
+// s_session_gen, s_disconnecting, s_auth_fail_cnt, s_play_sem, s_tts_done,
+// s_transcript, s_stt_text, s_llm_text, s_dictation_text, s_dictation_title,
+// s_dictation_summary, s_vision_capable, s_vision_per_frame_mils, s_vision_model.
 // ---------------------------------------------------------------------------
 
-/* TT #328 Wave 2 — debug entry-point exposed via voice.h so the e2e
- * harness can fire synthetic WS frames into the dispatcher without
- * needing Dragon to misbehave.  Tiny wrapper, no validation beyond
- * the len > 0 guard — the JSON parser inside handle_text_message
- * already rejects malformed input. */
-void voice_debug_inject_text(const char *data, int len) {
-   if (!data || len <= 0) return;
-   handle_text_message(data, len);
-}
-
-static void handle_text_message(const char *data, int len)
-{
-    cJSON *root = cJSON_ParseWithLength(data, len);
-    if (!root) {
-        ESP_LOGW(TAG, "Failed to parse JSON: %.*s", len, data);
-        return;
-    }
-
-    cJSON *type = cJSON_GetObjectItem(root, "type");
-    if (!cJSON_IsString(type)) {
-        ESP_LOGW(TAG, "JSON missing 'type': %.*s", len, data);
-        cJSON_Delete(root);
-        return;
-    }
-
-    const char *type_str = type->valuestring;
-
-    if (strcmp(type_str, "stt_partial") == 0) {
-        cJSON *text = cJSON_GetObjectItem(root, "text");
-        /* U12 (#206): regardless of dictation mode, surface the partial
-         * as a live caption above the chat input pill.  No-op when chat
-         * is closed (s_input is NULL inside ui_chat). */
-        if (cJSON_IsString(text) && text->valuestring) {
-            ui_chat_show_partial(text->valuestring);
-        }
-        if (cJSON_IsString(text) && text->valuestring && s_voice_mode == VOICE_MODE_DICTATE
-            && s_dictation_text) {
-            /* v4·D audit P1 fix: use bounded copy instead of unchecked
-             * strcat.  Previously the guard compared cur+add+2 against
-             * the buffer size, but under mutex-less concurrent writes
-             * cur_len could change between the check and the strcat.
-             * Take the state mutex and re-bound with snprintf so an
-             * overflow is impossible. */
-            if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-            size_t cur_len = strlen(s_dictation_text);
-            size_t remaining = (cur_len + 1 < DICTATION_TEXT_SIZE)
-                               ? (DICTATION_TEXT_SIZE - cur_len - 1) : 0;
-            if (remaining > 1) {
-                const char *sep = (cur_len > 0) ? " " : "";
-                snprintf(s_dictation_text + cur_len, remaining,
-                         "%s%s", sep, text->valuestring);
-            }
-            if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-            ESP_LOGI(TAG, "STT partial: \"%s\" (total %u chars)",
-                     text->valuestring, (unsigned)strlen(s_dictation_text));
-            voice_set_state(VOICE_STATE_LISTENING, s_dictation_text);
-        }
-    } else if (strcmp(type_str, "stt") == 0) {
-        cJSON *text = cJSON_GetObjectItem(root, "text");
-        /* U12 (#206): final STT result lands as a real chat bubble — clear
-         * the live partial caption so it doesn't linger above the pill. */
-        ui_chat_show_partial(NULL);
-        if (cJSON_IsString(text) && text->valuestring) {
-            if (s_voice_mode == VOICE_MODE_DICTATE) {
-                if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-                strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
-                s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
-                if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-                ESP_LOGI(TAG, "Dictation complete: %u chars", (unsigned)strlen(text->valuestring));
-                voice_set_state(VOICE_STATE_READY, "dictation_done");
-            } else {
-                if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-                strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
-                s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
-                strncpy(s_transcript, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
-                s_transcript[MAX_TRANSCRIPT_LEN - 1] = '\0';
-                s_llm_text[0] = '\0';
-                if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-                ESP_LOGI(TAG, "STT: \"%s\"", s_stt_text);
-                ui_chat_push_message("user", text->valuestring);
-                voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
-            }
-        }
-    } else if (strcmp(type_str, "tts_start") == 0) {
-        /* Audit #80 DMA leak hunt (wave 9): log heap state at the 5
-         * interesting boundaries of a chat turn (llm_done, tts_start,
-         * tts_end, media, text_update) so we can diff which stage leaks.
-         * Heap caps are DMA-capable internal SRAM — same pool the WiFi
-         * Rx ring needs to stay alive. */
-        ESP_LOGI(TAG, "TTS start — preparing playback | heap_dma_free=%u largest=%u",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        tab5_audio_speaker_enable(true);
-        playback_buf_reset();
-        voice_set_state(VOICE_STATE_SPEAKING, NULL);
-    } else if (strcmp(type_str, "tts_end") == 0) {
-        ESP_LOGI(TAG, "TTS end — drain task will finish playback | heap_dma_free=%u largest=%u",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        s_tts_done = true;
-        if (s_play_sem) xSemaphoreGive(s_play_sem);
-    } else if (strcmp(type_str, "llm") == 0) {
-        /* TinkerBox #91 follow-up (#193): ignore late llm tokens that
-         * arrive after a cancel.  Tab5 transitions to READY locally on
-         * cancel-send (see voice_cancel below); Dragon now actually
-         * interrupts the LLM stream within ~1 ms (was ~65 s pre-#91),
-         * but tokens already in TCP flight at cancel-time still arrive
-         * a few hundred ms later.  Without this guard, the unconditional
-         * voice_set_state below pulls the orb back into PROCESSING with
-         * the partial cancelled response text — the cancel APPEARS to
-         * not have worked from the user's perspective.
-         *
-         * Honor llm tokens only when the user is actively waiting for a
-         * turn (PROCESSING or SPEAKING).  All other states (READY after
-         * cancel, IDLE on disconnect, LISTENING when a new mic recording
-         * already started) mean the previous turn is no longer the user's
-         * focus and any late tokens belong to a turn they cancelled.
-         */
-        voice_state_t cur_for_llm = voice_get_state();
-        if (cur_for_llm != VOICE_STATE_PROCESSING && cur_for_llm != VOICE_STATE_SPEAKING) {
-            ESP_LOGD(TAG, "llm token ignored — state=%d (post-cancel late arrival)",
-                     cur_for_llm);
-            cJSON_Delete(root);
-            return;
-        }
-        cJSON *text = cJSON_GetObjectItem(root, "text");
-        if (cJSON_IsString(text) && text->valuestring) {
-            if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-            size_t llm_len = strlen(s_llm_text);
-            size_t add_len = strlen(text->valuestring);
-            if (llm_len + add_len < MAX_TRANSCRIPT_LEN - 1) {
-                strcat(s_llm_text, text->valuestring);
-            }
-            size_t cur_len = strlen(s_transcript);
-            if (cur_len + add_len < MAX_TRANSCRIPT_LEN - 1) {
-                strcat(s_transcript, text->valuestring);
-            }
-            if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-            ESP_LOGD(TAG, "LLM token: \"%s\"", text->valuestring);
-            voice_set_state(VOICE_STATE_PROCESSING, s_llm_text);
-        }
-    } else if (strcmp(type_str, "cancel_ack") == 0) {
-        /* TinkerBox #91: server-side confirmation that cancel landed.
-         * Today we just log it — the state machine already transitioned
-         * to READY when voice_cancel was called, and the llm-token
-         * guard above handles the late-arrival grace window.
-         * If we ever add a "definitely no more late tokens, safe to
-         * resume" semantic, this is where it would slot in. */
-        cJSON *cancelled = cJSON_GetObjectItem(root, "cancelled");
-        int n = cJSON_IsArray(cancelled) ? cJSON_GetArraySize(cancelled) : 0;
-        ESP_LOGI(TAG, "cancel_ack: cancelled=%d slot(s)", n);
-    } else if (strcmp(type_str, "error") == 0) {
-        /* γ2-H8 (issue #196): route Dragon error frames by severity.
-         *
-         * Pre-fix every {"type":"error"} frame landed in the voice-
-         * overlay caption regardless of what went wrong — a recoverable
-         * STT-empty toast and an unrecoverable session-invalid banner
-         * both ended up in the same place.  Dragon's γ1 taxonomy
-         * (TinkerBox PR #102) added structured `severity` ("transient"
-         * vs "fatal") and `scope` fields; this handler honours them:
-         *
-         *   - TRANSIENT → non-blocking ui_home_show_toast(), stay in
-         *     READY.  User can keep talking.
-         *   - FATAL → existing voice-state caption path (more
-         *     permanent surface).  Reset playback + speaker since a
-         *     fatal error means we shouldn't keep half-playing TTS.
-         *
-         * Special case: code="device_evicted" (TinkerBox γ2-M5, PR
-         * #109) means another device claimed our slot.  Auto-reconnect
-         * would just trigger an eviction loop, so we set the
-         * disconnect guard + stop the WS client.  User must
-         * power-cycle or re-launch via the debug endpoint.
-         */
-        cJSON *msg       = cJSON_GetObjectItem(root, "message");
-        cJSON *severity  = cJSON_GetObjectItem(root, "severity");
-        cJSON *code      = cJSON_GetObjectItem(root, "code");
-        const char *err_src  = cJSON_IsString(msg) ? msg->valuestring : "unknown";
-        /* Default to "fatal" for unknown / pre-γ1 frames — safer to
-         * surface in caption (more visible) than to silently toast.
-         * Tab5 is forward-compatible with future severity values too:
-         * anything not "transient" routes to caption. */
-        const char *sev_src  = cJSON_IsString(severity) ? severity->valuestring : "fatal";
-        const char *code_src = cJSON_IsString(code) ? code->valuestring : "";
-        ESP_LOGE(TAG, "Dragon error [%s/%s]: %s", sev_src, code_src, err_src);
-
-        char err_buf[128];
-        strncpy(err_buf, err_src, sizeof(err_buf) - 1);
-        err_buf[sizeof(err_buf) - 1] = '\0';
-
-        bool is_transient = (strcmp(sev_src, "transient") == 0);
-
-        if (is_transient) {
-            /* TRANSIENT → toast via the existing voice_async_toast()
-             * helper.  This handler runs on the WS task, NOT the LVGL
-             * task — voice_async_toast() takes ownership of a strdup'd
-             * buffer, queues it via lv_async_call, and stamps the
-             * session_gen so a stale toast from a prior connection
-             * doesn't surface after a reconnect. */
-            char *toast_copy = strdup(err_buf);
-            if (toast_copy) {
-                voice_async_toast(toast_copy);
-            }
-        } else {
-            /* FATAL → existing caption path. */
-            playback_buf_reset();
-            tab5_audio_speaker_enable(false);
-            bool connected = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
-            voice_set_state(connected ? VOICE_STATE_READY : VOICE_STATE_IDLE, err_buf);
-
-            /* device_evicted: don't loop the eviction.  Stop the WS
-             * client + set the disconnect guard so the
-             * WEBSOCKET_EVENT_DISCONNECTED handler doesn't try to
-             * reconnect.  User regains connectivity via power-cycle
-             * or the /voice/reconnect debug endpoint.
-             *
-             * IMPORTANT: esp_websocket_client_stop() rejects calls
-             * from the WS task itself (logs "Client cannot be
-             * stopped from websocket task" and no-ops).  Hop to the
-             * shared worker queue (task_worker.{c,h}) so the stop
-             * runs on a non-WS task. */
-            if (strcmp(code_src, "device_evicted") == 0 && g_voice_ws) {
-                ESP_LOGW(TAG, "device_evicted: scheduling WS stop to prevent reconnect loop");
-                s_disconnecting = true;
-                tab5_worker_enqueue(_voice_stop_ws_worker_fn, NULL,
-                                    "device_evicted_stop");
-            }
-        }
-    } else if (strcmp(type_str, "session_start") == 0) {
-        cJSON *sid = cJSON_GetObjectItem(root, "session_id");
-        if (cJSON_IsString(sid) && sid->valuestring) {
-            tab5_settings_set_session_id(sid->valuestring);
-            ESP_LOGI(TAG, "Session: %s", sid->valuestring);
-        }
-        cJSON *resumed = cJSON_GetObjectItem(root, "resumed");
-        cJSON *msg_cnt = cJSON_GetObjectItem(root, "message_count");
-        ESP_LOGI(TAG, "session_start: resumed=%s messages=%d",
-                 (cJSON_IsTrue(resumed) ? "yes" : "no"),
-                 cJSON_IsNumber(msg_cnt) ? msg_cnt->valueint : 0);
-
-        if (s_state == VOICE_STATE_CONNECTING) {
-            voice_set_state(VOICE_STATE_READY, NULL);
-            ESP_LOGI(TAG, "Connected to Dragon voice server");
-
-            uint8_t saved_mode = tab5_settings_get_voice_mode();
-            char saved_model[64] = {0};
-            tab5_settings_get_llm_model(saved_model, sizeof(saved_model));
-            ESP_LOGI(TAG, "Restoring voice_mode=%d model='%s' on reconnect",
-                     saved_mode, saved_model[0] ? saved_model : "(default)");
-            voice_send_config_update((int)saved_mode,
-                                     saved_model[0] ? saved_model : NULL);
-
-            ui_notes_sync_pending();
-        }
-    } else if (strcmp(type_str, "session_messages") == 0) {
-        /* Audit C8/K15 (2026-04-20): Dragon replays the tail of session
-         * messages on a resumed connect.  Rehydrate chat_store so the
-         * user sees their conversation after a reconnect.  Pushed via
-         * ui_chat_push_message which is thread-safe + lv_async_call'd. */
-        cJSON *items = cJSON_GetObjectItem(root, "items");
-        if (cJSON_IsArray(items)) {
-            int n = cJSON_GetArraySize(items);
-            ESP_LOGI(TAG, "session_messages replay: %d items", n);
-            for (int i = 0; i < n; i++) {
-                cJSON *m = cJSON_GetArrayItem(items, i);
-                if (!m) continue;
-                const char *role = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(m, "role"));
-                const char *content = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(m, "content"));
-                if (!role || !content || !content[0]) continue;
-                /* Skip system/tool rows — chat UI only renders
-                 * user/assistant today. */
-                if (strcmp(role, "user") != 0 &&
-                    strcmp(role, "assistant") != 0) continue;
-                ui_chat_push_message(role, content);
-            }
-        }
-    } else if (strcmp(type_str, "dictation_postprocessing") == 0) {
-        /* TinkerBox#94 H4: Dragon spawned the title+summary LLM call after
-         * `stt`.  Pre-fix the user stared at the bare transcript for
-         * 10-20 s with no signal that more was coming.  Show a status
-         * caption so the wait feels intentional. */
-        ESP_LOGI(TAG, "Dictation post-process started");
-        voice_set_state(VOICE_STATE_PROCESSING, "Generating summary...");
-    } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
-        /* TinkerBox#94 H4: LLM failed or wasn't available.  Note already
-         * saved (the transcript landed via the prior `stt` event); user
-         * just doesn't get an auto-generated title/summary.  Clear the
-         * "Generating summary..." caption and toast the friendly
-         * message. */
-        cJSON *msg = cJSON_GetObjectItem(root, "message");
-        const char *m = cJSON_IsString(msg) ? msg->valuestring
-                                            : "Note saved — summary unavailable";
-        ESP_LOGW(TAG, "Dictation post-process error: %s", m);
-        char buf[160];
-        strncpy(buf, m, sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
-        voice_async_toast(strdup(buf));
-        voice_set_state(VOICE_STATE_READY, "dictation_done");
-    } else if (strcmp(type_str, "dictation_postprocessing_cancelled") == 0) {
-       /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
-        * post-process.  The new dictation will emit its own
-        * `dictation_postprocessing` event a few ms later — silently log
-        * here so we don't fight the new caption.
-        *
-        * TT #328 Wave 2 (audit error-surfacing) — the original handler
-        * was log-only, but on the cancellation-WITHOUT-followup path
-        * (Dragon shut down, user disconnected mid-dictation, failover
-        * race) the user is left staring at "Generating summary..."
-        * forever because no dictation_postprocessing comes to override
-        * it.  Reset to READY so the caption clears; if a legitimate
-        * follow-up _postprocessing fires it'll re-set the caption a
-        * few ms later anyway, no UI flicker visible. */
-       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
-       voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
-    } else if (strcmp(type_str, "dictation_summary") == 0) {
-        cJSON *title = cJSON_GetObjectItem(root, "title");
-        cJSON *summary = cJSON_GetObjectItem(root, "summary");
-        if (cJSON_IsString(title)) {
-            strncpy(s_dictation_title, title->valuestring, sizeof(s_dictation_title) - 1);
-            s_dictation_title[sizeof(s_dictation_title) - 1] = '\0';
-        }
-        if (cJSON_IsString(summary)) {
-            strncpy(s_dictation_summary, summary->valuestring, sizeof(s_dictation_summary) - 1);
-            s_dictation_summary[sizeof(s_dictation_summary) - 1] = '\0';
-        }
-        ESP_LOGI(TAG, "Dictation summary: \"%s\"", s_dictation_title);
-        voice_set_state(VOICE_STATE_READY, "dictation_summary");
-    } else if (strcmp(type_str, "note_created") == 0) {
-        cJSON *nid = cJSON_GetObjectItem(root, "note_id");
-        cJSON *ntitle = cJSON_GetObjectItem(root, "title");
-        ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"",
-                 cJSON_IsString(nid) ? nid->valuestring : "?",
-                 cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
-    } else if (strcmp(type_str, "llm_done") == 0) {
-        cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
-        ESP_LOGI(TAG, "LLM done (%.0fms) | heap_dma_free=%u largest=%u",
-                 cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-        /* TT #328 Wave 2 — recovery hook.  The fallback banner that fires
-         * on config_update.error sticks until the user dismisses or until
-         * a successful turn comes back through.  llm_done is the
-         * canonical "things are working again" signal — clear it here so
-         * the user sees the "things are back to normal" state without
-         * having to manually tap the banner. */
-        if (s_fallback_banner_active) {
-           ESP_LOGI(TAG, "Wave 2: clearing fallback banner (recovery via llm_done)");
-           s_fallback_banner_active = false;
-           tab5_lv_async_call(async_clear_banner_cb, NULL);
-        }
-        /* #293: emit obs event for e2e harness. */
-        {
-           char latency_str[24];
-           snprintf(latency_str, sizeof(latency_str), "%.0f", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0);
-           tab5_debug_obs_event("chat.llm_done", latency_str);
-        }
-        /* Prefer the full text field in llm_done (TC bypass uses it)
-         * falling back to the accumulated streamed tokens. */
-        cJSON *full = cJSON_GetObjectItem(root, "text");
-        const char *bubble_text = s_llm_text;
-        if (cJSON_IsString(full) && full->valuestring && full->valuestring[0]) {
-            bubble_text = full->valuestring;
-        }
-        if (bubble_text && bubble_text[0]) {
-            /* #78 + #160: defensive Tab5-side scrub of any <tool>...</tool>
-             * + <args>...</args> markers that survived Dragon's
-             * server-side stripper.  Without this the user sometimes
-             * sees raw "<tool>recall</tool><args>{\"query\":...}</args>"
-             * land as a chat bubble (caught by the audit screenshot in
-             * #160).  The strip handles the bubble destined for chat;
-             * s_llm_text continues to hold the raw text in case other
-             * paths need it. */
-            char clean[MAX_TRANSCRIPT_LEN];
-            md_strip_tool_markers(bubble_text, clean, sizeof(clean));
-            if (clean[0]) {
-                ui_chat_push_message("assistant", clean);
-            }
-        }
-        /* v4·D TC polish: if no TTS is coming (TC bypass never sends
-         * tts_start -- gateway is text-only), transition to READY
-         * directly.  Without this, state sits in PROCESSING forever
-         * after a TC text turn, chat input pill stays on "Thinking...",
-         * voice overlay stays blocked. */
-        if (s_state == VOICE_STATE_PROCESSING) {
-            voice_set_state(VOICE_STATE_READY, "llm_done");
-        }
-    } else if (strcmp(type_str, "receipt") == 0) {
-       /* SOLID-audit SRP-3 (2026-05-03): receipt accounting + cap-downgrade
-        * policy + chat-bubble stamp deferral all moved to voice_billing.c.
-        * Voice.c parses the JSON fields and hands them in typed; the
-        * billing module owns the rest of the chain. */
-       const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(root, "model"));
-       cJSON *ptok = cJSON_GetObjectItem(root, "prompt_tokens");
-       cJSON *ctok = cJSON_GetObjectItem(root, "completion_tokens");
-       cJSON *mils = cJSON_GetObjectItem(root, "cost_mils");
-       cJSON *retried_j = cJSON_GetObjectItem(root, "retried");
-       voice_billing_record_receipt(model, cJSON_IsNumber(ptok) ? (int)ptok->valuedouble : 0,
-                                    cJSON_IsNumber(ctok) ? (int)ctok->valuedouble : 0,
-                                    cJSON_IsNumber(mils) ? (int)mils->valuedouble : 0, cJSON_IsTrue(retried_j));
-    } else if (strcmp(type_str, "text_update") == 0) {
-        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(root, "text"));
-        if (text) {
-            ESP_LOGI(TAG, "Text update: replacing last AI message");
-            ui_chat_update_last_message(text);
-        }
-    } else if (strcmp(type_str, "vision_capability") == 0) {
-        /* v4·D Phase 4b: Dragon advertises which model (if any) can see a
-         * camera frame.  Cached for ui_camera to render its violet chip.
-         * Empty/zero on local-only or non-vision models.  Triggered via
-         * Dragon's config_update ACK path so it lands whenever mode
-         * changes. */
-        cJSON *can = cJSON_GetObjectItem(root, "can_see");
-        cJSON *mdl = cJSON_GetObjectItem(root, "model");
-        cJSON *fpm = cJSON_GetObjectItem(root, "per_frame_mils");
-        s_vision_capable = cJSON_IsTrue(can);
-        s_vision_per_frame_mils = cJSON_IsNumber(fpm) ? (int)fpm->valuedouble : 0;
-        const char *m = (cJSON_IsString(mdl) && mdl->valuestring) ? mdl->valuestring : "";
-        snprintf(s_vision_model, sizeof(s_vision_model), "%s", m);
-        ESP_LOGI(TAG, "Vision capability: %s (model=%s, per_frame=%d mils)",
-                 s_vision_capable ? "YES" : "no",
-                 s_vision_model[0] ? s_vision_model : "none",
-                 s_vision_per_frame_mils);
-    } else if (strcmp(type_str, "pong") == 0) {
-        /* Dragon-level JSON pong — logged only. WS-level ping/pong is
-         * handled automatically by esp_websocket_client (pingpong_timeout_sec). */
-        ESP_LOGD(TAG, "App-level pong");
-    } else if (strcmp(type_str, "config_update") == 0) {
-        cJSON *error = cJSON_GetObjectItem(root, "error");
-        if (cJSON_IsString(error) && error->valuestring[0]) {
-            ESP_LOGW(TAG, "Config update error from Dragon: %s", error->valuestring);
-            /* TT #317 Phase 5: don't clobber a Tab5-only ONBOARD pick. */
-            if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
-               tab5_settings_set_voice_mode(0);
-            }
-            voice_async_refresh_badge();
-            {
-                size_t elen = strlen(error->valuestring);
-                if (elen > 80) elen = 80;
-                char *toast_msg = malloc(elen + 1);
-                if (toast_msg) {
-                    memcpy(toast_msg, error->valuestring, elen);
-                    toast_msg[elen] = '\0';
-                    voice_async_toast(toast_msg);
-                }
-            }
-            /* TT #328 Wave 2 (audit error-surfacing) — toast was the
-             * only surface; auto-dismissed in 3 s.  Users glancing
-             * away missed the fact that they got auto-downgraded to
-             * Local + lost cloud STT/TTS quality.  Pair the toast
-             * with a persistent dismissable error banner that sits
-             * until the user acknowledges OR until the next
-             * successful llm_done auto-clears it (recovery signal). */
-            voice_async_error_banner_dyn(error->valuestring, true /* dismissable */);
-            s_fallback_banner_active = true;
-            voice_set_state(VOICE_STATE_READY, error->valuestring);
-        }
-        cJSON *vmode = cJSON_GetObjectItem(root, "voice_mode");
-        if (!cJSON_IsNumber(vmode)) {
-            cJSON *config_obj = cJSON_GetObjectItem(root, "config");
-            if (config_obj) {
-                vmode = cJSON_GetObjectItem(config_obj, "voice_mode");
-            }
-        }
-        if (cJSON_IsNumber(vmode)) {
-            uint8_t mode = (uint8_t)vmode->valueint;
-            /* TT #317 Phase 5: ONBOARD is Tab5-side-only.  Dragon never
-             * knows about it — its ACK always echoes 0/1/2/3.  If user
-             * has set ONBOARD locally, ignore Dragon's echo. */
-            if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
-               tab5_settings_set_voice_mode(mode);
-               ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
-            } else {
-               ESP_LOGD(TAG, "Config update: ignoring Dragon vmode=%d (we're in ONBOARD)", mode);
-            }
-            voice_async_refresh_badge();
-        }
-        cJSON *config = cJSON_GetObjectItem(root, "config");
-        bool applied_cloud = false;
-        if (config) {
-            cJSON *cloud = cJSON_GetObjectItem(config, "cloud_mode");
-            if (cJSON_IsBool(cloud)) {
-                bool is_cloud = cJSON_IsTrue(cloud);
-                if (!cJSON_IsNumber(vmode)) {
-                    tab5_settings_set_voice_mode(is_cloud ? 1 : 0);
-                    voice_async_refresh_badge();
-                    applied_cloud = true;
-                }
-            }
-        }
-        /* #262: codec negotiation reply.  Dragon picks one of the
-         * codecs Tab5 advertised in `register` and tells us via
-         * config_update.audio_codec.  Two flavours so it can choose
-         * uplink (mic) and downlink (TTS) independently:
-         *   - audio_codec        : applies to both (legacy / shorthand)
-         *   - audio_uplink_codec : mic only
-         *   - audio_downlink_codec: TTS only
-         * Unrecognized strings fall back to PCM. */
-        cJSON *acu = cJSON_GetObjectItem(root, "audio_uplink_codec");
-        cJSON *acd = cJSON_GetObjectItem(root, "audio_downlink_codec");
-        cJSON *ac  = cJSON_GetObjectItem(root, "audio_codec");
-        if (cJSON_IsString(acu)) {
-            voice_codec_set_uplink(voice_codec_from_name(acu->valuestring));
-        } else if (cJSON_IsString(ac)) {
-            voice_codec_set_uplink(voice_codec_from_name(ac->valuestring));
-        }
-        if (cJSON_IsString(acd)) {
-            voice_codec_set_downlink(voice_codec_from_name(acd->valuestring));
-        } else if (cJSON_IsString(ac)) {
-            voice_codec_set_downlink(voice_codec_from_name(ac->valuestring));
-        }
-        /* Wave 14 W14-L03: if neither voice_mode nor cloud_mode was
-         * present, the handler used to exit silently and Tab5 would
-         * disagree with Dragon about the active mode with no trace.
-         * Log at DEBUG so it's visible via /log without spamming INFO. */
-        if (!cJSON_IsNumber(vmode) && !applied_cloud &&
-            !cJSON_IsString(error)) {
-            ESP_LOGD(TAG, "config_update received with no voice_mode/"
-                         "cloud_mode/error field — no-op");
-        }
-    } else if (strcmp(type_str, "tool_call") == 0) {
-        cJSON *tool = cJSON_GetObjectItem(root, "tool");
-        const char *tool_name = cJSON_IsString(tool) ? tool->valuestring : "unknown";
-        ESP_LOGI(TAG, "Tool call: %s", tool_name);
-
-        const char *status_text = "Thinking...";
-        if (strcmp(tool_name, "web_search") == 0) {
-            status_text = "Searching the web...";
-        } else if (strcmp(tool_name, "remember") == 0 || strcmp(tool_name, "memory_store") == 0) {
-            status_text = "Remembering...";
-        } else if (strcmp(tool_name, "memory_search") == 0 || strcmp(tool_name, "recall") == 0) {
-            status_text = "Recalling...";
-        } else if (strcmp(tool_name, "browser") == 0 || strcmp(tool_name, "browse") == 0) {
-            status_text = "Browsing...";
-        } else if (strcmp(tool_name, "calculator") == 0 || strcmp(tool_name, "math") == 0) {
-            status_text = "Calculating...";
-        } else {
-            status_text = "Using tools...";
-        }
-        voice_set_state(VOICE_STATE_PROCESSING, status_text);
-        /* Tab5 audit D5: also push a system bubble so the user can see
-         * tool activity in chat (not just on the voice overlay label).
-         * CLAUDE.md's "thinking + tool indicator bubbles" claim was wired
-         * only to the overlay-state string previously. */
-        ui_chat_push_system(status_text);
-        /* U7+U8 (#206): record activity so the agents/focus surfaces
-         * can render real history instead of the v5 demo rows. */
-        tool_log_push_call(tool_name, status_text);
-    } else if (strcmp(type_str, "tool_result") == 0) {
-        cJSON *tool = cJSON_GetObjectItem(root, "tool");
-        cJSON *exec_ms = cJSON_GetObjectItem(root, "execution_ms");
-        const char *tool_name = cJSON_IsString(tool) ? tool->valuestring : "unknown";
-        double ms = cJSON_IsNumber(exec_ms) ? exec_ms->valuedouble : 0.0;
-        ESP_LOGI(TAG, "Tool result: %s (%.0fms)", tool_name, ms);
-        voice_set_state(VOICE_STATE_PROCESSING, "Thinking...");
-        /* Tab5 audit D5: close the loop with a completion bubble so the
-         * chat timeline shows what ran + how long it took. */
-        char done_buf[80];
-        snprintf(done_buf, sizeof(done_buf), "%s done (%.0fms)",
-                 tool_name, ms);
-        ui_chat_push_system(done_buf);
-        /* U7+U8 (#206): mark the tool_log entry done so the
-         * agents/focus surfaces can show "DONE  •  234 ms". */
-        tool_log_push_result(tool_name, (uint32_t)ms);
-    } else if (strcmp(type_str, "media") == 0) {
-        const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
-        const char *mtype = cJSON_GetStringValue(cJSON_GetObjectItem(root, "media_type"));
-        cJSON *w_item = cJSON_GetObjectItem(root, "width");
-        cJSON *h_item = cJSON_GetObjectItem(root, "height");
-        int w = cJSON_IsNumber(w_item) ? (int)w_item->valuedouble : 0;
-        int h = cJSON_IsNumber(h_item) ? (int)h_item->valuedouble : 0;
-        const char *alt = cJSON_GetStringValue(cJSON_GetObjectItem(root, "alt"));
-        if (url) {
-            ESP_LOGI(TAG, "Media: %s %dx%d", mtype ? mtype : "image", w, h);
-            ui_chat_push_media(url, mtype, w, h, alt);
-        }
-    } else if (strcmp(type_str, "card") == 0) {
-        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "title"));
-        const char *sub = cJSON_GetStringValue(cJSON_GetObjectItem(root, "subtitle"));
-        const char *img = cJSON_GetStringValue(cJSON_GetObjectItem(root, "image_url"));
-        const char *desc = cJSON_GetStringValue(cJSON_GetObjectItem(root, "description"));
-        if (title) {
-            ESP_LOGI(TAG, "Card: %s", title);
-            ui_chat_push_card(title, sub, img, desc);
-        }
-        /* Wave 23b SOLID-audit SRP-2: nine widget WS verbs (widget_card,
-         * widget_live, widget_live_update, widget_list, widget_chart,
-         * widget_media, widget_prompt, widget_live_dismiss, widget_dismiss)
-         * extracted to voice_widget_ws.{c,h}.  Returns true iff the verb
-         * was recognized + handled; false falls through to the unknown-
-         * verb log below. */
-    } else if (voice_widget_ws_dispatch(type_str, root)) {
-       /* widget verb handled inside voice_widget_ws.c */
-    } else if (strcmp(type_str, "audio_clip") == 0) {
-       const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(root, "url"));
-       cJSON *dur_item = cJSON_GetObjectItem(root, "duration_s");
-       float dur = cJSON_IsNumber(dur_item) ? (float)dur_item->valuedouble : 0.0f;
-       const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(root, "label"));
-       if (url) {
-          ESP_LOGI(TAG, "Audio clip: %s (%.1fs)", label ? label : "", dur);
-          ui_chat_push_audio_clip(url, dur, label);
-       }
-    } else {
-       ESP_LOGW(TAG, "Unknown message type: %s (full: %.*s)", type_str, len, data);
-    }
-
-    cJSON_Delete(root);
-}
 
 // ---------------------------------------------------------------------------
 // Binary frame handling (TTS audio from Dragon) — called from event handler.
@@ -1353,7 +549,7 @@ static size_t upsample_16k_to_48k(const int16_t *in, size_t in_samples,
     return out_idx;
 }
 
-static void handle_binary_message(const char *data, int len)
+void handle_binary_message(const char *data, int len)
 {
     /* #268: video frames carry the 4-byte "VID0" magic.  Route them
      * to voice_video before any audio-state checks — video plays
@@ -1400,7 +596,7 @@ static void handle_binary_message(const char *data, int len)
         return;
     }
     if (cur == VOICE_STATE_PROCESSING) {
-        playback_buf_reset();
+        voice_playback_buf_reset();
         voice_set_state(VOICE_STATE_SPEAKING, NULL);
     }
 
@@ -1437,371 +633,11 @@ static void handle_binary_message(const char *data, int len)
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket event handler (runs on esp_websocket_client's internal task)
+// WebSocket event handler + URI helper: extracted to voice_ws_proto.c
+// (TT #331 Wave 23 SRP-A1, Tasks 1.6/1.8/1.9 combined for dep-closure).
+// Statics promoted to extern for cross-TU access (see voice.h).
 // ---------------------------------------------------------------------------
-static void voice_ws_event_handler(void *arg, esp_event_base_t base,
-                                    int32_t event_id, void *event_data)
-{
-    esp_websocket_event_data_t *data = (esp_websocket_event_data_t *)event_data;
 
-    switch ((esp_websocket_event_id_t)event_id) {
-    case WEBSOCKET_EVENT_BEFORE_CONNECT:
-        ESP_LOGI(TAG, "WS: BEFORE_CONNECT (host=%s%s)",
-                 s_dragon_host, s_using_ngrok ? " [ngrok]" : "");
-        voice_set_state(VOICE_STATE_CONNECTING, s_dragon_host);
-        break;
-
-    case WEBSOCKET_EVENT_CONNECTED: {
-        ESP_LOGI(TAG, "WS: CONNECTED — sending register frame");
-        /* #293: emit obs event for e2e harness. */
-        tab5_debug_obs_event("ws.connect", "");
-        /* TT #317 Phase 4: stamp WS-alive so the K144 failover gate can
-         * measure how long Dragon's been down before engaging. */
-        s_ws_last_alive_us = esp_timer_get_time();
-        /* TT #317 Phase 5: if a K144 failover engaged during the down
-         * period, surface "Dragon reconnected" so the user knows the
-         * next turn is back on the cloud/LAN brain.  Wave 4b: the flag
-         * lives in voice_onboard now; consume_engagement_flag returns
-         * true once and clears, so the toast fires exactly once per
-         * disconnect cycle. */
-        if (voice_onboard_consume_engagement_flag()) {
-           ESP_LOGI(TAG, "WS reconnected after K144 failover — toast 'Dragon reconnected'");
-           if (tab5_ui_try_lock(100)) {
-              ui_home_show_toast("Dragon reconnected");
-              tab5_ui_unlock();
-           }
-        }
-        /* US-C02: bump session gen on every successful connect. */
-        s_session_gen++;
-        s_handshake_fail_cnt = 0;
-        /* γ3-Tab5 (issue #198): clear the auth-fail counter on a
-         * successful connect so a transient 401 (e.g. a token-rotation
-         * race during Dragon restart) doesn't get sticky after Dragon
-         * recovers.  Only a sustained run of 401s should trip the
-         * stop-retry — recovery must self-heal. */
-        s_auth_fail_cnt = 0;
-        /* T1.1: reset backoff state on every successful connect so a
-         * long-running healthy session doesn't get hit with a 30 s
-         * delay on its first blip. */
-        s_connect_attempt = 0;
-        esp_websocket_client_set_reconnect_timeout(g_voice_ws, WS_CLIENT_BACKOFF_MIN_MS);
-
-        esp_err_t reg_err = voice_ws_send_register();
-        if (reg_err != ESP_OK) {
-            ESP_LOGE(TAG, "WS: register send failed (%s)", esp_err_to_name(reg_err));
-            /* Let auto-reconnect re-attempt. */
-        }
-        /* Don't set READY yet — wait for Dragon's session_start reply so
-         * we know the backend pipeline is fully up. Keep state CONNECTING
-         * until session_start arrives (~6s model load on first boot). */
-        break;
-    }
-
-    case WEBSOCKET_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "WS: DISCONNECTED");
-        { tab5_debug_obs_event("ws.disconnect", ""); }
-        /* Flush playback so we don't keep speaking into a dead pipe. */
-        playback_buf_reset();
-        tab5_audio_speaker_enable(false);
-        /* Tab5 audit F5 (2026-04-20): if the drop landed MID-TURN (voice
-         * state was PROCESSING or SPEAKING), surface a toast so the user
-         * knows why the reply stopped.  Previously a mid-turn Dragon
-         * crash was silent — just a frozen overlay + no answer.  The
-         * home status-bar pill already picks up RECONNECTING via
-         * voice_get_degraded_reason(), so the toast is a short-lived
-         * orient-the-user signal, not the permanent indicator.
-         *
-         * Wave 7 F5 completion (2026-04-21): also pulse the halo orb
-         * rose for ~2.5 s so the visual signal matches the audit spec
-         * ("toast + rose orb pulse"). Toast alone was easy to miss if
-         * the user was looking at the chat area rather than the home
-         * card. ui_home_pulse_orb_alert reverts to the mode-default
-         * orb paint via an LVGL one-shot timer. */
-        {
-            voice_state_t cur = s_state;
-            if ((cur == VOICE_STATE_PROCESSING || cur == VOICE_STATE_SPEAKING) && !s_disconnecting) {
-               tab5_lv_async_call((lv_async_cb_t)ui_home_show_toast, (void *)"Dragon dropped mid-turn - reconnecting");
-               tab5_lv_async_call((lv_async_cb_t)ui_home_pulse_orb_alert, NULL);
-            }
-        }
-        /* T1.1: bump attempt counter + apply exponential-with-full-jitter
-         * backoff to the client's reconnect timer.  Prevents thundering
-         * herd if multiple Tab5s share the same Dragon + avoids 2 s
-         * hammering against a server that's 20 s into its restart. */
-        s_connect_attempt++;
-        {
-            int shift = s_connect_attempt - 1;
-            if (shift < 0) shift = 0;
-            if (shift > 5) shift = 5;
-            uint32_t exp_ms = WS_CLIENT_BACKOFF_MIN_MS << shift;
-            if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
-            uint32_t half = exp_ms / 2;
-            uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
-            uint32_t delay_ms = half + jitter;    /* [exp/2, exp) */
-            ESP_LOGI(TAG, "WS: reconnect attempt=%d backoff=%lums (exp=%lums)",
-                     s_connect_attempt, (unsigned long)delay_ms,
-                     (unsigned long)exp_ms);
-            esp_websocket_client_set_reconnect_timeout(g_voice_ws, delay_ms);
-        }
-        /* #146: WS-level escalation.  If Wi-Fi probes claim we're fine
-         * (probe task still sees lan=1/ngrok=1) but the voice WS keeps
-         * failing to connect, the Wi-Fi chip's TCP-stack state is bad.
-         * The probe is a one-shot SYN; the WS handshake needs more
-         * buffers + TLS-path + full RX pipeline.  After WS_KICK_THRESHOLD
-         * consecutive failed attempts (~2 min of retry), hard-kick the
-         * stack.  Don't do this on attempt 1-4 — those are normal
-         * transient failures (Dragon restart, brief AP hiccup). */
-        #define WS_KICK_THRESHOLD 5
-        if (s_connect_attempt == WS_KICK_THRESHOLD) {
-            ESP_LOGW(TAG, "WS: %d failed attempts — escalating to hard-kick "
-                          "(stack may be wedged despite probe success)",
-                     s_connect_attempt);
-            esp_err_t kr = tab5_wifi_hard_kick();
-            if (kr != ESP_OK) {
-                /* ESP-Hosted's Wi-Fi slave chip doesn't always recover
-                 * from stop/start without a host-side reboot (observed:
-                 * esp_wifi_start returns ESP_FAIL repeatedly).  Don't
-                 * burn another 5 attempts — reboot now. */
-                ESP_LOGE(TAG, "WS: hard-kick failed (%s) — controlled reboot",
-                         esp_err_to_name(kr));
-                vTaskDelay(pdMS_TO_TICKS(100));
-                esp_restart();
-                /* unreachable */
-            }
-            /* Reset the counter so we give it another 5 tries after the
-             * successful hard kick before escalating again.  If 10
-             * failures in a row, the link-probe zombie path catches it. */
-            s_connect_attempt = 0;
-        }
-        /* T1.2: RECONNECTING while a backoff is queued + WiFi is up.
-         * IDLE only when WiFi is genuinely down or user stopped voice. */
-        {
-            bool wifi_up = tab5_wifi_connected();
-            if (s_initialized && !s_disconnecting && wifi_up) {
-                voice_set_state(VOICE_STATE_RECONNECTING, "backoff");
-            } else {
-                voice_set_state(VOICE_STATE_IDLE, "disconnected");
-            }
-        }
-        /* v4·D audit P0 fix: ngrok fallback was one-way.  Clear the flag
-         * + reset the fail counter so the NEXT successful connection
-         * gets a chance to land on LAN.  The actual URI swap is deferred
-         * to voice_try_lan_probe() which runs off the WS event task. */
-        if (s_using_ngrok && tab5_settings_get_connection_mode() == 0) {
-            s_handshake_fail_cnt = 0;
-            /* Leave s_using_ngrok alone here: we only reset it once the
-             * external LAN probe succeeds (heap_watchdog periodic hook).
-             * Clearing it here without swapping the client URI would be
-             * a lie, and swapping the URI inside the event task has
-             * shown to wedge the client.  Next sprint: add a proper
-             * probe task that pings LAN and schedules the swap via
-             * lv_async_call on success. */
-        }
-        break;
-
-    case WEBSOCKET_EVENT_CLOSED:
-        /* closes #110: was voice_set_state(IDLE, "closed") with NO
-         * reconnect scheduled — if Dragon sends a graceful WS close
-         * frame (restart, idle timeout, etc.) Tab5 parked in IDLE
-         * forever until the user hit /voice/reconnect manually.
-         * DISCONNECTED re-armed the reconnect timer; CLOSED did not.
-         *
-         * Mirror the DISCONNECTED path: bump attempt, apply
-         * exponential-with-full-jitter backoff, transition to
-         * RECONNECTING when Wi-Fi is up so the state bar reflects
-         * that Tab5 is actively trying, not dead.  The managed WS
-         * client's auto-reconnect picks up the new timeout. */
-        ESP_LOGI(TAG, "WS: CLOSED — scheduling reconnect");
-        if (g_voice_ws && !s_disconnecting) {
-            s_connect_attempt++;
-            int shift = s_connect_attempt - 1;
-            if (shift < 0) shift = 0;
-            if (shift > 5) shift = 5;
-            uint32_t exp_ms = WS_CLIENT_BACKOFF_MIN_MS << shift;
-            if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
-            uint32_t half = exp_ms / 2;
-            uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
-            uint32_t delay_ms = half + jitter;
-            ESP_LOGI(TAG, "WS: CLOSED reconnect attempt=%d backoff=%lums",
-                     s_connect_attempt, (unsigned long)delay_ms);
-            esp_websocket_client_set_reconnect_timeout(g_voice_ws, delay_ms);
-            if (tab5_wifi_connected()) {
-                voice_set_state(VOICE_STATE_RECONNECTING, "closed");
-            } else {
-                voice_set_state(VOICE_STATE_IDLE, "closed-nowifi");
-            }
-        } else {
-            voice_set_state(VOICE_STATE_IDLE, "closed");
-        }
-        break;
-
-    case WEBSOCKET_EVENT_DATA:
-        if (!data) break;
-        s_last_activity_us = esp_timer_get_time();
-        if (data->op_code == WS_TRANSPORT_OPCODES_TEXT && data->data_len > 0) {
-            ESP_LOGI(TAG, "WS recv text (%d bytes): %.*s", data->data_len,
-                     data->data_len > 200 ? 200 : data->data_len, data->data_ptr);
-            handle_text_message(data->data_ptr, data->data_len);
-        } else if (data->op_code == WS_TRANSPORT_OPCODES_BINARY && data->data_len > 0) {
-            /* #268: large binary frames (e.g. Phase 3B video JPEGs >32 KB)
-             * arrive in fragments — esp_websocket_client splits them at
-             * WS_CLIENT_BUFFER_SIZE.  Reassemble using payload_len +
-             * payload_offset before dispatching to handle_binary_message
-             * so the magic-byte sniff sees the whole frame.  Audio
-             * (PCM/OPUS) is single-fragment so the fast path skips
-             * reassembly. */
-            const int frag_total = data->payload_len;
-            const int frag_off   = data->payload_offset;
-            const int frag_len   = data->data_len;
-            if (frag_total <= 0 || frag_total == frag_len) {
-                /* Single-fragment frame — current behavior. */
-                handle_binary_message(data->data_ptr, frag_len);
-            } else {
-                /* Multi-fragment frame.  Lazy-init reassembly buffer
-                 * in PSRAM, sized to the same ceiling voice_video uses. */
-                static uint8_t *s_rx_reasm_buf = NULL;
-                static int      s_rx_reasm_cap = 96 * 1024;
-                if (!s_rx_reasm_buf) {
-                    s_rx_reasm_buf = heap_caps_malloc(
-                        s_rx_reasm_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-                }
-                if (!s_rx_reasm_buf) {
-                    ESP_LOGW(TAG, "rx-reasm OOM (%d B); dropping frag", s_rx_reasm_cap);
-                    break;
-                }
-                if (frag_total > s_rx_reasm_cap) {
-                    ESP_LOGW(TAG, "rx-reasm: payload %d > cap %d; dropping", frag_total, s_rx_reasm_cap);
-                    break;
-                }
-                if (frag_off + frag_len > frag_total) {
-                    ESP_LOGW(TAG, "rx-reasm: bad frag off=%d len=%d total=%d",
-                             frag_off, frag_len, frag_total);
-                    break;
-                }
-                memcpy(s_rx_reasm_buf + frag_off, data->data_ptr, frag_len);
-                if (frag_off + frag_len == frag_total) {
-                    handle_binary_message((const char *)s_rx_reasm_buf, frag_total);
-                }
-            }
-        } else if (data->op_code == WS_TRANSPORT_OPCODES_PING) {
-            ESP_LOGD(TAG, "WS recv PING — client auto-pongs");
-        } else if (data->op_code == WS_TRANSPORT_OPCODES_PONG) {
-            ESP_LOGD(TAG, "WS recv PONG");
-        } else if (data->op_code == WS_TRANSPORT_OPCODES_CLOSE) {
-            ESP_LOGI(TAG, "WS recv CLOSE frame");
-        }
-        break;
-
-    case WEBSOCKET_EVENT_ERROR: {
-        int status = data ? data->error_handle.esp_ws_handshake_status_code : 0;
-        esp_websocket_error_type_t et = data ? data->error_handle.error_type : WEBSOCKET_ERROR_TYPE_NONE;
-        ESP_LOGW(TAG, "WS: ERROR (type=%d, handshake_status=%d, sock_errno=%d)",
-                 (int)et, status,
-                 data ? data->error_handle.esp_transport_sock_errno : 0);
-        /* T1.1: apply the same backoff on error as on disconnect so
-         * a handshake-fail loop doesn't pin at 2 s forever. */
-        {
-            int shift = s_connect_attempt;
-            if (shift < 0) shift = 0;
-            if (shift > 5) shift = 5;
-            uint32_t exp_ms = WS_CLIENT_BACKOFF_MIN_MS << shift;
-            if (exp_ms > WS_CLIENT_BACKOFF_CAP_MS) exp_ms = WS_CLIENT_BACKOFF_CAP_MS;
-            uint32_t half = exp_ms / 2;
-            uint32_t jitter = half > 0 ? (esp_random() % half) : 0;
-            esp_websocket_client_set_reconnect_timeout(g_voice_ws, half + jitter);
-        }
-
-        /* γ3-Tab5 (issue #198): 401 specifically means auth failed —
-         * burning the auth-fail counter every retry will pin the
-         * device against ngrok forever (wrong-token devices used to
-         * loop 401s on both LAN and ngrok endpoints, eating battery
-         * + ngrok bandwidth + log storage).  After WS_AUTH_FAIL_THRESHOLD
-         * consecutive 401s, stop the WS client + show a toast pointing
-         * at Settings.  s_auth_fail_cnt resets on a successful CONNECT
-         * so a transient 401 (token-rotation race during Dragon
-         * restart) doesn't get sticky after recovery.
-         *
-         * Filter on status alone — NOT on
-         * `et == WEBSOCKET_ERROR_TYPE_HANDSHAKE`.  Empirically (live
-         * test on real device against PROD :3502 with rotated token)
-         * a clean 401 from Dragon arrives as `et=1`
-         * (WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT) because the underlying
-         * TCP transport completed successfully — the 401 happens at
-         * the application layer.  Gating on HANDSHAKE here meant the
-         * counter never incremented and the loop ran forever. */
-        if (status == 401) {
-            s_auth_fail_cnt++;
-            ESP_LOGW(TAG, "WS: 401 auth_failed (count=%d/%d)",
-                     s_auth_fail_cnt, WS_AUTH_FAIL_THRESHOLD);
-            if (s_auth_fail_cnt >= WS_AUTH_FAIL_THRESHOLD && !s_disconnecting) {
-                ESP_LOGE(TAG, "WS: %d consecutive 401s — stopping retry loop",
-                         s_auth_fail_cnt);
-                s_disconnecting = true;
-                /* Hop to worker task — esp_websocket_client_stop()
-                 * rejects calls from the WS task itself.  Same pattern
-                 * as the γ2-H8 device_evicted handler. */
-                tab5_worker_enqueue(_voice_auth_fail_stop_worker_fn, NULL,
-                                    "auth_failed_stop");
-                /* TT #328 Wave 3 P0 #15 — pre-Wave-3 this was a 2.2 s toast.
-                 * After 5 silent retries the user got a single transient
-                 * notice they could easily miss.  Upgraded to a persistent
-                 * error banner that stays until they tap it (and presumably
-                 * jump to Settings to fix the token).  Also fires the
-                 * error.auth obs event so /events surfaces the lockout. */
-                tab5_debug_obs_event("error.auth", "ws_401_stop");
-                char *toast = strdup("Invalid Dragon token — check Settings");
-                if (toast) {
-                    voice_async_toast(toast);
-                }
-                voice_async_error_banner(
-                    "Dragon rejected your token (401). Reconnect paused — "
-                    "open Settings → Network to update.");
-                break;
-            }
-        }
-
-        /* Handshake failure → try ngrok fallback (only in conn_mode=auto,
-         * only while still on local URI, after NGROK_FALLBACK_THRESHOLD fails). */
-        if (et == WEBSOCKET_ERROR_TYPE_HANDSHAKE && status != 101) {
-            s_handshake_fail_cnt++;
-            uint8_t conn_mode = tab5_settings_get_connection_mode();
-            if (conn_mode == 0 && !s_using_ngrok
-                && s_handshake_fail_cnt >= NGROK_FALLBACK_THRESHOLD) {
-                char ngrok_uri[128];
-                snprintf(ngrok_uri, sizeof(ngrok_uri),
-                         "wss://%s:%d%s",
-                         TAB5_NGROK_HOST, TAB5_NGROK_PORT, TAB5_VOICE_WS_PATH);
-                ESP_LOGW(TAG, "WS: handshake failed %d× — falling back to %s",
-                         s_handshake_fail_cnt, ngrok_uri);
-                s_using_ngrok = true;
-                s_handshake_fail_cnt = 0;
-                /* set_uri requires a stopped client. The client is
-                 * currently between reconnect attempts; stop+set+start
-                 * to force it onto the new URI immediately. */
-                esp_websocket_client_stop(g_voice_ws);
-                esp_websocket_client_set_uri(g_voice_ws, ngrok_uri);
-                strncpy(s_dragon_host, TAB5_NGROK_HOST, sizeof(s_dragon_host) - 1);
-                s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
-                s_dragon_port = TAB5_NGROK_PORT;
-                esp_websocket_client_start(g_voice_ws);
-            }
-        }
-        break;
-    }
-
-    default:
-        break;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// URI helpers
-// ---------------------------------------------------------------------------
-static void voice_build_local_uri(char *out, size_t out_cap,
-                                   const char *host, uint16_t port)
-{
-    snprintf(out, out_cap, "ws://%s:%u%s", host, (unsigned)port, TAB5_VOICE_WS_PATH);
-}
 
 // ---------------------------------------------------------------------------
 // Mic capture task — reads 4-ch TDM at 48kHz, extracts MIC1, downsamples
@@ -2210,7 +1046,7 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
         return ESP_ERR_NO_MEM;
     }
 
-    playback_buf_reset();
+    voice_playback_buf_reset();
     s_transcript[0] = '\0';
 
     /* Spawn the playback drain task once, at init — it sleeps on s_play_sem
@@ -2480,7 +1316,7 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
         s_dragon_port = TAB5_NGROK_PORT;
         s_using_ngrok = true;
     } else {
-        voice_build_local_uri(uri, sizeof(uri), dragon_host, dragon_port);
+        voice_ws_proto_build_local_uri(uri, sizeof(uri), dragon_host, dragon_port);
         strncpy(s_dragon_host, dragon_host, sizeof(s_dragon_host) - 1);
         s_dragon_host[sizeof(s_dragon_host) - 1] = '\0';
         s_dragon_port = dragon_port;
@@ -2568,7 +1404,7 @@ static esp_err_t voice_ws_start_client(const char *dragon_host, uint16_t dragon_
     }
 
     esp_err_t er = esp_websocket_register_events(g_voice_ws, WEBSOCKET_EVENT_ANY,
-                                                  voice_ws_event_handler, NULL);
+                                                  voice_ws_proto_event_handler, NULL);
     if (er != ESP_OK) {
         ESP_LOGE(TAG, "register_events failed: %s", esp_err_to_name(er));
         esp_websocket_client_destroy(g_voice_ws);
@@ -3069,7 +1905,7 @@ esp_err_t voice_cancel(void)
         }
     }
 
-    playback_buf_reset();
+    voice_playback_buf_reset();
     tab5_audio_speaker_enable(false);
 
     bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
@@ -3138,7 +1974,7 @@ esp_err_t voice_disconnect(void)
         s_started = false;
     }
 
-    playback_buf_reset();
+    voice_playback_buf_reset();
     voice_set_state(VOICE_STATE_IDLE, NULL);
 
     s_disconnecting = false;

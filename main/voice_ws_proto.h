@@ -43,6 +43,11 @@ void voice_ws_proto_build_local_uri(char *out, size_t out_cap,
                                     const char *dragon_host,
                                     uint16_t dragon_port);
 
+/* UI-async helpers (formerly voice.c statics).  Used by mic_capture_task
+ * (in voice.c) and the JSON RX dispatcher to schedule LVGL-thread
+ * notifications without taking the LVGL lock from a worker task. */
+void voice_async_toast(char *text);   /* takes ownership of text */
+
 #ifdef __cplusplus
 }
 #endif
