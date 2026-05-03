@@ -3331,45 +3331,9 @@ esp_err_t voice_send_text(const char *text)
     return ret;
 }
 
-esp_err_t voice_send_widget_action(const char *card_id, const char *event,
-                                   const char *payload_json)
-{
-    if (!card_id || !event) return ESP_ERR_INVALID_ARG;
-    if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) return ESP_ERR_INVALID_STATE;
-
-    /* Rate limit: 4/sec max (see docs/WIDGETS.md §11). */
-    static uint32_t s_action_bucket = 4;
-    static uint32_t s_action_tick   = 0;
-    uint32_t now = lv_tick_get();
-    if (now - s_action_tick >= 1000) {
-        s_action_bucket = 4;
-        s_action_tick = now;
-    }
-    if (s_action_bucket == 0) {
-        ESP_LOGW(TAG, "widget_action rate-limited (card=%s event=%s)", card_id, event);
-        return ESP_ERR_INVALID_STATE;
-    }
-    s_action_bucket--;
-
-    cJSON *msg = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg, "type", "widget_action");
-    cJSON_AddStringToObject(msg, "card_id", card_id);
-    cJSON_AddStringToObject(msg, "event", event);
-    if (payload_json && payload_json[0]) {
-        cJSON *p = cJSON_Parse(payload_json);
-        if (p) cJSON_AddItemToObject(msg, "payload", p);
-    }
-    char *json = cJSON_PrintUnformatted(msg);
-    cJSON_Delete(msg);
-    if (!json) return ESP_ERR_NO_MEM;
-
-    esp_err_t ret = voice_ws_send_text(json);
-    cJSON_free(json);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "widget_action: %s → %s", card_id, event);
-    }
-    return ret;
-}
+/* voice_send_widget_action moved to voice_ws_proto.c (TT #331 Wave 23
+ * SRP-A1) — pure WS-proto concern: builds a JSON frame + calls
+ * voice_ws_send_text. */
 
 esp_err_t voice_send_config_update_ex(int voice_mode, const char *llm_model,
                                       const char *reason)
