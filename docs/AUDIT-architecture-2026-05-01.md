@@ -27,6 +27,8 @@ The firmware is **well-layered with strong boundaries** between BSP, business lo
 
 ### A1 [P1] — God-file: voice.c still large after K144 extraction
 
+**Status:** **SHIPPED** — closed 2026-05-03 by PR #355 (voice_ws_proto extract — WS event handler + JSON RX + binary RX + send wrappers + REGISTER + UI helpers, ~1,267 LOC out) + PR #356 (voice_modes extract — config_update senders + voice_modes_route_text pure helper + s_voice_mode ownership, ~114 LOC out + behavioural split).  voice.c lands at **2,287 LOC**.  E2E baseline holds on physical Tab5 (192.168.1.90): smoke 14/14, full 24/24, onboard 14/14, wave7 (Local→K144 failover) 21/22 (single Dragon-side LLM 180s timeout, not a routing regression).  Heap floor identical to baseline at fresh boot.
+
 **Dimension:** god-file, modularity rules
 
 **Where:** `main/voice.c:1-4251` (4,251 LOC) + 72 endpoint handlers (httpd_register_uri_handler count)
