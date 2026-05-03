@@ -583,111 +583,110 @@ static void mic_capture_task(void *arg)
             continue;
         }
         ESP_LOGI(TAG, "Mic session start (mode=%d)", voice_get_mode());
-    int frames_sent = 0;
+        int frames_sent = 0;
 
-    int silence_frames = 0;
-    int total_silence_frames = 0;
-    bool had_speech = false;
-    bool auto_stop_warning_shown = false;
+        int silence_frames = 0;
+        int total_silence_frames = 0;
+        bool had_speech = false;
+        bool auto_stop_warning_shown = false;
 
-    #define CALIBRATION_FRAMES 25
-    float noise_sum = 0;
-    int cal_count = 0;
-    float dictation_threshold = DICTATION_SILENCE_THRESHOLD;
+#define CALIBRATION_FRAMES 25
+        float noise_sum = 0;
+        int cal_count = 0;
+        float dictation_threshold = DICTATION_SILENCE_THRESHOLD;
 
-    bool ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
+        bool ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
 
-    while (s_mic_running && (ws_live || voice_get_mode() == VOICE_MODE_DICTATE || voice_get_mode() == VOICE_MODE_CALL)) {
-        esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(5));
-            continue;
-        }
+        while (s_mic_running &&
+               (ws_live || voice_get_mode() == VOICE_MODE_DICTATE || voice_get_mode() == VOICE_MODE_CALL)) {
+           esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
+           if (err != ESP_OK) {
+              ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
+              vTaskDelay(pdMS_TO_TICKS(5));
+              continue;
+           }
 
-        if (frames_sent < 5) {
-            for (int ch = 0; ch < MIC_TDM_CHANNELS; ch++) {
-                int64_t sqsum = 0;
-                int16_t mn = 0, mx = 0;
-                int nz = 0;
-                for (int i = ch; i < MIC_TDM_SAMPLES; i += MIC_TDM_CHANNELS) {
+           if (frames_sent < 5) {
+              for (int ch = 0; ch < MIC_TDM_CHANNELS; ch++) {
+                 int64_t sqsum = 0;
+                 int16_t mn = 0, mx = 0;
+                 int nz = 0;
+                 for (int i = ch; i < MIC_TDM_SAMPLES; i += MIC_TDM_CHANNELS) {
                     int16_t v = tdm_buf[i];
                     sqsum += (int64_t)v * v;
                     if (v < mn) mn = v;
                     if (v > mx) mx = v;
                     if (v != 0) nz++;
-                }
-                int count = MIC_48K_FRAMES;
-                float rms = sqrtf((float)(sqsum / (count > 0 ? count : 1)));
-                ESP_LOGI(TAG, "SLOT_DIAG #%d CH%d: min=%d max=%d rms=%.0f nz=%d/%d",
-                         frames_sent, ch, mn, mx, rms, nz, count);
-            }
-        }
+                 }
+                 int count = MIC_48K_FRAMES;
+                 float rms = sqrtf((float)(sqsum / (count > 0 ? count : 1)));
+                 ESP_LOGI(TAG, "SLOT_DIAG #%d CH%d: min=%d max=%d rms=%.0f nz=%d/%d", frames_sent, ch, mn, mx, rms, nz,
+                          count);
+              }
+           }
 
-        int out_idx = 0;
+           int out_idx = 0;
 
-        for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES; i += DOWNSAMPLE_RATIO) {
-            int32_t sum = 0;
-            for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
-                sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + MIC_TDM_MIC1_OFF];
-            }
-            mono_buf[out_idx++] = (int16_t)(sum / DOWNSAMPLE_RATIO);
-        }
+           for (int i = 0; i + DOWNSAMPLE_RATIO - 1 < MIC_48K_FRAMES && out_idx < VOICE_CHUNK_SAMPLES;
+                i += DOWNSAMPLE_RATIO) {
+              int32_t sum = 0;
+              for (int j = 0; j < DOWNSAMPLE_RATIO; j++) {
+                 sum += tdm_buf[(i + j) * MIC_TDM_CHANNELS + MIC_TDM_MIC1_OFF];
+              }
+              mono_buf[out_idx++] = (int16_t)(sum / DOWNSAMPLE_RATIO);
+           }
 
-        if (frames_sent % 50 == 0) {
-            int16_t mn = 0, mx = 0;
-            int64_t sqsum = 0;
-            for (int k = 0; k < out_idx; k++) {
-                int16_t v = mono_buf[k];
-                if (v < mn) mn = v;
-                if (v > mx) mx = v;
-                sqsum += (int64_t)v * v;
-            }
-            float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
-            ESP_LOGI(TAG, "Mic chunk #%d (slot %d): min=%d max=%d rms=%.0f samples=%d",
-                     frames_sent, MIC_TDM_MIC1_OFF, mn, mx, rms, out_idx);
-        }
+           if (frames_sent % 50 == 0) {
+              int16_t mn = 0, mx = 0;
+              int64_t sqsum = 0;
+              for (int k = 0; k < out_idx; k++) {
+                 int16_t v = mono_buf[k];
+                 if (v < mn) mn = v;
+                 if (v > mx) mx = v;
+                 sqsum += (int64_t)v * v;
+              }
+              float rms = sqrtf((float)(sqsum / (out_idx > 0 ? out_idx : 1)));
+              ESP_LOGI(TAG, "Mic chunk #%d (slot %d): min=%d max=%d rms=%.0f samples=%d", frames_sent, MIC_TDM_MIC1_OFF,
+                       mn, mx, rms, out_idx);
+           }
 
-        /* Re-check connection each loop — esp_websocket_client may
-         * have reconnected (or gone away) in the background. */
-        ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
+           /* Re-check connection each loop — esp_websocket_client may
+            * have reconnected (or gone away) in the background. */
+           ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
 
-        ui_notes_write_audio(mono_buf, out_idx);
+           ui_notes_write_audio(mono_buf, out_idx);
 
-        if (ws_live) {
-            /* #262: encode through voice_codec (PCM = memcpy passthrough,
-             * OPUS = ~60 B variable-length packet).  Dragon decodes per
-             * the active uplink codec it picked in config_update. */
-            size_t send_bytes = 0;
-            esp_err_t cerr = voice_codec_encode_uplink(mono_buf, out_idx,
-                                                       enc_buf, VOICE_CHUNK_BYTES,
-                                                       &send_bytes);
-            if (cerr == ESP_OK && send_bytes > 0) {
-                if (voice_get_mode() == VOICE_MODE_CALL) {
+           if (ws_live) {
+              /* #262: encode through voice_codec (PCM = memcpy passthrough,
+               * OPUS = ~60 B variable-length packet).  Dragon decodes per
+               * the active uplink codec it picked in config_update. */
+              size_t send_bytes = 0;
+              esp_err_t cerr = voice_codec_encode_uplink(mono_buf, out_idx, enc_buf, VOICE_CHUNK_BYTES, &send_bytes);
+              if (cerr == ESP_OK && send_bytes > 0) {
+                 if (voice_get_mode() == VOICE_MODE_CALL) {
                     /* #280: drop the chunk silently when muted.  Mic
                      * loop continues running so RMS / counters stay
                      * fresh — only the WS send is suppressed.  Peer
                      * hears silence; our state is preserved. */
                     if (s_call_muted) {
-                        err = ESP_OK;
+                       err = ESP_OK;
                     } else {
-                        /* #272: wrap with AUD0 magic so Dragon broadcasts
-                         * to the call peer instead of feeding STT.  Stack-
-                         * allocated — mic task has 16 KB stack, plenty of
-                         * headroom for a 648 B packet. */
-                        uint8_t call_pkt[VOICE_CHUNK_BYTES + VOICE_CALL_AUDIO_HEADER_LEN];
-                        size_t wire_len = voice_codec_pack_call_audio(
-                            call_pkt, sizeof(call_pkt), enc_buf, send_bytes);
-                        if (wire_len > 0) {
-                            err = voice_ws_send_binary(call_pkt, wire_len);
-                        } else {
-                            err = ESP_ERR_NO_MEM;
-                        }
+                       /* #272: wrap with AUD0 magic so Dragon broadcasts
+                        * to the call peer instead of feeding STT.  Stack-
+                        * allocated — mic task has 16 KB stack, plenty of
+                        * headroom for a 648 B packet. */
+                       uint8_t call_pkt[VOICE_CHUNK_BYTES + VOICE_CALL_AUDIO_HEADER_LEN];
+                       size_t wire_len = voice_codec_pack_call_audio(call_pkt, sizeof(call_pkt), enc_buf, send_bytes);
+                       if (wire_len > 0) {
+                          err = voice_ws_send_binary(call_pkt, wire_len);
+                       } else {
+                          err = ESP_ERR_NO_MEM;
+                       }
                     }
-                } else {
+                 } else {
                     err = voice_ws_send_binary(enc_buf, send_bytes);
-                }
-                if (err != ESP_OK) {
+                 }
+                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "WS send failed — continuing SD recording");
                     /* TT #328 Wave 3 P0 #13 — surface mid-dictation drop.
                      * Pre-Wave-3 the user only saw the live waveform freeze;
@@ -702,102 +701,98 @@ static void mic_capture_task(void *arg)
                        if (t) voice_async_toast(t);
                     }
                     if (voice_get_mode() == VOICE_MODE_ASK) break;
-                }
-            } else {
-                ESP_LOGW(TAG, "voice_codec_encode_uplink failed (%d) — dropping chunk",
-                         (int)cerr);
-            }
-        }
-        frames_sent++;
+                 }
+              } else {
+                 ESP_LOGW(TAG, "voice_codec_encode_uplink failed (%d) — dropping chunk", (int)cerr);
+              }
+           }
+           frames_sent++;
 
-        if (voice_get_mode() == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
-            ESP_LOGI(TAG, "Max recording duration reached (%ds)",
-                     MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
-            voice_set_state(VOICE_STATE_LISTENING, "max_duration");
-            break;
-        }
+           if (voice_get_mode() == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
+              ESP_LOGI(TAG, "Max recording duration reached (%ds)", MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
+              voice_set_state(VOICE_STATE_LISTENING, "max_duration");
+              break;
+           }
 
-        /* Wave 15 W15-P02: compute RMS for BOTH Ask and Dictate modes
-         * so the voice overlay can render a live "listening back" glow
-         * on the orb driven by voice_get_current_rms().  Previously RMS
-         * was gated to DICTATE and the UI orb stayed static during
-         * normal Ask turns, which made the overlay feel unresponsive.
-         * The expensive VAD-driven auto-stop logic below is still
-         * scoped to DICTATE (the only mode that uses it). */
-        if (out_idx > 0) {
-            int64_t sqsum = 0;
-            for (int k = 0; k < out_idx; k++) {
-                sqsum += (int64_t)mono_buf[k] * mono_buf[k];
-            }
-            float rms = sqrtf((float)(sqsum / out_idx));
-            s_current_rms = rms;
-        }
+           /* Wave 15 W15-P02: compute RMS for BOTH Ask and Dictate modes
+            * so the voice overlay can render a live "listening back" glow
+            * on the orb driven by voice_get_current_rms().  Previously RMS
+            * was gated to DICTATE and the UI orb stayed static during
+            * normal Ask turns, which made the overlay feel unresponsive.
+            * The expensive VAD-driven auto-stop logic below is still
+            * scoped to DICTATE (the only mode that uses it). */
+           if (out_idx > 0) {
+              int64_t sqsum = 0;
+              for (int k = 0; k < out_idx; k++) {
+                 sqsum += (int64_t)mono_buf[k] * mono_buf[k];
+              }
+              float rms = sqrtf((float)(sqsum / out_idx));
+              s_current_rms = rms;
+           }
 
-        if (voice_get_mode() == VOICE_MODE_DICTATE) {
-            /* Re-read the just-computed RMS rather than recomputing. */
-            float rms = s_current_rms;
+           if (voice_get_mode() == VOICE_MODE_DICTATE) {
+              /* Re-read the just-computed RMS rather than recomputing. */
+              float rms = s_current_rms;
 
-            if (cal_count < CALIBRATION_FRAMES) {
-                noise_sum += rms;
-                cal_count++;
-                if (cal_count == CALIBRATION_FRAMES) {
+              if (cal_count < CALIBRATION_FRAMES) {
+                 noise_sum += rms;
+                 cal_count++;
+                 if (cal_count == CALIBRATION_FRAMES) {
                     float ambient = noise_sum / CALIBRATION_FRAMES;
                     dictation_threshold = fmaxf(400.0f, fminf(1500.0f, ambient * 2.0f));
-                    ESP_LOGI(TAG, "VAD calibrated: ambient=%.0f, threshold=%.0f",
-                             ambient, dictation_threshold);
-                }
-                continue;
-            }
+                    ESP_LOGI(TAG, "VAD calibrated: ambient=%.0f, threshold=%.0f", ambient, dictation_threshold);
+                 }
+                 continue;
+              }
 
-            if (rms < dictation_threshold) {
-                silence_frames++;
-                total_silence_frames++;
+              if (rms < dictation_threshold) {
+                 silence_frames++;
+                 total_silence_frames++;
 
-                if (had_speech && total_silence_frames == DICTATION_WARN_3S_FRAMES) {
+                 if (had_speech && total_silence_frames == DICTATION_WARN_3S_FRAMES) {
                     ui_voice_show_auto_stop_warning(2);
                     auto_stop_warning_shown = true;
-                } else if (had_speech && total_silence_frames == DICTATION_WARN_4S_FRAMES) {
+                 } else if (had_speech && total_silence_frames == DICTATION_WARN_4S_FRAMES) {
                     ui_voice_show_auto_stop_warning(1);
-                }
-            } else {
-                if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
-                    ESP_LOGI(TAG, "Dictation: pause (%dms), sending segment",
-                             silence_frames * TAB5_VOICE_CHUNK_MS);
+                 }
+              } else {
+                 if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
+                    ESP_LOGI(TAG, "Dictation: pause (%dms), sending segment", silence_frames * TAB5_VOICE_CHUNK_MS);
                     voice_ws_send_text("{\"type\":\"segment\"}");
-                }
-                if (auto_stop_warning_shown) {
+                 }
+                 if (auto_stop_warning_shown) {
                     ui_voice_show_auto_stop_warning(0);
                     auto_stop_warning_shown = false;
-                }
-                silence_frames = 0;
-                total_silence_frames = 0;
-                had_speech = true;
-            }
+                 }
+                 silence_frames = 0;
+                 total_silence_frames = 0;
+                 had_speech = true;
+              }
 
-            if (had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES) {
-                ESP_LOGI(TAG, "Dictation auto-stop: %ds silence",
-                         DICTATION_AUTO_STOP_FRAMES * TAB5_VOICE_CHUNK_MS / 1000);
-                break;
-            }
+              if (had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES) {
+                 ESP_LOGI(TAG, "Dictation auto-stop: %ds silence",
+                          DICTATION_AUTO_STOP_FRAMES * TAB5_VOICE_CHUNK_MS / 1000);
+                 break;
+              }
+           }
         }
-    }
 
-    s_mic_running = false;
-    s_current_rms = 0;
-    /* #284: do NOT free tdm_buf / mono_buf / enc_buf — persistent task
-     * reuses them across sessions.  They're freed only at process
-     * shutdown (which never happens on the firmware side). */
+        s_mic_running = false;
+        s_current_rms = 0;
+        /* #284: do NOT free tdm_buf / mono_buf / enc_buf — persistent task
+         * reuses them across sessions.  They're freed only at process
+         * shutdown (which never happens on the firmware side). */
 
-    if (voice_get_mode() == VOICE_MODE_DICTATE && had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES &&
-        g_voice_ws && esp_websocket_client_is_connected(g_voice_ws)) {
-       voice_ws_send_text("{\"type\":\"stop\"}");
-       voice_set_state(VOICE_STATE_PROCESSING, NULL);
-    }
+        if (voice_get_mode() == VOICE_MODE_DICTATE && had_speech &&
+            total_silence_frames >= DICTATION_AUTO_STOP_FRAMES && g_voice_ws &&
+            esp_websocket_client_is_connected(g_voice_ws)) {
+           voice_ws_send_text("{\"type\":\"stop\"}");
+           voice_set_state(VOICE_STATE_PROCESSING, NULL);
+        }
 
-    ESP_LOGI(TAG, "Mic session end (frames=%d) — back to idle",
-             frames_sent);
-    /* #284: drop back to outer while(1) and wait for the next
-     * xSemaphoreGive in voice_*_start.  No vTaskSuspend, no leak. */
+        ESP_LOGI(TAG, "Mic session end (frames=%d) — back to idle", frames_sent);
+        /* #284: drop back to outer while(1) and wait for the next
+         * xSemaphoreGive in voice_*_start.  No vTaskSuspend, no leak. */
     }   /* outer while(1) */
 }
 
@@ -1627,9 +1622,8 @@ esp_err_t voice_call_audio_start(void)
      * always true after voice_init (one task lives forever), so the
      * old guard would always block.  Gate on s_mic_running only. */
     if (s_mic_running) {
-        ESP_LOGW(TAG, "voice_call_audio_start: mic already running (mode=%d)",
-                 voice_get_mode());
-        return ESP_OK;
+       ESP_LOGW(TAG, "voice_call_audio_start: mic already running (mode=%d)", voice_get_mode());
+       return ESP_OK;
     }
     if (tab5_settings_get_mic_mute()) {
         ESP_LOGW(TAG, "voice_call_audio_start: mic muted — refusing");
@@ -1650,9 +1644,9 @@ esp_err_t voice_call_audio_start(void)
 
 bool voice_call_audio_set_muted(bool muted)
 {
-    if (voice_get_mode() != VOICE_MODE_CALL) {
-        return false;     /* no-op outside a call */
-    }
+   if (voice_get_mode() != VOICE_MODE_CALL) {
+      return false; /* no-op outside a call */
+   }
     s_call_muted = muted;
     ESP_LOGI(TAG, "Call audio %s", muted ? "MUTED" : "UNMUTED");
     return s_call_muted;
@@ -1665,9 +1659,9 @@ bool voice_call_audio_is_muted(void)
 
 esp_err_t voice_call_audio_stop(void)
 {
-    if (voice_get_mode() != VOICE_MODE_CALL || !s_mic_running) {
-        return ESP_OK;
-    }
+   if (voice_get_mode() != VOICE_MODE_CALL || !s_mic_running) {
+      return ESP_OK;
+   }
     ESP_LOGI(TAG, "Stopping call audio");
     s_mic_running = false;
     /* Leaving call mode resets mute state so the next call starts
@@ -1684,7 +1678,7 @@ esp_err_t voice_call_audio_stop(void)
     }
     if (rx_h) i2s_channel_enable(rx_h);
 
-    voice_modes_set_internal(VOICE_MODE_ASK);   /* return to default for next listen */
+    voice_modes_set_internal(VOICE_MODE_ASK); /* return to default for next listen */
     return ESP_OK;
 }
 
@@ -1964,30 +1958,30 @@ esp_err_t voice_send_text(const char *text)
     voice_modes_route_result_t route;
     voice_modes_route_text(text, &route);
     switch (route.kind) {
-    case VOICE_MODES_ROUTE_K144_CHAIN_BUSY:
-        if (tab5_ui_try_lock(100)) {
-            ui_home_show_toast("Stop onboard chat first to send text");
-            tab5_ui_unlock();
-        }
-        return route.err;
-    case VOICE_MODES_ROUTE_K144_OK:
-        return ESP_OK;
-    case VOICE_MODES_ROUTE_K144_FAILED:
-        if (tab5_ui_try_lock(100)) {
-            ui_home_show_toast("Onboard LLM not ready");
-            tab5_ui_unlock();
-        }
-        return route.err;
-    case VOICE_MODES_ROUTE_DRAGON_PATH:
-        /* fall through to Dragon WS send below */
-        break;
+       case VOICE_MODES_ROUTE_K144_CHAIN_BUSY:
+          if (tab5_ui_try_lock(100)) {
+             ui_home_show_toast("Stop onboard chat first to send text");
+             tab5_ui_unlock();
+          }
+          return route.err;
+       case VOICE_MODES_ROUTE_K144_OK:
+          return ESP_OK;
+       case VOICE_MODES_ROUTE_K144_FAILED:
+          if (tab5_ui_try_lock(100)) {
+             ui_home_show_toast("Onboard LLM not ready");
+             tab5_ui_unlock();
+          }
+          return route.err;
+       case VOICE_MODES_ROUTE_DRAGON_PATH:
+          /* fall through to Dragon WS send below */
+          break;
     }
 
     if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) {
-        /* Failover already attempted by voice_modes_route_text — if we
-         * reach here in DRAGON_PATH mode the WS is genuinely down and no
-         * K144 fallback was viable.  Surface the existing contract. */
-        return ESP_ERR_INVALID_STATE;
+       /* Failover already attempted by voice_modes_route_text — if we
+        * reach here in DRAGON_PATH mode the WS is genuinely down and no
+        * K144 fallback was viable.  Surface the existing contract. */
+       return ESP_ERR_INVALID_STATE;
     }
 
     /* Wave 13 H1: snapshot state once so the LISTENING branch and the
