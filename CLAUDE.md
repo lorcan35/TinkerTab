@@ -187,18 +187,19 @@ Commit hash + PR if applicable.
 - Never batch multiple unrelated fixes into one commit
 
 ## Dragon Access (for deploying/testing)
-- **Host:** 192.168.1.91
+- **Host (current 2026-05-04):** `192.168.70.242` (LAN flips between `192.168.1.x` and `192.168.70.x` — historic IP `192.168.1.91` was valid on the .1.x LAN; verify with `ping radxa-dragon-q6a` or `nmap -p 22,3502,18789 --open <subnet>/24`)
+- **Hostname:** `radxa-dragon-q6a` (nmap reverse DNS)
 - **User:** radxa (NOT rock — user was migrated)
-- **Password:** `<DRAGON_SSH_PASSWORD>`
-- **SSH:** `ssh radxa@192.168.1.91  # password in ~/.ssh/config or use key auth`
+- **Password:** `<DRAGON_SSH_PASSWORD>` (the value passes via `sshpass -p '<pw>'`; sudo on Dragon is currently passwordless after SSH login)
+- **SSH:** `ssh radxa@192.168.70.242  # or whatever the current LAN IP is`
 ```bash
-ssh radxa@192.168.1.91  # password in ~/.ssh/config or use key auth
+ssh radxa@192.168.70.242
 sudo systemctl status tinkerclaw-voice
 sudo journalctl -u tinkerclaw-voice --no-pager -n 50
 ```
 
 ### Dragon Stability
-- **Ethernet** — DHCP IP 192.168.1.91 on enp1s0
+- **Ethernet** — DHCP-assigned via enp1s0 (currently `192.168.70.242`; was `192.168.1.91` on the .1.x LAN)
 - **Stripped services** — gdm3, snapd, ollama, nanobot, rustdesk, fwupd all masked. Only tinkerclaw-* services run.
 - **ngrok tunnels** — `tinkerclaw-ngrok.service` maintains three tunnels:
   - `tinkerclaw-dashboard.ngrok.dev` → localhost:3500 (dashboard)
@@ -240,7 +241,7 @@ while True:
 
 ## Debug Server (ADB-style Remote Control)
 Full HTTP API on port 8080 for remote testing and control.
-**Note:** Tab5 IP is DHCP-assigned. Current lease: 192.168.1.90. Update if it changes.
+**Note:** Tab5 IP is DHCP-assigned.  Current lease 2026-05-04: `192.168.70.128` (hostname `espressif`); was `192.168.70.128` on the .1.x LAN.  When the lease moves, locate via `nmap -p 8080 --open <subnet>/24` (the dev box itself answers 8080 too — Tab5 is the one whose `GET /info` returns `auth_required: true`).
 
 ### Authentication (Bearer Token)
 All endpoints except `/info` and `/selftest` require a Bearer token in the `Authorization` header.
@@ -255,46 +256,46 @@ All endpoints except `/info` and `/selftest` require a Bearer token in the `Auth
 export TOKEN="abcdef1234567890abcdef1234567890"
 
 # Display
-curl -s -H "Authorization: Bearer $TOKEN" -o screen.bmp http://192.168.1.90:8080/screenshot
-curl -s http://192.168.1.90:8080/info | python3 -m json.tool   # No auth needed
+curl -s -H "Authorization: Bearer $TOKEN" -o screen.bmp http://192.168.70.128:8080/screenshot
+curl -s http://192.168.70.128:8080/info | python3 -m json.tool   # No auth needed
 
 # Touch
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/touch -d '{"x":360,"y":640,"action":"tap"}'
 
 # Settings (read all NVS settings as JSON)
-curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/settings | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/settings | python3 -m json.tool
 
 # Voice Mode (switch Local/Hybrid/Cloud remotely)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=0"  # Local
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/mode?m=3"  # TinkerClaw
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/mode?m=0"  # Local
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/mode?m=1"  # Hybrid (cloud STT+TTS)
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/mode?m=2&model=anthropic/claude-sonnet-4-20250514"  # Full Cloud
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/mode?m=3"  # TinkerClaw
 
 # Navigation (force screen change — uses async_navigate dispatcher with screen.navigate obs event)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=settings"
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=notes"
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=chat"
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=camera"
-curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.1.90:8080/navigate?screen=home"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/navigate?screen=settings"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/navigate?screen=notes"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/navigate?screen=chat"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/navigate?screen=camera"
+curl -s -H "Authorization: Bearer $TOKEN" -X POST "http://192.168.70.128:8080/navigate?screen=home"
 
 # Camera (capture live frame as BMP)
-curl -s -H "Authorization: Bearer $TOKEN" -o frame.bmp http://192.168.1.90:8080/camera
+curl -s -H "Authorization: Bearer $TOKEN" -o frame.bmp http://192.168.70.128:8080/camera
 
 # OTA
-curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/ota/check | python3 -m json.tool
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/ota/apply
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/ota/check | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/ota/apply
 
 # Chat (send text to Dragon via voice WS)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/chat -d '{"text":"What time is it?"}'
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/chat -d '{"text":"What time is it?"}'
 
 # Voice state (connected, state_name, last_llm_text, last_stt_text)
-curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/voice | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/voice | python3 -m json.tool
 
 # Force voice WS reconnect
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/voice/reconnect
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/voice/reconnect
 
 # K144 / chain diagnostic snapshot (TT #327 Wave 5)
-curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/m5 | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/m5 | python3 -m json.tool
 # → {"chain_active":false,"chain_uptime_ms":0,"failover_state":2,
 #    "failover_state_name":"ready","uart_baud":115200}
 
@@ -302,7 +303,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/m5 | python3 
 # on the AX630C, waits for re-init, re-runs the warm-up probe.  Recovers a
 # sticky UNAVAILABLE state in ~10 s without needing to power-cycle the K144 or
 # reboot Tab5.  Async — returns immediately + flips state machine to PROBING.
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/reset
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/m5/reset
 # → {"status":"queued","detail":"K144 reset job enqueued — poll GET /m5",
 #    "failover_state":2}
 # → {"status":"rejected","detail":"Probe already in flight — ..."}  (if already cycling)
@@ -311,7 +312,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/re
 # sys.version round-trip outside the 30 s cache TTL.  Returns the same shape as
 # GET /m5 with the cache freshly populated.  GET /m5 itself now also surfaces
 # the cached hwinfo block on every call.
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/refresh
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/m5/refresh
 # → {..., "hwinfo": {"valid":true,"temp_celsius":39.35,"temp_milli_c":39350,
 #                    "cpu_loadavg":0,"mem":27,"cache_age_ms":1125},
 #       "version":"v1.3"}
@@ -319,7 +320,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/m5/re
 # K144 model registry (TT #328 Wave 15) — surfaces the sys.lsmode response
 # with full {mode, primary_cap, language} per installed model.  Cached for
 # 5 min (registry doesn't change between K144 reboots); ?force=1 bypasses.
-curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.1.90:8080/m5/models?force=1"
+curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.70.128:8080/m5/models?force=1"
 # → {"valid":true,"count":11,"models":[
 #     {"mode":"qwen2.5-0.5B-prefill-20e","primary_cap":"text_generation",...},
 #     {"mode":"sherpa-ncnn-streaming-zipformer-20M-2023-02-17",
@@ -331,24 +332,24 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.1.90:8080/m5/models?fo
 #   ], "cache_age_s": 1}
 
 # Self-test (no auth needed)
-curl -s http://192.168.1.90:8080/selftest | python3 -m json.tool
+curl -s http://192.168.70.128:8080/selftest | python3 -m json.tool
 
 # ── Harness-friendly endpoints (#293/#294/#296/#297, April 2026) ──
 # Current screen + overlay visibility (chat/voice/settings)
-curl -s -H "Authorization: Bearer $TOKEN" http://192.168.1.90:8080/screen | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/screen | python3 -m json.tool
 # → {"current":"home","overlays":{"chat":false,"voice":false,"settings":false}}
 
 # Type into the focused LVGL textarea — also accepts ?text=&submit=1 query.
 # submit=true dispatches LV_EVENT_READY (same event the Done key fires).
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/input/text \
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/input/text \
      -d '{"text":"hello world","submit":true}'
 
 # Long-press at a coordinate (450ms default; 500-5000ms range via duration_ms)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch \
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/touch \
      -d '{"x":360,"y":640,"action":"long_press","duration_ms":1200}'
 
 # Swipe between tile pages (20ms step cadence; 50-3000ms total via duration_ms)
-curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch \
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/touch \
      -d '{"action":"swipe","x1":600,"y1":640,"x2":120,"y2":640,"duration_ms":300}'
 
 # Observability events ring — read everything since uptime_ms=N.
@@ -357,7 +358,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.1.90:8080/touch
 #        display.brightness, audio.volume, audio.mic_mute, nvs.
 # Polling-only (long-poll was tried + reverted: PANIC under load on
 # single-threaded httpd — see LEARNINGS).
-curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.1.90:8080/events?since=0" | python3 -m json.tool
+curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.70.128:8080/events?since=0" | python3 -m json.tool
 ```
 
 ### Observability events
@@ -500,10 +501,10 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw / Onboard (K144)**
 - **Debug:** `/ota/check` and `/ota/apply` endpoints on debug server
 - **Deploy new firmware:**
   ```bash
-  scp build/tinkertab.bin radxa@192.168.1.91:/home/radxa/ota/
+  scp build/tinkertab.bin radxa@192.168.70.242:/home/radxa/ota/
   # IMPORTANT: Always include sha256 hash for MitM protection
   SHA=$(sha256sum build/tinkertab.bin | cut -d' ' -f1)
-  echo "{\"version\":\"0.7.1\",\"sha256\":\"$SHA\"}" | ssh radxa@192.168.1.91 'cat > /home/radxa/ota/version.json'
+  echo "{\"version\":\"0.7.1\",\"sha256\":\"$SHA\"}" | ssh radxa@192.168.70.242 'cat > /home/radxa/ota/version.json'
   # Tab5 checks hourly or user taps "Check Update" in Settings
   ```
 
@@ -985,7 +986,7 @@ binary served via `/api/ota/firmware.bin`):
 ```bash
 cd ~/projects/TinkerTab
 # Grab whichever binary Dragon is advertising as current:
-curl -sS "http://192.168.1.91:3502/api/ota/check?current=0.0.0" \
+curl -sS "http://192.168.70.242:3502/api/ota/check?current=0.0.0" \
      -H "Authorization: Bearer $DRAGON_API_TOKEN"
 # Then either OTA it, or serial-flash directly:
 idf.py -p /dev/ttyUSB0 flash
