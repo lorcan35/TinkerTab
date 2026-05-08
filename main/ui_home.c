@@ -174,9 +174,9 @@ static lv_timer_t *s_refresh_timer = NULL;
  * Kept s_mode_short here because the home pill uses different short
  * labels ("Local") than the canonical ui_theme th_mode_names[]
  * ("Local") — actually identical, future cleanup TODO. */
-static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
+static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard", "Solo"};
 static const char *s_mode_tagline[VOICE_MODE_COUNT] = {
-    "ON-DEVICE", "LOCAL + CLOUD", "CLOUD ONLY", "TINKERCLAW", "K144 ONBOARD",
+    "ON-DEVICE", "LOCAL + CLOUD", "CLOUD ONLY", "TINKERCLAW", "K144 ONBOARD", "OPENROUTER DIRECT",
 };
 
 static uint8_t s_badge_mode = 0;
@@ -209,6 +209,7 @@ static void now_card_click_cb(lv_event_t *e);
 static void now_card_long_press_cb(lv_event_t *e);
 static void sys_click_cb(lv_event_t *e);
 static void mode_chip_long_press_cb(lv_event_t *e);
+static void mode_chip_click_cb(lv_event_t *e); /* TT #370 */
 /* U19 (#206): rail callbacks removed with the rail itself. */
 static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
@@ -419,7 +420,11 @@ static void mode_dot_kick_pulse(void) {
 
 static void update_mode_ui(uint8_t mode)
 {
-    if (mode >= 4) mode = 0;
+    /* TT #370 — was hardcoded `>= 4` which silently clamped vmode=4
+     * (Onboard) to 0 (Local) in the home badge.  Now bounded by the
+     * array size so vmode=4 + new vmode=5 (SOLO_DIRECT) both render
+     * correctly. */
+    if (mode >= VOICE_MODE_COUNT) mode = 0;
     bool changed = (s_badge_mode != mode);
     s_badge_mode = mode;
     /* TT #328 Wave 6 — recolor through shared widget.  mode_dot_anim_cb
@@ -644,7 +649,10 @@ lv_obj_t *ui_home_create(void)
      * short-tap (the obvious affordance) silently did nothing and the
      * chip looked broken to new users. */
     lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
-    lv_obj_add_event_cb(s_mode_chip, mode_chip_long_press_cb, LV_EVENT_CLICKED, NULL);
+    /* TT #370 — CLICKED routes through mode_chip_click_cb which
+     * cycles K144↔SOLO when current is one of those tiers, otherwise
+     * falls through to opening the 3-dial sheet. */
+    lv_obj_add_event_cb(s_mode_chip, mode_chip_click_cb, LV_EVENT_CLICKED, NULL);
     ui_fb_card(s_mode_chip); /* TT #328 Wave 10 */
 
     /* TT #328 Wave 6 — shared mode-dot widget (was 6 lines of open-coded
@@ -1796,6 +1804,34 @@ static void mode_chip_long_press_cb(lv_event_t *e)
      * directly, so nothing else to do here. */
     /* TT #328 Wave 9 — user has discovered the chip; suppress the
      * pending hint toast so we don't tell them what they just did. */
+    tab5_settings_set_mode_hint_seen(true);
+    extern void ui_mode_sheet_show(void);
+    ui_mode_sheet_show();
+}
+
+/* TT #370 — mode-pill TAP behaviour.  When current mode is K144
+ * (vmode=4) or SOLO (vmode=5), tap cycles between them — both are
+ * Dragon-free tiers and a fast tap-to-flip is the design intent of
+ * the standalone-SKU mode pill (see spec).  For other modes, fall
+ * through to the existing 3-dial sheet UX (long-press behaviour).
+ *
+ * No config_update fires for vmode 4↔5 — neither tier involves
+ * Dragon, so Dragon doesn't need to know.  NVS write + UI refresh
+ * is the entire transition. */
+static void mode_chip_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (any_overlay_visible()) return;
+    uint8_t cur = tab5_settings_get_voice_mode();
+    if (cur == VMODE_LOCAL_ONBOARD || cur == VMODE_SOLO_DIRECT) {
+        uint8_t next = (cur == VMODE_LOCAL_ONBOARD) ? VMODE_SOLO_DIRECT
+                                                    : VMODE_LOCAL_ONBOARD;
+        tab5_settings_set_voice_mode(next);
+        update_mode_ui(next);
+        ESP_LOGI(TAG, "mode pill: cycled %u -> %u", cur, next);
+        return;
+    }
+    /* Default: open the 3-dial mode-sheet (was the long-press UX). */
     tab5_settings_set_mode_hint_seen(true);
     extern void ui_mode_sheet_show(void);
     ui_mode_sheet_show();

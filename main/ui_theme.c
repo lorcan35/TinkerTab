@@ -15,10 +15,10 @@ static const char *TAG = "ui_theme";
  * vmode=4 (Onboard) row in Sessions/Drawer rendered as grey "?" because
  * callers indexed [4] arrays with vm=4. */
 const char *th_mode_names[VOICE_MODE_COUNT] = {
-    "Local", "Hybrid", "Cloud", "TinkerClaw", "Onboard",
+    "Local", "Hybrid", "Cloud", "TinkerClaw", "Onboard", "Solo",
 };
 const uint32_t th_mode_colors[VOICE_MODE_COUNT] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
 };
 
 /* ── Shared styles ─────────────────────────────────────────── */

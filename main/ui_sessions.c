@@ -97,7 +97,7 @@ static void mode_to_tag(uint8_t vm, char *out, size_t n, uint32_t *color_out)
     * grew to VOICE_MODE_COUNT.  Now read straight from the canonical
     * th_mode_names + th_mode_colors. */
    static const char *s_tags[VOICE_MODE_COUNT] = {
-       "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD",
+       "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD", "SOLO",
    };
    const char *tag;
    uint32_t col;

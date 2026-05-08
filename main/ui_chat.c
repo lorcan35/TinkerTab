@@ -62,7 +62,7 @@ static const char *TAG = "ui_chat";
 #define CHAT_VIEW_H       (CHAT_H - CHAT_VIEW_Y - (CHAT_PILL_BOT_PAD + CHAT_PILL_H + 24) - NAV_H)
 
 static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
 };
 
 /* ── State ─────────────────────────────────────────────────────── */
@@ -241,7 +241,7 @@ static void on_mode_lp(void *ud)
     paint_header_and_view_for_mode(m);
     if (s_sugg) chat_suggestions_set_mode(s_sugg, m);
 
-    static const char *names[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
+    static const char *names[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard", "Solo"};
     char toast[64];
     const char *nick = llm;
     const char *slash = strchr(nick, '/');

@@ -37,10 +37,12 @@ static const char *s_prompts[VOICE_MODE_COUNT][4] = {
     {"Help me debug...", "Explain this concept...", "Write a code snippet...", "Talk through a design..."},
     /* Onboard (voice_mode 4) — K144 stacked LLM, no Dragon needed */
     {"Tell me a joke", "What time is it?", "Greet me politely", "Quick fact about Mars"},
+    /* Solo (voice_mode 5) — OpenRouter direct, full cloud capability */
+    {"Brief weather metaphor", "Translate to Arabic...", "Plan a 25-min focus block", "Help me write..."},
 };
 
 static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
 };
 
 /* Local + Hybrid + Agent (TinkerClaw) leads are static -- they describe
@@ -58,6 +60,8 @@ static const char *s_mode_lead[VOICE_MODE_COUNT] = {
     "Your agent: memory + reasoning tools.",
     /* Onboard (vmode=4) — K144 stacked LLM, fully Dragon-free. */
     "On-device chat -- no cloud, no Dragon.",
+    /* Solo (vmode=5) — OpenRouter direct, no Dragon, no K144 (TT #370). */
+    "Direct cloud -- no Dragon needed.",
 };
 
 struct chat_suggestions {

@@ -47,14 +47,16 @@
 
 // Voice modes (matches voice_mode in config_update protocol)
 // Note: voice.h has the canonical VMODE_* names (VMODE_LOCAL_ONBOARD = 4
-// for the K144 stacked LLM module).  These VOICE_MODE_* aliases match
-// the older 0..3 scheme; mode-cycle UIs use VOICE_MODE_COUNT to wrap.
+// for the K144 stacked LLM module, VMODE_SOLO_DIRECT = 5 for direct
+// OpenRouter).  These VOICE_MODE_* aliases match the older 0..3
+// scheme; mode-cycle UIs use VOICE_MODE_COUNT to wrap.
 #define VOICE_MODE_LOCAL       0
 #define VOICE_MODE_HYBRID      1
 #define VOICE_MODE_CLOUD       2
 #define VOICE_MODE_TINKERCLAW  3
-#define VOICE_MODE_ONBOARD 4
-#define VOICE_MODE_COUNT 5
+#define VOICE_MODE_ONBOARD     4
+#define VOICE_MODE_SOLO        5  /* TT #370 — vmode=5 SOLO_DIRECT */
+#define VOICE_MODE_COUNT 6
 #define TAB5_PLATFORM         "esp32p4-tab5"
 
 // ---------------------------------------------------------------------------
