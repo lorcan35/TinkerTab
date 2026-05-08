@@ -39,6 +39,8 @@ else()
              "debug_server_call.c" "debug_server_camera.c" "debug_server_obs.c"
              "debug_server_input.c" "debug_server_nav.c" "debug_server_admin.c"
              "debug_server_chat.c" "debug_server_inject.c" "debug_server_metrics.c"
+             "debug_server_solo.c"
+             "openrouter_sse.c"
              "debug_obs.c" "pool_probe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"

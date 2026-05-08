@@ -62,6 +62,7 @@
 #include "debug_server_camera.h"
 #include "debug_server_chat.h"
 #include "debug_server_codec.h"
+#include "debug_server_solo.h"
 #include "debug_server_dictation.h"
 #include "debug_server_inject.h"
 #include "debug_server_input.h"
@@ -824,6 +825,8 @@ esp_err_t tab5_debug_server_init(void)
     debug_server_inject_register(server);
     /* Wave 23b (#332): codec endpoint family registered en-bloc. */
     debug_server_codec_register(server);
+    /* TT #370: solo-mode synthetic test endpoints (/solo/sse_test, ...). */
+    debug_server_solo_register(server);
 
     /* Log the URL */
     char ip[20];
