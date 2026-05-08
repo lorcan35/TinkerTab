@@ -107,18 +107,19 @@ typedef enum {
                          // start/stop messages, no LLM/TTS — pure relay.
 } voice_mode_t;
 
-/* TT #317 Phase 5: NVS `vmode` LLM-tier values.  Existing 0..3 documented
- * in CLAUDE.md "NVS Settings Keys".  Tier 4 added for the K144 LLM Module:
- * voice.c routes EVERY text turn through voice_m5_llm_infer (the K144
- * sidecar) regardless of Dragon WS state, no 30-sec failover grace.
- * Settings UI picker entry deferred to Phase 5b (the s_mode_row array
- * is hardcoded to 4 rows; expanding to 5 is a separate UI patch).
- * For now, set via:  POST /settings -d '{"voice_mode": 4}' */
+/* TT #317 Phase 5 + TT #370 Phase 1: NVS `vmode` LLM-tier values.  0..3
+ * documented in CLAUDE.md "NVS Settings Keys".  Tier 4 added for the
+ * K144 LLM Module: voice.c routes EVERY text turn through
+ * voice_m5_llm_infer (the K144 sidecar) regardless of Dragon WS state,
+ * no 30-sec failover grace.  Tier 5 (SOLO_DIRECT) added 2026-05-08:
+ * Tab5 talks directly to OpenRouter — no Dragon, no K144 — see
+ * voice_solo.{c,h}.  Set via:  POST /settings -d '{"voice_mode": 5}' */
 #define VMODE_LOCAL 0         /* Dragon Q6A only */
 #define VMODE_HYBRID 1        /* Dragon LLM, OpenRouter STT/TTS */
-#define VMODE_CLOUD 2         /* OpenRouter LLM/STT/TTS */
+#define VMODE_CLOUD 2         /* OpenRouter LLM/STT/TTS via Dragon proxy */
 #define VMODE_TINKERCLAW 3    /* TinkerClaw Gateway LLM */
 #define VMODE_LOCAL_ONBOARD 4 /* K144 stacked-on-Mate LLM, Dragon-free */
+#define VMODE_SOLO_DIRECT 5   /* OpenRouter direct, Dragon-free, K144-free */
 
 // Callback for state changes (for UI updates)
 typedef void (*voice_state_cb_t)(voice_state_t new_state, const char *detail);

@@ -104,6 +104,25 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out) {
       ESP_LOGW(TAG, "Local-mode failover attempted but K144 errored: %s", esp_err_to_name(fe));
    }
 
+   /* TT #370 — vmode=5 SOLO_DIRECT.  Tab5 ↔ OpenRouter direct.  Real
+    * dispatch to voice_solo_send_text lands in a follow-up commit;
+    * for now we gate on or_key + fall through to DRAGON_PATH so a
+    * misconfigured device still has a working error pathway via the
+    * existing WS error UX.  The NO_KEY return short-circuits before
+    * any send so the caller can prompt for QR scan. */
+   if (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT) {
+      char or_key[96] = {0};
+      tab5_settings_get_or_key(or_key, sizeof or_key);
+      if (or_key[0] == '\0') {
+         ESP_LOGW(TAG, "VMODE_SOLO_DIRECT but or_key empty — refusing send");
+         out->kind = VOICE_MODES_ROUTE_SOLO_NO_KEY;
+         out->err = ESP_ERR_INVALID_STATE;
+         return;
+      }
+      ESP_LOGW(TAG, "VMODE_SOLO_DIRECT: voice_solo not wired yet, falling through to Dragon");
+      /* fall through */
+   }
+
    /* Default — Dragon WS path. */
    out->kind = VOICE_MODES_ROUTE_DRAGON_PATH;
 }

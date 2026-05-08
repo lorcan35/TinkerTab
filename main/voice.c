@@ -1972,6 +1972,22 @@ esp_err_t voice_send_text(const char *text)
              tab5_ui_unlock();
           }
           return route.err;
+       case VOICE_MODES_ROUTE_SOLO_OK:
+          /* TT #370 — voice_solo already drove state machine + chat UI;
+           * nothing left to do here. */
+          return ESP_OK;
+       case VOICE_MODES_ROUTE_SOLO_NO_KEY:
+          if (tab5_ui_try_lock(100)) {
+             ui_home_show_toast("Scan QR to set OpenRouter key");
+             tab5_ui_unlock();
+          }
+          return route.err;
+       case VOICE_MODES_ROUTE_SOLO_FAILED:
+          if (tab5_ui_try_lock(100)) {
+             ui_home_show_toast("Solo turn failed");
+             tab5_ui_unlock();
+          }
+          return route.err;
        case VOICE_MODES_ROUTE_DRAGON_PATH:
           /* fall through to Dragon WS send below */
           break;
