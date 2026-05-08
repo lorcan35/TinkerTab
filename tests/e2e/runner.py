@@ -2436,6 +2436,98 @@ def story_wave16_k144_polish(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+# ───────────────────────────────────────────────────────────────────
+# TT #370 — story_solo: vmode=5 SOLO_DIRECT (Tab5 ↔ OpenRouter direct)
+# ───────────────────────────────────────────────────────────────────
+
+def story_solo(r: Runner) -> None:
+    """Verify Tab5 solo mode (vmode=5) end-to-end via debug endpoints.
+
+    Skips if OPENROUTER_KEY not in env or Tab5 has empty or_key NVS.
+    Covers: SSE parser unit test, NVS round-trip, mode pill, route
+    plumbing, real LLM call, RAG remember/recall round-trip.
+    """
+    tab5 = r.tab5
+    or_key = os.environ.get("OPENROUTER_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+
+    # ─── A. Liveness + foundation ──────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor",
+           lambda t: t.reset_event_cursor() and None)
+
+    # ─── B. SSE parser smoke (no API call) ─────────────────────────
+    sse_payload = (b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+                   b'data: [DONE]\n\n')
+
+    def _sse_test(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/sse_test",
+                      data=sse_payload,
+                      headers={**t._headers(), "Content-Type": "text/plain"},
+                      timeout=10)
+        d = rsp.json()
+        return d.get("done") is True and d.get("deltas") == ["hello"]
+    r.step("[B] SSE parser: single delta + DONE", _sse_test)
+
+    # ─── C. NVS schema + or_key provisioning ───────────────────────
+    r.step("[C] NVS exposes or_* keys with defaults",
+           lambda t: t.settings().get("or_mdl_llm", "").startswith("~anthropic"))
+    if not or_key:
+        r.step("[C] SKIP — no OPENROUTER_KEY in env",
+               lambda t: True)
+        return
+
+    def _provision_key(t: Tab5Driver) -> bool:
+        rsp = t._post("/settings", json={"or_key": or_key}, timeout=10)
+        return "or_key" in rsp.json().get("updated", [])
+    r.step("[C] Provision or_key via /settings", _provision_key)
+    r.step("[C] Verify or_key_set",
+           lambda t: t.settings().get("or_key_set") is True)
+
+    # ─── D. Mode pill + route plumbing ─────────────────────────────
+    r.step("[D] /mode m=5 returns mode_name=solo_direct",
+           lambda t: t.mode(5).get("mode_name") == "solo_direct")
+    r.step("[D] /settings shows voice_mode=5 (no Dragon ACK clobber)",
+           lambda t: t.settings().get("voice_mode") == 5)
+
+    # ─── E. Real LLM round-trip via /solo/llm_test ─────────────────
+    def _llm(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/llm_test",
+                      json={"prompt": "reply with the single word: pong"},
+                      timeout=60)
+        d = rsp.json()
+        return (d.get("ok") is True and "pong" in d.get("reply", "").lower()
+                and d.get("delta_count", 0) >= 1)
+    r.step("[E] /solo/llm_test returns 'pong' (real OpenRouter)", _llm)
+
+    # ─── F. solo.* obs events fired ────────────────────────────────
+    r.step("[F] solo.llm_done event observed",
+           lambda t: t.await_event("solo.llm_done", timeout_s=5) is not None)
+
+    # ─── G. RAG remember/recall round-trip ─────────────────────────
+    def _rag_remember(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/rag_test",
+                      json={"action": "remember",
+                            "text": "my favourite color is teal"},
+                      timeout=30)
+        return rsp.json().get("ok") is True
+
+    def _rag_recall(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/rag_test",
+                      json={"action": "recall",
+                            "query": "what colour do I like"},
+                      timeout=30)
+        d = rsp.json()
+        hits = d.get("hits", [])
+        return (d.get("ok") is True and len(hits) >= 1
+                and "teal" in hits[0].get("text", "").lower())
+    r.step("[G] RAG remember", _rag_remember)
+    r.step("[G] RAG recall finds 'teal'", _rag_recall)
+
+    # ─── H. Cleanup — restore vmode=2 (Cloud) ──────────────────────
+    r.step("[end] Restore vmode=2",
+           lambda t: t.mode(2).get("voice_mode") == 2)
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -2457,6 +2549,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave14":  story_wave14_k144_observable,
     "story_wave15":  story_wave15_k144_models,
     "story_wave16":  story_wave16_k144_polish,
+    "story_solo":    story_solo,
 }
 
 
