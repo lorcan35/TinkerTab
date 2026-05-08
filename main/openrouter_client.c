@@ -373,9 +373,90 @@ cleanup:
 }
 
 esp_err_t openrouter_embed(const char *text, float **out_vec, size_t *out_dim) {
-   (void)text;
-   if (out_vec) *out_vec = NULL;
-   if (out_dim) *out_dim = 0;
-   ESP_LOGW(TAG, "openrouter_embed stub");
-   return ESP_ERR_NOT_SUPPORTED;
+   if (!text || !out_vec || !out_dim) return ESP_ERR_INVALID_ARG;
+   *out_vec = NULL;
+   *out_dim = 0;
+
+   char model[64] = {0};
+   tab5_settings_get_or_mdl_emb(model, sizeof model);
+
+   cJSON *body = cJSON_CreateObject();
+   cJSON_AddStringToObject(body, "model", model);
+   cJSON_AddStringToObject(body, "input", text);
+   char *body_str = cJSON_PrintUnformatted(body);
+   cJSON_Delete(body);
+   if (!body_str) return ESP_ERR_NO_MEM;
+
+   esp_http_client_handle_t c = openrouter_open_post("/embeddings");
+   if (!c) {
+      free(body_str);
+      return ESP_ERR_INVALID_STATE;
+   }
+   esp_http_client_set_header(c, "Content-Type", "application/json");
+
+   esp_err_t err = esp_http_client_open(c, strlen(body_str));
+   if (err != ESP_OK) goto cleanup;
+   if (esp_http_client_write(c, body_str, strlen(body_str)) < 0) {
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+   esp_http_client_fetch_headers(c);
+   int status = esp_http_client_get_status_code(c);
+   if (status != 200) {
+      ESP_LOGE(TAG, "embed status=%d", status);
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+
+   /* Response body in PSRAM.  text-embedding-3-small returns 1536
+    * floats × ~12 chars each ≈ 18 KB; 32 KB is comfortable. */
+   const size_t cap = 32 * 1024;
+   char *rbuf = heap_caps_calloc(1, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!rbuf) {
+      err = ESP_ERR_NO_MEM;
+      goto cleanup;
+   }
+   size_t total_read = 0;
+   while (total_read + 1 < cap) {
+      int n = esp_http_client_read(c, rbuf + total_read, cap - 1 - total_read);
+      if (n <= 0) break;
+      total_read += (size_t)n;
+   }
+   cJSON *root = cJSON_Parse(rbuf);
+   heap_caps_free(rbuf);
+   if (!root) {
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+   cJSON *data = cJSON_GetObjectItem(root, "data");
+   if (cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
+      cJSON *embedding = cJSON_GetObjectItem(cJSON_GetArrayItem(data, 0), "embedding");
+      if (cJSON_IsArray(embedding)) {
+         int dim = cJSON_GetArraySize(embedding);
+         float *v = heap_caps_malloc((size_t)dim * sizeof(float),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+         if (v) {
+            for (int i = 0; i < dim; i++) {
+               cJSON *e = cJSON_GetArrayItem(embedding, i);
+               v[i] = e ? (float)e->valuedouble : 0.0f;
+            }
+            *out_vec = v;
+            *out_dim = (size_t)dim;
+         } else {
+            err = ESP_ERR_NO_MEM;
+         }
+      } else {
+         err = ESP_FAIL;
+      }
+   } else {
+      err = ESP_FAIL;
+   }
+   cJSON_Delete(root);
+
+cleanup:
+   esp_http_client_close(c);
+   esp_http_client_cleanup(c);
+   s_inflight = NULL;
+   free(body_str);
+   return err;
 }
