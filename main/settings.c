@@ -46,6 +46,14 @@ static const char *TAG = "settings";
  * to enumerate).  Cap at ~256 chars: tool names are typically 8-16
  * chars, so 256 holds 16-32 stars — well above any sane user need. */
 #define KEY_STAR_SKILLS "star_skills"
+/* TT #370 — OpenRouter (vmode=5 SOLO_DIRECT) NVS keys.  All ≤15 chars.
+ * Empty `or_key` means solo mode is unconfigured. */
+#define KEY_OR_KEY     "or_key"
+#define KEY_OR_MDL_LLM "or_mdl_llm"
+#define KEY_OR_MDL_STT "or_mdl_stt"
+#define KEY_OR_MDL_TTS "or_mdl_tts"
+#define KEY_OR_MDL_EMB "or_mdl_emb"
+#define KEY_OR_VOICE   "or_voice"
 #define KEY_BRIGHTNESS  "brightness"
 #define KEY_VOLUME      "volume"
 #define KEY_DEVICE_ID   "device_id"
@@ -375,6 +383,56 @@ esp_err_t tab5_settings_set_starred_skills(const char *list) {
 }
 
 esp_err_t tab5_settings_set_dragon_api_token(const char *token) { return set_str(KEY_DRAGON_TOK, token ? token : ""); }
+
+/* ── OpenRouter (vmode=5 SOLO_DIRECT) ──────────────────────────────────
+ *
+ * Defaults match docs/superpowers/specs/2026-05-08-tab5-solo-mode-design.md.
+ * Empty key disables solo mode at runtime; voice_modes_route_text
+ * surfaces VOICE_MODES_ROUTE_SOLO_NO_KEY so the UI can prompt for a
+ * QR scan.  `~latest` aliases let users avoid string-tweak churn as
+ * OpenRouter ships new model versions. */
+
+esp_err_t tab5_settings_get_or_key(char *buf, size_t len) {
+    return get_str(KEY_OR_KEY, buf, len, "");
+}
+esp_err_t tab5_settings_set_or_key(const char *key) {
+    return set_str(KEY_OR_KEY, key ? key : "");
+}
+
+esp_err_t tab5_settings_get_or_mdl_llm(char *buf, size_t len) {
+    return get_str(KEY_OR_MDL_LLM, buf, len, "~anthropic/claude-haiku-latest");
+}
+esp_err_t tab5_settings_set_or_mdl_llm(const char *model) {
+    return set_str(KEY_OR_MDL_LLM, model ? model : "");
+}
+
+esp_err_t tab5_settings_get_or_mdl_stt(char *buf, size_t len) {
+    return get_str(KEY_OR_MDL_STT, buf, len, "whisper-1");
+}
+esp_err_t tab5_settings_set_or_mdl_stt(const char *model) {
+    return set_str(KEY_OR_MDL_STT, model ? model : "");
+}
+
+esp_err_t tab5_settings_get_or_mdl_tts(char *buf, size_t len) {
+    return get_str(KEY_OR_MDL_TTS, buf, len, "tts-1");
+}
+esp_err_t tab5_settings_set_or_mdl_tts(const char *model) {
+    return set_str(KEY_OR_MDL_TTS, model ? model : "");
+}
+
+esp_err_t tab5_settings_get_or_mdl_emb(char *buf, size_t len) {
+    return get_str(KEY_OR_MDL_EMB, buf, len, "text-embedding-3-small");
+}
+esp_err_t tab5_settings_set_or_mdl_emb(const char *model) {
+    return set_str(KEY_OR_MDL_EMB, model ? model : "");
+}
+
+esp_err_t tab5_settings_get_or_voice(char *buf, size_t len) {
+    return get_str(KEY_OR_VOICE, buf, len, "alloy");
+}
+esp_err_t tab5_settings_set_or_voice(const char *voice) {
+    return set_str(KEY_OR_VOICE, voice ? voice : "");
+}
 
 /* ── Display ──────────────────────────────────────────────────────────── */
 

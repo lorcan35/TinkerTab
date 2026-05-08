@@ -54,6 +54,31 @@ esp_err_t tab5_settings_set_dragon_api_token(const char *token);
 esp_err_t tab5_settings_get_starred_skills(char *buf, size_t len);
 esp_err_t tab5_settings_set_starred_skills(const char *list);
 
+/* ── OpenRouter (vmode=5 SOLO_DIRECT) ────────────────────────────────────
+ * Tab5 talks directly to OpenRouter's audio + chat APIs when vmode=5
+ * (no Dragon, no K144 in the loop).  All six keys live in the
+ * "settings" NVS namespace.  Defaults are sensible `~latest` aliases
+ * so a fresh device with just the API key set works out of the box.
+ * Empty `or_key` is the disabled state; voice_modes_route_text returns
+ * VOICE_MODES_ROUTE_SOLO_NO_KEY and the UI prompts for a QR scan. */
+esp_err_t tab5_settings_get_or_key(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_key(const char *key);
+
+esp_err_t tab5_settings_get_or_mdl_llm(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_mdl_llm(const char *model);
+
+esp_err_t tab5_settings_get_or_mdl_stt(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_mdl_stt(const char *model);
+
+esp_err_t tab5_settings_get_or_mdl_tts(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_mdl_tts(const char *model);
+
+esp_err_t tab5_settings_get_or_mdl_emb(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_mdl_emb(const char *model);
+
+esp_err_t tab5_settings_get_or_voice(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_voice(const char *voice);
+
 /* ── v4·D Sovereign Halo mode dials ──────────────────────────────────── */
 /* Three orthogonal dials that replace the 4-mode pill.  Tab5 resolves the
  * triple into the legacy (voice_mode, llm_model) pair Dragon expects.

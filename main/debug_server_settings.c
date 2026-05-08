@@ -74,6 +74,32 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
       cJSON_AddStringToObject(root, "starred_skills", stars);
    }
 
+   /* TT #370 — OpenRouter (vmode=5 SOLO_DIRECT).  The key is
+    * surfaced as `or_key_set` + `or_key_len` (same shape as
+    * dragon_api_token above) so the harness + UI can verify it's
+    * provisioned without exposing the secret.  Model + voice fields
+    * are non-sensitive and surfaced directly. */
+   {
+      char or_key[96] = {0};
+      tab5_settings_get_or_key(or_key, sizeof(or_key));
+      cJSON_AddBoolToObject(root, "or_key_set", or_key[0] != '\0');
+      cJSON_AddNumberToObject(root, "or_key_len", (double)strlen(or_key));
+
+      char or_buf[96] = {0};
+      tab5_settings_get_or_mdl_llm(or_buf, sizeof(or_buf));
+      cJSON_AddStringToObject(root, "or_mdl_llm", or_buf);
+      tab5_settings_get_or_mdl_stt(or_buf, sizeof(or_buf));
+      cJSON_AddStringToObject(root, "or_mdl_stt", or_buf);
+      tab5_settings_get_or_mdl_tts(or_buf, sizeof(or_buf));
+      cJSON_AddStringToObject(root, "or_mdl_tts", or_buf);
+      tab5_settings_get_or_mdl_emb(or_buf, sizeof(or_buf));
+      cJSON_AddStringToObject(root, "or_mdl_emb", or_buf);
+
+      char or_voice[32] = {0};
+      tab5_settings_get_or_voice(or_voice, sizeof(or_voice));
+      cJSON_AddStringToObject(root, "or_voice", or_voice);
+   }
+
    /* Hardware */
    cJSON_AddNumberToObject(root, "brightness", tab5_settings_get_brightness());
    cJSON_AddNumberToObject(root, "volume", tab5_settings_get_volume());
@@ -227,6 +253,44 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
    if (cJSON_IsString(stars_in)) {
       if (strlen(stars_in->valuestring) <= 240 && tab5_settings_set_starred_skills(stars_in->valuestring) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("starred_skills"));
+      }
+   }
+
+   /* TT #370 — OpenRouter (vmode=5 SOLO_DIRECT).  Six string keys.
+    * `or_key` is the only one with a tight length cap (80 chars
+    * accommodates the 73-char sk-or-v1- format + headroom).  Models
+    * accept 95 chars (handles the longest published OpenRouter model
+    * IDs with `~latest` aliases).  `or_voice` is a short preset name. */
+   {
+      cJSON *or_key = cJSON_GetObjectItem(req_json, "or_key");
+      if (cJSON_IsString(or_key) && strlen(or_key->valuestring) <= 80 &&
+          tab5_settings_set_or_key(or_key->valuestring) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("or_key"));
+      }
+      cJSON *or_llm = cJSON_GetObjectItem(req_json, "or_mdl_llm");
+      if (cJSON_IsString(or_llm) && strlen(or_llm->valuestring) <= 95 &&
+          tab5_settings_set_or_mdl_llm(or_llm->valuestring) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("or_mdl_llm"));
+      }
+      cJSON *or_stt = cJSON_GetObjectItem(req_json, "or_mdl_stt");
+      if (cJSON_IsString(or_stt) && strlen(or_stt->valuestring) <= 95 &&
+          tab5_settings_set_or_mdl_stt(or_stt->valuestring) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("or_mdl_stt"));
+      }
+      cJSON *or_tts = cJSON_GetObjectItem(req_json, "or_mdl_tts");
+      if (cJSON_IsString(or_tts) && strlen(or_tts->valuestring) <= 95 &&
+          tab5_settings_set_or_mdl_tts(or_tts->valuestring) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("or_mdl_tts"));
+      }
+      cJSON *or_emb = cJSON_GetObjectItem(req_json, "or_mdl_emb");
+      if (cJSON_IsString(or_emb) && strlen(or_emb->valuestring) <= 95 &&
+          tab5_settings_set_or_mdl_emb(or_emb->valuestring) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("or_mdl_emb"));
+      }
+      cJSON *or_voice_in = cJSON_GetObjectItem(req_json, "or_voice");
+      if (cJSON_IsString(or_voice_in) && strlen(or_voice_in->valuestring) <= 31 &&
+          tab5_settings_set_or_voice(or_voice_in->valuestring) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("or_voice"));
       }
    }
 
