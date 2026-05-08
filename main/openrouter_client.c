@@ -76,15 +76,143 @@ void openrouter_cancel_inflight(void) {
    }
 }
 
-/* ── Stubs — filled in over the next 4 commits ──────────────────── */
+/* Build a 44-byte WAV RIFF header for PCM-16LE @ 16 kHz mono.  Caller
+ * writes the PCM right after.  Required by /audio/transcriptions
+ * which expects an audio container, not raw PCM. */
+static void wav16_header(uint8_t *hdr, size_t pcm_bytes) {
+   const uint32_t sample_rate = 16000;
+   const uint16_t num_ch = 1;
+   const uint16_t bits = 16;
+   const uint32_t byte_rate = sample_rate * num_ch * bits / 8;
+   uint32_t riff_size = 36u + (uint32_t)pcm_bytes;
+   uint32_t fmt_size = 16;
+   uint16_t fmt_pcm = 1;
+   uint16_t block_align = num_ch * bits / 8;
+   uint32_t data_size = (uint32_t)pcm_bytes;
+   memcpy(hdr, "RIFF", 4);
+   memcpy(hdr + 4, &riff_size, 4);
+   memcpy(hdr + 8, "WAVE", 4);
+   memcpy(hdr + 12, "fmt ", 4);
+   memcpy(hdr + 16, &fmt_size, 4);
+   memcpy(hdr + 20, &fmt_pcm, 2);
+   memcpy(hdr + 22, &num_ch, 2);
+   memcpy(hdr + 24, &sample_rate, 4);
+   memcpy(hdr + 28, &byte_rate, 4);
+   memcpy(hdr + 32, &block_align, 2);
+   memcpy(hdr + 34, &bits, 2);
+   memcpy(hdr + 36, "data", 4);
+   memcpy(hdr + 40, &data_size, 4);
+}
 
 esp_err_t openrouter_stt(const int16_t *pcm, size_t samples, char *out_text, size_t out_cap) {
-   (void)pcm;
-   (void)samples;
-   (void)out_text;
-   (void)out_cap;
-   ESP_LOGW(TAG, "openrouter_stt stub");
-   return ESP_ERR_NOT_SUPPORTED;
+   if (!pcm || !out_text || out_cap < 16 || samples == 0) return ESP_ERR_INVALID_ARG;
+
+   char model[64] = {0};
+   tab5_settings_get_or_mdl_stt(model, sizeof model);
+
+   static const char kBoundary[] = "----tab5-solo-boundary";
+   const size_t pcm_bytes = samples * sizeof(int16_t);
+   const size_t wav_bytes = 44 + pcm_bytes;
+
+   /* Build the part-A and part-B framing strings up front.  Their
+    * sizes go into the Content-Length we hand to esp_http_client_open. */
+   char part_a[256];
+   int part_a_n = snprintf(part_a, sizeof part_a,
+                           "--%s\r\nContent-Disposition: form-data; "
+                           "name=\"file\"; filename=\"audio.wav\"\r\n"
+                           "Content-Type: audio/wav\r\n\r\n",
+                           kBoundary);
+
+   char part_b[160];
+   int part_b_n = snprintf(part_b, sizeof part_b,
+                           "\r\n--%s\r\nContent-Disposition: form-data; "
+                           "name=\"model\"\r\n\r\n%s\r\n--%s--\r\n",
+                           kBoundary, model, kBoundary);
+
+   if (part_a_n <= 0 || part_b_n <= 0 || (size_t)part_b_n >= sizeof part_b) {
+      return ESP_ERR_INVALID_SIZE;
+   }
+   const size_t total = (size_t)part_a_n + wav_bytes + (size_t)part_b_n;
+
+   esp_http_client_handle_t c = openrouter_open_post("/audio/transcriptions");
+   if (!c) return ESP_ERR_INVALID_STATE;
+   char ctype[96];
+   snprintf(ctype, sizeof ctype, "multipart/form-data; boundary=%s", kBoundary);
+   esp_http_client_set_header(c, "Content-Type", ctype);
+
+   esp_err_t err = esp_http_client_open(c, total);
+   if (err != ESP_OK) goto cleanup;
+   if (esp_http_client_write(c, part_a, part_a_n) < 0) {
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+
+   uint8_t hdr[44];
+   wav16_header(hdr, pcm_bytes);
+   if (esp_http_client_write(c, (const char *)hdr, sizeof hdr) < 0) {
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+
+   /* PCM in 4 KB chunks to bound TX-buffer memcpy churn on PSRAM. */
+   const char *pcm_b = (const char *)pcm;
+   size_t off = 0;
+   while (off < pcm_bytes) {
+      size_t n = pcm_bytes - off;
+      if (n > 4096) n = 4096;
+      int wrote = esp_http_client_write(c, pcm_b + off, n);
+      if (wrote < 0) {
+         err = ESP_FAIL;
+         goto cleanup;
+      }
+      off += (size_t)wrote;
+   }
+   if (esp_http_client_write(c, part_b, part_b_n) < 0) {
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+
+   esp_http_client_fetch_headers(c);
+   int status = esp_http_client_get_status_code(c);
+   if (status != 200) {
+      ESP_LOGE(TAG, "stt status=%d", status);
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+
+   /* Response is JSON: {"text":"..."}.  Cap at 16 KB into PSRAM. */
+   const size_t rcap = 16 * 1024;
+   char *rbuf = heap_caps_calloc(1, rcap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!rbuf) {
+      err = ESP_ERR_NO_MEM;
+      goto cleanup;
+   }
+   size_t total_read = 0;
+   while (total_read + 1 < rcap) {
+      int n = esp_http_client_read(c, rbuf + total_read, rcap - 1 - total_read);
+      if (n <= 0) break;
+      total_read += (size_t)n;
+   }
+   cJSON *root = cJSON_Parse(rbuf);
+   heap_caps_free(rbuf);
+   if (root) {
+      cJSON *t = cJSON_GetObjectItem(root, "text");
+      if (cJSON_IsString(t) && t->valuestring) {
+         strncpy(out_text, t->valuestring, out_cap - 1);
+         out_text[out_cap - 1] = '\0';
+      } else {
+         err = ESP_FAIL;
+      }
+      cJSON_Delete(root);
+   } else {
+      err = ESP_FAIL;
+   }
+
+cleanup:
+   esp_http_client_close(c);
+   esp_http_client_cleanup(c);
+   s_inflight = NULL;
+   return err;
 }
 
 typedef struct {
