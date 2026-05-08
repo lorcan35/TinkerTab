@@ -37,7 +37,7 @@ static esp_err_t mode_set_handler(httpd_req_t *req) {
    char query[128] = {0};
    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
       cJSON *err = cJSON_CreateObject();
-      cJSON_AddStringToObject(err, "error", "use ?m=0|1|2|3|4&model=... (3=TinkerClaw, 4=K144 onboard)");
+      cJSON_AddStringToObject(err, "error", "use ?m=0|1|2|3|4|5&model=... (3=TinkerClaw, 4=K144 onboard, 5=Solo direct)");
       return tab5_debug_send_json_resp(req, err);
    }
 
@@ -47,8 +47,10 @@ static esp_err_t mode_set_handler(httpd_req_t *req) {
    httpd_query_key_value(query, "model", model, sizeof(model));
 
    int mode = atoi(val);
-   /* TT #317 Phase 5: vmode=4 added for VMODE_LOCAL_ONBOARD (K144). */
-   if (mode < 0 || mode > 4) mode = 0;
+   /* TT #317 Phase 5: vmode=4 added for VMODE_LOCAL_ONBOARD (K144).
+    * TT #370 Phase 1: vmode=5 added for VMODE_SOLO_DIRECT (OpenRouter
+    * direct, no Dragon, no K144). */
+   if (mode < 0 || mode > 5) mode = 0;
 
    /* Save to NVS */
    tab5_settings_set_voice_mode((uint8_t)mode);
@@ -59,13 +61,14 @@ static esp_err_t mode_set_handler(httpd_req_t *req) {
    ESP_LOGI("debug_mode", "Mode switch: voice_mode=%d, llm_model=%s", mode, model[0] ? model : "(unchanged)");
 
    /* Send config_update to Dragon via voice WS — except for vmode=4
-    * (VMODE_LOCAL_ONBOARD) which is a Tab5-side-only tier.  Dragon
-    * doesn't understand it and would ACK with an error that reverts our
-    * NVS write back to 0.  When user picks ONBOARD, tell Dragon we're
-    * still in "local" (mode=0) so its STT/TTS stay on local backends;
-    * Tab5 then bypasses Dragon for the LLM turn via voice_send_text. */
+    * (VMODE_LOCAL_ONBOARD) and vmode=5 (VMODE_SOLO_DIRECT) which are
+    * both Tab5-side-only tiers.  Dragon doesn't understand them and
+    * would ACK with an error that reverts our NVS write back to 0.
+    * When user picks one of those, tell Dragon we're still in
+    * "local" (mode=0) so its STT/TTS stay on local backends; Tab5
+    * then bypasses Dragon for the turn via voice_send_text. */
    if (voice_is_connected()) {
-      int dragon_mode = (mode == 4) ? 0 : mode;
+      int dragon_mode = (mode >= 4) ? 0 : mode;
       voice_send_config_update(dragon_mode, model[0] ? model : NULL);
    }
 
@@ -75,8 +78,8 @@ static esp_err_t mode_set_handler(httpd_req_t *req) {
    /* Return current state */
    cJSON *root = cJSON_CreateObject();
    cJSON_AddNumberToObject(root, "voice_mode", mode);
-   const char *mode_names[] = {"local", "hybrid", "cloud", "tinkerclaw", "local_onboard"};
-   cJSON_AddStringToObject(root, "mode_name", mode <= 4 ? mode_names[mode] : "unknown");
+   const char *mode_names[] = {"local", "hybrid", "cloud", "tinkerclaw", "local_onboard", "solo_direct"};
+   cJSON_AddStringToObject(root, "mode_name", mode <= 5 ? mode_names[mode] : "unknown");
    char cur_model[64];
    tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
    cJSON_AddStringToObject(root, "llm_model", cur_model);
