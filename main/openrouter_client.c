@@ -307,11 +307,69 @@ cleanup:
 }
 
 esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *ctx) {
-   (void)text;
-   (void)cb;
-   (void)ctx;
-   ESP_LOGW(TAG, "openrouter_tts stub");
-   return ESP_ERR_NOT_SUPPORTED;
+   if (!text || !*text || !cb) return ESP_ERR_INVALID_ARG;
+
+   char model[64] = {0};
+   tab5_settings_get_or_mdl_tts(model, sizeof model);
+   char voice[32] = {0};
+   tab5_settings_get_or_voice(voice, sizeof voice);
+
+   cJSON *body = cJSON_CreateObject();
+   cJSON_AddStringToObject(body, "model", model);
+   cJSON_AddStringToObject(body, "voice", voice);
+   cJSON_AddStringToObject(body, "input", text);
+   cJSON_AddStringToObject(body, "response_format", "wav");
+   char *body_str = cJSON_PrintUnformatted(body);
+   cJSON_Delete(body);
+   if (!body_str) return ESP_ERR_NO_MEM;
+
+   esp_http_client_handle_t c = openrouter_open_post("/audio/speech");
+   if (!c) {
+      free(body_str);
+      return ESP_ERR_INVALID_STATE;
+   }
+   esp_http_client_set_header(c, "Content-Type", "application/json");
+
+   esp_err_t err = esp_http_client_open(c, strlen(body_str));
+   if (err != ESP_OK) goto cleanup;
+   if (esp_http_client_write(c, body_str, strlen(body_str)) < 0) {
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+   esp_http_client_fetch_headers(c);
+   int status = esp_http_client_get_status_code(c);
+   if (status != 200) {
+      ESP_LOGE(TAG, "tts status=%d", status);
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+
+   /* Skip the 44-byte WAV RIFF header — caller wants raw PCM-16LE. */
+   uint8_t header[44];
+   int hr = 0;
+   while (hr < (int)sizeof header) {
+      int n = esp_http_client_read(c, (char *)header + hr, sizeof header - hr);
+      if (n <= 0) {
+         err = ESP_FAIL;
+         goto cleanup;
+      }
+      hr += n;
+   }
+
+   /* Stream PCM payload to the callback in 4 KB chunks. */
+   uint8_t buf[4096];
+   while (1) {
+      int n = esp_http_client_read(c, (char *)buf, sizeof buf);
+      if (n <= 0) break;
+      cb(buf, (size_t)n, ctx);
+   }
+
+cleanup:
+   esp_http_client_close(c);
+   esp_http_client_cleanup(c);
+   s_inflight = NULL;
+   free(body_str);
+   return err;
 }
 
 esp_err_t openrouter_embed(const char *text, float **out_vec, size_t *out_dim) {
