@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "openrouter_client.h"
+#include "solo_rag.h"
 #include "solo_session_store.h"
 #include "task_worker.h"
 #include "ui_chat.h"
@@ -123,7 +124,7 @@ esp_err_t voice_solo_init(void) {
    if (s_initialized) return ESP_OK;
    solo_session_init();   /* mkdir /sdcard/sessions, idempotent */
    solo_session_open(NULL, 0); /* warm the active sid from NVS */
-   /* Follow-up commit: solo_rag_init. */
+   solo_rag_init();       /* touch /sdcard/rag.bin, idempotent */
    s_initialized = true;
    ESP_LOGI(TAG, "voice_solo_init OK");
    return ESP_OK;

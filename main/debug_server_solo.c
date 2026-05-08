@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "openrouter_client.h"
 #include "openrouter_sse.h"
+#include "solo_rag.h"
 
 static const char *TAG = "debug_solo";
 
@@ -151,6 +152,75 @@ static esp_err_t llm_test_handler(httpd_req_t *req) {
    return tab5_debug_send_json_resp(req, out);
 }
 
+/* /solo/rag_test — POST {"action":"remember","text":"..."} →
+ *                        {"ok":bool,"fact_id":N}
+ *                   POST {"action":"recall","query":"..."} →
+ *                        {"ok":bool,"hits":[{fact_id,score,text},...]}
+ *                   POST {"action":"count"} → {"count":N}
+ */
+static esp_err_t rag_test_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_FAIL;
+
+   char body[1024] = {0};
+   size_t total = req->content_len < sizeof body - 1 ? req->content_len : sizeof body - 1;
+   if (total == 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty");
+   size_t got = 0;
+   while (got < total) {
+      int n = httpd_req_recv(req, body + got, total - got);
+      if (n <= 0) return ESP_FAIL;
+      got += (size_t)n;
+   }
+   body[got] = '\0';
+
+   cJSON *root = cJSON_Parse(body);
+   if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
+   cJSON *action = cJSON_GetObjectItem(root, "action");
+   cJSON *out = cJSON_CreateObject();
+
+   if (cJSON_IsString(action) && strcmp(action->valuestring, "remember") == 0) {
+      cJSON *t = cJSON_GetObjectItem(root, "text");
+      if (!cJSON_IsString(t)) {
+         cJSON_AddBoolToObject(out, "ok", false);
+         cJSON_AddStringToObject(out, "error", "missing text");
+      } else {
+         uint32_t fid = 0;
+         esp_err_t err = solo_rag_remember(t->valuestring, &fid);
+         cJSON_AddBoolToObject(out, "ok", err == ESP_OK);
+         cJSON_AddNumberToObject(out, "fact_id", (double)fid);
+         if (err != ESP_OK) cJSON_AddStringToObject(out, "error", esp_err_to_name(err));
+      }
+   } else if (cJSON_IsString(action) && strcmp(action->valuestring, "recall") == 0) {
+      cJSON *q = cJSON_GetObjectItem(root, "query");
+      if (!cJSON_IsString(q)) {
+         cJSON_AddBoolToObject(out, "ok", false);
+         cJSON_AddStringToObject(out, "error", "missing query");
+      } else {
+         solo_rag_hit_t hits[5] = {0};
+         int n_hits = 0;
+         esp_err_t err = solo_rag_recall(q->valuestring, 5, hits, &n_hits);
+         cJSON_AddBoolToObject(out, "ok", err == ESP_OK);
+         cJSON *arr = cJSON_CreateArray();
+         for (int i = 0; i < n_hits; i++) {
+            cJSON *h = cJSON_CreateObject();
+            cJSON_AddNumberToObject(h, "fact_id", (double)hits[i].fact_id);
+            cJSON_AddNumberToObject(h, "score", (double)hits[i].score);
+            cJSON_AddStringToObject(h, "text", hits[i].text);
+            cJSON_AddItemToArray(arr, h);
+         }
+         cJSON_AddItemToObject(out, "hits", arr);
+         if (err != ESP_OK) cJSON_AddStringToObject(out, "error", esp_err_to_name(err));
+      }
+   } else if (cJSON_IsString(action) && strcmp(action->valuestring, "count") == 0) {
+      cJSON_AddBoolToObject(out, "ok", true);
+      cJSON_AddNumberToObject(out, "count", (double)solo_rag_count());
+   } else {
+      cJSON_AddBoolToObject(out, "ok", false);
+      cJSON_AddStringToObject(out, "error", "unknown action (remember|recall|count)");
+   }
+   cJSON_Delete(root);
+   return tab5_debug_send_json_resp(req, out);
+}
+
 void debug_server_solo_register(httpd_handle_t server) {
    if (!server) return;
    static const httpd_uri_t uri_sse = {.uri = "/solo/sse_test", .method = HTTP_POST, .handler = sse_test_handler};
@@ -164,4 +234,8 @@ void debug_server_solo_register(httpd_handle_t server) {
    static const httpd_uri_t uri_llm = {.uri = "/solo/llm_test", .method = HTTP_POST, .handler = llm_test_handler};
    httpd_register_uri_handler(server, &uri_llm);
    ESP_LOGI(TAG, "registered /solo/llm_test");
+
+   static const httpd_uri_t uri_rag = {.uri = "/solo/rag_test", .method = HTTP_POST, .handler = rag_test_handler};
+   httpd_register_uri_handler(server, &uri_rag);
+   ESP_LOGI(TAG, "registered /solo/rag_test");
 }
