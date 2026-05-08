@@ -464,13 +464,17 @@ esp_err_t tab5_settings_set_volume(uint8_t vol)
 
 uint8_t tab5_settings_get_voice_mode(void)
 {
-   /* TT #317 P5: 0=local, 1=hybrid, 2=cloud, 3=tinkerclaw, 4=local_onboard (K144). */
+   /* TT #317 P5 + TT #370 P1: 0=local, 1=hybrid, 2=cloud,
+    * 3=tinkerclaw, 4=local_onboard (K144), 5=solo_direct (OpenRouter). */
    return get_u8("vmode", 0);
 }
 
 esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 {
-   if (mode > 4) mode = 0;
+   /* TT #370: previously \`mode > 4\` silently clamped vmode=5 to 0 —
+    * the root cause of /mode?m=5 not persisting.  Now the clamp
+    * tracks VOICE_MODE_COUNT (currently 6 → max valid is 5). */
+   if (mode >= VOICE_MODE_COUNT) mode = 0;
    return set_u8("vmode", mode);
 }
 
