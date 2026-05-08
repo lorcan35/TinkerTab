@@ -18,6 +18,7 @@
 #include "voice.h"
 #include "voice_m5_llm.h"  /* M5_FAILOVER_GRACE_MS (the WS-down grace window) */
 #include "voice_onboard.h" /* K144 chain + send_text + failover state */
+#include "voice_solo.h"    /* TT #370 — vmode=5 SOLO_DIRECT dispatch */
 #include "voice_ws_proto.h"
 
 static const char *TAG = "tab5_voice_modes";
@@ -104,12 +105,11 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out) {
       ESP_LOGW(TAG, "Local-mode failover attempted but K144 errored: %s", esp_err_to_name(fe));
    }
 
-   /* TT #370 — vmode=5 SOLO_DIRECT.  Tab5 ↔ OpenRouter direct.  Real
-    * dispatch to voice_solo_send_text lands in a follow-up commit;
-    * for now we gate on or_key + fall through to DRAGON_PATH so a
-    * misconfigured device still has a working error pathway via the
-    * existing WS error UX.  The NO_KEY return short-circuits before
-    * any send so the caller can prompt for QR scan. */
+   /* TT #370 — vmode=5 SOLO_DIRECT.  Tab5 ↔ OpenRouter direct.  Gate
+    * on or_key (NO_KEY short-circuits to the QR-scan prompt UX); on
+    * key-set, dispatch to voice_solo_send_text which owns the rest
+    * of the chain (LLM stream → chat UI → TTS → playback ring).
+    * Caller treats SOLO_OK as terminal — no Dragon WS dispatch. */
    if (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT) {
       char or_key[96] = {0};
       tab5_settings_get_or_key(or_key, sizeof or_key);
@@ -119,8 +119,16 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out) {
          out->err = ESP_ERR_INVALID_STATE;
          return;
       }
-      ESP_LOGW(TAG, "VMODE_SOLO_DIRECT: voice_solo not wired yet, falling through to Dragon");
-      /* fall through */
+      esp_err_t se = voice_solo_send_text(text);
+      if (se == ESP_OK) {
+         ESP_LOGI(TAG, "VMODE_SOLO_DIRECT — routed to voice_solo");
+         out->kind = VOICE_MODES_ROUTE_SOLO_OK;
+      } else {
+         ESP_LOGW(TAG, "VMODE_SOLO_DIRECT — voice_solo errored: %s", esp_err_to_name(se));
+         out->kind = VOICE_MODES_ROUTE_SOLO_FAILED;
+         out->err = se;
+      }
+      return;
    }
 
    /* Default — Dragon WS path. */
