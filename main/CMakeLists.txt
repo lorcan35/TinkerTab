@@ -42,6 +42,7 @@ else()
              "debug_server_solo.c"
              "openrouter_sse.c"
              "openrouter_client.c"
+             "solo_session_store.c"
              "debug_obs.c" "pool_probe.c" "heap_watchdog.c"
              "service_registry.c" "service_storage.c" "service_display.c"
              "service_audio.c" "service_network.c" "service_dragon.c"

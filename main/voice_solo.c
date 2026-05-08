@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "openrouter_client.h"
+#include "solo_session_store.h"
 #include "task_worker.h"
 #include "ui_chat.h"
 #include "ui_home.h"
@@ -50,10 +51,17 @@ static void solo_delta_cb(const char *delta, size_t n, void *vctx) {
    ui_chat_update_last_message(a->acc);
 }
 
-/* Build [{"role":"user","content":<text>}].  Caller frees the
- * returned malloc'd JSON string with free(). */
+/* Build [...history..., {"role":"user","content":<text>}].  Caller
+ * frees the returned malloc'd JSON string with free().  History is
+ * pulled from solo_session_store; on first turn it's just the new
+ * user message. */
 static char *solo_build_messages_json(const char *user_text) {
-   cJSON *arr = cJSON_CreateArray();
+   /* 16 KB is enough for ~50 turns × ~300 chars each.  PSRAM-backed
+    * via the heap_caps allocator hooks. */
+   char history[16384] = {0};
+   solo_session_load_recent(20, history, sizeof history);
+   cJSON *arr = cJSON_Parse(history);
+   if (!arr) arr = cJSON_CreateArray();
    cJSON *m = cJSON_CreateObject();
    cJSON_AddStringToObject(m, "role", "user");
    cJSON_AddStringToObject(m, "content", user_text);
@@ -96,6 +104,11 @@ static void solo_send_text_job(void *arg) {
    if (err != ESP_OK) {
       ESP_LOGE(TAG, "solo LLM failed: %s", esp_err_to_name(err));
       ui_home_show_toast("Solo LLM failed");
+   } else {
+      /* Persist both turns to the SD-backed session.  acc.acc is
+       * NUL-terminated by the delta callback. */
+      solo_session_append("user", text);
+      solo_session_append("assistant", acc.acc ? acc.acc : "");
    }
 
    free(msgs_json);
@@ -108,7 +121,9 @@ static void solo_send_text_job(void *arg) {
 
 esp_err_t voice_solo_init(void) {
    if (s_initialized) return ESP_OK;
-   /* Follow-up commits: solo_session_init, solo_rag_init. */
+   solo_session_init();   /* mkdir /sdcard/sessions, idempotent */
+   solo_session_open(NULL, 0); /* warm the active sid from NVS */
+   /* Follow-up commit: solo_rag_init. */
    s_initialized = true;
    ESP_LOGI(TAG, "voice_solo_init OK");
    return ESP_OK;
@@ -235,6 +250,10 @@ static void solo_send_audio_job(void *arg) {
       heap_caps_free(acc.acc);
       goto done;
    }
+   /* Persist the user (transcript) + assistant turn now — even if
+    * TTS fails below, the session log is intact. */
+   solo_session_append("user", transcript);
+   solo_session_append("assistant", acc.acc ? acc.acc : "");
 
    /* Step 3 — TTS the assistant text into the playback ring. */
    voice_set_state(VOICE_STATE_SPEAKING, "solo");
