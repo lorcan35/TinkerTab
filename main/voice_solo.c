@@ -120,9 +120,12 @@ static void solo_send_text_job(void *arg) {
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
    tab5_debug_obs_event("solo.llm_start", "");
 
-   /* Push the user turn + an empty assistant placeholder so the
-    * delta callback can update_last_message into a fresh bubble. */
-   ui_chat_push_message("user", text);
+   /* W1-E (TT #372): do NOT push the "user" bubble here — upstream
+    * /chat/handler + voice_ws_proto already pushed it before routing
+    * the text to us.  Pushing again caused doubled user bubbles in
+    * the chat overlay (visible in screenshots).  We still push the
+    * empty assistant placeholder so the delta callback has a bubble
+    * to update_last_message into. */
    ui_chat_push_message("assistant", "");
 
    solo_chat_acc_t acc = {0};
