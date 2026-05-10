@@ -375,15 +375,18 @@ static uint8_t   s_active_tab     = 0;
  * flipping to Cloud.  Selected chip gets the same amber-wash style
  * the active mode row uses for visual continuity.
  *
- * Selection of which models to expose: pulled from the multi-model
- * router's catalog (`dragon_voice/llm/openrouter_llm.py`
- * `_OPENROUTER_CAPS`).  We bias toward the practical sweet-spot
- * for a voice-first device:
- *   - Haiku 3.5  : cheapest text+vision+tools, good default
- *   - Sonnet 4.6 : quality vision, mid-cost
- *   - GPT-4o     : multimodal incl. audio I/O
- *   - Gemini 3 F : video-capable + 1 M context
- *   - DS Flash   : cheapest text-only (no vision)
+ * Selection of which models to expose: refreshed 2026-05-10 against
+ * the live OpenRouter catalog (367 models).  Provider diversity +
+ * tier coverage; rolling-alias `~` IDs let OpenRouter auto-pick the
+ * latest dated revision so the picker doesn't rot.
+ *   - Opus 4.7   : Anthropic flagship reasoning, Jan-2026 cutoff
+ *   - Sonnet 4.6 : quality vision, mid-cost (workhorse)
+ *   - Haiku      : rolling-latest cheap text+vision+tools
+ *   - GPT-5.5    : OpenAI flagship
+ *   - GPT-5.4 m  : OpenAI budget tier
+ *   - Gemini Pro : rolling-latest Google flagship (1M ctx)
+ *   - Gemini 3.1 : fastest cheap multimodal
+ *   - Grok 4.3   : xAI latest
  *
  * Adding more models later = grow the array; UI re-flows automatically. */
 typedef struct {
@@ -392,11 +395,14 @@ typedef struct {
    const char *model_id;    /* what we send to Dragon as llm_model */
 } cloud_model_spec_t;
 static const cloud_model_spec_t s_cloud_models[] = {
-    {"Haiku", "claude-3.5-haiku", "anthropic/claude-3.5-haiku"},
-    {"Sonnet", "claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
-    {"GPT-4o", "gpt-4o", "openai/gpt-4o"},
-    {"Gemini", "gemini-3-flash-preview", "google/gemini-3-flash-preview"},
-    {"DS Flash", "deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
+    {"Opus 4.7",  "claude-opus-4.7",       "anthropic/claude-opus-4.7"},
+    {"Sonnet",    "claude-sonnet-4.6",     "anthropic/claude-sonnet-4.6"},
+    {"Haiku",     "claude-haiku-latest",   "~anthropic/claude-haiku-latest"},
+    {"GPT-5.5",   "gpt-5.5",               "openai/gpt-5.5"},
+    {"GPT-5.4 m", "gpt-5.4-mini",          "openai/gpt-5.4-mini"},
+    {"Gemini Pro", "gemini-pro-latest",    "~google/gemini-pro-latest"},
+    {"Gemini 3.1", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"},
+    {"Grok 4.3",  "grok-4.3",              "x-ai/grok-4.3"},
 };
 #define CLOUD_MODEL_COUNT (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
 static lv_obj_t *s_model_chip[CLOUD_MODEL_COUNT] = {NULL};

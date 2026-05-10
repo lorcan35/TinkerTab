@@ -480,7 +480,9 @@ esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 
 esp_err_t tab5_settings_get_llm_model(char *buf, size_t len)
 {
-    return get_str("llm_mdl", buf, len, "anthropic/claude-3.5-haiku");
+    /* Refreshed 2026-05-10 — rolling-alias matches the cloud picker
+     * default and won't rot when Anthropic ships a new haiku rev. */
+    return get_str("llm_mdl", buf, len, "~anthropic/claude-haiku-latest");
 }
 
 esp_err_t tab5_settings_set_llm_model(const char *model)
@@ -674,11 +676,10 @@ uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
 
     if (cloud_audio && cloud_llm) {
         if (out_model && model_len > 0) {
-            /* "anthropic/claude-sonnet-4-20250514" rejected by OpenRouter
-             * ("not a valid model ID").  Using the current valid Sonnet
-             * ID so cloud mode actually works out of the box.  Users can
-             * still pick any other model via /mode?model=... */
-            snprintf(out_model, model_len, "anthropic/claude-3.5-sonnet");
+            /* Refreshed 2026-05-10 — Sonnet 4.6 is the OpenRouter-valid
+             * mid-tier flagship; users can still pick any model via the
+             * Settings picker or POST /mode?model=... */
+            snprintf(out_model, model_len, "anthropic/claude-sonnet-4.6");
         }
         return 2; /* Full Cloud */
     }
