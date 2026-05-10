@@ -1133,7 +1133,7 @@ void voice_lan_probe_task(void *arg)
          * reboot cluster we saw in the 30-min stability test — 9 SW
          * resets, each at zombie_rounds=6, while the WS stayed
          * connected throughout. */
-        if (!lan_ok && !ngrok_ok && !voice_is_connected()) {
+        if (false && !lan_ok && !ngrok_ok && !voice_is_connected()) {  /* SOLO-mode rescue 2026-05-09: disabled */
             zombie_rounds++;
             if (zombie_rounds >= ZOMBIE_REBOOT) {
                 ESP_LOGE(TAG, "Zombie Wi-Fi: %d rounds (~%d s) failed even "
@@ -1781,6 +1781,15 @@ esp_err_t voice_cancel(void)
         return ESP_OK;
     }
     ESP_LOGI(TAG, "Cancelling voice session");
+
+    /* W1-C (TT #372): in vmode=5 SOLO_DIRECT the in-flight HTTP turn
+     * lives in voice_solo, not the Dragon WS path.  Set the cancel flag
+     * + close the OpenRouter handle so the worker bails out before
+     * persisting partial replies to the session log. */
+    if (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT) {
+        extern void voice_solo_cancel(void);
+        voice_solo_cancel();
+    }
 
     if (s_mic_running) {
         s_mic_running = false;

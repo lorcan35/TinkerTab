@@ -30,6 +30,12 @@ static const char *TAG = "voice_solo";
 
 static bool s_initialized = false;
 static volatile bool s_busy = false;
+/* W1-C (TT #372): cancel flag checked at each job step.  Old behavior:
+ * voice_solo_cancel called openrouter_cancel_inflight() but the worker
+ * continued through solo_session_append + voice_set_state(READY), so a
+ * canceled mid-LLM turn got persisted as if it succeeded — corrupting
+ * the session log for the next turn (likely contributor to U1). */
+static volatile bool s_cancel_requested = false;
 
 /* Single-flight accumulator — we never overlap two solo turns
  * (s_busy guards the entry path).  PSRAM-backed so a long reply
@@ -82,6 +88,7 @@ static char *solo_build_messages_json(const char *user_text) {
 static void solo_send_text_job(void *arg) {
    char *text = arg;
    s_busy = true;
+   s_cancel_requested = false;  /* W1-C: clear from any prior cancel */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
    tab5_debug_obs_event("solo.llm_start", "");
@@ -98,18 +105,27 @@ static void solo_send_text_job(void *arg) {
    char *msgs_json = solo_build_messages_json(text);
    int64_t t0 = esp_timer_get_time();
    esp_err_t err = ESP_ERR_NO_MEM;
-   if (msgs_json && acc.acc) {
+   if (s_cancel_requested) {
+      err = ESP_ERR_INVALID_STATE;
+   } else if (msgs_json && acc.acc) {
       err = openrouter_chat_stream(msgs_json, solo_delta_cb, &acc);
    }
    int64_t dt = (esp_timer_get_time() - t0) / 1000;
    char detail[48];
    snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
-   tab5_debug_obs_event(err == ESP_OK ? "solo.llm_done" : "solo.error", detail);
 
-   if (err != ESP_OK) {
+   /* W1-C: distinguish cancel from genuine failure.  Persisting a
+    * canceled or partial reply to the session pollutes the next turn's
+    * history. */
+   if (s_cancel_requested) {
+      tab5_debug_obs_event("solo.cancel", detail);
+      ESP_LOGI(TAG, "solo turn canceled — skipping session append");
+   } else if (err != ESP_OK) {
+      tab5_debug_obs_event("solo.error", detail);
       ESP_LOGE(TAG, "solo LLM failed: %s", esp_err_to_name(err));
       ui_home_show_toast("Solo LLM failed");
    } else {
+      tab5_debug_obs_event("solo.llm_done", detail);
       /* Persist both turns to the SD-backed session.  acc.acc is
        * NUL-terminated by the delta callback. */
       solo_session_append("user", text);
@@ -121,6 +137,7 @@ static void solo_send_text_job(void *arg) {
    free(text);
 
    voice_set_state(VOICE_STATE_READY, "solo");
+   s_cancel_requested = false;
    s_busy = false;
 }
 
@@ -213,6 +230,7 @@ typedef struct {
 static void solo_send_audio_job(void *arg) {
    solo_audio_job_t *job = arg;
    s_busy = true;
+   s_cancel_requested = false;  /* W1-C */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
    tab5_debug_obs_event("solo.stt_start", "");
@@ -226,6 +244,10 @@ static void solo_send_audio_job(void *arg) {
    snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
    tab5_debug_obs_event(err == ESP_OK ? "solo.stt_done" : "solo.error", detail);
    heap_caps_free(job->pcm);
+   if (s_cancel_requested) {
+      ESP_LOGI(TAG, "solo audio canceled after STT");
+      goto done;
+   }
    if (err != ESP_OK || transcript[0] == '\0') {
       ui_home_show_toast("Solo STT failed");
       goto done;
@@ -248,6 +270,13 @@ static void solo_send_audio_job(void *arg) {
    }
    dt = (esp_timer_get_time() - t0) / 1000;
    snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
+   if (s_cancel_requested) {
+      tab5_debug_obs_event("solo.cancel", detail);
+      ESP_LOGI(TAG, "solo audio canceled after LLM — skipping session append");
+      free(msgs);
+      heap_caps_free(acc.acc);
+      goto done;
+   }
    tab5_debug_obs_event(err == ESP_OK ? "solo.llm_done" : "solo.error", detail);
    free(msgs);
    if (err != ESP_OK) {
@@ -275,6 +304,7 @@ static void solo_send_audio_job(void *arg) {
 done:
    free(job);
    voice_set_state(VOICE_STATE_READY, "solo");
+   s_cancel_requested = false;
    s_busy = false;
 }
 
@@ -304,9 +334,12 @@ esp_err_t voice_solo_send_audio(int16_t *pcm, size_t samples) {
 }
 
 void voice_solo_cancel(void) {
+   /* W1-C: set the flag FIRST, then break the HTTP.  Order matters —
+    * if the job sees the cancel after openrouter_chat_stream returns
+    * normally, the s_cancel_requested check skips session append. */
+   s_cancel_requested = true;
    openrouter_cancel_inflight();
-   /* s_busy clears in the job's normal cleanup path; cancel just
-    * forces the in-flight HTTP to break out faster. */
+   ESP_LOGI(TAG, "voice_solo_cancel: flag set + inflight closed");
 }
 
 bool voice_solo_busy(void) {
