@@ -18,6 +18,8 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "openrouter_client.h"
 #include "solo_rag.h"
 #include "solo_session_store.h"
@@ -30,6 +32,31 @@ static const char *TAG = "voice_solo";
 
 static bool s_initialized = false;
 static volatile bool s_busy = false;
+/* W1-D (TT #372): mutex makes the s_busy test-and-set atomic across
+ * the caller and worker threads.  Without it, two callers could both
+ * see s_busy==false before either worker runs, double-enqueue, and
+ * then race on session/UI state. */
+static SemaphoreHandle_t s_busy_mtx = NULL;
+static bool busy_take(void) {
+   if (!s_busy_mtx) {
+      s_busy_mtx = xSemaphoreCreateMutex();
+      if (!s_busy_mtx) return false;
+   }
+   xSemaphoreTake(s_busy_mtx, portMAX_DELAY);
+   bool taken = false;
+   if (!s_busy) {
+      s_busy = true;
+      taken = true;
+   }
+   xSemaphoreGive(s_busy_mtx);
+   return taken;
+}
+static void busy_release(void) {
+   if (!s_busy_mtx) return;
+   xSemaphoreTake(s_busy_mtx, portMAX_DELAY);
+   s_busy = false;
+   xSemaphoreGive(s_busy_mtx);
+}
 /* W1-C (TT #372): cancel flag checked at each job step.  Old behavior:
  * voice_solo_cancel called openrouter_cancel_inflight() but the worker
  * continued through solo_session_append + voice_set_state(READY), so a
@@ -87,7 +114,7 @@ static char *solo_build_messages_json(const char *user_text) {
  * here since tab5_worker hosts us. */
 static void solo_send_text_job(void *arg) {
    char *text = arg;
-   s_busy = true;
+   /* W1-D: s_busy already set by busy_take() in voice_solo_send_text. */
    s_cancel_requested = false;  /* W1-C: clear from any prior cancel */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
@@ -138,7 +165,7 @@ static void solo_send_text_job(void *arg) {
 
    voice_set_state(VOICE_STATE_READY, "solo");
    s_cancel_requested = false;
-   s_busy = false;
+   busy_release();  /* W1-D */
 }
 
 esp_err_t voice_solo_init(void) {
@@ -153,14 +180,20 @@ esp_err_t voice_solo_init(void) {
 
 esp_err_t voice_solo_send_text(const char *text) {
    if (!text || !*text) return ESP_ERR_INVALID_ARG;
-   if (s_busy) return ESP_ERR_INVALID_STATE;
+   /* W1-D: atomic test-and-set so two concurrent callers can't both
+    * pass the busy check before either worker runs. */
+   if (!busy_take()) return ESP_ERR_INVALID_STATE;
 
    char *copy = strdup(text);
-   if (!copy) return ESP_ERR_NO_MEM;
+   if (!copy) {
+      busy_release();
+      return ESP_ERR_NO_MEM;
+   }
 
    esp_err_t e = tab5_worker_enqueue(solo_send_text_job, copy, "solo_text");
    if (e != ESP_OK) {
       free(copy);
+      busy_release();
       return e;
    }
    return ESP_OK;
@@ -229,7 +262,7 @@ typedef struct {
 
 static void solo_send_audio_job(void *arg) {
    solo_audio_job_t *job = arg;
-   s_busy = true;
+   /* W1-D: s_busy already set by busy_take() */
    s_cancel_requested = false;  /* W1-C */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
@@ -305,7 +338,7 @@ done:
    free(job);
    voice_set_state(VOICE_STATE_READY, "solo");
    s_cancel_requested = false;
-   s_busy = false;
+   busy_release();  /* W1-D */
 }
 
 esp_err_t voice_solo_send_audio(int16_t *pcm, size_t samples) {
@@ -313,13 +346,15 @@ esp_err_t voice_solo_send_audio(int16_t *pcm, size_t samples) {
       heap_caps_free(pcm);
       return ESP_ERR_INVALID_ARG;
    }
-   if (s_busy) {
+   /* W1-D: atomic test-and-set */
+   if (!busy_take()) {
       heap_caps_free(pcm);
       return ESP_ERR_INVALID_STATE;
    }
    solo_audio_job_t *job = malloc(sizeof *job);
    if (!job) {
       heap_caps_free(pcm);
+      busy_release();
       return ESP_ERR_NO_MEM;
    }
    job->pcm = pcm;
@@ -328,6 +363,7 @@ esp_err_t voice_solo_send_audio(int16_t *pcm, size_t samples) {
    if (e != ESP_OK) {
       heap_caps_free(pcm);
       free(job);
+      busy_release();
       return e;
    }
    return ESP_OK;

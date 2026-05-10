@@ -17,6 +17,8 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "openrouter_sse.h"
 #include "settings.h"
 
@@ -25,8 +27,25 @@ static const char *TAG = "or_client";
 #define OR_BASE_URL "https://openrouter.ai/api/v1"
 #define OR_REFERER "https://tab5.tinkerclaw.local"
 
-/* Single-flight: voice_solo never overlaps two calls. */
+/* W1-D (TT #372): mutex protects s_inflight from use-after-free.
+ * Old code: a worker setting s_inflight=NULL during cleanup could race
+ * with a concurrent openrouter_cancel_inflight() reading the handle —
+ * cancel might call esp_http_client_close on a freed pointer.
+ * Now: every read/write of s_inflight is taken under s_inflight_mtx. */
 static esp_http_client_handle_t s_inflight = NULL;
+static SemaphoreHandle_t s_inflight_mtx = NULL;
+
+static void inflight_init_once(void) {
+   if (!s_inflight_mtx) {
+      s_inflight_mtx = xSemaphoreCreateMutex();
+   }
+}
+static void inflight_set(esp_http_client_handle_t h) {
+   inflight_init_once();
+   if (s_inflight_mtx) xSemaphoreTake(s_inflight_mtx, portMAX_DELAY);
+   s_inflight = h;
+   if (s_inflight_mtx) xSemaphoreGive(s_inflight_mtx);
+}
 
 /* Apply Authorization + the OpenRouter-recommended HTTP-Referer +
  * X-Title headers to a fresh esp_http_client handle.  Returns
@@ -70,7 +89,7 @@ esp_http_client_handle_t openrouter_open_post(const char *path) {
       esp_http_client_cleanup(c);
       return NULL;
    }
-   s_inflight = c;
+   inflight_set(c);
    return c;
 }
 
@@ -112,9 +131,17 @@ static void log_error_body(esp_http_client_handle_t c, const char *path) {
 }
 
 void openrouter_cancel_inflight(void) {
-   if (s_inflight) {
+   /* W1-D: take + clear under mutex so we never call close on a handle
+    * that the worker just freed in its cleanup path. */
+   inflight_init_once();
+   esp_http_client_handle_t h = NULL;
+   if (s_inflight_mtx) xSemaphoreTake(s_inflight_mtx, portMAX_DELAY);
+   h = s_inflight;
+   s_inflight = NULL;  /* worker's "s_inflight = NULL" in cleanup is now a no-op */
+   if (s_inflight_mtx) xSemaphoreGive(s_inflight_mtx);
+   if (h) {
       ESP_LOGW(TAG, "cancel_inflight — closing in-flight HTTP");
-      esp_http_client_close(s_inflight);
+      esp_http_client_close(h);
    }
 }
 
@@ -253,7 +280,7 @@ esp_err_t openrouter_stt(const int16_t *pcm, size_t samples, char *out_text, siz
 cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
-   s_inflight = NULL;
+   inflight_set(NULL);
    return err;
 }
 
@@ -315,7 +342,7 @@ esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delt
    if (openrouter_sse_init(&sse, chat_sse_cb, &cctx) != ESP_OK) {
       free(body_str);
       esp_http_client_cleanup(c);
-      s_inflight = NULL;
+      inflight_set(NULL);
       return ESP_ERR_NO_MEM;
    }
 
@@ -343,7 +370,7 @@ cleanup:
    openrouter_sse_free(sse);
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
-   s_inflight = NULL;
+   inflight_set(NULL);
    free(body_str);
    return err;
 }
@@ -409,7 +436,7 @@ esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *c
 cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
-   s_inflight = NULL;
+   inflight_set(NULL);
    free(body_str);
    return err;
 }
@@ -498,7 +525,7 @@ esp_err_t openrouter_embed(const char *text, float **out_vec, size_t *out_dim) {
 cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
-   s_inflight = NULL;
+   inflight_set(NULL);
    free(body_str);
    return err;
 }
