@@ -57,10 +57,13 @@ static void solo_delta_cb(const char *delta, size_t n, void *vctx) {
  * pulled from solo_session_store; on first turn it's just the new
  * user message. */
 static char *solo_build_messages_json(const char *user_text) {
-   /* 16 KB is enough for ~50 turns × ~300 chars each.  PSRAM-backed
-    * via the heap_caps allocator hooks. */
-   char history[16384] = {0};
-   solo_session_load_recent(20, history, sizeof history);
+   /* 16 KB on the worker task's 16 KB stack triggered Core 1 stack
+    * protection fault the moment mbedTLS pushed its handshake frame.
+    * Per CLAUDE.md memory rules, anything >4 KB must live in PSRAM. */
+   const size_t hist_cap = 16384;
+   char *history = heap_caps_calloc(1, hist_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!history) return NULL;
+   solo_session_load_recent(20, history, hist_cap);
    cJSON *arr = cJSON_Parse(history);
    if (!arr) arr = cJSON_CreateArray();
    cJSON *m = cJSON_CreateObject();
@@ -69,6 +72,7 @@ static char *solo_build_messages_json(const char *user_text) {
    cJSON_AddItemToArray(arr, m);
    char *s = cJSON_PrintUnformatted(arr);
    cJSON_Delete(arr);
+   heap_caps_free(history);
    return s;
 }
 
