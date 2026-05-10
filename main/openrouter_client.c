@@ -57,7 +57,12 @@ esp_http_client_handle_t openrouter_open_post(const char *path) {
        .crt_bundle_attach = esp_crt_bundle_attach,
        .timeout_ms = 60000,
        .buffer_size = 4096,
-       .buffer_size_tx = 2048,
+       /* W1-A (TT #372): bumped 2 KB → 8 KB.  Multi-turn chat history
+        * generated bodies in the 4-7 KB range; a 2 KB tx buffer caused
+        * partial writes that downstream openrouter_chat_stream did NOT
+        * loop on, so OpenRouter received truncated JSON → 400 → ESP_FAIL
+        * with 0 deltas.  8 KB covers ~25 turns of typical Sonnet history. */
+       .buffer_size_tx = 8192,
    };
    esp_http_client_handle_t c = esp_http_client_init(&cfg);
    if (!c) return NULL;
@@ -67,6 +72,43 @@ esp_http_client_handle_t openrouter_open_post(const char *path) {
    }
    s_inflight = c;
    return c;
+}
+
+/* Write `body` of `len` bytes to the open handle, looping over partial
+ * writes (esp_http_client_write may return < len under tx-buffer or
+ * mbedTLS back-pressure).  Returns ESP_OK on full write, ESP_FAIL on
+ * any short/error return.  Used by chat/tts/embed senders. */
+static esp_err_t write_full(esp_http_client_handle_t c, const char *body, size_t len) {
+   size_t off = 0;
+   while (off < len) {
+      int n = esp_http_client_write(c, body + off, len - off);
+      if (n <= 0) {
+         ESP_LOGE(TAG, "write_full: short write at offset %u/%u (rc=%d)",
+                  (unsigned)off, (unsigned)len, n);
+         return ESP_FAIL;
+      }
+      off += (size_t)n;
+   }
+   return ESP_OK;
+}
+
+/* Drain + log the response body on a non-200.  Eats up to 2 KB into a
+ * stack buffer so the OpenRouter error JSON is visible in logs.  Without
+ * this, every failure looked like generic ESP_FAIL with no diagnostic. */
+static void log_error_body(esp_http_client_handle_t c, const char *path) {
+   char buf[2048];
+   int total = 0;
+   while (total < (int)sizeof(buf) - 1) {
+      int n = esp_http_client_read(c, buf + total, sizeof(buf) - 1 - total);
+      if (n <= 0) break;
+      total += n;
+   }
+   if (total > 0) {
+      buf[total] = '\0';
+      ESP_LOGE(TAG, "%s error body (%d bytes): %s", path, total, buf);
+   } else {
+      ESP_LOGE(TAG, "%s no error body returned", path);
+   }
 }
 
 void openrouter_cancel_inflight(void) {
@@ -277,16 +319,16 @@ esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delt
       return ESP_ERR_NO_MEM;
    }
 
-   esp_err_t err = esp_http_client_open(c, strlen(body_str));
+   size_t body_len = strlen(body_str);
+   esp_err_t err = esp_http_client_open(c, body_len);
    if (err != ESP_OK) goto cleanup;
-   if (esp_http_client_write(c, body_str, strlen(body_str)) < 0) {
-      err = ESP_FAIL;
-      goto cleanup;
-   }
+   err = write_full(c, body_str, body_len);
+   if (err != ESP_OK) goto cleanup;
    esp_http_client_fetch_headers(c);
    int status = esp_http_client_get_status_code(c);
    if (status != 200) {
-      ESP_LOGE(TAG, "chat status=%d", status);
+      ESP_LOGE(TAG, "chat status=%d (body_len=%u)", status, (unsigned)body_len);
+      log_error_body(c, "/chat/completions");
       err = ESP_FAIL;
       goto cleanup;
    }
@@ -330,16 +372,16 @@ esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *c
    }
    esp_http_client_set_header(c, "Content-Type", "application/json");
 
-   esp_err_t err = esp_http_client_open(c, strlen(body_str));
+   size_t body_len = strlen(body_str);
+   esp_err_t err = esp_http_client_open(c, body_len);
    if (err != ESP_OK) goto cleanup;
-   if (esp_http_client_write(c, body_str, strlen(body_str)) < 0) {
-      err = ESP_FAIL;
-      goto cleanup;
-   }
+   err = write_full(c, body_str, body_len);
+   if (err != ESP_OK) goto cleanup;
    esp_http_client_fetch_headers(c);
    int status = esp_http_client_get_status_code(c);
    if (status != 200) {
-      ESP_LOGE(TAG, "tts status=%d", status);
+      ESP_LOGE(TAG, "tts status=%d (body_len=%u)", status, (unsigned)body_len);
+      log_error_body(c, "/audio/speech");
       err = ESP_FAIL;
       goto cleanup;
    }
@@ -394,16 +436,16 @@ esp_err_t openrouter_embed(const char *text, float **out_vec, size_t *out_dim) {
    }
    esp_http_client_set_header(c, "Content-Type", "application/json");
 
-   esp_err_t err = esp_http_client_open(c, strlen(body_str));
+   size_t body_len = strlen(body_str);
+   esp_err_t err = esp_http_client_open(c, body_len);
    if (err != ESP_OK) goto cleanup;
-   if (esp_http_client_write(c, body_str, strlen(body_str)) < 0) {
-      err = ESP_FAIL;
-      goto cleanup;
-   }
+   err = write_full(c, body_str, body_len);
+   if (err != ESP_OK) goto cleanup;
    esp_http_client_fetch_headers(c);
    int status = esp_http_client_get_status_code(c);
    if (status != 200) {
-      ESP_LOGE(TAG, "embed status=%d", status);
+      ESP_LOGE(TAG, "embed status=%d (body_len=%u)", status, (unsigned)body_len);
+      log_error_body(c, "/embeddings");
       err = ESP_FAIL;
       goto cleanup;
    }

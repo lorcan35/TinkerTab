@@ -107,18 +107,26 @@ static void llm_test_delta_cb(const char *d, size_t n, void *vctx) {
 static esp_err_t llm_test_handler(httpd_req_t *req) {
    if (!tab5_debug_check_auth(req)) return ESP_FAIL;
 
-   char body[512] = {0};
-   size_t total = req->content_len < sizeof(body) - 1 ? req->content_len : sizeof(body) - 1;
-   if (total == 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty");
+   /* W1-A (TT #372): body buffer in PSRAM, 16 KB cap.  Stack 512-byte
+    * buffer was truncating any prompt > 500 chars silently and then
+    * cJSON_Parse would fail with "bad prompt" — invisible to callers. */
+   const size_t cap = 16 * 1024;
+   if (req->content_len == 0 || req->content_len > cap - 1) {
+      return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty or oversized");
+   }
+   char *body = heap_caps_calloc(1, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!body) return ESP_ERR_NO_MEM;
+   size_t total = req->content_len;
    size_t got = 0;
    while (got < total) {
       int n = httpd_req_recv(req, body + got, total - got);
-      if (n <= 0) return ESP_FAIL;
+      if (n <= 0) { heap_caps_free(body); return ESP_FAIL; }
       got += (size_t)n;
    }
    body[got] = '\0';
 
    cJSON *root = cJSON_Parse(body);
+   heap_caps_free(body);  /* W1-A: release the PSRAM body buffer */
    cJSON *prompt = root ? cJSON_GetObjectItem(root, "prompt") : NULL;
    if (!cJSON_IsString(prompt)) {
       if (root) cJSON_Delete(root);
@@ -161,18 +169,25 @@ static esp_err_t llm_test_handler(httpd_req_t *req) {
 static esp_err_t rag_test_handler(httpd_req_t *req) {
    if (!tab5_debug_check_auth(req)) return ESP_FAIL;
 
-   char body[1024] = {0};
-   size_t total = req->content_len < sizeof body - 1 ? req->content_len : sizeof body - 1;
-   if (total == 0) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty");
+   /* W1-A (TT #372): body buffer in PSRAM, 16 KB cap.  Long facts
+    * (>1 KB) were silently truncated by the old stack buffer. */
+   const size_t cap = 16 * 1024;
+   if (req->content_len == 0 || req->content_len > cap - 1) {
+      return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty or oversized");
+   }
+   char *body = heap_caps_calloc(1, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!body) return ESP_ERR_NO_MEM;
+   size_t total = req->content_len;
    size_t got = 0;
    while (got < total) {
       int n = httpd_req_recv(req, body + got, total - got);
-      if (n <= 0) return ESP_FAIL;
+      if (n <= 0) { heap_caps_free(body); return ESP_FAIL; }
       got += (size_t)n;
    }
    body[got] = '\0';
 
    cJSON *root = cJSON_Parse(body);
+   heap_caps_free(body);
    if (!root) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad json");
    cJSON *action = cJSON_GetObjectItem(root, "action");
    cJSON *out = cJSON_CreateObject();
