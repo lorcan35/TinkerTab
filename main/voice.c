@@ -1811,7 +1811,13 @@ esp_err_t voice_stop_listening(void)
 
    /* W4-B (TT #375): SOLO_DIRECT stop path.  Mic is already disabled +
     * drained above; hand the accumulated PCM to voice_solo, which posts
-    * an audio-job to the worker (STT → LLM → TTS through OpenRouter). */
+    * an audio-job to the worker (STT → LLM → TTS through OpenRouter).
+    *
+    * Ownership note: voice_solo_send_audio's worker calls heap_caps_free
+    * on the pcm pointer after STT (voice_solo.c:321).  Our s_solo_pcm
+    * is a persistent buffer reused across mic sessions — passing it
+    * directly would be a use-after-free on the next session.  Copy
+    * into a fresh PSRAM buffer that voice_solo can own + free. */
    if (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT) {
       voice_reset_activity_timestamp();
       voice_set_state(VOICE_STATE_PROCESSING, "solo");
@@ -1820,9 +1826,21 @@ esp_err_t voice_stop_listening(void)
          voice_set_state(VOICE_STATE_READY, "solo_empty");
          return ESP_ERR_INVALID_STATE;
       }
-      ESP_LOGI(TAG, "Solo stop: handing %u samples to voice_solo_send_audio", (unsigned)s_solo_samples);
-      esp_err_t e = voice_solo_send_audio(s_solo_pcm, s_solo_samples);
+      size_t n = s_solo_samples;
+      size_t bytes = n * sizeof(int16_t);
+      int16_t *copy = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!copy) {
+         ESP_LOGE(TAG, "Solo stop: PSRAM alloc %u bytes failed", (unsigned)bytes);
+         voice_set_state(VOICE_STATE_READY, "solo_oom");
+         return ESP_ERR_NO_MEM;
+      }
+      memcpy(copy, s_solo_pcm, bytes);
+      s_solo_samples = 0; /* reset cursor for next session */
+      ESP_LOGI(TAG, "Solo stop: handing %u samples (%u KB) to voice_solo_send_audio", (unsigned)n,
+               (unsigned)(bytes / 1024));
+      esp_err_t e = voice_solo_send_audio(copy, n); /* takes ownership of copy */
       if (e != ESP_OK) {
+         /* voice_solo_send_audio's error paths already heap_caps_free'd copy */
          ESP_LOGW(TAG, "voice_solo_send_audio failed: %s", esp_err_to_name(e));
          voice_set_state(VOICE_STATE_READY, "solo_dispatch_failed");
       }

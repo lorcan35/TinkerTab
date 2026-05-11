@@ -22,6 +22,7 @@
 #include "openrouter_client.h"
 #include "openrouter_sse.h"
 #include "solo_rag.h"
+#include "voice_solo.h"
 
 static const char *TAG = "debug_solo";
 
@@ -242,6 +243,39 @@ static esp_err_t rag_test_handler(httpd_req_t *req) {
    return tab5_debug_send_json_resp(req, out);
 }
 
+/* /solo/inject_audio — POST raw 16 kHz mono int16 PCM body → posts an
+ * audio-job to voice_solo_send_audio, which runs STT → LLM → TTS through
+ * OpenRouter just like a real mic-orb session would.  Used by the E2E
+ * harness to drive the W4-B audio chain with deterministic synthetic
+ * input (e.g. espeak-ng-rendered speech) without needing a person to
+ * physically speak.  Body cap 32 s × 16 kHz × 2 B = 1 MB. */
+static esp_err_t inject_audio_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_FAIL;
+   const size_t cap = 1024 * 1024;
+   if (req->content_len <= 0 || (size_t)req->content_len > cap || (req->content_len % 2) != 0) {
+      return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "POST 16 kHz mono int16 PCM, 1..1MB, even byte count");
+   }
+   int16_t *pcm = heap_caps_malloc((size_t)req->content_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!pcm) return ESP_ERR_NO_MEM;
+   size_t got = 0;
+   while (got < (size_t)req->content_len) {
+      int n = httpd_req_recv(req, (char *)pcm + got, (size_t)req->content_len - got);
+      if (n <= 0) {
+         heap_caps_free(pcm);
+         return ESP_FAIL;
+      }
+      got += (size_t)n;
+   }
+   size_t samples = got / sizeof(int16_t);
+   esp_err_t e = voice_solo_send_audio(pcm, samples); /* takes ownership */
+   cJSON *out = cJSON_CreateObject();
+   cJSON_AddBoolToObject(out, "ok", e == ESP_OK);
+   cJSON_AddNumberToObject(out, "samples", (double)samples);
+   cJSON_AddNumberToObject(out, "duration_ms", (double)samples * 1000.0 / 16000.0);
+   if (e != ESP_OK) cJSON_AddStringToObject(out, "error", esp_err_to_name(e));
+   return tab5_debug_send_json_resp(req, out);
+}
+
 void debug_server_solo_register(httpd_handle_t server) {
    if (!server) return;
    static const httpd_uri_t uri_sse = {.uri = "/solo/sse_test", .method = HTTP_POST, .handler = sse_test_handler};
@@ -255,6 +289,11 @@ void debug_server_solo_register(httpd_handle_t server) {
    static const httpd_uri_t uri_llm = {.uri = "/solo/llm_test", .method = HTTP_POST, .handler = llm_test_handler};
    httpd_register_uri_handler(server, &uri_llm);
    ESP_LOGI(TAG, "registered /solo/llm_test");
+
+   static const httpd_uri_t uri_audio = {
+       .uri = "/solo/inject_audio", .method = HTTP_POST, .handler = inject_audio_handler};
+   httpd_register_uri_handler(server, &uri_audio);
+   ESP_LOGI(TAG, "registered /solo/inject_audio");
 
    static const httpd_uri_t uri_rag = {.uri = "/solo/rag_test", .method = HTTP_POST, .handler = rag_test_handler};
    httpd_register_uri_handler(server, &uri_rag);
