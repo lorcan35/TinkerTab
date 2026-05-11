@@ -22,6 +22,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "mbedtls/base64.h" /* TT #377: WAV → base64 for OpenRouter input_audio */
 #include "openrouter_sse.h"
 #include "settings.h"
 
@@ -207,55 +208,71 @@ static void wav16_header(uint8_t *hdr, size_t pcm_bytes) {
 esp_err_t openrouter_stt(const int16_t *pcm, size_t samples, char *out_text, size_t out_cap) {
    if (!pcm || !out_text || out_cap < 16 || samples == 0) return ESP_ERR_INVALID_ARG;
 
-   char model[64] = {0};
+   char model[96] = {0};
    tab5_settings_get_or_mdl_stt(model, sizeof model);
 
-   static const char kBoundary[] = "----tab5-solo-boundary";
+   /* TT #377: OpenRouter's /audio/transcriptions takes JSON, not
+    * multipart/form-data — `{"model":"...","input_audio":{"data":"<b64>","format":"wav"}}`.
+    * Probed live 2026-05-11; previous multipart implementation got
+    * `"No number after minus sign in JSON at position 1"` because
+    * their gateway hits the body with a JSON parser regardless of
+    * Content-Type.  The OpenAI multipart shape is for openai.com
+    * directly, not openrouter.ai. */
    const size_t pcm_bytes = samples * sizeof(int16_t);
    const size_t wav_bytes = 44 + pcm_bytes;
 
-   /* Build the part-A and part-B framing strings up front.  Their
-    * sizes go into the Content-Length we hand to esp_http_client_open. */
-   char part_a[256];
-   int part_a_n = snprintf(part_a, sizeof part_a,
-                           "--%s\r\nContent-Disposition: form-data; "
-                           "name=\"file\"; filename=\"audio.wav\"\r\n"
-                           "Content-Type: audio/wav\r\n\r\n",
-                           kBoundary);
+   uint8_t *wav = heap_caps_malloc(wav_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!wav) return ESP_ERR_NO_MEM;
+   wav16_header(wav, pcm_bytes);
+   memcpy(wav + 44, pcm, pcm_bytes);
 
-   char part_b[160];
-   int part_b_n = snprintf(part_b, sizeof part_b,
-                           "\r\n--%s\r\nContent-Disposition: form-data; "
-                           "name=\"model\"\r\n\r\n%s\r\n--%s--\r\n",
-                           kBoundary, model, kBoundary);
-
-   if (part_a_n <= 0 || part_b_n <= 0 || (size_t)part_b_n >= sizeof part_b) {
-      return ESP_ERR_INVALID_SIZE;
+   /* Base64 grows by 4/3 + padding + null. */
+   const size_t b64_cap = ((wav_bytes + 2) / 3) * 4 + 1;
+   char *b64 = heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!b64) {
+      heap_caps_free(wav);
+      return ESP_ERR_NO_MEM;
    }
-   const size_t total = (size_t)part_a_n + wav_bytes + (size_t)part_b_n;
+   size_t b64_olen = 0;
+   int mb = mbedtls_base64_encode((unsigned char *)b64, b64_cap, &b64_olen, wav, wav_bytes);
+   heap_caps_free(wav);
+   if (mb != 0) {
+      ESP_LOGE(TAG, "base64_encode failed: -0x%04x", -mb);
+      heap_caps_free(b64);
+      return ESP_FAIL;
+   }
+   b64[b64_olen] = '\0';
 
-   log_health("/audio/transcriptions", "pre"); /* W4-C (TT #375) */
+   cJSON *body = cJSON_CreateObject();
+   cJSON_AddStringToObject(body, "model", model);
+   cJSON *input_audio = cJSON_CreateObject();
+   cJSON_AddStringToObject(input_audio, "data", b64);
+   cJSON_AddStringToObject(input_audio, "format", "wav");
+   cJSON_AddItemToObject(body, "input_audio", input_audio);
+   char *body_str = cJSON_PrintUnformatted(body);
+   cJSON_Delete(body);
+   heap_caps_free(b64);
+   if (!body_str) return ESP_ERR_NO_MEM;
+   const size_t body_len = strlen(body_str);
 
-   /* W4-C (TT #375): same retry-once-on-ESP_ERR_HTTP_CONNECT pattern as
-    * chat_stream/embed.  Retry is cheap here because it triggers BEFORE
-    * any of the WAV body bytes are written. */
+   log_health("/audio/transcriptions", "pre");
+
    int attempt = 0;
    esp_http_client_handle_t c = NULL;
    esp_err_t err = ESP_FAIL;
    int64_t t_open = 0;
-   char ctype[96];
-   snprintf(ctype, sizeof ctype, "multipart/form-data; boundary=%s", kBoundary);
 retry:
    attempt++;
    c = openrouter_open_post("/audio/transcriptions");
    if (!c) {
+      free(body_str);
       log_health("/audio/transcriptions", "post");
       return ESP_ERR_INVALID_STATE;
    }
-   esp_http_client_set_header(c, "Content-Type", ctype);
+   esp_http_client_set_header(c, "Content-Type", "application/json");
 
    t_open = esp_timer_get_time();
-   err = esp_http_client_open(c, total);
+   err = esp_http_client_open(c, body_len);
    if (err != ESP_OK) {
       ESP_LOGE(TAG, "/audio/transcriptions open failed: %s (errno=%d) after %lldms (attempt %d)", esp_err_to_name(err),
                errno, (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
@@ -269,41 +286,14 @@ retry:
       }
       goto cleanup;
    }
-   if (esp_http_client_write(c, part_a, part_a_n) < 0) {
-      err = ESP_FAIL;
-      goto cleanup;
-   }
-
-   uint8_t hdr[44];
-   wav16_header(hdr, pcm_bytes);
-   if (esp_http_client_write(c, (const char *)hdr, sizeof hdr) < 0) {
-      err = ESP_FAIL;
-      goto cleanup;
-   }
-
-   /* PCM in 4 KB chunks to bound TX-buffer memcpy churn on PSRAM. */
-   const char *pcm_b = (const char *)pcm;
-   size_t off = 0;
-   while (off < pcm_bytes) {
-      size_t n = pcm_bytes - off;
-      if (n > 4096) n = 4096;
-      int wrote = esp_http_client_write(c, pcm_b + off, n);
-      if (wrote < 0) {
-         err = ESP_FAIL;
-         goto cleanup;
-      }
-      off += (size_t)wrote;
-   }
-   if (esp_http_client_write(c, part_b, part_b_n) < 0) {
-      err = ESP_FAIL;
-      goto cleanup;
-   }
+   err = write_full(c, body_str, body_len);
+   if (err != ESP_OK) goto cleanup;
 
    esp_http_client_fetch_headers(c);
    int status = esp_http_client_get_status_code(c);
    if (status != 200) {
-      ESP_LOGE(TAG, "stt status=%d", status);
-      log_error_body(c, "/audio/transcriptions"); /* W4-C U6 (TT #375) */
+      ESP_LOGE(TAG, "stt status=%d (body_len=%u)", status, (unsigned)body_len);
+      log_error_body(c, "/audio/transcriptions");
       err = ESP_FAIL;
       goto cleanup;
    }
@@ -340,9 +330,10 @@ cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
    inflight_set(NULL);
+   free(body_str);
    ESP_LOGI(TAG, "/audio/transcriptions done rc=%s in %lldms (attempts=%d)", esp_err_to_name(err),
             (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
-   log_health("/audio/transcriptions", "post"); /* W4-C (TT #375) */
+   log_health("/audio/transcriptions", "post");
    return err;
 }
 
@@ -496,7 +487,14 @@ esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *c
    cJSON_AddStringToObject(body, "model", model);
    cJSON_AddStringToObject(body, "voice", voice);
    cJSON_AddStringToObject(body, "input", text);
-   cJSON_AddStringToObject(body, "response_format", "wav");
+   /* TT #377: OpenRouter's /audio/speech Zod schema rejects "wav" — only
+    * "mp3" or "pcm" are accepted.  We pick pcm (raw 24 kHz mono int16-LE,
+    * no container) and skip the WAV-header strip below.  Note: at the
+    * time of writing OpenRouter has NO working TTS model anyway — every
+    * candidate (openai/tts-1, openai/gpt-audio*, openai/gpt-4o-audio-preview)
+    * returns "Model does not exist" on this endpoint.  Code is shape-correct
+    * for whenever they add one; tracked separately. */
+   cJSON_AddStringToObject(body, "response_format", "pcm");
    char *body_str = cJSON_PrintUnformatted(body);
    cJSON_Delete(body);
    if (!body_str) return ESP_ERR_NO_MEM;
@@ -547,17 +545,8 @@ retry:
       goto cleanup;
    }
 
-   /* Skip the 44-byte WAV RIFF header — caller wants raw PCM-16LE. */
-   uint8_t header[44];
-   int hr = 0;
-   while (hr < (int)sizeof header) {
-      int n = esp_http_client_read(c, (char *)header + hr, sizeof header - hr);
-      if (n <= 0) {
-         err = ESP_FAIL;
-         goto cleanup;
-      }
-      hr += n;
-   }
+   /* TT #377: response_format=pcm returns raw PCM-16LE with no container,
+    * so we no longer strip a 44-byte WAV RIFF header here. */
 
    /* Stream PCM payload to the callback in 4 KB chunks. */
    uint8_t buf[4096];

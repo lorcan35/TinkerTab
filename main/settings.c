@@ -400,7 +400,12 @@ esp_err_t tab5_settings_get_or_mdl_llm(char *buf, size_t len) {
 }
 esp_err_t tab5_settings_set_or_mdl_llm(const char *model) { return set_str(KEY_OR_MDL_LLM, model ? model : ""); }
 
-esp_err_t tab5_settings_get_or_mdl_stt(char *buf, size_t len) { return get_str(KEY_OR_MDL_STT, buf, len, "whisper-1"); }
+esp_err_t tab5_settings_get_or_mdl_stt(char *buf, size_t len) {
+   /* TT #377: OpenRouter wants the prefixed model name `openai/whisper-1`,
+    * not the bare `whisper-1` (that's the OpenAI-direct form).  Probed live
+    * 2026-05-11 against https://openrouter.ai/api/v1/audio/transcriptions. */
+   return get_str(KEY_OR_MDL_STT, buf, len, "openai/whisper-1");
+}
 esp_err_t tab5_settings_set_or_mdl_stt(const char *model) { return set_str(KEY_OR_MDL_STT, model ? model : ""); }
 
 esp_err_t tab5_settings_get_or_mdl_tts(char *buf, size_t len) { return get_str(KEY_OR_MDL_TTS, buf, len, "tts-1"); }
