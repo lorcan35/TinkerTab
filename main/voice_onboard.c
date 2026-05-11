@@ -27,6 +27,7 @@
 #include "ui_home.h"      /* ui_home_show_toast */
 #include "voice.h"        /* voice_set_state, VOICE_STATE_* */
 #include "voice_m5_llm.h" /* probe / infer / chain_* */
+#include "voice_messages_sync.h" /* W3-C-c: Dragon canonical message store */
 
 static const char *TAG = "voice_onboard";
 
@@ -288,6 +289,12 @@ static void onboard_failover_text_job(void *arg) {
          tab5_ui_unlock();
       }
       ESP_LOGI(TAG, "K144 reply: '%s'", reply);
+      /* W3-C-c (cross-stack cohesion audit 2026-05-11): POST both
+       * sides of the failover turn to Dragon's canonical messages
+       * DB.  prompt arrived as text (typed in chat); the K144 reply
+       * is text too. */
+      voice_messages_sync_post("user", prompt, "text");
+      voice_messages_sync_post("assistant", reply, "text");
    } else {
       if (tab5_ui_try_lock(150)) {
          ui_home_show_toast("Onboard LLM unavailable");
@@ -482,6 +489,13 @@ static void onboard_text_callback(const char *text, bool from_llm, bool finish, 
 
    if (finish && *len > 0) {
       ESP_LOGI(TAG, "chain %s commit: '%s'", from_llm ? "LLM" : "ASR", buf);
+
+      /* W3-C-c (cross-stack cohesion audit 2026-05-11): POST each
+       * autonomous-chain commit to Dragon's canonical messages DB.
+       * ASR = the user's spoken turn; LLM = K144's reply.  Both
+       * land via the chain's stacked K144 mic + LLM + TTS so they
+       * carry input_mode="voice". */
+      voice_messages_sync_post(from_llm ? "assistant" : "user", buf, "voice");
 
       /* Wave 3a Eigen workaround: chain doesn't include tts.setup any
        * more (K144's SummerTTS crashes mid-stream from LLM).  Instead,
