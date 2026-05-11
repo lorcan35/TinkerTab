@@ -8,11 +8,11 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "config.h" /* TAB5_VOICE_PORT */
+#include "debug_obs.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
-#include "config.h" /* TAB5_VOICE_PORT */
-#include "debug_obs.h"
 #include "settings.h"
 #include "task_worker.h"
 
@@ -20,9 +20,9 @@ static const char *TAG = "msg_sync";
 
 /* Job state — fully self-contained.  Worker reads, no NVS touch. */
 typedef struct {
-   char url[160];          /* http://{host}:3502/api/v1/sessions/{session_id}/messages */
-   char auth[160];          /* "Bearer {token}" or "" when no token */
-   char *body;              /* PSRAM, free()d by worker */
+   char url[160];  /* http://{host}:3502/api/v1/sessions/{session_id}/messages */
+   char auth[160]; /* "Bearer {token}" or "" when no token */
+   char *body;     /* PSRAM, free()d by worker */
    size_t body_len;
    /* For obs / log: keep role + a short content prefix.  Avoids
     * leaking secrets if a malformed caller passes a token as content. */
@@ -103,9 +103,7 @@ static void msg_sync_post_job(void *arg) {
    free_job(job);
 }
 
-esp_err_t voice_messages_sync_post(const char *role,
-                                   const char *content,
-                                   const char *input_mode) {
+esp_err_t voice_messages_sync_post(const char *role, const char *content, const char *input_mode) {
    if (!role || !role[0] || !content || !content[0]) {
       return ESP_ERR_INVALID_ARG;
    }
@@ -120,8 +118,7 @@ esp_err_t voice_messages_sync_post(const char *role,
    tab5_settings_get_dragon_api_token(dragon_tok, sizeof dragon_tok);
 
    if (!session_id[0] || !dragon_host[0]) {
-      ESP_LOGD(TAG, "skip: session_id=%s dragon_host=%s",
-               session_id[0] ? "set" : "empty",
+      ESP_LOGD(TAG, "skip: session_id=%s dragon_host=%s", session_id[0] ? "set" : "empty",
                dragon_host[0] ? "set" : "empty");
       return ESP_ERR_INVALID_STATE;
    }
@@ -153,9 +150,8 @@ esp_err_t voice_messages_sync_post(const char *role,
       heap_caps_free(psram_body);
       return ESP_ERR_NO_MEM;
    }
-   snprintf(job->url, sizeof job->url,
-            "http://%s:%d/api/v1/sessions/%s/messages",
-            dragon_host, TAB5_VOICE_PORT, session_id);
+   snprintf(job->url, sizeof job->url, "http://%s:%d/api/v1/sessions/%s/messages", dragon_host, TAB5_VOICE_PORT,
+            session_id);
    if (dragon_tok[0]) {
       snprintf(job->auth, sizeof job->auth, "Bearer %s", dragon_tok);
    }

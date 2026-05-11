@@ -39,8 +39,9 @@
  */
 #pragma once
 
-#include "esp_err.h"
 #include <stddef.h>
+
+#include "esp_err.h"
 
 /* Best-effort POST of one turn to Dragon's canonical messages DB.
  *
@@ -53,6 +54,4 @@
  *         otherwise.  Caller MUST NOT free anything passed in — the
  *         module copies all inputs.
  */
-esp_err_t voice_messages_sync_post(const char *role,
-                                   const char *content,
-                                   const char *input_mode);
+esp_err_t voice_messages_sync_post(const char *role, const char *content, const char *input_mode);
