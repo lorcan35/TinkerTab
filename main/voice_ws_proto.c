@@ -874,6 +874,39 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       /* Dragon-level JSON pong — logged only. WS-level ping/pong is
        * handled automatically by esp_websocket_client (pingpong_timeout_sec). */
       ESP_LOGD(TAG, "App-level pong");
+   } else if (strcmp(type_str, "cap_downgrade") == 0) {
+      /* W5-C (cross-stack audit 2026-05-11): Dragon hit its server-side
+       * BUDGET_DAILY_CENTS cap and is telling us to switch to Local.
+       * Frame shape:
+       *   { "type":"cap_downgrade", "reason":"daily_cap_hit",
+       *     "spent_cents":N, "cap_cents":M, "day":"YYYY-MM-DD",
+       *     "turn_id":"..." }
+       * Mirrors the Tab5→Dragon direction already handled in
+       * voice_billing.c — Dragon owns server-side cap enforcement
+       * (W5-A/B), Tab5 owns its own NVS budget.  Either side hitting
+       * its cap drops both back to Local mode + surfaces a toast. */
+      cJSON *spent_j = cJSON_GetObjectItem(root, "spent_cents");
+      cJSON *cap_j = cJSON_GetObjectItem(root, "cap_cents");
+      int spent = cJSON_IsNumber(spent_j) ? spent_j->valueint : -1;
+      int cap = cJSON_IsNumber(cap_j) ? cap_j->valueint : -1;
+      ESP_LOGW(TAG, "Server cap hit: spent=%dc cap=%dc — flipping to Local", spent, cap);
+      char detail[48];
+      snprintf(detail, sizeof detail, "spent=%dc cap=%dc", spent, cap);
+      tab5_debug_obs_event("voice.cap_downgrade_recv", detail);
+      /* Flip NVS vmode to LOCAL only if we're not already on a Tab5-
+       * side-only tier the user explicitly picked (ONBOARD=4 /
+       * SOLO=5).  Those modes don't use Dragon's billable backends
+       * anyway, so the cap is moot for them; user's pick stands. */
+      uint8_t cur = tab5_settings_get_voice_mode();
+      if (cur != VMODE_LOCAL_ONBOARD && cur != VMODE_SOLO_DIRECT && cur != 0) {
+         tab5_settings_set_voice_mode(0);
+         voice_async_refresh_badge();
+         ESP_LOGI(TAG, "Cap downgrade: voice_mode %u → 0 (Local)", cur);
+      }
+      /* User-visible toast.  Pair with persistent banner so a quick
+       * dismiss doesn't hide the fact that they got auto-downgraded. */
+      const char *msg = "Daily budget cap reached — switched to Local mode";
+      voice_async_toast(strdup(msg));
    } else if (strcmp(type_str, "config_update") == 0) {
       cJSON *error = cJSON_GetObjectItem(root, "error");
       if (cJSON_IsString(error) && error->valuestring[0]) {
