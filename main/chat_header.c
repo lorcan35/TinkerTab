@@ -32,9 +32,9 @@ static const char *TAG = "chat_hdr";
 #define HDR_TOUCH TOUCH_MIN
 
 static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
 };
-static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard"};
+static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard", "Solo"};
 
 struct chat_header {
     lv_obj_t *root;       /* 96-h bar */

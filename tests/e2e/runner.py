@@ -2436,6 +2436,344 @@ def story_wave16_k144_polish(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+# ───────────────────────────────────────────────────────────────────
+# TT #370 — story_solo: vmode=5 SOLO_DIRECT (Tab5 ↔ OpenRouter direct)
+# ───────────────────────────────────────────────────────────────────
+
+def story_solo(r: Runner) -> None:
+    """Verify Tab5 solo mode (vmode=5) end-to-end via debug endpoints.
+
+    Skips if OPENROUTER_KEY not in env or Tab5 has empty or_key NVS.
+    Covers: SSE parser unit test, NVS round-trip, mode pill, route
+    plumbing, real LLM call, RAG remember/recall round-trip.
+    """
+    tab5 = r.tab5
+    or_key = os.environ.get("OPENROUTER_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+
+    # ─── A. Liveness + foundation ──────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor",
+           lambda t: t.reset_event_cursor() and None)
+
+    # ─── B. SSE parser smoke (no API call) ─────────────────────────
+    sse_payload = (b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+                   b'data: [DONE]\n\n')
+
+    def _sse_test(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/sse_test",
+                      data=sse_payload,
+                      headers={**t._headers(), "Content-Type": "text/plain"},
+                      timeout=10)
+        d = rsp.json()
+        return d.get("done") is True and d.get("deltas") == ["hello"]
+    r.step("[B] SSE parser: single delta + DONE", _sse_test)
+
+    # ─── C. NVS schema + or_key provisioning ───────────────────────
+    r.step("[C] NVS exposes or_* keys with defaults",
+           lambda t: t.settings().get("or_mdl_llm", "").startswith("~anthropic"))
+    if not or_key:
+        r.step("[C] SKIP — no OPENROUTER_KEY in env",
+               lambda t: True)
+        return
+
+    def _provision_key(t: Tab5Driver) -> bool:
+        rsp = t._post("/settings", json={"or_key": or_key}, timeout=10)
+        return "or_key" in rsp.json().get("updated", [])
+    r.step("[C] Provision or_key via /settings", _provision_key)
+    r.step("[C] Verify or_key_set",
+           lambda t: t.settings().get("or_key_set") is True)
+
+    # ─── D. Mode pill + route plumbing ─────────────────────────────
+    r.step("[D] /mode m=5 returns mode_name=solo_direct",
+           lambda t: t.mode(5).get("mode_name") == "solo_direct")
+    r.step("[D] /settings shows voice_mode=5 (no Dragon ACK clobber)",
+           lambda t: t.settings().get("voice_mode") == 5)
+
+    # ─── E. Real LLM round-trip via /solo/llm_test ─────────────────
+    def _llm(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/llm_test",
+                      json={"prompt": "reply with the single word: pong"},
+                      timeout=60)
+        d = rsp.json()
+        return (d.get("ok") is True and "pong" in d.get("reply", "").lower()
+                and d.get("delta_count", 0) >= 1)
+    r.step("[E] /solo/llm_test returns 'pong' (real OpenRouter)", _llm)
+
+    # ─── F. solo.* obs events fired ────────────────────────────────
+    r.step("[F] solo.llm_done event observed",
+           lambda t: t.await_event("solo.llm_done", timeout_s=5) is not None)
+
+    # ─── G. RAG remember/recall round-trip ─────────────────────────
+    def _rag_remember(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/rag_test",
+                      json={"action": "remember",
+                            "text": "my favourite color is teal"},
+                      timeout=30)
+        return rsp.json().get("ok") is True
+
+    def _rag_recall(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/rag_test",
+                      json={"action": "recall",
+                            "query": "what colour do I like"},
+                      timeout=30)
+        d = rsp.json()
+        hits = d.get("hits", [])
+        return (d.get("ok") is True and len(hits) >= 1
+                and "teal" in hits[0].get("text", "").lower())
+    r.step("[G] RAG remember", _rag_remember)
+    r.step("[G] RAG recall finds 'teal'", _rag_recall)
+
+    # ─── H. Cleanup — restore vmode=2 (Cloud) ──────────────────────
+    r.step("[end] Restore vmode=2",
+           lambda t: t.mode(2).get("voice_mode") == 2)
+
+
+# ───────────────────────────────────────────────────────────────────
+# TT #370 — story_solo_full: comprehensive user-story coverage
+#
+# Drives the firmware like a real user would: touch + keyboard
+# + screen navigation + multi-turn chat + reboot + heap watchdog.
+# Sections SOLO-A through SOLO-I; each is its own logical story.
+# ───────────────────────────────────────────────────────────────────
+
+def story_solo_full(r: Runner) -> None:
+    """User-experience-grade coverage of vmode=5 SOLO_DIRECT.
+
+    Requires: OPENROUTER_KEY in env (or OPENROUTER_API_KEY).  Tab5
+    will be rebooted mid-scenario to verify session persistence
+    across power events.
+    """
+    tab5 = r.tab5
+    or_key = os.environ.get("OPENROUTER_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+    assert or_key, "story_solo_full needs OPENROUTER_KEY in env"
+
+    # Touch coords (per ui_home.c line 632: pos_centered(s_mode_chip, 680, 360, 52)):
+    #   mode chip: x=180-540, y=680-732 — center (360, 706)
+    MODE_CHIP_X, MODE_CHIP_Y = 360, 706
+
+    # ===================================================================
+    # SOLO-A — cold-boot setup: provision key + models, verify NVS
+    # ===================================================================
+    r.step("[A1] Boot reachable", lambda t: t.wait_alive(60))
+    r.step("[A2] Reset event cursor",
+           lambda t: t.reset_event_cursor() and None)
+
+    def _provision(t: Tab5Driver) -> bool:
+        rsp = t._post("/settings", json={
+            "or_key": or_key,
+            "or_mdl_llm": "~anthropic/claude-haiku-latest",
+            "or_mdl_stt": "whisper-1",
+            "or_mdl_tts": "tts-1",
+            "or_mdl_emb": "text-embedding-3-small",
+            "or_voice": "alloy",
+        }, timeout=10).json()
+        upd = set(rsp.get("updated", []))
+        return all(k in upd for k in ("or_key", "or_mdl_llm",
+                                       "or_mdl_stt", "or_mdl_tts",
+                                       "or_mdl_emb", "or_voice"))
+    r.step("[A3] POST /settings: 6 or_* keys round-trip", _provision)
+
+    r.step("[A4] /settings reflects provisioning",
+           lambda t: (t.settings().get("or_key_set") is True
+                      and t.settings().get("or_mdl_llm", "").startswith("~anthropic")))
+
+    # ===================================================================
+    # SOLO-B — mode pill cycling K144 ↔ SOLO via real touch
+    # ===================================================================
+    r.step("[B1] Force vmode=4 (K144 onboard)",
+           lambda t: t.mode(4).get("voice_mode") == 4)
+    r.step("[B2] Navigate home (mode chip visible)",
+           lambda t: t.navigate("home").get("navigated") == "home")
+    time.sleep(1.5)
+    r.step("[B3] Tap mode chip — cycles 4 → 5",
+           lambda t: t.tap(MODE_CHIP_X, MODE_CHIP_Y) and True)
+    time.sleep(1.0)
+    r.step("[B4] Verify vmode==5 after tap",
+           lambda t: t.settings().get("voice_mode") == 5)
+    r.step("[B5] Tap mode chip again — cycles 5 → 4",
+           lambda t: t.tap(MODE_CHIP_X, MODE_CHIP_Y) and True)
+    time.sleep(1.0)
+    r.step("[B6] Verify vmode==4 after second tap",
+           lambda t: t.settings().get("voice_mode") == 4)
+
+    # ===================================================================
+    # SOLO-C — keyboard-driven first solo turn
+    # ===================================================================
+    r.step("[C1] Set vmode=5 (Solo Direct)",
+           lambda t: t.mode(5).get("voice_mode") == 5)
+    r.step("[C2] Navigate to Chat",
+           lambda t: t.navigate("chat").get("navigated") == "chat")
+    time.sleep(1.5)
+    r.step("[C3] Type via on-screen keyboard + submit",
+           lambda t: t.input_text("respond with the single word: pong",
+                                   submit=True).get("ok") is not False)
+
+    def _wait_llm(t: Tab5Driver) -> bool:
+        return t.await_event("solo.llm_done", timeout_s=30) is not None
+    r.step("[C4] solo.llm_done fires (real OpenRouter call)", _wait_llm)
+
+    def _verify_reply(t: Tab5Driver) -> bool:
+        # Cross-check via /solo/llm_test (deterministic round-trip)
+        rsp = t._post("/solo/llm_test",
+                      json={"prompt": "respond with the single word: pong"},
+                      timeout=60).json()
+        return rsp.get("ok") and "pong" in rsp.get("reply", "").lower()
+    r.step("[C5] /solo/llm_test cross-check returns 'pong'", _verify_reply)
+
+    # ===================================================================
+    # SOLO-D — multi-turn conversation; session prepends history
+    # ===================================================================
+    def _say(prompt: str):
+        def fn(t: Tab5Driver) -> bool:
+            rsp = t._post("/solo/llm_test",
+                          json={"prompt": prompt}, timeout=60).json()
+            return rsp.get("ok") is True
+        return fn
+
+    r.step("[D1] Turn 1: 'remember teal as my favorite color'",
+           _say("remember teal as my favorite color, just acknowledge"))
+    time.sleep(2)
+    r.step("[D2] Turn 2: 'what is my favorite color?'",
+           _say("what is my favorite color?"))
+    time.sleep(2)
+
+    def _verify_color(t: Tab5Driver) -> bool:
+        # last_llm_text in /voice should reflect the most recent turn —
+        # but story_solo turns hit /solo/llm_test which doesn't update
+        # /voice's last_llm_text.  Check the session file via a
+        # follow-up turn that asks the model to confirm.
+        rsp = t._post("/solo/llm_test",
+                      json={"prompt": "based on what I told you earlier, "
+                                       "is my favorite color teal? answer "
+                                       "with just yes or no"},
+                      timeout=60).json()
+        reply = rsp.get("reply", "").lower()
+        return rsp.get("ok") and "yes" in reply
+    r.step("[D3] Session history verified — model recalls 'teal'",
+           _verify_color)
+
+    # ===================================================================
+    # SOLO-E — RAG remember + recall round-trip
+    # ===================================================================
+    def _rag_remember(text: str):
+        def fn(t: Tab5Driver) -> bool:
+            return t._post("/solo/rag_test",
+                            json={"action": "remember", "text": text},
+                            timeout=30).json().get("ok") is True
+        return fn
+
+    r.step("[E1] RAG remember: 'I have a dog named Rex'",
+           _rag_remember("I have a dog named Rex"))
+    r.step("[E2] RAG remember: 'I drive a blue Tesla'",
+           _rag_remember("I drive a blue Tesla"))
+    r.step("[E3] RAG remember: 'I prefer coffee black, no sugar'",
+           _rag_remember("I prefer coffee black, no sugar"))
+
+    def _rag_recall_finds(query: str, needle: str):
+        def fn(t: Tab5Driver) -> bool:
+            d = t._post("/solo/rag_test",
+                         json={"action": "recall", "query": query},
+                         timeout=30).json()
+            hits = d.get("hits", [])
+            return (d.get("ok") is True and len(hits) >= 1
+                    and needle.lower() in hits[0].get("text", "").lower())
+        return fn
+
+    r.step("[E4] RAG recall 'pet name' → top hit mentions Rex",
+           _rag_recall_finds("what is my pet's name", "rex"))
+    r.step("[E5] RAG recall 'car' → top hit mentions Tesla",
+           _rag_recall_finds("what kind of car do I drive", "tesla"))
+    r.step("[E6] RAG recall 'beverage' → top hit mentions coffee",
+           _rag_recall_finds("how do I take my morning drink", "coffee"))
+
+    def _rag_count(t: Tab5Driver) -> bool:
+        d = t._post("/solo/rag_test",
+                     json={"action": "count"}, timeout=10).json()
+        return d.get("count", 0) >= 3
+    r.step("[E7] RAG store reports >= 3 facts", _rag_count)
+
+    # ===================================================================
+    # SOLO-F — mode hopping doesn't break (solo → cloud → solo)
+    # ===================================================================
+    r.step("[F1] Switch to vmode=2 (Cloud, Dragon-mediated)",
+           lambda t: t.mode(2).get("voice_mode") == 2)
+    time.sleep(1)
+    r.step("[F2] Switch back to vmode=5 (Solo Direct)",
+           lambda t: t.mode(5).get("voice_mode") == 5)
+    r.step("[F3] Solo turn after the round-trip still works",
+           _say("respond with: ok"))
+    r.step("[F4] solo.llm_done fired",
+           lambda t: t.await_event("solo.llm_done", timeout_s=30) is not None)
+
+    # ===================================================================
+    # SOLO-G — heap stability across 5 sequential solo turns
+    # ===================================================================
+    captured: dict = {}
+
+    def _capture_baseline(t: Tab5Driver) -> bool:
+        captured["pre"] = t.heap()
+        return True
+    r.step("[G1] Capture heap baseline", _capture_baseline)
+
+    for n in range(1, 6):
+        r.step(f"[G2.{n}] Solo turn #{n} (rapid-fire)",
+               _say(f"reply with 'turn {n}'"))
+        time.sleep(1.5)
+
+    def _verify_heap_delta(t: Tab5Driver) -> bool:
+        post = t.heap()
+        pre = captured.get("pre", {})
+        # internal_largest is the contiguous SRAM block — most
+        # important for fragmentation under repeated chat overlays.
+        pre_largest = pre.get("internal_largest", 0)
+        post_largest = post.get("internal_largest", 0)
+        delta_kb = (pre_largest - post_largest) // 1024
+        captured["delta_kb"] = delta_kb
+        captured["pre_kb"] = pre_largest // 1024
+        captured["post_kb"] = post_largest // 1024
+        return delta_kb < 200  # 200 KB allowance
+    r.step("[G3] Heap delta < 200 KB after 5 turns", _verify_heap_delta)
+
+    def _print_heap(t: Tab5Driver) -> bool:
+        print(f"      heap pre={captured.get('pre_kb')}KB "
+              f"post={captured.get('post_kb')}KB "
+              f"delta={captured.get('delta_kb')}KB")
+        return True
+    r.step("[G4] Heap report", _print_heap)
+
+    # ===================================================================
+    # SOLO-H — session continuity across reboot
+    # ===================================================================
+    r.step("[H1] Plant a memorable fact via solo turn",
+           _say("remember the codeword 'pineapple-9'; just say ok"))
+    time.sleep(2)
+    r.step("[H2] Reboot Tab5",
+           lambda t: t.reboot() and True)
+    time.sleep(28)  # wait for boot + WiFi reconnect
+    r.step("[H3] Tab5 reachable post-reboot",
+           lambda t: t.wait_alive(60))
+    r.step("[H4] vmode still = 5 (NVS persisted)",
+           lambda t: t.settings().get("voice_mode") == 5)
+
+    def _recall_codeword(t: Tab5Driver) -> bool:
+        rsp = t._post("/solo/llm_test",
+                      json={"prompt": "what was the codeword I told you "
+                                       "earlier? respond with just the word"},
+                      timeout=60).json()
+        reply = rsp.get("reply", "").lower()
+        return rsp.get("ok") and "pineapple" in reply
+    r.step("[H5] Session resumed — model recalls 'pineapple-9'",
+           _recall_codeword)
+
+    # ===================================================================
+    # SOLO-I — final cleanup
+    # ===================================================================
+    r.step("[I1] Restore vmode=2 (Cloud)",
+           lambda t: t.mode(2).get("voice_mode") == 2)
+    r.step("[I2] Navigate home",
+           lambda t: t.navigate("home").get("navigated") == "home")
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -2457,6 +2795,8 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave14":  story_wave14_k144_observable,
     "story_wave15":  story_wave15_k144_models,
     "story_wave16":  story_wave16_k144_polish,
+    "story_solo":    story_solo,
+    "story_solo_full": story_solo_full,
 }
 
 

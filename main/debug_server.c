@@ -73,6 +73,7 @@
 #include "debug_server_obs.h"
 #include "debug_server_ota.h"
 #include "debug_server_settings.h"
+#include "debug_server_solo.h"
 #include "debug_server_voice.h"
 #include "debug_server_wifi.h"
 #include "widget.h" /* Audit C4 (#202): widget_store_evictions_total */
@@ -679,7 +680,10 @@ esp_err_t tab5_debug_server_init(void)
      * /chat/llm_done, /tool_log/push, /keyboard/layout, /net/ping,
      * /nvs/erase, /debug/inject_error, etc.  Without the bump, late
      * registrations silently drop with httpd 404. */
-    config.max_uri_handlers = 72;
+    /* TT #370: solo-mode synthetic test endpoints add /solo/sse_test +
+     * /solo/llm_test + /solo/rag_test in subsequent commits.  Bumped
+     * 72 → 80 to absorb them and leave a 4-slot cushion. */
+    config.max_uri_handlers = 80;
     config.lru_purge_enable = true;
     config.max_open_sockets = 16;         /* Needs headroom for rapid API calls (nav+info pairs) */
     config.recv_wait_timeout = 5;         /* 5s recv timeout (default 5) */
@@ -824,6 +828,8 @@ esp_err_t tab5_debug_server_init(void)
     debug_server_inject_register(server);
     /* Wave 23b (#332): codec endpoint family registered en-bloc. */
     debug_server_codec_register(server);
+    /* TT #370: solo-mode synthetic test endpoints (/solo/sse_test, ...). */
+    debug_server_solo_register(server);
 
     /* Log the URL */
     char ip[20];

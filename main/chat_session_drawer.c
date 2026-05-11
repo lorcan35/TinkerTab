@@ -43,10 +43,10 @@ static const char *TAG = "chat_drawer";
  * end of the array (UB).  Drawer call-sites index by vm without bounds-
  * checking via the helper below. */
 static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
-    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD,
+    TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
 };
 static const char *s_mode_short[VOICE_MODE_COUNT] = {
-    "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD",
+    "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD", "SOLO",
 };
 
 typedef struct {

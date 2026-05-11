@@ -912,14 +912,16 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       }
       if (cJSON_IsNumber(vmode)) {
          uint8_t mode = (uint8_t)vmode->valueint;
-         /* TT #317 Phase 5: ONBOARD is Tab5-side-only.  Dragon never
-          * knows about it — its ACK always echoes 0/1/2/3.  If user
-          * has set ONBOARD locally, ignore Dragon's echo. */
-         if (tab5_settings_get_voice_mode() != VMODE_LOCAL_ONBOARD) {
+         /* TT #317 Phase 5 + TT #370 Phase 1: ONBOARD (4) and
+          * SOLO_DIRECT (5) are both Tab5-side-only tiers.  Dragon
+          * never knows about them — its ACK always echoes 0/1/2/3.
+          * If user has set one of those locally, ignore Dragon's echo. */
+         uint8_t cur = tab5_settings_get_voice_mode();
+         if (cur != VMODE_LOCAL_ONBOARD && cur != VMODE_SOLO_DIRECT) {
             tab5_settings_set_voice_mode(mode);
             ESP_LOGI(TAG, "Config update: voice_mode=%d (persisted)", mode);
          } else {
-            ESP_LOGD(TAG, "Config update: ignoring Dragon vmode=%d (we're in ONBOARD)", mode);
+            ESP_LOGD(TAG, "Config update: ignoring Dragon vmode=%d (we're in %u)", mode, cur);
          }
          voice_async_refresh_badge();
       }
