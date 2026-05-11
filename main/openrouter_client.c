@@ -8,6 +8,7 @@
 
 #include "openrouter_client.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,8 +18,10 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "openrouter_sse.h"
 #include "settings.h"
 
@@ -60,6 +63,14 @@ esp_err_t openrouter_apply_auth(esp_http_client_handle_t c) {
    esp_http_client_set_header(c, "Authorization", hdr);
    esp_http_client_set_header(c, "HTTP-Referer", OR_REFERER);
    esp_http_client_set_header(c, "X-Title", "TinkerTab Solo");
+   /* W2-B (TT #373): force fresh TCP per call.  Without this OpenRouter
+    * sometimes responds Connection: keep-alive and esp_http_client
+    * caches the underlying socket; after ~5 min of activity the cached
+    * socket goes silently dead and the next call hangs in TLS handshake
+    * for 60 s before timing out.  "Connection: close" makes both ends
+    * tear down after each response, so every solo turn starts from a
+    * clean TCP+TLS handshake. */
+   esp_http_client_set_header(c, "Connection", "close");
    return ESP_OK;
 }
 
@@ -127,6 +138,29 @@ static void log_error_body(esp_http_client_handle_t c, const char *path) {
       ESP_LOGE(TAG, "%s error body (%d bytes): %s", path, total, buf);
    } else {
       ESP_LOGE(TAG, "%s no error body returned", path);
+   }
+}
+
+/* W2-A (TT #373): one-line health snapshot.  Goes in the log before each
+ * outbound call + on every failure path so the sustained-load
+ * degradation has a paper trail.  largest_free_block on internal SRAM is
+ * the right canary: TLS handshake needs ~6-8 KB contiguous and a
+ * fragmented heap (<32 KB largest free) reliably fails the next
+ * mbedtls_ssl_handshake even though total free SRAM looks fine. */
+static void log_health(const char *path, const char *phase) {
+   size_t int_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+   size_t int_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+   size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+   if (int_largest < 32 * 1024) {
+      ESP_LOGW(TAG, "%s [%s] internal_free=%uB largest=%uB psram_free=%uMB "
+                    "(LOW — TLS handshake at risk)",
+               path, phase, (unsigned)int_free, (unsigned)int_largest,
+               (unsigned)(psram_free / (1024 * 1024)));
+   } else {
+      ESP_LOGI(TAG, "%s [%s] internal_free=%uKB largest=%uKB psram_free=%uMB",
+               path, phase, (unsigned)(int_free / 1024),
+               (unsigned)(int_largest / 1024),
+               (unsigned)(psram_free / (1024 * 1024)));
    }
 }
 
@@ -329,7 +363,23 @@ esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delt
    cJSON_Delete(body);
    if (!body_str) return ESP_ERR_NO_MEM;
 
-   esp_http_client_handle_t c = openrouter_open_post("/chat/completions");
+   log_health("/chat/completions", "pre");
+
+   /* W2-C (TT #373): auto-retry-once on transient ESP_ERR_HTTP_CONNECT.
+    * After ~5 min of sustained activity the first TCP/TLS attempt
+    * sometimes fails — likely a stale cached socket — but a fresh
+    * handle on the second try succeeds.  Cap at 1 retry so a real
+    * outage doesn't double-amplify the failure latency. */
+   int attempt = 0;
+   esp_err_t err = ESP_FAIL;
+   esp_http_client_handle_t c = NULL;
+   openrouter_sse_state_t *sse = NULL;
+   chat_stream_ctx_t cctx = {.cb = cb, .cb_ctx = ctx};
+   size_t body_len = strlen(body_str);
+   int64_t t_open = 0;
+retry:
+   attempt++;
+   c = openrouter_open_post("/chat/completions");
    if (!c) {
       free(body_str);
       return ESP_ERR_INVALID_STATE;
@@ -337,8 +387,6 @@ esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delt
    esp_http_client_set_header(c, "Content-Type", "application/json");
    esp_http_client_set_header(c, "Accept", "text/event-stream");
 
-   chat_stream_ctx_t cctx = {.cb = cb, .cb_ctx = ctx};
-   openrouter_sse_state_t *sse = NULL;
    if (openrouter_sse_init(&sse, chat_sse_cb, &cctx) != ESP_OK) {
       free(body_str);
       esp_http_client_cleanup(c);
@@ -346,9 +394,23 @@ esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delt
       return ESP_ERR_NO_MEM;
    }
 
-   size_t body_len = strlen(body_str);
-   esp_err_t err = esp_http_client_open(c, body_len);
-   if (err != ESP_OK) goto cleanup;
+   t_open = esp_timer_get_time();
+   err = esp_http_client_open(c, body_len);
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "/chat/completions open failed: %s (errno=%d) after %lldms (attempt %d)",
+               esp_err_to_name(err), errno,
+               (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+      if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
+         ESP_LOGW(TAG, "/chat/completions transient connect failure — retry-once");
+         openrouter_sse_free(sse); sse = NULL;
+         esp_http_client_close(c);
+         esp_http_client_cleanup(c);
+         inflight_set(NULL);
+         vTaskDelay(pdMS_TO_TICKS(500));
+         goto retry;
+      }
+      goto cleanup;
+   }
    err = write_full(c, body_str, body_len);
    if (err != ESP_OK) goto cleanup;
    esp_http_client_fetch_headers(c);
@@ -372,6 +434,10 @@ cleanup:
    esp_http_client_cleanup(c);
    inflight_set(NULL);
    free(body_str);
+   ESP_LOGI(TAG, "/chat/completions done rc=%s in %lldms (attempts=%d)",
+            esp_err_to_name(err),
+            (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+   log_health("/chat/completions", "post");
    return err;
 }
 
@@ -456,16 +522,39 @@ esp_err_t openrouter_embed(const char *text, float **out_vec, size_t *out_dim) {
    cJSON_Delete(body);
    if (!body_str) return ESP_ERR_NO_MEM;
 
-   esp_http_client_handle_t c = openrouter_open_post("/embeddings");
+   log_health("/embeddings", "pre");
+
+   /* W2-C (TT #373): same retry-once pattern as chat_stream. */
+   int attempt = 0;
+   esp_http_client_handle_t c = NULL;
+   esp_err_t err = ESP_FAIL;
+   size_t body_len = strlen(body_str);
+   int64_t t_open = 0;
+retry:
+   attempt++;
+   c = openrouter_open_post("/embeddings");
    if (!c) {
       free(body_str);
       return ESP_ERR_INVALID_STATE;
    }
    esp_http_client_set_header(c, "Content-Type", "application/json");
 
-   size_t body_len = strlen(body_str);
-   esp_err_t err = esp_http_client_open(c, body_len);
-   if (err != ESP_OK) goto cleanup;
+   t_open = esp_timer_get_time();
+   err = esp_http_client_open(c, body_len);
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "/embeddings open failed: %s (errno=%d) after %lldms (attempt %d)",
+               esp_err_to_name(err), errno,
+               (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+      if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
+         ESP_LOGW(TAG, "/embeddings transient connect failure — retry-once");
+         esp_http_client_close(c);
+         esp_http_client_cleanup(c);
+         inflight_set(NULL);
+         vTaskDelay(pdMS_TO_TICKS(500));
+         goto retry;
+      }
+      goto cleanup;
+   }
    err = write_full(c, body_str, body_len);
    if (err != ESP_OK) goto cleanup;
    esp_http_client_fetch_headers(c);
@@ -527,5 +616,9 @@ cleanup:
    esp_http_client_cleanup(c);
    inflight_set(NULL);
    free(body_str);
+   ESP_LOGI(TAG, "/embeddings done rc=%s in %lldms (attempts=%d)",
+            esp_err_to_name(err),
+            (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+   log_health("/embeddings", "post");
    return err;
 }
