@@ -475,6 +475,242 @@ cleanup:
    return err;
 }
 
+/* ── TT #379: multimodal audio chat ───────────────────────────────────── */
+
+/* Per-stream context for chat_audio's SSE delta dispatcher.  parse_buf is
+ * reused across deltas (mirrors chat_stream's W3-B) and decode_buf grows
+ * on demand for the largest base64-PCM chunk in the stream. */
+typedef struct {
+   openrouter_tts_chunk_cb_t audio_cb;
+   openrouter_chat_delta_cb_t text_cb;
+   void *cb_ctx;
+   char *parse_buf;
+   size_t parse_cap;
+   uint8_t *decode_buf;
+   size_t decode_cap;
+   size_t audio_chunks; /* DEBUG counters surfaced in the final log line. */
+   size_t audio_bytes;
+   size_t text_chunks;
+   size_t text_chars;
+} chat_audio_ctx_t;
+
+/* Grow `parse_buf` (or `decode_buf`) in place to at least `need` bytes,
+ * capped at 256 KB.  Returns ESP_OK on success.  Used by the SSE delta
+ * dispatcher to bound the per-stream PSRAM footprint while avoiding
+ * malloc/free churn on every delta. */
+static esp_err_t grow_psram_buf(uint8_t **buf, size_t *cap, size_t need) {
+   if (*cap >= need) return ESP_OK;
+   size_t newcap = *cap ? *cap : 1024;
+   while (newcap < need && newcap < 256 * 1024) newcap *= 2;
+   if (newcap < need) return ESP_ERR_NO_MEM;
+   uint8_t *grown = heap_caps_realloc(*buf, newcap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!grown) return ESP_ERR_NO_MEM;
+   *buf = grown;
+   *cap = newcap;
+   return ESP_OK;
+}
+
+static void chat_audio_sse_cb(const char *json, size_t len, void *vctx) {
+   chat_audio_ctx_t *c = vctx;
+   /* Stage the SSE event into parse_buf so cJSON_Parse sees a NUL-terminated
+    * buffer; reuse across deltas (same pattern as chat_sse_cb). */
+   if (grow_psram_buf((uint8_t **)&c->parse_buf, &c->parse_cap, len + 1) != ESP_OK) return;
+   memcpy(c->parse_buf, json, len);
+   c->parse_buf[len] = '\0';
+   cJSON *root = cJSON_Parse(c->parse_buf);
+   if (!root) return;
+   cJSON *choices = cJSON_GetObjectItem(root, "choices");
+   if (!cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
+      cJSON_Delete(root);
+      return;
+   }
+   cJSON *delta = cJSON_GetObjectItem(cJSON_GetArrayItem(choices, 0), "delta");
+   cJSON *audio = delta ? cJSON_GetObjectItem(delta, "audio") : NULL;
+   if (!audio) {
+      cJSON_Delete(root);
+      return;
+   }
+   /* Transcript text chunk → text_cb (assistant's "voice" rendered as text). */
+   cJSON *transcript = cJSON_GetObjectItem(audio, "transcript");
+   if (cJSON_IsString(transcript) && transcript->valuestring && transcript->valuestring[0]) {
+      size_t tl = strlen(transcript->valuestring);
+      c->text_chunks++;
+      c->text_chars += tl;
+      if (c->text_cb) c->text_cb(transcript->valuestring, tl, c->cb_ctx);
+   }
+   /* Audio chunk: base64-encoded PCM16 → audio_cb after decode. */
+   cJSON *data = cJSON_GetObjectItem(audio, "data");
+   if (cJSON_IsString(data) && data->valuestring) {
+      const char *b64 = data->valuestring;
+      size_t b64_len = strlen(b64);
+      size_t need = (b64_len * 3) / 4 + 2;
+      if (grow_psram_buf(&c->decode_buf, &c->decode_cap, need) == ESP_OK) {
+         size_t out_len = 0;
+         int rc = mbedtls_base64_decode(c->decode_buf, c->decode_cap, &out_len, (const unsigned char *)b64, b64_len);
+         if (rc == 0 && out_len > 0) {
+            c->audio_chunks++;
+            c->audio_bytes += out_len;
+            if (c->audio_cb) c->audio_cb(c->decode_buf, out_len, c->cb_ctx);
+         }
+      }
+   }
+   cJSON_Delete(root);
+}
+
+esp_err_t openrouter_chat_audio(const int16_t *pcm, size_t samples, openrouter_tts_chunk_cb_t audio_cb,
+                                openrouter_chat_delta_cb_t text_cb, void *ctx) {
+   if (!pcm || samples == 0 || (!audio_cb && !text_cb)) return ESP_ERR_INVALID_ARG;
+
+   char model[96] = {0};
+   tab5_settings_get_or_mdl_audio(model, sizeof model);
+   char voice[32] = {0};
+   tab5_settings_get_or_voice(voice, sizeof voice);
+
+   const size_t pcm_bytes = samples * sizeof(int16_t);
+   const size_t wav_bytes = 44 + pcm_bytes;
+
+   /* WAV-wrap the mic PCM in PSRAM, then base64-encode it (the input_audio
+    * field on a content[] block takes the same shape as /audio/transcriptions). */
+   uint8_t *wav = heap_caps_malloc(wav_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!wav) return ESP_ERR_NO_MEM;
+   wav16_header(wav, pcm_bytes);
+   memcpy(wav + 44, pcm, pcm_bytes);
+
+   const size_t b64_cap = ((wav_bytes + 2) / 3) * 4 + 1;
+   char *b64 = heap_caps_malloc(b64_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!b64) {
+      heap_caps_free(wav);
+      return ESP_ERR_NO_MEM;
+   }
+   size_t b64_olen = 0;
+   int mb = mbedtls_base64_encode((unsigned char *)b64, b64_cap, &b64_olen, wav, wav_bytes);
+   heap_caps_free(wav);
+   if (mb != 0) {
+      heap_caps_free(b64);
+      return ESP_FAIL;
+   }
+   b64[b64_olen] = '\0';
+
+   /* Build the request body:
+    *   { model, modalities, audio:{voice,format},
+    *     stream:true,
+    *     messages:[{role:"user", content:[{type:"input_audio", input_audio:{data,format}}]}] } */
+   cJSON *body = cJSON_CreateObject();
+   cJSON_AddStringToObject(body, "model", model);
+   cJSON *modalities = cJSON_CreateArray();
+   cJSON_AddItemToArray(modalities, cJSON_CreateString("text"));
+   cJSON_AddItemToArray(modalities, cJSON_CreateString("audio"));
+   cJSON_AddItemToObject(body, "modalities", modalities);
+   cJSON *audio_cfg = cJSON_CreateObject();
+   cJSON_AddStringToObject(audio_cfg, "voice", voice);
+   cJSON_AddStringToObject(audio_cfg, "format", "pcm16");
+   cJSON_AddItemToObject(body, "audio", audio_cfg);
+   cJSON_AddBoolToObject(body, "stream", true);
+   cJSON *msgs = cJSON_CreateArray();
+   cJSON *user_msg = cJSON_CreateObject();
+   cJSON_AddStringToObject(user_msg, "role", "user");
+   cJSON *content_arr = cJSON_CreateArray();
+   cJSON *audio_block = cJSON_CreateObject();
+   cJSON_AddStringToObject(audio_block, "type", "input_audio");
+   cJSON *input_audio = cJSON_CreateObject();
+   cJSON_AddStringToObject(input_audio, "data", b64);
+   cJSON_AddStringToObject(input_audio, "format", "wav");
+   cJSON_AddItemToObject(audio_block, "input_audio", input_audio);
+   cJSON_AddItemToArray(content_arr, audio_block);
+   cJSON_AddItemToObject(user_msg, "content", content_arr);
+   cJSON_AddItemToArray(msgs, user_msg);
+   cJSON_AddItemToObject(body, "messages", msgs);
+   char *body_str = cJSON_PrintUnformatted(body);
+   cJSON_Delete(body);
+   heap_caps_free(b64);
+   if (!body_str) return ESP_ERR_NO_MEM;
+   const size_t body_len = strlen(body_str);
+
+   log_health("/chat/completions[audio]", "pre");
+
+   int attempt = 0;
+   esp_err_t err = ESP_FAIL;
+   esp_http_client_handle_t c = NULL;
+   openrouter_sse_state_t *sse = NULL;
+   chat_audio_ctx_t actx = {
+       .audio_cb = audio_cb,
+       .text_cb = text_cb,
+       .cb_ctx = ctx,
+       .parse_buf = NULL,
+       .parse_cap = 0,
+       .decode_buf = NULL,
+       .decode_cap = 0,
+   };
+   int64_t t_open = 0;
+retry:
+   attempt++;
+   c = openrouter_open_post("/chat/completions");
+   if (!c) {
+      free(body_str);
+      return ESP_ERR_INVALID_STATE;
+   }
+   esp_http_client_set_header(c, "Content-Type", "application/json");
+   esp_http_client_set_header(c, "Accept", "text/event-stream");
+
+   if (openrouter_sse_init(&sse, chat_audio_sse_cb, &actx) != ESP_OK) {
+      free(body_str);
+      esp_http_client_cleanup(c);
+      inflight_set(NULL);
+      return ESP_ERR_NO_MEM;
+   }
+
+   t_open = esp_timer_get_time();
+   err = esp_http_client_open(c, body_len);
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "/chat/completions[audio] open failed: %s (errno=%d) after %lldms (attempt %d)",
+               esp_err_to_name(err), errno, (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+      if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
+         ESP_LOGW(TAG, "/chat/completions[audio] transient connect failure — retry-once");
+         openrouter_sse_free(sse);
+         sse = NULL;
+         esp_http_client_close(c);
+         esp_http_client_cleanup(c);
+         inflight_set(NULL);
+         vTaskDelay(pdMS_TO_TICKS(500));
+         goto retry;
+      }
+      goto cleanup;
+   }
+   err = write_full(c, body_str, body_len);
+   if (err != ESP_OK) goto cleanup;
+   esp_http_client_fetch_headers(c);
+   int status = esp_http_client_get_status_code(c);
+   if (status != 200) {
+      ESP_LOGE(TAG, "chat_audio status=%d (body_len=%u)", status, (unsigned)body_len);
+      log_error_body(c, "/chat/completions[audio]");
+      err = ESP_FAIL;
+      goto cleanup;
+   }
+   char rbuf[1024];
+   while (1) {
+      int n = esp_http_client_read(c, rbuf, sizeof rbuf);
+      if (n <= 0) break;
+      if (openrouter_sse_feed(sse, rbuf, (size_t)n)) break;
+   }
+
+cleanup:
+   openrouter_sse_free(sse);
+   esp_http_client_close(c);
+   esp_http_client_cleanup(c);
+   inflight_set(NULL);
+   if (actx.parse_buf) heap_caps_free(actx.parse_buf);
+   if (actx.decode_buf) heap_caps_free(actx.decode_buf);
+   free(body_str);
+   ESP_LOGI(TAG,
+            "/chat/completions[audio] done rc=%s in %lldms (attempts=%d) "
+            "audio_chunks=%u audio_bytes=%u text_chunks=%u text_chars=%u",
+            esp_err_to_name(err), (long long)((esp_timer_get_time() - t_open) / 1000), attempt,
+            (unsigned)actx.audio_chunks, (unsigned)actx.audio_bytes, (unsigned)actx.text_chunks,
+            (unsigned)actx.text_chars);
+   log_health("/chat/completions[audio]", "post");
+   return err;
+}
+
 esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *ctx) {
    if (!text || !*text || !cb) return ESP_ERR_INVALID_ARG;
 

@@ -79,6 +79,10 @@ esp_err_t tab5_settings_set_or_mdl_emb(const char *model);
 esp_err_t tab5_settings_get_or_voice(char *buf, size_t len);
 esp_err_t tab5_settings_set_or_voice(const char *voice);
 
+/* TT #379 — multimodal audio chat model (audio in → audio+text out via /chat/completions). */
+esp_err_t tab5_settings_get_or_mdl_audio(char *buf, size_t len);
+esp_err_t tab5_settings_set_or_mdl_audio(const char *model);
+
 /* ── v4·D Sovereign Halo mode dials ──────────────────────────────────── */
 /* Three orthogonal dials that replace the 4-mode pill.  Tab5 resolves the
  * triple into the legacy (voice_mode, llm_model) pair Dragon expects.
