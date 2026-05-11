@@ -16,6 +16,9 @@ dependencies.lock
 # Large design files (kept locally, not tracked)
 stitch-designs/
 
+# Docusaurus docs site staging — PR #329 carries this; keep out of tree until landed
+docs-site/
+
 # Wokwi simulator state
 wokwi.dat
 

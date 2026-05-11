@@ -147,9 +147,7 @@ static lv_obj_t *s_mode_sub        = NULL;  /* "LOCAL + CLOUD" */
 static lv_obj_t *s_now_card        = NULL;
 static lv_obj_t *s_now_accent      = NULL;  /* 140×3 amber bar top-left */
 static lv_obj_t *s_now_kicker      = NULL;
-static lv_obj_t *s_now_lede        = NULL;
-static lv_obj_t *s_stat_k[3]       = {NULL, NULL, NULL};
-static lv_obj_t *s_stat_v[3]       = {NULL, NULL, NULL};
+static lv_obj_t *s_now_lede = NULL;
 /* TT #69 — icon slot top-right of the live card.  Container only;
  * `widget_icons_render` materialises the canvas + draws the
  * primitives inside on every refresh.  We track which icon id is
@@ -753,18 +751,6 @@ lv_obj_t *ui_home_create(void)
     lv_obj_clear_flag(s_now_icon, LV_OBJ_FLAG_CLICKABLE);
     /* Hidden until a widget with a known icon name arrives. */
     lv_obj_add_flag(s_now_icon, LV_OBJ_FLAG_HIDDEN);
-
-    /* Stats row removed in Sovereign Halo live-line. Pointers kept as
-     * hidden sinks so orb/mode update code that writes to them is a no-op. */
-    for (int i = 0; i < 3; i++) {
-        s_stat_k[i] = lv_label_create(s_now_card);
-        lv_label_set_text(s_stat_k[i], "");
-        lv_obj_add_flag(s_stat_k[i], LV_OBJ_FLAG_HIDDEN);
-
-        s_stat_v[i] = lv_label_create(s_now_card);
-        lv_label_set_text(s_stat_v[i], "");
-        lv_obj_add_flag(s_stat_v[i], LV_OBJ_FLAG_HIDDEN);
-    }
 
     /* ── Say pill (108 px) ─────────────────────────────────── */
     const int strip_y = SH - STRIP_BOT_PAD - SAY_GAP - SAY_H;
@@ -1399,27 +1385,6 @@ void ui_home_update_status(void)
             const char *cur = lv_label_get_text(s_now_lede);
             if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_now_lede, buf);
         }
-        /* Stats: progress if available, otherwise tone-coded state. */
-        if (s_stat_k[0] && s_stat_v[0]) {
-            int pct = (int)(live_w->progress * 100.0f + 0.5f);
-            if (pct < 0) pct = 0;
-            if (pct > 100) pct = 100;
-            lv_label_set_text(s_stat_k[0], "PROGRESS");
-            char pbuf[16]; snprintf(pbuf, sizeof(pbuf), "%d%%", pct);
-            lv_label_set_text(s_stat_v[0], pbuf);
-            lv_obj_set_style_text_color(s_stat_v[0], lv_color_hex(TH_AMBER), 0);
-        }
-        if (s_stat_k[1] && s_stat_v[1]) {
-            lv_label_set_text(s_stat_k[1], "TONE");
-            lv_label_set_text(s_stat_v[1], tone_name(live_w->tone));
-            lv_obj_set_style_text_color(s_stat_v[1], lv_color_hex(TH_TEXT_PRIMARY), 0);
-        }
-        if (s_stat_k[2] && s_stat_v[2]) {
-            lv_label_set_text(s_stat_k[2], "PRIORITY");
-            char buf[8]; snprintf(buf, sizeof(buf), "%d", live_w->priority);
-            lv_label_set_text(s_stat_v[2], buf);
-            lv_obj_set_style_text_color(s_stat_v[2], lv_color_hex(TH_TEXT_PRIMARY), 0);
-        }
         orb_paint_for_tone(live_w->tone);
     } else {
         /* Empty-state kicker + lede — Sovereign Halo live-line uses a
@@ -1476,25 +1441,6 @@ void ui_home_update_status(void)
         if (s_now_lede) {
             const char *cur = lv_label_get_text(s_now_lede);
             if (!cur || strcmp(cur, lede) != 0) lv_label_set_text(s_now_lede, lede);
-        }
-        /* Default stats: voice mode, battery, wifi — always something here. */
-        if (s_stat_k[0] && s_stat_v[0]) {
-            lv_label_set_text(s_stat_k[0], "VOICE");
-            lv_label_set_text(s_stat_v[0], s_mode_short[s_badge_mode]);
-            lv_obj_set_style_text_color(s_stat_v[0], lv_color_hex(TH_AMBER), 0);
-        }
-        if (s_stat_k[1] && s_stat_v[1]) {
-            lv_label_set_text(s_stat_k[1], "BATTERY");
-            char b[8];
-            snprintf(b, sizeof(b), "%d%%", (int)tab5_battery_percent());
-            lv_label_set_text(s_stat_v[1], b);
-            lv_obj_set_style_text_color(s_stat_v[1], lv_color_hex(TH_TEXT_PRIMARY), 0);
-        }
-        if (s_stat_k[2] && s_stat_v[2]) {
-            lv_label_set_text(s_stat_k[2], "NET");
-            lv_label_set_text(s_stat_v[2], wifi_ok ? "OK" : "OFF");
-            lv_obj_set_style_text_color(s_stat_v[2],
-                lv_color_hex(wifi_ok ? TH_TEXT_PRIMARY : TH_STATUS_RED), 0);
         }
         orb_paint_for_mode(s_badge_mode);
     }
@@ -2145,7 +2091,6 @@ void ui_home_destroy(void)
     s_state_word = s_greet_line = NULL;
     s_mode_chip = s_mode_dot = s_mode_name = s_mode_sub = NULL;
     s_now_card = s_now_accent = s_now_kicker = s_now_lede = NULL;
-    for (int i = 0; i < 3; i++) s_stat_k[i] = s_stat_v[i] = NULL;
     s_say_pill = s_say_mic = s_say_label_main = s_say_label_sub = NULL;
     s_toast = NULL;
 }
