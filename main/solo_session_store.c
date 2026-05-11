@@ -14,6 +14,7 @@
 
 #include "solo_session_store.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,16 +127,56 @@ static cJSON *load_session(const char *path) {
 }
 
 static esp_err_t save_session(const char *path, cJSON *root) {
+   /* W4-D (TT #375): atomic write — `fopen("w")` truncates immediately,
+    * so power loss or a full SD between fopen and fclose corrupted the
+    * entire session log (P1).  Plus the original ignored fwrite's return
+    * value (P2), so a short write silently produced truncated JSON that
+    * load_session would parse as ESP_FAIL on next boot, losing all
+    * history.  Fix: write to <path>.tmp, fsync, rename.  FATFS rename(2)
+    * is atomic on a single mount, so the file is either fully-old or
+    * fully-new — never half-written.  Check fwrite return == strlen(s);
+    * on mismatch unlink the .tmp and surface ESP_FAIL so the caller
+    * doesn't think the append succeeded. */
    char *s = cJSON_PrintUnformatted(root);
    if (!s) return ESP_ERR_NO_MEM;
-   FILE *f = fopen(path, "w");
+   size_t s_len = strlen(s);
+
+   char tmp_path[128];
+   int tn = snprintf(tmp_path, sizeof tmp_path, "%s.tmp", path);
+   if (tn <= 0 || (size_t)tn >= sizeof tmp_path) {
+      free(s);
+      return ESP_ERR_INVALID_SIZE;
+   }
+
+   FILE *f = fopen(tmp_path, "w");
    if (!f) {
       free(s);
       return ESP_FAIL;
    }
-   fwrite(s, 1, strlen(s), f);
-   fclose(f);
+   size_t wrote = fwrite(s, 1, s_len, f);
+   int flush_rc = fflush(f);
+   int fsync_rc = fsync(fileno(f));
+   int close_rc = fclose(f);
    free(s);
+   if (wrote != s_len || flush_rc != 0 || fsync_rc != 0 || close_rc != 0) {
+      ESP_LOGE(TAG, "save_session: short/failed write (wrote=%u/%u flush=%d fsync=%d close=%d)", (unsigned)wrote,
+               (unsigned)s_len, flush_rc, fsync_rc, close_rc);
+      unlink(tmp_path);
+      return ESP_FAIL;
+   }
+   /* FATFS `f_rename` returns FR_EXIST if the destination is present, so
+    * unlink the previous file first.  Tiny atomicity window between
+    * unlink and rename — if power dies in between, the destination is
+    * gone but `<path>.tmp` is intact.  A future boot-time scan that
+    * promotes orphan `.tmp` files to their canonical name would close
+    * that gap; for now the in-flight turn loses but prior turns survive
+    * because the .tmp carries the full updated history. */
+   unlink(path); /* errno EEXIST is fine; we WANT it gone */
+   if (rename(tmp_path, path) != 0) {
+      ESP_LOGE(TAG, "save_session: rename %s -> %s failed (errno=%d)", tmp_path, path, errno);
+      unlink(tmp_path);
+      return ESP_FAIL;
+   }
    return ESP_OK;
 }
 

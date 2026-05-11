@@ -58,6 +58,7 @@
 #include "voice.h"
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
+#include "voice_solo.h"
 #include "wifi.h"
 
 static const char *TAG = "tab5";
@@ -105,6 +106,11 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
     ESP_LOGI(TAG, "Creating overlays (deferred)...");
     ui_keyboard_init(NULL);
     ui_voice_init();
+    /* W4-A (TT #375): wire voice_solo init.  Idempotent — touches
+     * /sdcard/sessions, warms s_sid from NVS, touches /sdcard/rag.bin.
+     * Runs after voice_init() (which ui_voice_init wraps) so the worker
+     * queue + voice state machine are up. */
+    voice_solo_init();
     /* TT #328 Wave 10 — persistent floating home button on lv_layer_top.
      * Hidden by default; non-home screens toggle it via
      * ui_chrome_set_home_visible(true) on show, (false) on destroy. */

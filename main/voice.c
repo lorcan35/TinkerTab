@@ -58,6 +58,7 @@
 #include "voice_codec.h"     /* #262: OPUS encode/decode wrapper */
 #include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
 #include "voice_modes.h"     /* TT #331 Wave 23 SRP-A2: 5-tier mode dispatch */
+#include "voice_solo.h"      /* W4-B (TT #375): vmode=5 SOLO_DIRECT mic-audio dispatch */
 #include "voice_video.h"     /* #266: live JPEG streaming */
 #include "voice_widget_ws.h" /* SOLID-audit SRP-2: widget WS verb dispatch */
 #include "voice_ws_proto.h"  /* TT #331 Wave 23 SRP-A1: WS proto layer */
@@ -210,6 +211,16 @@ volatile bool s_using_ngrok = false; /* true once we've switched to the ngrok UR
 // Mic capture task
 static TaskHandle_t  s_mic_task    = NULL;
 static volatile bool s_mic_running = false;
+
+/* W4-B (TT #375): SOLO mic-capture buffer.  In vmode=5 the mic loop
+ * appends downsampled 16 kHz mono PCM here instead of sending over WS
+ * to Dragon; on stop, voice_stop_listening hands it to
+ * voice_solo_send_audio for OpenRouter STT.  Cap = 16 s × 16 kHz = 256K
+ * samples = 512 KB PSRAM, lazy-allocated on first use. */
+#define SOLO_PCM_CAP_SECONDS 16
+#define SOLO_PCM_CAP_SAMPLES (16000 * SOLO_PCM_CAP_SECONDS)
+static int16_t *s_solo_pcm = NULL;
+static volatile size_t s_solo_samples = 0;
 /* #284: persistent mic task — created once at voice_init, idles on
  * this binary semaphore between sessions instead of being spawned +
  * suspended per-call.  Each start_listening / start_dictation /
@@ -564,11 +575,18 @@ static void mic_capture_task(void *arg)
      * headroom; 640 B comfortably fits the worst-case bitrate ceiling. */
     uint8_t  *enc_buf  = (uint8_t  *)heap_caps_malloc(
         VOICE_CHUNK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* W4-B (TT #375): SOLO mic-capture buffer.  512 KB PSRAM, allocated
+     * once at task start.  Used only when vmode=5 SOLO_DIRECT is the
+     * active voice mode; otherwise idle. */
+    s_solo_pcm =
+        (int16_t *)heap_caps_malloc(SOLO_PCM_CAP_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!tdm_buf || !mono_buf || !enc_buf) {
         ESP_LOGE(TAG, "Failed to allocate mic buffers — task idling forever");
         heap_caps_free(tdm_buf);
         heap_caps_free(mono_buf);
         heap_caps_free(enc_buf);
+        heap_caps_free(s_solo_pcm);
+        s_solo_pcm = NULL;
         /* No buffers means we can't ever do useful work — block
          * indefinitely on the never-given semaphore.  Don't suspend
          * (P4 TLSP rule) and don't loop+spin. */
@@ -598,7 +616,8 @@ static void mic_capture_task(void *arg)
         bool ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
 
         while (s_mic_running &&
-               (ws_live || voice_get_mode() == VOICE_MODE_DICTATE || voice_get_mode() == VOICE_MODE_CALL)) {
+               (ws_live || voice_get_mode() == VOICE_MODE_DICTATE || voice_get_mode() == VOICE_MODE_CALL ||
+                tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT)) {
            esp_err_t err = tab5_mic_read(tdm_buf, MIC_TDM_SAMPLES, 100);
            if (err != ESP_OK) {
               ESP_LOGW(TAG, "Mic read failed: %s", esp_err_to_name(err));
@@ -656,7 +675,24 @@ static void mic_capture_task(void *arg)
 
            ui_notes_write_audio(mono_buf, out_idx);
 
-           if (ws_live) {
+           /* W4-B (TT #375): SOLO_DIRECT capture path.  Accumulate the
+            * downsampled 16 kHz mono PCM into s_solo_pcm; voice_stop_listening
+            * hands it to voice_solo_send_audio for OpenRouter STT.  Cap is
+            * SOLO_PCM_CAP_SECONDS — beyond that we silently drop trailing
+            * samples.  We still let the loop's tail (frames_sent++,
+            * MAX_RECORD_FRAMES_ASK, RMS for the orb) run normally; only
+            * the WS uplink is gated off below. */
+           bool is_solo_mode = (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT);
+           if (is_solo_mode && s_solo_pcm) {
+              size_t room = (SOLO_PCM_CAP_SAMPLES > s_solo_samples) ? (SOLO_PCM_CAP_SAMPLES - s_solo_samples) : 0;
+              size_t copy_n = ((size_t)out_idx < room) ? (size_t)out_idx : room;
+              if (copy_n > 0) {
+                 memcpy(s_solo_pcm + s_solo_samples, mono_buf, copy_n * sizeof(int16_t));
+                 s_solo_samples += copy_n;
+              }
+           }
+
+           if (ws_live && !is_solo_mode) {
               /* #262: encode through voice_codec (PCM = memcpy passthrough,
                * OPUS = ~60 B variable-length packet).  Dragon decodes per
                * the active uplink codec it picked in config_update. */
@@ -1459,10 +1495,14 @@ esp_err_t voice_start_listening(void)
    }
 
    bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
+   /* W4-B (TT #375): vmode=5 SOLO_DIRECT owns its own STT path — Dragon
+    * WS is not required and no `{"type":"start"}` frame is sent. */
+   bool is_solo = (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT);
    /* Wave 13 H1: snapshot state once under the mutex so the log and the
     * guard below see the same value, and neither races the WS RX callback. */
    voice_state_t cur_state = voice_get_state();
-   ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_live=%d, state=%d", s_initialized, ws_live, cur_state);
+   ESP_LOGI(TAG, "voice_start_listening: initialized=%d, ws_live=%d, state=%d solo=%d", s_initialized, ws_live,
+            cur_state, (int)is_solo);
 
    if (tab5_settings_get_mic_mute()) {
       ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
@@ -1470,26 +1510,32 @@ esp_err_t voice_start_listening(void)
       return ESP_ERR_INVALID_STATE;
    }
 
-    if (!s_initialized || !ws_live) {
-        ESP_LOGE(TAG, "Not connected (initialized=%d, ws_live=%d)",
-                 s_initialized, ws_live);
-        return ESP_ERR_INVALID_STATE;
-    }
+   if (!s_initialized || (!ws_live && !is_solo)) {
+      ESP_LOGE(TAG, "Not connected (initialized=%d, ws_live=%d, solo=%d)", s_initialized, ws_live, (int)is_solo);
+      return ESP_ERR_INVALID_STATE;
+   }
     if (cur_state != VOICE_STATE_READY) {
         ESP_LOGW(TAG, "Cannot start listening in state %d", cur_state);
         return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Starting push-to-talk (ask mode)");
+    ESP_LOGI(TAG, "Starting push-to-talk (ask mode%s)", is_solo ? ", solo" : "");
     voice_modes_set_internal(VOICE_MODE_ASK);
 
-    ESP_LOGI(TAG, "Sending {\"type\":\"start\"} to Dragon...");
-    esp_err_t err = voice_ws_send_text("{\"type\":\"start\"}");
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send start signal");
-        return err;
+    if (is_solo) {
+       /* W4-B: reset the SOLO capture cursor.  voice_stop_listening
+        * sends the accumulated PCM to OpenRouter STT via
+        * voice_solo_send_audio. */
+       s_solo_samples = 0;
+    } else {
+       ESP_LOGI(TAG, "Sending {\"type\":\"start\"} to Dragon...");
+       esp_err_t err = voice_ws_send_text("{\"type\":\"start\"}");
+       if (err != ESP_OK) {
+          ESP_LOGE(TAG, "Failed to send start signal");
+          return err;
+       }
+       ESP_LOGI(TAG, "Start signal sent OK");
     }
-    ESP_LOGI(TAG, "Start signal sent OK");
 
     s_transcript[0] = '\0';
     s_stt_text[0] = '\0';
@@ -1758,6 +1804,26 @@ esp_err_t voice_stop_listening(void)
       voice_set_state(VOICE_STATE_READY, "offline_saved");
       voice_modes_set_internal(VOICE_MODE_ASK);
       return ESP_OK;
+   }
+
+   /* W4-B (TT #375): SOLO_DIRECT stop path.  Mic is already disabled +
+    * drained above; hand the accumulated PCM to voice_solo, which posts
+    * an audio-job to the worker (STT → LLM → TTS through OpenRouter). */
+   if (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT) {
+      voice_reset_activity_timestamp();
+      voice_set_state(VOICE_STATE_PROCESSING, "solo");
+      if (!s_solo_pcm || s_solo_samples == 0) {
+         ESP_LOGW(TAG, "Solo stop with empty capture (samples=%u)", (unsigned)s_solo_samples);
+         voice_set_state(VOICE_STATE_READY, "solo_empty");
+         return ESP_ERR_INVALID_STATE;
+      }
+      ESP_LOGI(TAG, "Solo stop: handing %u samples to voice_solo_send_audio", (unsigned)s_solo_samples);
+      esp_err_t e = voice_solo_send_audio(s_solo_pcm, s_solo_samples);
+      if (e != ESP_OK) {
+         ESP_LOGW(TAG, "voice_solo_send_audio failed: %s", esp_err_to_name(e));
+         voice_set_state(VOICE_STATE_READY, "solo_dispatch_failed");
+      }
+      return e;
    }
 
     esp_err_t err = voice_ws_send_text("{\"type\":\"stop\"}");

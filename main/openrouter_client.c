@@ -237,14 +237,41 @@ esp_err_t openrouter_stt(const int16_t *pcm, size_t samples, char *out_text, siz
    }
    const size_t total = (size_t)part_a_n + wav_bytes + (size_t)part_b_n;
 
-   esp_http_client_handle_t c = openrouter_open_post("/audio/transcriptions");
-   if (!c) return ESP_ERR_INVALID_STATE;
+   log_health("/audio/transcriptions", "pre"); /* W4-C (TT #375) */
+
+   /* W4-C (TT #375): same retry-once-on-ESP_ERR_HTTP_CONNECT pattern as
+    * chat_stream/embed.  Retry is cheap here because it triggers BEFORE
+    * any of the WAV body bytes are written. */
+   int attempt = 0;
+   esp_http_client_handle_t c = NULL;
+   esp_err_t err = ESP_FAIL;
+   int64_t t_open = 0;
    char ctype[96];
    snprintf(ctype, sizeof ctype, "multipart/form-data; boundary=%s", kBoundary);
+retry:
+   attempt++;
+   c = openrouter_open_post("/audio/transcriptions");
+   if (!c) {
+      log_health("/audio/transcriptions", "post");
+      return ESP_ERR_INVALID_STATE;
+   }
    esp_http_client_set_header(c, "Content-Type", ctype);
 
-   esp_err_t err = esp_http_client_open(c, total);
-   if (err != ESP_OK) goto cleanup;
+   t_open = esp_timer_get_time();
+   err = esp_http_client_open(c, total);
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "/audio/transcriptions open failed: %s (errno=%d) after %lldms (attempt %d)", esp_err_to_name(err),
+               errno, (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+      if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
+         ESP_LOGW(TAG, "/audio/transcriptions transient connect failure — retry-once");
+         esp_http_client_close(c);
+         esp_http_client_cleanup(c);
+         inflight_set(NULL);
+         vTaskDelay(pdMS_TO_TICKS(500));
+         goto retry;
+      }
+      goto cleanup;
+   }
    if (esp_http_client_write(c, part_a, part_a_n) < 0) {
       err = ESP_FAIL;
       goto cleanup;
@@ -279,6 +306,7 @@ esp_err_t openrouter_stt(const int16_t *pcm, size_t samples, char *out_text, siz
    int status = esp_http_client_get_status_code(c);
    if (status != 200) {
       ESP_LOGE(TAG, "stt status=%d", status);
+      log_error_body(c, "/audio/transcriptions"); /* W4-C U6 (TT #375) */
       err = ESP_FAIL;
       goto cleanup;
    }
@@ -315,6 +343,9 @@ cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
    inflight_set(NULL);
+   ESP_LOGI(TAG, "/audio/transcriptions done rc=%s in %lldms (attempts=%d)", esp_err_to_name(err),
+            (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+   log_health("/audio/transcriptions", "post"); /* W4-C (TT #375) */
    return err;
 }
 
@@ -475,16 +506,41 @@ esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *c
    cJSON_Delete(body);
    if (!body_str) return ESP_ERR_NO_MEM;
 
-   esp_http_client_handle_t c = openrouter_open_post("/audio/speech");
+   log_health("/audio/speech", "pre"); /* W4-C (TT #375) */
+
+   /* W4-C (TT #375): retry-once-on-ESP_ERR_HTTP_CONNECT pattern mirrors
+    * chat_stream / embed.  TTS body is a small JSON blob — re-writing
+    * it on retry is essentially free. */
+   int attempt = 0;
+   esp_http_client_handle_t c = NULL;
+   esp_err_t err = ESP_FAIL;
+   size_t body_len = strlen(body_str);
+   int64_t t_open = 0;
+retry:
+   attempt++;
+   c = openrouter_open_post("/audio/speech");
    if (!c) {
       free(body_str);
+      log_health("/audio/speech", "post");
       return ESP_ERR_INVALID_STATE;
    }
    esp_http_client_set_header(c, "Content-Type", "application/json");
 
-   size_t body_len = strlen(body_str);
-   esp_err_t err = esp_http_client_open(c, body_len);
-   if (err != ESP_OK) goto cleanup;
+   t_open = esp_timer_get_time();
+   err = esp_http_client_open(c, body_len);
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "/audio/speech open failed: %s (errno=%d) after %lldms (attempt %d)", esp_err_to_name(err), errno,
+               (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+      if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
+         ESP_LOGW(TAG, "/audio/speech transient connect failure — retry-once");
+         esp_http_client_close(c);
+         esp_http_client_cleanup(c);
+         inflight_set(NULL);
+         vTaskDelay(pdMS_TO_TICKS(500));
+         goto retry;
+      }
+      goto cleanup;
+   }
    err = write_full(c, body_str, body_len);
    if (err != ESP_OK) goto cleanup;
    esp_http_client_fetch_headers(c);
@@ -521,6 +577,9 @@ cleanup:
    esp_http_client_cleanup(c);
    inflight_set(NULL);
    free(body_str);
+   ESP_LOGI(TAG, "/audio/speech done rc=%s in %lldms (attempts=%d)", esp_err_to_name(err),
+            (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+   log_health("/audio/speech", "post"); /* W4-C (TT #375) */
    return err;
 }
 
