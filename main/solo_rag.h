@@ -19,9 +19,10 @@
  */
 #pragma once
 
-#include "esp_err.h"
 #include <stddef.h>
 #include <stdint.h>
+
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,15 +37,14 @@ esp_err_t solo_rag_remember(const char *text, uint32_t *out_fact_id);
 typedef struct {
    uint32_t fact_id;
    uint32_t ts;
-   float    score;
-   char     text[256];
+   float score;
+   char text[256];
 } solo_rag_hit_t;
 
 /** Embed `query` and return the top-K cosine matches in `hits`/`*n_hits`.
  *  hits is caller-owned; size must be ≥ k.  k <= 8 is the practical
  *  ceiling (linear top-K insertion). */
-esp_err_t solo_rag_recall(const char *query, int k,
-                          solo_rag_hit_t *hits, int *n_hits);
+esp_err_t solo_rag_recall(const char *query, int k, solo_rag_hit_t *hits, int *n_hits);
 
 /** Number of records currently stored. */
 int solo_rag_count(void);

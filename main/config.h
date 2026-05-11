@@ -54,8 +54,8 @@
 #define VOICE_MODE_HYBRID      1
 #define VOICE_MODE_CLOUD       2
 #define VOICE_MODE_TINKERCLAW  3
-#define VOICE_MODE_ONBOARD     4
-#define VOICE_MODE_SOLO        5  /* TT #370 — vmode=5 SOLO_DIRECT */
+#define VOICE_MODE_ONBOARD 4
+#define VOICE_MODE_SOLO 5 /* TT #370 — vmode=5 SOLO_DIRECT */
 #define VOICE_MODE_COUNT 6
 #define TAB5_PLATFORM         "esp32p4-tab5"
 

@@ -420,29 +420,29 @@ static void mode_dot_kick_pulse(void) {
 
 static void update_mode_ui(uint8_t mode)
 {
-    /* TT #370 — was hardcoded `>= 4` which silently clamped vmode=4
-     * (Onboard) to 0 (Local) in the home badge.  Now bounded by the
-     * array size so vmode=4 + new vmode=5 (SOLO_DIRECT) both render
-     * correctly. */
-    if (mode >= VOICE_MODE_COUNT) mode = 0;
-    bool changed = (s_badge_mode != mode);
-    s_badge_mode = mode;
-    /* TT #328 Wave 6 — recolor through shared widget.  mode_dot_anim_cb
-     * still mutates size/radius directly for the pulse animation; that
-     * stays open-coded since it's not shared. */
-    if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
-    if (s_mode_name) lv_label_set_text(s_mode_name, s_mode_short[mode]);
-    if (s_mode_sub)  lv_label_set_text(s_mode_sub,  s_mode_tagline[mode]);
-    orb_paint_for_mode(mode);
+   /* TT #370 — was hardcoded `>= 4` which silently clamped vmode=4
+    * (Onboard) to 0 (Local) in the home badge.  Now bounded by the
+    * array size so vmode=4 + new vmode=5 (SOLO_DIRECT) both render
+    * correctly. */
+   if (mode >= VOICE_MODE_COUNT) mode = 0;
+   bool changed = (s_badge_mode != mode);
+   s_badge_mode = mode;
+   /* TT #328 Wave 6 — recolor through shared widget.  mode_dot_anim_cb
+    * still mutates size/radius directly for the pulse animation; that
+    * stays open-coded since it's not shared. */
+   if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
+   if (s_mode_name) lv_label_set_text(s_mode_name, s_mode_short[mode]);
+   if (s_mode_sub) lv_label_set_text(s_mode_sub, s_mode_tagline[mode]);
+   orb_paint_for_mode(mode);
 
-    /* Phase 4 (#42): pulse the dot only on actual mode changes (not the
-     * initial chip creation paint).  Without the first-paint guard, the
-     * dot would visibly grow + bounce on every overlay open / home
-     * re-create even when nothing changed. */
-    if (s_dot_first_paint) {
-       s_dot_first_paint = false;
-       return;
-    }
+   /* Phase 4 (#42): pulse the dot only on actual mode changes (not the
+    * initial chip creation paint).  Without the first-paint guard, the
+    * dot would visibly grow + bounce on every overlay open / home
+    * re-create even when nothing changed. */
+   if (s_dot_first_paint) {
+      s_dot_first_paint = false;
+      return;
+   }
     if (changed) {
        mode_dot_kick_pulse();
     }
@@ -1818,23 +1818,21 @@ static void mode_chip_long_press_cb(lv_event_t *e)
  * No config_update fires for vmode 4↔5 — neither tier involves
  * Dragon, so Dragon doesn't need to know.  NVS write + UI refresh
  * is the entire transition. */
-static void mode_chip_click_cb(lv_event_t *e)
-{
-    (void)e;
-    if (any_overlay_visible()) return;
-    uint8_t cur = tab5_settings_get_voice_mode();
-    if (cur == VMODE_LOCAL_ONBOARD || cur == VMODE_SOLO_DIRECT) {
-        uint8_t next = (cur == VMODE_LOCAL_ONBOARD) ? VMODE_SOLO_DIRECT
-                                                    : VMODE_LOCAL_ONBOARD;
-        tab5_settings_set_voice_mode(next);
-        update_mode_ui(next);
-        ESP_LOGI(TAG, "mode pill: cycled %u -> %u", cur, next);
-        return;
-    }
-    /* Default: open the 3-dial mode-sheet (was the long-press UX). */
-    tab5_settings_set_mode_hint_seen(true);
-    extern void ui_mode_sheet_show(void);
-    ui_mode_sheet_show();
+static void mode_chip_click_cb(lv_event_t *e) {
+   (void)e;
+   if (any_overlay_visible()) return;
+   uint8_t cur = tab5_settings_get_voice_mode();
+   if (cur == VMODE_LOCAL_ONBOARD || cur == VMODE_SOLO_DIRECT) {
+      uint8_t next = (cur == VMODE_LOCAL_ONBOARD) ? VMODE_SOLO_DIRECT : VMODE_LOCAL_ONBOARD;
+      tab5_settings_set_voice_mode(next);
+      update_mode_ui(next);
+      ESP_LOGI(TAG, "mode pill: cycled %u -> %u", cur, next);
+      return;
+   }
+   /* Default: open the 3-dial mode-sheet (was the long-press UX). */
+   tab5_settings_set_mode_hint_seen(true);
+   extern void ui_mode_sheet_show(void);
+   ui_mode_sheet_show();
 }
 
 /* U24 (#206): set by now_card_long_press_cb when a long-press just

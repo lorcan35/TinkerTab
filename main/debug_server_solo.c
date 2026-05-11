@@ -120,13 +120,16 @@ static esp_err_t llm_test_handler(httpd_req_t *req) {
    size_t got = 0;
    while (got < total) {
       int n = httpd_req_recv(req, body + got, total - got);
-      if (n <= 0) { heap_caps_free(body); return ESP_FAIL; }
+      if (n <= 0) {
+         heap_caps_free(body);
+         return ESP_FAIL;
+      }
       got += (size_t)n;
    }
    body[got] = '\0';
 
    cJSON *root = cJSON_Parse(body);
-   heap_caps_free(body);  /* W1-A: release the PSRAM body buffer */
+   heap_caps_free(body); /* W1-A: release the PSRAM body buffer */
    cJSON *prompt = root ? cJSON_GetObjectItem(root, "prompt") : NULL;
    if (!cJSON_IsString(prompt)) {
       if (root) cJSON_Delete(root);
@@ -181,7 +184,10 @@ static esp_err_t rag_test_handler(httpd_req_t *req) {
    size_t got = 0;
    while (got < total) {
       int n = httpd_req_recv(req, body + got, total - got);
-      if (n <= 0) { heap_caps_free(body); return ESP_FAIL; }
+      if (n <= 0) {
+         heap_caps_free(body);
+         return ESP_FAIL;
+      }
       got += (size_t)n;
    }
    body[got] = '\0';

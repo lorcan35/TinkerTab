@@ -48,12 +48,12 @@ static const char *TAG = "settings";
 #define KEY_STAR_SKILLS "star_skills"
 /* TT #370 — OpenRouter (vmode=5 SOLO_DIRECT) NVS keys.  All ≤15 chars.
  * Empty `or_key` means solo mode is unconfigured. */
-#define KEY_OR_KEY     "or_key"
+#define KEY_OR_KEY "or_key"
 #define KEY_OR_MDL_LLM "or_mdl_llm"
 #define KEY_OR_MDL_STT "or_mdl_stt"
 #define KEY_OR_MDL_TTS "or_mdl_tts"
 #define KEY_OR_MDL_EMB "or_mdl_emb"
-#define KEY_OR_VOICE   "or_voice"
+#define KEY_OR_VOICE "or_voice"
 #define KEY_BRIGHTNESS  "brightness"
 #define KEY_VOLUME      "volume"
 #define KEY_DEVICE_ID   "device_id"
@@ -392,47 +392,27 @@ esp_err_t tab5_settings_set_dragon_api_token(const char *token) { return set_str
  * QR scan.  `~latest` aliases let users avoid string-tweak churn as
  * OpenRouter ships new model versions. */
 
-esp_err_t tab5_settings_get_or_key(char *buf, size_t len) {
-    return get_str(KEY_OR_KEY, buf, len, "");
-}
-esp_err_t tab5_settings_set_or_key(const char *key) {
-    return set_str(KEY_OR_KEY, key ? key : "");
-}
+esp_err_t tab5_settings_get_or_key(char *buf, size_t len) { return get_str(KEY_OR_KEY, buf, len, ""); }
+esp_err_t tab5_settings_set_or_key(const char *key) { return set_str(KEY_OR_KEY, key ? key : ""); }
 
 esp_err_t tab5_settings_get_or_mdl_llm(char *buf, size_t len) {
-    return get_str(KEY_OR_MDL_LLM, buf, len, "~anthropic/claude-haiku-latest");
+   return get_str(KEY_OR_MDL_LLM, buf, len, "~anthropic/claude-haiku-latest");
 }
-esp_err_t tab5_settings_set_or_mdl_llm(const char *model) {
-    return set_str(KEY_OR_MDL_LLM, model ? model : "");
-}
+esp_err_t tab5_settings_set_or_mdl_llm(const char *model) { return set_str(KEY_OR_MDL_LLM, model ? model : ""); }
 
-esp_err_t tab5_settings_get_or_mdl_stt(char *buf, size_t len) {
-    return get_str(KEY_OR_MDL_STT, buf, len, "whisper-1");
-}
-esp_err_t tab5_settings_set_or_mdl_stt(const char *model) {
-    return set_str(KEY_OR_MDL_STT, model ? model : "");
-}
+esp_err_t tab5_settings_get_or_mdl_stt(char *buf, size_t len) { return get_str(KEY_OR_MDL_STT, buf, len, "whisper-1"); }
+esp_err_t tab5_settings_set_or_mdl_stt(const char *model) { return set_str(KEY_OR_MDL_STT, model ? model : ""); }
 
-esp_err_t tab5_settings_get_or_mdl_tts(char *buf, size_t len) {
-    return get_str(KEY_OR_MDL_TTS, buf, len, "tts-1");
-}
-esp_err_t tab5_settings_set_or_mdl_tts(const char *model) {
-    return set_str(KEY_OR_MDL_TTS, model ? model : "");
-}
+esp_err_t tab5_settings_get_or_mdl_tts(char *buf, size_t len) { return get_str(KEY_OR_MDL_TTS, buf, len, "tts-1"); }
+esp_err_t tab5_settings_set_or_mdl_tts(const char *model) { return set_str(KEY_OR_MDL_TTS, model ? model : ""); }
 
 esp_err_t tab5_settings_get_or_mdl_emb(char *buf, size_t len) {
-    return get_str(KEY_OR_MDL_EMB, buf, len, "text-embedding-3-small");
+   return get_str(KEY_OR_MDL_EMB, buf, len, "text-embedding-3-small");
 }
-esp_err_t tab5_settings_set_or_mdl_emb(const char *model) {
-    return set_str(KEY_OR_MDL_EMB, model ? model : "");
-}
+esp_err_t tab5_settings_set_or_mdl_emb(const char *model) { return set_str(KEY_OR_MDL_EMB, model ? model : ""); }
 
-esp_err_t tab5_settings_get_or_voice(char *buf, size_t len) {
-    return get_str(KEY_OR_VOICE, buf, len, "alloy");
-}
-esp_err_t tab5_settings_set_or_voice(const char *voice) {
-    return set_str(KEY_OR_VOICE, voice ? voice : "");
-}
+esp_err_t tab5_settings_get_or_voice(char *buf, size_t len) { return get_str(KEY_OR_VOICE, buf, len, "alloy"); }
+esp_err_t tab5_settings_set_or_voice(const char *voice) { return set_str(KEY_OR_VOICE, voice ? voice : ""); }
 
 /* ── Display ──────────────────────────────────────────────────────────── */
 
@@ -480,9 +460,9 @@ esp_err_t tab5_settings_set_voice_mode(uint8_t mode)
 
 esp_err_t tab5_settings_get_llm_model(char *buf, size_t len)
 {
-    /* Refreshed 2026-05-10 — rolling-alias matches the cloud picker
-     * default and won't rot when Anthropic ships a new haiku rev. */
-    return get_str("llm_mdl", buf, len, "~anthropic/claude-haiku-latest");
+   /* Refreshed 2026-05-10 — rolling-alias matches the cloud picker
+    * default and won't rot when Anthropic ships a new haiku rev. */
+   return get_str("llm_mdl", buf, len, "~anthropic/claude-haiku-latest");
 }
 
 esp_err_t tab5_settings_set_llm_model(const char *model)
@@ -676,10 +656,10 @@ uint8_t tab5_mode_resolve(uint8_t int_tier, uint8_t voi_tier, uint8_t aut_tier,
 
     if (cloud_audio && cloud_llm) {
         if (out_model && model_len > 0) {
-            /* Refreshed 2026-05-10 — Sonnet 4.6 is the OpenRouter-valid
-             * mid-tier flagship; users can still pick any model via the
-             * Settings picker or POST /mode?model=... */
-            snprintf(out_model, model_len, "anthropic/claude-sonnet-4.6");
+           /* Refreshed 2026-05-10 — Sonnet 4.6 is the OpenRouter-valid
+            * mid-tier flagship; users can still pick any model via the
+            * Settings picker or POST /mode?model=... */
+           snprintf(out_model, model_len, "anthropic/claude-sonnet-4.6");
         }
         return 2; /* Full Cloud */
     }

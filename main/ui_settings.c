@@ -395,14 +395,14 @@ typedef struct {
    const char *model_id;    /* what we send to Dragon as llm_model */
 } cloud_model_spec_t;
 static const cloud_model_spec_t s_cloud_models[] = {
-    {"Opus 4.7",  "claude-opus-4.7",       "anthropic/claude-opus-4.7"},
-    {"Sonnet",    "claude-sonnet-4.6",     "anthropic/claude-sonnet-4.6"},
-    {"Haiku",     "claude-haiku-latest",   "~anthropic/claude-haiku-latest"},
-    {"GPT-5.5",   "gpt-5.5",               "openai/gpt-5.5"},
-    {"GPT-5.4 m", "gpt-5.4-mini",          "openai/gpt-5.4-mini"},
-    {"Gemini Pro", "gemini-pro-latest",    "~google/gemini-pro-latest"},
+    {"Opus 4.7", "claude-opus-4.7", "anthropic/claude-opus-4.7"},
+    {"Sonnet", "claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
+    {"Haiku", "claude-haiku-latest", "~anthropic/claude-haiku-latest"},
+    {"GPT-5.5", "gpt-5.5", "openai/gpt-5.5"},
+    {"GPT-5.4 m", "gpt-5.4-mini", "openai/gpt-5.4-mini"},
+    {"Gemini Pro", "gemini-pro-latest", "~google/gemini-pro-latest"},
     {"Gemini 3.1", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"},
-    {"Grok 4.3",  "grok-4.3",              "x-ai/grok-4.3"},
+    {"Grok 4.3", "grok-4.3", "x-ai/grok-4.3"},
 };
 #define CLOUD_MODEL_COUNT (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
 static lv_obj_t *s_model_chip[CLOUD_MODEL_COUNT] = {NULL};

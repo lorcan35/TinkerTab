@@ -15,9 +15,10 @@
  */
 #pragma once
 
-#include "esp_err.h"
 #include <stddef.h>
 #include <stdint.h>
+
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,21 +31,18 @@ typedef void (*openrouter_tts_chunk_cb_t)(const uint8_t *pcm, size_t len, void *
 /** STT — multipart upload of PCM-16LE @ 16 kHz mono.  Writes UTF-8
  *  transcript into out_text (caller-owned, NUL-terminated).  Returns
  *  ESP_FAIL on non-200, ESP_ERR_INVALID_STATE if or_key empty. */
-esp_err_t openrouter_stt(const int16_t *pcm, size_t samples,
-                         char *out_text, size_t out_cap);
+esp_err_t openrouter_stt(const int16_t *pcm, size_t samples, char *out_text, size_t out_cap);
 
 /** Streaming chat completion.  messages_json is a JSON-encoded array
  *  of {role, content} objects (caller owns the build).  cb fires per
  *  delta token; the final accumulated reply is the caller's
  *  responsibility to assemble (cb is incremental). */
-esp_err_t openrouter_chat_stream(const char *messages_json,
-                                 openrouter_chat_delta_cb_t cb, void *ctx);
+esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delta_cb_t cb, void *ctx);
 
 /** TTS.  Streams WAV bytes; the 44-byte RIFF header is consumed
  *  internally and PCM bytes flow to cb (PCM-16LE @ 24 kHz mono per
  *  the OpenAI tts-1 spec). */
-esp_err_t openrouter_tts(const char *text,
-                         openrouter_tts_chunk_cb_t cb, void *ctx);
+esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *ctx);
 
 /** Embeddings.  Returns a malloc'd float vector in PSRAM; caller
  *  frees with heap_caps_free.  *out_dim is set to the dimensionality. */

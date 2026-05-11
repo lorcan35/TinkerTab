@@ -70,15 +70,15 @@ static volatile bool s_cancel_requested = false;
  * up to SOLO_ACC_HARD_CAP — old fixed 8 KB silently truncated long
  * Opus replies mid-sentence both in the chat overlay AND the
  * persisted session. */
-#define SOLO_ACC_INITIAL_CAP  (8 * 1024)
-#define SOLO_ACC_HARD_CAP     (64 * 1024)
+#define SOLO_ACC_INITIAL_CAP (8 * 1024)
+#define SOLO_ACC_HARD_CAP (64 * 1024)
 #define SOLO_ACC_TRUNC_MARKER "\n\n[…truncated]"
 
 typedef struct {
    char *acc;
    size_t cap;
    size_t len;
-   bool   truncated;  /* set once the hard cap is hit + marker appended */
+   bool truncated; /* set once the hard cap is hit + marker appended */
 } solo_chat_acc_t;
 
 /* Grow the accumulator if `need_bytes` extra won't fit.  Doubles
@@ -154,7 +154,7 @@ static char *solo_build_messages_json(const char *user_text) {
 static void solo_send_text_job(void *arg) {
    char *text = arg;
    /* W1-D: s_busy already set by busy_take() in voice_solo_send_text. */
-   s_cancel_requested = false;  /* W1-C: clear from any prior cancel */
+   s_cancel_requested = false; /* W1-C: clear from any prior cancel */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
    tab5_debug_obs_event("solo.llm_start", "");
@@ -209,14 +209,14 @@ static void solo_send_text_job(void *arg) {
 
    voice_set_state(VOICE_STATE_READY, "solo");
    s_cancel_requested = false;
-   busy_release();  /* W1-D */
+   busy_release(); /* W1-D */
 }
 
 esp_err_t voice_solo_init(void) {
    if (s_initialized) return ESP_OK;
-   solo_session_init();   /* mkdir /sdcard/sessions, idempotent */
+   solo_session_init();        /* mkdir /sdcard/sessions, idempotent */
    solo_session_open(NULL, 0); /* warm the active sid from NVS */
-   solo_rag_init();       /* touch /sdcard/rag.bin, idempotent */
+   solo_rag_init();            /* touch /sdcard/rag.bin, idempotent */
    s_initialized = true;
    ESP_LOGI(TAG, "voice_solo_init OK");
    return ESP_OK;
@@ -263,8 +263,7 @@ static void solo_tts_chunk_cb(const uint8_t *bytes, size_t len, void *vctx) {
    size_t in_samples = len / sizeof(int16_t);
 
    size_t span = s_tts_carry_n + in_samples;
-   int16_t *buf = heap_caps_malloc(span * sizeof(int16_t),
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   int16_t *buf = heap_caps_malloc(span * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!buf) return;
    if (s_tts_carry_n) memcpy(buf, s_tts_carry, s_tts_carry_n * sizeof(int16_t));
    memcpy(buf + s_tts_carry_n, in, in_samples * sizeof(int16_t));
@@ -276,14 +275,13 @@ static void solo_tts_chunk_cb(const uint8_t *bytes, size_t len, void *vctx) {
       heap_caps_free(buf);
       return;
    }
-   int16_t *out = heap_caps_malloc(triples * 2 * sizeof(int16_t),
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   int16_t *out = heap_caps_malloc(triples * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!out) {
       heap_caps_free(buf);
       return;
    }
    for (size_t k = 0; k < triples; k++) {
-      out[2 * k]     = (buf[3 * k] + buf[3 * k + 1]) / 2;
+      out[2 * k] = (buf[3 * k] + buf[3 * k + 1]) / 2;
       out[2 * k + 1] = (buf[3 * k + 1] + buf[3 * k + 2]) / 2;
    }
    /* Stash leftover (≤2 samples). */
@@ -307,7 +305,7 @@ typedef struct {
 static void solo_send_audio_job(void *arg) {
    solo_audio_job_t *job = arg;
    /* W1-D: s_busy already set by busy_take() */
-   s_cancel_requested = false;  /* W1-C */
+   s_cancel_requested = false; /* W1-C */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
    tab5_debug_obs_event("solo.stt_start", "");
@@ -382,7 +380,7 @@ done:
    free(job);
    voice_set_state(VOICE_STATE_READY, "solo");
    s_cancel_requested = false;
-   busy_release();  /* W1-D */
+   busy_release(); /* W1-D */
 }
 
 esp_err_t voice_solo_send_audio(int16_t *pcm, size_t samples) {
@@ -422,6 +420,4 @@ void voice_solo_cancel(void) {
    ESP_LOGI(TAG, "voice_solo_cancel: flag set + inflight closed");
 }
 
-bool voice_solo_busy(void) {
-   return s_busy;
-}
+bool voice_solo_busy(void) { return s_busy; }

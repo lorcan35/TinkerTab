@@ -172,7 +172,7 @@ static void paint_header_and_view_for_mode(uint8_t mode)
        * wrong model name (often "claude-3.5-sonnet" — the cloud
        * default — when the solo path was actually using a different
        * model). */
-      if (mode == 5) {  /* VMODE_SOLO_DIRECT */
+      if (mode == 5) { /* VMODE_SOLO_DIRECT */
          tab5_settings_get_or_mdl_llm(llm, sizeof(llm));
       } else {
          const chat_session_t *cur = chat_store_active_session();
@@ -784,26 +784,26 @@ void ui_chat_refresh_spend(void) {
 /* Optional helper — legacy API kept for voice.c compatibility. */
 void ui_chat_add_message(const char *text, bool is_user)
 {
-    /* W1-E (TT #372): allow empty text for the assistant streaming
-     * placeholder — async_push_msg_cb's "no merge candidate" branch
-     * appends a fresh assistant bubble that may start empty and get
-     * filled in by ui_chat_update_last_message via streaming deltas.
-     * Old guard dropped the placeholder, which made the very next
-     * delta update overwrite the user bubble (assistant reply hidden). */
-    if (!text) return;
-    if (!*text && is_user) return;  /* still reject empty user bubbles */
-    chat_msg_t m = {0};
-    m.type = MSG_TEXT;
-    m.is_user = is_user;
-    m.timestamp = now_ts();
-    m.height_px = -1;
-    safe_copy(m.text, sizeof(m.text), text);
-    chat_store_add(&m);
-    suggestions_sync_visibility();
-    if (s_view) {
-        chat_msg_view_refresh(s_view);
-        chat_msg_view_scroll_to_bottom(s_view);
-    }
+   /* W1-E (TT #372): allow empty text for the assistant streaming
+    * placeholder — async_push_msg_cb's "no merge candidate" branch
+    * appends a fresh assistant bubble that may start empty and get
+    * filled in by ui_chat_update_last_message via streaming deltas.
+    * Old guard dropped the placeholder, which made the very next
+    * delta update overwrite the user bubble (assistant reply hidden). */
+   if (!text) return;
+   if (!*text && is_user) return; /* still reject empty user bubbles */
+   chat_msg_t m = {0};
+   m.type = MSG_TEXT;
+   m.is_user = is_user;
+   m.timestamp = now_ts();
+   m.height_px = -1;
+   safe_copy(m.text, sizeof(m.text), text);
+   chat_store_add(&m);
+   suggestions_sync_visibility();
+   if (s_view) {
+      chat_msg_view_refresh(s_view);
+      chat_msg_view_scroll_to_bottom(s_view);
+   }
 }
 
 /* ── Thread-safe async push from voice task ──────────────────── */
@@ -881,19 +881,24 @@ static void async_push_msg_cb(void *arg)
 
 void ui_chat_push_message(const char *role, const char *text)
 {
-    /* W1-E (TT #372): allow empty `text` ONLY for the streaming-placeholder
-     * pattern (assistant bubble pushed empty, then updated by deltas via
-     * ui_chat_update_last_message).  Old guard rejected empty unconditionally,
-     * so voice_solo's `ui_chat_push_message("assistant", "")` was silently
-     * dropped — the deltas then updated the previous (user) bubble, hiding
-     * the assistant reply entirely. */
-    if (!text) return;
-    if (!*text && (!role || strcmp(role, "assistant") != 0)) return;
-    push_msg_t *p = calloc(1, sizeof(*p));
-    if (!p) return;
-    p->role = strdup(role ? role : "assistant");
-    p->text = strdup(text);
-    if (!p->role || !p->text) { free(p->role); free(p->text); free(p); return; }
+   /* W1-E (TT #372): allow empty `text` ONLY for the streaming-placeholder
+    * pattern (assistant bubble pushed empty, then updated by deltas via
+    * ui_chat_update_last_message).  Old guard rejected empty unconditionally,
+    * so voice_solo's `ui_chat_push_message("assistant", "")` was silently
+    * dropped — the deltas then updated the previous (user) bubble, hiding
+    * the assistant reply entirely. */
+   if (!text) return;
+   if (!*text && (!role || strcmp(role, "assistant") != 0)) return;
+   push_msg_t *p = calloc(1, sizeof(*p));
+   if (!p) return;
+   p->role = strdup(role ? role : "assistant");
+   p->text = strdup(text);
+   if (!p->role || !p->text) {
+      free(p->role);
+      free(p->text);
+      free(p);
+      return;
+   }
     tab5_lv_async_call(async_push_msg_cb, p);
 }
 
@@ -1222,42 +1227,47 @@ static void async_update_last_cb(void *arg)
     if (!u) return;
     if (u->text) {
         if (*u->text) {
-            /* W1-E (TT #372): the streaming caller (voice_solo,
-             * Dragon path's poll_voice) wants the delta to land in the
-             * trailing ASSISTANT bubble.  But if the assistant
-             * placeholder push is still in the LVGL async queue when
-             * the first delta arrives, the absolute-last bubble is
-             * still the USER bubble — and we'd overwrite the user's
-             * own message with the LLM reply.  Walk back up to 4
-             * messages looking for a recent assistant MSG_TEXT.  If
-             * we find one, update it; otherwise append a fresh
-             * assistant bubble so the reply isn't lost. */
-            int idx = -1;
-            int total = chat_store_count();
-            for (int k = total - 1; k >= 0 && k >= total - 4; k--) {
-                const chat_msg_t *m = chat_store_get(k);
-                if (m && m->type == MSG_TEXT && !m->is_user) { idx = k; break; }
-                if (m && m->type == MSG_TEXT && m->is_user)   { break; }
-            }
-            if (idx >= 0) {
-                chat_msg_t *m = chat_store_get_mut(idx);
-                if (m) {
-                    safe_copy(m->text, sizeof(m->text), u->text);
-                    m->height_px = -1;
-                }
-                if (s_view) chat_msg_view_invalidate_index(s_view, idx);
-            } else {
-                /* No assistant bubble in recent history — append fresh
-                 * so the reply renders.  Bypasses ui_chat_add_message's
-                 * empty-guard since u->text is non-empty here. */
-                chat_msg_t m = {0};
-                m.type = MSG_TEXT;
-                m.is_user = false;
-                m.timestamp = now_ts();
-                m.height_px = -1;
-                safe_copy(m.text, sizeof(m.text), u->text);
-                chat_store_add(&m);
-            }
+           /* W1-E (TT #372): the streaming caller (voice_solo,
+            * Dragon path's poll_voice) wants the delta to land in the
+            * trailing ASSISTANT bubble.  But if the assistant
+            * placeholder push is still in the LVGL async queue when
+            * the first delta arrives, the absolute-last bubble is
+            * still the USER bubble — and we'd overwrite the user's
+            * own message with the LLM reply.  Walk back up to 4
+            * messages looking for a recent assistant MSG_TEXT.  If
+            * we find one, update it; otherwise append a fresh
+            * assistant bubble so the reply isn't lost. */
+           int idx = -1;
+           int total = chat_store_count();
+           for (int k = total - 1; k >= 0 && k >= total - 4; k--) {
+              const chat_msg_t *m = chat_store_get(k);
+              if (m && m->type == MSG_TEXT && !m->is_user) {
+                 idx = k;
+                 break;
+              }
+              if (m && m->type == MSG_TEXT && m->is_user) {
+                 break;
+              }
+           }
+           if (idx >= 0) {
+              chat_msg_t *m = chat_store_get_mut(idx);
+              if (m) {
+                 safe_copy(m->text, sizeof(m->text), u->text);
+                 m->height_px = -1;
+              }
+              if (s_view) chat_msg_view_invalidate_index(s_view, idx);
+           } else {
+              /* No assistant bubble in recent history — append fresh
+               * so the reply renders.  Bypasses ui_chat_add_message's
+               * empty-guard since u->text is non-empty here. */
+              chat_msg_t m = {0};
+              m.type = MSG_TEXT;
+              m.is_user = false;
+              m.timestamp = now_ts();
+              m.height_px = -1;
+              safe_copy(m.text, sizeof(m.text), u->text);
+              chat_store_add(&m);
+           }
         } else {
             /* Audit D6: Dragon stripped the whole response (pure code block
              * that was rendered as a JPEG media event). Remove the now-empty

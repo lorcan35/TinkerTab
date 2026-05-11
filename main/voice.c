@@ -1169,36 +1169,39 @@ void voice_lan_probe_task(void *arg)
          * reboot cluster we saw in the 30-min stability test — 9 SW
          * resets, each at zombie_rounds=6, while the WS stayed
          * connected throughout. */
-        if (false && !lan_ok && !ngrok_ok && !voice_is_connected()) {  /* SOLO-mode rescue 2026-05-09: disabled */
-            zombie_rounds++;
-            if (zombie_rounds >= ZOMBIE_REBOOT) {
-                ESP_LOGE(TAG, "Zombie Wi-Fi: %d rounds (~%d s) failed even "
-                              "after hard kick — controlled reboot",
-                         zombie_rounds, zombie_rounds * 30);
-                /* Give the log buffer a moment to flush before reboot. */
-                vTaskDelay(pdMS_TO_TICKS(100));
-                esp_restart();
-                /* unreachable */
-            } else if (zombie_rounds >= ZOMBIE_HARD) {
-                ESP_LOGW(TAG, "Zombie Wi-Fi: %d rounds — escalating to HARD kick "
-                              "(esp_wifi_stop/start)", zombie_rounds);
-                esp_err_t r = tab5_wifi_hard_kick();
-                if (r != ESP_OK) {
-                    ESP_LOGE(TAG, "Hard kick returned %s — next round reboots",
-                             esp_err_to_name(r));
-                }
-                /* Keep zombie_rounds ticking so the reboot fires if
-                 * the hard kick didn't recover.  Not reached when the
-                 * voice WS is alive — the outer check short-circuited
-                 * at the top of this block (see #159). */
-            } else if (zombie_rounds >= ZOMBIE_SOFT) {
-                ESP_LOGW(TAG, "Zombie Wi-Fi detected: both probes failed "
-                              "%d rounds in a row — soft kick (deauth+reconnect)",
-                         zombie_rounds);
-                tab5_wifi_kick();
-            }
+        if (false && !lan_ok && !ngrok_ok && !voice_is_connected()) { /* SOLO-mode rescue 2026-05-09: disabled */
+           zombie_rounds++;
+           if (zombie_rounds >= ZOMBIE_REBOOT) {
+              ESP_LOGE(TAG,
+                       "Zombie Wi-Fi: %d rounds (~%d s) failed even "
+                       "after hard kick — controlled reboot",
+                       zombie_rounds, zombie_rounds * 30);
+              /* Give the log buffer a moment to flush before reboot. */
+              vTaskDelay(pdMS_TO_TICKS(100));
+              esp_restart();
+              /* unreachable */
+           } else if (zombie_rounds >= ZOMBIE_HARD) {
+              ESP_LOGW(TAG,
+                       "Zombie Wi-Fi: %d rounds — escalating to HARD kick "
+                       "(esp_wifi_stop/start)",
+                       zombie_rounds);
+              esp_err_t r = tab5_wifi_hard_kick();
+              if (r != ESP_OK) {
+                 ESP_LOGE(TAG, "Hard kick returned %s — next round reboots", esp_err_to_name(r));
+              }
+              /* Keep zombie_rounds ticking so the reboot fires if
+               * the hard kick didn't recover.  Not reached when the
+               * voice WS is alive — the outer check short-circuited
+               * at the top of this block (see #159). */
+           } else if (zombie_rounds >= ZOMBIE_SOFT) {
+              ESP_LOGW(TAG,
+                       "Zombie Wi-Fi detected: both probes failed "
+                       "%d rounds in a row — soft kick (deauth+reconnect)",
+                       zombie_rounds);
+              tab5_wifi_kick();
+           }
         } else {
-            zombie_rounds = 0;
+           zombie_rounds = 0;
         }
 
         /* Auto-mode: if we're stuck on ngrok but LAN is reachable, swap back. */
@@ -1853,8 +1856,8 @@ esp_err_t voice_cancel(void)
      * + close the OpenRouter handle so the worker bails out before
      * persisting partial replies to the session log. */
     if (tab5_settings_get_voice_mode() == VMODE_SOLO_DIRECT) {
-        extern void voice_solo_cancel(void);
-        voice_solo_cancel();
+       extern void voice_solo_cancel(void);
+       voice_solo_cancel();
     }
 
     if (s_mic_running) {

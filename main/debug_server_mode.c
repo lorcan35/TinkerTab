@@ -37,7 +37,8 @@ static esp_err_t mode_set_handler(httpd_req_t *req) {
    char query[128] = {0};
    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
       cJSON *err = cJSON_CreateObject();
-      cJSON_AddStringToObject(err, "error", "use ?m=0|1|2|3|4|5&model=... (3=TinkerClaw, 4=K144 onboard, 5=Solo direct)");
+      cJSON_AddStringToObject(err, "error",
+                              "use ?m=0|1|2|3|4|5&model=... (3=TinkerClaw, 4=K144 onboard, 5=Solo direct)");
       return tab5_debug_send_json_resp(req, err);
    }
 

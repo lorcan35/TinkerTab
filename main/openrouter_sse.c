@@ -35,11 +35,9 @@ struct openrouter_sse_state {
 
 static const char *TAG = "or_sse";
 
-esp_err_t openrouter_sse_init(openrouter_sse_state_t **out,
-                              openrouter_sse_data_cb_t cb, void *ctx) {
+esp_err_t openrouter_sse_init(openrouter_sse_state_t **out, openrouter_sse_data_cb_t cb, void *ctx) {
    if (!out || !cb) return ESP_ERR_INVALID_ARG;
-   openrouter_sse_state_t *s =
-       heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   openrouter_sse_state_t *s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!s) return ESP_ERR_NO_MEM;
    s->line = heap_caps_malloc(LINE_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!s->line) {
@@ -64,8 +62,7 @@ static void emit_line(openrouter_sse_state_t *s) {
     * `retry:` lines exist in the spec but OpenRouter chat-completions
     * doesn't use them. */
    static const char kPrefix[] = "data:";
-   if (n < sizeof(kPrefix) - 1 ||
-       memcmp(s->line, kPrefix, sizeof(kPrefix) - 1) != 0) {
+   if (n < sizeof(kPrefix) - 1 || memcmp(s->line, kPrefix, sizeof(kPrefix) - 1) != 0) {
       return;
    }
    const char *p = s->line + sizeof(kPrefix) - 1;
@@ -98,8 +95,7 @@ bool openrouter_sse_feed(openrouter_sse_state_t *s, const char *buf, size_t len)
       } else if (s->line_len + 1 < LINE_BUF_BYTES) {
          s->line[s->line_len++] = c;
       } else {
-         ESP_LOGW(TAG, "SSE line overflow at %u bytes — dropping until next \\n",
-                  (unsigned)s->line_len);
+         ESP_LOGW(TAG, "SSE line overflow at %u bytes — dropping until next \\n", (unsigned)s->line_len);
          s->dropping = true;
          s->line_len = 0;
       }

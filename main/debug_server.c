@@ -62,7 +62,6 @@
 #include "debug_server_camera.h"
 #include "debug_server_chat.h"
 #include "debug_server_codec.h"
-#include "debug_server_solo.h"
 #include "debug_server_dictation.h"
 #include "debug_server_inject.h"
 #include "debug_server_input.h"
@@ -74,6 +73,7 @@
 #include "debug_server_obs.h"
 #include "debug_server_ota.h"
 #include "debug_server_settings.h"
+#include "debug_server_solo.h"
 #include "debug_server_voice.h"
 #include "debug_server_wifi.h"
 #include "widget.h" /* Audit C4 (#202): widget_store_evictions_total */

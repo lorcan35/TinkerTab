@@ -29,9 +29,9 @@
 #include "esp_random.h"
 #include "nvs.h"
 
-#define SESSIONS_DIR  "/sdcard/sessions"
+#define SESSIONS_DIR "/sdcard/sessions"
 #define NVS_NAMESPACE "settings"
-#define NVS_KEY       "solo_sid"
+#define NVS_KEY "solo_sid"
 
 static const char *TAG = "solo_sess";
 static char s_sid[33] = {0};

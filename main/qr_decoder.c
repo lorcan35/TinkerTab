@@ -41,8 +41,7 @@ esp_err_t qr_decoder_init(qr_decoder_t **out, int width, int height) {
    return ESP_OK;
 }
 
-esp_err_t qr_decoder_decode_frame(qr_decoder_t *d, const uint8_t *gray,
-                                   char *out_buf, size_t out_cap) {
+esp_err_t qr_decoder_decode_frame(qr_decoder_t *d, const uint8_t *gray, char *out_buf, size_t out_cap) {
    if (!d || !gray || !out_buf || out_cap < 2) return ESP_ERR_INVALID_ARG;
    int w, h;
    uint8_t *fb = quirc_begin(d->q, &w, &h);
@@ -56,9 +55,7 @@ esp_err_t qr_decoder_decode_frame(qr_decoder_t *d, const uint8_t *gray,
       quirc_extract(d->q, i, &code);
       quirc_decode_error_t err = quirc_decode(&code, &data);
       if (err == QUIRC_SUCCESS) {
-         size_t copy = data.payload_len < (int)(out_cap - 1)
-                           ? (size_t)data.payload_len
-                           : out_cap - 1;
+         size_t copy = data.payload_len < (int)(out_cap - 1) ? (size_t)data.payload_len : out_cap - 1;
          memcpy(out_buf, data.payload, copy);
          out_buf[copy] = '\0';
          return ESP_OK;

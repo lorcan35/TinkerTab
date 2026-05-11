@@ -14,9 +14,10 @@
  */
 #pragma once
 
-#include "esp_err.h"
 #include <stdbool.h>
 #include <stddef.h>
+
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,8 +27,7 @@ typedef void (*openrouter_sse_data_cb_t)(const char *json, size_t len, void *ctx
 
 typedef struct openrouter_sse_state openrouter_sse_state_t;
 
-esp_err_t openrouter_sse_init(openrouter_sse_state_t **out,
-                              openrouter_sse_data_cb_t cb, void *ctx);
+esp_err_t openrouter_sse_init(openrouter_sse_state_t **out, openrouter_sse_data_cb_t cb, void *ctx);
 
 /** Feed bytes; returns true if the [DONE] sentinel has been observed
  *  (cumulative across feeds). */

@@ -113,8 +113,7 @@ static esp_err_t write_full(esp_http_client_handle_t c, const char *body, size_t
    while (off < len) {
       int n = esp_http_client_write(c, body + off, len - off);
       if (n <= 0) {
-         ESP_LOGE(TAG, "write_full: short write at offset %u/%u (rc=%d)",
-                  (unsigned)off, (unsigned)len, n);
+         ESP_LOGE(TAG, "write_full: short write at offset %u/%u (rc=%d)", (unsigned)off, (unsigned)len, n);
          return ESP_FAIL;
       }
       off += (size_t)n;
@@ -152,15 +151,13 @@ static void log_health(const char *path, const char *phase) {
    size_t int_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
    if (int_largest < 32 * 1024) {
-      ESP_LOGW(TAG, "%s [%s] internal_free=%uB largest=%uB psram_free=%uMB "
-                    "(LOW — TLS handshake at risk)",
-               path, phase, (unsigned)int_free, (unsigned)int_largest,
-               (unsigned)(psram_free / (1024 * 1024)));
+      ESP_LOGW(TAG,
+               "%s [%s] internal_free=%uB largest=%uB psram_free=%uMB "
+               "(LOW — TLS handshake at risk)",
+               path, phase, (unsigned)int_free, (unsigned)int_largest, (unsigned)(psram_free / (1024 * 1024)));
    } else {
-      ESP_LOGI(TAG, "%s [%s] internal_free=%uKB largest=%uKB psram_free=%uMB",
-               path, phase, (unsigned)(int_free / 1024),
-               (unsigned)(int_largest / 1024),
-               (unsigned)(psram_free / (1024 * 1024)));
+      ESP_LOGI(TAG, "%s [%s] internal_free=%uKB largest=%uKB psram_free=%uMB", path, phase, (unsigned)(int_free / 1024),
+               (unsigned)(int_largest / 1024), (unsigned)(psram_free / (1024 * 1024)));
    }
 }
 
@@ -171,7 +168,7 @@ void openrouter_cancel_inflight(void) {
    esp_http_client_handle_t h = NULL;
    if (s_inflight_mtx) xSemaphoreTake(s_inflight_mtx, portMAX_DELAY);
    h = s_inflight;
-   s_inflight = NULL;  /* worker's "s_inflight = NULL" in cleanup is now a no-op */
+   s_inflight = NULL; /* worker's "s_inflight = NULL" in cleanup is now a no-op */
    if (s_inflight_mtx) xSemaphoreGive(s_inflight_mtx);
    if (h) {
       ESP_LOGW(TAG, "cancel_inflight — closing in-flight HTTP");
@@ -368,9 +365,8 @@ static void chat_sse_cb(const char *json, size_t len, void *vctx) {
        * Typical OpenRouter SSE deltas are <1 KB; outliers up to ~8 KB. */
       size_t newcap = c->parse_cap ? c->parse_cap : 1024;
       while (newcap < len + 1 && newcap < 16 * 1024) newcap *= 2;
-      if (newcap < len + 1) return;  /* one chunk > 16 KB — drop */
-      char *grown = heap_caps_realloc(c->parse_buf, newcap,
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (newcap < len + 1) return; /* one chunk > 16 KB — drop */
+      char *grown = heap_caps_realloc(c->parse_buf, newcap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
       if (!grown) return;
       c->parse_buf = grown;
       c->parse_cap = newcap;
@@ -444,12 +440,12 @@ retry:
    t_open = esp_timer_get_time();
    err = esp_http_client_open(c, body_len);
    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "/chat/completions open failed: %s (errno=%d) after %lldms (attempt %d)",
-               esp_err_to_name(err), errno,
-               (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
+      ESP_LOGE(TAG, "/chat/completions open failed: %s (errno=%d) after %lldms (attempt %d)", esp_err_to_name(err),
+               errno, (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
       if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
          ESP_LOGW(TAG, "/chat/completions transient connect failure — retry-once");
-         openrouter_sse_free(sse); sse = NULL;
+         openrouter_sse_free(sse);
+         sse = NULL;
          esp_http_client_close(c);
          esp_http_client_cleanup(c);
          inflight_set(NULL);
@@ -480,10 +476,9 @@ cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
    inflight_set(NULL);
-   if (cctx.parse_buf) heap_caps_free(cctx.parse_buf);  /* W3-B */
+   if (cctx.parse_buf) heap_caps_free(cctx.parse_buf); /* W3-B */
    free(body_str);
-   ESP_LOGI(TAG, "/chat/completions done rc=%s in %lldms (attempts=%d)",
-            esp_err_to_name(err),
+   ESP_LOGI(TAG, "/chat/completions done rc=%s in %lldms (attempts=%d)", esp_err_to_name(err),
             (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
    log_health("/chat/completions", "post");
    return err;
@@ -618,8 +613,7 @@ retry:
    t_open = esp_timer_get_time();
    err = esp_http_client_open(c, body_len);
    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "/embeddings open failed: %s (errno=%d) after %lldms (attempt %d)",
-               esp_err_to_name(err), errno,
+      ESP_LOGE(TAG, "/embeddings open failed: %s (errno=%d) after %lldms (attempt %d)", esp_err_to_name(err), errno,
                (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
       if (attempt == 1 && err == ESP_ERR_HTTP_CONNECT) {
          ESP_LOGW(TAG, "/embeddings transient connect failure — retry-once");
@@ -667,8 +661,7 @@ retry:
       cJSON *embedding = cJSON_GetObjectItem(cJSON_GetArrayItem(data, 0), "embedding");
       if (cJSON_IsArray(embedding)) {
          int dim = cJSON_GetArraySize(embedding);
-         float *v = heap_caps_malloc((size_t)dim * sizeof(float),
-                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+         float *v = heap_caps_malloc((size_t)dim * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
          if (v) {
             for (int i = 0; i < dim; i++) {
                cJSON *e = cJSON_GetArrayItem(embedding, i);
@@ -692,8 +685,7 @@ cleanup:
    esp_http_client_cleanup(c);
    inflight_set(NULL);
    free(body_str);
-   ESP_LOGI(TAG, "/embeddings done rc=%s in %lldms (attempts=%d)",
-            esp_err_to_name(err),
+   ESP_LOGI(TAG, "/embeddings done rc=%s in %lldms (attempts=%d)", esp_err_to_name(err),
             (long long)((esp_timer_get_time() - t_open) / 1000), attempt);
    log_health("/embeddings", "post");
    return err;

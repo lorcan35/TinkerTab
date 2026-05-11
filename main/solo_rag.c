@@ -16,18 +16,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>   /* ftruncate, fileno */
+#include <unistd.h> /* ftruncate, fileno */
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "openrouter_client.h"
 
-#define RAG_PATH      "/sdcard/rag.bin"
-#define RAG_MAGIC     0x76474152u /* 'RAGv' little-endian */
-#define RAG_TEXT_MAX  4095u       /* W1-B: matches reader buffer cap */
-#define NVS_NS        "settings"
-#define NVS_NEXT_ID   "rag_next_id"
+#define RAG_PATH "/sdcard/rag.bin"
+#define RAG_MAGIC 0x76474152u /* 'RAGv' little-endian */
+#define RAG_TEXT_MAX 4095u    /* W1-B: matches reader buffer cap */
+#define NVS_NS "settings"
+#define NVS_NEXT_ID "rag_next_id"
 
 static const char *TAG = "solo_rag";
 
@@ -55,9 +55,9 @@ static uint32_t scan_disk_max_fact_id(void) {
       if (fread(&magic, sizeof magic, 1, f) != 1) break;
       if (magic != RAG_MAGIC) break;
       if (fread(&fact_id, sizeof fact_id, 1, f) != 1) break;
-      if (fread(&ts,      sizeof ts,      1, f) != 1) break;
-      if (fread(&vd,      sizeof vd,      1, f) != 1) break;
-      if (fread(&tl,      sizeof tl,      1, f) != 1) break;
+      if (fread(&ts, sizeof ts, 1, f) != 1) break;
+      if (fread(&vd, sizeof vd, 1, f) != 1) break;
+      if (fread(&tl, sizeof tl, 1, f) != 1) break;
       if (fseek(f, (long)tl + (long)vd * (long)sizeof(float), SEEK_CUR) != 0) break;
       if (fact_id > max_id) max_id = fact_id;
    }
@@ -80,8 +80,7 @@ static uint32_t next_fact_id(void) {
          /* First-boot OR NVS slot missing — seed from disk max so we
           * resume above the highest existing fact_id. */
          id = scan_disk_max_fact_id() + 1;
-         ESP_LOGW(TAG, "next_fact_id: NVS slot missing — seeded from disk max → %lu",
-                  (unsigned long)id);
+         ESP_LOGW(TAG, "next_fact_id: NVS slot missing — seeded from disk max → %lu", (unsigned long)id);
       }
       nvs_set_u32(h, NVS_NEXT_ID, id + 1);
       nvs_commit(h);
@@ -90,8 +89,7 @@ static uint32_t next_fact_id(void) {
    }
    /* NVS open itself failed — scan disk every call.  Slower but correct. */
    id = scan_disk_max_fact_id() + 1;
-   ESP_LOGW(TAG, "next_fact_id: NVS unavailable — disk scan → %lu",
-            (unsigned long)id);
+   ESP_LOGW(TAG, "next_fact_id: NVS unavailable — disk scan → %lu", (unsigned long)id);
    return id;
 }
 
@@ -126,14 +124,10 @@ esp_err_t solo_rag_remember(const char *text, uint32_t *out_fact_id) {
     * just appended a corrupt record.  Truncate on first failure to
     * keep the file readable for the next boot. */
    long start_off = ftell(f);
-   bool ok =
-       fwrite(&magic,    sizeof magic,    1, f) == 1 &&
-       fwrite(&fact_id,  sizeof fact_id,  1, f) == 1 &&
-       fwrite(&ts,       sizeof ts,       1, f) == 1 &&
-       fwrite(&vec_dim,  sizeof vec_dim,  1, f) == 1 &&
-       fwrite(&text_len, sizeof text_len, 1, f) == 1 &&
-       fwrite(text,      1,        text_len, f) == text_len &&
-       fwrite(vec,       sizeof(float),  dim, f) == dim;
+   bool ok = fwrite(&magic, sizeof magic, 1, f) == 1 && fwrite(&fact_id, sizeof fact_id, 1, f) == 1 &&
+             fwrite(&ts, sizeof ts, 1, f) == 1 && fwrite(&vec_dim, sizeof vec_dim, 1, f) == 1 &&
+             fwrite(&text_len, sizeof text_len, 1, f) == 1 && fwrite(text, 1, text_len, f) == text_len &&
+             fwrite(vec, sizeof(float), dim, f) == dim;
    if (!ok) {
       ESP_LOGE(TAG, "remember: short write at offset %ld — truncating", start_off);
       fflush(f);
@@ -147,8 +141,8 @@ esp_err_t solo_rag_remember(const char *text, uint32_t *out_fact_id) {
    if (!ok) return ESP_FAIL;
 
    if (out_fact_id) *out_fact_id = fact_id;
-   ESP_LOGI(TAG, "remember fact_id=%lu (vec_dim=%u, text_len=%u)",
-            (unsigned long)fact_id, (unsigned)vec_dim, (unsigned)text_len);
+   ESP_LOGI(TAG, "remember fact_id=%lu (vec_dim=%u, text_len=%u)", (unsigned long)fact_id, (unsigned)vec_dim,
+            (unsigned)text_len);
    return ESP_OK;
 }
 
@@ -156,15 +150,14 @@ static float cosine(const float *a, const float *b, size_t n) {
    double dot = 0, na = 0, nb = 0;
    for (size_t i = 0; i < n; i++) {
       dot += (double)a[i] * (double)b[i];
-      na  += (double)a[i] * (double)a[i];
-      nb  += (double)b[i] * (double)b[i];
+      na += (double)a[i] * (double)a[i];
+      nb += (double)b[i] * (double)b[i];
    }
    if (na <= 0 || nb <= 0) return 0.0f;
    return (float)(dot / (sqrt(na) * sqrt(nb)));
 }
 
-esp_err_t solo_rag_recall(const char *query, int k,
-                          solo_rag_hit_t *hits, int *n_hits) {
+esp_err_t solo_rag_recall(const char *query, int k, solo_rag_hit_t *hits, int *n_hits) {
    if (!query || !hits || !n_hits || k <= 0) return ESP_ERR_INVALID_ARG;
    *n_hits = 0;
 
@@ -201,10 +194,8 @@ esp_err_t solo_rag_recall(const char *query, int k,
          ESP_LOGW(TAG, "bad magic at offset %ld — stopping scan", ftell(f) - 4);
          break;
       }
-      if (fread(&fact_id, sizeof fact_id, 1, f) != 1 ||
-          fread(&ts,      sizeof ts,      1, f) != 1 ||
-          fread(&vd,      sizeof vd,      1, f) != 1 ||
-          fread(&tl,      sizeof tl,      1, f) != 1) {
+      if (fread(&fact_id, sizeof fact_id, 1, f) != 1 || fread(&ts, sizeof ts, 1, f) != 1 ||
+          fread(&vd, sizeof vd, 1, f) != 1 || fread(&tl, sizeof tl, 1, f) != 1) {
          ESP_LOGW(TAG, "short header read — abandoning scan");
          break;
       }
@@ -214,8 +205,7 @@ esp_err_t solo_rag_recall(const char *query, int k,
          break;
       }
       text_buf[tl] = '\0';
-      float *vec = heap_caps_malloc((size_t)vd * sizeof(float),
-                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      float *vec = heap_caps_malloc((size_t)vd * sizeof(float), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
       if (!vec) break;
       if (fread(vec, sizeof(float), vd, f) != vd) {
          ESP_LOGW(TAG, "short vec read (wanted %u floats) — abandoning scan", (unsigned)vd);
@@ -229,8 +219,8 @@ esp_err_t solo_rag_recall(const char *query, int k,
           * visible without spamming on every recall. */
          static bool warned = false;
          if (!warned) {
-            ESP_LOGW(TAG, "skipping fact_id=%lu — dim %u != current %u (model changed?)",
-                     (unsigned long)fact_id, (unsigned)vd, (unsigned)qdim);
+            ESP_LOGW(TAG, "skipping fact_id=%lu — dim %u != current %u (model changed?)", (unsigned long)fact_id,
+                     (unsigned)vd, (unsigned)qdim);
             warned = true;
          }
          heap_caps_free(vec);
@@ -262,7 +252,7 @@ esp_err_t solo_rag_recall(const char *query, int k,
    }
    fclose(f);
    heap_caps_free(qvec);
-   heap_caps_free(text_buf);  /* W1-B */
+   heap_caps_free(text_buf); /* W1-B */
 
    /* Sort hits descending by score (small-N selection sort). */
    for (int i = 0; i < got - 1; i++) {
@@ -293,9 +283,9 @@ int solo_rag_count(void) {
       /* W1-B: check every fread; abandon on short read so a corrupt
        * record doesn't get counted. */
       if (fread(&fact_id, sizeof fact_id, 1, f) != 1) break;
-      if (fread(&ts,      sizeof ts,      1, f) != 1) break;
-      if (fread(&vd,      sizeof vd,      1, f) != 1) break;
-      if (fread(&tl,      sizeof tl,      1, f) != 1) break;
+      if (fread(&ts, sizeof ts, 1, f) != 1) break;
+      if (fread(&vd, sizeof vd, 1, f) != 1) break;
+      if (fread(&tl, sizeof tl, 1, f) != 1) break;
       if (fseek(f, (long)tl + (long)vd * (long)sizeof(float), SEEK_CUR) != 0) break;
       n++;
    }
