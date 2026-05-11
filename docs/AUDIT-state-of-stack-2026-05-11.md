@@ -1,5 +1,28 @@
 # Cross-stack state-of-the-stack audit — 2026-05-11
 
+## Wave program status — shipped to main (updated as PRs land)
+
+| Wave | Repo | PR | What |
+|---|---|---|---|
+| W1 | TinkerBox | #272 | protocol.md §19 numbering + #N→#124 |
+| W1 | TinkerTab | #382 | tree hygiene + this audit doc landed |
+| W2a | TinkerTab | #384 | SOLO audio playback chain (24→48 kHz upsample, speaker enable, backpressure) + STT prepend for real user transcript |
+| W2b | TinkerTab | #386 | re-enabled `voice.c:1172` zombie-Wi-Fi reboot escalation |
+| W3-A | TinkerBox | #274 | `VoiceMode.SOLO=5` added + `is_solo()` predicate + `config_swap` SOLO branch + 11 new tests |
+| W3-B | TinkerTab | #388 | Tab5 sends real vmode 4/5 in `config_update` (no more clamp-to-0) |
+| W3-C-a | TinkerBox | #276 | `POST /api/v1/sessions/{id}/messages` REST endpoint + 11 handler tests + CI gate |
+| W3-C-b | TinkerTab | #390 | Tab5 SOLO turns POST to Dragon canonical store via new `voice_messages_sync.{c,h}` module |
+| W3-C-c | TinkerTab | #392 | K144 turns (failover + autonomous chain) POST to Dragon canonical store |
+| W3-C-d | TinkerTab | #394 | SD offline queue (`/sdcard/msgsync.txt`, FAT 8.3) + drain on WS reconnect |
+
+**W7 placeholder:** TinkerBox #270 (mode 3 full surface, 7 sub-waves W7-0..G).  Decision logged 2026-05-11: Option C (full surface).
+
+**Remaining roadmap:** W4 turn_id (next) · W5 cost guard · W6 finish Wave 23 · W7 mode 3 sub-program · W8 UX polish · W9 test infra · W10 docs strategy.
+
+**Update this section when shipping new waves so the wave program survives session compaction.**
+
+---
+
 **Product naming (corrected 2026-05-11):**
 - **TinkerClaw** = the umbrella product brand. The Tab5 firmware connects to TinkerClaw running on Dragon hardware.
 - **TinkerTab** = the Tab5 firmware repo (the face).

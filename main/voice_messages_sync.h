@@ -22,13 +22,12 @@
  *
  * ## Failure mode
  *
- * If the HTTP POST fails (Dragon down, 5xx, network error), the
- * failure is logged at WARN level and the message is dropped.  An
- * SD-card offline queue + drain-on-WS-reconnect path is deferred to
- * W3-C-c (#TBD).  Dropping is acceptable for the v1 cohesion
- * payoff — the canonical store gains the turn whenever the network
- * is up, and the historical `solo_session_store` on SD still has
- * the full record locally.
+ * If the HTTP POST fails (Dragon down, 5xx, network error), W3-C-d
+ * appends the body to the SD-backed offline queue at
+ * `/sdcard/msg_queue.jsonl`.  When the Tab5 ↔ Dragon WS reconnects,
+ * voice_ws_proto.c calls `voice_messages_sync_drain()` which posts
+ * each queued entry in order.  Per-entry failures get re-queued so
+ * the file is durable across reboots + bounded outages.
  *
  * ## Concurrency
  *
@@ -55,3 +54,18 @@
  *         module copies all inputs.
  */
 esp_err_t voice_messages_sync_post(const char *role, const char *content, const char *input_mode);
+
+/* Drain the SD-backed offline queue.  Reads every entry in
+ * /sdcard/msg_queue.jsonl, attempts to POST each, and re-queues
+ * per-entry failures.  Runs on the shared task_worker.  Idempotent —
+ * back-to-back calls just enqueue duplicate drain jobs which run in
+ * sequence.
+ *
+ * Typical caller: voice_ws_proto.c on WEBSOCKET_EVENT_CONNECTED,
+ * AFTER the register frame so session_id has been confirmed.
+ *
+ * @return ESP_OK if a drain job was queued, ESP_ERR_NO_MEM if the
+ *         worker queue is full.  Empty queue is a cheap no-op, not
+ *         an error.
+ */
+esp_err_t voice_messages_sync_drain(void);
