@@ -34,6 +34,7 @@
 #include "voice.h"           /* g_voice_ws extern + voice_set_state */
 #include "voice_billing.h"   /* receipt + budget */
 #include "voice_codec.h"     /* VOICE_CODEC_OPUS_UPLINK_ENABLED */
+#include "voice_messages_sync.h" /* W3-C-d: drain offline queue on reconnect */
 #include "voice_onboard.h"   /* K144 failover hooks */
 #include "voice_video.h"     /* VID0 magic peek + downlink decode */
 #include "voice_widget_ws.h" /* widget_* WS dispatch */
@@ -1233,6 +1234,11 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
             ESP_LOGE(TAG, "WS: register send failed (%s)", esp_err_to_name(reg_err));
             /* Let auto-reconnect re-attempt. */
          }
+         /* W3-C-d (cross-stack cohesion audit 2026-05-11): drain any
+          * SOLO/K144 turns that were POSTed while Dragon was
+          * unreachable.  Best-effort — re-queues per-entry failures
+          * for the next reconnect cycle. */
+         voice_messages_sync_drain();
          /* Don't set READY yet — wait for Dragon's session_start reply so
           * we know the backend pipeline is fully up. Keep state CONNECTING
           * until session_start arrives (~6s model load on first boot). */
