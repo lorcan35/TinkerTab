@@ -28,6 +28,7 @@
 #include "ui_chat.h"
 #include "ui_home.h"
 #include "voice.h"
+#include "voice_messages_sync.h" /* W3-C-b: Dragon canonical message store */
 
 static const char *TAG = "voice_solo";
 
@@ -202,6 +203,11 @@ static void solo_send_text_job(void *arg) {
        * NUL-terminated by the delta callback. */
       solo_session_append("user", text);
       solo_session_append("assistant", acc.acc ? acc.acc : "");
+      /* W3-C-b (cross-stack cohesion audit 2026-05-11): also POST to
+       * Dragon's canonical messages DB so the dashboard's Conversations
+       * tab and cross-session memory search see the SOLO turn. */
+      voice_messages_sync_post("user", text, "text");
+      voice_messages_sync_post("assistant", acc.acc ? acc.acc : "", "text");
    }
 
    free(msgs_json);
@@ -384,6 +390,11 @@ static void solo_send_audio_job(void *arg) {
     * transcript or the "[voice input]" fallback. */
    solo_session_append("user", user_text);
    solo_session_append("assistant", acc.acc ? acc.acc : "");
+   /* W3-C-b (cross-stack cohesion audit 2026-05-11): also POST to
+    * Dragon's canonical messages DB.  input_mode=voice marks the
+    * audio path so the dashboard can filter by modality. */
+   voice_messages_sync_post("user", user_text, "voice");
+   voice_messages_sync_post("assistant", acc.acc ? acc.acc : "", "voice");
    heap_caps_free(acc.acc);
 
    /* Signal the playback drain task that no more audio is coming for
