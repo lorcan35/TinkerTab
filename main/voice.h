@@ -184,6 +184,13 @@ esp_err_t voice_clear_history(void);
 /** Send a text message to Dragon, bypassing STT (goes straight to LLM). */
 esp_err_t voice_send_text(const char *text);
 
+/** W4-A: return the current turn_id (12-hex-char string + null).  Set by
+ *  voice_start_listening / voice_start_dictation / voice_send_text on every
+ *  fresh turn.  Returns "-" before the first turn (never NULL).  Use to
+ *  stamp obs events + downstream HTTP bodies so a single turn is
+ *  traceable across Tab5 ↔ Dragon. */
+const char *voice_current_turn_id(void);
+
 /** Send a raw binary frame on the voice WS (#266: video frames + any
  *  future non-audio binary payload).  Internally calls the same
  *  esp_websocket_client_send_bin path as the mic uplink, with the same
