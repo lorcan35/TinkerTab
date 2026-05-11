@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio.h" /* tab5_audio_speaker_enable */
 #include "cJSON.h"
 #include "debug_obs.h"
 #include "esp_heap_caps.h"
@@ -243,54 +244,57 @@ esp_err_t voice_solo_send_text(const char *text) {
    return ESP_OK;
 }
 
-/* OpenRouter TTS-1 returns 24 kHz mono PCM; voice_playback_buf_write
- * expects the same rate the existing Dragon-TTS pipeline uses (16 kHz —
- * the playback drain task upsamples 1:3 to 48 kHz on output).  3:2
- * decimation with a 1-tap average across each pair gives a clean
- * downsample without a low-pass filter:
- *   out[2k]   = (in[3k]   + in[3k+1]) / 2
- *   out[2k+1] = (in[3k+1] + in[3k+2]) / 2
- *
- * Caller may feed odd-aligned chunks; we keep up to 2 leftover
- * samples in `s_tts_carry` for the next call. */
-static int16_t s_tts_carry[2];
-static size_t s_tts_carry_n;
+/* OpenRouter's audio models (gpt-4o-audio-preview, tts-1) return PCM-16LE
+ * at 24 kHz mono.  voice_playback_buf_write expects 48 kHz (the I2S codec
+ * native rate per bsp_config.h TAB5_AUDIO_SAMPLE_RATE).  The Dragon TTS
+ * path in voice_ws_proto.c upsamples 16→48 kHz before writing; ours has
+ * to upsample 24→48 kHz (1:2 ratio).  Linear interpolation with one
+ * boundary-carry sample so a chunk break doesn't produce a click. */
+static int16_t s_tts_carry;
+static bool s_tts_carry_valid;
 
 static void solo_tts_chunk_cb(const uint8_t *bytes, size_t len, void *vctx) {
    (void)vctx;
    if (!bytes || len < sizeof(int16_t)) return;
    const int16_t *in = (const int16_t *)bytes;
    size_t in_samples = len / sizeof(int16_t);
+   if (in_samples == 0) return;
 
-   size_t span = s_tts_carry_n + in_samples;
-   int16_t *buf = heap_caps_malloc(span * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!buf) return;
-   if (s_tts_carry_n) memcpy(buf, s_tts_carry, s_tts_carry_n * sizeof(int16_t));
-   memcpy(buf + s_tts_carry_n, in, in_samples * sizeof(int16_t));
+   size_t out_samples = in_samples * 2;
+   int16_t *out = heap_caps_malloc(out_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!out) return;
 
-   size_t triples = span / 3;
-   if (triples == 0) {
-      memcpy(s_tts_carry, buf, span * sizeof(int16_t));
-      s_tts_carry_n = span;
-      heap_caps_free(buf);
-      return;
+   /* Bridge the chunk boundary: if we have a previous carry, interpolate
+    * from carry → in[0] for the first output pair.  Otherwise just hold
+    * in[0] for the first half-step (silence until the next sample). */
+   int16_t prev = s_tts_carry_valid ? s_tts_carry : in[0];
+   for (size_t k = 0; k < in_samples; k++) {
+      int16_t curr = in[k];
+      out[2 * k] = (int16_t)(((int32_t)prev + (int32_t)curr) / 2);
+      out[2 * k + 1] = curr;
+      prev = curr;
    }
-   int16_t *out = heap_caps_malloc(triples * 2 * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!out) {
-      heap_caps_free(buf);
-      return;
+   s_tts_carry = in[in_samples - 1];
+   s_tts_carry_valid = true;
+
+   /* Backpressure: OpenRouter audio chunks are large (~24 K upsampled
+    * samples each = ~500 ms of 48 kHz audio).  voice_playback_buf_write
+    * is non-blocking — anything past the ring capacity is silently
+    * dropped, which sounds like dropouts in the playback.  Slice the
+    * upsampled chunk into ~1 K-sample writes and yield when the ring
+    * pushes back so the drain task can catch up. */
+   size_t off = 0;
+   while (off < out_samples) {
+      size_t slice = out_samples - off;
+      if (slice > 1024) slice = 1024;
+      size_t wrote = voice_playback_buf_write(out + off, slice);
+      off += wrote;
+      if (wrote < slice) {
+         /* Ring full — wait one playback frame (~21 ms at 48 kHz × 1 K)
+          * for the drain task to free space. */
+         vTaskDelay(pdMS_TO_TICKS(20));
+      }
    }
-   for (size_t k = 0; k < triples; k++) {
-      out[2 * k] = (buf[3 * k] + buf[3 * k + 1]) / 2;
-      out[2 * k + 1] = (buf[3 * k + 1] + buf[3 * k + 2]) / 2;
-   }
-   /* Stash leftover (≤2 samples). */
-   s_tts_carry_n = span - triples * 3;
-   if (s_tts_carry_n) {
-      memcpy(s_tts_carry, buf + triples * 3, s_tts_carry_n * sizeof(int16_t));
-   }
-   voice_playback_buf_write(out, triples * 2);
-   heap_caps_free(buf);
    heap_caps_free(out);
 }
 
@@ -302,12 +306,11 @@ typedef struct {
    size_t samples;
 } solo_audio_job_t;
 
-/* TT #379: single multimodal /chat/completions call.  Audio in → audio +
- * transcript out, streamed.  The assistant's transcript is the chat-overlay
- * text (acc); the audio chunks (PCM-16LE @ 24 kHz mono) flow through
- * solo_tts_chunk_cb into the playback ring.  Replaces the STT → LLM → TTS
- * triple-call chain — one round-trip instead of three, no separate
- * Whisper / TTS hops. */
+/* TT #379 + follow-up: audio path runs STT first to recover the user-side
+ * transcript (the multimodal model doesn't echo input back), then the
+ * single multimodal /chat/completions[audio] call for the assistant
+ * audio + transcript.  Two calls instead of three (was STT + LLM + TTS) —
+ * STT for the user bubble, chat_audio for everything else. */
 static void solo_send_audio_job(void *arg) {
    solo_audio_job_t *job = arg;
    /* W1-D: s_busy already set by busy_take() */
@@ -315,10 +318,30 @@ static void solo_send_audio_job(void *arg) {
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
 
-   /* Chat-overlay placeholder bubbles.  We don't have a separate user
-    * transcript (audio went in, no STT echo) — show "[voice input]"
-    * so the user-side of the turn is visible in the thread. */
-   ui_chat_push_message("user", "[voice input]");
+   /* Step 1 — STT to recover the user transcript.  Cheap (~2 s for a
+    * 4 s clip).  On failure, fall back to "[voice input]" placeholder
+    * so the user bubble is never blank. */
+   char user_text[1024] = {0};
+   tab5_debug_obs_event("solo.stt_start", "");
+   int64_t t0 = esp_timer_get_time();
+   esp_err_t err = openrouter_stt(job->pcm, job->samples, user_text, sizeof user_text);
+   int64_t dt = (esp_timer_get_time() - t0) / 1000;
+   char detail[48];
+   snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
+   tab5_debug_obs_event(err == ESP_OK ? "solo.stt_done" : "solo.error", detail);
+
+   if (s_cancel_requested) {
+      ESP_LOGI(TAG, "solo audio canceled after STT");
+      goto done_free_pcm;
+   }
+   if (err != ESP_OK || user_text[0] == '\0') {
+      /* Don't fail the whole turn — STT is just nice-to-have for the
+       * user bubble.  The multimodal call below still hears the audio. */
+      ESP_LOGW(TAG, "solo STT failed/empty — falling back to placeholder");
+      strncpy(user_text, "[voice input]", sizeof user_text - 1);
+   }
+
+   ui_chat_push_message("user", user_text);
    ui_chat_push_message("assistant", "");
 
    solo_chat_acc_t acc = {0};
@@ -328,41 +351,57 @@ static void solo_send_audio_job(void *arg) {
    /* Audio chunks start arriving during the same stream — flip state
     * to SPEAKING the moment we get the first one so the orb pulses. */
    voice_set_state(VOICE_STATE_SPEAKING, "solo");
-   s_tts_carry_n = 0; /* reset 24→16 downsample carry between turns */
+   s_tts_carry_valid = false; /* reset 24→48 upsample boundary between turns */
+   /* Power on the NS4150B speaker amp now so the first audio chunk
+    * lands on a live output.  The playback drain task disables it
+    * again once the ring empties + s_tts_done flips. */
+   tab5_audio_speaker_enable(true);
 
    tab5_debug_obs_event("solo.audio_start", "");
-   int64_t t0 = esp_timer_get_time();
-   esp_err_t err = ESP_FAIL;
+   t0 = esp_timer_get_time();
    if (acc.acc) {
       err = openrouter_chat_audio(job->pcm, job->samples, solo_tts_chunk_cb, solo_delta_cb, &acc);
    } else {
       err = ESP_ERR_NO_MEM;
    }
-   int64_t dt = (esp_timer_get_time() - t0) / 1000;
-   char detail[48];
+   dt = (esp_timer_get_time() - t0) / 1000;
    snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
-   heap_caps_free(job->pcm);
 
    if (s_cancel_requested) {
       tab5_debug_obs_event("solo.cancel", detail);
       ESP_LOGI(TAG, "solo audio canceled mid-stream — skipping session append");
       heap_caps_free(acc.acc);
-      goto done;
+      goto done_free_pcm;
    }
    tab5_debug_obs_event(err == ESP_OK ? "solo.audio_done" : "solo.error", detail);
    if (err != ESP_OK) {
       ui_home_show_toast("Solo audio chat failed");
       heap_caps_free(acc.acc);
-      goto done;
+      tab5_audio_speaker_enable(false); /* abort path — speaker off */
+      goto done_free_pcm;
    }
-   /* Persist the turn.  We have no STT transcript for the user side, so
-    * record it as "[voice input]" — the assistant transcript is the
-    * model's spoken reply. */
-   solo_session_append("user", "[voice input]");
+   /* Persist both sides of the turn.  user_text is either the real
+    * transcript or the "[voice input]" fallback. */
+   solo_session_append("user", user_text);
    solo_session_append("assistant", acc.acc ? acc.acc : "");
    heap_caps_free(acc.acc);
 
-done:
+   /* Signal the playback drain task that no more audio is coming for
+    * this turn.  It'll drain the ring, disable the speaker amp, and
+    * transition state back to READY itself.  We do NOT call
+    * voice_set_state(READY) below — the drain task owns that
+    * transition so we don't race it. */
+   s_tts_done = true;
+   /* Skip the unconditional READY transition at the bottom; drain
+    * task handles it.  Falls through to free pcm + release busy. */
+   heap_caps_free(job->pcm);
+   free(job);
+   s_cancel_requested = false;
+   busy_release(); /* W1-D */
+   return;
+
+done_free_pcm:
+   heap_caps_free(job->pcm);
    free(job);
    voice_set_state(VOICE_STATE_READY, "solo");
    s_cancel_requested = false;
