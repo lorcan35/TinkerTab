@@ -48,6 +48,20 @@ esp_err_t openrouter_tts(const char *text, openrouter_tts_chunk_cb_t cb, void *c
  *  frees with heap_caps_free.  *out_dim is set to the dimensionality. */
 esp_err_t openrouter_embed(const char *text, float **out_vec, size_t *out_dim);
 
+/** TT #379 — multimodal audio chat (audio in → audio + text out).
+ *
+ *  Single /chat/completions call against an audio-capable model
+ *  (openai/gpt-4o-audio-preview by default) that replaces the
+ *  STT → LLM → TTS chain.  Streams two interleaved callback types:
+ *    - audio_cb fires with decoded PCM-16LE chunks at 24 kHz mono
+ *      (caller upsamples to its playback rate)
+ *    - text_cb fires with assistant transcript deltas (same shape as
+ *      openrouter_chat_stream — feed into the chat-overlay accumulator)
+ *  Either callback may be NULL.  Returns ESP_OK on [DONE], ESP_FAIL on
+ *  non-200, ESP_ERR_INVALID_STATE if or_key empty. */
+esp_err_t openrouter_chat_audio(const int16_t *pcm, size_t samples, openrouter_tts_chunk_cb_t audio_cb,
+                                openrouter_chat_delta_cb_t text_cb, void *ctx);
+
 /** Abort any in-flight HTTP.  Safe from any task; idempotent. */
 void openrouter_cancel_inflight(void);
 

@@ -302,78 +302,64 @@ typedef struct {
    size_t samples;
 } solo_audio_job_t;
 
+/* TT #379: single multimodal /chat/completions call.  Audio in → audio +
+ * transcript out, streamed.  The assistant's transcript is the chat-overlay
+ * text (acc); the audio chunks (PCM-16LE @ 24 kHz mono) flow through
+ * solo_tts_chunk_cb into the playback ring.  Replaces the STT → LLM → TTS
+ * triple-call chain — one round-trip instead of three, no separate
+ * Whisper / TTS hops. */
 static void solo_send_audio_job(void *arg) {
    solo_audio_job_t *job = arg;
    /* W1-D: s_busy already set by busy_take() */
    s_cancel_requested = false; /* W1-C */
 
    voice_set_state(VOICE_STATE_PROCESSING, "solo");
-   tab5_debug_obs_event("solo.stt_start", "");
 
-   /* Step 1 — STT. */
-   char transcript[1024] = {0};
-   int64_t t0 = esp_timer_get_time();
-   esp_err_t err = openrouter_stt(job->pcm, job->samples, transcript, sizeof transcript);
-   int64_t dt = (esp_timer_get_time() - t0) / 1000;
-   char detail[48];
-   snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
-   tab5_debug_obs_event(err == ESP_OK ? "solo.stt_done" : "solo.error", detail);
-   heap_caps_free(job->pcm);
-   if (s_cancel_requested) {
-      ESP_LOGI(TAG, "solo audio canceled after STT");
-      goto done;
-   }
-   if (err != ESP_OK || transcript[0] == '\0') {
-      ui_home_show_toast("Solo STT failed");
-      goto done;
-   }
-
-   /* Step 2 — LLM streaming with chat-bubble updates. */
-   ui_chat_push_message("user", transcript);
+   /* Chat-overlay placeholder bubbles.  We don't have a separate user
+    * transcript (audio went in, no STT echo) — show "[voice input]"
+    * so the user-side of the turn is visible in the thread. */
+   ui_chat_push_message("user", "[voice input]");
    ui_chat_push_message("assistant", "");
 
    solo_chat_acc_t acc = {0};
    acc.cap = SOLO_ACC_INITIAL_CAP;
    acc.acc = heap_caps_calloc(1, acc.cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   char *msgs = solo_build_messages_json(transcript);
-   tab5_debug_obs_event("solo.llm_start", "");
-   t0 = esp_timer_get_time();
-   if (msgs && acc.acc) {
-      err = openrouter_chat_stream(msgs, solo_delta_cb, &acc);
+
+   /* Audio chunks start arriving during the same stream — flip state
+    * to SPEAKING the moment we get the first one so the orb pulses. */
+   voice_set_state(VOICE_STATE_SPEAKING, "solo");
+   s_tts_carry_n = 0; /* reset 24→16 downsample carry between turns */
+
+   tab5_debug_obs_event("solo.audio_start", "");
+   int64_t t0 = esp_timer_get_time();
+   esp_err_t err = ESP_FAIL;
+   if (acc.acc) {
+      err = openrouter_chat_audio(job->pcm, job->samples, solo_tts_chunk_cb, solo_delta_cb, &acc);
    } else {
       err = ESP_ERR_NO_MEM;
    }
-   dt = (esp_timer_get_time() - t0) / 1000;
+   int64_t dt = (esp_timer_get_time() - t0) / 1000;
+   char detail[48];
    snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
+   heap_caps_free(job->pcm);
+
    if (s_cancel_requested) {
       tab5_debug_obs_event("solo.cancel", detail);
-      ESP_LOGI(TAG, "solo audio canceled after LLM — skipping session append");
-      free(msgs);
+      ESP_LOGI(TAG, "solo audio canceled mid-stream — skipping session append");
       heap_caps_free(acc.acc);
       goto done;
    }
-   tab5_debug_obs_event(err == ESP_OK ? "solo.llm_done" : "solo.error", detail);
-   free(msgs);
+   tab5_debug_obs_event(err == ESP_OK ? "solo.audio_done" : "solo.error", detail);
    if (err != ESP_OK) {
-      ui_home_show_toast("Solo LLM failed");
+      ui_home_show_toast("Solo audio chat failed");
       heap_caps_free(acc.acc);
       goto done;
    }
-   /* Persist the user (transcript) + assistant turn now — even if
-    * TTS fails below, the session log is intact. */
-   solo_session_append("user", transcript);
+   /* Persist the turn.  We have no STT transcript for the user side, so
+    * record it as "[voice input]" — the assistant transcript is the
+    * model's spoken reply. */
+   solo_session_append("user", "[voice input]");
    solo_session_append("assistant", acc.acc ? acc.acc : "");
-
-   /* Step 3 — TTS the assistant text into the playback ring. */
-   voice_set_state(VOICE_STATE_SPEAKING, "solo");
-   tab5_debug_obs_event("solo.tts_start", "");
-   t0 = esp_timer_get_time();
-   /* Reset the 24→16 downsample carry between turns. */
-   s_tts_carry_n = 0;
-   err = openrouter_tts(acc.acc, solo_tts_chunk_cb, NULL);
-   dt = (esp_timer_get_time() - t0) / 1000;
-   snprintf(detail, sizeof detail, "ms=%lld", (long long)dt);
-   tab5_debug_obs_event(err == ESP_OK ? "solo.tts_done" : "solo.error", detail);
    heap_caps_free(acc.acc);
 
 done:

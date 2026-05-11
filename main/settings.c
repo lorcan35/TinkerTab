@@ -54,6 +54,9 @@ static const char *TAG = "settings";
 #define KEY_OR_MDL_TTS "or_mdl_tts"
 #define KEY_OR_MDL_EMB "or_mdl_emb"
 #define KEY_OR_VOICE "or_voice"
+/* TT #379 — multimodal audio chat model.  One /chat/completions call
+ * with audio in + audio+text out replaces the STT → LLM → TTS chain. */
+#define KEY_OR_MDL_AUD "or_mdl_aud"
 #define KEY_BRIGHTNESS  "brightness"
 #define KEY_VOLUME      "volume"
 #define KEY_DEVICE_ID   "device_id"
@@ -418,6 +421,14 @@ esp_err_t tab5_settings_set_or_mdl_emb(const char *model) { return set_str(KEY_O
 
 esp_err_t tab5_settings_get_or_voice(char *buf, size_t len) { return get_str(KEY_OR_VOICE, buf, len, "alloy"); }
 esp_err_t tab5_settings_set_or_voice(const char *voice) { return set_str(KEY_OR_VOICE, voice ? voice : ""); }
+
+/* TT #379: multimodal audio chat model.  openai/gpt-4o-audio-preview is
+ * the only audio-capable model currently exposed by OpenRouter that
+ * accepts input_audio AND returns audio output via /chat/completions. */
+esp_err_t tab5_settings_get_or_mdl_audio(char *buf, size_t len) {
+   return get_str(KEY_OR_MDL_AUD, buf, len, "openai/gpt-4o-audio-preview");
+}
+esp_err_t tab5_settings_set_or_mdl_audio(const char *model) { return set_str(KEY_OR_MDL_AUD, model ? model : ""); }
 
 /* ── Display ──────────────────────────────────────────────────────────── */
 

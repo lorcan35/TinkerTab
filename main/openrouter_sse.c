@@ -17,7 +17,12 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
-#define LINE_BUF_BYTES 4096
+/* TT #379: bumped 4 KB → 64 KB to fit multimodal audio chunks.  gpt-4o-audio-preview
+ * emits per-delta SSE events with base64-encoded PCM that runs ~24 KB per event;
+ * the 4 KB cap was correct for text-only chat but silently dropped every
+ * audio-bearing event in the multimodal stream.  Allocated in PSRAM so the
+ * internal-SRAM footprint is unchanged. */
+#define LINE_BUF_BYTES (64 * 1024)
 
 struct openrouter_sse_state {
    char *line;
