@@ -692,14 +692,12 @@ static void voice_tab_switch(uint8_t new_tab)
              : new_tab == 2 ? "cloud"
              : new_tab == 3 ? "tinkerclaw"
                             : "onboard");
-    /* TT #317 P5b: ONBOARD is Tab5-side-only — Dragon doesn't know about
-     * mode 4 and would error-revert via config_update.  send_voice_config
-     * downgrades to mode 0 in that case via the same path /mode does. */
-    if (new_tab != 4) {
-       send_voice_config();
-    } else if (voice_is_connected()) {
-       voice_send_config_update(0, NULL); /* keep Dragon on local STT/TTS */
-    }
+    /* W3-B (cross-stack cohesion audit 2026-05-11): pre-W3-A this
+     * branched mode 4 (ONBOARD) into a clamp-to-0 path because Dragon
+     * would error-revert on unknown vmode=4.  After W3-A (TinkerBox
+     * PR #274) Dragon recognises ONBOARD + SOLO cleanly via
+     * select_backends_for_mode; the clamp is no longer needed. */
+    send_voice_config();
 }
 
 /* Audit E3 (2026-04-20): tapping TinkerClaw from Settings used to hot-switch

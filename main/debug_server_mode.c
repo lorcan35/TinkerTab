@@ -61,16 +61,16 @@ static esp_err_t mode_set_handler(httpd_req_t *req) {
 
    ESP_LOGI("debug_mode", "Mode switch: voice_mode=%d, llm_model=%s", mode, model[0] ? model : "(unchanged)");
 
-   /* Send config_update to Dragon via voice WS — except for vmode=4
-    * (VMODE_LOCAL_ONBOARD) and vmode=5 (VMODE_SOLO_DIRECT) which are
-    * both Tab5-side-only tiers.  Dragon doesn't understand them and
-    * would ACK with an error that reverts our NVS write back to 0.
-    * When user picks one of those, tell Dragon we're still in
-    * "local" (mode=0) so its STT/TTS stay on local backends; Tab5
-    * then bypasses Dragon for the turn via voice_send_text. */
+   /* Send the real voice_mode to Dragon.  W3-B (cross-stack cohesion
+    * audit 2026-05-11): pre-W3-A Dragon's VoiceMode enum stopped at
+    * ONBOARD=4 and didn't know SOLO=5, so Tab5 used to clamp 4/5 to
+    * 0 here to avoid the "unknown voice_mode=N" downgrade warning.
+    * After W3-A (TinkerBox PR #274) Dragon recognises both 4 and 5
+    * cleanly; select_backends_for_mode applies LOCAL-shaped
+    * placeholders so STT/TTS stay sensible if the user flips back.
+    * Two codebases lying to each other is over. */
    if (voice_is_connected()) {
-      int dragon_mode = (mode >= 4) ? 0 : mode;
-      voice_send_config_update(dragon_mode, model[0] ? model : NULL);
+      voice_send_config_update(mode, model[0] ? model : NULL);
    }
 
    /* Refresh home screen mode badge (runs on LVGL thread) */
