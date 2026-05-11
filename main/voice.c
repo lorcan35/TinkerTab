@@ -1169,7 +1169,12 @@ void voice_lan_probe_task(void *arg)
          * reboot cluster we saw in the 30-min stability test — 9 SW
          * resets, each at zombie_rounds=6, while the WS stayed
          * connected throughout. */
-        if (false && !lan_ok && !ngrok_ok && !voice_is_connected()) { /* SOLO-mode rescue 2026-05-09: disabled */
+        /* W2b (TT #385, 2026-05-11): re-enabled.  The 2026-05-09 SOLO-mode
+         * rescue gated this off as belt-and-braces during the TT #370 wave;
+         * the false-positive class it was guarding against (zombie escalates
+         * while WS is healthy) is already excluded by the `!voice_is_connected()`
+         * clause below.  See AUDIT-state-of-stack-2026-05-11.md "Wave 2b". */
+        if (!lan_ok && !ngrok_ok && !voice_is_connected()) {
            zombie_rounds++;
            if (zombie_rounds >= ZOMBIE_REBOOT) {
               ESP_LOGE(TAG,
