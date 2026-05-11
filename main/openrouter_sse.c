@@ -23,6 +23,12 @@ struct openrouter_sse_state {
    char *line;
    size_t line_len;
    bool done;
+   /* W3-C (TT #374): once a line overflows the 4 KB buffer, drop every
+    * subsequent byte until we see the next \n.  Old code reset
+    * line_len=0 and started accumulating mid-line content as a fresh
+    * "new line" — leading to malformed-JSON parse attempts that
+    * occasionally emitted garbage deltas to the chat UI. */
+   bool dropping;
    openrouter_sse_data_cb_t cb;
    void *ctx;
 };
@@ -81,12 +87,20 @@ bool openrouter_sse_feed(openrouter_sse_state_t *s, const char *buf, size_t len)
    for (size_t i = 0; i < len; i++) {
       char c = buf[i];
       if (c == '\n') {
-         emit_line(s);
+         /* W3-C: emit only if we weren't dropping this line.  Either
+          * way the line is consumed — clear state and start fresh. */
+         if (!s->dropping) emit_line(s);
          s->line_len = 0;
+         s->dropping = false;
+      } else if (s->dropping) {
+         /* Already overflowed — skip silently until next \n */
+         continue;
       } else if (s->line_len + 1 < LINE_BUF_BYTES) {
          s->line[s->line_len++] = c;
       } else {
-         ESP_LOGW(TAG, "SSE line overflow at %u bytes — dropping", (unsigned)s->line_len);
+         ESP_LOGW(TAG, "SSE line overflow at %u bytes — dropping until next \\n",
+                  (unsigned)s->line_len);
+         s->dropping = true;
          s->line_len = 0;
       }
    }

@@ -42,15 +42,56 @@ esp_err_t solo_rag_init(void) {
    return ESP_OK;
 }
 
+/* W3-D (TT #374): scan the on-disk file for the highest fact_id.  Used
+ * as a fallback seed when NVS is unavailable so we never collide with
+ * an existing record. */
+static uint32_t scan_disk_max_fact_id(void) {
+   FILE *f = fopen(RAG_PATH, "rb");
+   if (!f) return 0;
+   uint32_t max_id = 0;
+   while (1) {
+      uint32_t magic, fact_id, ts;
+      uint16_t vd, tl;
+      if (fread(&magic, sizeof magic, 1, f) != 1) break;
+      if (magic != RAG_MAGIC) break;
+      if (fread(&fact_id, sizeof fact_id, 1, f) != 1) break;
+      if (fread(&ts,      sizeof ts,      1, f) != 1) break;
+      if (fread(&vd,      sizeof vd,      1, f) != 1) break;
+      if (fread(&tl,      sizeof tl,      1, f) != 1) break;
+      if (fseek(f, (long)tl + (long)vd * (long)sizeof(float), SEEK_CUR) != 0) break;
+      if (fact_id > max_id) max_id = fact_id;
+   }
+   fclose(f);
+   return max_id;
+}
+
+/* W3-D: monotonic id even if NVS open/get fails.  Old code defaulted
+ * to id=1 on failure — two distinct facts could end up with the same
+ * fact_id, breaking recall (returns wrong (fact_id, text) pair). */
 static uint32_t next_fact_id(void) {
    nvs_handle_t h;
-   uint32_t id = 1;
+   uint32_t id = 0;
+   bool from_nvs = false;
    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-      nvs_get_u32(h, NVS_NEXT_ID, &id);
+      if (nvs_get_u32(h, NVS_NEXT_ID, &id) == ESP_OK) {
+         from_nvs = true;
+      }
+      if (!from_nvs) {
+         /* First-boot OR NVS slot missing — seed from disk max so we
+          * resume above the highest existing fact_id. */
+         id = scan_disk_max_fact_id() + 1;
+         ESP_LOGW(TAG, "next_fact_id: NVS slot missing — seeded from disk max → %lu",
+                  (unsigned long)id);
+      }
       nvs_set_u32(h, NVS_NEXT_ID, id + 1);
       nvs_commit(h);
       nvs_close(h);
+      return id;
    }
+   /* NVS open itself failed — scan disk every call.  Slower but correct. */
+   id = scan_disk_max_fact_id() + 1;
+   ESP_LOGW(TAG, "next_fact_id: NVS unavailable — disk scan → %lu",
+            (unsigned long)id);
    return id;
 }
 

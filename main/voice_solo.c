@@ -66,19 +66,58 @@ static volatile bool s_cancel_requested = false;
 
 /* Single-flight accumulator — we never overlap two solo turns
  * (s_busy guards the entry path).  PSRAM-backed so a long reply
- * doesn't fragment internal SRAM. */
+ * doesn't fragment internal SRAM.  W3-A (TT #374): grows on demand
+ * up to SOLO_ACC_HARD_CAP — old fixed 8 KB silently truncated long
+ * Opus replies mid-sentence both in the chat overlay AND the
+ * persisted session. */
+#define SOLO_ACC_INITIAL_CAP  (8 * 1024)
+#define SOLO_ACC_HARD_CAP     (64 * 1024)
+#define SOLO_ACC_TRUNC_MARKER "\n\n[…truncated]"
+
 typedef struct {
    char *acc;
    size_t cap;
    size_t len;
+   bool   truncated;  /* set once the hard cap is hit + marker appended */
 } solo_chat_acc_t;
+
+/* Grow the accumulator if `need_bytes` extra won't fit.  Doubles
+ * capacity up to SOLO_ACC_HARD_CAP.  Returns true if the new bytes
+ * will fit, false if we've hit the hard cap (caller appends the
+ * truncation marker once). */
+static bool solo_acc_reserve(solo_chat_acc_t *a, size_t need_bytes) {
+   if (a->len + need_bytes + 1 < a->cap) return true;
+   if (a->cap >= SOLO_ACC_HARD_CAP) return false;
+   size_t newcap = a->cap ? a->cap * 2 : SOLO_ACC_INITIAL_CAP;
+   while (newcap < a->len + need_bytes + 1 && newcap < SOLO_ACC_HARD_CAP) {
+      newcap *= 2;
+   }
+   if (newcap > SOLO_ACC_HARD_CAP) newcap = SOLO_ACC_HARD_CAP;
+   char *grown = heap_caps_realloc(a->acc, newcap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!grown) return false;
+   a->acc = grown;
+   a->cap = newcap;
+   return a->len + need_bytes + 1 < a->cap;
+}
 
 static void solo_delta_cb(const char *delta, size_t n, void *vctx) {
    solo_chat_acc_t *a = vctx;
-   if (a->len + n + 1 < a->cap) {
+   if (solo_acc_reserve(a, n)) {
       memcpy(a->acc + a->len, delta, n);
       a->len += n;
       a->acc[a->len] = '\0';
+   } else if (!a->truncated) {
+      /* Hit the hard cap — append the marker exactly once and stop
+       * accumulating.  Visible to the user instead of a silent cutoff. */
+      const size_t mlen = strlen(SOLO_ACC_TRUNC_MARKER);
+      if (a->len + mlen + 1 < a->cap) {
+         memcpy(a->acc + a->len, SOLO_ACC_TRUNC_MARKER, mlen);
+         a->len += mlen;
+         a->acc[a->len] = '\0';
+      }
+      a->truncated = true;
+      ESP_LOGW(TAG, "solo reply hit hard cap %u — marker appended, further deltas dropped",
+               (unsigned)SOLO_ACC_HARD_CAP);
    }
    /* Stream into chat UI as deltas arrive.  ui_chat_update_last_message
     * replaces the trailing assistant bubble's text every chunk. */
@@ -128,8 +167,10 @@ static void solo_send_text_job(void *arg) {
     * to update_last_message into. */
    ui_chat_push_message("assistant", "");
 
+   /* W3-A: initial allocation; solo_acc_reserve grows on demand up to
+    * SOLO_ACC_HARD_CAP. */
    solo_chat_acc_t acc = {0};
-   acc.cap = 8192;
+   acc.cap = SOLO_ACC_INITIAL_CAP;
    acc.acc = heap_caps_calloc(1, acc.cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
 
    char *msgs_json = solo_build_messages_json(text);
@@ -294,7 +335,7 @@ static void solo_send_audio_job(void *arg) {
    ui_chat_push_message("assistant", "");
 
    solo_chat_acc_t acc = {0};
-   acc.cap = 8192;
+   acc.cap = SOLO_ACC_INITIAL_CAP;
    acc.acc = heap_caps_calloc(1, acc.cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    char *msgs = solo_build_messages_json(transcript);
    tab5_debug_obs_event("solo.llm_start", "");

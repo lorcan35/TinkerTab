@@ -318,18 +318,35 @@ cleanup:
    return err;
 }
 
+/* W3-B (TT #374): reuse one persistent parse buffer for the whole
+ * stream instead of malloc+free per delta.  Sonnet's 1112-delta replies
+ * meant 1112 PSRAM allocations in ~10 s, fragmenting the heap over
+ * many turns.  parse_buf grows on demand inside this stream's lifetime
+ * and is freed once when the stream ends. */
 typedef struct {
    openrouter_chat_delta_cb_t cb;
    void *cb_ctx;
+   char *parse_buf;
+   size_t parse_cap;
 } chat_stream_ctx_t;
 
 static void chat_sse_cb(const char *json, size_t len, void *vctx) {
    chat_stream_ctx_t *c = vctx;
-   char *copy = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!copy) return;
-   memcpy(copy, json, len);
-   copy[len] = '\0';
-   cJSON *root = cJSON_Parse(copy);
+   if (c->parse_cap < len + 1) {
+      /* Round up to next power-of-2 above (len+1), capped at 16 KB.
+       * Typical OpenRouter SSE deltas are <1 KB; outliers up to ~8 KB. */
+      size_t newcap = c->parse_cap ? c->parse_cap : 1024;
+      while (newcap < len + 1 && newcap < 16 * 1024) newcap *= 2;
+      if (newcap < len + 1) return;  /* one chunk > 16 KB — drop */
+      char *grown = heap_caps_realloc(c->parse_buf, newcap,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!grown) return;
+      c->parse_buf = grown;
+      c->parse_cap = newcap;
+   }
+   memcpy(c->parse_buf, json, len);
+   c->parse_buf[len] = '\0';
+   cJSON *root = cJSON_Parse(c->parse_buf);
    if (root) {
       cJSON *choices = cJSON_GetObjectItem(root, "choices");
       if (cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
@@ -341,7 +358,6 @@ static void chat_sse_cb(const char *json, size_t len, void *vctx) {
       }
       cJSON_Delete(root);
    }
-   heap_caps_free(copy);
 }
 
 esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delta_cb_t cb, void *ctx) {
@@ -374,7 +390,7 @@ esp_err_t openrouter_chat_stream(const char *messages_json, openrouter_chat_delt
    esp_err_t err = ESP_FAIL;
    esp_http_client_handle_t c = NULL;
    openrouter_sse_state_t *sse = NULL;
-   chat_stream_ctx_t cctx = {.cb = cb, .cb_ctx = ctx};
+   chat_stream_ctx_t cctx = {.cb = cb, .cb_ctx = ctx, .parse_buf = NULL, .parse_cap = 0};
    size_t body_len = strlen(body_str);
    int64_t t_open = 0;
 retry:
@@ -433,6 +449,7 @@ cleanup:
    esp_http_client_close(c);
    esp_http_client_cleanup(c);
    inflight_set(NULL);
+   if (cctx.parse_buf) heap_caps_free(cctx.parse_buf);  /* W3-B */
    free(body_str);
    ESP_LOGI(TAG, "/chat/completions done rc=%s in %lldms (attempts=%d)",
             esp_err_to_name(err),
