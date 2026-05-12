@@ -31,15 +31,16 @@
 #include "ui_core.h" /* tab5_lv_async_call */
 #include "ui_home.h"
 #include "ui_notes.h"
-#include "voice.h"           /* g_voice_ws extern + voice_set_state */
-#include "voice_billing.h"   /* receipt + budget */
-#include "voice_codec.h"     /* VOICE_CODEC_OPUS_UPLINK_ENABLED */
+#include "ui_notification.h"
+#include "voice.h"               /* g_voice_ws extern + voice_set_state */
+#include "voice_billing.h"       /* receipt + budget */
+#include "voice_codec.h"         /* VOICE_CODEC_OPUS_UPLINK_ENABLED */
 #include "voice_messages_sync.h" /* W3-C-d: drain offline queue on reconnect */
-#include "voice_onboard.h"   /* K144 failover hooks */
-#include "voice_video.h"     /* VID0 magic peek + downlink decode */
-#include "voice_widget_ws.h" /* widget_* WS dispatch */
-#include "widget.h"          /* widget_live_update / widget_live_dismiss */
-#include "wifi.h"            /* tab5_wifi_hard_kick / tab5_wifi_connected */
+#include "voice_onboard.h"       /* K144 failover hooks */
+#include "voice_video.h"         /* VID0 magic peek + downlink decode */
+#include "voice_widget_ws.h"     /* widget_* WS dispatch */
+#include "widget.h"              /* widget_live_update / widget_live_dismiss */
+#include "wifi.h"                /* tab5_wifi_hard_kick / tab5_wifi_connected */
 
 static const char *TAG = "tab5_voice_ws";
 
@@ -907,6 +908,59 @@ void voice_ws_proto_handle_text(const char *data, int len) {
        * dismiss doesn't hide the fact that they got auto-downgraded. */
       const char *msg = "Daily budget cap reached — switched to Local mode";
       voice_async_toast(strdup(msg));
+   } else if (strcmp(type_str, "channel_message") == 0) {
+      /* W7-E.1: route gateway-watched channel messages (Telegram,
+       * WhatsApp, Discord, ...) into the notification surface.  v0
+       * implements the toast path only; high-priority / now-card
+       * routing lands in W7-E.2. */
+      channel_message_t msg;
+      memset(&msg, 0, sizeof(msg));
+
+      cJSON *ch = cJSON_GetObjectItem(root, "channel");
+      if (cJSON_IsString(ch) && ch->valuestring) {
+         strncpy(msg.channel, ch->valuestring, sizeof(msg.channel) - 1);
+      }
+      cJSON *mid = cJSON_GetObjectItem(root, "message_id");
+      if (cJSON_IsString(mid) && mid->valuestring) {
+         strncpy(msg.message_id, mid->valuestring, sizeof(msg.message_id) - 1);
+      }
+      cJSON *tid = cJSON_GetObjectItem(root, "thread_id");
+      if (cJSON_IsString(tid) && tid->valuestring) {
+         strncpy(msg.thread_id, tid->valuestring, sizeof(msg.thread_id) - 1);
+      }
+      cJSON *sender = cJSON_GetObjectItem(root, "sender");
+      if (cJSON_IsObject(sender)) {
+         cJSON *dn = cJSON_GetObjectItem(sender, "display_name");
+         if (cJSON_IsString(dn) && dn->valuestring) {
+            strncpy(msg.sender, dn->valuestring, sizeof(msg.sender) - 1);
+         }
+         cJSON *starred = cJSON_GetObjectItem(sender, "starred");
+         msg.sender_starred = cJSON_IsTrue(starred);
+      }
+      /* Prefer `preview` (short) over `text` (full).  Fall back to
+       * text when preview is missing so a minimal injection still
+       * renders a useful toast. */
+      cJSON *preview = cJSON_GetObjectItem(root, "preview");
+      cJSON *text_full = cJSON_GetObjectItem(root, "text");
+      const char *preview_src = NULL;
+      if (cJSON_IsString(preview) && preview->valuestring && preview->valuestring[0]) {
+         preview_src = preview->valuestring;
+      } else if (cJSON_IsString(text_full) && text_full->valuestring) {
+         preview_src = text_full->valuestring;
+      }
+      if (preview_src) {
+         strncpy(msg.preview, preview_src, sizeof(msg.preview) - 1);
+      }
+      cJSON *pri = cJSON_GetObjectItem(root, "priority");
+      if (cJSON_IsString(pri) && pri->valuestring) {
+         strncpy(msg.priority, pri->valuestring, sizeof(msg.priority) - 1);
+      }
+      cJSON *needs = cJSON_GetObjectItem(root, "needs_reply");
+      msg.needs_reply = cJSON_IsTrue(needs);
+
+      ESP_LOGI(TAG, "channel_message: ch=%s sender=%s pri=%s preview=\"%.40s\"", msg.channel, msg.sender, msg.priority,
+               msg.preview);
+      ui_notification_show(&msg);
    } else if (strcmp(type_str, "config_update") == 0) {
       cJSON *error = cJSON_GetObjectItem(root, "error");
       if (cJSON_IsString(error) && error->valuestring[0]) {

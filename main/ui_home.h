@@ -36,9 +36,10 @@ void ui_home_show_toast(const char *text);
  *  baseline lifetime so the user has time to read.  Lifetimes are also
  *  scaled by message length (60 ms/char on top of the baseline). */
 typedef enum {
-   UI_TOAST_INFO = 0,  /* amber  — legacy default */
-   UI_TOAST_WARN = 1,  /* yellow — non-fatal degradation */
-   UI_TOAST_ERROR = 2, /* rose   — failure user must notice */
+   UI_TOAST_INFO = 0,     /* amber  — legacy default */
+   UI_TOAST_WARN = 1,     /* yellow — non-fatal degradation */
+   UI_TOAST_ERROR = 2,    /* rose   — failure user must notice */
+   UI_TOAST_INCOMING = 3, /* blue-violet — W7-E.1 channel_message arrival */
 } ui_toast_tone_t;
 
 /** Show a toast with a severity tone + auto-scaled lifetime.

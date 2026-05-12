@@ -1927,6 +1927,8 @@ static void screen_gesture_cb(lv_event_t *e)
 #define TOAST_LIFETIME_INFO_MS 2200
 #define TOAST_LIFETIME_WARN_MS 3500
 #define TOAST_LIFETIME_ERROR_MS 5000
+#define TOAST_LIFETIME_INCOMING_MS 3000 /* W7-E.1 — slightly longer than INFO so sender + preview both register */
+#define TOAST_BORDER_INCOMING 0x6B5BFF  /* W7-E.1 — blue-violet per PLAN §4.1 */
 #define TOAST_LIFETIME_PER_CHAR_MS 60
 #define TOAST_LIFETIME_CAP_MS 8000
 #define TOAST_FRAME_MS 16 /* ~60 fps */
@@ -1942,6 +1944,7 @@ static uint32_t toast_lifetime_for(ui_toast_tone_t tone, const char *text) {
    uint32_t base = TOAST_LIFETIME_INFO_MS;
    if (tone == UI_TOAST_WARN) base = TOAST_LIFETIME_WARN_MS;
    if (tone == UI_TOAST_ERROR) base = TOAST_LIFETIME_ERROR_MS;
+   if (tone == UI_TOAST_INCOMING) base = TOAST_LIFETIME_INCOMING_MS;
    uint32_t scale = text ? (uint32_t)strlen(text) * TOAST_LIFETIME_PER_CHAR_MS : 0;
    uint32_t total = base + scale;
    if (total > TOAST_LIFETIME_CAP_MS) total = TOAST_LIFETIME_CAP_MS;
@@ -1949,9 +1952,10 @@ static uint32_t toast_lifetime_for(ui_toast_tone_t tone, const char *text) {
 }
 
 static uint32_t toast_border_for(ui_toast_tone_t tone) {
-   if (tone == UI_TOAST_WARN) return TH_MODE_HYBRID; /* yellow */
-   if (tone == UI_TOAST_ERROR) return TH_STATUS_RED; /* rose-red */
-   return TH_CARD_BORDER;                            /* legacy subtle */
+   if (tone == UI_TOAST_WARN) return TH_MODE_HYBRID;            /* yellow */
+   if (tone == UI_TOAST_ERROR) return TH_STATUS_RED;            /* rose-red */
+   if (tone == UI_TOAST_INCOMING) return TOAST_BORDER_INCOMING; /* W7-E.1 blue-violet */
+   return TH_CARD_BORDER;                                       /* legacy subtle */
 }
 
 /* Track the currently-displayed toast so a back-to-back show_toast can
@@ -2043,6 +2047,7 @@ static void show_toast_internal_tone(const char *text, ui_toast_tone_t tone) {
     * 2 px border in the matching mode-tone hue so they stand out without
     * the full toast bg getting tinted (keeps text contrast unchanged). */
    uint32_t border = toast_border_for(tone);
+   /* W7-E.1 — INCOMING falls into the "not INFO" branch, gets the 2 px border. */
    int bw = (tone == UI_TOAST_INFO) ? 1 : 2;
    lv_obj_set_style_border_width(t, bw, 0);
    lv_obj_set_style_border_color(t, lv_color_hex(border), 0);
