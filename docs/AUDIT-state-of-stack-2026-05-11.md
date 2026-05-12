@@ -23,10 +23,13 @@
 | W9-A (3/N) | TinkerTab | #413 | `test_spring_anim.c` (9 tests / 18 assertions) — damped harmonic oscillator math.  Pins each of the 3 regime branches (under/critical/over), the SPRING_MAX_ELAPSED_S pathological-config bail-out, the zero-mass clamp, and SNAPPY/BOUNCY/SMOOTH preset envelopes.  **Closes #412** |
 | W9-B | TinkerTab | #415 | `tests/e2e/discover.py` — Tab5 host discovery chain (arg → env → mDNS espressif.local → cache → fail).  Replaces hardcoded `192.168.1.90` in `runner.py`.  New `tests/e2e/nightly.sh` cron-deployable wrapper for `story_stress --reboot`.  Live-verified: 14/14 PASS through new discovery wiring.  **Closes #414** |
 | W9-C | TinkerBox | #289 | `tests/test_protocol_contract.py` — 4 tests pinning bidirectional parity between `_handle_ws_voice` cmd_type branches and `docs/protocol.md` Tab5→Dragon headings.  Tolerant of ASCII `->` + Unicode `→` arrows and `Action — \`verb\`` heading style.  Allowlist self-test rejects stale entries.  Wired into ci.yml pytest gate.  **Closes TinkerBox #288** |
+| W9-D | TinkerTab | #418 | `story_resilience` e2e scenario — 13 steps exercising voice.c's WS reconnect path: `/voice/reconnect` → `ws.connect` event → READY return → session_id preservation → post-reconnect chat → LLM completion → state-machine sanity.  Live-verified: 13/13 PASS in 128 s on Tab5 192.168.1.90.  **Closes #417** |
 
 **W7 placeholder:** TinkerBox #270 (mode 3 full surface, 7 sub-waves W7-0..G).  Decision logged 2026-05-11: Option C (full surface).
 
-**Remaining roadmap:** W9-A more slices (heavier modules need cJSON / NVS / SD shims) · W9-D Dragon-restart resilience · W10 docs strategy.
+**Wave 9 fully closed** — W9-A (host-test infra), W9-B (discovery + nightly), W9-C (protocol contract), W9-D (resilience) all merged.  Further W9-A slices (solo_session_store, solo_rag) deferred — they need cJSON / NVS / SD shims; ROI bar not met yet.
+
+**Remaining roadmap:** W10 docs strategy.
 
 **Update this section when shipping new waves so the wave program survives session compaction.**
 
