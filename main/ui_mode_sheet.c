@@ -5,16 +5,17 @@
  */
 #include "ui_mode_sheet.h"
 
-#include "settings.h"
-#include "voice.h"
-#include "ui_theme.h"
-#include "config.h"
-
-#include "esp_log.h"
-#include "lvgl.h"
-
 #include <stdio.h>
 #include <string.h>
+
+#include "config.h"
+#include "esp_log.h"
+#include "lvgl.h"
+#include "settings.h"
+#include "ui_core.h" /* W8: tab5_ui_try_lock / tab5_ui_unlock for or_key gate toast */
+#include "ui_home.h" /* W8: ui_home_show_toast */
+#include "ui_theme.h"
+#include "voice.h"
 
 static const char *TAG = "ui_mode_sheet";
 
@@ -293,15 +294,17 @@ void ui_mode_sheet_show(void)
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
         /* TT #328 Wave 9 follow-up — Onboard added as a 5th preset.
-         * vmode=4 (K144) doesn't fit the int/voi/aut dial taxonomy
-         * (it's an entirely different runtime — on-device chip, no
-         * Dragon involvement); preset_click_cb's case 4 takes a
-         * direct-write path that bypasses tab5_mode_resolve.  Closes
-         * the "K144 unreachable from mode-sheet" half of audit P0 #10. */
+         * W8 (cross-stack audit 2026-05-11) — Solo added as a 6th preset
+         * to close the "SOLO_DIRECT not discoverable from the mode sheet"
+         * UX gap.  Both vmode=4 (K144) and vmode=5 (SOLO_DIRECT) bypass
+         * the int/voi/aut dial taxonomy because they aren't shaped by
+         * Dragon-side capability tiers — each is its own runtime.
+         * preset_click_cb's case 4 / case 5 take direct-write paths
+         * that bypass tab5_mode_resolve. */
         const int gap = 8;
-        const int chip_count = 5;
+        const int chip_count = 6;
         const int chip_w = ((MS_W - 2 * SIDE_PAD) - gap * (chip_count - 1)) / chip_count;
-        const char *labels[5] = {"Local", "Hybrid", "Cloud", "Agent", "Onboard"};
+        const char *labels[6] = {"Local", "Hybrid", "Cloud", "Agent", "Onboard", "Solo"};
         extern void preset_click_cb(lv_event_t *e);
         for (int c = 0; c < chip_count; c++) {
             lv_obj_t *chip = lv_obj_create(row);
@@ -540,6 +543,32 @@ void preset_click_cb(lv_event_t *e)
            tab5_settings_get_llm_model(model, sizeof(model));
            voice_send_config_update(VOICE_MODE_ONBOARD, model);
            ESP_LOGI(TAG, "Onboard preset -> voice_mode=%d (K144)", VOICE_MODE_ONBOARD);
+           ui_mode_sheet_hide();
+           return;
+        case 5: /* Solo — W8 (cross-stack audit 2026-05-11): closes the
+                 * "SOLO_DIRECT only reachable via /mode debug or chip
+                 * cycling" discoverability gap.  Direct vmode=5 write;
+                 * Dragon sees it as a real mode after W3-A/B but
+                 * idle-pipelines because Tab5 goes direct to OpenRouter
+                 * for the audio path.  If the OpenRouter key isn't
+                 * provisioned, surface a hint instead of silently
+                 * switching to a non-functional mode. */
+        {
+           char or_key[96] = {0};
+           tab5_settings_get_or_key(or_key, sizeof or_key);
+           if (or_key[0] == '\0') {
+              if (tab5_ui_try_lock(150)) {
+                 ui_home_show_toast("Scan QR to set OpenRouter key first");
+                 tab5_ui_unlock();
+              }
+              return;
+           }
+           tab5_settings_set_voice_mode(VOICE_MODE_SOLO);
+           char model2[64] = {0};
+           tab5_settings_get_llm_model(model2, sizeof(model2));
+           voice_send_config_update(VOICE_MODE_SOLO, model2);
+           ESP_LOGI(TAG, "Solo preset -> voice_mode=%d (OpenRouter direct)", VOICE_MODE_SOLO);
+        }
            ui_mode_sheet_hide();
            return;
         default: return;
