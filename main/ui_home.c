@@ -34,6 +34,7 @@
 
 #include "battery.h"
 #include "config.h"
+#include "debug_obs.h" /* W7-E.2: ui.notif.now obs events */
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -148,6 +149,8 @@ static lv_obj_t *s_now_card        = NULL;
 static lv_obj_t *s_now_accent      = NULL;  /* 140×3 amber bar top-left */
 static lv_obj_t *s_now_kicker      = NULL;
 static lv_obj_t *s_now_lede = NULL;
+/* W7-E.2: channel-message now-card overlay (lives on lv_layer_top). */
+static lv_obj_t *s_channel_card = NULL;
 /* TT #69 — icon slot top-right of the live card.  Container only;
  * `widget_icons_render` materialises the canvas + draws the
  * primitives inside on every refresh.  We track which icon id is
@@ -2097,6 +2100,12 @@ void ui_home_destroy(void)
     }
     s_dot_size_current = 0.0f;
     s_dot_first_paint = true;
+    /* W7-E.2: tear down any in-flight channel-now overlay so its
+     * obj on lv_layer_top doesn't outlive the home screen. */
+    if (s_channel_card) {
+       lv_obj_del(s_channel_card);
+       s_channel_card = NULL;
+    }
     if (s_screen) { lv_obj_del(s_screen); s_screen = NULL; }
     s_sys_dot = s_sys_label = s_time_label = NULL;
     s_halo_outer = s_halo_inner = NULL;
@@ -2343,6 +2352,116 @@ void ui_home_show_error_banner(const char *text, ui_banner_dismiss_cb_t dismiss_
 }
 
 void ui_home_clear_error_banner(void) { err_banner_destroy(); }
+
+/* ── W7-E.2: channel-message now-card overlay ─────────────────────── */
+/* s_channel_card is declared at file scope near the other now-card statics. */
+
+static void channel_card_destroy(void) {
+   if (s_channel_card) {
+      lv_obj_del(s_channel_card);
+      s_channel_card = NULL;
+   }
+}
+
+static void channel_card_dismiss_cb(lv_event_t *e) {
+   (void)e;
+   tab5_debug_obs_event("ui.notif.now", "dismiss");
+   channel_card_destroy();
+}
+
+static void channel_card_reply_cb(lv_event_t *e) {
+   (void)e;
+   tab5_debug_obs_event("ui.notif.now", "reply_stub");
+   channel_card_destroy();
+   show_toast_internal_tone("Reply flow coming in W7-E.4", UI_TOAST_INFO);
+}
+
+static void channel_card_snooze_cb(lv_event_t *e) {
+   (void)e;
+   tab5_debug_obs_event("ui.notif.now", "snooze_stub");
+   channel_card_destroy();
+   show_toast_internal_tone("Snooze coming in W7-E.3", UI_TOAST_INFO);
+}
+
+/* Build one of the three action pills on the card.  Returns the pill obj. */
+static lv_obj_t *channel_card_make_button(lv_obj_t *parent, int x, int y, int w, const char *text, lv_event_cb_t cb) {
+   lv_obj_t *btn = lv_obj_create(parent);
+   lv_obj_remove_style_all(btn);
+   lv_obj_set_size(btn, w, 48);
+   lv_obj_set_pos(btn, x, y);
+   lv_obj_set_style_bg_color(btn, lv_color_hex(TH_CARD), 0);
+   lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(btn, 24, 0);
+   lv_obj_set_style_border_width(btn, 1, 0);
+   lv_obj_set_style_border_color(btn, lv_color_hex(TH_MODE_CLAW), 0);
+   lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+
+   lv_obj_t *lbl = lv_label_create(btn);
+   lv_label_set_text(lbl, text);
+   lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_set_style_text_letter_space(lbl, 2, 0);
+   lv_obj_center(lbl);
+   return btn;
+}
+
+void ui_home_show_channel_now(const char *channel, const char *sender, const char *preview) {
+   /* Replace any in-flight now-card.  W7-E.3 will stack into a queue
+    * with a "1 more" badge; v0 just replaces. */
+   channel_card_destroy();
+
+   const char *ch_safe = (channel && channel[0]) ? channel : "?";
+   const char *sender_safe = (sender && sender[0]) ? sender : "Someone";
+   const char *preview_safe = (preview && preview[0]) ? preview : "(no preview)";
+
+   /* Card: 640 × 260, centered, rose border per PLAN §4.1. */
+   lv_obj_t *c = lv_obj_create(lv_layer_top());
+   lv_obj_remove_style_all(c);
+   lv_obj_set_size(c, 640, 260);
+   lv_obj_align(c, LV_ALIGN_CENTER, 0, -120);
+   lv_obj_set_style_bg_color(c, lv_color_hex(TH_CARD_ELEVATED), 0);
+   lv_obj_set_style_bg_opa(c, 245, 0);
+   lv_obj_set_style_radius(c, 24, 0);
+   lv_obj_set_style_border_width(c, 2, 0);
+   lv_obj_set_style_border_color(c, lv_color_hex(TH_MODE_CLAW), 0);
+   lv_obj_set_style_pad_all(c, 22, 0);
+   lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+
+   /* Kicker row: [ch]  sender */
+   char kicker[96];
+   snprintf(kicker, sizeof(kicker), "[%.12s]  %.60s", ch_safe, sender_safe);
+   lv_obj_t *kick = lv_label_create(c);
+   lv_label_set_text(kick, kicker);
+   lv_label_set_long_mode(kick, LV_LABEL_LONG_DOT);
+   lv_obj_set_width(kick, 596);
+   lv_obj_set_pos(kick, 0, 0);
+   lv_obj_set_style_text_font(kick, FONT_HEADING, 0);
+   lv_obj_set_style_text_color(kick, lv_color_hex(TH_TEXT_PRIMARY), 0);
+
+   /* Multi-line preview body */
+   lv_obj_t *body = lv_label_create(c);
+   lv_label_set_text(body, preview_safe);
+   lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+   lv_obj_set_width(body, 596);
+   lv_obj_set_pos(body, 0, 48);
+   lv_obj_set_style_text_font(body, FONT_BODY, 0);
+   lv_obj_set_style_text_color(body, lv_color_hex(TH_TEXT_BODY), 0);
+   lv_obj_set_style_max_height(body, 96, 0);
+
+   /* Button row at the bottom of the card (3 pills, 180 px wide each). */
+   const int btn_w = 180;
+   const int btn_y = 260 - 22 - 48 - 22;  /* card_h - pad - btn_h - extra-margin */
+   const int gap = (596 - btn_w * 3) / 2; /* even spacing within 596 px inner */
+   channel_card_make_button(c, 0, btn_y, btn_w, "REPLY", channel_card_reply_cb);
+   channel_card_make_button(c, btn_w + gap, btn_y, btn_w, "SNOOZE", channel_card_snooze_cb);
+   channel_card_make_button(c, (btn_w + gap) * 2, btn_y, btn_w, "DISMISS", channel_card_dismiss_cb);
+
+   s_channel_card = c;
+}
+
+void ui_home_hide_channel_now(void) { channel_card_destroy(); }
 
 void ui_home_set_error_banner_visible(bool visible) {
    if (!s_err_banner) return;

@@ -30,31 +30,46 @@ static bool quiet_now(void) {
    return tab5_settings_quiet_active(lt.tm_hour);
 }
 
+/* W7-E.2: routing rule per PLAN §3.1 — high-priority OR starred sender
+ * OR needs_reply lands on the now-card; everything else stays on the
+ * toast surface from W7-E.1. */
+static bool route_to_now_card(const channel_message_t *msg) {
+   if (msg->sender_starred) return true;
+   if (msg->needs_reply) return true;
+   if (msg->priority[0] && strcasecmp(msg->priority, "high") == 0) return true;
+   return false;
+}
+
 /* Owned copy queued for the LVGL thread.  Freed in the async callback. */
 static void notif_show_async_cb(void *arg) {
    channel_message_t *msg = (channel_message_t *)arg;
    if (!msg) return;
 
-   /* Compose toast text: "[ch] sender · preview".  Bounded with %.Ns
-    * specifiers so compiler can prove no truncation can OOB the 200 B
-    * buffer.  Visually we want the line short anyway — long previews
-    * read better in the now-card surface (W7-E.2). */
-   char text[200];
    const char *ch = msg->channel[0] ? msg->channel : "?";
    const char *sender = msg->sender[0] ? msg->sender : "Someone";
    const char *preview = msg->preview[0] ? msg->preview : "(no preview)";
-   snprintf(text, sizeof(text), "[%.15s] %.40s · %.120s", ch, sender, preview);
+   bool to_now_card = route_to_now_card(msg);
 
-   ui_home_show_toast_ex(text, UI_TOAST_INCOMING);
+   if (to_now_card) {
+      /* Richer surface: kicker + multi-line preview + 3-button row. */
+      ui_home_show_channel_now(ch, sender, preview);
+   } else {
+      /* Toast: compose "[ch] sender · preview".  Bounded with %.Ns
+       * specifiers so compiler can prove no truncation. */
+      char text[200];
+      snprintf(text, sizeof(text), "[%.15s] %.40s · %.120s", ch, sender, preview);
+      ui_home_show_toast_ex(text, UI_TOAST_INCOMING);
+   }
 
-   /* Audio cue: low ping for the toast surface.  Respect quiet hours
-    * per spec §4.3 — visible toast still fires, audio is suppressed. */
+   /* Audio cue: HIGH for now-card, LOW for toast.  Respect quiet hours
+    * per spec §4.3 — visible surface still fires, audio is suppressed. */
    if (!quiet_now()) {
-      ui_audio_cue_play(UI_CUE_INCOMING_LOW);
+      ui_audio_cue_play(to_now_card ? UI_CUE_INCOMING_HIGH : UI_CUE_INCOMING_LOW);
    }
 
    char detail[48];
-   snprintf(detail, sizeof(detail), "%.8s/%.20s pri=%.6s", ch, sender, msg->priority[0] ? msg->priority : "?");
+   snprintf(detail, sizeof(detail), "%.6s/%.16s pri=%.6s surf=%s", ch, sender, msg->priority[0] ? msg->priority : "?",
+            to_now_card ? "now" : "toast");
    tab5_debug_obs_event("ui.notif", detail);
 
    free(msg);
