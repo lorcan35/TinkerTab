@@ -32,10 +32,13 @@
 | W10-A (TT) | TinkerTab | #421 | CLAUDE.md slim: extract "Current Sprint" + Waves 11-19 + Key Fixes (April 2026) → new `docs/CHANGELOG.md`.  CLAUDE.md 1055 → 992 LOC (-6 %).  **Closes #420** |
 | W10-A (TB) | TinkerBox | #291 | CLAUDE.md slim: extract Local LLM Benchmarks (13-row gauntlet table + failure-class analysis + when-to-use matrix) + "Current Sprint" issues table → new `docs/CHANGELOG.md`.  CLAUDE.md 769 → 683 LOC (-11 %).  Architecture Decisions stays in runbook (durable rules).  **Closes TinkerBox #290** |
 | W10-C | TinkerTab | #423 | ADR scaffold: `docs/adr/{README,0000-template,0001-host-test-infra-pattern}.md`.  CLAUDE.md cross-links the criteria.  First record captures the W9-A "plain assert + ESP-IDF shims" choice.  **Closes #422** |
+| W7-A | TinkerBox | #293 | Gateway tool-call SSE forwarding.  `TinkerClawBackend.set_tool_event_handler(on_tool_call)` setter + parser accumulates `delta.tool_calls` deltas by `index` and flushes on finish_reason/EOS.  Payload shape matches Dragon ToolRegistry's existing `{"tool": ..., "args": ...}` so Tab5's Wave 12 agent_log feed renders gateway activity with zero firmware changes.  `pipeline.py` auto-wires `conn_state["on_tool_call"]` via `hasattr` guard.  11 new tests / 50 total pass.  Earns the right to W7-B/C.  **Closes TinkerBox #292** |
 
 **Wave 10 (mostly) closed** — W10-A landed on both repos, W10-C ADR scaffold landed.  W10-B (docs-site PR #329 land-or-split) and W10-D (TinkerClaw fork scope-down per W7 outcome) remain.
 
-**Remaining roadmap:** W10-B docs-site decision · W10-D fork scope-down (gated on W7 mode-3 outcome).
+**Wave 7 started** — W7-A (gateway tool-call SSE forwarding) shipped 2026-05-12.  Mode 3 now visible-different from mode 2: agentic activity surfaces to Tab5's existing `agent_log` feed.  Next: W7-A.2 tool_result via Responses-API event-typed SSE, then W7-B (skill catalog) + W7-C (memory bridge).
+
+**Remaining roadmap:** W7-A.2 → W7-B → W7-C → W7-0 design → W7-D/E/F/G · W10-B docs-site decision · W10-D fork scope-down (gated on W7 outcome).
 
 **Update this section when shipping new waves so the wave program survives session compaction.**
 
