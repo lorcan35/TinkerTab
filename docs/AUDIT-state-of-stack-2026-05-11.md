@@ -29,7 +29,13 @@
 
 **Wave 9 fully closed** — W9-A (host-test infra), W9-B (discovery + nightly), W9-C (protocol contract), W9-D (resilience) all merged.  Further W9-A slices (solo_session_store, solo_rag) deferred — they need cJSON / NVS / SD shims; ROI bar not met yet.
 
-**Remaining roadmap:** W10 docs strategy.
+| W10-A (TT) | TinkerTab | #421 | CLAUDE.md slim: extract "Current Sprint" + Waves 11-19 + Key Fixes (April 2026) → new `docs/CHANGELOG.md`.  CLAUDE.md 1055 → 992 LOC (-6 %).  **Closes #420** |
+| W10-A (TB) | TinkerBox | #291 | CLAUDE.md slim: extract Local LLM Benchmarks (13-row gauntlet table + failure-class analysis + when-to-use matrix) + "Current Sprint" issues table → new `docs/CHANGELOG.md`.  CLAUDE.md 769 → 683 LOC (-11 %).  Architecture Decisions stays in runbook (durable rules).  **Closes TinkerBox #290** |
+| W10-C | TinkerTab | #423 | ADR scaffold: `docs/adr/{README,0000-template,0001-host-test-infra-pattern}.md`.  CLAUDE.md cross-links the criteria.  First record captures the W9-A "plain assert + ESP-IDF shims" choice.  **Closes #422** |
+
+**Wave 10 (mostly) closed** — W10-A landed on both repos, W10-C ADR scaffold landed.  W10-B (docs-site PR #329 land-or-split) and W10-D (TinkerClaw fork scope-down per W7 outcome) remain.
+
+**Remaining roadmap:** W10-B docs-site decision · W10-D fork scope-down (gated on W7 mode-3 outcome).
 
 **Update this section when shipping new waves so the wave program survives session compaction.**
 
