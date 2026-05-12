@@ -2803,8 +2803,10 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("scenario", choices=list(SCENARIOS.keys()) + ["all"])
-    p.add_argument("--base-url", default=os.environ.get(
-        "TAB5_URL", "http://192.168.1.90:8080"))
+    p.add_argument("--base-url", default=None,
+                   help="Override Tab5 URL.  Falls back to TAB5_URL env, "
+                        "then mDNS (espressif.local), then ~/.tinker_tab5_url "
+                        "cache.  See tests/e2e/discover.py.")
     p.add_argument("--token",
                    default=os.environ.get("TAB5_TOKEN",
                                           "05eed3b13bf62d92cfd8ac424438b9f2"))
@@ -2812,7 +2814,17 @@ def main() -> int:
                    help="Reboot Tab5 before running (clean state)")
     args = p.parse_args()
 
-    tab5 = Tab5Driver(base_url=args.base_url, token=args.token)
+    # W9-B: resolve the Tab5 URL through the discovery chain instead of
+    # using a hardcoded LAN IP that rots when DHCP rotates.
+    from discover import find_tab5  # noqa: E402
+    base_url = find_tab5(prefer_url=args.base_url)
+    if not base_url:
+        print("ERROR: cannot locate Tab5.  Try one of:")
+        print("  export TAB5_URL=http://<ip>:8080")
+        print("  enable mDNS + verify `avahi-resolve-host-name -4 espressif.local`")
+        return 2
+
+    tab5 = Tab5Driver(base_url=base_url, token=args.token)
     if args.reboot:
         print("Rebooting Tab5…")
         tab5.reboot()
