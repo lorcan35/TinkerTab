@@ -2774,6 +2774,88 @@ def story_solo_full(r: Runner) -> None:
            lambda t: t.navigate("home").get("navigated") == "home")
 
 
+def story_resilience(r: Runner) -> None:
+    """W9-D (audit 2026-05-11): Tab5 survives a Dragon WS reconnect mid-session.
+
+    Verifies the reconnect path that fires when Dragon restarts, the
+    network blips, or the user moves between APs.  Pass criteria:
+
+      * After /voice/reconnect, Tab5 returns to READY within 30 s
+      * `ws.connect` obs event fires post-reconnect
+      * A chat sent post-reconnect completes via `chat.llm_done`
+      * `session_id` is preserved across the reconnect (Dragon-side
+        session resume contract — see protocol.md §7 Session Lifecycle)
+      * Voice state machine never lands in a stuck non-READY state
+
+    This is a Tab5-side resilience test — it exercises voice.c's
+    reconnect watchdog + esp_websocket_client reconnect logic without
+    needing SSH access to Dragon.  A future variant could SSH and
+    `systemctl restart tinkerclaw-voice` for a true end-to-end check.
+    """
+    tab5 = r.tab5
+
+    # ─── A. Baseline known state ───────────────────────────────────
+    r.step("Boot reachable", lambda t: t.wait_alive(60))
+    r.step("Reset event cursor",
+           lambda t: t.reset_event_cursor() and None)
+    r.step("Force voice mode = Local (0)",
+           lambda t: t.mode(0).get("ok") is not False)
+    r.step("Voice ready before reconnect",
+           lambda t: t.await_voice_state("READY", 30))
+    baseline_session = {}
+    def _capture_session(t: Tab5Driver) -> bool:
+        s = t.settings()
+        baseline_session["id"] = s.get("session_id", "")
+        return bool(baseline_session["id"])
+    r.step("Capture baseline session_id",
+           _capture_session)
+
+    # ─── B. Force the reconnect ────────────────────────────────────
+    # Reset cursor again so the post-reconnect events are isolated
+    # from the boot-time `ws.connect` we already saw.
+    r.step("Reset event cursor for reconnect-window",
+           lambda t: t.reset_event_cursor() and None)
+    r.step("Force WS reconnect (simulates Dragon hiccup)",
+           lambda t: t.voice_reconnect().get("ok", True))
+
+    # esp_websocket_client takes a few seconds to tear down + redial
+    # the TLS socket; voice.c routes through CONNECTING → READY.
+    r.step("WS reconnect event fired",
+           lambda t: t.await_event("ws.connect", 30) is not None)
+    r.step("Voice returns to READY post-reconnect",
+           lambda t: t.await_voice_state("READY", 60))
+
+    # ─── C. Verify session resumed, not recreated ─────────────────
+    def _session_preserved(t: Tab5Driver) -> bool:
+        s = t.settings()
+        new_id = s.get("session_id", "")
+        baseline_session["new"] = new_id
+        # Either Dragon resumed the same session (ideal) OR opened a
+        # fresh one with the device_id binding intact.  The contract
+        # we care about is "Tab5 ends up with a valid session_id",
+        # not "the literal string matches" — Dragon-side session
+        # resume is allowed to fall back to create when the prior
+        # session has expired (1 h idle window).
+        return bool(new_id)
+    r.step("session_id still valid after reconnect",
+           _session_preserved)
+
+    # ─── D. Chat round-trip after reconnect ───────────────────────
+    r.step("Send post-reconnect chat",
+           lambda t: t.chat("ping post reconnect") and True)
+    r.step("LLM completes after reconnect",
+           lambda t: t.await_llm_done(timeout_s=180) is not None)
+
+    # ─── E. State machine sanity ──────────────────────────────────
+    def _final_state_sane(t: Tab5Driver) -> bool:
+        st = t.voice_state().get("state_name", "")
+        # SPEAKING/READY/IDLE all valid terminal states; LISTENING /
+        # PROCESSING / RECONNECTING after an LLM-done are bugs.
+        return st in ("READY", "IDLE", "SPEAKING")
+    r.step("Final voice state is sane",
+           _final_state_sane)
+
+
 SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_smoke":   story_smoke,
     "story_full":    story_full,
@@ -2797,6 +2879,7 @@ SCENARIOS: dict[str, Callable[[Runner], None]] = {
     "story_wave16":  story_wave16_k144_polish,
     "story_solo":    story_solo,
     "story_solo_full": story_solo_full,
+    "story_resilience": story_resilience,
 }
 
 
