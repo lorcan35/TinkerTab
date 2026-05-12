@@ -151,6 +151,7 @@ static void fetch_agent_skills_job(void *arg);
 static void kick_off_agent_skills_fetch(void);
 static void async_render_agent_skills_cb(void *arg);
 static void render_agent_skills(const agent_skills_payload_t *p);
+static void hide_agent_skills_cb(void *arg);
 static volatile bool s_skills_fetch_pending = false;
 
 /* ── Helpers ─────────────────────────────────────────────────── */
@@ -596,6 +597,24 @@ static void kick_off_agent_log_fetch(void) {
  * thread for compact chip render below the existing tools catalog. */
 static void fetch_agent_skills_job(void *arg) {
    (void)arg;
+   /* W7-B.4 (audit 2026-05-11): only relevant when vmode==3.
+    * Mode 0/1/2/4/5 either have no gateway (Local/Hybrid/Cloud — use
+    * Dragon's own ToolRegistry, already rendered in TOOLS CATALOG),
+    * or bypass it (Onboard K144 + Solo).  Skip the round-trip and
+    * leave the section hidden in those cases.  Re-checked on every
+    * overlay show, so flipping to mode 3 + re-opening surfaces it. */
+   uint8_t vmode = tab5_settings_get_voice_mode();
+   if (vmode != VOICE_MODE_TINKERCLAW) {
+      char detail[24];
+      snprintf(detail, sizeof detail, "skip vmode=%u", (unsigned)vmode);
+      tab5_debug_obs_event("agent_skills", detail);
+      /* If the user just flipped out of mode 3, hide any stale section
+       * from a previous render.  LVGL state — must run on UI thread. */
+      tab5_lv_async_call(hide_agent_skills_cb, NULL);
+      s_skills_fetch_pending = false;
+      return;
+   }
+
    agent_skills_payload_t *p = heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!p) {
       ESP_LOGE(TAG, "agent_skills_payload alloc failed");
@@ -767,7 +786,10 @@ static void render_agent_skills(const agent_skills_payload_t *p) {
       lv_obj_clear_flag(s_skills_root, LV_OBJ_FLAG_SCROLLABLE);
    } else {
       lv_obj_clean(s_skills_root);
-      /* Re-anchor in case the catalog grew or just rendered. */
+      /* W7-B.4: re-show if the prior render hid the section because
+       * vmode was not 3.  Re-anchor in case the catalog grew or just
+       * rendered. */
+      lv_obj_remove_flag(s_skills_root, LV_OBJ_FLAG_HIDDEN);
       if (s_catalog_root) {
          lv_obj_align_to(s_skills_root, s_catalog_root, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 40);
       }
@@ -871,6 +893,17 @@ static void async_render_agent_skills_cb(void *arg) {
    }
    heap_caps_free(p);
    s_skills_fetch_pending = false;
+}
+
+/* W7-B.4: hide the agent_skills section without freeing it (so a
+ * later flip back to mode 3 just re-renders into the existing
+ * container).  Called from the worker thread via tab5_lv_async_call
+ * when vmode != 3 at fetch time. */
+static void hide_agent_skills_cb(void *arg) {
+   (void)arg;
+   if (s_skills_root) {
+      lv_obj_add_flag(s_skills_root, LV_OBJ_FLAG_HIDDEN);
+   }
 }
 
 static void render_catalog(const tools_payload_t *p) {
