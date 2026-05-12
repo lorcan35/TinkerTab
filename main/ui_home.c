@@ -2378,9 +2378,13 @@ static void channel_card_reply_cb(lv_event_t *e) {
 
 static void channel_card_snooze_cb(lv_event_t *e) {
    (void)e;
-   tab5_debug_obs_event("ui.notif.now", "snooze_stub");
+   tab5_debug_obs_event("ui.notif.now", "snooze");
    channel_card_destroy();
-   show_toast_internal_tone("Snooze coming in W7-E.3", UI_TOAST_INFO);
+   /* W7-E.3: real snooze ring — entry stays in PSRAM for 15 min, then
+    * re-fires through the standard routing path.  Forward-declared
+    * extern so ui_home doesn't pull the full ui_notification.h. */
+   extern void ui_notification_snooze_current(void);
+   ui_notification_snooze_current();
 }
 
 /* Build one of the three action pills on the card.  Returns the pill obj. */

@@ -49,6 +49,18 @@ typedef struct {
  * source struct. */
 void ui_notification_show(const channel_message_t *msg);
 
+/* W7-E.3: boot-time init.  Kicks the 60 s snooze-walk timer so deferred
+ * messages refire on schedule.  Idempotent; safe to call more than once.
+ * Must run on the LVGL thread (typically from main.c after ui_core_init).
+ */
+void ui_notification_init(void);
+
+/* W7-E.3: enqueue the most recently shown now-card message into the
+ * snooze ring with `fire_at = now + 15 min`.  Overflow (>8) drops the
+ * oldest entry.  Wired to the SNOOZE button in ui_home.  No-op if no
+ * now-card message has been shown yet this boot. */
+void ui_notification_snooze_current(void);
+
 #ifdef __cplusplus
 }
 #endif

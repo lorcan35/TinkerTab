@@ -1,16 +1,18 @@
 /*
  * ui_notification.c — see header.
  *
- * Wave 7-E.1 (toast-path slice).
+ * Wave 7-E.1 toast path + W7-E.2 now-card router + W7-E.3 dedupe + snooze rings.
  */
 #include "ui_notification.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "debug_obs.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 #include "settings.h"
 #include "ui_audio_cues.h"
@@ -18,6 +20,48 @@
 #include "ui_home.h"
 
 static const char *TAG = "ui_notification";
+
+/* ── W7-E.3: dedupe ring ───────────────────────────────────────────── */
+
+/* 32 entries keyed on message_id.  PSRAM-cheap (32 × 64 B = 2 KB in BSS).
+ * Older entries get overwritten as new arrivals push past the head. */
+#define DEDUPE_RING_SIZE 32
+static char s_dedupe_ring[DEDUPE_RING_SIZE][CHANNEL_MSG_ID_MAX];
+static int s_dedupe_head = 0;
+
+/* Returns true if `id` is new (was not in the ring; added).  Returns
+ * false if it was already present (caller should skip).  Empty id always
+ * passes through (no dedupe — older Dragon builds may omit message_id). */
+static bool dedupe_check_and_add(const char *id) {
+   if (!id || !id[0]) return true; /* no id → always allow */
+   for (int i = 0; i < DEDUPE_RING_SIZE; i++) {
+      if (s_dedupe_ring[i][0] && strncmp(s_dedupe_ring[i], id, CHANNEL_MSG_ID_MAX) == 0) {
+         return false;
+      }
+   }
+   /* snprintf is bounds-safe and dodges the GCC strncpy-truncation warning
+    * since we explicitly cap output length including NUL. */
+   snprintf(s_dedupe_ring[s_dedupe_head], CHANNEL_MSG_ID_MAX, "%s", id);
+   s_dedupe_head = (s_dedupe_head + 1) % DEDUPE_RING_SIZE;
+   return true;
+}
+
+/* ── W7-E.3: snooze ring ───────────────────────────────────────────── */
+
+#define SNOOZE_RING_SIZE 8
+#define SNOOZE_DELAY_MS (15 * 60 * 1000) /* 15 minutes per PLAN §3.2 */
+#define SNOOZE_TICK_MS (60 * 1000)       /* walker fires every 60 s */
+
+static channel_message_t s_snooze_ring[SNOOZE_RING_SIZE];
+static uint64_t s_snooze_fire_at[SNOOZE_RING_SIZE]; /* esp_timer_get_time() µs */
+static int s_snooze_count = 0;
+static lv_timer_t *s_snooze_timer = NULL;
+
+/* W7-E.2 → W7-E.3 handoff: remember the most recent now-card message so
+ * the SNOOZE button can recover it without ui_home needing to carry the
+ * full channel_message_t through its public API. */
+static channel_message_t s_last_now_msg;
+static bool s_last_now_msg_valid = false;
 
 /* True if quiet-hours is currently active per NVS + local clock.  Mirrors
  * `tab5_settings_quiet_active(hour_local)` which expects an [0..23] hour. */
@@ -45,6 +89,16 @@ static void notif_show_async_cb(void *arg) {
    channel_message_t *msg = (channel_message_t *)arg;
    if (!msg) return;
 
+   /* W7-E.3: dedupe before any surface side-effect.  Same message_id
+    * arriving twice = silent drop with obs trail. */
+   if (!dedupe_check_and_add(msg->message_id)) {
+      char detail[48];
+      snprintf(detail, sizeof(detail), "drop %.32s", msg->message_id);
+      tab5_debug_obs_event("ui.notif.dedupe", detail);
+      free(msg);
+      return;
+   }
+
    const char *ch = msg->channel[0] ? msg->channel : "?";
    const char *sender = msg->sender[0] ? msg->sender : "Someone";
    const char *preview = msg->preview[0] ? msg->preview : "(no preview)";
@@ -53,6 +107,9 @@ static void notif_show_async_cb(void *arg) {
    if (to_now_card) {
       /* Richer surface: kicker + multi-line preview + 3-button row. */
       ui_home_show_channel_now(ch, sender, preview);
+      /* Cache for the SNOOZE button — see ui_notification_snooze_current. */
+      memcpy(&s_last_now_msg, msg, sizeof(s_last_now_msg));
+      s_last_now_msg_valid = true;
    } else {
       /* Toast: compose "[ch] sender · preview".  Bounded with %.Ns
        * specifiers so compiler can prove no truncation. */
@@ -102,4 +159,76 @@ void ui_notification_show(const channel_message_t *msg) {
       ESP_LOGW(TAG, "lv_async_call failed — dropping channel_message");
       free(owned);
    }
+}
+
+/* ── W7-E.3: snooze walker + public API ────────────────────────────── */
+
+static uint64_t snooze_now_us(void) { return (uint64_t)esp_timer_get_time(); }
+
+/* LVGL-thread periodic timer.  Walks the ring; any entry whose fire_at
+ * has passed gets removed + re-shown via the normal routing path. */
+static void snooze_walk_cb(lv_timer_t *t) {
+   (void)t;
+   uint64_t now_us = snooze_now_us();
+   /* Walk in reverse so we can remove without re-indexing. */
+   for (int i = s_snooze_count - 1; i >= 0; i--) {
+      if (s_snooze_fire_at[i] > now_us) continue;
+
+      /* Snapshot the message so we can fire it after we shrink the ring
+       * — ui_notification_show could recursively populate s_snooze_ring
+       * if the re-fire ends up snoozed again. */
+      channel_message_t fire = s_snooze_ring[i];
+      if (i < s_snooze_count - 1) {
+         memmove(&s_snooze_ring[i], &s_snooze_ring[i + 1], sizeof(s_snooze_ring[0]) * (s_snooze_count - i - 1));
+         memmove(&s_snooze_fire_at[i], &s_snooze_fire_at[i + 1], sizeof(uint64_t) * (s_snooze_count - i - 1));
+      }
+      s_snooze_count--;
+
+      /* Clear the dedupe slot for this id so the refire isn't silently
+       * dropped.  Simpler than tracking a "snooze bypass" flag through
+       * the async hop. */
+      if (fire.message_id[0]) {
+         for (int k = 0; k < DEDUPE_RING_SIZE; k++) {
+            if (strncmp(s_dedupe_ring[k], fire.message_id, CHANNEL_MSG_ID_MAX) == 0) {
+               s_dedupe_ring[k][0] = '\0';
+               break;
+            }
+         }
+      }
+
+      tab5_debug_obs_event("ui.notif.snooze", "refire");
+      ui_notification_show(&fire);
+   }
+}
+
+void ui_notification_init(void) {
+   if (s_snooze_timer) return;
+   s_snooze_timer = lv_timer_create(snooze_walk_cb, SNOOZE_TICK_MS, NULL);
+   ESP_LOGI(TAG, "snooze walker armed (tick=%u ms, delay=%u ms)", (unsigned)SNOOZE_TICK_MS, (unsigned)SNOOZE_DELAY_MS);
+}
+
+void ui_notification_snooze_current(void) {
+   if (!s_last_now_msg_valid) {
+      ESP_LOGW(TAG, "snooze requested but no now-card message in cache");
+      return;
+   }
+
+   /* Overflow: drop oldest. */
+   if (s_snooze_count >= SNOOZE_RING_SIZE) {
+      memmove(&s_snooze_ring[0], &s_snooze_ring[1], sizeof(s_snooze_ring[0]) * (SNOOZE_RING_SIZE - 1));
+      memmove(&s_snooze_fire_at[0], &s_snooze_fire_at[1], sizeof(uint64_t) * (SNOOZE_RING_SIZE - 1));
+      s_snooze_count = SNOOZE_RING_SIZE - 1;
+      tab5_debug_obs_event("ui.notif.snooze", "overflow");
+   }
+
+   s_snooze_ring[s_snooze_count] = s_last_now_msg;
+   s_snooze_fire_at[s_snooze_count] = snooze_now_us() + (uint64_t)SNOOZE_DELAY_MS * 1000ULL;
+   s_snooze_count++;
+
+   char detail[48];
+   snprintf(detail, sizeof(detail), "added %.8s/%.20s in=%us", s_last_now_msg.channel, s_last_now_msg.sender,
+            (unsigned)(SNOOZE_DELAY_MS / 1000));
+   tab5_debug_obs_event("ui.notif.snooze", detail);
+
+   ui_home_show_toast_ex("Snoozed for 15 minutes", UI_TOAST_INFO);
 }
