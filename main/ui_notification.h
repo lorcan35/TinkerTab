@@ -61,6 +61,15 @@ void ui_notification_init(void);
  * now-card message has been shown yet this boot. */
 void ui_notification_snooze_current(void);
 
+/* W7-E.4: send a channel_reply for the most recently shown now-card
+ * message.  If `text` is NULL/empty, the quick-ack placeholder
+ * "👍" is used so the v0 button is meaningfully wired without the
+ * full voice-dictation overlay (deferred to W7-E.4b).  Toasts
+ * "Reply queued to {sender}" on send; Dragon's async ACK lands as
+ * "Replied via {channel}" through the channel_reply_ack handler.
+ * No-op if no now-card message has been shown yet this boot. */
+void ui_notification_reply_current(const char *text);
+
 #ifdef __cplusplus
 }
 #endif

@@ -184,6 +184,14 @@ esp_err_t voice_clear_history(void);
 /** Send a text message to Dragon, bypassing STT (goes straight to LLM). */
 esp_err_t voice_send_text(const char *text);
 
+/** W7-E.4: send a channel_reply WS frame to Dragon.  Builds
+ *  {"type":"channel_reply","channel":...,"thread_id":...,"text":...}
+ *  and queues it on the voice WS.  Returns ESP_ERR_INVALID_STATE if the
+ *  WS isn't connected, ESP_ERR_INVALID_ARG on NULL args.  Reply ack
+ *  arrives asynchronously as a channel_reply_ack frame handled in
+ *  voice_ws_proto.c. */
+esp_err_t voice_send_channel_reply(const char *channel, const char *thread_id, const char *text);
+
 /** W4-A: return the current turn_id (12-hex-char string + null).  Set by
  *  voice_start_listening / voice_start_dictation / voice_send_text on every
  *  fresh turn.  Returns "-" before the first turn (never NULL).  Use to

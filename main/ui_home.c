@@ -2371,9 +2371,13 @@ static void channel_card_dismiss_cb(lv_event_t *e) {
 
 static void channel_card_reply_cb(lv_event_t *e) {
    (void)e;
-   tab5_debug_obs_event("ui.notif.now", "reply_stub");
+   tab5_debug_obs_event("ui.notif.now", "reply");
    channel_card_destroy();
-   show_toast_internal_tone("Reply flow coming in W7-E.4", UI_TOAST_INFO);
+   /* W7-E.4: real reply path — uses the v0 quick-ack placeholder
+    * ("👍").  Real user-typed/dictated text lands in W7-E.4b.
+    * Forward-declared extern so ui_home doesn't pull ui_notification.h. */
+   extern void ui_notification_reply_current(const char *text);
+   ui_notification_reply_current(NULL);
 }
 
 static void channel_card_snooze_cb(lv_event_t *e) {
