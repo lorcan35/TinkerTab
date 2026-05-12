@@ -93,12 +93,41 @@ typedef struct {
    char err_msg[80];
 } agent_log_payload_t;
 
+/* W7-B.3 — agent-skill catalog payload for the mode-3 section.
+ *
+ * Cap at 12 entries; Dragon's static catalog has 8 + a small number
+ * of observed extras is the realistic ceiling.  Each entry carries
+ * just enough for a compact chip render: name + source flag (so we
+ * can colour-tint static vs observed). */
+#define AGENT_SKILL_MAX 12
+#define AGENT_SKILL_NAME_LEN 32
+
+typedef enum {
+   AGENT_SKILL_SOURCE_STATIC = 0,
+   AGENT_SKILL_SOURCE_OBSERVED = 1,
+} agent_skill_source_t;
+
+typedef struct {
+   char name[AGENT_SKILL_NAME_LEN];
+   agent_skill_source_t source;
+} agent_skill_entry_t;
+
+typedef struct {
+   int n;
+   int total_count;    /* server-reported count (may exceed n if truncated) */
+   int observed_count; /* server-reported observed count */
+   agent_skill_entry_t items[AGENT_SKILL_MAX];
+   bool fetch_ok;
+   char err_msg[80];
+} agent_skills_payload_t;
+
 static lv_obj_t *s_overlay       = NULL;
 static lv_obj_t *s_back_btn      = NULL;
 static lv_obj_t *s_count_lbl     = NULL;   /* U7 (#206): refreshed on each show */
 static lv_obj_t *s_entry_root    = NULL;   /* container for the live activity entry */
 static lv_obj_t *s_catalog_root = NULL;    /* TT #328 Wave 6: tools-catalog section */
 static lv_obj_t *s_agent_log_root = NULL;  /* Wave 12: cross-session feed section */
+static lv_obj_t *s_skills_root = NULL;     /* W7-B.3: mode-3 skill catalog section */
 static bool      s_visible       = false;
 static volatile bool s_fetch_pending = false;
 static volatile bool s_log_fetch_pending = false;
@@ -113,12 +142,15 @@ static void fetch_agent_log_job(void *arg);
 static void async_render_agent_log_cb(void *arg);
 static void kick_off_agent_log_fetch(void);
 /* W7-B Tab5-side (audit 2026-05-11): mode-3 agent-skill catalog
- * fetch.  Dragon serves `/api/v1/agent_skills` with the union of
- * known-static OpenClaw core tools + tools observed in agent_log.
- * First slice fires an obs event with the summary; rendering into
- * the overlay UI is a follow-up. */
+ * fetch + render.  Dragon serves `/api/v1/agent_skills` with the
+ * union of known-static OpenClaw core tools + tools observed in
+ * agent_log.  W7-B Tab5 (#429) added the round-trip probe + obs
+ * event; W7-B.3 (this PR) renders the result into the Agents
+ * overlay as a compact chip grid. */
 static void fetch_agent_skills_job(void *arg);
 static void kick_off_agent_skills_fetch(void);
+static void async_render_agent_skills_cb(void *arg);
+static void render_agent_skills(const agent_skills_payload_t *p);
 static volatile bool s_skills_fetch_pending = false;
 
 /* ── Helpers ─────────────────────────────────────────────────── */
@@ -555,21 +587,29 @@ static void kick_off_agent_log_fetch(void) {
    }
 }
 
-/* ── W7-B Tab5-side: GET /api/v1/agent_skills round-trip probe ────────
+/* ── W7-B Tab5-side: GET /api/v1/agent_skills fetch + render ──────────
  *
- * First slice — fetch the catalog on every overlay show, emit an obs
- * event with `count=N observed=M`, log a one-line summary.  No UI
- * rendering yet; that's a follow-up once we've validated the data
- * shape on live hardware via the obs ring.  Catalog is at
- * `dragon_host:3502/api/v1/agent_skills`. */
+ * Dragon serves `/api/v1/agent_skills` with the union of static
+ * OpenClaw core tools + tools observed in agent_log.  Worker fetches
+ * on every overlay show, parses up to AGENT_SKILL_MAX items, fires an
+ * obs event with the summary, and hands the payload to the LVGL
+ * thread for compact chip render below the existing tools catalog. */
 static void fetch_agent_skills_job(void *arg) {
    (void)arg;
+   agent_skills_payload_t *p = heap_caps_calloc(1, sizeof(*p), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!p) {
+      ESP_LOGE(TAG, "agent_skills_payload alloc failed");
+      s_skills_fetch_pending = false;
+      return;
+   }
 
    char dragon_host[64] = {0};
    tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
    if (!dragon_host[0]) {
       tab5_debug_obs_event("agent_skills", "no_host");
-      s_skills_fetch_pending = false;
+      snprintf(p->err_msg, sizeof(p->err_msg), "Dragon host not configured");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_agent_skills_cb, p);
       return;
    }
 
@@ -580,7 +620,9 @@ static void fetch_agent_skills_job(void *arg) {
    char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!resp_buf) {
       tab5_debug_obs_event("agent_skills", "psram_alloc_fail");
-      s_skills_fetch_pending = false;
+      snprintf(p->err_msg, sizeof(p->err_msg), "PSRAM alloc failed");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_agent_skills_cb, p);
       return;
    }
 
@@ -594,8 +636,10 @@ static void fetch_agent_skills_job(void *arg) {
    esp_http_client_handle_t client = esp_http_client_init(&cfg);
    if (!client) {
       tab5_debug_obs_event("agent_skills", "http_init_fail");
+      snprintf(p->err_msg, sizeof(p->err_msg), "http_client_init failed");
+      p->fetch_ok = false;
       heap_caps_free(resp_buf);
-      s_skills_fetch_pending = false;
+      tab5_lv_async_call(async_render_agent_skills_cb, p);
       return;
    }
 
@@ -615,9 +659,11 @@ static void fetch_agent_skills_job(void *arg) {
       char detail[48];
       snprintf(detail, sizeof detail, "open_err=%s", esp_err_to_name(err));
       tab5_debug_obs_event("agent_skills", detail);
+      snprintf(p->err_msg, sizeof(p->err_msg), "open: %s", esp_err_to_name(err));
+      p->fetch_ok = false;
       esp_http_client_cleanup(client);
       heap_caps_free(resp_buf);
-      s_skills_fetch_pending = false;
+      tab5_lv_async_call(async_render_agent_skills_cb, p);
       return;
    }
    esp_http_client_fetch_headers(client);
@@ -626,10 +672,12 @@ static void fetch_agent_skills_job(void *arg) {
       char detail[24];
       snprintf(detail, sizeof detail, "http_%d", status);
       tab5_debug_obs_event("agent_skills", detail);
+      snprintf(p->err_msg, sizeof(p->err_msg), "HTTP %d", status);
+      p->fetch_ok = false;
       esp_http_client_close(client);
       esp_http_client_cleanup(client);
       heap_caps_free(resp_buf);
-      s_skills_fetch_pending = false;
+      tab5_lv_async_call(async_render_agent_skills_cb, p);
       return;
    }
 
@@ -644,27 +692,47 @@ static void fetch_agent_skills_job(void *arg) {
    esp_http_client_cleanup(client);
 
    /* Response shape:
-    *   {"items":[...], "count":N, "static_count":S, "observed_count":O}
-    * We only care about the summary counts for this slice. */
+    *   {"items":[{name, source, uses, last_ts},...],
+    *    "count":N, "static_count":S, "observed_count":O} */
    cJSON *root = cJSON_Parse(resp_buf);
    heap_caps_free(resp_buf);
    if (!root) {
       tab5_debug_obs_event("agent_skills", "json_parse_fail");
-      s_skills_fetch_pending = false;
+      snprintf(p->err_msg, sizeof(p->err_msg), "JSON parse failed");
+      p->fetch_ok = false;
+      tab5_lv_async_call(async_render_agent_skills_cb, p);
       return;
    }
-   int count = 0, observed = 0;
-   cJSON *c = cJSON_GetObjectItem(root, "count");
-   cJSON *o = cJSON_GetObjectItem(root, "observed_count");
-   if (cJSON_IsNumber(c)) count = c->valueint;
-   if (cJSON_IsNumber(o)) observed = o->valueint;
+   cJSON *cnt = cJSON_GetObjectItem(root, "count");
+   cJSON *obs = cJSON_GetObjectItem(root, "observed_count");
+   if (cJSON_IsNumber(cnt)) p->total_count = cnt->valueint;
+   if (cJSON_IsNumber(obs)) p->observed_count = obs->valueint;
+
+   cJSON *items = cJSON_GetObjectItem(root, "items");
+   if (cJSON_IsArray(items)) {
+      int len = cJSON_GetArraySize(items);
+      if (len > AGENT_SKILL_MAX) len = AGENT_SKILL_MAX;
+      for (int i = 0; i < len; i++) {
+         cJSON *it = cJSON_GetArrayItem(items, i);
+         cJSON *nm = cJSON_GetObjectItem(it, "name");
+         cJSON *sr = cJSON_GetObjectItem(it, "source");
+         if (!cJSON_IsString(nm) || !nm->valuestring || !nm->valuestring[0]) continue;
+         snprintf(p->items[p->n].name, AGENT_SKILL_NAME_LEN, "%s", nm->valuestring);
+         p->items[p->n].source = (cJSON_IsString(sr) && sr->valuestring && strcmp(sr->valuestring, "observed") == 0)
+                                     ? AGENT_SKILL_SOURCE_OBSERVED
+                                     : AGENT_SKILL_SOURCE_STATIC;
+         p->n++;
+      }
+   }
    cJSON_Delete(root);
+   p->fetch_ok = true;
 
    char detail[48];
-   snprintf(detail, sizeof detail, "count=%d observed=%d", count, observed);
+   snprintf(detail, sizeof detail, "count=%d observed=%d", p->total_count, p->observed_count);
    tab5_debug_obs_event("agent_skills", detail);
-   ESP_LOGI(TAG, "agent_skills fetched: %s", detail);
-   s_skills_fetch_pending = false;
+   ESP_LOGI(TAG, "agent_skills fetched: %s (rendering %d items)", detail, p->n);
+
+   tab5_lv_async_call(async_render_agent_skills_cb, p);
 }
 
 static void kick_off_agent_skills_fetch(void) {
@@ -674,6 +742,135 @@ static void kick_off_agent_skills_fetch(void) {
       ESP_LOGW(TAG, "agent_skills_fetch worker enqueue failed");
       s_skills_fetch_pending = false;
    }
+}
+
+/* LVGL-thread render of the agent-skill catalog.  Takes ownership of
+ * the worker-allocated payload, builds a compact chip list below the
+ * tools catalog, then frees the payload.  Idempotent — called on
+ * every overlay show via kick_off_agent_skills_fetch. */
+static void render_agent_skills(const agent_skills_payload_t *p) {
+   if (!s_skills_root) {
+      s_skills_root = lv_obj_create(s_overlay);
+      lv_obj_remove_style_all(s_skills_root);
+      lv_obj_set_size(s_skills_root, SW, LV_SIZE_CONTENT);
+      /* Anchor below the tools-catalog container so we never overlap
+       * with its tool cards as Dragon adds more tools.  Fallback to
+       * an absolute far-down position when the catalog hasn't
+       * rendered yet (skills fetch landed first). */
+      if (s_catalog_root) {
+         lv_obj_align_to(s_skills_root, s_catalog_root, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 40);
+      } else {
+         lv_obj_set_pos(s_skills_root, 0, 2200);
+      }
+      lv_obj_set_flex_flow(s_skills_root, LV_FLEX_FLOW_COLUMN);
+      lv_obj_set_style_pad_row(s_skills_root, 14, 0);
+      lv_obj_clear_flag(s_skills_root, LV_OBJ_FLAG_SCROLLABLE);
+   } else {
+      lv_obj_clean(s_skills_root);
+      /* Re-anchor in case the catalog grew or just rendered. */
+      if (s_catalog_root) {
+         lv_obj_align_to(s_skills_root, s_catalog_root, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 40);
+      }
+   }
+
+   /* Section header — emerald to distinguish from the amber tools-
+    * catalog header.  "MODE 3" prefix makes the scope explicit
+    * (these skills come from the gateway, not local Dragon tools). */
+   lv_obj_t *kicker = lv_label_create(s_skills_root);
+   lv_label_set_text(kicker, "\xe2\x80\xa2 MODE 3 \xe2\x80\x94 AGENT SKILLS");
+   lv_obj_set_style_text_font(kicker, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(kicker, lv_color_hex(TH_MODE_CLAW), 0);
+   lv_obj_set_style_text_letter_space(kicker, 4, 0);
+   lv_obj_set_style_pad_left(kicker, SIDE_PAD, 0);
+
+   if (!p->fetch_ok) {
+      lv_obj_t *e = lv_label_create(s_skills_root);
+      lv_label_set_long_mode(e, LV_LABEL_LONG_WRAP);
+      char buf[200];
+      snprintf(buf, sizeof(buf),
+               "Couldn't reach Dragon's agent-skill catalog (%s).\n\n"
+               "Once Dragon is online, reopen this screen.",
+               p->err_msg[0] ? p->err_msg : "no detail");
+      lv_label_set_text(e, buf);
+      lv_obj_set_width(e, SW - 2 * SIDE_PAD);
+      lv_obj_set_style_margin_left(e, SIDE_PAD, 0);
+      lv_obj_set_style_text_font(e, FONT_BODY, 0);
+      lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
+      return;
+   }
+
+   if (p->n == 0) {
+      lv_obj_t *e = lv_label_create(s_skills_root);
+      lv_label_set_text(e, "No agent skills available yet.");
+      lv_obj_set_style_pad_left(e, SIDE_PAD, 0);
+      lv_obj_set_style_text_font(e, FONT_BODY, 0);
+      lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
+      return;
+   }
+
+   /* Count line — "N AVAILABLE · M ACTIVELY USED" */
+   lv_obj_t *count = lv_label_create(s_skills_root);
+   char cbuf[64];
+   if (p->observed_count > 0) {
+      snprintf(cbuf, sizeof(cbuf), "%d AVAILABLE \xe2\x80\xa2 %d ACTIVELY USED", p->total_count, p->observed_count);
+   } else {
+      snprintf(cbuf, sizeof(cbuf), "%d AVAILABLE", p->total_count);
+   }
+   lv_label_set_text(count, cbuf);
+   lv_obj_set_style_text_font(count, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(count, lv_color_hex(TH_TEXT_SECONDARY), 0);
+   lv_obj_set_style_text_letter_space(count, 3, 0);
+   lv_obj_set_style_pad_left(count, SIDE_PAD, 0);
+
+   /* Compact chip row.  Flex-wrap so many short names stack across
+    * multiple visual rows.  Static = dim border, observed = emerald
+    * fill — the visual hierarchy mirrors the data shape (observed
+    * skills are the ones the user has actually seen fire). */
+   lv_obj_t *chips = lv_obj_create(s_skills_root);
+   lv_obj_remove_style_all(chips);
+   lv_obj_set_size(chips, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
+   lv_obj_set_style_margin_left(chips, SIDE_PAD, 0);
+   lv_obj_set_flex_flow(chips, LV_FLEX_FLOW_ROW_WRAP);
+   lv_obj_set_style_pad_column(chips, 8, 0);
+   lv_obj_set_style_pad_row(chips, 8, 0);
+   lv_obj_clear_flag(chips, LV_OBJ_FLAG_SCROLLABLE);
+
+   for (int i = 0; i < p->n; i++) {
+      lv_obj_t *chip = lv_obj_create(chips);
+      lv_obj_remove_style_all(chip);
+      lv_obj_set_size(chip, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+      lv_obj_set_style_pad_hor(chip, 14, 0);
+      lv_obj_set_style_pad_ver(chip, 8, 0);
+      lv_obj_set_style_radius(chip, 16, 0);
+      lv_obj_set_style_border_width(chip, 1, 0);
+      if (p->items[i].source == AGENT_SKILL_SOURCE_OBSERVED) {
+         lv_obj_set_style_bg_color(chip, lv_color_hex(TH_MODE_CLAW), 0);
+         lv_obj_set_style_bg_opa(chip, LV_OPA_30, 0);
+         lv_obj_set_style_border_color(chip, lv_color_hex(TH_MODE_CLAW), 0);
+      } else {
+         lv_obj_set_style_bg_opa(chip, LV_OPA_TRANSP, 0);
+         lv_obj_set_style_border_color(chip, lv_color_hex(0x2A2A34), 0);
+      }
+      lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+
+      lv_obj_t *lbl = lv_label_create(chip);
+      lv_label_set_text(lbl, p->items[i].name);
+      lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
+      lv_obj_set_style_text_color(
+          lbl, lv_color_hex(p->items[i].source == AGENT_SKILL_SOURCE_OBSERVED ? TH_TEXT_PRIMARY : TH_TEXT_BODY), 0);
+   }
+}
+
+static void async_render_agent_skills_cb(void *arg) {
+   agent_skills_payload_t *p = (agent_skills_payload_t *)arg;
+   if (!p) return;
+   /* Tab5 may have closed the overlay before the worker came back —
+    * drop the payload safely instead of touching freed LVGL state. */
+   if (s_overlay && !lv_obj_has_flag(s_overlay, LV_OBJ_FLAG_HIDDEN)) {
+      render_agent_skills(p);
+   }
+   heap_caps_free(p);
+   s_skills_fetch_pending = false;
 }
 
 static void render_catalog(const tools_payload_t *p) {
