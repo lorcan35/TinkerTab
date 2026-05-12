@@ -74,6 +74,21 @@ esp_err_t ui_audio_cues_init(void) {
       if (r != ESP_OK) worst = r;
    }
 
+   /* Cancel: 60 ms 220 Hz (A3) — sub-octave of mode_switch, low +
+    * dismissive.  40% amplitude since low frequencies sound quieter
+    * at the same digital level. */
+   if (!s_cues[UI_CUE_CANCEL].pcm) {
+      esp_err_t r = init_cue(UI_CUE_CANCEL, SAMPLE_RATE / 1000 * 60, 220.0f, 32767 * 40 / 100, "cancel");
+      if (r != ESP_OK) worst = r;
+   }
+
+   /* Error: 120 ms 200 Hz — longer + lower than cancel so they
+    * don't get confused.  Same 40% amplitude. */
+   if (!s_cues[UI_CUE_ERROR].pcm) {
+      esp_err_t r = init_cue(UI_CUE_ERROR, SAMPLE_RATE / 1000 * 120, 200.0f, 32767 * 40 / 100, "error");
+      if (r != ESP_OK) worst = r;
+   }
+
    return worst;
 }
 

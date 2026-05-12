@@ -25,6 +25,7 @@
 #include "solo_rag.h"
 #include "solo_session_store.h"
 #include "task_worker.h"
+#include "ui_audio_cues.h"
 #include "ui_chat.h"
 #include "ui_home.h"
 #include "voice.h"
@@ -197,6 +198,7 @@ static void solo_send_text_job(void *arg) {
       tab5_debug_obs_event("solo.error", detail);
       ESP_LOGE(TAG, "solo LLM failed: %s", esp_err_to_name(err));
       ui_home_show_toast("Solo LLM failed");
+      ui_audio_cue_play(UI_CUE_ERROR);
    } else {
       tab5_debug_obs_event("solo.llm_done", detail);
       /* Persist both turns to the SD-backed session.  acc.acc is
@@ -382,6 +384,7 @@ static void solo_send_audio_job(void *arg) {
    tab5_debug_obs_event(err == ESP_OK ? "solo.audio_done" : "solo.error", detail);
    if (err != ESP_OK) {
       ui_home_show_toast("Solo audio chat failed");
+      ui_audio_cue_play(UI_CUE_ERROR);
       heap_caps_free(acc.acc);
       tab5_audio_speaker_enable(false); /* abort path — speaker off */
       goto done_free_pcm;
