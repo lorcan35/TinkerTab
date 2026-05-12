@@ -31,3 +31,15 @@ target_compile_definitions(test_openrouter_sse PRIVATE HOST_LOG_QUIET=1)
 # elsewhere.
 target_compile_options(test_openrouter_sse PRIVATE -Wno-unused-variable -Wno-unused-const-variable)
 add_test(NAME openrouter_sse COMMAND test_openrouter_sse)
+
+# spring_anim — W9-A slice 3.  Pure-math module; only ESP-IDF dep is
+# esp_log.h.  Closed-form damped harmonic oscillator.
+add_executable(test_spring_anim
+    test_spring_anim.c
+    ${MAIN_DIR}/spring_anim.c
+)
+target_include_directories(test_spring_anim PRIVATE ${SHIM_DIR} ${MAIN_DIR})
+target_compile_definitions(test_spring_anim PRIVATE HOST_LOG_QUIET=1)
+target_compile_options(test_spring_anim PRIVATE -Wno-unused-variable -Wno-unused-const-variable)
+target_link_libraries(test_spring_anim PRIVATE m)
+add_test(NAME spring_anim COMMAND test_spring_anim)
