@@ -659,6 +659,12 @@ void app_main(void)
     extern esp_err_t ui_audio_cues_init(void);
     (void)ui_audio_cues_init();
 
+    /* W7-E.3: arm the snooze-walk timer so deferred channel messages
+     * refire on schedule.  Runs on the LVGL thread (lv_timer) so safe
+     * to call here — LVGL is already up by this point in boot. */
+    extern void ui_notification_init(void);
+    ui_notification_init();
+
     /* TT #317 Phase 4: kick off the K144 LLM Module failover warm-up.
      * Posts ONE long-running job to the worker queue; safe to call here
      * because subsequent boot work (UI, voice, watchdog) doesn't depend
