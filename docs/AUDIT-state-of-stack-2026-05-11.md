@@ -33,12 +33,14 @@
 | W10-A (TB) | TinkerBox | #291 | CLAUDE.md slim: extract Local LLM Benchmarks (13-row gauntlet table + failure-class analysis + when-to-use matrix) + "Current Sprint" issues table → new `docs/CHANGELOG.md`.  CLAUDE.md 769 → 683 LOC (-11 %).  Architecture Decisions stays in runbook (durable rules).  **Closes TinkerBox #290** |
 | W10-C | TinkerTab | #423 | ADR scaffold: `docs/adr/{README,0000-template,0001-host-test-infra-pattern}.md`.  CLAUDE.md cross-links the criteria.  First record captures the W9-A "plain assert + ESP-IDF shims" choice.  **Closes #422** |
 | W7-A | TinkerBox | #293 | Gateway tool-call SSE forwarding.  `TinkerClawBackend.set_tool_event_handler(on_tool_call)` setter + parser accumulates `delta.tool_calls` deltas by `index` and flushes on finish_reason/EOS.  Payload shape matches Dragon ToolRegistry's existing `{"tool": ..., "args": ...}` so Tab5's Wave 12 agent_log feed renders gateway activity with zero firmware changes.  `pipeline.py` auto-wires `conn_state["on_tool_call"]` via `hasattr` guard.  11 new tests / 50 total pass.  Earns the right to W7-B/C.  **Closes TinkerBox #292** |
+| W7-A.b | TinkerBox | #295 | Bridge gateway tool_calls into `/api/v1/agent_log` ring.  Pre-W7-A.b the Wave-12 chokepoint was `ToolRegistry.execute`, which mode 3 bypasses — gateway calls never reached the cross-session feed.  Now `TinkerClawBackend._flush_tool_calls` also calls `agent_log.record_call(name, args)`.  Recording fires regardless of WS handler presence.  3 new tests / 14 total pass.  **Closes TinkerBox #294** |
+| W7-B | TinkerBox | #297 | `GET /api/v1/agent_skills` catalog endpoint.  Union of (a) hardcoded OpenClaw core tools (bash/browser/edit_file/memory/read_file/search_files/task/web_search) verified against upstream source 2026-05-12 + (b) tool names observed in agent_log ring.  Each entry: name/source/uses/last_ts.  Avoids the OpenClaw gateway's WS-RPC `skills.status` complexity for v1 — live-discovery is W7-B.2.  7 new tests / 21 total pass.  **Closes TinkerBox #296** |
 
 **Wave 10 (mostly) closed** — W10-A landed on both repos, W10-C ADR scaffold landed.  W10-B (docs-site PR #329 land-or-split) and W10-D (TinkerClaw fork scope-down per W7 outcome) remain.
 
-**Wave 7 started** — W7-A (gateway tool-call SSE forwarding) shipped 2026-05-12.  Mode 3 now visible-different from mode 2: agentic activity surfaces to Tab5's existing `agent_log` feed.  Next: W7-A.2 tool_result via Responses-API event-typed SSE, then W7-B (skill catalog) + W7-C (memory bridge).
+**Wave 7 progressing** — W7-A + W7-A.b + W7-B all shipped 2026-05-12.  Mode 3 now (1) surfaces real-time gateway tool calls to Tab5, (2) records them into the cross-session agent_log feed, (3) exposes a skill catalog for Tab5's Agents overlay to render alongside Dragon's built-in tools.  Next: W7-A.2 tool_result via Responses-API event-typed SSE (or skip to W7-C memory bridge for higher impact).
 
-**Remaining roadmap:** W7-A.2 → W7-B → W7-C → W7-0 design → W7-D/E/F/G · W10-B docs-site decision · W10-D fork scope-down (gated on W7 outcome).
+**Remaining roadmap:** W7-A.2 OR W7-C memory bridge · W7-B.2 dynamic skill discovery (WS-RPC) · W7-0 notification design → W7-D/E/F/G · W10-B docs-site decision · W10-D fork scope-down (gated on W7 outcome).
 
 **Update this section when shipping new waves so the wave program survives session compaction.**
 
