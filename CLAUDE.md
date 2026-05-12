@@ -163,6 +163,8 @@ When the issue tracker accumulates >10 open items, work in **waves**: one wave a
 
 For multi-week features (Grove, K144, widget platform), **write a plan doc first** (`docs/PLAN-*.md`) with: hardware reality, code architecture, phased breakdown with file:line refs, honest unknowns, code anchors.  File a tracking issue that links to the doc as source-of-truth.  Branches die; docs + issues persist.
 
+For **non-obvious cross-stack architectural decisions** (host-test pattern, lv_async_call discipline, codec gating policy, etc.), write an ADR — see [`docs/adr/README.md`](docs/adr/README.md) for the criteria + template.  ADRs are short, immutable once accepted, and live forever so future contributors don't re-litigate decisions that already took real thinking to settle.  Not every PR needs one; one a quarter is healthy.
+
 ### Issue Format
 ```
 ## Bug / Problem
