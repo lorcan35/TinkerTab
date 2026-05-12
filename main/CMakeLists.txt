@@ -7,6 +7,7 @@ set(UI_SRCS
     "ui_mode_sheet.c"
     "ui_nav_sheet.c"
     "ui_onboarding.c"
+    "ui_audio_cues.c"
     "chat_msg_store.c"
     "chat_header.c"
     "chat_input_bar.c"

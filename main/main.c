@@ -653,6 +653,12 @@ void app_main(void)
     // first enqueue doesn't race the init.
     tab5_worker_init();
 
+    /* W8 (audit 2026-05-11): pre-compute UI audio-cue PCM buffers.
+     * Must come after tab5_worker_init since ui_audio_cue_play
+     * dispatches onto the worker.  Cheap (<100 KB PSRAM total). */
+    extern esp_err_t ui_audio_cues_init(void);
+    (void)ui_audio_cues_init();
+
     /* TT #317 Phase 4: kick off the K144 LLM Module failover warm-up.
      * Posts ONE long-running job to the worker queue; safe to call here
      * because subsequent boot work (UI, voice, watchdog) doesn't depend
