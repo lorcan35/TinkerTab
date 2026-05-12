@@ -64,6 +64,29 @@ static esp_err_t init_cue(ui_cue_t id, size_t samples, float freq_hz, int amp_q1
    return ESP_OK;
 }
 
+/* W7-E.0: two-tone bell.  Pre-computes two sine-envelope segments
+ * back-to-back in one PSRAM buffer.  Each segment carries its own
+ * attack/release so the transition between the two pitches doesn't
+ * click.  Used for the high-priority "incoming message" cue —
+ * recognizable as bell-shaped, distinct from the single-tone cues. */
+static esp_err_t init_two_tone_cue(ui_cue_t id, size_t samples_each, float freq_a_hz, float freq_b_hz, int amp_q15,
+                                   const char *obs_tag) {
+   size_t total = samples_each * 2;
+   int16_t *pcm = heap_caps_malloc(total * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!pcm) {
+      ESP_LOGW(TAG, "PSRAM alloc failed for cue %d", (int)id);
+      return ESP_ERR_NO_MEM;
+   }
+   gen_sine_envelope(pcm, samples_each, freq_a_hz, amp_q15);
+   gen_sine_envelope(pcm + samples_each, samples_each, freq_b_hz, amp_q15);
+   s_cues[id].pcm = pcm;
+   s_cues[id].samples = total;
+   s_cues[id].obs_tag = obs_tag;
+   ESP_LOGI(TAG, "Cue %d ready: %u samples @ %.0f→%.0fHz amp=%d", (int)id, (unsigned)total, (double)freq_a_hz,
+            (double)freq_b_hz, amp_q15);
+   return ESP_OK;
+}
+
 esp_err_t ui_audio_cues_init(void) {
    esp_err_t worst = ESP_OK;
 
@@ -86,6 +109,25 @@ esp_err_t ui_audio_cues_init(void) {
     * don't get confused.  Same 40% amplitude. */
    if (!s_cues[UI_CUE_ERROR].pcm) {
       esp_err_t r = init_cue(UI_CUE_ERROR, SAMPLE_RATE / 1000 * 120, 200.0f, 32767 * 40 / 100, "error");
+      if (r != ESP_OK) worst = r;
+   }
+
+   /* W7-E.0: low-priority "incoming" toast ping — 30 ms 1200 Hz @ 30%
+    * amplitude.  Short + soft so a Telegram message doesn't startle
+    * the room; recognizable as "message arrived" by being brighter
+    * and shorter than the existing mode_switch cue. */
+   if (!s_cues[UI_CUE_INCOMING_LOW].pcm) {
+      esp_err_t r = init_cue(UI_CUE_INCOMING_LOW, SAMPLE_RATE / 1000 * 30, 1200.0f, 32767 * 30 / 100, "incoming_low");
+      if (r != ESP_OK) worst = r;
+   }
+
+   /* W7-E.0: high-priority "incoming" two-tone bell — 40 ms 880 Hz
+    * then 40 ms 1320 Hz, each at 35% amplitude.  Bell-shaped
+    * cadence (low→high) reads as "attention needed"; distinct from
+    * both mode_switch (single tone) and error (long low growl). */
+   if (!s_cues[UI_CUE_INCOMING_HIGH].pcm) {
+      esp_err_t r = init_two_tone_cue(UI_CUE_INCOMING_HIGH, SAMPLE_RATE / 1000 * 40, 880.0f, 1320.0f, 32767 * 35 / 100,
+                                      "incoming_high");
       if (r != ESP_OK) worst = r;
    }
 
