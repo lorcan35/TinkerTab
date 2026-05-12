@@ -1,0 +1,23 @@
+name: Host Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S tests/host -B tests/host/build
+
+      - name: Build
+        run: cmake --build tests/host/build --parallel
+
+      - name: Run
+        working-directory: tests/host/build
+        run: ctest --output-on-failure
