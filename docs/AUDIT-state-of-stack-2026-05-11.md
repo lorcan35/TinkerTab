@@ -14,10 +14,14 @@
 | W3-C-b | TinkerTab | #390 | Tab5 SOLO turns POST to Dragon canonical store via new `voice_messages_sync.{c,h}` module |
 | W3-C-c | TinkerTab | #392 | K144 turns (failover + autonomous chain) POST to Dragon canonical store |
 | W3-C-d | TinkerTab | #394 | SD offline queue (`/sdcard/msgsync.txt`, FAT 8.3) + drain on WS reconnect |
+| W8 (1/4) | TinkerTab | #400 | SOLO chip in mode-sheet preset row |
+| W8 (2/4) | TinkerTab | #402 | honest say-pill copy ("Tap to talk" / "HOLD ORB FOR MODES") + `LV_SYMBOL_AUDIO` mic glyph |
+| W8 (3/4) | TinkerTab | #404 | `ui_audio_cues.{c,h}` module + mode-switch cue (80 ms 880 Hz) |
+| W8 (4/4) | TinkerTab | #406 | cancel cue (60 ms 220 Hz) in `voice_cancel` + error cue (120 ms 200 Hz) in voice_solo failure toasts — **closes #405** |
 
 **W7 placeholder:** TinkerBox #270 (mode 3 full surface, 7 sub-waves W7-0..G).  Decision logged 2026-05-11: Option C (full surface).
 
-**Remaining roadmap:** W4 turn_id (next) · W5 cost guard · W6 finish Wave 23 · W7 mode 3 sub-program · W8 UX polish · W9 test infra · W10 docs strategy.
+**Remaining roadmap:** W9 test infra · W10 docs strategy.
 
 **Update this section when shipping new waves so the wave program survives session compaction.**
 
