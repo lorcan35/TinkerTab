@@ -90,6 +90,17 @@ static void notif_show_async_cb(void *arg) {
    channel_message_t *msg = (channel_message_t *)arg;
    if (!msg) return;
 
+   /* W7-E.5: per-channel opt-in gate.  Settings → CHANNELS controls
+    * which platforms surface on this device.  Fail-open on unknown
+    * channel names so future Dragon additions still get through. */
+   if (msg->channel[0] && !tab5_settings_get_channel_enabled(msg->channel)) {
+      char detail[32];
+      snprintf(detail, sizeof(detail), "%.16s", msg->channel);
+      tab5_debug_obs_event("ui.notif.channel_off", detail);
+      free(msg);
+      return;
+   }
+
    /* W7-E.3: dedupe before any surface side-effect.  Same message_id
     * arriving twice = silent drop with obs trail. */
    if (!dedupe_check_and_add(msg->message_id)) {

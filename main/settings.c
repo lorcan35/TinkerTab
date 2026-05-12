@@ -546,6 +546,41 @@ bool tab5_settings_quiet_active(int hour_local)
     return (hour_local >= s || hour_local < e);
 }
 
+/* ── W7-E.5: per-channel notification opt-in ─────────────────────────── */
+
+uint8_t tab5_settings_get_ch_tg_on(void) { return get_u8("ch_tg_on", 0); }
+esp_err_t tab5_settings_set_ch_tg_on(uint8_t on) { return set_u8("ch_tg_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_wa_on(void) { return get_u8("ch_wa_on", 0); }
+esp_err_t tab5_settings_set_ch_wa_on(uint8_t on) { return set_u8("ch_wa_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_dc_on(void) { return get_u8("ch_dc_on", 0); }
+esp_err_t tab5_settings_set_ch_dc_on(uint8_t on) { return set_u8("ch_dc_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_sl_on(void) { return get_u8("ch_sl_on", 0); }
+esp_err_t tab5_settings_set_ch_sl_on(uint8_t on) { return set_u8("ch_sl_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_sg_on(void) { return get_u8("ch_sg_on", 0); }
+esp_err_t tab5_settings_set_ch_sg_on(uint8_t on) { return set_u8("ch_sg_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_im_on(void) { return get_u8("ch_im_on", 0); }
+esp_err_t tab5_settings_set_ch_im_on(uint8_t on) { return set_u8("ch_im_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_ma_on(void) { return get_u8("ch_ma_on", 0); }
+esp_err_t tab5_settings_set_ch_ma_on(uint8_t on) { return set_u8("ch_ma_on", on ? 1 : 0); }
+uint8_t tab5_settings_get_ch_em_on(void) { return get_u8("ch_em_on", 0); }
+esp_err_t tab5_settings_set_ch_em_on(uint8_t on) { return set_u8("ch_em_on", on ? 1 : 0); }
+
+bool tab5_settings_get_channel_enabled(const char *channel_short) {
+   if (!channel_short || !channel_short[0]) return true; /* no channel → fail-open */
+   if (strcmp(channel_short, "tg") == 0) return tab5_settings_get_ch_tg_on() != 0;
+   if (strcmp(channel_short, "wa") == 0) return tab5_settings_get_ch_wa_on() != 0;
+   if (strcmp(channel_short, "dc") == 0) return tab5_settings_get_ch_dc_on() != 0;
+   if (strcmp(channel_short, "sl") == 0) return tab5_settings_get_ch_sl_on() != 0;
+   if (strcmp(channel_short, "sg") == 0) return tab5_settings_get_ch_sg_on() != 0;
+   if (strcmp(channel_short, "im") == 0) return tab5_settings_get_ch_im_on() != 0;
+   if (strcmp(channel_short, "ma") == 0) return tab5_settings_get_ch_ma_on() != 0;
+   if (strcmp(channel_short, "em") == 0) return tab5_settings_get_ch_em_on() != 0;
+   /* Unknown channel — fail-open so future Dragon additions still surface
+    * (user can react + ship a Settings entry).  Common known prefixes
+    * ("telegram" etc.) also match 2-char shorthand if Dragon emits them. */
+   return true;
+}
+
 /* ── Connection mode ────────────────────────────────────────────────── */
 
 uint8_t tab5_settings_get_connection_mode(void)
