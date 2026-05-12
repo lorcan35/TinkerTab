@@ -131,6 +131,16 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    cJSON_AddNumberToObject(root, "quiet_start", tab5_settings_get_quiet_start());
    cJSON_AddNumberToObject(root, "quiet_end", tab5_settings_get_quiet_end());
 
+   /* W7-E.5: per-channel notification toggles. */
+   cJSON_AddNumberToObject(root, "ch_tg_on", tab5_settings_get_ch_tg_on());
+   cJSON_AddNumberToObject(root, "ch_wa_on", tab5_settings_get_ch_wa_on());
+   cJSON_AddNumberToObject(root, "ch_dc_on", tab5_settings_get_ch_dc_on());
+   cJSON_AddNumberToObject(root, "ch_sl_on", tab5_settings_get_ch_sl_on());
+   cJSON_AddNumberToObject(root, "ch_sg_on", tab5_settings_get_ch_sg_on());
+   cJSON_AddNumberToObject(root, "ch_im_on", tab5_settings_get_ch_im_on());
+   cJSON_AddNumberToObject(root, "ch_ma_on", tab5_settings_get_ch_ma_on());
+   cJSON_AddNumberToObject(root, "ch_em_on", tab5_settings_get_ch_em_on());
+
    /* Audit U2 (#206): auto-rotate persisted preference. */
    cJSON_AddNumberToObject(root, "auto_rot", tab5_settings_get_auto_rotate());
    /* #260: camera rotation persisted preference. */
@@ -339,6 +349,27 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("quiet_end"));
       }
    }
+
+   /* W7-E.5: per-channel toggles. */
+#define CHANNEL_SET_FROM_JSON(key, setter)                                         \
+   do {                                                                            \
+      cJSON *node = cJSON_GetObjectItem(req_json, key);                            \
+      if (cJSON_IsNumber(node) || cJSON_IsBool(node)) {                            \
+         int v = cJSON_IsBool(node) ? cJSON_IsTrue(node) : (int)node->valuedouble; \
+         if (setter(v ? 1 : 0) == ESP_OK) {                                        \
+            cJSON_AddItemToArray(updated, cJSON_CreateString(key));                \
+         }                                                                         \
+      }                                                                            \
+   } while (0)
+   CHANNEL_SET_FROM_JSON("ch_tg_on", tab5_settings_set_ch_tg_on);
+   CHANNEL_SET_FROM_JSON("ch_wa_on", tab5_settings_set_ch_wa_on);
+   CHANNEL_SET_FROM_JSON("ch_dc_on", tab5_settings_set_ch_dc_on);
+   CHANNEL_SET_FROM_JSON("ch_sl_on", tab5_settings_set_ch_sl_on);
+   CHANNEL_SET_FROM_JSON("ch_sg_on", tab5_settings_set_ch_sg_on);
+   CHANNEL_SET_FROM_JSON("ch_im_on", tab5_settings_set_ch_im_on);
+   CHANNEL_SET_FROM_JSON("ch_ma_on", tab5_settings_set_ch_ma_on);
+   CHANNEL_SET_FROM_JSON("ch_em_on", tab5_settings_set_ch_em_on);
+#undef CHANNEL_SET_FROM_JSON
 
    /* Audit U2 (#206): auto-rotate POST setter for testability — also
     * triggers ui_core_apply_auto_rotation so the new value takes

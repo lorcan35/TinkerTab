@@ -214,6 +214,36 @@ esp_err_t tab5_settings_set_quiet_end(uint8_t hour);
  *  Convenience — does the wrap-past-midnight math for you. */
 bool      tab5_settings_quiet_active(int hour_local);
 
+/* ── W7-E.5: per-channel notification opt-in ─────────────────────────── */
+
+/** 8 channels Tab5 understands.  Tab5 silently drops `channel_message`
+ *  frames whose channel name resolves to "off"; Dragon may still emit
+ *  (the source-side suppression lives in W7-F).  All default 0 — user
+ *  opts in per platform via Settings → CHANNELS. */
+uint8_t tab5_settings_get_ch_tg_on(void);
+esp_err_t tab5_settings_set_ch_tg_on(uint8_t on);
+uint8_t tab5_settings_get_ch_wa_on(void);
+esp_err_t tab5_settings_set_ch_wa_on(uint8_t on);
+uint8_t tab5_settings_get_ch_dc_on(void);
+esp_err_t tab5_settings_set_ch_dc_on(uint8_t on);
+uint8_t tab5_settings_get_ch_sl_on(void);
+esp_err_t tab5_settings_set_ch_sl_on(uint8_t on);
+uint8_t tab5_settings_get_ch_sg_on(void);
+esp_err_t tab5_settings_set_ch_sg_on(uint8_t on);
+uint8_t tab5_settings_get_ch_im_on(void);
+esp_err_t tab5_settings_set_ch_im_on(uint8_t on);
+uint8_t tab5_settings_get_ch_ma_on(void);
+esp_err_t tab5_settings_set_ch_ma_on(uint8_t on);
+uint8_t tab5_settings_get_ch_em_on(void);
+esp_err_t tab5_settings_set_ch_em_on(uint8_t on);
+
+/** Convenience: map a 2-char canonical channel name ("tg"/"wa"/"dc"/...)
+ *  → bool enabled.  Returns true for unknown names so a future Dragon
+ *  emitting a channel Tab5 doesn't know about still surfaces (fail-open
+ *  on the unknown-channel axis; user must explicitly opt out via a
+ *  future Settings UI for it). */
+bool tab5_settings_get_channel_enabled(const char *channel_short);
+
 /* ── Auto-rotate (audit U2 / TinkerTab #206) ─────────────────────────── */
 
 /** Auto-rotate the display 180° when held upside-down (USB up).  IMU

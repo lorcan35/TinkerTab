@@ -816,6 +816,27 @@ static void cb_quiet_on(lv_event_t *e)
     ui_home_refresh_sys_label();
 }
 
+/* W7-E.5: per-channel notification toggles.  Each callback persists to
+ * NVS via the matching tab5_settings_set_ch_*_on; the notification
+ * router (ui_notification.c) reads the value at incoming-message time,
+ * so toggling takes effect instantly without re-render. */
+#define CHANNEL_TOGGLE_CB(short_name, fn_name)          \
+   static void cb_ch_##fn_name##_on(lv_event_t *e) {    \
+      lv_obj_t *sw = lv_event_get_target(e);            \
+      bool on = lv_obj_has_state(sw, LV_STATE_CHECKED); \
+      tab5_settings_set_ch_##fn_name##_on(on ? 1 : 0);  \
+      ESP_LOGI(TAG, "Channel " short_name ": %d", on);  \
+   }
+
+CHANNEL_TOGGLE_CB("tg", tg)
+CHANNEL_TOGGLE_CB("wa", wa)
+CHANNEL_TOGGLE_CB("dc", dc)
+CHANNEL_TOGGLE_CB("sl", sl)
+CHANNEL_TOGGLE_CB("sg", sg)
+CHANNEL_TOGGLE_CB("im", im)
+CHANNEL_TOGGLE_CB("ma", ma)
+CHANNEL_TOGGLE_CB("em", em)
+
 /* Audit U3 (#206): start/end-hour sliders.  Both fire on
  * LV_EVENT_VALUE_CHANGED while dragging, so we update the label live
  * AND persist to NVS on every step.  ui_home re-reads on next sys-label
@@ -1839,6 +1860,32 @@ lv_obj_t *ui_settings_create(void)
         }
     }
     y += ROW_H + 20;
+
+    /* ════════════════════════════════════════════════════════════════
+     *  SECTION: CHANNELS (W7-E.5 — per-platform notification opt-in)
+     * ════════════════════════════════════════════════════════════════ */
+    feed_wdt();
+    ESP_LOGI(TAG, "Phase 1 — Section: Channels");
+    lv_color_t acc_channels = lv_color_hex(ACC_VOICE); /* shares amber w/ Voice */
+
+    y = mk_section(s_scroll, "CHANNELS", acc_channels, y);
+
+    struct {
+       const char *label;
+       uint8_t (*getter)(void);
+       lv_event_cb_t cb;
+    } ch_rows[] = {
+        {"Telegram", tab5_settings_get_ch_tg_on, cb_ch_tg_on}, {"WhatsApp", tab5_settings_get_ch_wa_on, cb_ch_wa_on},
+        {"Discord", tab5_settings_get_ch_dc_on, cb_ch_dc_on},  {"Slack", tab5_settings_get_ch_sl_on, cb_ch_sl_on},
+        {"Signal", tab5_settings_get_ch_sg_on, cb_ch_sg_on},   {"iMessage", tab5_settings_get_ch_im_on, cb_ch_im_on},
+        {"Matrix", tab5_settings_get_ch_ma_on, cb_ch_ma_on},   {"Email", tab5_settings_get_ch_em_on, cb_ch_em_on},
+    };
+    for (size_t i = 0; i < sizeof(ch_rows) / sizeof(ch_rows[0]); i++) {
+       mk_row_label(s_scroll, ch_rows[i].label, y);
+       mk_switch(s_scroll, acc_channels, 660, y, ch_rows[i].getter() != 0, ch_rows[i].cb, NULL);
+       y += ROW_H + 8;
+    }
+    y += 20;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: DISPLAY (amber #F5A623)
