@@ -74,6 +74,20 @@ void ui_home_clear_error_banner(void);
  *  restore visibility.  No-op when no banner is currently shown. */
 void ui_home_set_error_banner_visible(bool visible);
 
+/** W7-E.2 — channel-message now-card overlay.  Renders a richer surface
+ *  than the toast path (W7-E.1): kicker with [channel] + sender, multi-
+ *  line preview, and a 3-button row (Reply / Snooze / Dismiss).  Sits on
+ *  lv_layer_top so it survives screen navigations until dismissed.
+ *
+ *  v0 button behavior:
+ *   - Dismiss  → hides the overlay
+ *   - Reply    → toast stub "Reply flow coming in W7-E.4"  +  hide
+ *   - Snooze   → toast stub "Snooze coming in W7-E.3"      +  hide
+ *
+ *  LVGL thread only — marshal from other tasks via tab5_lv_async_call. */
+void ui_home_show_channel_now(const char *channel, const char *sender, const char *preview);
+void ui_home_hide_channel_now(void);
+
 /** Wave 7 F5 crash surface: brief rose pulse on the halo orb.
  *  Used when a mid-turn Dragon drop is detected so the user has a visual
  *  signal alongside the "Dragon dropped mid-turn" toast. Reverts to the
