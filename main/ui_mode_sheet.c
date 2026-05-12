@@ -12,8 +12,9 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "settings.h"
-#include "ui_core.h" /* W8: tab5_ui_try_lock / tab5_ui_unlock for or_key gate toast */
-#include "ui_home.h" /* W8: ui_home_show_toast */
+#include "ui_audio_cues.h" /* W8: mode-switch chirp on preset / dial commit */
+#include "ui_core.h"       /* W8: tab5_ui_try_lock / tab5_ui_unlock for or_key gate toast */
+#include "ui_home.h"       /* W8: ui_home_show_toast */
 #include "ui_theme.h"
 #include "voice.h"
 
@@ -486,6 +487,13 @@ static void refresh_composite(void)
 
 static void persist_and_notify_dragon(void)
 {
+    /* W8: confirmatory chirp.  Fired from EVERY user-driven mode-sheet
+     * commit (dial segment tap → persist_and_notify_dragon, plus every
+     * preset chip case 0..3 below).  Audit found the device mute on
+     * UI interactions; the cue closes that gap.  Worker-dispatched so
+     * the LVGL caller doesn't block. */
+    ui_audio_cue_play(UI_CUE_MODE_SWITCH);
+
     /* Persist the three tiers + the derived voice_mode + (optional) llm_model. */
     tab5_settings_set_int_tier(s_int_tier);
     tab5_settings_set_voi_tier(s_voi_tier);
@@ -539,6 +547,7 @@ void preset_click_cb(lv_event_t *e)
                       * stays at whatever the user last picked.  Closes the
                       * "K144 unreachable from sheet" half of audit P0 #10. */
            tab5_settings_set_voice_mode(VOICE_MODE_ONBOARD);
+           ui_audio_cue_play(UI_CUE_MODE_SWITCH); /* W8: chirp on Onboard preset */
            char model[64] = {0};
            tab5_settings_get_llm_model(model, sizeof(model));
            voice_send_config_update(VOICE_MODE_ONBOARD, model);
