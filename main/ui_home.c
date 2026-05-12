@@ -1931,7 +1931,9 @@ static void screen_gesture_cb(lv_event_t *e)
 #define TOAST_LIFETIME_WARN_MS 3500
 #define TOAST_LIFETIME_ERROR_MS 5000
 #define TOAST_LIFETIME_INCOMING_MS 3000 /* W7-E.1 — slightly longer than INFO so sender + preview both register */
-#define TOAST_BORDER_INCOMING 0x6B5BFF  /* W7-E.1 — blue-violet per PLAN §4.1 */
+#define TOAST_LIFETIME_INCOMING_QUIET_MS 1500 /* W7-E.6 — dim + quick fade per PLAN §4.3 */
+#define TOAST_BORDER_INCOMING 0x6B5BFF        /* W7-E.1 — blue-violet per PLAN §4.1 */
+#define TOAST_OPA_QUIET 120                   /* W7-E.6 — half the default 240 bg opacity */
 #define TOAST_LIFETIME_PER_CHAR_MS 60
 #define TOAST_LIFETIME_CAP_MS 8000
 #define TOAST_FRAME_MS 16 /* ~60 fps */
@@ -1948,6 +1950,9 @@ static uint32_t toast_lifetime_for(ui_toast_tone_t tone, const char *text) {
    if (tone == UI_TOAST_WARN) base = TOAST_LIFETIME_WARN_MS;
    if (tone == UI_TOAST_ERROR) base = TOAST_LIFETIME_ERROR_MS;
    if (tone == UI_TOAST_INCOMING) base = TOAST_LIFETIME_INCOMING_MS;
+   /* W7-E.6: quiet variant — short fixed lifetime, don't scale with text len.
+    * Quiet hours = don't grab attention. */
+   if (tone == UI_TOAST_INCOMING_QUIET) return TOAST_LIFETIME_INCOMING_QUIET_MS;
    uint32_t scale = text ? (uint32_t)strlen(text) * TOAST_LIFETIME_PER_CHAR_MS : 0;
    uint32_t total = base + scale;
    if (total > TOAST_LIFETIME_CAP_MS) total = TOAST_LIFETIME_CAP_MS;
@@ -1955,10 +1960,11 @@ static uint32_t toast_lifetime_for(ui_toast_tone_t tone, const char *text) {
 }
 
 static uint32_t toast_border_for(ui_toast_tone_t tone) {
-   if (tone == UI_TOAST_WARN) return TH_MODE_HYBRID;            /* yellow */
-   if (tone == UI_TOAST_ERROR) return TH_STATUS_RED;            /* rose-red */
-   if (tone == UI_TOAST_INCOMING) return TOAST_BORDER_INCOMING; /* W7-E.1 blue-violet */
-   return TH_CARD_BORDER;                                       /* legacy subtle */
+   if (tone == UI_TOAST_WARN) return TH_MODE_HYBRID;                  /* yellow */
+   if (tone == UI_TOAST_ERROR) return TH_STATUS_RED;                  /* rose-red */
+   if (tone == UI_TOAST_INCOMING) return TOAST_BORDER_INCOMING;       /* W7-E.1 blue-violet */
+   if (tone == UI_TOAST_INCOMING_QUIET) return TOAST_BORDER_INCOMING; /* W7-E.6 same hue, dim via bg opa */
+   return TH_CARD_BORDER;                                             /* legacy subtle */
 }
 
 /* Track the currently-displayed toast so a back-to-back show_toast can
@@ -2042,7 +2048,11 @@ static void show_toast_internal_tone(const char *text, ui_toast_tone_t tone) {
    lv_obj_remove_style_all(t);
    lv_obj_set_size(t, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
    lv_obj_set_style_bg_color(t, lv_color_hex(TH_CARD_ELEVATED), 0);
-   lv_obj_set_style_bg_opa(t, 240, 0);
+   /* W7-E.6: quiet variant uses half-opacity background so the user
+    * sees the message arrived but it doesn't visually compete with
+    * whatever they're doing during sleep hours. */
+   int bg_opa = (tone == UI_TOAST_INCOMING_QUIET) ? TOAST_OPA_QUIET : 240;
+   lv_obj_set_style_bg_opa(t, bg_opa, 0);
    lv_obj_set_style_radius(t, 18, 0);
    lv_obj_set_style_pad_hor(t, 22, 0);
    lv_obj_set_style_pad_ver(t, 14, 0);

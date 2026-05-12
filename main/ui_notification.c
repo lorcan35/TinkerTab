@@ -116,8 +116,12 @@ static void notif_show_async_cb(void *arg) {
    const char *preview = msg->preview[0] ? msg->preview : "(no preview)";
    bool to_now_card = route_to_now_card(msg);
 
+   bool quiet = quiet_now();
+
    if (to_now_card) {
-      /* Richer surface: kicker + multi-line preview + 3-button row. */
+      /* Richer surface: kicker + multi-line preview + 3-button row.
+       * High-priority gets through visually even in quiet hours per
+       * PLAN §4.3 — user opted into the priority signal. */
       ui_home_show_channel_now(ch, sender, preview);
       /* Cache for the SNOOZE button — see ui_notification_snooze_current. */
       memcpy(&s_last_now_msg, msg, sizeof(s_last_now_msg));
@@ -127,18 +131,20 @@ static void notif_show_async_cb(void *arg) {
        * specifiers so compiler can prove no truncation. */
       char text[200];
       snprintf(text, sizeof(text), "[%.15s] %.40s · %.120s", ch, sender, preview);
-      ui_home_show_toast_ex(text, UI_TOAST_INCOMING);
+      /* W7-E.6: dim variant during quiet hours — visible but not
+       * attention-grabbing per PLAN §4.3. */
+      ui_home_show_toast_ex(text, quiet ? UI_TOAST_INCOMING_QUIET : UI_TOAST_INCOMING);
    }
 
    /* Audio cue: HIGH for now-card, LOW for toast.  Respect quiet hours
     * per spec §4.3 — visible surface still fires, audio is suppressed. */
-   if (!quiet_now()) {
+   if (!quiet) {
       ui_audio_cue_play(to_now_card ? UI_CUE_INCOMING_HIGH : UI_CUE_INCOMING_LOW);
    }
 
-   char detail[48];
-   snprintf(detail, sizeof(detail), "%.6s/%.16s pri=%.6s surf=%s", ch, sender, msg->priority[0] ? msg->priority : "?",
-            to_now_card ? "now" : "toast");
+   char detail[64];
+   snprintf(detail, sizeof(detail), "%.6s/%.16s pri=%.6s surf=%s%s", ch, sender, msg->priority[0] ? msg->priority : "?",
+            to_now_card ? "now" : "toast", quiet ? " quiet" : "");
    tab5_debug_obs_event("ui.notif", detail);
 
    free(msg);
@@ -181,6 +187,16 @@ static uint64_t snooze_now_us(void) { return (uint64_t)esp_timer_get_time(); }
  * has passed gets removed + re-shown via the normal routing path. */
 static void snooze_walk_cb(lv_timer_t *t) {
    (void)t;
+   /* W7-E.6: during quiet hours, leave the ring untouched so re-fires
+    * don't wake the user.  Next 60 s tick after quiet ends will process
+    * the accumulated backlog naturally — entries with `fire_at` already
+    * in the past stay flagged ready. */
+   if (quiet_now()) {
+      if (s_snooze_count > 0) {
+         tab5_debug_obs_event("ui.notif.snooze", "defer_quiet");
+      }
+      return;
+   }
    uint64_t now_us = snooze_now_us();
    /* Walk in reverse so we can remove without re-indexing. */
    for (int i = s_snooze_count - 1; i >= 0; i--) {
