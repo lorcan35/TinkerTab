@@ -24,6 +24,7 @@
 
 #include "cJSON.h"
 #include "config.h"
+#include "debug_obs.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -111,6 +112,14 @@ static void render_agent_log(const agent_log_payload_t *p);
 static void fetch_agent_log_job(void *arg);
 static void async_render_agent_log_cb(void *arg);
 static void kick_off_agent_log_fetch(void);
+/* W7-B Tab5-side (audit 2026-05-11): mode-3 agent-skill catalog
+ * fetch.  Dragon serves `/api/v1/agent_skills` with the union of
+ * known-static OpenClaw core tools + tools observed in agent_log.
+ * First slice fires an obs event with the summary; rendering into
+ * the overlay UI is a follow-up. */
+static void fetch_agent_skills_job(void *arg);
+static void kick_off_agent_skills_fetch(void);
+static volatile bool s_skills_fetch_pending = false;
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -546,6 +555,127 @@ static void kick_off_agent_log_fetch(void) {
    }
 }
 
+/* ── W7-B Tab5-side: GET /api/v1/agent_skills round-trip probe ────────
+ *
+ * First slice — fetch the catalog on every overlay show, emit an obs
+ * event with `count=N observed=M`, log a one-line summary.  No UI
+ * rendering yet; that's a follow-up once we've validated the data
+ * shape on live hardware via the obs ring.  Catalog is at
+ * `dragon_host:3502/api/v1/agent_skills`. */
+static void fetch_agent_skills_job(void *arg) {
+   (void)arg;
+
+   char dragon_host[64] = {0};
+   tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
+   if (!dragon_host[0]) {
+      tab5_debug_obs_event("agent_skills", "no_host");
+      s_skills_fetch_pending = false;
+      return;
+   }
+
+   char url[160];
+   snprintf(url, sizeof(url), "http://%s:%d/api/v1/agent_skills", dragon_host, TAB5_VOICE_PORT);
+
+   const size_t resp_cap = 8 * 1024;
+   char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!resp_buf) {
+      tab5_debug_obs_event("agent_skills", "psram_alloc_fail");
+      s_skills_fetch_pending = false;
+      return;
+   }
+
+   esp_http_client_config_t cfg = {
+       .url = url,
+       .method = HTTP_METHOD_GET,
+       .timeout_ms = 5000,
+       .buffer_size = 2048,
+       .crt_bundle_attach = NULL,
+   };
+   esp_http_client_handle_t client = esp_http_client_init(&cfg);
+   if (!client) {
+      tab5_debug_obs_event("agent_skills", "http_init_fail");
+      heap_caps_free(resp_buf);
+      s_skills_fetch_pending = false;
+      return;
+   }
+
+   /* Same bearer-auth path as the tools + agent_log fetches. */
+   char auth_header[128] = {0};
+   {
+      char tok[96] = {0};
+      tab5_settings_get_dragon_api_token(tok, sizeof(tok));
+      if (tok[0]) {
+         snprintf(auth_header, sizeof(auth_header), "Bearer %s", tok);
+         esp_http_client_set_header(client, "Authorization", auth_header);
+      }
+   }
+
+   esp_err_t err = esp_http_client_open(client, 0);
+   if (err != ESP_OK) {
+      char detail[48];
+      snprintf(detail, sizeof detail, "open_err=%s", esp_err_to_name(err));
+      tab5_debug_obs_event("agent_skills", detail);
+      esp_http_client_cleanup(client);
+      heap_caps_free(resp_buf);
+      s_skills_fetch_pending = false;
+      return;
+   }
+   esp_http_client_fetch_headers(client);
+   int status = esp_http_client_get_status_code(client);
+   if (status != 200) {
+      char detail[24];
+      snprintf(detail, sizeof detail, "http_%d", status);
+      tab5_debug_obs_event("agent_skills", detail);
+      esp_http_client_close(client);
+      esp_http_client_cleanup(client);
+      heap_caps_free(resp_buf);
+      s_skills_fetch_pending = false;
+      return;
+   }
+
+   int total = 0;
+   while (total < (int)resp_cap - 1) {
+      int n = esp_http_client_read(client, resp_buf + total, (int)resp_cap - 1 - total);
+      if (n <= 0) break;
+      total += n;
+   }
+   resp_buf[total] = '\0';
+   esp_http_client_close(client);
+   esp_http_client_cleanup(client);
+
+   /* Response shape:
+    *   {"items":[...], "count":N, "static_count":S, "observed_count":O}
+    * We only care about the summary counts for this slice. */
+   cJSON *root = cJSON_Parse(resp_buf);
+   heap_caps_free(resp_buf);
+   if (!root) {
+      tab5_debug_obs_event("agent_skills", "json_parse_fail");
+      s_skills_fetch_pending = false;
+      return;
+   }
+   int count = 0, observed = 0;
+   cJSON *c = cJSON_GetObjectItem(root, "count");
+   cJSON *o = cJSON_GetObjectItem(root, "observed_count");
+   if (cJSON_IsNumber(c)) count = c->valueint;
+   if (cJSON_IsNumber(o)) observed = o->valueint;
+   cJSON_Delete(root);
+
+   char detail[48];
+   snprintf(detail, sizeof detail, "count=%d observed=%d", count, observed);
+   tab5_debug_obs_event("agent_skills", detail);
+   ESP_LOGI(TAG, "agent_skills fetched: %s", detail);
+   s_skills_fetch_pending = false;
+}
+
+static void kick_off_agent_skills_fetch(void) {
+   if (s_skills_fetch_pending) return;
+   s_skills_fetch_pending = true;
+   if (tab5_worker_enqueue(fetch_agent_skills_job, NULL, "agents_skills_fetch") != ESP_OK) {
+      ESP_LOGW(TAG, "agent_skills_fetch worker enqueue failed");
+      s_skills_fetch_pending = false;
+   }
+}
+
 static void render_catalog(const tools_payload_t *p) {
    /* Lazy-create the catalog container.  Sits below the existing
     * AGENT ACTIVITY entry at y ≈ 250 + (entry height ~250).  Use
@@ -807,6 +937,9 @@ void ui_agents_show(void)
         kick_off_tools_fetch();
         /* TT #328 Wave 12 — refresh cross-session activity feed. */
         kick_off_agent_log_fetch();
+        /* W7-B (audit 2026-05-11): probe Dragon's agent-skill catalog
+         * for mode-3 visibility — obs ring records count + observed. */
+        kick_off_agent_skills_fetch();
         return;
     }
 
@@ -859,6 +992,11 @@ void ui_agents_show(void)
     /* TT #328 Wave 12 — fetch cross-session agent_log in parallel.
      * Renders below the local activity entry when local is empty. */
     kick_off_agent_log_fetch();
+    /* W7-B (audit 2026-05-11): probe Dragon's agent-skill catalog
+     * for mode-3 visibility — first slice records `count` + `observed`
+     * to the obs ring; visual rendering follows once data shape is
+     * validated on live hardware. */
+    kick_off_agent_skills_fetch();
     ESP_LOGI(TAG, "agents overlay shown");
 }
 
