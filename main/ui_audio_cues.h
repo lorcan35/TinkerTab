@@ -40,9 +40,11 @@
 #include "esp_err.h"
 
 typedef enum {
-   UI_CUE_MODE_SWITCH = 0, /* 80 ms 880 Hz — bright, confirmatory */
-   UI_CUE_CANCEL = 1,      /* 60 ms 220 Hz — low, dismissive */
-   UI_CUE_ERROR = 2,       /* 120 ms 200 Hz — longer, somber */
+   UI_CUE_MODE_SWITCH = 0,   /* 80 ms 880 Hz — bright, confirmatory */
+   UI_CUE_CANCEL = 1,        /* 60 ms 220 Hz — low, dismissive */
+   UI_CUE_ERROR = 2,         /* 120 ms 200 Hz — longer, somber */
+   UI_CUE_INCOMING_LOW = 3,  /* W7-E.0: 30 ms 1200 Hz @ 30% — toast ping */
+   UI_CUE_INCOMING_HIGH = 4, /* W7-E.0: 80 ms two-tone bell (880→1320 Hz) @ 35% — now-card claim */
    UI_CUE_COUNT,
 } ui_cue_t;
 
