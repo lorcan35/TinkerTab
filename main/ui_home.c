@@ -779,17 +779,22 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_bg_grad_dir(s_say_mic, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(s_say_mic, LV_OPA_COVER, 0);
 
-    /* Label text inside mic — use text chevron placeholder. We don't ship a
-     * mic glyph in the Montserrat subset, so a compact ASCII mark keeps the
-     * pill legible until an icon font is added. */
+    /* W8 (cross-stack audit 2026-05-11): replaced the U+2022 placeholder
+     * dot with LV_SYMBOL_AUDIO, which IS in the Montserrat-48 subset
+     * (already used by ui_audio.c).  Brand affordance is now a real
+     * microphone glyph instead of an ambiguous bullet — closes the
+     * audit's "mic glyph is a bullet dot" finding. */
     lv_obj_t *mic_mark = lv_label_create(s_say_mic);
-    lv_label_set_text(mic_mark, "\xe2\x80\xa2");  /* U+2022 as placeholder dot */
+    lv_label_set_text(mic_mark, LV_SYMBOL_AUDIO);
     lv_obj_set_style_text_font(mic_mark, FONT_CLOCK, 0);
     lv_obj_set_style_text_color(mic_mark, lv_color_hex(TH_BG), 0);
     lv_obj_align(mic_mark, LV_ALIGN_CENTER, 0, -6);
 
+    /* W8: copy was "Hold to speak" but the say-pill is bound to tap
+     * (click) only — long-press is on the orb above.  Renamed to match
+     * the actual gesture. */
     s_say_label_main = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_main, "Hold to speak");
+    lv_label_set_text(s_say_label_main, "Tap to talk");
     lv_obj_set_pos(s_say_label_main, 116, 26);
     lv_obj_set_style_text_font(s_say_label_main, FONT_HEADING, 0);
     lv_obj_set_style_text_color(s_say_label_main, lv_color_hex(TH_TEXT_PRIMARY), 0);
@@ -807,8 +812,12 @@ lv_obj_t *ui_home_create(void)
      * Record (and from Wave 3 will land in chat).  The label was
      * outright lying about the binding; renamed to match what the
      * gesture actually does. */
+    /* W8: sub-label clarified.  The long-press gesture lives on the
+     * ORB above, not on the pill.  Pre-W8 "HOLD FOR MODES" was
+     * ambiguous about which surface the hold applies to — visible
+     * confusion in audit screenshots. */
     s_say_label_sub = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_sub, "HOLD FOR MODES");
+    lv_label_set_text(s_say_label_sub, "HOLD ORB FOR MODES");
     lv_obj_set_pos(s_say_label_sub, 116, 60);
     lv_obj_set_style_text_font(s_say_label_sub, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_say_label_sub, lv_color_hex(TH_TEXT_DIM), 0);
