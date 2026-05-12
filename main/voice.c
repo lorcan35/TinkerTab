@@ -50,6 +50,7 @@
 #include "settings.h"
 #include "task_worker.h" /* #133: defer queue-drain to avoid stack blow */
 #include "tool_log.h"    /* U7+U8 (#206): record tool activity for ui_agents/ui_focus */
+#include "ui_audio_cues.h" /* W8: UI_CUE_CANCEL on voice_cancel */
 #include "ui_chat.h"
 #include "ui_core.h"
 #include "ui_home.h" /* TT #317 Phase 4: ui_home_show_toast for failover UX */
@@ -1907,6 +1908,10 @@ esp_err_t voice_cancel(void)
         return ESP_OK;
     }
     ESP_LOGI(TAG, "Cancelling voice session");
+
+    /* W8 (audit 2026-05-11): confirmatory cancel chirp.  Audit found the
+     * device was mute on UI interactions; this closes the cancel branch. */
+    ui_audio_cue_play(UI_CUE_CANCEL);
 
     /* W1-C (TT #372): in vmode=5 SOLO_DIRECT the in-flight HTTP turn
      * lives in voice_solo, not the Dragon WS path.  Set the cancel flag

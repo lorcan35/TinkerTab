@@ -40,7 +40,9 @@
 #include "esp_err.h"
 
 typedef enum {
-   UI_CUE_MODE_SWITCH = 0,
+   UI_CUE_MODE_SWITCH = 0, /* 80 ms 880 Hz — bright, confirmatory */
+   UI_CUE_CANCEL = 1,      /* 60 ms 220 Hz — low, dismissive */
+   UI_CUE_ERROR = 2,       /* 120 ms 200 Hz — longer, somber */
    UI_CUE_COUNT,
 } ui_cue_t;
 
