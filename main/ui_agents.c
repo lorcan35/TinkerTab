@@ -89,6 +89,13 @@ typedef struct {
 typedef struct {
    int n;
    agent_log_entry_t entries[AGENT_LOG_MAX];
+   /* W7-A.3 (audit 2026-05-11): per-source bucket counts surfaced by
+    * Dragon's `/api/v1/agent_log` response.  Used to render a small
+    * "Dragon: N · Gateway: M" summary under the section header so
+    * the user can see at a glance which surface has been active. */
+   int dragon_count;
+   int gateway_count;
+   int other_count;
    bool fetch_ok;
    char err_msg[80];
 } agent_log_payload_t;
@@ -521,8 +528,11 @@ static void fetch_agent_log_job(void *arg) {
    esp_http_client_close(client);
    esp_http_client_cleanup(client);
 
-   /* { "items": [{id, ts, tool, status, result, execution_ms, args}, ...],
-    *   "count":N, "head_id":H, "tail_id":T, "ring_size":S }                */
+   /* { "items": [{id, ts, tool, status, result, execution_ms, args, source}, ...],
+    *   "count":N, "head_id":H, "tail_id":T, "ring_size":S,
+    *   "sources": {"dragon": N, "gateway": M, ...} }
+    * The `source` field on each entry + the top-level `sources` dict
+    * were added by TinkerBox W7-A.3 (#302). */
    cJSON *root = cJSON_Parse(resp_buf);
    heap_caps_free(resp_buf);
    if (!root) {
@@ -563,9 +573,32 @@ static void fetch_agent_log_job(void *arg) {
       }
       p->n++;
    }
+
+   /* W7-A.3: top-level `sources` dict — bucket counts across the whole
+    * ring (not just the paginated `items`).  Keys are arbitrary strings;
+    * we extract the two known ones and lump everything else into
+    * `other_count` so a future surface (MCP, channel bridge, etc.)
+    * still shows up in the total. */
+   cJSON *sources = cJSON_GetObjectItem(root, "sources");
+   if (cJSON_IsObject(sources)) {
+      cJSON *src_item = NULL;
+      cJSON_ArrayForEach(src_item, sources) {
+         if (!cJSON_IsNumber(src_item) || !src_item->string) continue;
+         int v = src_item->valueint;
+         if (strcmp(src_item->string, "dragon") == 0) {
+            p->dragon_count = v;
+         } else if (strcmp(src_item->string, "gateway") == 0) {
+            p->gateway_count = v;
+         } else {
+            p->other_count += v;
+         }
+      }
+   }
+
    cJSON_Delete(root);
    p->fetch_ok = true;
-   ESP_LOGI(TAG, "Fetched %d agent_log entries from %s", p->n, url);
+   ESP_LOGI(TAG, "Fetched %d agent_log entries from %s (dragon=%d gateway=%d other=%d)", p->n, url, p->dragon_count,
+            p->gateway_count, p->other_count);
 
    tab5_lv_async_call(async_render_agent_log_cb, p);
 }
@@ -1061,6 +1094,25 @@ static void render_agent_log(const agent_log_payload_t *p) {
       lv_obj_set_style_text_font(e, FONT_BODY, 0);
       lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
       return;
+   }
+
+   /* W7-A.3: per-source bucket summary line.  Skipped silently when
+    * every bucket is zero (initial Dragon boot) so the section stays
+    * compact; otherwise renders "Dragon: N · Gateway: M".  Other
+    * sources (MCP, channel bridge, etc.) roll into "+K other" so a
+    * future surface doesn't get lost. */
+   if (p->dragon_count > 0 || p->gateway_count > 0 || p->other_count > 0) {
+      lv_obj_t *sumlbl = lv_label_create(s_agent_log_root);
+      char sbuf[80];
+      int off = snprintf(sbuf, sizeof(sbuf), "DRAGON: %d \xe2\x80\xa2 GATEWAY: %d", p->dragon_count, p->gateway_count);
+      if (p->other_count > 0 && off > 0 && off < (int)sizeof(sbuf)) {
+         snprintf(sbuf + off, sizeof(sbuf) - off, " \xe2\x80\xa2 +%d OTHER", p->other_count);
+      }
+      lv_label_set_text(sumlbl, sbuf);
+      lv_obj_set_style_text_font(sumlbl, FONT_CAPTION, 0);
+      lv_obj_set_style_text_color(sumlbl, lv_color_hex(TH_TEXT_SECONDARY), 0);
+      lv_obj_set_style_text_letter_space(sumlbl, 3, 0);
+      lv_obj_set_style_pad_left(sumlbl, SIDE_PAD, 0);
    }
 
    if (p->n == 0) {
