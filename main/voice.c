@@ -2202,6 +2202,35 @@ esp_err_t voice_send_text(const char *text)
     return ret;
 }
 
+/* W7-E.4: channel_reply WS sender.  Routes a Tab5-side reply to a
+ * gateway-watched channel back through Dragon (which forwards to the
+ * gateway via chat.reply RPC).  No state-machine side-effects — this is
+ * a one-shot fire-and-forget; Dragon ACKs asynchronously via the
+ * channel_reply_ack frame handled in voice_ws_proto.c. */
+esp_err_t voice_send_channel_reply(const char *channel, const char *thread_id, const char *text) {
+   if (!channel || !channel[0]) return ESP_ERR_INVALID_ARG;
+   if (!thread_id || !thread_id[0]) return ESP_ERR_INVALID_ARG;
+   if (!text || !text[0]) return ESP_ERR_INVALID_ARG;
+   if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) {
+      return ESP_ERR_INVALID_STATE;
+   }
+
+   cJSON *msg = cJSON_CreateObject();
+   if (!msg) return ESP_ERR_NO_MEM;
+   cJSON_AddStringToObject(msg, "type", "channel_reply");
+   cJSON_AddStringToObject(msg, "channel", channel);
+   cJSON_AddStringToObject(msg, "thread_id", thread_id);
+   cJSON_AddStringToObject(msg, "text", text);
+   char *json = cJSON_PrintUnformatted(msg);
+   cJSON_Delete(msg);
+   if (!json) return ESP_ERR_NO_MEM;
+
+   ESP_LOGI(TAG, "Sending channel_reply ch=%s thread=%s text=%.40s", channel, thread_id, text);
+   esp_err_t ret = voice_ws_send_text(json);
+   cJSON_free(json);
+   return ret;
+}
+
 /* voice_send_widget_action moved to voice_ws_proto.c (TT #331 Wave 23
  * SRP-A1) — pure WS-proto concern: builds a JSON frame + calls
  * voice_ws_send_text. */

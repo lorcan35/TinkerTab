@@ -18,6 +18,7 @@
 #include "ui_audio_cues.h"
 #include "ui_core.h" /* tab5_lv_async_call */
 #include "ui_home.h"
+#include "voice.h" /* W7-E.4: voice_send_channel_reply */
 
 static const char *TAG = "ui_notification";
 
@@ -205,6 +206,33 @@ void ui_notification_init(void) {
    if (s_snooze_timer) return;
    s_snooze_timer = lv_timer_create(snooze_walk_cb, SNOOZE_TICK_MS, NULL);
    ESP_LOGI(TAG, "snooze walker armed (tick=%u ms, delay=%u ms)", (unsigned)SNOOZE_TICK_MS, (unsigned)SNOOZE_DELAY_MS);
+}
+
+void ui_notification_reply_current(const char *text) {
+   if (!s_last_now_msg_valid) {
+      ESP_LOGW(TAG, "reply requested but no now-card message in cache");
+      tab5_debug_obs_event("ui.notif.reply", "no_cache");
+      return;
+   }
+   /* "👍" UTF-8 is 4 bytes (F0 9F 91 8D); use as quick-ack placeholder
+    * when caller didn't supply real dictated text (W7-E.4b will). */
+   const char *reply_text = (text && text[0]) ? text : "\xF0\x9F\x91\x8D";
+
+   esp_err_t r = voice_send_channel_reply(s_last_now_msg.channel, s_last_now_msg.thread_id, reply_text);
+
+   char detail[64];
+   if (r == ESP_OK) {
+      snprintf(detail, sizeof(detail), "sent ch=%.10s thread=%.20s", s_last_now_msg.channel, s_last_now_msg.thread_id);
+      tab5_debug_obs_event("ui.notif.reply", detail);
+
+      char toast[96];
+      snprintf(toast, sizeof(toast), "Reply queued to %.40s", s_last_now_msg.sender);
+      ui_home_show_toast_ex(toast, UI_TOAST_INFO);
+   } else {
+      snprintf(detail, sizeof(detail), "send_fail err=%d", (int)r);
+      tab5_debug_obs_event("ui.notif.reply", detail);
+      ui_home_show_toast_ex("Reply not sent — Dragon offline", UI_TOAST_WARN);
+   }
 }
 
 void ui_notification_snooze_current(void) {

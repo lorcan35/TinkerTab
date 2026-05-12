@@ -908,6 +908,36 @@ void voice_ws_proto_handle_text(const char *data, int len) {
        * dismiss doesn't hide the fact that they got auto-downgraded. */
       const char *msg = "Daily budget cap reached — switched to Local mode";
       voice_async_toast(strdup(msg));
+   } else if (strcmp(type_str, "channel_reply_ack") == 0) {
+      /* W7-E.4: Dragon's confirmation that a channel_reply landed.
+       * Schema: {"type":"channel_reply_ack","thread_id":"...","ok":bool,
+       *          "platform_message_id":"...","channel":"...",
+       *          ["error":"..."]}.  Toast on either side so the user
+       *          sees the outcome. */
+      cJSON *ok_node = cJSON_GetObjectItem(root, "ok");
+      cJSON *ch_node = cJSON_GetObjectItem(root, "channel");
+      cJSON *err_node = cJSON_GetObjectItem(root, "error");
+      bool ok = cJSON_IsTrue(ok_node);
+      const char *ch = (cJSON_IsString(ch_node) && ch_node->valuestring) ? ch_node->valuestring : "channel";
+      if (ok) {
+         char *toast = malloc(64);
+         if (toast) {
+            snprintf(toast, 64, "Replied via %.40s", ch);
+            voice_async_toast(toast);
+         }
+         tab5_debug_obs_event("ui.notif.reply", "ack_ok");
+      } else {
+         const char *errmsg =
+             (cJSON_IsString(err_node) && err_node->valuestring) ? err_node->valuestring : "send failed";
+         char *toast = malloc(128);
+         if (toast) {
+            snprintf(toast, 128, "Reply failed: %.80s", errmsg);
+            voice_async_toast(toast);
+         }
+         char detail[48];
+         snprintf(detail, sizeof(detail), "ack_fail %.30s", errmsg);
+         tab5_debug_obs_event("ui.notif.reply", detail);
+      }
    } else if (strcmp(type_str, "channel_message") == 0) {
       /* W7-E.1: route gateway-watched channel messages (Telegram,
        * WhatsApp, Discord, ...) into the notification surface.  v0
