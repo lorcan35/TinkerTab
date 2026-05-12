@@ -22,10 +22,11 @@
 | W9-A (2/N) | TinkerTab | #411 | `tests/host/shim/` ESP-IDF shims (heap_caps, esp_log, esp_err) + `test_openrouter_sse.c` (9 tests / 18 assertions: overflow drop+resume, 50 KB intact, [DONE] sentinel, CRLF, comment-line drop, multi-event single feed, split-feeds, optional space).  Pins both recent SSE regressions (W3-C overflow restart, TT #379 64 KB bump).  **Closes #410** |
 | W9-A (3/N) | TinkerTab | #413 | `test_spring_anim.c` (9 tests / 18 assertions) — damped harmonic oscillator math.  Pins each of the 3 regime branches (under/critical/over), the SPRING_MAX_ELAPSED_S pathological-config bail-out, the zero-mass clamp, and SNAPPY/BOUNCY/SMOOTH preset envelopes.  **Closes #412** |
 | W9-B | TinkerTab | #415 | `tests/e2e/discover.py` — Tab5 host discovery chain (arg → env → mDNS espressif.local → cache → fail).  Replaces hardcoded `192.168.1.90` in `runner.py`.  New `tests/e2e/nightly.sh` cron-deployable wrapper for `story_stress --reboot`.  Live-verified: 14/14 PASS through new discovery wiring.  **Closes #414** |
+| W9-C | TinkerBox | #289 | `tests/test_protocol_contract.py` — 4 tests pinning bidirectional parity between `_handle_ws_voice` cmd_type branches and `docs/protocol.md` Tab5→Dragon headings.  Tolerant of ASCII `->` + Unicode `→` arrows and `Action — \`verb\`` heading style.  Allowlist self-test rejects stale entries.  Wired into ci.yml pytest gate.  **Closes TinkerBox #288** |
 
 **W7 placeholder:** TinkerBox #270 (mode 3 full surface, 7 sub-waves W7-0..G).  Decision logged 2026-05-11: Option C (full surface).
 
-**Remaining roadmap:** W9-A more slices (heavier modules need cJSON / NVS / SD shims) · W9-C protocol contract test · W9-D Dragon-restart resilience · W10 docs strategy.
+**Remaining roadmap:** W9-A more slices (heavier modules need cJSON / NVS / SD shims) · W9-D Dragon-restart resilience · W10 docs strategy.
 
 **Update this section when shipping new waves so the wave program survives session compaction.**
 
