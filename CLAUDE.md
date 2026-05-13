@@ -7,6 +7,9 @@
 - **UI/UX hardening — CLOSED** → [`docs/AUDIT-ui-ux-2026-04-29.md`](docs/AUDIT-ui-ux-2026-04-29.md) + [`docs/PLAN-ui-ux-hardening.md`](docs/PLAN-ui-ux-hardening.md) + LEARNINGS "TT #328 UI/UX hardening".
   As of 2026-04-30, 9 wave-by-wave PRs have closed 14/16 audit P0s on `feat/k144-phase6a-baud-switch`: a11y contrast, mode-array drift, mic-button leak, atomic touch injection, toast tones + persistent error banner + 4 new `error.*` obs classes, per-state voice icons, orb safe long-press + undo, universal `ui_tap_gate` debounce, chat-header touch-target lift, shared `widget_mode_dot` extract, nav-sheet 3×3 (Focus tile P0 #4), dead-API removal, onboarding Wi-Fi step, dual mode-control collapse (orb long-press → mode-sheet), and discoverability chevron + first-launch hint.  Two P0s deferred as larger scope: K144 as 5th tier in 3-dial sheet (touches autonomy-dial product semantics) + orb-overload across 4 surfaces (cross-team IA call).
 
+- **Wave 7 (TinkerClaw / channel messaging) — CLOSED** → [`docs/AUDIT-state-of-stack-2026-05-11.md`](docs/AUDIT-state-of-stack-2026-05-11.md) + [`docs/PLAN-agent-mode-notification-surface.md`](docs/PLAN-agent-mode-notification-surface.md).
+  As of 2026-05-13 the W7 sprint is functionally complete across both repos: **W7-A** mode-3 tool-call visibility (gateway → Tab5 chips), **W7-B** agent-skills catalog endpoint + Tab5 chip render with vmode=3 gating + live-refresh on mode change, **W7-A.3** dual-source `agent_log` (Dragon / gateway / channel_push / user_reply buckets), **W7-E** notification surface (7 sub-slices .0–.6 — incoming audio cues, toast path, now-card claim, dedupe + snooze rings, real `channel_reply` WS frame, Settings → CHANNELS per-platform NVS toggles, quiet-hours dim + snooze defer), **W7-E.4b** voice-dictated reply (armed-context state in `voice.c` + STT-handler intercept in `voice_ws_proto.c`), **W7-F** Dragon-side channel connector — F-stub → F.2 GatewayConnector → F.3 connect-param fix → F.4 ed25519 device identity + challenge-nonce handshake → F.5 short-code → canonical channel name mapping.  W7-E.2 channel-now overlay auto-dismisses on screen navigation (TT #464).  W7-B catalog refreshes live on `/mode` POST + dial commits (TT #467).  W7-E.4c reply-context chip repaints on both first-open AND overlay-already-up paths (TT #481).  Real Telegram pairing remains as an ops-only step.  Full end-to-end UX validation pass with real-touch input verified live on Tab5 192.168.1.90 ↔ Dragon 192.168.1.91.
+
 - **Stability — CLOSED** → [`docs/STABILITY-INVESTIGATION.md`](docs/STABILITY-INVESTIGATION.md)
   As of 2026-04-27 the investigation is fundamentally done. Real root cause of the long-residual crash class: **LVGL 9.x `lv_async_call` is NOT thread-safe** (does `lv_malloc` + `lv_timer_create` against unprotected TLSF) — the codebase had been treating it as thread-safe for years per a wrong comment in `ui_core.c`. PR #257 hand-wrapped the empirical site (mem_fetch); PR #259 added a `tab5_lv_async_call(cb, arg)` helper in `ui_core.{h,c}` and replaced all 49 sites uniformly. Today's stress benchmark progression: 50 % uptime → 92.4 % (#246) → 96 % (#249) → 97.6 % (#251+#253+#255) → **100 %, zero reboots in 5-min mixed nav+screenshot stress** (#257+#259). **Rule for any new lv_async_call use: ALWAYS call `tab5_lv_async_call`, never the LVGL primitive directly.** If a new stability symptom surfaces, do a fresh systematic-debugging pass — the historic "whack-a-mole" + LVGL pool + SDIO RX classes are all closed, so a new crash is a new mechanism.
 
@@ -384,6 +387,14 @@ ring; `GET /events?since=N` returns everything with `ms >= N`.  Each entry has
 | `m5.chain` | `voice_onboard_chain_start` / `_chain_stop` | `start` / `stop` |
 | `m5.reset` | `voice_onboard_reset_failover` (Wave 13) | `start` / `ack_ok` / `ack_fail` / `auto_retry` / `recovered` / `fail` |
 | `error.k144` | `mark_k144_unavailable` | reason: `probe_fail` / `warmup_fail` / `reset_probe_fail` / `reset_warmup_fail` |
+| `ui.cue` | `ui_audio_cues.c::cue_play_job` after speaker draw | `{cue_name} err={n}` (mode_switch/cancel/error/incoming_low/incoming_high) |
+| `ui.notif` | `ui_notification.c::notif_show_async_cb` after route decision | `{ch}/{sender} pri={p} surf={now\|toast}[ quiet]` |
+| `ui.notif.channel_off` | router gate when `ch_*_on=0` (W7-E.5) | `{channel}` |
+| `ui.notif.dedupe` | dedupe ring hit (W7-E.3) | `drop {message_id}` |
+| `ui.notif.now` | now-card button taps (W7-E.2) | `dismiss` / `reply` / `snooze` |
+| `ui.notif.snooze` | snooze ring + walker (W7-E.3) | `added {ch}/{sender} in=900s` / `overflow` / `defer_quiet` / `refire` |
+| `ui.notif.reply` | W7-E.4 + W7-E.4b channel_reply round-trip | `armed ch={ch} sender={s}` / `dictated ch={ch} err={n}` / `sent ch={ch} thread={t}` / `ack_ok` / `ack_fail {err}` / `no_cache` / `send_fail err={n}` |
+| `agent_skills` | `ui_agents.c::fetch_agent_skills_job` (W7-B Tab5) | `count={n} observed={k}` or `skip vmode={n}` |
 
 The `kind` buffer is 32 chars; `detail` is 48 chars (silently truncated past those).
 Ring is 256 entries, FIFO eviction.
@@ -475,8 +486,8 @@ Listed in chronological order from real runs:
 - **Reconnect Watchdog:** Checks connection every 5s. If Dragon restarts or network drops, auto-reconnects with exponential backoff (10s→20s→40s→60s max). Idle keepalive pings detect dead TCP.
 - **Offline Fallback:** If Dragon is unreachable on mic tap, auto-starts local SD card recording via Notes module.
 
-### Five-Tier Voice Mode (Onboard tier added in Phase 5)
-Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw / Onboard (K144)**
+### Six-Tier Voice Mode (Solo Direct added in TT #370)
+Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw / Onboard (K144) / Solo Direct (OpenRouter)**
 
 | Mode | STT | LLM | TTS | Latency | Cost |
 |------|-----|-----|-----|---------|------|
@@ -485,6 +496,7 @@ Settings dropdown: **Local / Hybrid / Full Cloud / TinkerClaw / Onboard (K144)**
 | Full Cloud (2) | OpenRouter gpt-audio-mini | User-selected (Haiku/Sonnet/GPT-4o) | OpenRouter gpt-audio-mini | 3-6s | $0.03-0.08/req |
 | TinkerClaw (3) | Moonshine (or OpenRouter) | TinkerClaw Gateway | Piper (or OpenRouter) | varies | varies |
 | Onboard K144 (4) | K144 sherpa-ncnn ASR (chain) or text-only (failover) | M5 K144 stacked LLM (qwen2.5-0.5B over UART) | K144 single_speaker_english_fast (per-utterance synth) | 2-3s | Free |
+| Solo Direct (5) | OpenRouter (Tab5 → OpenRouter direct, no Dragon) | OpenRouter (`or_mdl_llm`) | OpenRouter (`or_mdl_tts`, `or_voice`) — or TT #379 multimodal audio chat via `or_mdl_audio` | 3-6s | $0.03-0.08/req |
 
 - **LLM Model Picker:** Settings dropdown: Local NPU / Local Ollama / Claude Haiku / Claude Sonnet / GPT-4o mini (enabled only in Full Cloud mode)
 - **Auto-Fallback (cloud STT/TTS):** If cloud STT/TTS fails, Dragon falls back to local for that request + sends `config_update` with `error` field → Tab5 auto-reverts to Local mode
@@ -623,6 +635,21 @@ All keys live in the `"settings"` NVS namespace. Max key length is 15 chars.
 | `cam_rot` | u8 | 0 | 0-3 | Camera frame rotation in 90° steps applied in software after capture (0=none, 1=90° CW, 2=180°, 3=270° CW). Settings dropdown. Added in #261. |
 | `dragon_tok` | str | `""` | — | Dragon REST API bearer token.  Used for outbound HTTP calls to gated endpoints (`/api/v1/tools`, `/api/v1/agent_log`, `/api/v1/sessions`, `/api/v1/memory`).  Empty by default; provisioned via `POST /settings`.  Wave 8 (`9f51804`). |
 | `star_skills` | str | `""` | — | Comma-separated list of starred (pinned) skill / tool names.  Read by `ui_skills.c` on render to sort starred tools first + apply amber tint + "PINNED" caption.  Toggled by tap on a skill card or via `POST /settings`.  Wave 11 (`bcf05d9`). |
+| `or_key` | str | `""` | — | OpenRouter API key (TT #370 vmode=5 SOLO_DIRECT).  Empty disables Solo mode — `voice_modes_route_text` returns `SOLO_NO_KEY` + UI prompts QR scan.  Provisioned via QR scan or `POST /settings`. |
+| `or_mdl_llm` | str | `~latest` alias | — | OpenRouter LLM model for Solo mode (vmode=5).  Default falls through to the alias resolver. |
+| `or_mdl_stt` | str | `~latest` alias | — | OpenRouter STT model for Solo mode (audio in). |
+| `or_mdl_tts` | str | `~latest` alias | — | OpenRouter TTS model for Solo mode (audio out). |
+| `or_mdl_emb` | str | `~latest` alias | — | OpenRouter embedding model for Solo-mode RAG. |
+| `or_voice` | str | sensible default | — | OpenRouter TTS voice id for Solo mode. |
+| `or_mdl_audio` | str | `~latest` alias | — | TT #379 multimodal audio chat model — one `/chat/completions` call replaces the STT → LLM → TTS chain in Solo mode. |
+| `ch_tg_on` | u8 | 0 | 0-1 | W7-E.5 (#459): per-channel notification opt-in for Telegram.  All `ch_*_on` keys default off — user opts in per platform via Settings → CHANNELS section.  `ui_notification.c` gates incoming `channel_message` frames whose `channel` field maps to a disabled toggle (silent drop with `ui.notif.channel_off` obs).  Unknown channels fail-open. |
+| `ch_wa_on` | u8 | 0 | 0-1 | W7-E.5: WhatsApp notification toggle. |
+| `ch_dc_on` | u8 | 0 | 0-1 | W7-E.5: Discord notification toggle. |
+| `ch_sl_on` | u8 | 0 | 0-1 | W7-E.5: Slack notification toggle. |
+| `ch_sg_on` | u8 | 0 | 0-1 | W7-E.5: Signal notification toggle. |
+| `ch_im_on` | u8 | 0 | 0-1 | W7-E.5: iMessage notification toggle. |
+| `ch_ma_on` | u8 | 0 | 0-1 | W7-E.5: Matrix notification toggle. |
+| `ch_em_on` | u8 | 0 | 0-1 | W7-E.5: Email notification toggle. |
 
 ### ⚠️ LVGL Configuration — CRITICAL
 **ALL LVGL config goes in `sdkconfig.defaults`, NOT `lv_conf.h`.** The ESP-IDF LVGL component sets `CONFIG_LV_CONF_SKIP=1` which means `lv_conf.h` is COMPLETELY IGNORED. Any change to `lv_conf.h` has ZERO effect. Always verify with `grep "SETTING" build/config/sdkconfig.h` after building.
@@ -690,6 +717,7 @@ Wire layout: `"VID0"` (4 bytes) + `len_be` (4 bytes) + `payload[len]`. Same shap
 5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"..."}` — four-tier mode switch. Backward compat: `cloud_mode` bool still accepted.
 6. **Device Registration:** `{"type":"register","device_id":"...","session_id":"..."}` on WS connect
 7. **Clear History:** `{"type":"clear"}` — reset conversation context (W14-H20: was documented as `clear_history`; Tab5's `voice.c` + Dragon's dispatcher have always agreed on `clear`)
+8. **Channel Reply (W7-E.4):** `{"type":"channel_reply","channel":"telegram","thread_id":"<id>","text":"<reply>"}` — user response to a previously-received `channel_message` (see Dragon→Tab5 #16 below).  Built by `voice_send_channel_reply` in voice.c.  In W7-E.4b mode the next STT-complete transcript is routed through this path instead of normal LLM dispatch when reply context is armed via `voice_arm_channel_reply` (REPLY button on the now-card overlay).  Dragon ACKs asynchronously with `channel_reply_ack`.  Full schema in TinkerBox [`docs/protocol.md`](https://github.com/lorcan35/TinkerBox/blob/main/docs/protocol.md) §20.
 
 ### Dragon → Tab5 (receiving)
 1. **session_start** — session_id for NVS persistence
@@ -710,6 +738,10 @@ Wire layout: `"VID0"` (4 bytes) + `len_be` (4 bytes) + `payload[len]`. Same shap
 14. **audio_clip** — inline audio: `{"type":"audio_clip","url":"...","duration_s":2.3,"label":"..."}`.
 15. **text_update** — replace last AI bubble text: `{"type":"text_update","text":"cleaned text"}`. Dragon strips rendered code blocks from the text after sending them as media images.
 
+### Dragon → Tab5 (Channel Messaging — W7-E + W7-F, May 2026)
+16. **channel_message** — incoming third-party platform message (Telegram, WhatsApp, Discord, Slack, Signal, iMessage, Matrix, Email): `{"type":"channel_message","channel":"tg","message_id":"...","thread_id":"...","sender":{"display_name":"...","starred":true},"text":"...","preview":"...","priority":"low|normal|high","needs_reply":bool}`.  Routed by `ui_notification.c` to either toast (low-priority) or now-card (high / starred / needs_reply); 8 `ch_*_on` NVS gates per-channel.  Dedupe on `message_id` (32-entry PSRAM ring); high-pri claims a rose-bordered overlay on `lv_layer_top` with REPLY / SNOOZE / DISMISS buttons.  Quiet-hours dim variant.  Snooze 15-min ring with 60 s walker.  Full spec: TinkerBox `docs/protocol.md` §20.
+17. **channel_reply_ack** — Dragon's confirmation that a Tab5-sent `channel_reply` was delivered (or stub-acknowledged in W7-F era): `{"type":"channel_reply_ack","channel":"telegram","thread_id":"...","ok":true,"platform_message_id":"stub:<hex>"|"<real-id>"}`.  On `ok=true` Tab5 toasts "Replied via {channel}".
+
 ### Not Yet Implemented (planned)
 - **Recording:** `{"type":"record_start"}` -> binary PCM -> `{"type":"record_stop"}` — creates a note.
 - **SD Card:** Save raw WAV to SD before/during WS send. Offline queue if Dragon unreachable. (Issue #44)
@@ -720,7 +752,10 @@ Generated from `ls main/` — if you add or remove a file, update this section.
 
 ### Boot + infrastructure
 ```
-main/main.c               — Boot sequence: HW init → service bring-up → LVGL → watchdog
+main/main.c               — Boot sequence: HW init → service bring-up → LVGL → watchdog.
+                             Also runs one-time init for W8 audio cues (`ui_audio_cues_init`)
+                             and W7-E snooze walker (`ui_notification_init`) after worker
+                             + LVGL are up.
 main/config.h             — Pin map, firmware version, OTA paths, VOICE_MODE_TINKERCLAW=3
 main/service_registry.*   — Service-pattern scaffolding (audio/display/dragon/network/storage)
 main/service_audio.c      — Audio service init (I2S, ES8388 DAC, ES7210 mic)
@@ -786,6 +821,14 @@ main/voice.{c,h}          — Voice public API + state machine + mic capture tas
                              reconnect watchdog.  Wave 23 thinned voice.c from ~3,668 LOC
                              to ~2,287 LOC by extracting voice_ws_proto (RX/TX dispatch +
                              event handler) and voice_modes (five-tier routing).
+                             W7-E.4 (#456) adds `voice_send_channel_reply(channel, thread_id,
+                             text)` for replying to channel_message frames over the existing
+                             voice WS.  W7-E.4b (#471) adds armed-reply context state (4 APIs:
+                             `voice_arm_channel_reply`, `_disarm`, `_is_armed`, `_consume`)
+                             so the next STT-complete transcript routes through
+                             `voice_send_channel_reply` instead of normal LLM dispatch.
+                             Peek variant `voice_peek_channel_reply` for UI surfaces that
+                             need to display the armed target without consuming it (TT #488).
 main/voice_ws_proto.{c,h} — WS frame routing layer: JSON RX dispatcher + binary magic
                              VID0/AUD0/untagged-PCM dispatcher + esp_websocket_client
                              event callback + send wrappers + REGISTER frame builder +
@@ -843,8 +886,24 @@ main/ui_files.{c,h}       — SD file browser (directories, WAV playback, image 
 main/ui_notes.{c,h}       — Notes screen (search, compact cards, edit overlay, dragon sync)
 main/ui_sessions.{c,h}    — Session browser (cross-session history)
 main/ui_memory.{c,h}      — Memory facts browser
-main/ui_agents.{c,h}      — Agents / TinkerClaw status panel
+main/ui_agents.{c,h}      — Agents / TinkerClaw status panel.  W7-A.3-Tab5 (#439)
+                             renders bucketed source counts (Dragon / gateway / other);
+                             W7-B.3 (#432) renders agent-skills chips with vmode=3 gate;
+                             W7-B follow-up (#468) refreshes catalog live on mode change.
 main/ui_audio.{c,h}       — Audio settings (volume, mute, routing)
+main/ui_audio_cues.{c,h}  — W8 pre-computed PCM cue buffers (5 tones: MODE_SWITCH,
+                             CANCEL, ERROR, INCOMING_LOW, INCOMING_HIGH two-tone bell).
+                             48 kHz mono int16 in PSRAM, dispatched via task_worker.
+                             init from main.c after worker is up.
+main/ui_notification.{c,h} — W7-E channel_message router + surface dispatcher.  Owns
+                             channel_message_t struct, the 32-entry dedupe ring keyed
+                             on message_id (W7-E.3), 8-entry snooze ring with 15-min
+                             defer + 60 s walker (W7-E.3), routing rule (high/starred/
+                             needs_reply → now-card; else → toast), per-channel opt-in
+                             gate (W7-E.5), quiet-hours dim variant (W7-E.6), and
+                             reply-context arm/peek/consume bridge to voice.c (W7-E.4b).
+                             ui_notification_init() called from main.c arms the snooze
+                             walker.
 main/ui_mode_sheet.{c,h}  — Three-tier voice-mode picker sheet
 main/ui_nav_sheet.{c,h}   — Bottom nav sheet (home / chat / notes / settings / camera / files)
 main/ui_onboarding.{c,h}  — First-boot tutorial flow
