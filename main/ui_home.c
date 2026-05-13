@@ -124,6 +124,27 @@ static lv_obj_t *s_ring_outer      = NULL;
 static lv_obj_t *s_ring_mid        = NULL;
 static lv_obj_t *s_ring_inner      = NULL;
 static lv_obj_t *s_orb             = NULL;
+/* TT #501 — orb aliveness pool.
+ *
+ *  - s_orb_breath_anim: the ambient breath anim handle (4 s opacity
+ *    cycle).  NULL when not running.  Restarted on state-machine exits
+ *    from voice modes back to IDLE/READY.
+ *  - s_orb_peak_timer: 50 ms tick that polls voice_get_current_rms()
+ *    and drives orb opacity during LISTENING/PROCESSING/SPEAKING.
+ *    NULL when idle.
+ *  - s_ripple_pool: 4 reusable border-only circles that ride the
+ *    orb's center.  Static pool so tool-call spam can't OOM the LVGL
+ *    pool.  Allocated once at ui_home_create; deleted at destroy.
+ *    `next_ripple_slot` is a round-robin index — when 4 are live and
+ *    a 5th tool fires, we recycle the oldest by killing its anim
+ *    + restarting from radius 90.  Cheap. */
+#define ORB_RIPPLE_POOL_SIZE 4
+static lv_obj_t *s_orb_breath_anim_obj = NULL; /* the anim is on s_orb itself but we track by flag */
+static bool s_orb_breath_running = false;
+static lv_timer_t *s_orb_peak_timer = NULL;
+static lv_obj_t *s_ripple_pool[ORB_RIPPLE_POOL_SIZE] = {0};
+static uint8_t s_next_ripple_slot = 0;
+static float s_orb_rms_ema = 0.0f;
 /* TT #328 Wave 11 — orb status pip.  P0 #16 said "the orb has 4 contracts
  * branching invisibly on voice_mode / chain_active."  This small badge
  * sits in the orb's top-right corner and flips glyph+color based on what
@@ -220,6 +241,11 @@ static void orb_paint_for_tone(widget_tone_t tone);
 static void mode_hint_fire_cb(lv_timer_t *t);
 /* TT #328 Wave 11 — orb status pip painter (P0 #16). */
 static void paint_orb_pip_for_context(void);
+/* TT #501 — orb aliveness static fns referenced from ui_home_destroy
+ * (which lives above the implementations). */
+static void orb_set_opa_cb(void *obj, int32_t v);
+static void ripple_set_radius_cb(void *obj, int32_t r);
+static void ripple_set_opa_cb(void *obj, int32_t v);
 /* v4·D Phase 4g: widget_prompt hit-zone tap routing */
 static void prompt_choice_tap_cb(lv_event_t *e);
 static void refresh_prompt_hit_zones(const widget_t *w);
@@ -880,6 +906,9 @@ lv_obj_t *ui_home_create(void)
 
     /* Initial fill */
     ui_home_update_status();
+
+    /* TT #501: kick off the ambient orb breath now that s_orb exists. */
+    ui_home_orb_aliveness_sync();
 
     if (s_refresh_timer == NULL) {
         /* 2 s safety-net poll — the real state push is from voice.c via
@@ -2094,6 +2123,27 @@ static void show_toast_internal(const char *text) { show_toast_internal_tone(tex
 void ui_home_destroy(void)
 {
     if (s_refresh_timer) { lv_timer_delete(s_refresh_timer); s_refresh_timer = NULL; }
+    /* TT #501: tear down orb-aliveness state so anims don't fire on a
+     * freed s_orb after the screen is gone.  Peak timer + breath anim
+     * both reference s_orb. */
+    if (s_orb_peak_timer) {
+       lv_timer_delete(s_orb_peak_timer);
+       s_orb_peak_timer = NULL;
+    }
+    if (s_orb) lv_anim_delete(s_orb, orb_set_opa_cb);
+    s_orb_breath_running = false;
+    /* The ripple pool objects are children of s_screen and get freed
+     * when s_screen is deleted below; clear our handles + cancel any
+     * in-flight anims to be safe. */
+    for (uint8_t i = 0; i < ORB_RIPPLE_POOL_SIZE; i++) {
+       if (s_ripple_pool[i]) {
+          lv_anim_delete(s_ripple_pool[i], ripple_set_radius_cb);
+          lv_anim_delete(s_ripple_pool[i], ripple_set_opa_cb);
+          s_ripple_pool[i] = NULL;
+       }
+    }
+    s_next_ripple_slot = 0;
+    s_orb_rms_ema = 0.0f;
     /* Phase 2 (#42): tear down any in-flight toast ctx so its anim
      * timer doesn't fire on a freed obj after the screen is gone. */
     if (s_toast_ctx) {
@@ -2489,6 +2539,269 @@ void ui_home_set_error_banner_visible(bool visible) {
       lv_obj_add_flag(s_err_banner, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* ── TT #501 orb aliveness ──────────────────────────────────────────
+ *
+ * Three coordinated animation modes that share the same lv_obj_t (s_orb):
+ *   - BREATH (idle): 4 s opacity sine on s_orb, infinite loop.  Always
+ *     running unless replaced by the peak meter.
+ *   - PEAK METER (voice active): 50 ms timer reads voice_get_current_rms,
+ *     smooths via EMA (alpha=0.35), drives opacity 235 + rms*120 capped.
+ *     Owns s_orb's opacity while alive; on stop, breath restarts.
+ *   - RIPPLE (per tool_call): static pool of 4 transient border-only
+ *     circles centered on the orb.  Each ripple animates radius 90→180
+ *     + opacity 200→0 over 500 ms then auto-hides.  Pool is round-robin;
+ *     a 5th call while 4 are live recycles the oldest (kills its anim).
+ *
+ * Voice-state transition policy (driven from voice_set_state via the
+ * existing ui_home_refresh_sys_label hook):
+ *   IDLE / READY / CONNECTING / RECONNECTING → breath
+ *   LISTENING / PROCESSING / SPEAKING        → peak meter
+ *
+ * Overlay-aware: anything that hides the home (chat full, settings
+ * full, camera) pauses both anims via ui_home_orb_aliveness_pause()
+ * to keep CPU + heap pressure off the busy overlay.  Restored on
+ * any-overlay-hidden via ui_home_orb_aliveness_resume(). */
+
+#define ORB_BREATH_PERIOD_MS 4000
+#define ORB_BREATH_OPA_MIN 235
+#define ORB_BREATH_OPA_MAX 255
+#define ORB_PEAK_TICK_MS 50
+#define ORB_PEAK_RMS_GAIN 120.0f
+#define ORB_PEAK_RMS_EMA 0.35f
+#define ORB_RIPPLE_DURATION_MS 500
+#define ORB_RIPPLE_R_START (ORB_SIZE / 2) /* 90 */
+#define ORB_RIPPLE_R_END (ORB_SIZE)       /* 180 */
+#define ORB_RIPPLE_OPA_START 200
+#define ORB_RIPPLE_OPA_END 0
+
+/* lv_anim setter for opacity on s_orb — used by breath. */
+static void orb_set_opa_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+/* Start the ambient 4 s sine breath.  Idempotent — safe to call when
+ * already running (we delete any prior anim on s_orb first). */
+static void orb_breath_start(void) {
+   if (!s_orb) return;
+   /* Kill any existing breath anim on s_orb so we don't stack them. */
+   lv_anim_delete(s_orb, orb_set_opa_cb);
+
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_orb);
+   lv_anim_set_exec_cb(&a, orb_set_opa_cb);
+   lv_anim_set_values(&a, ORB_BREATH_OPA_MIN, ORB_BREATH_OPA_MAX);
+   lv_anim_set_time(&a, ORB_BREATH_PERIOD_MS / 2);
+   lv_anim_set_playback_time(&a, ORB_BREATH_PERIOD_MS / 2);
+   lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+   s_orb_breath_running = true;
+}
+
+/* Stop the breath anim and clamp opacity back to full.  Called before
+ * peak meter takes over, or on overlay-hide. */
+static void orb_breath_stop(void) {
+   if (!s_orb) return;
+   lv_anim_delete(s_orb, orb_set_opa_cb);
+   lv_obj_set_style_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+   s_orb_breath_running = false;
+}
+
+/* Peak-meter tick — reads RMS, smooths, drives opacity.  Runs on the
+ * LVGL thread (lv_timer ctx) so direct style writes are safe. */
+static void orb_peak_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_orb) return;
+   float rms = voice_get_current_rms();
+   /* Clamp to [0, 1] — RMS is normalised in voice.c but defensive. */
+   if (rms < 0.0f) rms = 0.0f;
+   if (rms > 1.0f) rms = 1.0f;
+   /* EMA smoothing so a single loud frame doesn't slam the orb full
+    * bright and back; 35 % new sample = ~5 frame settle time at 20 Hz. */
+   s_orb_rms_ema = (ORB_PEAK_RMS_EMA * rms) + ((1.0f - ORB_PEAK_RMS_EMA) * s_orb_rms_ema);
+   int opa = ORB_BREATH_OPA_MIN + (int)(s_orb_rms_ema * ORB_PEAK_RMS_GAIN);
+   if (opa > 255) opa = 255;
+   if (opa < ORB_BREATH_OPA_MIN) opa = ORB_BREATH_OPA_MIN;
+   lv_obj_set_style_opa(s_orb, (lv_opa_t)opa, LV_PART_MAIN);
+}
+
+/* Start the peak meter — stops breath first.  Idempotent. */
+static void orb_peak_start(void) {
+   if (!s_orb) return;
+   orb_breath_stop();
+   s_orb_rms_ema = 0.0f;
+   if (s_orb_peak_timer == NULL) {
+      s_orb_peak_timer = lv_timer_create(orb_peak_tick_cb, ORB_PEAK_TICK_MS, NULL);
+   }
+}
+
+static void orb_peak_stop(void) {
+   if (s_orb_peak_timer) {
+      lv_timer_delete(s_orb_peak_timer);
+      s_orb_peak_timer = NULL;
+   }
+}
+
+/* Public: kick the orb anim system to match the current voice state.
+ * Called from voice_set_state() via ui_home_refresh_sys_label. */
+void ui_home_orb_aliveness_sync(void) {
+   if (!s_orb) return;
+   voice_state_t st = voice_get_state();
+   bool active = (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING);
+   if (active) {
+      if (s_orb_peak_timer == NULL) orb_peak_start();
+   } else {
+      if (s_orb_peak_timer) orb_peak_stop();
+      if (!s_orb_breath_running) orb_breath_start();
+   }
+}
+
+/* Pause both anim modes (overlay opened, screen left).  Restored via
+ * ui_home_orb_aliveness_resume() on overlay close.  Keeps CPU off the
+ * orb when the user is in chat/settings/camera. */
+void ui_home_orb_aliveness_pause(void) {
+   orb_peak_stop();
+   orb_breath_stop();
+}
+
+void ui_home_orb_aliveness_resume(void) { ui_home_orb_aliveness_sync(); }
+
+/* ── Ripple ──────────────────────────────────────────────────────── */
+
+/* Source-bucket color for the ripple, picked from the tool name.
+ * Matches the W7-A.3 / W7-G agent_log source buckets so the orb's
+ * visual halo aligns with what `/api/v1/agent_log` reports. */
+static uint32_t ripple_color_for_tool(const char *tool_name) {
+   if (!tool_name) return 0x34d399; /* emerald — Dragon-local default */
+   /* gateway_browser (W7-G): browser, browser_*, browser.* */
+   if (strcmp(tool_name, "browser") == 0 || strncmp(tool_name, "browser_", 8) == 0 ||
+       strncmp(tool_name, "browser.", 8) == 0) {
+      return 0x3b82f6; /* blue */
+   }
+   /* channel push/reply */
+   if (strncmp(tool_name, "channel_", 8) == 0) {
+      return 0xf43f5e; /* rose */
+   }
+   /* Mode-3 gateway routes — heuristic on current voice mode. */
+   extern uint8_t tab5_settings_get_voice_mode(void);
+   if (tab5_settings_get_voice_mode() == 3) {
+      return 0xa78bfa; /* violet — gateway tools in mode 3 */
+   }
+   return 0x34d399; /* emerald — Dragon-local */
+}
+
+/* lv_anim setter for ripple radius — resizes + re-centers around the
+ * orb's center.  Called every frame by the active anim. */
+static void ripple_set_radius_cb(void *obj, int32_t r) {
+   if (!obj) return;
+   lv_obj_t *o = (lv_obj_t *)obj;
+   lv_obj_set_size(o, r * 2, r * 2);
+   /* Re-center on the orb position (parent is s_screen — same coord
+    * space as s_orb's pos_centered call). */
+   lv_obj_set_pos(o, ORB_CX - r, ORB_CY - r);
+}
+
+static void ripple_set_opa_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+/* Hide the ripple after its anim completes — reset state so the slot
+ * is available again. */
+static void ripple_done_cb(lv_anim_t *a) {
+   lv_obj_t *o = (lv_obj_t *)lv_anim_get_user_data(a);
+   if (o) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Fire one ripple from the pool — colored by source bucket.
+ * If pool full, recycle the oldest slot (round-robin).  Safe to call
+ * from any task via tab5_lv_async_call; this function assumes LVGL
+ * lock is held. */
+static void orb_ripple_fire_internal(uint32_t color) {
+   if (s_screen == NULL) return;
+   /* Lazy-init the pool on first ripple.  Each slot is a thin border-
+    * only circle, hidden + sized 0 initially. */
+   for (uint8_t i = 0; i < ORB_RIPPLE_POOL_SIZE; i++) {
+      if (s_ripple_pool[i] == NULL) {
+         lv_obj_t *r = lv_obj_create(s_screen);
+         if (r == NULL) return; /* OOM — skip silently */
+         lv_obj_remove_style_all(r);
+         lv_obj_set_size(r, 0, 0);
+         lv_obj_set_pos(r, ORB_CX, ORB_CY);
+         lv_obj_set_style_radius(r, LV_RADIUS_CIRCLE, 0);
+         lv_obj_set_style_bg_opa(r, LV_OPA_TRANSP, 0);
+         lv_obj_set_style_border_width(r, 3, 0);
+         lv_obj_set_style_border_opa(r, LV_OPA_TRANSP, 0);
+         lv_obj_clear_flag(r, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+         lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
+         /* Place ripples BELOW the orb in z-order so the orb stays
+          * on top — `lv_obj_move_to_index(r, 0)` would put it first
+          * in the parent's child list which is back-most in LVGL 9.
+          * The orb itself is created later so naturally on top. */
+         s_ripple_pool[i] = r;
+      }
+   }
+
+   /* Pick the next slot — kill any in-flight anim on it so we can
+    * restart from radius 90. */
+   lv_obj_t *slot = s_ripple_pool[s_next_ripple_slot];
+   s_next_ripple_slot = (s_next_ripple_slot + 1) % ORB_RIPPLE_POOL_SIZE;
+   if (slot == NULL) return;
+
+   lv_anim_delete(slot, ripple_set_radius_cb);
+   lv_anim_delete(slot, ripple_set_opa_cb);
+
+   lv_obj_set_style_border_color(slot, lv_color_hex(color), 0);
+   lv_obj_clear_flag(slot, LV_OBJ_FLAG_HIDDEN);
+
+   /* Radius anim */
+   lv_anim_t a_r;
+   lv_anim_init(&a_r);
+   lv_anim_set_var(&a_r, slot);
+   lv_anim_set_exec_cb(&a_r, ripple_set_radius_cb);
+   lv_anim_set_values(&a_r, ORB_RIPPLE_R_START, ORB_RIPPLE_R_END);
+   lv_anim_set_time(&a_r, ORB_RIPPLE_DURATION_MS);
+   lv_anim_set_path_cb(&a_r, lv_anim_path_ease_out);
+   lv_anim_set_user_data(&a_r, slot);
+   lv_anim_set_completed_cb(&a_r, ripple_done_cb);
+   lv_anim_start(&a_r);
+
+   /* Opacity anim — same duration, separate setter */
+   lv_anim_t a_o;
+   lv_anim_init(&a_o);
+   lv_anim_set_var(&a_o, slot);
+   lv_anim_set_exec_cb(&a_o, ripple_set_opa_cb);
+   lv_anim_set_values(&a_o, ORB_RIPPLE_OPA_START, ORB_RIPPLE_OPA_END);
+   lv_anim_set_time(&a_o, ORB_RIPPLE_DURATION_MS);
+   lv_anim_set_path_cb(&a_o, lv_anim_path_linear);
+   lv_anim_start(&a_o);
+}
+
+/* Async wrapper carrying the color through tab5_lv_async_call. */
+typedef struct {
+   uint32_t color;
+} ripple_args_t;
+static void ripple_async_cb(void *arg) {
+   ripple_args_t *a = (ripple_args_t *)arg;
+   if (!a) return;
+   orb_ripple_fire_internal(a->color);
+   free(a);
+}
+
+/* Public: fire a ripple matching the given tool name.  Safe to call
+ * from the WS task (the call into LVGL is marshalled via the W14-H10
+ * tab5_lv_async_call wrapper). */
+void ui_home_orb_ripple_for_tool(const char *tool_name) {
+   if (!s_orb) return;
+   uint32_t color = ripple_color_for_tool(tool_name);
+   ripple_args_t *args = (ripple_args_t *)malloc(sizeof(*args));
+   if (!args) return;
+   args->color = color;
+   tab5_lv_async_call(ripple_async_cb, args);
+}
+
 /* Wave 7 F5 crash surface: paint the orb rose for ~2.5 s so a mid-turn
  * Dragon drop has a visual signal beyond the toast. Restores the
  * mode-default orb paint afterwards. Runs on the LVGL thread. */
@@ -2506,11 +2819,14 @@ void ui_home_pulse_orb_alert(void)
     if (rev) lv_timer_set_repeat_count(rev, 1);
 }
 
-/* Voice-state-driven state-word refresh — marshalled onto the LVGL thread. */
+/* Voice-state-driven state-word refresh — marshalled onto the LVGL thread.
+ * TT #501: also sync the orb-aliveness mode so the breath/peak swap
+ * happens in lockstep with the sys-label state word. */
 static void sys_label_refresh_async_cb(void *arg)
 {
     (void)arg;
     ui_home_update_status();
+    ui_home_orb_aliveness_sync();
 }
 
 void ui_home_refresh_sys_label(void)
