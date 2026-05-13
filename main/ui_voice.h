@@ -26,6 +26,16 @@ void ui_voice_show(void);
 void ui_voice_hide(void);
 bool ui_voice_is_visible(void);
 
+/** TT #481 (W7-E.4c follow-up): repaint the reply-context chip from
+ *  the currently-armed channel_reply state.  Idempotent — when context
+ *  is armed, shows the chip; when not, hides it.  Call right after
+ *  `voice_arm_channel_reply` from any path where the voice overlay may
+ *  already be up — `ui_voice_show` short-circuits when `s_visible` is
+ *  already true so the chip-paint inside it doesn't re-run.  Safe to
+ *  call before the overlay is built (bails when widget is NULL).
+ *  LVGL thread only. */
+void ui_voice_refresh_reply_chip(void);
+
 /**
  * Dismiss the overlay only if voice is in a non-active state
  * (IDLE/READY/RECONNECTING/CONNECTING).  During LISTENING / PROCESSING /

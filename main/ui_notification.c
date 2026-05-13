@@ -268,6 +268,14 @@ void ui_notification_reply_current(const char *text) {
    /* W7-E.4b: voice-dictated reply path.  Arm + prompt. */
    voice_arm_channel_reply(s_last_now_msg.channel, s_last_now_msg.thread_id, s_last_now_msg.sender);
 
+   /* TT #481 (W7-E.4c follow-up): if the voice overlay is already up
+    * (e.g. user was mid-conversation when a now-card arrived), the
+    * chip-paint inside ui_voice_show won't re-run on next listening
+    * start because s_visible is already true.  Repaint explicitly so
+    * the chip appears on either path: overlay-already-up OR fresh-open. */
+   extern void ui_voice_refresh_reply_chip(void);
+   ui_voice_refresh_reply_chip();
+
    char detail[64];
    snprintf(detail, sizeof(detail), "armed ch=%.8s sender=%.20s", s_last_now_msg.channel, s_last_now_msg.sender);
    tab5_debug_obs_event("ui.notif.reply", detail);
