@@ -1402,3 +1402,13 @@ bool ui_agents_is_visible(void)
 {
     return s_visible;
 }
+
+/* W7-B follow-up (TT #467): re-fire the skill-catalog fetch on voice-mode
+ * change so the vmode=3 gate inside `fetch_agent_skills_job` updates live.
+ * No-op when the overlay is hidden — the next ui_agents_show() will fetch
+ * from scratch anyway. */
+void ui_agents_on_mode_change(void) {
+   if (!s_visible) return;
+   ESP_LOGI(TAG, "mode change → re-fetching agent_skills catalog");
+   kick_off_agent_skills_fetch();
+}

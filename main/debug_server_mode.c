@@ -26,6 +26,10 @@ static void async_refresh_mode_badge(void *arg) {
    (void)arg;
    extern void ui_home_refresh_mode_badge(void);
    ui_home_refresh_mode_badge();
+   /* W7-B follow-up (TT #467): if the Agents overlay is currently visible,
+    * re-fetch the agent-skill catalog so its vmode=3 gate updates live. */
+   extern void ui_agents_on_mode_change(void);
+   ui_agents_on_mode_change();
 }
 
 /* POST /mode?m=0|1|2|3|4&model=... — switch voice mode.
