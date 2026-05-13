@@ -2266,6 +2266,19 @@ bool voice_is_channel_reply_armed(void) {
    return armed;
 }
 
+bool voice_peek_channel_reply(char *channel_out, char *thread_id_out, char *sender_out) {
+   bool armed = false;
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   if (s_reply_armed) {
+      armed = true;
+      if (channel_out) snprintf(channel_out, 16, "%s", s_reply_channel);
+      if (thread_id_out) snprintf(thread_id_out, 64, "%s", s_reply_thread);
+      if (sender_out) snprintf(sender_out, 64, "%s", s_reply_sender);
+   }
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   return armed;
+}
+
 bool voice_consume_channel_reply(char *channel_out, char *thread_id_out, char *sender_out) {
    bool was_armed = false;
    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
