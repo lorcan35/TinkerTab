@@ -669,20 +669,11 @@ void ui_voice_show(void)
     lv_obj_set_style_opa(s_overlay, VO_BG_OPA, 0);
 
     /* W7-E.4c: reveal the reply-context chip if the user just tapped
-     * REPLY on a now-card.  voice_peek_channel_reply reads the armed
-     * state without clearing (the STT-complete branch in
-     * voice_ws_proto.c consumes via voice_consume_channel_reply). */
-    if (s_lbl_reply_chip) {
-       char ch[16] = {0}, thread[64] = {0}, sender[64] = {0};
-       if (voice_peek_channel_reply(ch, thread, sender)) {
-          char text[160];
-          snprintf(text, sizeof(text), "Replying to %.40s (%.8s)", sender[0] ? sender : "?", ch[0] ? ch : "?");
-          lv_label_set_text(s_lbl_reply_chip, text);
-          lv_obj_clear_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
-       } else {
-          lv_obj_add_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
-       }
-    }
+     * REPLY on a now-card.  Body extracted to
+     * ui_voice_refresh_reply_chip so callers that arm context AFTER
+     * the overlay is already shown (TT #481 — `ui_voice_show`
+     * short-circuits at top) can trigger the repaint manually. */
+    ui_voice_refresh_reply_chip();
 
     /* Child-opacity ramp is driven by fade_overlay_cb from start→end
      * in the old animation; skipping it means child content snaps on
@@ -690,6 +681,25 @@ void ui_voice_show(void)
      * text labels' opacity instead of the container. */
 
     ESP_LOGI(TAG, "Voice overlay shown (instant, W15-C07)");
+}
+
+/* TT #481 (W7-E.4c follow-up): chip-repaint helper.  Was inlined inside
+ * ui_voice_show; extracted so callers that arm context after the overlay
+ * is already up (e.g. ui_notification_reply_current when chat → voice
+ * overlay was already visible) can still trigger the visual repaint.
+ * Idempotent — safe to call multiple times; bails when the chip widget
+ * hasn't been built yet (overlay not constructed). */
+void ui_voice_refresh_reply_chip(void) {
+   if (!s_lbl_reply_chip) return;
+   char ch[16] = {0}, thread[64] = {0}, sender[64] = {0};
+   if (voice_peek_channel_reply(ch, thread, sender)) {
+      char text[160];
+      snprintf(text, sizeof(text), "Replying to %.40s (%.8s)", sender[0] ? sender : "?", ch[0] ? ch : "?");
+      lv_label_set_text(s_lbl_reply_chip, text);
+      lv_obj_clear_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
+   } else {
+      lv_obj_add_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
+   }
 }
 
 void ui_voice_hide(void)
