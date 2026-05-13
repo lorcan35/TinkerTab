@@ -34,6 +34,7 @@
 #include "ui_core.h"
 #include "ui_home.h"
 #include "ui_theme.h"
+#include "voice.h" /* W7-D: voice_send_text for chip-tap demo turns */
 
 static const char *TAG = "ui_agents";
 
@@ -800,6 +801,38 @@ static void kick_off_agent_skills_fetch(void) {
  * the worker-allocated payload, builds a compact chip list below the
  * tools catalog, then frees the payload.  Idempotent — called on
  * every overlay show via kick_off_agent_skills_fetch. */
+/* W7-D: persistent name cache for chip tap handlers.  `s_skills_root`
+ * gets `lv_obj_clean`'d on every re-render, so chip user_data needs to
+ * point at storage that outlives the chip objects.  We index by chip
+ * ordinal — the user_data is a (void*)(intptr_t) cast of the index. */
+static char s_skill_chip_names[AGENT_SKILL_MAX][AGENT_SKILL_NAME_LEN];
+
+static void skill_chip_click_cb(lv_event_t *e) {
+   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= AGENT_SKILL_MAX) return;
+   const char *name = s_skill_chip_names[idx];
+   if (!name[0]) return;
+   /* Defensive: chips shouldn't be visible outside vmode=3 per W7-B.4,
+    * but guard against stale-render edge cases (mode flipped mid-fetch). */
+   if (tab5_settings_get_voice_mode() != 3) {
+      ui_home_show_toast("Switch to TinkerClaw mode to run skills");
+      return;
+   }
+   char prompt[160];
+   snprintf(prompt, sizeof(prompt), "Demonstrate the %.30s skill with a simple example, briefly.", name);
+   esp_err_t r = voice_send_text(prompt);
+   char detail[64];
+   snprintf(detail, sizeof(detail), "%.20s err=%d", name, (int)r);
+   tab5_debug_obs_event("ui.notif.skill_tap", detail);
+   if (r == ESP_OK) {
+      char toast[96];
+      snprintf(toast, sizeof(toast), "Asked Dragon to demo %.30s\xe2\x80\xa6", name);
+      ui_home_show_toast(toast);
+   } else {
+      ui_home_show_toast("Couldn't reach Dragon right now");
+   }
+}
+
 static void render_agent_skills(const agent_skills_payload_t *p) {
    if (!s_skills_root) {
       s_skills_root = lv_obj_create(s_overlay);
@@ -877,6 +910,15 @@ static void render_agent_skills(const agent_skills_payload_t *p) {
    lv_obj_set_style_text_letter_space(count, 3, 0);
    lv_obj_set_style_pad_left(count, SIDE_PAD, 0);
 
+   /* W7-D: discoverability hint that chips are tappable.  Renders just
+    * above the chip row — small + dim so it doesn't compete with the
+    * rest of the panel. */
+   lv_obj_t *hint = lv_label_create(s_skills_root);
+   lv_label_set_text(hint, "Tap a chip to ask Dragon to demo the skill.");
+   lv_obj_set_style_text_font(hint, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(hint, lv_color_hex(TH_TEXT_DIM), 0);
+   lv_obj_set_style_pad_left(hint, SIDE_PAD, 0);
+
    /* Compact chip row.  Flex-wrap so many short names stack across
     * multiple visual rows.  Static = dim border, observed = emerald
     * fill — the visual hierarchy mirrors the data shape (observed
@@ -889,6 +931,11 @@ static void render_agent_skills(const agent_skills_payload_t *p) {
    lv_obj_set_style_pad_column(chips, 8, 0);
    lv_obj_set_style_pad_row(chips, 8, 0);
    lv_obj_clear_flag(chips, LV_OBJ_FLAG_SCROLLABLE);
+
+   /* Reset the persistent name cache before re-populating so stale
+    * indices from a prior render can't fire bogus prompts.  Cleared in
+    * full each pass; chip count <= AGENT_SKILL_MAX. */
+   memset(s_skill_chip_names, 0, sizeof(s_skill_chip_names));
 
    for (int i = 0; i < p->n; i++) {
       lv_obj_t *chip = lv_obj_create(chips);
@@ -907,6 +954,13 @@ static void render_agent_skills(const agent_skills_payload_t *p) {
          lv_obj_set_style_border_color(chip, lv_color_hex(0x2A2A34), 0);
       }
       lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+
+      /* W7-D: cache the name + wire tap → demo-prompt turn.  index is
+       * encoded as user_data so the callback can resolve back to the
+       * persistent buffer. */
+      snprintf(s_skill_chip_names[i], AGENT_SKILL_NAME_LEN, "%s", p->items[i].name);
+      lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(chip, skill_chip_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
       lv_obj_t *lbl = lv_label_create(chip);
       lv_label_set_text(lbl, p->items[i].name);
