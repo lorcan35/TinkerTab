@@ -119,3 +119,15 @@ void ui_home_orb_aliveness_sync(void);
 void ui_home_orb_aliveness_pause(void);
 void ui_home_orb_aliveness_resume(void);
 void ui_home_orb_ripple_for_tool(const char *tool_name);
+
+/** TT #503 orb circadian — gradient stops drift through 7 phases over
+ *  24 hours (dawn/morning/midday/afternoon/sunset/dusk/night).
+ *  `ui_home_orb_force_hour(h)` overrides real time for visual debug:
+ *    h = -1   → clear override, return to real time
+ *    h = 0..23 → simulate that hour for the next repaint
+ *    h other → returns -2 (invalid)
+ *  Returns the effective hour after the set (or -1 / -2 sentinels).
+ *  `ui_home_orb_current_hour()` returns the hour the orb is currently
+ *  painted at (-1 if never painted yet). */
+int ui_home_orb_force_hour(int h);
+int ui_home_orb_current_hour(void);

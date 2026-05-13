@@ -244,6 +244,8 @@ static void paint_orb_pip_for_context(void);
 /* TT #501 — orb aliveness static fns referenced from ui_home_destroy
  * (which lives above the implementations). */
 static void orb_set_opa_cb(void *obj, int32_t v);
+static void halo_inner_set_border_opa_cb(void *obj, int32_t v);
+static void halo_outer_set_bg_opa_cb(void *obj, int32_t v);
 static void ripple_set_radius_cb(void *obj, int32_t r);
 static void ripple_set_opa_cb(void *obj, int32_t v);
 /* v4·D Phase 4g: widget_prompt hit-zone tap routing */
@@ -306,21 +308,153 @@ static void format_right_time(char *buf, size_t n, const struct tm *tm)
 
 /* ── Orb painting (preserved from v5) ─────────────────────────── */
 
+/* TT #503: circadian palette.
+ *
+ * The orb's gradient stops drift through 7 phases over 24 hours,
+ * matching natural light: pale gold dawn → bright amber midday →
+ * rose-gold sunset → near-black night.  Picked by `tm_hour` (0-23).
+ *
+ * Static-table for predictability — pure function, no branching beyond
+ * a single switch.  When TT #501's `orb_force_hour` debug override is
+ * set (≥0), the table is read at the forced hour instead.
+ *
+ * Trade-off: 24 separate hex pairs would be smoothest but bloat the
+ * binary + visually no-one notices a 1-hour difference within a phase.
+ * 7 phases (dawn/morning/midday/afternoon/sunset/dusk/night) is the
+ * sweet spot — enough motion to feel alive, simple enough to debug. */
+static int8_t s_orb_force_hour = -1; /* -1 = real time; 0..23 = override */
+
+static void pick_circadian_palette(int hour, uint32_t *top, uint32_t *bot) {
+   /* Wrap any out-of-range into [0,23]. */
+   if (hour < 0 || hour > 23) hour = 12;
+   if (hour >= 5 && hour <= 6) {
+      /* Dawn — pale gold → coral */
+      *top = 0xFFE4A8;
+      *bot = 0xE89A6B;
+   } else if (hour >= 7 && hour <= 10) {
+      /* Morning — warm yellow → amber */
+      *top = 0xFFD568;
+      *bot = 0xD2811A;
+   } else if (hour >= 11 && hour <= 14) {
+      /* Midday — the historic v4·D Sovereign Halo default */
+      *top = 0xFFC75A;
+      *bot = 0xB9650A;
+   } else if (hour >= 15 && hour <= 17) {
+      /* Afternoon — orange → terracotta */
+      *top = 0xFF9E55;
+      *bot = 0xA04A0E;
+   } else if (hour >= 18 && hour <= 20) {
+      /* Sunset — rose-gold → maroon */
+      *top = 0xFF8050;
+      *bot = 0x8B3010;
+   } else if (hour >= 21 && hour <= 22) {
+      /* Dusk — burnished bronze → dark amber */
+      *top = 0xD5A050;
+      *bot = 0x804008;
+   } else {
+      /* Night (23 + 0-4) — muted brass → near-black ember */
+      *top = 0x7F6535;
+      *bot = 0x2A1F0F;
+   }
+}
+
+/* Hour-change tracker — `ui_home_update_status` calls
+ * `orb_repaint_if_hour_changed()` on every 2 s refresh tick, but
+ * actual paint only fires when the hour rolls over (or after a
+ * `orb_force_hour` mutation).  Cheap. */
+static int s_last_painted_hour = -1;
+
 static void orb_paint_for_mode(uint8_t mode)
 {
     if (!s_orb) return;
     (void)mode;
     /* v4·D Sovereign Halo: the orb IS the brand -- treat it like a lantern.
      * Mode identity lives on the small mode-chip dot under the lede, not
-     * on the orb.  Amber gradient always. Previously we tinted the orb
-     * blue/rose/emerald per mode which fought the "voice-first brand
-     * deserves maximum presence" rule from d-sovereign-halo.html. */
-    const uint32_t top = 0xFFC75A;
-    const uint32_t bot = 0xB9650A;
+     * on the orb.  TT #503: gradient stops are now hour-of-day driven
+     * via pick_circadian_palette() instead of the fixed amber.  Mode
+     * still doesn't affect the orb color — only time does. */
+    int hour;
+    if (s_orb_force_hour >= 0) {
+       hour = s_orb_force_hour;
+    } else {
+       time_t now = 0;
+       time(&now);
+       struct tm tm_local;
+       localtime_r(&now, &tm_local);
+       hour = tm_local.tm_hour;
+    }
+    uint32_t top = 0, bot = 0;
+    pick_circadian_palette(hour, &top, &bot);
     lv_obj_set_style_bg_color(s_orb, lv_color_hex(top), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+    s_last_painted_hour = hour;
+}
+
+/* Re-paint the orb if the current effective hour differs from the
+ * last painted hour.  Called from ui_home_update_status (2 s tick)
+ * so the orb visibly drifts during a long session. */
+static void orb_repaint_if_hour_changed(void) {
+   if (!s_orb) return;
+   int hour;
+   if (s_orb_force_hour >= 0) {
+      hour = s_orb_force_hour;
+   } else {
+      time_t now = 0;
+      time(&now);
+      struct tm tm_local;
+      localtime_r(&now, &tm_local);
+      hour = tm_local.tm_hour;
+   }
+   if (hour != s_last_painted_hour) {
+      orb_paint_for_mode(s_badge_mode);
+   }
+}
+
+/* LVGL-thread cb that does the actual repaint after a force_hour mutation. */
+static void orb_force_repaint_async_cb(void *arg) {
+   (void)arg;
+   if (s_orb) orb_paint_for_mode(s_badge_mode);
+}
+
+/* Public: debug-server endpoint hook.  Set h=-1 to clear the override
+ * and return to real time.  h=0..23 simulates that hour for the next
+ * orb repaint.  Returns the effective hour after the set.
+ *
+ * THREAD-SAFE: the override mutation is two int writes (a 2-step race
+ * is fine — the next refresh tick re-reads cleanly).  The actual LVGL
+ * repaint is marshalled via tab5_lv_async_call so this can be called
+ * from httpd / WS / any non-LVGL task.  Calling LVGL functions
+ * directly from the httpd task starves the LVGL thread on rapid
+ * bursts (TASK_WDT trip — surfaced by the TT #503 24-hour walk). */
+int ui_home_orb_force_hour(int h) {
+   if (h < -1 || h > 23) return -2; /* invalid */
+   s_orb_force_hour = (int8_t)h;
+   s_last_painted_hour = -1; /* force next refresh tick to repaint */
+   /* Best-effort immediate repaint via the W14-H10 lv_async_call
+    * wrapper so a caller polling right after the POST sees the new
+    * gradient without waiting 2 s for the refresh tick. */
+   tab5_lv_async_call(orb_force_repaint_async_cb, NULL);
+   return (h < 0) ? -1 : h;
+}
+
+/* Public: read the EFFECTIVE hour the orb is committed to — the value
+ * that the next paint will use.  Decoupled from `s_last_painted_hour`
+ * (which tracks the most recent painted hour) so callers polling right
+ * after a force_hour POST see the committed state even if the async
+ * repaint hasn't flushed yet.
+ *
+ *   - If override is set (s_orb_force_hour >= 0) → return that.
+ *   - Otherwise → return the current real-time hour from localtime_r.
+ *   - Never returns -1 in normal operation. */
+int ui_home_orb_current_hour(void) {
+   if (s_orb_force_hour >= 0) return (int)s_orb_force_hour;
+   time_t now = 0;
+   time(&now);
+   struct tm tm_local;
+   localtime_r(&now, &tm_local);
+   return tm_local.tm_hour;
 }
 
 /* TT #328 Wave 11 P0 #16 — paint the orb status pip based on what the
@@ -910,6 +1044,11 @@ lv_obj_t *ui_home_create(void)
     /* TT #501: kick off the ambient orb breath now that s_orb exists. */
     ui_home_orb_aliveness_sync();
 
+    /* TT #503: paint the orb at the current hour-of-day immediately
+     * instead of waiting for the first refresh tick.  Without this the
+     * orb shows the previous boot's last-painted hour for up to 2 s. */
+    orb_repaint_if_hour_changed();
+
     if (s_refresh_timer == NULL) {
         /* 2 s safety-net poll — the real state push is from voice.c via
          * voice_set_state() + ws_receive_task cleanup, which fires within
@@ -1052,6 +1191,11 @@ void ui_home_update_status(void)
         const char *cur = lv_label_get_text(s_time_label);
         if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_time_label, buf);
     }
+
+    /* TT #503: re-paint the orb if hour rolled over since last paint.
+     * One-shot per hour — pick_circadian_palette is pure-data so the
+     * check is microsecond-scale on the no-op path. */
+    orb_repaint_if_hour_changed();
 
     /* TT #328 Wave 11 P0 #16 — keep the orb status pip in sync with the
      * branching state so the user sees what tap will do at a glance. */
@@ -2131,6 +2275,8 @@ void ui_home_destroy(void)
        s_orb_peak_timer = NULL;
     }
     if (s_orb) lv_anim_delete(s_orb, orb_set_opa_cb);
+    if (s_halo_inner) lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
+    if (s_halo_outer) lv_anim_delete(s_halo_outer, halo_outer_set_bg_opa_cb);
     s_orb_breath_running = false;
     /* The ripple pool objects are children of s_screen and get freed
      * when s_screen is deleted below; clear our handles + cancel any
@@ -2562,12 +2708,31 @@ void ui_home_set_error_banner_visible(bool visible) {
  * to keep CPU + heap pressure off the busy overlay.  Restored on
  * any-overlay-hidden via ui_home_orb_aliveness_resume(). */
 
+/* Smooth-as-fuck pass (TT #503 follow-up):
+ *
+ * Original v1 used opacity 235→255 (20 levels over 4 s = ~5 levels/sec) —
+ * visible stepping on Tab5's idle ~14 FPS.  Smooth pass widens the swing
+ * 3× + adds counter-phase halo animation for a real "lantern exhaling"
+ * effect that's visible regardless of frame rate:
+ *   - Orb opacity 195↔255 (60 levels vs 20)
+ *   - Inner halo border_opa 100↔200 in counter-phase
+ *   - Outer halo bg_opa 50↔90 in counter-phase
+ * Three anims share EASE_IN_OUT so they hit extremes in lockstep.
+ *
+ * Peak meter: tick lowered to 33 ms (~30 Hz, was 20 Hz), gain widened
+ * 1.5× so a typical speaking RMS swings the orb more dramatically.
+ * The mic-driven peak should feel physical — you talk, the orb pulses
+ * with your syllables, no perceptible lag. */
 #define ORB_BREATH_PERIOD_MS 4000
-#define ORB_BREATH_OPA_MIN 235
+#define ORB_BREATH_OPA_MIN 195
 #define ORB_BREATH_OPA_MAX 255
-#define ORB_PEAK_TICK_MS 50
-#define ORB_PEAK_RMS_GAIN 120.0f
-#define ORB_PEAK_RMS_EMA 0.35f
+#define HALO_INNER_BREATH_MIN 100
+#define HALO_INNER_BREATH_MAX 200
+#define HALO_OUTER_BREATH_MIN 50
+#define HALO_OUTER_BREATH_MAX 90
+#define ORB_PEAK_TICK_MS 33 /* ~30 Hz — visibly smoother than 50 ms */
+#define ORB_PEAK_RMS_GAIN 180.0f
+#define ORB_PEAK_RMS_EMA 0.40f
 #define ORB_RIPPLE_DURATION_MS 500
 #define ORB_RIPPLE_R_START (ORB_SIZE / 2) /* 90 */
 #define ORB_RIPPLE_R_END (ORB_SIZE)       /* 180 */
@@ -2580,13 +2745,34 @@ static void orb_set_opa_cb(void *obj, int32_t v) {
    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
 }
 
+/* Counter-phase setters for the halo objects.  Border / bg opa instead
+ * of main opa so we leave the halo's color + radius alone. */
+static void halo_inner_set_border_opa_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+static void halo_outer_set_bg_opa_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
 /* Start the ambient 4 s sine breath.  Idempotent — safe to call when
- * already running (we delete any prior anim on s_orb first). */
+ * already running (we delete any prior anim first).  Smooth-as-fuck
+ * pass: three coordinated anims hit max/min in lockstep:
+ *   - Orb opacity grows from min→max (lantern brightens)
+ *   - Inner halo border dims max→min (the "exhale")
+ *   - Outer halo bg dims max→min (the aura recedes)
+ * Net effect: the orb feels like a single living thing breathing,
+ * not just a static gradient with a fade. */
 static void orb_breath_start(void) {
    if (!s_orb) return;
-   /* Kill any existing breath anim on s_orb so we don't stack them. */
+   /* Kill any existing breath anims so we don't stack them. */
    lv_anim_delete(s_orb, orb_set_opa_cb);
+   if (s_halo_inner) lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
+   if (s_halo_outer) lv_anim_delete(s_halo_outer, halo_outer_set_bg_opa_cb);
 
+   /* Orb opacity — primary anim (lantern brightening) */
    lv_anim_t a;
    lv_anim_init(&a);
    lv_anim_set_var(&a, s_orb);
@@ -2597,15 +2783,52 @@ static void orb_breath_start(void) {
    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
    lv_anim_start(&a);
+
+   /* Inner halo border — counter-phase (dim as orb brightens) */
+   if (s_halo_inner) {
+      lv_anim_t b;
+      lv_anim_init(&b);
+      lv_anim_set_var(&b, s_halo_inner);
+      lv_anim_set_exec_cb(&b, halo_inner_set_border_opa_cb);
+      /* Reverse: start MAX, fall to MIN, swing back to MAX. */
+      lv_anim_set_values(&b, HALO_INNER_BREATH_MAX, HALO_INNER_BREATH_MIN);
+      lv_anim_set_time(&b, ORB_BREATH_PERIOD_MS / 2);
+      lv_anim_set_playback_time(&b, ORB_BREATH_PERIOD_MS / 2);
+      lv_anim_set_repeat_count(&b, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
+      lv_anim_start(&b);
+   }
+
+   /* Outer halo bg — same counter-phase, subtler */
+   if (s_halo_outer) {
+      lv_anim_t c;
+      lv_anim_init(&c);
+      lv_anim_set_var(&c, s_halo_outer);
+      lv_anim_set_exec_cb(&c, halo_outer_set_bg_opa_cb);
+      lv_anim_set_values(&c, HALO_OUTER_BREATH_MAX, HALO_OUTER_BREATH_MIN);
+      lv_anim_set_time(&c, ORB_BREATH_PERIOD_MS / 2);
+      lv_anim_set_playback_time(&c, ORB_BREATH_PERIOD_MS / 2);
+      lv_anim_set_repeat_count(&c, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&c, lv_anim_path_ease_in_out);
+      lv_anim_start(&c);
+   }
    s_orb_breath_running = true;
 }
 
-/* Stop the breath anim and clamp opacity back to full.  Called before
- * peak meter takes over, or on overlay-hide. */
+/* Stop ALL three breath anims and clamp each back to its rest value.
+ * Called before peak meter takes over, or on overlay-hide. */
 static void orb_breath_stop(void) {
    if (!s_orb) return;
    lv_anim_delete(s_orb, orb_set_opa_cb);
    lv_obj_set_style_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+   if (s_halo_inner) {
+      lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
+      lv_obj_set_style_border_opa(s_halo_inner, HALO_INNER_BREATH_MAX, LV_PART_MAIN);
+   }
+   if (s_halo_outer) {
+      lv_anim_delete(s_halo_outer, halo_outer_set_bg_opa_cb);
+      lv_obj_set_style_bg_opa(s_halo_outer, HALO_OUTER_BREATH_MAX, LV_PART_MAIN);
+   }
    s_orb_breath_running = false;
 }
 
