@@ -91,6 +91,14 @@ static void async_navigate(void *arg) {
    ui_focus_hide();
    ui_sessions_hide();
    ui_keyboard_hide();
+   /* W7-E follow-up (TT #464): channel-now overlay lives on lv_layer_top
+    * so it survives screen loads unless explicitly dismissed.  Any user-
+    * initiated navigation is a clear "I'm not dealing with this right
+    * now" gesture — drop the overlay so it doesn't shadow the destination
+    * screen.  Snoozed messages still re-fire on the walker timer; the
+    * underlying notification state isn't lost. */
+   extern void ui_home_hide_channel_now(void);
+   ui_home_hide_channel_now();
    /* Wave 4 UX fix: if the voice overlay is up but voice is idle, a
     * nav request means the user has moved on.  Dismiss so the user
     * sees the screen they just navigated to instead of a stale
