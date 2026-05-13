@@ -1139,6 +1139,11 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       /* U7+U8 (#206): record activity so the agents/focus surfaces
        * can render real history instead of the v5 demo rows. */
       tool_log_push_call(tool_name, status_text);
+      /* TT #501: visual ripple from the orb, color-coded by source
+       * bucket (W7-A.3 / W7-G).  Browser tools = blue, channel = rose,
+       * mode-3 gateway = violet, else emerald.  Safe from WS task
+       * (ui_home_orb_ripple_for_tool marshals via tab5_lv_async_call). */
+      ui_home_orb_ripple_for_tool(tool_name);
    } else if (strcmp(type_str, "tool_result") == 0) {
       cJSON *tool = cJSON_GetObjectItem(root, "tool");
       cJSON *exec_ms = cJSON_GetObjectItem(root, "execution_ms");

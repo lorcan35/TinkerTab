@@ -101,3 +101,21 @@ void ui_home_pulse_orb_alert(void);
  *  so LISTENING / THINKING / SPEAKING appear within one LVGL tick. Thread-safe
  *  via lv_async_call — callers can invoke from any task/core. */
 void ui_home_refresh_sys_label(void);
+
+/** TT #501 orb aliveness — three coordinated animations that share s_orb:
+ *  - Ambient 4 s opacity breath (idle/READY/CONNECTING)
+ *  - Mic-RMS peak meter (LISTENING/PROCESSING/SPEAKING)
+ *  - Source-bucket ripple per tool_call frame
+ *
+ *  `ui_home_orb_aliveness_sync()` is called from voice_set_state() to flip
+ *  between breath and peak-meter modes based on voice_get_state().
+ *  `ui_home_orb_aliveness_pause()` / `_resume()` toggle around overlay
+ *  open/close so CPU isn't burned animating a hidden orb.
+ *  `ui_home_orb_ripple_for_tool(tool_name)` fires one ripple from the
+ *  static pool, color picked by tool-name → source-bucket heuristic
+ *  (browser=blue, channel_=rose, mode-3 gateway=violet, else emerald).
+ *  All three are thread-safe; orb_ripple uses tab5_lv_async_call. */
+void ui_home_orb_aliveness_sync(void);
+void ui_home_orb_aliveness_pause(void);
+void ui_home_orb_aliveness_resume(void);
+void ui_home_orb_ripple_for_tool(const char *tool_name);
