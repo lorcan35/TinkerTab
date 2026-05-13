@@ -2231,6 +2231,58 @@ esp_err_t voice_send_channel_reply(const char *channel, const char *thread_id, c
    return ret;
 }
 
+/* W7-E.4b: armed-reply context.  Guarded by s_state_mutex so concurrent
+ * STT arrival (WS task) + REPLY button arm (LVGL task) don't race. */
+static char s_reply_channel[16];
+static char s_reply_thread[64];
+static char s_reply_sender[64];
+static bool s_reply_armed = false;
+
+void voice_arm_channel_reply(const char *channel, const char *thread_id, const char *sender) {
+   if (!channel || !thread_id) return;
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   snprintf(s_reply_channel, sizeof(s_reply_channel), "%s", channel);
+   snprintf(s_reply_thread, sizeof(s_reply_thread), "%s", thread_id);
+   snprintf(s_reply_sender, sizeof(s_reply_sender), "%s", sender ? sender : "");
+   s_reply_armed = true;
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   ESP_LOGI(TAG, "voice_arm_channel_reply: ch=%s thread=%s sender=%s", channel, thread_id, sender ? sender : "");
+}
+
+void voice_disarm_channel_reply(void) {
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   s_reply_armed = false;
+   s_reply_channel[0] = '\0';
+   s_reply_thread[0] = '\0';
+   s_reply_sender[0] = '\0';
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+}
+
+bool voice_is_channel_reply_armed(void) {
+   bool armed = false;
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   armed = s_reply_armed;
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   return armed;
+}
+
+bool voice_consume_channel_reply(char *channel_out, char *thread_id_out, char *sender_out) {
+   bool was_armed = false;
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   if (s_reply_armed) {
+      was_armed = true;
+      if (channel_out) snprintf(channel_out, 16, "%s", s_reply_channel);
+      if (thread_id_out) snprintf(thread_id_out, 64, "%s", s_reply_thread);
+      if (sender_out) snprintf(sender_out, 64, "%s", s_reply_sender);
+      s_reply_armed = false;
+      s_reply_channel[0] = '\0';
+      s_reply_thread[0] = '\0';
+      s_reply_sender[0] = '\0';
+   }
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   return was_armed;
+}
+
 /* voice_send_widget_action moved to voice_ws_proto.c (TT #331 Wave 23
  * SRP-A1) — pure WS-proto concern: builds a JSON frame + calls
  * voice_ws_send_text. */

@@ -531,6 +531,31 @@ void voice_ws_proto_handle_text(const char *data, int len) {
             ESP_LOGI(TAG, "Dictation complete: %u chars", (unsigned)strlen(text->valuestring));
             voice_set_state(VOICE_STATE_READY, "dictation_done");
          } else {
+            /* W7-E.4b: if a channel reply is armed, route the transcript
+             * to voice_send_channel_reply instead of normal LLM dispatch.
+             * Atomic read-and-clear via voice_consume_channel_reply. */
+            char reply_ch[16] = {0}, reply_thread[64] = {0}, reply_sender[64] = {0};
+            if (voice_consume_channel_reply(reply_ch, reply_thread, reply_sender)) {
+               ESP_LOGI(TAG, "STT armed reply → ch=%s thread=%s text=%.40s", reply_ch, reply_thread, text->valuestring);
+               esp_err_t r = voice_send_channel_reply(reply_ch, reply_thread, text->valuestring);
+               char detail[64];
+               snprintf(detail, sizeof(detail), "dictated ch=%.8s err=%d", reply_ch, (int)r);
+               tab5_debug_obs_event("ui.notif.reply", detail);
+
+               char *toast = malloc(96);
+               if (toast) {
+                  if (r == ESP_OK) {
+                     snprintf(toast, 96, "Reply sent to %.40s", reply_sender[0] ? reply_sender : reply_ch);
+                  } else {
+                     snprintf(toast, 96, "Reply not sent — Dragon offline");
+                  }
+                  voice_async_toast(toast);
+               }
+               voice_set_state(VOICE_STATE_READY, NULL);
+               cJSON_Delete(root);
+               return;
+            }
+
             if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
             strncpy(s_stt_text, text->valuestring, MAX_TRANSCRIPT_LEN - 1);
             s_stt_text[MAX_TRANSCRIPT_LEN - 1] = '\0';
