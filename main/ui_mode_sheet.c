@@ -515,6 +515,11 @@ static void persist_and_notify_dragon(void)
 
     ESP_LOGI(TAG, "Tier change resolved -> voice_mode=%d model=%s",
              new_mode, model_to_send);
+    /* W7-B follow-up (TT #467): refresh agent_skills catalog if Agents
+     * overlay is visible — its vmode=3 gate needs to update live when
+     * the user dials in/out of TinkerClaw. */
+    extern void ui_agents_on_mode_change(void);
+    ui_agents_on_mode_change();
 }
 
 /* Wave 10 H5 Presets: one-tap recipes that set all three dials to the
@@ -551,6 +556,10 @@ void preset_click_cb(lv_event_t *e)
            tab5_settings_get_llm_model(model, sizeof(model));
            voice_send_config_update(VOICE_MODE_ONBOARD, model);
            ESP_LOGI(TAG, "Onboard preset -> voice_mode=%d (K144)", VOICE_MODE_ONBOARD);
+           {
+              extern void ui_agents_on_mode_change(void);
+              ui_agents_on_mode_change();
+           }
            ui_mode_sheet_hide();
            return;
         case 5: /* Solo — W8 (cross-stack audit 2026-05-11): closes the
@@ -576,6 +585,10 @@ void preset_click_cb(lv_event_t *e)
            tab5_settings_get_llm_model(model2, sizeof(model2));
            voice_send_config_update(VOICE_MODE_SOLO, model2);
            ESP_LOGI(TAG, "Solo preset -> voice_mode=%d (OpenRouter direct)", VOICE_MODE_SOLO);
+           {
+              extern void ui_agents_on_mode_change(void);
+              ui_agents_on_mode_change();
+           }
         }
            ui_mode_sheet_hide();
            return;

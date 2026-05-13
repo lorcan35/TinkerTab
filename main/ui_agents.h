@@ -22,3 +22,10 @@ void ui_agents_hide(void);
 
 /** True if the overlay is currently visible. */
 bool ui_agents_is_visible(void);
+
+/** W7-B follow-up (TT #467): notify the overlay that the user's voice
+ *  mode changed.  When the overlay is currently visible, re-kicks the
+ *  agent-skill catalog fetch so the vmode=3 gate (W7-B.4) updates live
+ *  — switching into mode 3 reveals the skill section; switching out
+ *  hides it.  Safe to call when the overlay is hidden (no-op). */
+void ui_agents_on_mode_change(void);
