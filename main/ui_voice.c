@@ -32,6 +32,7 @@
 #include "ui_core.h" /* tab5_lv_async_call (#258) */
 #include "ui_notes.h"
 #include "ui_theme.h" /* TT #328 Wave 4: TH_MODE_*/ TH_STATUS_ *tokens for state - icon hues * /
+#include "voice.h" /* W7-E.4c: voice_is_channel_reply_armed + getters */
 
 static const char *TAG = "ui_voice";
 
@@ -213,6 +214,11 @@ static lv_obj_t  *s_orb_halo_inner = NULL;     /* 196 px border-only */
 static lv_obj_t  *s_lbl_status    = NULL;   /* "Listening..." / "Thinking..." / "Speaking..." */
 static lv_obj_t  *s_lbl_transcript = NULL;  /* STT transcript */
 static lv_obj_t  *s_lbl_dots      = NULL;   /* "..." animated dots */
+/* W7-E.4c: reply-context chip — shown at top of overlay when a
+ * channel reply is armed (voice_is_channel_reply_armed() == true).
+ * Hidden by default; populated in ui_voice_show via the armed-context
+ * accessor (which doesn't consume — that happens at STT-complete). */
+static lv_obj_t *s_lbl_reply_chip = NULL;
 
 /* Wave bars */
 static lv_obj_t  *s_wave_cont     = NULL;
@@ -353,6 +359,15 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
 
     s_cur_state = state;
     update_mic_button_state(state);
+
+    /* W7-E.4c: reply chip is meaningful only during the LISTENING phase.
+     * Once the user releases the orb (→ PROCESSING/SPEAKING/READY/IDLE)
+     * the reply context has either been consumed (real channel_reply
+     * sent) or the user gave up — either way, the "Replying to X" hint
+     * is stale.  Hide it. */
+    if (s_lbl_reply_chip && state != VOICE_STATE_LISTENING && state != VOICE_STATE_CONNECTING) {
+       lv_obj_add_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* Cancel any pending auto-hide */
     if (s_hide_timer) {
@@ -653,6 +668,22 @@ void ui_voice_show(void)
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(s_overlay, VO_BG_OPA, 0);
 
+    /* W7-E.4c: reveal the reply-context chip if the user just tapped
+     * REPLY on a now-card.  voice_peek_channel_reply reads the armed
+     * state without clearing (the STT-complete branch in
+     * voice_ws_proto.c consumes via voice_consume_channel_reply). */
+    if (s_lbl_reply_chip) {
+       char ch[16] = {0}, thread[64] = {0}, sender[64] = {0};
+       if (voice_peek_channel_reply(ch, thread, sender)) {
+          char text[160];
+          snprintf(text, sizeof(text), "Replying to %.40s (%.8s)", sender[0] ? sender : "?", ch[0] ? ch : "?");
+          lv_label_set_text(s_lbl_reply_chip, text);
+          lv_obj_clear_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
+       } else {
+          lv_obj_add_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
+       }
+    }
+
     /* Child-opacity ramp is driven by fade_overlay_cb from start→end
      * in the old animation; skipping it means child content snaps on
      * too.  If a gentler reveal is needed later, animate individual
@@ -677,6 +708,13 @@ void ui_voice_hide(void)
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(s_overlay, LV_OPA_COVER, 0);
+
+    /* W7-E.4c: hide the reply chip on overlay-out so the next
+     * unrelated open doesn't briefly flash stale text before
+     * ui_voice_show's peek/repaint runs. */
+    if (s_lbl_reply_chip) {
+       lv_obj_add_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
+    }
 
     ESP_LOGI(TAG, "Voice overlay hidden (instant)");
 }
@@ -807,6 +845,28 @@ static void build_overlay(void)
     lv_obj_set_style_text_align(s_lbl_transcript, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_transcript, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
+
+    /* W7-E.4c: reply-context chip at top-center.  Hidden by default;
+     * ui_voice_show populates + reveals it when voice_is_channel_reply_armed
+     * is true (set via voice_arm_channel_reply on the REPLY button tap). */
+    s_lbl_reply_chip = lv_label_create(s_overlay);
+    if (!s_lbl_reply_chip) {
+       ESP_LOGE(TAG, "OOM creating voice reply chip");
+       return;
+    }
+    lv_label_set_text(s_lbl_reply_chip, "");
+    lv_obj_set_style_text_font(s_lbl_reply_chip, FONT_BODY, 0);
+    lv_obj_set_style_text_color(s_lbl_reply_chip, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_letter_space(s_lbl_reply_chip, 1, 0);
+    lv_obj_set_style_bg_color(s_lbl_reply_chip, lv_color_hex(TH_CARD_ELEVATED), 0);
+    lv_obj_set_style_bg_opa(s_lbl_reply_chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_lbl_reply_chip, 18, 0);
+    lv_obj_set_style_pad_hor(s_lbl_reply_chip, 22, 0);
+    lv_obj_set_style_pad_ver(s_lbl_reply_chip, 12, 0);
+    lv_obj_set_style_border_width(s_lbl_reply_chip, 2, 0);
+    lv_obj_set_style_border_color(s_lbl_reply_chip, lv_color_hex(TH_MODE_CLAW), 0);
+    lv_obj_align(s_lbl_reply_chip, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_add_flag(s_lbl_reply_chip, LV_OBJ_FLAG_HIDDEN);
 
     /* Thinking dots label — centered with explicit width */
     s_lbl_dots = lv_label_create(s_overlay);
