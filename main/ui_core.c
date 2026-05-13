@@ -150,12 +150,35 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
 
-    /* TT #328 Wave 2 — read real touch FIRST so a finger on the glass wins
-     * over any debug inject in flight.  Pre-Wave-2 the inject branch always
-     * pre-empted real input; an HTTP injected tap fired during a real swipe
-     * would shadow the user's finger and either miss its target or force
-     * LVGL to dispatch the inject coords as if they were the real touch.
-     * Audit P0 #3 traced the symptom to this priority inversion. */
+    /* TT #483 (surfaced during W7-F.2 live test pass): when the debug
+     * inject is actively in flight, give it priority over any real-touch
+     * read.  Pre-#483 we polled real touch first per Wave 2, but
+     * capacitive noise from the ST7123 TDDI occasionally registers
+     * phantom micro-touches at low strength that masked HTTP injects
+     * from the e2e harness — net result was a `/touch` POST returning
+     * ok=true while the LVGL switch never received the event.
+     *
+     * Wave 2's original concern was "real finger during a swipe shouldn't
+     * be cancelled by an HTTP inject".  That trade-off lands the other
+     * way for the harness use case (the 300 ms tap window has no real
+     * finger 99 %+ of the time; phantom-strength noise is what's
+     * winning, not deliberate human input).  Keep the seqlock-protected
+     * publish (Wave 2's *other* fix) — that's the real correctness
+     * invariant, not the priority order.
+     *
+     * If a future scenario needs human-finger-wins-during-inject again
+     * we can gate this by a strength threshold or a temporary
+     * `inject_priority` flag on the override reader. */
+    int32_t inj_x, inj_y;
+    bool inj_pressed;
+    if (tab5_debug_touch_override(&inj_x, &inj_y, &inj_pressed)) {
+       data->point.x = inj_x;
+       data->point.y = inj_y;
+       data->state = inj_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+       return;
+    }
+
+    /* No inject in flight — read real touch hardware. */
     tab5_touch_point_t points[TAB5_TOUCH_MAX_POINTS];
     uint8_t count = 0;
     bool touched = tab5_touch_read(points, &count);
@@ -171,16 +194,6 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
             s_touch_debug_counter++;
         }
         return;
-    }
-
-    /* No real finger — debug inject (atomic seqlock-published) can drive. */
-    int32_t inj_x, inj_y;
-    bool inj_pressed;
-    if (tab5_debug_touch_override(&inj_x, &inj_y, &inj_pressed)) {
-       data->point.x = inj_x;
-       data->point.y = inj_y;
-       data->state = inj_pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-       return;
     }
 
     data->state = LV_INDEV_STATE_RELEASED;
