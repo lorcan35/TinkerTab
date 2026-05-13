@@ -192,6 +192,21 @@ esp_err_t voice_send_text(const char *text);
  *  voice_ws_proto.c. */
 esp_err_t voice_send_channel_reply(const char *channel, const char *thread_id, const char *text);
 
+/** W7-E.4b: arm the next voice utterance as a channel reply.  When
+ *  armed, the next STT-complete arrival is routed through
+ *  voice_send_channel_reply (with the stored channel/thread_id) instead
+ *  of normal LLM dispatch.  Cleared automatically after one consumption
+ *  OR via voice_disarm_channel_reply().  Safe to call from any task. */
+void voice_arm_channel_reply(const char *channel, const char *thread_id, const char *sender);
+void voice_disarm_channel_reply(void);
+bool voice_is_channel_reply_armed(void);
+
+/** Read-and-clear the armed context.  All three output buffers must be
+ *  large enough for the underlying caps (channel: 16, thread: 64,
+ *  sender: 64).  Returns true if context was armed (buffers populated)
+ *  or false if not.  Atomic w.r.t. the arm/disarm path. */
+bool voice_consume_channel_reply(char *channel_out, char *thread_id_out, char *sender_out);
+
 /** W4-A: return the current turn_id (12-hex-char string + null).  Set by
  *  voice_start_listening / voice_start_dictation / voice_send_text on every
  *  fresh turn.  Returns "-" before the first turn (never NULL).  Use to

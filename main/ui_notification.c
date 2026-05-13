@@ -241,25 +241,40 @@ void ui_notification_reply_current(const char *text) {
       tab5_debug_obs_event("ui.notif.reply", "no_cache");
       return;
    }
-   /* "👍" UTF-8 is 4 bytes (F0 9F 91 8D); use as quick-ack placeholder
-    * when caller didn't supply real dictated text (W7-E.4b will). */
-   const char *reply_text = (text && text[0]) ? text : "\xF0\x9F\x91\x8D";
 
-   esp_err_t r = voice_send_channel_reply(s_last_now_msg.channel, s_last_now_msg.thread_id, reply_text);
+   /* W7-E.4b: when caller supplies explicit text, use the legacy direct-
+    * send path (debug surfaces + future shortcut paths still use this).
+    * When text is NULL/empty, arm the reply context so the next mic-orb
+    * dictation routes to voice_send_channel_reply via the STT-complete
+    * branch in voice_ws_proto.c — that's the real spec §3.3 flow. */
+   if (text && text[0]) {
+      esp_err_t r = voice_send_channel_reply(s_last_now_msg.channel, s_last_now_msg.thread_id, text);
+      char detail[64];
+      if (r == ESP_OK) {
+         snprintf(detail, sizeof(detail), "sent ch=%.10s thread=%.20s", s_last_now_msg.channel,
+                  s_last_now_msg.thread_id);
+         tab5_debug_obs_event("ui.notif.reply", detail);
+         char toast[96];
+         snprintf(toast, sizeof(toast), "Reply queued to %.40s", s_last_now_msg.sender);
+         ui_home_show_toast_ex(toast, UI_TOAST_INFO);
+      } else {
+         snprintf(detail, sizeof(detail), "send_fail err=%d", (int)r);
+         tab5_debug_obs_event("ui.notif.reply", detail);
+         ui_home_show_toast_ex("Reply not sent — Dragon offline", UI_TOAST_WARN);
+      }
+      return;
+   }
+
+   /* W7-E.4b: voice-dictated reply path.  Arm + prompt. */
+   voice_arm_channel_reply(s_last_now_msg.channel, s_last_now_msg.thread_id, s_last_now_msg.sender);
 
    char detail[64];
-   if (r == ESP_OK) {
-      snprintf(detail, sizeof(detail), "sent ch=%.10s thread=%.20s", s_last_now_msg.channel, s_last_now_msg.thread_id);
-      tab5_debug_obs_event("ui.notif.reply", detail);
+   snprintf(detail, sizeof(detail), "armed ch=%.8s sender=%.20s", s_last_now_msg.channel, s_last_now_msg.sender);
+   tab5_debug_obs_event("ui.notif.reply", detail);
 
-      char toast[96];
-      snprintf(toast, sizeof(toast), "Reply queued to %.40s", s_last_now_msg.sender);
-      ui_home_show_toast_ex(toast, UI_TOAST_INFO);
-   } else {
-      snprintf(detail, sizeof(detail), "send_fail err=%d", (int)r);
-      tab5_debug_obs_event("ui.notif.reply", detail);
-      ui_home_show_toast_ex("Reply not sent — Dragon offline", UI_TOAST_WARN);
-   }
+   char toast[96];
+   snprintf(toast, sizeof(toast), "Hold the orb to reply to %.30s", s_last_now_msg.sender);
+   ui_home_show_toast_ex(toast, UI_TOAST_INFO);
 }
 
 void ui_notification_snooze_current(void) {
