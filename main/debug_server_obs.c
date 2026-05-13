@@ -26,6 +26,7 @@
 #include <sys/stat.h>
 
 #include "cJSON.h"
+#include "debug_obs.h"
 #include "debug_server_internal.h"
 #include "esp_core_dump.h"
 #include "esp_err.h"
@@ -225,6 +226,13 @@ static esp_err_t coredump_handler(httpd_req_t *req) {
    /* Terminate chunked stream. */
    httpd_resp_send_chunk(req, NULL, 0);
    ESP_LOGI(TAG, "/coredump: sent %zu/%zu bytes", sent, size);
+   /* W4-D (audit 2026-05-11): fire an obs event so the Dragon-side
+    * coredump scraper's pull leaves a fingerprint on the Tab5 obs
+    * ring — operators can correlate "Dragon archived dump at T" with
+    * "Tab5 served the bytes at T" without reading httpd logs. */
+   char obs_buf[48];
+   snprintf(obs_buf, sizeof(obs_buf), "bytes=%zu", sent);
+   tab5_debug_obs_event("debug.coredump_pull", obs_buf);
    return ESP_OK;
 }
 
