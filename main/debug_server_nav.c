@@ -239,12 +239,67 @@ static esp_err_t screen_state_handler(httpd_req_t *req) {
    return ret;
 }
 
+/* TT #503: debug endpoint for the orb circadian palette.  Force-set
+ * the hour-of-day used by the orb's gradient pick so visual phases
+ * can be walked from a test script without waiting for real time to
+ * pass.  Query params:
+ *   POST /orb/force_hour?h=N    (N = 0..23 → simulate that hour)
+ *   POST /orb/force_hour?h=-1   (clear override → real time)
+ * Returns the effective hour after the set, plus a `cleared` flag. */
+static esp_err_t orb_force_hour_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+
+   char query[64] = {0};
+   int h = -1;
+   bool got_h = false;
+   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+      char vbuf[8] = {0};
+      if (httpd_query_key_value(query, "h", vbuf, sizeof(vbuf)) == ESP_OK) {
+         h = atoi(vbuf);
+         got_h = true;
+      }
+   }
+   if (!got_h) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      httpd_resp_send(req, "{\"error\":\"missing h param (0..23 or -1)\"}", HTTPD_RESP_USE_STRLEN);
+      return ESP_OK;
+   }
+
+   extern int ui_home_orb_force_hour(int h);
+   extern int ui_home_orb_current_hour(void);
+   int ret_hour = ui_home_orb_force_hour(h);
+   if (ret_hour == -2) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      httpd_resp_send(req, "{\"error\":\"h must be -1..23\"}", HTTPD_RESP_USE_STRLEN);
+      return ESP_OK;
+   }
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddNumberToObject(root, "forced_hour", (double)ret_hour);
+   cJSON_AddBoolToObject(root, "cleared", ret_hour == -1);
+   cJSON_AddNumberToObject(root, "painted_hour", (double)ui_home_orb_current_hour());
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+   esp_err_t r = httpd_resp_sendstr(req, json);
+   free(json);
+   return r;
+}
+
 void debug_server_nav_register(httpd_handle_t server) {
    if (!server) return;
 
    static const httpd_uri_t uri_navigate = {.uri = "/navigate", .method = HTTP_POST, .handler = navigate_handler};
    static const httpd_uri_t uri_screen = {.uri = "/screen", .method = HTTP_GET, .handler = screen_state_handler};
+   /* TT #503 — orb circadian phase debug override. */
+   static const httpd_uri_t uri_orb_force_hour = {
+       .uri = "/orb/force_hour",
+       .method = HTTP_POST,
+       .handler = orb_force_hour_handler,
+   };
 
    httpd_register_uri_handler(server, &uri_navigate);
    httpd_register_uri_handler(server, &uri_screen);
+   httpd_register_uri_handler(server, &uri_orb_force_hour);
 }
