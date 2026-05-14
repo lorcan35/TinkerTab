@@ -807,14 +807,19 @@ static void build_overlay(void)
 {
     lv_obj_t *layer = lv_layer_top();
 
-    /* Full-screen overlay backdrop */
+    /* TT #511 wave-1.5 — in-place listening.  Voice overlay BG is now
+     * FULLY TRANSPARENT so the new ui_orb on the home screen shows
+     * through.  The home orb IS the orb during voice (with bloom +
+     * lean + comet driven by the state machine added in step 5-7).
+     * Only the text labels + buttons of this overlay render on top.
+     * The overlay still has CLICKABLE so background taps don't fall
+     * through to the home orb (preventing accidental re-trigger). */
     s_overlay = lv_obj_create(layer);
     if (!s_overlay) { ESP_LOGE(TAG, "OOM creating voice overlay backdrop"); return; }
     lv_obj_set_size(s_overlay, SW, SH);
     lv_obj_set_pos(s_overlay, 0, 0);
     lv_obj_set_style_radius(s_overlay, 0, 0);
-    lv_obj_set_style_bg_color(s_overlay, lv_color_hex(VO_BG), 0);
-    lv_obj_set_style_bg_opa(s_overlay, VO_BG_OPA, 0);
+    lv_obj_set_style_bg_opa(s_overlay, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_overlay, 0, 0);
     lv_obj_set_style_pad_all(s_overlay, 0, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
@@ -964,10 +969,23 @@ static void build_orb(lv_obj_t *parent)
     lv_obj_set_style_pad_all(s_orb_container, 0, 0);
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-    /*
-     * Fake radial gradient: concentric circles from center (brightest)
-     * to outer (transparent). Each layer is slightly larger and dimmer.
-     */
+    /* TT #511 wave-1.5 — in-place listening.  Skip the entire visual
+     * composite below (4 glow layers + ring + 3 halos = 8 widgets).
+     * The home orb (ui_orb on the home screen) is THE orb now; this
+     * container exists only as a click-target placeholder so state-
+     * machine code that adds CLICKABLE + event handlers to it (READY
+     * tap-to-listen, SPEAKING tap-to-cancel) still has a valid obj
+     * to attach to.  Earlier attempts:
+     *   1. Setting LV_PART_MAIN opa to 0 on the container — children
+     *      have their own bg_opa / border_opa so they rendered anyway.
+     *   2. Adding LV_OBJ_FLAG_HIDDEN to the container — confirmed not
+     *      sufficient to suppress the 8 children at draw time on this
+     *      LVGL 9.2.2 build (rings still rendered).
+     * The reliable fix is to NEVER create the visual children.
+     * Container's own bg_opa = TRANSP (set above) so it's an invisible
+     * 360 × 360 click box. */
+    return;
+#if 0  /* TT #511 wave-1.5 — dead-coded; ui_orb provides the orb visual. */
     int32_t base_sz = ORB_SZ_LISTEN;
     for (int i = ORB_GLOW_LAYERS - 1; i >= 0; i--) {
         /* Outermost layer is largest, innermost is smallest */
@@ -1036,6 +1054,7 @@ static void build_orb(lv_obj_t *parent)
          * in case LVGL's z-order derived from sibling order differs. */
         lv_obj_move_background(r);
     }
+#endif /* TT #511 wave-1.5 — dead-coded section above. */
 }
 
 /* ── Wave bars — speaking visualization ───────────────────────── */
@@ -1430,11 +1449,19 @@ static void show_state_idle(void)
 
 static void set_orb_color(uint32_t ring_hex, uint32_t glow_hex, lv_opa_t ring_opa)
 {
-    lv_obj_set_style_border_color(s_orb_ring, lv_color_hex(ring_hex), 0);
-    lv_obj_set_style_border_opa(s_orb_ring, ring_opa, 0);
+   /* TT #511 wave-1.5: orb widgets are dead-coded by build_orb (the
+    * home ui_orb provides the visual now).  Every pointer here is
+    * NULL; guard the writes so state handlers can keep calling this
+    * harmlessly. */
+   if (s_orb_ring) {
+      lv_obj_set_style_border_color(s_orb_ring, lv_color_hex(ring_hex), 0);
+      lv_obj_set_style_border_opa(s_orb_ring, ring_opa, 0);
+   }
 
     for (int i = 0; i < ORB_GLOW_LAYERS; i++) {
-        lv_obj_set_style_bg_color(s_orb_glow[i], lv_color_hex(glow_hex), 0);
+       if (s_orb_glow[i]) {
+          lv_obj_set_style_bg_color(s_orb_glow[i], lv_color_hex(glow_hex), 0);
+       }
     }
 }
 
@@ -1826,12 +1853,15 @@ static void stop_all_anims(void)
 
 static void orb_breathe_cb(void *obj, int32_t val)
 {
-    lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
+   /* TT #511 wave-1.5: obj may be NULL (dead-coded orb widgets). */
+   if (!obj) return;
+   lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 }
 
 static void orb_ring_opa_cb(void *obj, int32_t val)
 {
-    lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
+   if (!obj) return;
+   lv_obj_set_style_border_opa((lv_obj_t *)obj, (lv_opa_t)val, 0);
 }
 
 static void wave_bar_cb(void *obj, int32_t val)
