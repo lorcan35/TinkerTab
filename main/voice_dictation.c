@@ -60,11 +60,44 @@ static void dict_dispatch(void) {
    }
 }
 
+/* Return true if going from `cur` to `next` is a valid transition.
+ * Forward through the pipeline + any → FAILED + SAVED/FAILED/IDLE → IDLE.
+ * Bounces (e.g. RECORDING → RECORDING) are filtered by the dup check
+ * in set_state itself, so we don't list them here. */
+static bool dict_transition_allowed(dict_state_t cur, dict_state_t next) {
+   /* Failures terminate any in-flight state. */
+   if (next == DICT_FAILED) return cur != DICT_IDLE;
+   /* IDLE accepts from any terminal state. */
+   if (next == DICT_IDLE) return cur == DICT_SAVED || cur == DICT_FAILED ||
+                                 cur == DICT_RECORDING;
+   switch (cur) {
+   case DICT_IDLE:         return next == DICT_RECORDING;
+   case DICT_RECORDING:    return next == DICT_UPLOADING || next == DICT_TRANSCRIBING;
+   case DICT_UPLOADING:    return next == DICT_TRANSCRIBING;
+   case DICT_TRANSCRIBING: return next == DICT_SAVED;
+   case DICT_SAVED:        return next == DICT_IDLE;
+   case DICT_FAILED:       return next == DICT_UPLOADING || next == DICT_RECORDING;
+                           /* retry resumes upload (REST) or restarts recording */
+   }
+   return false;
+}
+
 void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason,
                                uint32_t now_ms) {
    /* Idempotent — same-state re-entry is a no-op (avoids spamming
     * subscribers during a chatty caller that re-asserts state). */
    if (new_state == s_event.state && fail_reason == s_event.fail_reason) {
+      return;
+   }
+
+   if (!dict_transition_allowed(s_event.state, new_state)) {
+      /* Refused — log via the host shim print so it's visible during
+       * host tests, but don't abort: callers may race and we want the
+       * state machine resilient.  On target, this maps to ESP_LOGW
+       * once we add an esp_log shim in tests/host/. */
+      fprintf(stderr, "voice_dictation: refused %s -> %s\n",
+              voice_dictation_state_name(s_event.state),
+              voice_dictation_state_name(new_state));
       return;
    }
 
