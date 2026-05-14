@@ -124,6 +124,12 @@ static lv_obj_t *s_ring_outer      = NULL;
 static lv_obj_t *s_ring_mid        = NULL;
 static lv_obj_t *s_ring_inner      = NULL;
 static lv_obj_t *s_orb             = NULL;
+/* TT #507 buttery-smooth pass: inner specular highlight that pulses
+ * INSIDE the orb instead of pulsing the whole orb body.  The orb's
+ * gradient stays stable (no whole-region redraw per frame = no refresh
+ * flicker), the small highlight draws much less area each tick so
+ * motion reads clean even at 30 Hz. */
+static lv_obj_t *s_orb_highlight = NULL;
 /* TT #501 — orb aliveness pool.
  *
  *  - s_orb_breath_anim: the ambient breath anim handle (4 s opacity
@@ -244,6 +250,7 @@ static void paint_orb_pip_for_context(void);
 /* TT #501 — orb aliveness static fns referenced from ui_home_destroy
  * (which lives above the implementations). */
 static void orb_set_opa_cb(void *obj, int32_t v);
+static void orb_highlight_set_opa_cb(void *obj, int32_t v);
 static void halo_inner_set_border_opa_cb(void *obj, int32_t v);
 static void halo_outer_set_bg_opa_cb(void *obj, int32_t v);
 static void ripple_set_radius_cb(void *obj, int32_t r);
@@ -713,7 +720,9 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_bg_opa(s_ring_outer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_ring_outer, 1, 0);
     lv_obj_set_style_border_color(s_ring_outer, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_border_opa(s_ring_outer, 60, 0);
+    /* TT #507 — dim the outer ring; was 60 → 25 so it reads as soft
+     * atmospheric glow instead of a hard tree-ring. */
+    lv_obj_set_style_border_opa(s_ring_outer, 25, 0);
     lv_obj_clear_flag(s_ring_outer, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     s_ring_mid = lv_obj_create(s_screen);
@@ -723,7 +732,8 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_bg_opa(s_ring_mid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_ring_mid, 1, 0);
     lv_obj_set_style_border_color(s_ring_mid, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_border_opa(s_ring_mid, 90, 0);
+    /* TT #507 — was 90 → 40. */
+    lv_obj_set_style_border_opa(s_ring_mid, 40, 0);
     lv_obj_clear_flag(s_ring_mid, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     s_ring_inner = lv_obj_create(s_screen);
@@ -733,7 +743,10 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_bg_opa(s_ring_inner, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_ring_inner, 1, 0);
     lv_obj_set_style_border_color(s_ring_inner, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_border_opa(s_ring_inner, 140, 0);
+    /* TT #507 — was 140 → 60.  Inner ring stays the most visible of
+     * the three (it sits closest to the orb body) but no longer
+     * dominates as a stark concentric outline. */
+    lv_obj_set_style_border_opa(s_ring_inner, 60, 0);
     lv_obj_clear_flag(s_ring_inner, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     /* The orb itself — 156 px, 2-stop vertical gradient, no shadow. */
@@ -747,6 +760,35 @@ lv_obj_t *ui_home_create(void)
     lv_obj_add_event_cb(s_orb, orb_click_cb, LV_EVENT_CLICKED, NULL);
     ui_fb_icon(s_orb); /* TT #328 Wave 10 — opacity dip on press */
     lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+
+    /* TT #507 — soft inner ember.  Small lighter circle inside the orb
+     * with LVGL shadow for a SOFT GLOW (no hard circular edge).  Sits
+     * at upper-center to look like top-lit sun glint.  This obj is the
+     * primary breath anim target — animating its bg_opa dirties a
+     * small area each tick, so motion reads smooth without the whole-
+     * orb refresh flicker the old build had. */
+    s_orb_highlight = lv_obj_create(s_orb);
+    lv_obj_remove_style_all(s_orb_highlight);
+    lv_obj_set_size(s_orb_highlight, 50, 50);
+    /* Position: upper-center of the orb (centered horizontally, ~30%
+     * down from top) — a sun-glint, not a ball-inside-a-ball. */
+    lv_obj_align(s_orb_highlight, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_style_radius(s_orb_highlight, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_orb_highlight, lv_color_hex(0xFFE8B8), 0);
+    /* Soft vertical gradient — bright top, fades to invisible at
+     * bottom so the highlight blends into the orb's body. */
+    lv_obj_set_style_bg_grad_color(s_orb_highlight, lv_color_hex(0xFFFFE8), 0);
+    lv_obj_set_style_bg_grad_dir(s_orb_highlight, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(s_orb_highlight, 110, 0);
+    /* LVGL shadow gives the highlight a SOFT GLOW halo around it —
+     * eliminates the hard circular edge that made the previous v3
+     * highlight look like "ball inside ball."  Cream-colored shadow,
+     * 30 px wide, 90 % opacity = visible glow that fades into orb. */
+    lv_obj_set_style_shadow_color(s_orb_highlight, lv_color_hex(0xFFE8B8), 0);
+    lv_obj_set_style_shadow_width(s_orb_highlight, 30, 0);
+    lv_obj_set_style_shadow_spread(s_orb_highlight, 4, 0);
+    lv_obj_set_style_shadow_opa(s_orb_highlight, 90, 0);
+    lv_obj_clear_flag(s_orb_highlight, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     /* TT #328 Wave 11 P0 #16 — orb status pip.  Small circular badge
      * anchored to the top-right of the orb that flips glyph+color
@@ -2275,6 +2317,7 @@ void ui_home_destroy(void)
        s_orb_peak_timer = NULL;
     }
     if (s_orb) lv_anim_delete(s_orb, orb_set_opa_cb);
+    if (s_orb_highlight) lv_anim_delete(s_orb_highlight, orb_highlight_set_opa_cb);
     if (s_halo_inner) lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
     if (s_halo_outer) lv_anim_delete(s_halo_outer, halo_outer_set_bg_opa_cb);
     s_orb_breath_running = false;
@@ -2317,6 +2360,7 @@ void ui_home_destroy(void)
     s_halo_outer = s_halo_inner = NULL;
     s_ring_outer = s_ring_mid = s_ring_inner = NULL;
     s_orb = NULL;
+    s_orb_highlight = NULL; /* TT #507 — child of s_orb; just clear handle. */
     s_state_word = s_greet_line = NULL;
     s_mode_chip = s_mode_dot = s_mode_name = s_mode_sub = NULL;
     s_now_card = s_now_accent = s_now_kicker = s_now_lede = NULL;
@@ -2708,24 +2752,12 @@ void ui_home_set_error_banner_visible(bool visible) {
  * to keep CPU + heap pressure off the busy overlay.  Restored on
  * any-overlay-hidden via ui_home_orb_aliveness_resume(). */
 
-/* Smooth-as-fuck pass (TT #503 follow-up):
- *
- * Original v1 used opacity 235→255 (20 levels over 4 s = ~5 levels/sec) —
- * visible stepping on Tab5's idle ~14 FPS.  Smooth pass widens the swing
- * 3× + adds counter-phase halo animation for a real "lantern exhaling"
- * effect that's visible regardless of frame rate:
- *   - Orb opacity 195↔255 (60 levels vs 20)
- *   - Inner halo border_opa 100↔200 in counter-phase
- *   - Outer halo bg_opa 50↔90 in counter-phase
- * Three anims share EASE_IN_OUT so they hit extremes in lockstep.
- *
- * Peak meter: tick lowered to 33 ms (~30 Hz, was 20 Hz), gain widened
- * 1.5× so a typical speaking RMS swings the orb more dramatically.
- * The mic-driven peak should feel physical — you talk, the orb pulses
- * with your syllables, no perceptible lag. */
+/* TT #507 — buttery-smooth pass.  Orb body NO LONGER animates (was
+ * 195↔255 opacity, caused "refresh flicker" because the whole 180 px
+ * orb rect invalidated every tick).  Inner highlight pulses instead. */
 #define ORB_BREATH_PERIOD_MS 4000
-#define ORB_BREATH_OPA_MIN 195
-#define ORB_BREATH_OPA_MAX 255
+#define ORB_HIGHLIGHT_OPA_MIN 100 /* TT #507 — soft inner ember dim  */
+#define ORB_HIGHLIGHT_OPA_MAX 190 /* TT #507 — bright inner ember    */
 #define HALO_INNER_BREATH_MIN 100
 #define HALO_INNER_BREATH_MAX 200
 #define HALO_OUTER_BREATH_MIN 50
@@ -2739,20 +2771,23 @@ void ui_home_set_error_banner_visible(bool visible) {
 #define ORB_RIPPLE_OPA_START 200
 #define ORB_RIPPLE_OPA_END 0
 
-/* Choppy-fix pass:
+/* TT #507 buttery-smooth pass:
  *
- * `lv_anim_path_ease_in_out` is a cubic-bezier approximation of sine but
- * combined with `set_playback_time` it has a perceptible HITCH at min
- * and max — the anim flips direction in a single tick which reads as
- * a stutter on a 30-Hz refresh loop.  Switch to a true sine path over
- * the FULL period (no playback) so motion is continuous + smooth at
- * every frame transition.
+ * Previous build animated the ORB's full-body opacity.  Each frame, LVGL
+ * marked the whole 180×180 orb rect dirty and redrew the entire gradient
+ * — the eye reads this whole-region redraw as a refresh/flicker, not as
+ * motion.  Plus opacity changes don't move the EDGE, so the orb feels
+ * static even when it's pulsing.
  *
- * Also: opacity-only animation reads as a fade, not motion — the
- * orb's edge stays still.  Add a SCALE transform anim (252 ↔ 264 on
- * LVGL 9's transform_scale, where 256 = 1.0) so the orb itself
- * actually deforms.  4-5 px breath motion at 180 px diameter is
- * visible without being distracting. */
+ * Fix: stop animating the orb body.  Instead, animate the inner SPECULAR
+ * HIGHLIGHT (`s_orb_highlight`, a 70 px lantern-glint child of s_orb):
+ *   - Highlight opacity 100↔190 (subtle pulse — the "ember")
+ *   - Halo border + bg counter-phase (unchanged)
+ *
+ * Net effect: orb body stays solid + stable, the highlight subtly
+ * brightens/dims like a candle flame inside a lantern.  Way less area
+ * redrawn each tick = no whole-region refresh artifacts = buttery
+ * smooth. */
 
 /* True sine path over the full anim duration.
  *
@@ -2782,7 +2817,18 @@ static int32_t breath_sine_path(const lv_anim_t *a) {
    return a->start_value + delta;
 }
 
-/* lv_anim setter for opacity on s_orb — used by breath. */
+/* lv_anim setter for bg_opa on s_orb_highlight — TT #507 buttery
+ * pass.  Was: lv_obj_set_style_opa on s_orb itself (causes whole-orb
+ * region redraw → refresh flicker).  Now drives the inner specular
+ * highlight only — much smaller dirty area + the orb body stays
+ * visually rock-solid. */
+static void orb_highlight_set_opa_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+/* Legacy callback kept for cleanup compatibility in destroy + breath_stop;
+ * no longer registered with anim engine. */
 static void orb_set_opa_cb(void *obj, int32_t v) {
    if (!obj) return;
    lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
@@ -2819,37 +2865,36 @@ static void orb_breath_start(void) {
    if (!s_orb) return;
    /* Kill any existing breath anims so we don't stack them. */
    lv_anim_delete(s_orb, orb_set_opa_cb);
+   if (s_orb_highlight) lv_anim_delete(s_orb_highlight, orb_highlight_set_opa_cb);
    if (s_halo_inner) lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
    if (s_halo_outer) lv_anim_delete(s_halo_outer, halo_outer_set_bg_opa_cb);
 
-   /* All four breath anims share the same full-period custom sine path
+   /* TT #507: ensure the orb body itself is fully opaque + STILL.
+    * The "refresh-y" feel came from animating the full orb opacity
+    * → whole-region invalidate every tick → eye reads as flicker. */
+   lv_obj_set_style_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+
+   /* All breath anims share the same full-period custom sine path
     * so they're frame-coherent + free of the ease_in_out + playback
     * transition hitch.  Same `set_time(ORB_BREATH_PERIOD_MS)`, no
     * playback_time — the sine path itself makes the value return to
     * the start at t=dur, so REPEAT_INFINITE just loops cleanly. */
 
-   /* Orb opacity */
-   lv_anim_t a;
-   lv_anim_init(&a);
-   lv_anim_set_var(&a, s_orb);
-   lv_anim_set_exec_cb(&a, orb_set_opa_cb);
-   lv_anim_set_values(&a, ORB_BREATH_OPA_MIN, ORB_BREATH_OPA_MAX);
-   lv_anim_set_time(&a, ORB_BREATH_PERIOD_MS);
-   lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-   lv_anim_set_path_cb(&a, breath_sine_path);
-   lv_anim_start(&a);
-
-   /* NOTE: scale transform anim removed.  LVGL 9 PARTIAL render mode
-    * has a known dirty-rect issue when transform_scale is animated on
-    * an object with a fixed lv_obj_set_size: the obj's logical bounds
-    * stay constant but the visual scale exceeds them, so the
-    * invalidator misses the periphery and stale framebuffer content
-    * from prior screens (splash, in our case) bleeds through.  The
-    * opacity + halo counter-phase already provide the breath motion;
-    * geometric motion would require a different approach (e.g.
-    * actual obj_set_size with re-anchoring, or a separate dedicated
-    * render-mode-FULL pass).  Revisit if perceived motion is still
-    * insufficient after the sine path fix. */
+   /* Inner highlight opacity — primary breath driver in v3.
+    * 70 px obj inside the orb → tiny invalidation region per frame →
+    * NO flicker, just a smooth glow that brightens and dims like
+    * a lantern's inner flame. */
+   if (s_orb_highlight) {
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, s_orb_highlight);
+      lv_anim_set_exec_cb(&a, orb_highlight_set_opa_cb);
+      lv_anim_set_values(&a, ORB_HIGHLIGHT_OPA_MIN, ORB_HIGHLIGHT_OPA_MAX);
+      lv_anim_set_time(&a, ORB_BREATH_PERIOD_MS);
+      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&a, breath_sine_path);
+      lv_anim_start(&a);
+   }
 
    /* Inner halo border — counter-phase via inverted sine (start MAX,
     * sine path normally goes 0→1→0, so inverting via lv_values inversed). */
@@ -2884,12 +2929,18 @@ static void orb_breath_start(void) {
    s_orb_breath_running = true;
 }
 
-/* Stop both opacity + halo breath anims and clamp back to rest values.
- * Called before peak meter takes over, or on overlay-hide. */
+/* Stop the highlight + halo breath anims and clamp back to rest values.
+ * Called before peak meter takes over, or on overlay-hide.
+ * (TT #507: s_orb body no longer animates; kept LV_OPA_COVER just in
+ * case some prior path left it different.) */
 static void orb_breath_stop(void) {
    if (!s_orb) return;
    lv_anim_delete(s_orb, orb_set_opa_cb);
    lv_obj_set_style_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
+   if (s_orb_highlight) {
+      lv_anim_delete(s_orb_highlight, orb_highlight_set_opa_cb);
+      lv_obj_set_style_bg_opa(s_orb_highlight, ORB_HIGHLIGHT_OPA_MAX, LV_PART_MAIN);
+   }
    if (s_halo_inner) {
       lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
       lv_obj_set_style_border_opa(s_halo_inner, HALO_INNER_BREATH_MAX, LV_PART_MAIN);
@@ -2901,22 +2952,22 @@ static void orb_breath_stop(void) {
    s_orb_breath_running = false;
 }
 
-/* Peak-meter tick — reads RMS, smooths, drives opacity.  Runs on the
- * LVGL thread (lv_timer ctx) so direct style writes are safe. */
+/* Peak-meter tick — reads RMS, smooths, drives the inner highlight's
+ * bg_opa.  TT #507: was driving s_orb's main opa (whole-region redraw
+ * caused refresh flicker); now drives the small 70 px highlight bg
+ * which dirty-invalidates a tiny area = smooth visible motion.
+ * Runs on the LVGL thread (lv_timer ctx) so direct style writes are safe. */
 static void orb_peak_tick_cb(lv_timer_t *t) {
    (void)t;
-   if (!s_orb) return;
+   if (!s_orb_highlight) return;
    float rms = voice_get_current_rms();
-   /* Clamp to [0, 1] — RMS is normalised in voice.c but defensive. */
    if (rms < 0.0f) rms = 0.0f;
    if (rms > 1.0f) rms = 1.0f;
-   /* EMA smoothing so a single loud frame doesn't slam the orb full
-    * bright and back; 35 % new sample = ~5 frame settle time at 20 Hz. */
    s_orb_rms_ema = (ORB_PEAK_RMS_EMA * rms) + ((1.0f - ORB_PEAK_RMS_EMA) * s_orb_rms_ema);
-   int opa = ORB_BREATH_OPA_MIN + (int)(s_orb_rms_ema * ORB_PEAK_RMS_GAIN);
+   int opa = ORB_HIGHLIGHT_OPA_MIN + (int)(s_orb_rms_ema * ORB_PEAK_RMS_GAIN);
    if (opa > 255) opa = 255;
-   if (opa < ORB_BREATH_OPA_MIN) opa = ORB_BREATH_OPA_MIN;
-   lv_obj_set_style_opa(s_orb, (lv_opa_t)opa, LV_PART_MAIN);
+   if (opa < ORB_HIGHLIGHT_OPA_MIN) opa = ORB_HIGHLIGHT_OPA_MIN;
+   lv_obj_set_style_bg_opa(s_orb_highlight, (lv_opa_t)opa, LV_PART_MAIN);
 }
 
 /* Start the peak meter — stops breath first.  Idempotent. */

@@ -108,6 +108,14 @@ CONFIG_LV_USE_LOG=y
 CONFIG_LV_LOG_LEVEL_WARN=y
 CONFIG_LV_THEME_DEFAULT_DARK=y
 CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
+# TT #507 — LVGL refresh period (orb breath needs sub-33 ms ticks to
+# feel smooth).  Default 33 ms = 30 Hz target; dropping to 16 ms = 60 Hz
+# target.  The DPI panel + PSRAM partial buffers handle this without
+# tearing.  Empirically Tab5 idle FPS hits ~45-85 at 33 ms; at 16 ms
+# the engine has the budget to run animations at the panel's natural
+# refresh rate.  No measurable CPU penalty at idle (anim work is per-
+# tick; the tick rate itself is cheap).
+CONFIG_LV_DEF_REFR_PERIOD=16
 # LVGL memory.  Base pool is 64 KB statically in BSS; the real working
 # heap comes from a 2 MB PSRAM-backed lv_mem_add_pool() at boot in main.c
 # (see #183 + docs/STABILITY-INVESTIGATION.md).  History: 2026-04-17 had
