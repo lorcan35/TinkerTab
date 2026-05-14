@@ -560,6 +560,20 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_set_style_bg_opa(s_comet, 0, 0);
    lv_obj_clear_flag(s_comet, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
+   /* PR 2: caption label below the orb for pipeline state text
+    * ("● RECORDING 0:23", "UPLOADING…", "TRANSCRIBING…", "✓ Saved").
+    * Sits 24 px below the orb body, transparent background, caption
+    * font.  Hidden by default — paint_pipeline_state shows it. */
+   s_orb_caption = lv_label_create(parent);
+   if (s_orb_caption) {
+      lv_label_set_text(s_orb_caption, "");
+      lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xE8E8EF), 0);
+      lv_obj_set_style_text_font(s_orb_caption, FONT_CAPTION, 0);
+      lv_obj_set_style_text_letter_space(s_orb_caption, 2, 0);
+      lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 24);
+      lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
+   }
+
    /* IDLE state arms tilt drift by default. */
    tilt_start();
 
@@ -584,6 +598,15 @@ void ui_orb_destroy(void) {
    /* Cancel any in-flight speaking-halo fade. */
    if (s_halo) {
       lv_anim_delete(s_halo, halo_opa_anim_cb);
+   }
+   /* PR 2: tear down caption + saved-fade timer. */
+   if (s_orb_caption) {
+      lv_obj_del(s_orb_caption);
+      s_orb_caption = NULL;
+   }
+   if (s_saved_fade_timer) {
+      lv_timer_del(s_saved_fade_timer);
+      s_saved_fade_timer = NULL;
    }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
