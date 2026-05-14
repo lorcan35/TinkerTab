@@ -98,6 +98,14 @@ static const char *TAG = "ui_orb";
 #define ORB_BLOOM_PERIOD_MS 100 /* 10 Hz */
 #define ORB_BLOOM_ALPHA 0.30f   /* EMA smoothing for RMS */
 
+/* ── Speaking halo (SPEAKING state) ──────────────────────────────────── */
+
+/* In SPEAKING, the halo is STEADY — no pulsing.  Reads as "I'm
+ * speaking, my voice is the dynamism."  240 ms fade in / out so the
+ * transition into/out of voice playback feels coupled. */
+#define ORB_SPEAKING_HALO_OPA 70
+#define ORB_SPEAKING_FADE_MS 240
+
 /* ── Module state ────────────────────────────────────────────────────── */
 
 static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
@@ -352,6 +360,34 @@ static void bloom_stop(void) {
    s_bloom_rms_ema = 0.0f;
 }
 
+/* ── Speaking halo (steady) ──────────────────────────────────────────── */
+
+/* Reuses s_halo (sibling-behind s_body, same obj that bloom drives in
+ * LISTENING).  bloom + speaking_halo are mutually exclusive — the
+ * state machine guarantees only one is active at a time. */
+static void halo_opa_anim_cb(void *obj, int32_t v) {
+   (void)obj;
+   if (!s_halo) return;
+   lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+static void halo_anim_to(int target_opa) {
+   if (!s_halo) return;
+   lv_anim_delete(s_halo, halo_opa_anim_cb);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_halo);
+   lv_anim_set_exec_cb(&a, halo_opa_anim_cb);
+   int cur = lv_obj_get_style_bg_opa(s_halo, LV_PART_MAIN);
+   lv_anim_set_values(&a, cur, target_opa);
+   lv_anim_set_time(&a, ORB_SPEAKING_FADE_MS);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+}
+
+static void speaking_enter(void) { halo_anim_to(ORB_SPEAKING_HALO_OPA); }
+static void speaking_exit(void) { halo_anim_to(0); }
+
 /* ── Skill-rim comet ─────────────────────────────────────────────────── */
 
 /* Orbit position anim: input v is angle * 10 in 0..3600 (one full
@@ -497,6 +533,10 @@ void ui_orb_destroy(void) {
       lv_anim_delete(s_comet, comet_pos_cb);
       lv_anim_delete(s_comet, comet_opa_cb);
    }
+   /* Cancel any in-flight speaking-halo fade. */
+   if (s_halo) {
+      lv_anim_delete(s_halo, halo_opa_anim_cb);
+   }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
     * a subsequent ui_orb_create on a fresh screen starts clean. */
@@ -553,6 +593,15 @@ void ui_orb_set_state(ui_orb_state_t s) {
       comet_start();
    } else if (s != ORB_STATE_PROCESSING && prev == ORB_STATE_PROCESSING) {
       comet_stop();
+   }
+
+   /* Step 7: SPEAKING — steady halo, no motion (tilt already paused
+    * above).  Body's existing cream-amber top stop is already warm
+    * enough to read as "speaking"; the halo carries the signal. */
+   if (s == ORB_STATE_SPEAKING && prev != ORB_STATE_SPEAKING) {
+      speaking_enter();
+   } else if (s != ORB_STATE_SPEAKING && prev == ORB_STATE_SPEAKING) {
+      speaking_exit();
    }
 }
 
