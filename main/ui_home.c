@@ -173,6 +173,17 @@ static lv_obj_t *s_mode_dot        = NULL;
 static lv_obj_t *s_mode_name       = NULL;  /* "Hybrid" */
 static lv_obj_t *s_mode_sub        = NULL;  /* "LOCAL + CLOUD" */
 
+/* PR 2: Dictate chip — sits directly below the mode chip.  Same dark-pill
+ * visual language (thin gray border, mode-chip-matched corner radius, no
+ * gradient).  Mirrors the dictation pipeline state in its label / hint /
+ * icon / border colour.  Tap → voice_start_dictation (in IDLE) or
+ * voice_cancel (in RECORDING) — wired in Tasks 8-9. */
+static lv_obj_t *s_dictate_chip       = NULL;
+static lv_obj_t *s_dictate_chip_dot   = NULL; /* breathing dot, left edge */
+static lv_obj_t *s_dictate_chip_label = NULL; /* "Dictate" / "RECORDING" / etc. */
+static lv_obj_t *s_dictate_chip_hint  = NULL; /* "TAP TO START" / "0:23" / etc. */
+static lv_obj_t *s_dictate_chip_icon  = NULL; /* 🎤 / × / 🔄 / ✓ */
+
 /* Now-slot card (widget live target + empty-state) */
 static lv_obj_t *s_now_card        = NULL;
 static lv_obj_t *s_now_accent      = NULL;  /* 140×3 amber bar top-left */
@@ -766,6 +777,57 @@ lv_obj_t *ui_home_create(void)
      * far — user wanted at-a-glance visibility of current voice mode
      * without having to remember + long-press to open the sheet.
      * The chip stays clickable and opens the mode sheet on tap. */
+
+    /* PR 2: Dictate chip — sits 12 px below the mode chip, matching its
+     * width and dark-pill visual language.  Three label children + a
+     * breathing dot.  Wave Tasks 8-9 wire the tap handler + a pipeline
+     * subscriber that mutates label / hint / icon / border on every
+     * dict_event_t.  Visually only here — chip is functional as soon as
+     * Task 8 adds dictate_chip_tap_cb. */
+    s_dictate_chip = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_dictate_chip);
+    lv_obj_set_size(s_dictate_chip, lv_obj_get_width(s_mode_chip), 36);
+    lv_obj_align_to(s_dictate_chip, s_mode_chip, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
+    lv_obj_set_style_bg_color(s_dictate_chip, lv_color_hex(TH_CARD_ELEVATED), 0);
+    lv_obj_set_style_bg_opa(s_dictate_chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_dictate_chip, 18, 0);
+    lv_obj_set_style_border_width(s_dictate_chip, 1, 0);
+    lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x262637), 0);
+    lv_obj_set_style_pad_hor(s_dictate_chip, 14, 0);
+    lv_obj_clear_flag(s_dictate_chip, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_dictate_chip, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Red breathing dot at the left edge — colour shifts with pipeline state. */
+    s_dictate_chip_dot = lv_obj_create(s_dictate_chip);
+    lv_obj_remove_style_all(s_dictate_chip_dot);
+    lv_obj_set_size(s_dictate_chip_dot, 10, 10);
+    lv_obj_align(s_dictate_chip_dot, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xE74C3C), 0);
+    lv_obj_set_style_bg_opa(s_dictate_chip_dot, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_dictate_chip_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_dictate_chip_dot, 0, 0);
+
+    /* Label — "Dictate" in IDLE, mutates per pipeline state. */
+    s_dictate_chip_label = lv_label_create(s_dictate_chip);
+    lv_label_set_text(s_dictate_chip_label, "Dictate");
+    lv_obj_set_style_text_color(s_dictate_chip_label, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(s_dictate_chip_label, FONT_BODY, 0);
+    lv_obj_align(s_dictate_chip_label, LV_ALIGN_LEFT_MID, 18, 0);
+
+    /* Hint — "TAP TO START" / "0:23" / "TAP TO RETRY" — right side, dim. */
+    s_dictate_chip_hint = lv_label_create(s_dictate_chip);
+    lv_label_set_text(s_dictate_chip_hint, "TAP TO START");
+    lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(TH_TEXT_DIM), 0);
+    lv_obj_set_style_text_font(s_dictate_chip_hint, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(s_dictate_chip_hint, 2, 0);
+    lv_obj_align(s_dictate_chip_hint, LV_ALIGN_RIGHT_MID, -28, 0);
+
+    /* Right-edge icon — mic / × / 🔄 / ✓ — toggles via pipeline subscriber. */
+    s_dictate_chip_icon = lv_label_create(s_dictate_chip);
+    lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_AUDIO);
+    lv_obj_set_style_text_color(s_dictate_chip_icon, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(s_dictate_chip_icon, FONT_CAPTION, 0);
+    lv_obj_align(s_dictate_chip_icon, LV_ALIGN_RIGHT_MID, 0, 0);
 
     /* TT #511 wave-1.6 (change B): now-card killed from idle.
      * Obj still created so channel-notification code that writes to
@@ -2264,6 +2326,8 @@ void ui_home_destroy(void)
     s_orb_highlight = NULL; /* TT #507 — child of s_orb; just clear handle. */
     s_state_word = s_greet_line = NULL;
     s_mode_chip = s_mode_dot = s_mode_name = s_mode_sub = NULL;
+    s_dictate_chip = s_dictate_chip_dot = s_dictate_chip_label = NULL;
+    s_dictate_chip_hint = s_dictate_chip_icon = NULL;
     s_now_card = s_now_accent = s_now_kicker = s_now_lede = NULL;
     s_say_pill = s_say_mic = s_say_label_main = s_say_label_sub = NULL;
     s_toast = NULL;
