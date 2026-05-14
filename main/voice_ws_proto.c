@@ -1411,6 +1411,17 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
          /* Flush playback so we don't keep speaking into a dead pipe. */
          voice_playback_buf_reset();
          tab5_audio_speaker_enable(false);
+         /* PR 1: if a dictation was mid-pipeline, fail it with NETWORK
+          * so the UI surfaces the disconnect.  No-op when pipeline is
+          * already IDLE/SAVED/FAILED. */
+         {
+            dict_state_t cur_dict = voice_dictation_get().state;
+            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING ||
+                cur_dict == DICT_TRANSCRIBING) {
+               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK,
+                                         (uint32_t)(esp_timer_get_time() / 1000));
+            }
+         }
          /* Tab5 audit F5 (2026-04-20): if the drop landed MID-TURN (voice
           * state was PROCESSING or SPEAKING), surface a toast so the user
           * knows why the reply stopped.  Previously a mid-turn Dragon
