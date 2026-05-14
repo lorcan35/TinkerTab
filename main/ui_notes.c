@@ -83,13 +83,27 @@ typedef enum {
     NOTE_STATE_FAILED,      /* transcription failed — can retry */
 } note_state_t;
 
-#define MAX_AUDIO_PATH  64
+/* Reason a note ended up in NOTE_STATE_FAILED — surfaced as a chip on
+ * the list row instead of the old generic "FAIL".  Persist+restore as the
+ * "fr" JSON key. */
+typedef enum {
+   NOTE_FAIL_NONE = 0,
+   NOTE_FAIL_AUTH,     /* Dragon returned 401 (no bearer or wrong token) */
+   NOTE_FAIL_NETWORK,  /* HTTP open / write / non-200 (not auth) */
+   NOTE_FAIL_EMPTY,    /* Dragon returned 200 + empty STT text */
+   NOTE_FAIL_NO_AUDIO, /* WAV missing on disk / too small / unreadable */
+   NOTE_FAIL_TOO_LONG, /* hit MAX_NOTE_REC_SECS cap during recording */
+} note_fail_t;
+
+#define MAX_AUDIO_PATH 64
+#define MAX_NOTE_REC_SECS 300 /* 5 min hard cap on SD recording */
 
 /* ── Note storage ───────────────────────────────────────── */
 typedef struct {
     char text[MAX_NOTE_LEN];
     char audio_path[MAX_AUDIO_PATH]; /* e.g. "/sdcard/rec/0042.wav" or "" */
     note_state_t state;
+    note_fail_t fail_reason;
     bool is_voice;
     uint8_t hour;
     uint8_t minute;
@@ -180,6 +194,14 @@ static void sync_note_to_dragon_task(void *arg)
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     esp_http_client_set_header(client, "Content-Type", "application/json");
+    /* Dragon W13 C2: /api/notes is bearer-gated.  Read dragon_tok from NVS
+     * and add the header; without it every sync silently 401s. */
+    char dtok[80];
+    if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
+       char auth_hdr[96];
+       snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
+       esp_http_client_set_header(client, "Authorization", auth_hdr);
+    }
     esp_http_client_set_post_field(client, json, strlen(json));
 
     esp_err_t err = esp_http_client_perform(client);
@@ -274,6 +296,9 @@ static void notes_save(void)
         cJSON_AddNumberToObject(obj, "y", n->year);
         cJSON_AddNumberToObject(obj, "i", i);
         if (n->needs_sync) cJSON_AddNumberToObject(obj, "ns", 1);
+        if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
+           cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
+        }
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -451,6 +476,8 @@ static void notes_load(void)
         n->year     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
         cJSON *jns = cJSON_GetObjectItem(item, "ns");
         n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
+        cJSON *jfr = cJSON_GetObjectItem(item, "fr");
+        n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
         n->used = true;
         loaded++;
     }
@@ -514,6 +541,7 @@ static lv_obj_t *s_rec_dot = NULL;        /* red pulsing dot */
 static lv_obj_t *s_rec_time_lbl = NULL;   /* "0:05" timer */
 static lv_obj_t *s_rec_text_lbl = NULL;   /* "Recording..." or "Paused" */
 static lv_obj_t *s_topbar_meta  = NULL;   /* v5 right-aligned count/size */
+static lv_obj_t *s_topbar_clear = NULL;   /* "CLEAR FAILED (N)" button — visible when any FAILED notes exist */
 static lv_timer_t *s_rec_timer = NULL;    /* 1s update timer */
 static int s_rec_seconds = 0;
 /* Wave 14 W14-L01: deleted `s_rec_paused` + its three callsites.
@@ -535,6 +563,8 @@ static void cb_input_send(lv_event_t *e);
 static void cb_note_tap(lv_event_t *e);
 static void cb_note_delete(lv_event_t *e);
 static void cb_note_play(lv_event_t *e);
+static void cb_note_retry(lv_event_t *e);
+static void cb_clear_failed(lv_event_t *e);
 static void cb_search_changed(lv_event_t *e);
 static void refresh_list(void);
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx);
@@ -1029,6 +1059,7 @@ static void transcription_queue_task(void *arg)
             if (!needs_work) continue;
             if (!s_notes[i].audio_path[0]) {
                 s_notes[i].state = NOTE_STATE_FAILED;
+                s_notes[i].fail_reason = NOTE_FAIL_NO_AUDIO;
                 snprintf(s_notes[i].text, MAX_NOTE_LEN, "(No audio file)");
                 notes_save();
                 continue;
@@ -1048,6 +1079,7 @@ static void transcription_queue_task(void *arg)
         if (!f) {
             ESP_LOGW(TAG, "Cannot open WAV: %s", n->audio_path);
             n->state = NOTE_STATE_FAILED;
+            n->fail_reason = NOTE_FAIL_NO_AUDIO;
             notes_save();
             continue;
         }
@@ -1060,6 +1092,7 @@ static void transcription_queue_task(void *arg)
             ESP_LOGW(TAG, "WAV file too small or too large: %ld bytes", file_size);
             fclose(f);
             n->state = NOTE_STATE_FAILED;
+            n->fail_reason = NOTE_FAIL_NO_AUDIO;
             snprintf(n->text, MAX_NOTE_LEN, "(Empty recording)");
             notes_save();
             continue;
@@ -1120,10 +1153,20 @@ static void transcription_queue_task(void *arg)
             ESP_LOGE(TAG, "transcribe: esp_http_client_init NULL (heap pressure?)");
             fclose(f);
             n->state = NOTE_STATE_FAILED;
+            n->fail_reason = NOTE_FAIL_NETWORK;
             notes_save();
             continue;
         }
         esp_http_client_set_header(client, "Content-Type", "audio/wav");
+        /* Dragon W13 C2 middleware gates /api/v1/transcribe behind bearer
+         * auth.  Without this header every upload 401s — was the root
+         * cause of the 100% FAIL rate on the Notes screen. */
+        char dtok[80];
+        if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
+           char auth_hdr[96];
+           snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
+           esp_http_client_set_header(client, "Authorization", auth_hdr);
+        }
 
         fseek(f, 0, SEEK_SET);
         esp_err_t err = esp_http_client_open(client, file_size);
@@ -1132,6 +1175,7 @@ static void transcription_queue_task(void *arg)
             esp_http_client_cleanup(client);
             fclose(f);
             n->state = NOTE_STATE_FAILED;
+            n->fail_reason = NOTE_FAIL_NETWORK;
             notes_save();
             continue;
         }
@@ -1172,10 +1216,12 @@ static void transcription_queue_task(void *arg)
                         strncpy(n->text, text, MAX_NOTE_LEN - 1);
                         n->text[MAX_NOTE_LEN - 1] = '\0';
                         n->state = NOTE_STATE_TRANSCRIBED;
+                        n->fail_reason = NOTE_FAIL_NONE;
                         ESP_LOGI(TAG, "Transcription done [%d]: %.60s", slot, text);
                     } else {
                         snprintf(n->text, MAX_NOTE_LEN, "(Empty transcription)");
                         n->state = NOTE_STATE_FAILED;
+                        n->fail_reason = NOTE_FAIL_EMPTY;
                     }
                     cJSON_Delete(root);
                 }
@@ -1184,6 +1230,7 @@ static void transcription_queue_task(void *arg)
         } else {
             ESP_LOGW(TAG, "Transcribe HTTP %d (len=%d)", status, content_len);
             n->state = NOTE_STATE_FAILED;
+            n->fail_reason = (status == 401 || status == 403) ? NOTE_FAIL_AUTH : NOTE_FAIL_NETWORK;
         }
 
         esp_http_client_close(client);
@@ -1400,6 +1447,11 @@ static void sd_record_task(void *arg)
     }
 
     int frames = 0;
+    /* 5-min hard cap.  Mic chunks are 20 ms (50 frames/s) so 300 s = 15000.
+     * Without this the SD recording would run until the user comes back
+     * and taps stop — a 477 s zombie was the proximate cause for adding
+     * this cap (audit 2026-05-14). */
+    const int max_frames = MAX_NOTE_REC_SECS * 50;
     while (s_sd_rec_running) {
         esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
         if (err != ESP_OK) {
@@ -1424,6 +1476,15 @@ static void sd_record_task(void *arg)
         }
         if (frames % 250 == 0) {  /* every 5 seconds */
             ESP_LOGI(TAG, "SD rec: %d frames (%.1fs)", frames, frames * 0.02f);
+        }
+        if (frames >= max_frames) {
+           ESP_LOGW(TAG, "SD rec: hit %ds cap — auto-stopping", MAX_NOTE_REC_SECS);
+           s_sd_rec_running = false;
+           /* Marshal the stop onto the LVGL thread same as the manual
+            * stop path in cb_new_voice so we don't race the recording
+            * indicator or s_rec_file teardown. */
+           tab5_lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
+           break;
         }
     }
 
@@ -1850,6 +1911,33 @@ static void cb_note_play(lv_event_t *e)
     xTaskCreate(wav_play_task, "wav_play", 8192, path, 5, NULL);
 }
 
+/* Retry a FAILED note: flip it back to RECORDED so the 15 s polling
+ * task picks it up on its next sweep.  Audio still on SD, so this is
+ * just a state reset.  No re-upload happens synchronously. */
+static void cb_note_retry(lv_event_t *e) {
+   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= MAX_NOTES || !s_notes[idx].used) return;
+   if (s_notes[idx].state != NOTE_STATE_FAILED) return;
+   if (!s_notes[idx].audio_path[0]) return;
+
+   s_notes[idx].state = NOTE_STATE_RECORDED;
+   s_notes[idx].fail_reason = NOTE_FAIL_NONE;
+   notes_save();
+   refresh_list();
+   ESP_LOGI(TAG, "Retry queued for note [%d]: %s", idx, s_notes[idx].audio_path);
+}
+
+/* Bulk-delete all FAILED notes.  Calls the public ui_notes_clear_failed
+ * which already knows how to drop entries safely. */
+static void cb_clear_failed(lv_event_t *e) {
+   (void)e;
+   int n = ui_notes_clear_failed();
+   if (n > 0) {
+      ESP_LOGI(TAG, "Cleared %d failed notes", n);
+   }
+   refresh_list();
+}
+
 /* ── Note card widget ──────────────────────────────────── */
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx)
 {
@@ -1908,7 +1996,12 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
 
     /* v5: kill the colored Material pill. Use a letter-spaced caption
-     * in amber (or red on failure) inline next to the timestamp. */
+     * in amber (or red on failure) inline next to the timestamp.  On
+     * FAILED state, the badge now surfaces the specific failure reason
+     * instead of a generic "FAIL" — so the user knows whether the
+     * server is unreachable (NETWORK), the auth token is missing
+     * (AUTH), the audio came back empty (EMPTY), the WAV is gone
+     * (NO AUDIO), or the recording hit the 5-min cap (TOO LONG). */
     lv_obj_t *badge = lv_label_create(header);
     if (!badge) return;
     const char *badge_text;
@@ -1917,7 +2010,29 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     case NOTE_STATE_RECORDED:     badge_text = "\xe2\x80\xa2 REC";    badge_color = COL_AMBER; break;
     case NOTE_STATE_TRANSCRIBING: badge_text = "\xe2\x80\xa2 . . .";  badge_color = COL_AMBER; break;
     case NOTE_STATE_TRANSCRIBED:  badge_text = "\xe2\x80\xa2 VOICE";  badge_color = COL_AMBER; break;
-    case NOTE_STATE_FAILED:       badge_text = "\xe2\x80\xa2 FAIL";   badge_color = COL_RED;   break;
+    case NOTE_STATE_FAILED:
+       switch (n.fail_reason) {
+          case NOTE_FAIL_AUTH:
+             badge_text = "\xe2\x80\xa2 AUTH";
+             break;
+          case NOTE_FAIL_EMPTY:
+             badge_text = "\xe2\x80\xa2 EMPTY";
+             break;
+          case NOTE_FAIL_NO_AUDIO:
+             badge_text = "\xe2\x80\xa2 NO AUDIO";
+             break;
+          case NOTE_FAIL_TOO_LONG:
+             badge_text = "\xe2\x80\xa2 TOO LONG";
+             break;
+          case NOTE_FAIL_NETWORK:
+             badge_text = "\xe2\x80\xa2 NETWORK";
+             break;
+          default:
+             badge_text = "\xe2\x80\xa2 FAIL";
+             break;
+       }
+       badge_color = COL_RED;
+       break;
     default:                      badge_text = n.is_voice ? "\xe2\x80\xa2 VOICE" : "\xe2\x80\xa2 TEXT";
                                   badge_color = COL_AMBER; break;
     }
@@ -1945,24 +2060,27 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_style_text_font(del_lbl, FONT_CAPTION, 0);
     lv_obj_center(del_lbl);
 
-    /* Play button — 44x44 touch target, green, next to delete, only for notes with audio */
-    if (n.audio_path[0] && n.state != NOTE_STATE_FAILED) {
-        lv_obj_t *play = lv_button_create(header);
-        if (!play) return;
-        lv_obj_set_size(play, 44, 44);
-        lv_obj_align(play, LV_ALIGN_RIGHT_MID, -48, 0);
-        lv_obj_set_style_bg_color(play, lv_color_hex(COL_MINT), 0);
-        lv_obj_set_style_bg_opa(play, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(play, 8, 0);
-        lv_obj_set_style_border_width(play, 0, 0);
-        lv_obj_add_event_cb(play, cb_note_play, LV_EVENT_CLICKED,
-                           (void *)(intptr_t)note_idx);
-        lv_obj_t *play_lbl = lv_label_create(play);
-        if (!play_lbl) return;
-        lv_label_set_text(play_lbl, LV_SYMBOL_PLAY);
-        lv_obj_set_style_text_color(play_lbl, lv_color_hex(COL_WHITE), 0);
-        lv_obj_set_style_text_font(play_lbl, FONT_CAPTION, 0);
-        lv_obj_center(play_lbl);
+    /* Action button — 44x44 touch target next to delete.  Play (green)
+     * for transcribed/recorded notes with audio; Retry (amber) for
+     * FAILED notes with audio so the user can re-attempt upload from
+     * the list without diving into an edit overlay. */
+    if (n.audio_path[0]) {
+       bool is_retry = (n.state == NOTE_STATE_FAILED);
+       lv_obj_t *act = lv_button_create(header);
+       if (!act) return;
+       lv_obj_set_size(act, 44, 44);
+       lv_obj_align(act, LV_ALIGN_RIGHT_MID, -48, 0);
+       lv_obj_set_style_bg_color(act, lv_color_hex(is_retry ? COL_AMBER : COL_MINT), 0);
+       lv_obj_set_style_bg_opa(act, LV_OPA_COVER, 0);
+       lv_obj_set_style_radius(act, 8, 0);
+       lv_obj_set_style_border_width(act, 0, 0);
+       lv_obj_add_event_cb(act, is_retry ? cb_note_retry : cb_note_play, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
+       lv_obj_t *act_lbl = lv_label_create(act);
+       if (!act_lbl) return;
+       lv_label_set_text(act_lbl, is_retry ? LV_SYMBOL_REFRESH : LV_SYMBOL_PLAY);
+       lv_obj_set_style_text_color(act_lbl, lv_color_hex(COL_WHITE), 0);
+       lv_obj_set_style_text_font(act_lbl, FONT_CAPTION, 0);
+       lv_obj_center(act_lbl);
     }
 
     /* FIX N1+N4: Note preview — truncated to ~100 chars, smaller font */
@@ -1992,12 +2110,36 @@ static void refresh_list(void)
      * scheduled (often via lv_async_call from the background transcription
      * task) and execution.  All s_* pointers below may be dangling. */
     if (s_destroying || !s_screen) return;
-    /* v5 topbar meta — update count regardless of list presence. */
+    /* Count failed entries up-front so we can update both the topbar
+     * meta and the conditional CLEAR FAILED button in one pass. */
+    int failed_count = 0;
+    for (int i = 0; i < MAX_NOTES; i++) {
+       if (s_notes[i].used && s_notes[i].state == NOTE_STATE_FAILED) failed_count++;
+    }
+    /* v5 topbar meta — always shows "N NOTES" in muted gray; the FAIL
+     * count is surfaced by the conditional CLEAR FAILED button so we
+     * don't duplicate the same number twice on the same row. */
     if (s_topbar_meta) {
         char buf[40];
         snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s",
                  s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
         lv_label_set_text(s_topbar_meta, buf);
+        lv_obj_set_style_text_color(s_topbar_meta, lv_color_hex(0x6A6A72), 0);
+    }
+    if (s_topbar_clear) {
+       if (failed_count > 0) {
+          /* Reflect the live count on the button label so the user
+           * sees "CLEAR 11 FAILED" instead of a static caption. */
+          lv_obj_t *lbl = lv_obj_get_child(s_topbar_clear, 0);
+          if (lbl) {
+             char b[24];
+             snprintf(b, sizeof(b), "CLEAR %d FAILED", failed_count);
+             lv_label_set_text(lbl, b);
+          }
+          lv_obj_clear_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
+       } else {
+          lv_obj_add_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
+       }
     }
     if (!s_list) return;
     lv_obj_clean(s_list);
@@ -2062,6 +2204,32 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_text_letter_space(meta, 3, 0);
     lv_obj_align(meta, LV_ALIGN_RIGHT_MID, -24, 0);
     s_topbar_meta = meta;
+
+    /* CLEAR FAILED (N) — appears only when any FAILED entries exist.
+     * Tap drops them all in one shot via ui_notes_clear_failed.  Sits
+     * between title and meta; hidden by default until refresh_list sees
+     * a non-zero failure count.  -200 offset clears the meta label
+     * which sits at right -24 and is ~140 px wide. */
+    lv_obj_t *clear_btn = lv_button_create(tb);
+    lv_obj_set_size(clear_btn, LV_SIZE_CONTENT, TOPBAR_H - 8);
+    lv_obj_align(clear_btn, LV_ALIGN_RIGHT_MID, -200, 0);
+    lv_obj_set_style_bg_opa(clear_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(clear_btn, 1, 0);
+    lv_obj_set_style_border_color(clear_btn, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_border_opa(clear_btn, LV_OPA_40, 0);
+    lv_obj_set_style_radius(clear_btn, 8, 0);
+    lv_obj_set_style_pad_hor(clear_btn, 10, 0);
+    lv_obj_set_style_pad_ver(clear_btn, 0, 0);
+    lv_obj_set_style_shadow_width(clear_btn, 0, 0);
+    lv_obj_add_event_cb(clear_btn, cb_clear_failed, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *clear_lbl = lv_label_create(clear_btn);
+    lv_label_set_text(clear_lbl, "CLEAR FAILED");
+    lv_obj_set_style_text_color(clear_lbl, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_text_font(clear_lbl, FONT_CAPTION, 0);
+    lv_obj_set_style_text_letter_space(clear_lbl, 2, 0);
+    lv_obj_center(clear_lbl);
+    lv_obj_add_flag(clear_btn, LV_OBJ_FLAG_HIDDEN); /* shown by refresh_list */
+    s_topbar_clear = clear_btn;
 
     return tb;
 }
