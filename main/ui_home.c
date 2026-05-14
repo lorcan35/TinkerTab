@@ -789,10 +789,13 @@ lv_obj_t *ui_home_create(void)
      * subscriber that mutates label / hint / icon / border on every
      * dict_event_t.  Visually only here — chip is functional as soon as
      * Task 8 adds dictate_chip_tap_cb. */
+    /* Mode chip is positioned via pos_centered(s_mode_chip, 680, 360, 52),
+     * so its bottom edge sits at y=732.  Place the Dictate chip 12 px below
+     * via absolute coords — avoids relying on lv_obj_align_to picking up
+     * the parent's post-create layout pass. */
     s_dictate_chip = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_dictate_chip);
-    lv_obj_set_size(s_dictate_chip, lv_obj_get_width(s_mode_chip), 36);
-    lv_obj_align_to(s_dictate_chip, s_mode_chip, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
+    pos_centered(s_dictate_chip, 744, 360, 36);
     lv_obj_set_style_bg_color(s_dictate_chip, lv_color_hex(TH_CARD_ELEVATED), 0);
     lv_obj_set_style_bg_opa(s_dictate_chip, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_dictate_chip, 18, 0);
