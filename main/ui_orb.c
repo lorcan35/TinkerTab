@@ -62,6 +62,19 @@ static const char *TAG = "ui_orb";
 /* Poll period for the IMU/highlight tick (ms). */
 #define ORB_TILT_PERIOD_MS 50 /* 20 Hz */
 
+/* ── Skill-rim comet (PROCESSING state) ──────────────────────────────── */
+
+/* A single bright disc orbits just outside the orb's body during
+ * PROCESSING (LLM/tool active).  Replaces the ripple-shower from #501
+ * — one steady motion reads as "thinking" without the noise of N
+ * concurrent ripples for N tools. */
+#define ORB_COMET_W 18
+#define ORB_COMET_H 18
+#define ORB_COMET_RADIUS_PX 102  /* just outside the body radius of 90 */
+#define ORB_COMET_PERIOD_MS 3600 /* one orbit per 3.6 s */
+#define ORB_COMET_FADE_MS 240    /* fade-in / fade-out duration */
+#define ORB_COMET_PEAK_OPA 230   /* opacity at full visibility */
+
 /* ── Listening lean ──────────────────────────────────────────────────── */
 
 /* When LISTENING engages, the specular's REST point eases from the
@@ -87,12 +100,15 @@ static const char *TAG = "ui_orb";
 
 /* ── Module state ────────────────────────────────────────────────────── */
 
-static lv_obj_t *s_root = NULL; /* parent container (= the home screen) */
-static lv_obj_t *s_body = NULL; /* the lit sphere itself */
-static lv_obj_t *s_spec = NULL; /* tilt-driven specular highlight (child of s_body) */
-static lv_obj_t *s_halo = NULL; /* voice-bloom halo (sibling-BEHIND s_body) */
+static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
+static lv_obj_t *s_body = NULL;  /* the lit sphere itself */
+static lv_obj_t *s_spec = NULL;  /* tilt-driven specular highlight (child of s_body) */
+static lv_obj_t *s_halo = NULL;  /* voice-bloom halo (sibling-BEHIND s_body) */
+static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
+static int s_orb_cx = 0; /* stashed at create — used by comet orbit math */
+static int s_orb_cy = 0;
 static float s_tilt_dx_ema = 0.0f;
 static float s_tilt_dy_ema = 0.0f;
 static float s_bloom_rms_ema = 0.0f;
@@ -336,6 +352,68 @@ static void bloom_stop(void) {
    s_bloom_rms_ema = 0.0f;
 }
 
+/* ── Skill-rim comet ─────────────────────────────────────────────────── */
+
+/* Orbit position anim: input v is angle * 10 in 0..3600 (one full
+ * rotation per anim cycle).  Decoded to degrees via integer math and
+ * fed to LVGL's fixed-point trigo helper, then scaled to pixel offset
+ * around (s_orb_cx, s_orb_cy). */
+static void comet_pos_cb(void *obj, int32_t v) {
+   (void)obj;
+   if (!s_comet) return;
+   int angle = v / 10; /* 0..360 deg */
+   int s_q = lv_trigo_sin(angle);
+   int c_q = lv_trigo_sin(angle + 90); /* cos(x) = sin(x + 90) */
+   int dx = (ORB_COMET_RADIUS_PX * c_q) / LV_TRIGO_SIN_MAX;
+   int dy = (ORB_COMET_RADIUS_PX * s_q) / LV_TRIGO_SIN_MAX;
+   lv_obj_set_pos(s_comet, s_orb_cx - (ORB_COMET_W / 2) + dx, s_orb_cy - (ORB_COMET_H / 2) + dy);
+}
+
+static void comet_opa_cb(void *obj, int32_t v) {
+   (void)obj;
+   if (!s_comet) return;
+   lv_obj_set_style_bg_opa(s_comet, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+static void comet_start(void) {
+   if (!s_comet) return;
+   /* Position cycle — infinite repeat. */
+   lv_anim_delete(s_comet, comet_pos_cb);
+   lv_anim_t pa;
+   lv_anim_init(&pa);
+   lv_anim_set_var(&pa, s_comet);
+   lv_anim_set_exec_cb(&pa, comet_pos_cb);
+   lv_anim_set_values(&pa, 0, 3600);
+   lv_anim_set_time(&pa, ORB_COMET_PERIOD_MS);
+   lv_anim_set_repeat_count(&pa, LV_ANIM_REPEAT_INFINITE);
+   lv_anim_start(&pa);
+   /* Fade in. */
+   lv_anim_delete(s_comet, comet_opa_cb);
+   lv_anim_t oa;
+   lv_anim_init(&oa);
+   lv_anim_set_var(&oa, s_comet);
+   lv_anim_set_exec_cb(&oa, comet_opa_cb);
+   int cur = lv_obj_get_style_bg_opa(s_comet, LV_PART_MAIN);
+   lv_anim_set_values(&oa, cur, ORB_COMET_PEAK_OPA);
+   lv_anim_set_time(&oa, ORB_COMET_FADE_MS);
+   lv_anim_start(&oa);
+}
+
+static void comet_stop(void) {
+   if (!s_comet) return;
+   /* Cancel position cycle immediately; fade out opa. */
+   lv_anim_delete(s_comet, comet_pos_cb);
+   lv_anim_delete(s_comet, comet_opa_cb);
+   lv_anim_t oa;
+   lv_anim_init(&oa);
+   lv_anim_set_var(&oa, s_comet);
+   lv_anim_set_exec_cb(&oa, comet_opa_cb);
+   int cur = lv_obj_get_style_bg_opa(s_comet, LV_PART_MAIN);
+   lv_anim_set_values(&oa, cur, 0);
+   lv_anim_set_time(&oa, ORB_COMET_FADE_MS);
+   lv_anim_start(&oa);
+}
+
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
 
 void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
@@ -344,6 +422,8 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       return;
    }
    s_root = parent;
+   s_orb_cx = cx;
+   s_orb_cy = cy;
 
    /* Halo FIRST so it sits BEHIND s_body in z-order (LVGL draws siblings
     * in creation order).  s_body's opa-cover gradient masks the part of
@@ -384,6 +464,18 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    s_tilt_dx_ema = 0.0f;
    s_tilt_dy_ema = 0.0f;
 
+   /* Skill-rim comet — sibling AFTER s_body so it draws on top.
+    * Starts invisible (opa 0); state machine drives fade-in on
+    * PROCESSING enter, fade-out on exit. */
+   s_comet = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_comet);
+   lv_obj_set_size(s_comet, ORB_COMET_W, ORB_COMET_H);
+   lv_obj_set_pos(s_comet, cx - ORB_COMET_W / 2 + ORB_COMET_RADIUS_PX, cy - ORB_COMET_H / 2);
+   lv_obj_set_style_radius(s_comet, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_color(s_comet, lv_color_hex(0xFFE0A0), 0);
+   lv_obj_set_style_bg_opa(s_comet, 0, 0);
+   lv_obj_clear_flag(s_comet, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
    /* IDLE state arms tilt drift by default. */
    tilt_start();
 
@@ -400,6 +492,11 @@ void ui_orb_destroy(void) {
       lv_anim_delete(s_spec, lean_anim_rest_x_cb);
       lv_anim_delete(s_spec, lean_anim_rest_y_cb);
    }
+   /* Cancel any in-flight comet anims. */
+   if (s_comet) {
+      lv_anim_delete(s_comet, comet_pos_cb);
+      lv_anim_delete(s_comet, comet_opa_cb);
+   }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
     * a subsequent ui_orb_create on a fresh screen starts clean. */
@@ -407,6 +504,7 @@ void ui_orb_destroy(void) {
    s_body = NULL;
    s_spec = NULL;
    s_halo = NULL;
+   s_comet = NULL;
    s_state = ORB_STATE_IDLE;
    s_last_painted_hour = -1;
    s_tilt_dx_ema = 0.0f;
@@ -448,6 +546,13 @@ void ui_orb_set_state(ui_orb_state_t s) {
    } else if (s != ORB_STATE_LISTENING && prev == ORB_STATE_LISTENING) {
       bloom_stop();
       lean_exit();
+   }
+
+   /* Step 6: skill-rim comet runs only during PROCESSING. */
+   if (s == ORB_STATE_PROCESSING && prev != ORB_STATE_PROCESSING) {
+      comet_start();
+   } else if (s != ORB_STATE_PROCESSING && prev == ORB_STATE_PROCESSING) {
+      comet_stop();
    }
 }
 

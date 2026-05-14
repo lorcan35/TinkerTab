@@ -3006,12 +3006,14 @@ static void ripple_async_cb(void *arg) {
  * from the WS task (the call into LVGL is marshalled via the W14-H10
  * tab5_lv_async_call wrapper). */
 void ui_home_orb_ripple_for_tool(const char *tool_name) {
-   if (!s_orb) return;
-   uint32_t color = ripple_color_for_tool(tool_name);
-   ripple_args_t *args = (ripple_args_t *)malloc(sizeof(*args));
-   if (!args) return;
-   args->color = color;
-   tab5_lv_async_call(ripple_async_cb, args);
+   /* TT #511 wave-1 step 6: comet replaces the ripple shower.
+    * voice.c is already in VOICE_STATE_PROCESSING during tool_call
+    * messages, so the orb is already showing the comet via the
+    * voice_set_state → ui_home_orb_aliveness_sync bridge.  This
+    * function stays as a no-op binary-compat shim so
+    * voice_ws_proto.c keeps linking; the ripple_pool + per-tool
+    * color logic is dead code, cleaned up in a follow-up. */
+   (void)tool_name;
 }
 
 /* Wave 7 F5 crash surface: paint the orb rose for ~2.5 s so a mid-turn
