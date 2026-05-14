@@ -1920,6 +1920,14 @@ esp_err_t voice_stop_listening(void)
     esp_err_t err = voice_ws_send_text("{\"type\":\"stop\"}");
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Stop signal failed — connection lost");
+        /* PR 1: WS send failed mid-dictation — fail the pipeline now so
+         * the in-flight dictation surfaces NETWORK instead of getting
+         * silently stuck in DICT_RECORDING.  Sprint D's disconnect hook
+         * in voice_ws_proto.c may not fire before this return path. */
+        if (voice_get_mode() == VOICE_MODE_DICTATE) {
+            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK,
+                                      (uint32_t)(esp_timer_get_time() / 1000));
+        }
         voice_set_state(VOICE_STATE_IDLE, "Connection lost");
         return ESP_FAIL;
     }
