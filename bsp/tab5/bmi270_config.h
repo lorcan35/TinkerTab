@@ -15,7 +15,7 @@ extern "C" {
 #endif
 
 extern const uint8_t bmi270_config_file[];
-extern const size_t  bmi270_config_file_len;
+extern const size_t bmi270_config_file_len;
 
 #ifdef __cplusplus
 }

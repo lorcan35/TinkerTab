@@ -129,48 +129,48 @@ static esp_err_t bmi270_upload_config(void)
       ESP_LOGW(TAG, "BMI270 config blob not linked — skipping firmware upload");
       ESP_LOGW(TAG, "Accel/gyro will return zeros on Tab5 silicon");
       return ESP_OK; /* non-fatal: try basic mode */
-    }
-    ESP_LOGI(TAG, "Uploading BMI270 config blob (%u bytes)...", (unsigned)cfg_len);
+   }
+   ESP_LOGI(TAG, "Uploading BMI270 config blob (%u bytes)...", (unsigned)cfg_len);
 
-    esp_err_t ret;
+   esp_err_t ret;
 
-    /* Prepare chip for config load */
-    ret = imu_write_reg(BMI270_REG_PWR_CONF, 0x00);  /* adv_power_save off */
-    if (ret != ESP_OK) return ret;
-    vTaskDelay(pdMS_TO_TICKS(1));
+   /* Prepare chip for config load */
+   ret = imu_write_reg(BMI270_REG_PWR_CONF, 0x00); /* adv_power_save off */
+   if (ret != ESP_OK) return ret;
+   vTaskDelay(pdMS_TO_TICKS(1));
 
-    ret = imu_write_reg(BMI270_REG_INIT_CTRL, 0x00);  /* start config load */
-    if (ret != ESP_OK) return ret;
+   ret = imu_write_reg(BMI270_REG_INIT_CTRL, 0x00); /* start config load */
+   if (ret != ESP_OK) return ret;
 
-    /* Burst-write config in 256-byte chunks.  Per Bosch's canonical
-     * write_config_file() in BMI270_SensorAPI/bmi2.c, BEFORE each chunk
-     * we MUST set INIT_ADDR_0/1 to the chunk's word-index (byte offset
-     * / 2), otherwise the BMI270 piles every chunk at offset 0 and
-     * INTERNAL_STATUS reads 0x00 instead of 0x01 after INIT_CTRL=1.
-     * That's the bug TT #511's IMU work hit on first-flash 2026-05-14. */
-    const size_t chunk = 256;
-    for (size_t off = 0; off < cfg_len; off += chunk) {
-        size_t n = (cfg_len - off < chunk) ? (cfg_len - off) : chunk;
-        /* Word-index = byte-offset / 2 (BMI270 internal RAM is 16-bit wide) */
-        uint16_t widx = (uint16_t)(off / 2);
-        uint8_t addr_buf[3] = {
-            BMI270_REG_INIT_ADDR_0,
-            (uint8_t)(widx & 0x0F),
-            (uint8_t)(widx >> 4),
-        };
-        ret = i2c_master_transmit(s_imu_dev, addr_buf, sizeof(addr_buf), I2C_TIMEOUT_MS);
-        if (ret != ESP_OK) {
-           ESP_LOGE(TAG, "INIT_ADDR write failed at offset %u: %s", (unsigned)off, esp_err_to_name(ret));
-           return ret;
-        }
-        uint8_t buf[1 + 256];
-        buf[0] = BMI270_REG_INIT_DATA;
-        memcpy(&buf[1], cfg + off, n);
-        ret = i2c_master_transmit(s_imu_dev, buf, 1 + n, I2C_TIMEOUT_MS);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Config upload failed at offset %u: %s", (unsigned)off, esp_err_to_name(ret));
-            return ret;
-        }
+   /* Burst-write config in 256-byte chunks.  Per Bosch's canonical
+    * write_config_file() in BMI270_SensorAPI/bmi2.c, BEFORE each chunk
+    * we MUST set INIT_ADDR_0/1 to the chunk's word-index (byte offset
+    * / 2), otherwise the BMI270 piles every chunk at offset 0 and
+    * INTERNAL_STATUS reads 0x00 instead of 0x01 after INIT_CTRL=1.
+    * That's the bug TT #511's IMU work hit on first-flash 2026-05-14. */
+   const size_t chunk = 256;
+   for (size_t off = 0; off < cfg_len; off += chunk) {
+      size_t n = (cfg_len - off < chunk) ? (cfg_len - off) : chunk;
+      /* Word-index = byte-offset / 2 (BMI270 internal RAM is 16-bit wide) */
+      uint16_t widx = (uint16_t)(off / 2);
+      uint8_t addr_buf[3] = {
+          BMI270_REG_INIT_ADDR_0,
+          (uint8_t)(widx & 0x0F),
+          (uint8_t)(widx >> 4),
+      };
+      ret = i2c_master_transmit(s_imu_dev, addr_buf, sizeof(addr_buf), I2C_TIMEOUT_MS);
+      if (ret != ESP_OK) {
+         ESP_LOGE(TAG, "INIT_ADDR write failed at offset %u: %s", (unsigned)off, esp_err_to_name(ret));
+         return ret;
+      }
+      uint8_t buf[1 + 256];
+      buf[0] = BMI270_REG_INIT_DATA;
+      memcpy(&buf[1], cfg + off, n);
+      ret = i2c_master_transmit(s_imu_dev, buf, 1 + n, I2C_TIMEOUT_MS);
+      if (ret != ESP_OK) {
+         ESP_LOGE(TAG, "Config upload failed at offset %u: %s", (unsigned)off, esp_err_to_name(ret));
+         return ret;
+      }
     }
 
     ret = imu_write_reg(BMI270_REG_INIT_CTRL, 0x01);  /* complete config load */
