@@ -118,6 +118,10 @@ CONFIG_LV_DRAW_SW_CIRCLE_CACHE_SIZE=32
 # gives UNIFORM frame pacing — every tick has time to complete, no
 # overshoot, motion reads smooth.
 CONFIG_LV_DEF_REFR_PERIOD=33
+# TT #510 — enable complex gradients (radial/linear/conical).  Required
+# for the orb's radial-light-from-upper-left sphere look.  Bumps the
+# binary by ~5 KB; well under the OTA partition budget.
+CONFIG_LV_USE_DRAW_SW_COMPLEX_GRADIENTS=y
 # LVGL memory.  Base pool is 64 KB statically in BSS; the real working
 # heap comes from a 2 MB PSRAM-backed lv_mem_add_pool() at boot in main.c
 # (see #183 + docs/STABILITY-INVESTIGATION.md).  History: 2026-04-17 had
