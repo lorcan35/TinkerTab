@@ -200,6 +200,46 @@ static int test_failed_clears_reason_on_idle(void) {
    return 0;
 }
 
+static int test_multiple_subscribers_all_fire(void) {
+   voice_dictation_init();
+   mock_sub_t a = {0}, b = {0};
+   voice_dictation_subscribe(mock_cb, &a);
+   voice_dictation_subscribe(mock_cb, &b);
+
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+
+   CHECK_EQ(a.call_count, 1);
+   CHECK_EQ(b.call_count, 1);
+   return 0;
+}
+
+static int test_unsubscribe_stops_callbacks(void) {
+   voice_dictation_init();
+   mock_sub_t a = {0}, b = {0};
+   int ha = voice_dictation_subscribe(mock_cb, &a);
+   voice_dictation_subscribe(mock_cb, &b);
+
+   voice_dictation_unsubscribe(ha);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+
+   CHECK_EQ(a.call_count, 0);
+   CHECK_EQ(b.call_count, 1);
+   return 0;
+}
+
+static int test_subscriber_table_full_returns_minus_one(void) {
+   voice_dictation_init();
+   mock_sub_t dummy[8] = {0};
+   int handles[8] = {0};
+   int got_full = 0;
+   for (int i = 0; i < 8; i++) {
+      handles[i] = voice_dictation_subscribe(mock_cb, &dummy[i]);
+      if (handles[i] == -1) got_full = 1;
+   }
+   CHECK_EQ(got_full, 1);   /* DICT_MAX_SUBSCRIBERS is 4 */
+   return 0;
+}
+
 int main(void) {
    if (test_init_state_is_idle()) return 1;
    if (test_idle_to_recording_fires_subscriber()) return 1;
@@ -212,6 +252,9 @@ int main(void) {
    if (test_retry_from_failed()) return 1;
    if (test_cancel_from_recording()) return 1;
    if (test_failed_clears_reason_on_idle()) return 1;
+   if (test_multiple_subscribers_all_fire()) return 1;
+   if (test_unsubscribe_stops_callbacks()) return 1;
+   if (test_subscriber_table_full_returns_minus_one()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }
