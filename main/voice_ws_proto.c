@@ -794,8 +794,7 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
       voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
       /* PR 1: pipeline transition for the cancelled path. */
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED,
-                                (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
    } else if (strcmp(type_str, "dictation_summary") == 0) {
       cJSON *title = cJSON_GetObjectItem(root, "title");
       cJSON *summary = cJSON_GetObjectItem(root, "summary");
@@ -1416,10 +1415,8 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
           * already IDLE/SAVED/FAILED. */
          {
             dict_state_t cur_dict = voice_dictation_get().state;
-            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING ||
-                cur_dict == DICT_TRANSCRIBING) {
-               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK,
-                                         (uint32_t)(esp_timer_get_time() / 1000));
+            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING || cur_dict == DICT_TRANSCRIBING) {
+               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
             }
          }
          /* Tab5 audit F5 (2026-04-20): if the drop landed MID-TURN (voice
