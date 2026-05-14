@@ -3,31 +3,30 @@
  * Pure-C state machine — zero ESP-IDF deps in the module under test;
  * this file uses plain assert.h / stdio just like test_md_strip.c. */
 
-#include "voice_dictation.h"
-
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "voice_dictation.h"
+
 static int g_pass = 0;
 
-#define CHECK(cond)                                                       \
-   do {                                                                   \
-      if (!(cond)) {                                                      \
-         fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond);  \
-         return 1;                                                        \
-      }                                                                   \
-      g_pass++;                                                           \
+#define CHECK(cond)                                                      \
+   do {                                                                  \
+      if (!(cond)) {                                                     \
+         fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); \
+         return 1;                                                       \
+      }                                                                  \
+      g_pass++;                                                          \
    } while (0)
 
-#define CHECK_EQ(a, b)                                                              \
-   do {                                                                             \
-      if ((a) != (b)) {                                                             \
-         fprintf(stderr, "FAIL %s:%d  %s != %s  (%d vs %d)\n", __FILE__, __LINE__,  \
-                 #a, #b, (int)(a), (int)(b));                                       \
-         return 1;                                                                  \
-      }                                                                             \
-      g_pass++;                                                                     \
+#define CHECK_EQ(a, b)                                                                                          \
+   do {                                                                                                         \
+      if ((a) != (b)) {                                                                                         \
+         fprintf(stderr, "FAIL %s:%d  %s != %s  (%d vs %d)\n", __FILE__, __LINE__, #a, #b, (int)(a), (int)(b)); \
+         return 1;                                                                                              \
+      }                                                                                                         \
+      g_pass++;                                                                                                 \
    } while (0)
 
 static int test_init_state_is_idle(void) {
@@ -41,8 +40,8 @@ static int test_init_state_is_idle(void) {
 
 /* Subscriber that records the last event it saw. */
 typedef struct {
-   int           call_count;
-   dict_event_t  last;
+   int call_count;
+   dict_event_t last;
 } mock_sub_t;
 
 static void mock_cb(const dict_event_t *e, void *ud) {
@@ -74,17 +73,17 @@ static int test_full_happy_path(void) {
    mock_sub_t m = {0};
    voice_dictation_subscribe(mock_cb, &m);
 
-   voice_dictation_set_state(DICT_RECORDING,    DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
-   voice_dictation_set_state(DICT_SAVED,        DICT_FAIL_NONE, 2400);
-   voice_dictation_set_state(DICT_IDLE,         DICT_FAIL_NONE, 4400);
+   voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 2400);
+   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, 4400);
 
    CHECK_EQ(m.call_count, 5);
    CHECK_EQ(m.last.state, DICT_IDLE);
    CHECK_EQ((int)m.last.started_ms, 1000);
    CHECK_EQ((int)m.last.stopped_ms, 2000);
-   CHECK_EQ(m.last.note_slot, -1);     /* IDLE reset cleared it */
+   CHECK_EQ(m.last.note_slot, -1); /* IDLE reset cleared it */
    return 0;
 }
 
@@ -94,10 +93,10 @@ static int test_idempotent_same_state(void) {
    voice_dictation_subscribe(mock_cb, &m);
 
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1500);  /* dup */
-   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 2000);  /* dup */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1500); /* dup */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 2000); /* dup */
 
-   CHECK_EQ(m.call_count, 1);   /* duplicates suppressed */
+   CHECK_EQ(m.call_count, 1); /* duplicates suppressed */
    return 0;
 }
 
@@ -106,17 +105,17 @@ static int test_invalid_backward_transition_blocked(void) {
    mock_sub_t m = {0};
    voice_dictation_subscribe(mock_cb, &m);
 
-   /* Walk the pipeline forward to reach SAVED (the strict guard table
-    * disallows IDLE → SAVED jumps, so we use the canonical path). */
-   voice_dictation_set_state(DICT_RECORDING,    DICT_FAIL_NONE, 100);
-   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 200);
+   /* Walk forward to TRANSCRIBING (the strict guard table disallows
+    * IDLE → TRANSCRIBING jumps, so we use the canonical path). */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 100);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 200);
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 300);
-   voice_dictation_set_state(DICT_SAVED,        DICT_FAIL_NONE, 400);
 
-   /* Invalid: SAVED → RECORDING (must go through IDLE first). */
+   /* Invalid: TRANSCRIBING → RECORDING (no resume mid-flight without
+    * going through SAVED or FAILED first). */
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 2000);
 
-   CHECK_EQ(m.last.state, DICT_SAVED);
+   CHECK_EQ(m.last.state, DICT_TRANSCRIBING);
    return 0;
 }
 
@@ -124,16 +123,16 @@ static int test_note_slot_persists_through_pipeline(void) {
    voice_dictation_init();
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
    voice_dictation_set_note_slot(7);
-   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
-   voice_dictation_set_state(DICT_SAVED,        DICT_FAIL_NONE, 2400);
+   voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 2400);
 
    dict_event_t e = voice_dictation_get();
    CHECK_EQ(e.note_slot, 7);
 
    voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, 4400);
    e = voice_dictation_get();
-   CHECK_EQ(e.note_slot, -1);  /* cleared on IDLE */
+   CHECK_EQ(e.note_slot, -1); /* cleared on IDLE */
    return 0;
 }
 
@@ -144,7 +143,7 @@ static int test_failed_from_uploading_auth(void) {
 
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
    voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
-   voice_dictation_set_state(DICT_FAILED,    DICT_FAIL_AUTH, 2100);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_AUTH, 2100);
 
    CHECK_EQ(m.last.state, DICT_FAILED);
    CHECK_EQ(m.last.fail_reason, DICT_FAIL_AUTH);
@@ -153,10 +152,10 @@ static int test_failed_from_uploading_auth(void) {
 
 static int test_failed_from_transcribing_empty(void) {
    voice_dictation_init();
-   voice_dictation_set_state(DICT_RECORDING,    DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
-   voice_dictation_set_state(DICT_FAILED,       DICT_FAIL_EMPTY, 2400);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, 2400);
 
    dict_event_t e = voice_dictation_get();
    CHECK_EQ(e.state, DICT_FAILED);
@@ -167,13 +166,13 @@ static int test_failed_from_transcribing_empty(void) {
 static int test_retry_from_failed(void) {
    voice_dictation_init();
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_FAILED,    DICT_FAIL_NETWORK, 1100);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1100);
    /* User taps retry → caller drives UPLOADING. */
    voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 5000);
 
    dict_event_t e = voice_dictation_get();
    CHECK_EQ(e.state, DICT_UPLOADING);
-   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);   /* cleared on leave-FAILED */
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE); /* cleared on leave-FAILED */
    return 0;
 }
 
@@ -236,15 +235,15 @@ static int test_subscriber_table_full_returns_minus_one(void) {
       handles[i] = voice_dictation_subscribe(mock_cb, &dummy[i]);
       if (handles[i] == -1) got_full = 1;
    }
-   CHECK_EQ(got_full, 1);   /* DICT_MAX_SUBSCRIBERS is 4 */
+   CHECK_EQ(got_full, 1); /* DICT_MAX_SUBSCRIBERS is 4 */
    return 0;
 }
 
 static int test_set_note_slot_rejected_in_idle(void) {
    voice_dictation_init();
-   voice_dictation_set_note_slot(42);            /* in IDLE — should be ignored */
+   voice_dictation_set_note_slot(42); /* in IDLE — should be ignored */
    dict_event_t e = voice_dictation_get();
-   CHECK_EQ(e.note_slot, -1);                    /* unchanged */
+   CHECK_EQ(e.note_slot, -1); /* unchanged */
    return 0;
 }
 
@@ -269,14 +268,14 @@ static int test_set_note_slot_accepted_in_uploading(void) {
 
 static int test_set_note_slot_rejected_after_saved(void) {
    voice_dictation_init();
-   voice_dictation_set_state(DICT_RECORDING,    DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
    voice_dictation_set_note_slot(13);
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
-   voice_dictation_set_state(DICT_SAVED,        DICT_FAIL_NONE, 2400);
-   voice_dictation_set_note_slot(99);            /* should be ignored — past upload window */
+   voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 2400);
+   voice_dictation_set_note_slot(99); /* should be ignored — past upload window */
    dict_event_t e = voice_dictation_get();
-   CHECK_EQ(e.note_slot, 13);                    /* still the legit one from UPLOADING */
+   CHECK_EQ(e.note_slot, 13); /* still the legit one from UPLOADING */
    return 0;
 }
 
@@ -284,8 +283,9 @@ static int test_set_note_slot_rejected_after_saved(void) {
  * recursive lock works. */
 static int g_reentrant_get_state = -1;
 static void reentrant_cb(const dict_event_t *e, void *ud) {
-   (void)e; (void)ud;
-   dict_event_t inner = voice_dictation_get();   /* MUST not deadlock */
+   (void)e;
+   (void)ud;
+   dict_event_t inner = voice_dictation_get(); /* MUST not deadlock */
    g_reentrant_get_state = (int)inner.state;
 }
 
@@ -294,6 +294,29 @@ static int test_subscriber_can_reenter_get(void) {
    voice_dictation_subscribe(reentrant_cb, NULL);
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
    CHECK_EQ(g_reentrant_get_state, (int)DICT_RECORDING);
+   return 0;
+}
+
+static int test_saved_to_recording_allowed(void) {
+   /* After a successful dictation, the next user-driven dictation must
+    * be able to start without needing the caller to first explicitly
+    * transition through IDLE.  PR 1 doesn't ship the UI's 2 s SAVED→IDLE
+    * fade yet, so SAVED→RECORDING must be a legal direct edge. */
+   voice_dictation_init();
+   mock_sub_t m = {0};
+   voice_dictation_subscribe(mock_cb, &m);
+
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
+   voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 2400);
+
+   /* User immediately taps Dictate again. */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 5000);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_RECORDING);
+   CHECK_EQ((int)e.started_ms, 5000); /* fresh start timestamp */
    return 0;
 }
 
@@ -317,6 +340,7 @@ int main(void) {
    if (test_set_note_slot_accepted_in_uploading()) return 1;
    if (test_set_note_slot_rejected_after_saved()) return 1;
    if (test_subscriber_can_reenter_get()) return 1;
+   if (test_saved_to_recording_allowed()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }

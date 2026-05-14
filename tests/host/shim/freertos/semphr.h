@@ -21,7 +21,7 @@ typedef int *SemaphoreHandle_t;
 #endif
 
 typedef unsigned int TickType_t;
-typedef int          BaseType_t;
+typedef int BaseType_t;
 
 static inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) {
    /* Sentinel non-NULL pointer so callers' NULL-check passes.  Never
@@ -31,7 +31,8 @@ static inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex(void) {
 }
 
 static inline BaseType_t xSemaphoreTakeRecursive(SemaphoreHandle_t h, TickType_t t) {
-   (void)h; (void)t;
+   (void)h;
+   (void)t;
    return pdTRUE;
 }
 
@@ -40,6 +41,4 @@ static inline BaseType_t xSemaphoreGiveRecursive(SemaphoreHandle_t h) {
    return pdTRUE;
 }
 
-static inline void vSemaphoreDelete(SemaphoreHandle_t h) {
-   (void)h;
-}
+static inline void vSemaphoreDelete(SemaphoreHandle_t h) { (void)h; }

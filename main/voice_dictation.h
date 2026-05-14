@@ -48,21 +48,21 @@ typedef enum {
 
 typedef enum {
    DICT_FAIL_NONE = 0,
-   DICT_FAIL_AUTH,        /* Dragon returned 401 / 403 */
-   DICT_FAIL_NETWORK,     /* Other HTTP error / WS disconnect / open failed */
-   DICT_FAIL_EMPTY,       /* Dragon returned 200 with empty STT text */
-   DICT_FAIL_NO_AUDIO,    /* WAV missing or unreadable / Dragon got no PCM */
-   DICT_FAIL_TOO_LONG,    /* hit 5-min hard cap during recording */
-   DICT_FAIL_CANCELLED,   /* user tapped cancel */
+   DICT_FAIL_AUTH,      /* Dragon returned 401 / 403 */
+   DICT_FAIL_NETWORK,   /* Other HTTP error / WS disconnect / open failed */
+   DICT_FAIL_EMPTY,     /* Dragon returned 200 with empty STT text */
+   DICT_FAIL_NO_AUDIO,  /* WAV missing or unreadable / Dragon got no PCM */
+   DICT_FAIL_TOO_LONG,  /* hit 5-min hard cap during recording */
+   DICT_FAIL_CANCELLED, /* user tapped cancel */
 } dict_fail_t;
 
 typedef struct {
    dict_state_t state;
-   dict_fail_t  fail_reason;     /* meaningful only when state == DICT_FAILED */
-   uint32_t     started_ms;      /* time of last IDLE→RECORDING (0 if never recorded) */
-   uint32_t     stopped_ms;      /* time of RECORDING→next (0 while still recording) */
-   uint32_t     last_change_ms;  /* time of most recent transition */
-   int          note_slot;       /* -1 until SD WAV slot allocated; >=0 after */
+   dict_fail_t fail_reason; /* meaningful only when state == DICT_FAILED */
+   uint32_t started_ms;     /* time of last IDLE→RECORDING (0 if never recorded) */
+   uint32_t stopped_ms;     /* time of RECORDING→next (0 while still recording) */
+   uint32_t last_change_ms; /* time of most recent transition */
+   int note_slot;           /* -1 until SD WAV slot allocated; >=0 after */
 } dict_event_t;
 
 typedef void (*dict_subscriber_t)(const dict_event_t *event, void *user_data);
@@ -84,8 +84,7 @@ void voice_dictation_unsubscribe(int handle);
  * the explicit SAVED→IDLE / FAILED→IDLE retry paths.
  *
  * fail_reason is ignored unless new_state == DICT_FAILED. */
-void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason,
-                               uint32_t now_ms);
+void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, uint32_t now_ms);
 
 /* Attach a note slot to the current pipeline (called when SD WAV starts).
  * Persists through subsequent transitions until next IDLE.

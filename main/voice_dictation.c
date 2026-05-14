@@ -26,12 +26,12 @@
 
 typedef struct {
    dict_subscriber_t cb;
-   void             *user_data;
-   bool              in_use;
+   void *user_data;
+   bool in_use;
 } dict_sub_t;
 
-static dict_event_t      s_event;
-static dict_sub_t        s_subs[DICT_MAX_SUBSCRIBERS];
+static dict_event_t s_event;
+static dict_sub_t s_subs[DICT_MAX_SUBSCRIBERS];
 static SemaphoreHandle_t s_lock = NULL;
 
 /* Lock / unlock the module-wide recursive mutex.  On host these collapse
@@ -112,22 +112,31 @@ static bool dict_transition_allowed(dict_state_t cur, dict_state_t next) {
    /* Failures terminate any in-flight state. */
    if (next == DICT_FAILED) return cur != DICT_IDLE;
    /* IDLE accepts from any terminal state. */
-   if (next == DICT_IDLE) return cur == DICT_SAVED || cur == DICT_FAILED ||
-                                 cur == DICT_RECORDING;
+   if (next == DICT_IDLE) return cur == DICT_SAVED || cur == DICT_FAILED || cur == DICT_RECORDING;
    switch (cur) {
-   case DICT_IDLE:         return next == DICT_RECORDING;
-   case DICT_RECORDING:    return next == DICT_UPLOADING || next == DICT_TRANSCRIBING;
-   case DICT_UPLOADING:    return next == DICT_TRANSCRIBING;
-   case DICT_TRANSCRIBING: return next == DICT_SAVED;
-   case DICT_SAVED:        return next == DICT_IDLE;
-   case DICT_FAILED:       return next == DICT_UPLOADING || next == DICT_RECORDING;
-                           /* retry resumes upload (REST) or restarts recording */
+      case DICT_IDLE:
+         return next == DICT_RECORDING;
+      case DICT_RECORDING:
+         return next == DICT_UPLOADING || next == DICT_TRANSCRIBING;
+      case DICT_UPLOADING:
+         return next == DICT_TRANSCRIBING;
+      case DICT_TRANSCRIBING:
+         return next == DICT_SAVED;
+      case DICT_SAVED:
+         return next == DICT_IDLE || next == DICT_RECORDING;
+         /* SAVED is a terminal display state (UI auto-fades to
+          * IDLE after ~2 s).  PR 1 doesn't ship a UI subscriber
+          * to drive that fade yet, so allow directly starting
+          * a new dictation from SAVED without forcing callers
+          * to interleave an explicit IDLE transition. */
+      case DICT_FAILED:
+         return next == DICT_UPLOADING || next == DICT_RECORDING;
+         /* retry resumes upload (REST) or restarts recording */
    }
    return false;
 }
 
-void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason,
-                               uint32_t now_ms) {
+void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, uint32_t now_ms) {
    dict_lock();
 
    /* Idempotent — same-state re-entry is a no-op (avoids spamming
@@ -142,8 +151,7 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason,
        * host tests, but don't abort: callers may race and we want the
        * state machine resilient.  On target, this maps to ESP_LOGW
        * once we add an esp_log shim in tests/host/. */
-      fprintf(stderr, "voice_dictation: refused %s -> %s\n",
-              voice_dictation_state_name(s_event.state),
+      fprintf(stderr, "voice_dictation: refused %s -> %s\n", voice_dictation_state_name(s_event.state),
               voice_dictation_state_name(new_state));
       dict_unlock();
       return;
@@ -195,25 +203,38 @@ dict_event_t voice_dictation_get(void) {
  * a static string literal. */
 const char *voice_dictation_state_name(dict_state_t s) {
    switch (s) {
-   case DICT_IDLE:         return "IDLE";
-   case DICT_RECORDING:    return "RECORDING";
-   case DICT_UPLOADING:    return "UPLOADING";
-   case DICT_TRANSCRIBING: return "TRANSCRIBING";
-   case DICT_SAVED:        return "SAVED";
-   case DICT_FAILED:       return "FAILED";
+      case DICT_IDLE:
+         return "IDLE";
+      case DICT_RECORDING:
+         return "RECORDING";
+      case DICT_UPLOADING:
+         return "UPLOADING";
+      case DICT_TRANSCRIBING:
+         return "TRANSCRIBING";
+      case DICT_SAVED:
+         return "SAVED";
+      case DICT_FAILED:
+         return "FAILED";
    }
    return "UNKNOWN";
 }
 
 const char *voice_dictation_fail_name(dict_fail_t f) {
    switch (f) {
-   case DICT_FAIL_NONE:      return "NONE";
-   case DICT_FAIL_AUTH:      return "AUTH";
-   case DICT_FAIL_NETWORK:   return "NETWORK";
-   case DICT_FAIL_EMPTY:     return "EMPTY";
-   case DICT_FAIL_NO_AUDIO:  return "NO_AUDIO";
-   case DICT_FAIL_TOO_LONG:  return "TOO_LONG";
-   case DICT_FAIL_CANCELLED: return "CANCELLED";
+      case DICT_FAIL_NONE:
+         return "NONE";
+      case DICT_FAIL_AUTH:
+         return "AUTH";
+      case DICT_FAIL_NETWORK:
+         return "NETWORK";
+      case DICT_FAIL_EMPTY:
+         return "EMPTY";
+      case DICT_FAIL_NO_AUDIO:
+         return "NO_AUDIO";
+      case DICT_FAIL_TOO_LONG:
+         return "TOO_LONG";
+      case DICT_FAIL_CANCELLED:
+         return "CANCELLED";
    }
    return "UNKNOWN";
 }

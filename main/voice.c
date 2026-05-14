@@ -189,7 +189,7 @@ const char *voice_current_turn_id(void) { return s_current_turn_id[0] ? s_curren
  * mid-PTT" without auto-cutting normal questions.  60 s leaves
  * generous headroom for longer thoughts. */
 #define MAX_RECORD_FRAMES_ASK 3000
-#define MAX_RECORD_FRAMES_DICT       15000   /* PR 1: 5 min hard cap on dictation */
+#define MAX_RECORD_FRAMES_DICT 15000 /* PR 1: 5 min hard cap on dictation */
 
 // ---------------------------------------------------------------------------
 // State
@@ -786,8 +786,7 @@ static void mic_capture_task(void *arg)
             * using the same pattern that's proven safe in ASK mode. */
            if (voice_get_mode() == VOICE_MODE_DICTATE && frames_sent >= MAX_RECORD_FRAMES_DICT) {
               ESP_LOGW(TAG, "Dictation hit 5-min cap — auto-stopping");
-              voice_dictation_set_state(DICT_FAILED, DICT_FAIL_TOO_LONG,
-                                        (uint32_t)(esp_timer_get_time() / 1000));
+              voice_dictation_set_state(DICT_FAILED, DICT_FAIL_TOO_LONG, (uint32_t)(esp_timer_get_time() / 1000));
               break;
            }
 
@@ -1707,8 +1706,7 @@ esp_err_t voice_start_dictation(void)
     /* PR 1: drive the dictation pipeline state machine.  The pipeline
      * is a separate higher-level state; the existing voice_state_t
      * (LISTENING/PROCESSING/READY) is unchanged. */
-    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE,
-                              (uint32_t)(esp_timer_get_time() / 1000));
+    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
 
     voice_set_state(VOICE_STATE_LISTENING, offline ? "offline" : NULL);
     return ESP_OK;
@@ -1873,8 +1871,7 @@ esp_err_t voice_stop_listening(void)
        * Dragon-returns retry, so the higher-level state is UPLOADING.
        * Fire BEFORE the mode flip back to ASK so the gate (mode ==
        * DICTATE) is still true. */
-      voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE,
-                                (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
       voice_modes_set_internal(VOICE_MODE_ASK);
       return ESP_OK;
    }
@@ -1925,8 +1922,7 @@ esp_err_t voice_stop_listening(void)
          * silently stuck in DICT_RECORDING.  Sprint D's disconnect hook
          * in voice_ws_proto.c may not fire before this return path. */
         if (voice_get_mode() == VOICE_MODE_DICTATE) {
-            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK,
-                                      (uint32_t)(esp_timer_get_time() / 1000));
+           voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
         }
         voice_set_state(VOICE_STATE_IDLE, "Connection lost");
         return ESP_FAIL;
@@ -1938,8 +1934,7 @@ esp_err_t voice_stop_listening(void)
      * a dictation stop (e.g. voice-ask path, which doesn't touch the
      * dictation pipeline at all). */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
-       voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE,
-                                 (uint32_t)(esp_timer_get_time() / 1000));
+       voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
     }
 
     voice_set_state(VOICE_STATE_PROCESSING, NULL);
