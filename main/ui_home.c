@@ -180,11 +180,11 @@ static lv_obj_t *s_mode_sub        = NULL;  /* "LOCAL + CLOUD" */
  * gradient).  Mirrors the dictation pipeline state in its label / hint /
  * icon / border colour.  Tap → voice_start_dictation (in IDLE) or
  * voice_cancel (in RECORDING) — wired in Tasks 8-9. */
-static lv_obj_t *s_dictate_chip       = NULL;
-static lv_obj_t *s_dictate_chip_dot   = NULL; /* breathing dot, left edge */
+static lv_obj_t *s_dictate_chip = NULL;
+static lv_obj_t *s_dictate_chip_dot = NULL;   /* breathing dot, left edge */
 static lv_obj_t *s_dictate_chip_label = NULL; /* "Dictate" / "RECORDING" / etc. */
-static lv_obj_t *s_dictate_chip_hint  = NULL; /* "TAP TO START" / "0:23" / etc. */
-static lv_obj_t *s_dictate_chip_icon  = NULL; /* 🎤 / × / 🔄 / ✓ */
+static lv_obj_t *s_dictate_chip_hint = NULL;  /* "TAP TO START" / "0:23" / etc. */
+static lv_obj_t *s_dictate_chip_icon = NULL;  /* 🎤 / × / 🔄 / ✓ */
 
 /* Now-slot card (widget live target + empty-state) */
 static lv_obj_t *s_now_card        = NULL;
@@ -843,8 +843,8 @@ lv_obj_t *ui_home_create(void)
      * so a screen recreate cycle doesn't double-subscribe. */
     static int s_dictate_chip_sub = -1;
     if (s_dictate_chip_sub < 0) {
-        s_dictate_chip_sub = voice_dictation_subscribe_lvgl(dictate_chip_pipeline_cb, NULL);
-        ESP_LOGI(TAG, "Dictate chip subscriber registered handle=%d", s_dictate_chip_sub);
+       s_dictate_chip_sub = voice_dictation_subscribe_lvgl(dictate_chip_pipeline_cb, NULL);
+       ESP_LOGI(TAG, "Dictate chip subscriber registered handle=%d", s_dictate_chip_sub);
     }
 
     /* TT #511 wave-1.6 (change B): now-card killed from idle.
@@ -1999,8 +1999,7 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
       }
    } else if (dp.state == DICT_RECORDING) {
       voice_cancel();
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED,
-                                (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
    }
 }
 
@@ -2010,8 +2009,8 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
 static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data) {
    (void)user_data;
    if (!event) return;
-   if (!s_dictate_chip || !s_dictate_chip_label || !s_dictate_chip_hint ||
-       !s_dictate_chip_icon || !s_dictate_chip_dot) {
+   if (!s_dictate_chip || !s_dictate_chip_label || !s_dictate_chip_hint || !s_dictate_chip_icon ||
+       !s_dictate_chip_dot) {
       return;
    }
 
@@ -2021,60 +2020,57 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
 
    char buf[40];
    switch (event->state) {
-   case DICT_IDLE:
-      lv_label_set_text(s_dictate_chip_label, "Dictate");
-      lv_label_set_text(s_dictate_chip_hint, "TAP TO START");
-      lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(TH_TEXT_DIM), 0);
-      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_AUDIO);
-      break;
+      case DICT_IDLE:
+         lv_label_set_text(s_dictate_chip_label, "Dictate");
+         lv_label_set_text(s_dictate_chip_hint, "TAP TO START");
+         lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(TH_TEXT_DIM), 0);
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_AUDIO);
+         break;
 
-   case DICT_RECORDING: {
-      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-      uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms)
-                          ? (now_ms - event->started_ms)
-                          : 0;
-      uint32_t s = dur_ms / 1000;
-      snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s / 60),
-               (unsigned long)(s % 60));
-      lv_label_set_text(s_dictate_chip_label, "RECORDING");
-      lv_label_set_text(s_dictate_chip_hint, buf);
-      lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
-      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_CLOSE);
-      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
-      break;
-   }
+      case DICT_RECORDING: {
+         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+         uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
+         uint32_t s = dur_ms / 1000;
+         snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+         lv_label_set_text(s_dictate_chip_label, "RECORDING");
+         lv_label_set_text(s_dictate_chip_hint, buf);
+         lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_CLOSE);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
+         break;
+      }
 
-   case DICT_UPLOADING:
-      lv_label_set_text(s_dictate_chip_label, "UPLOADING");
-      lv_label_set_text(s_dictate_chip_hint, "");
-      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_UPLOAD);
-      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xF59E0B), 0);
-      lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xF59E0B), 0);
-      break;
+      case DICT_UPLOADING:
+         lv_label_set_text(s_dictate_chip_label, "UPLOADING");
+         lv_label_set_text(s_dictate_chip_hint, "");
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_UPLOAD);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xF59E0B), 0);
+         lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xF59E0B), 0);
+         break;
 
-   case DICT_TRANSCRIBING:
-      lv_label_set_text(s_dictate_chip_label, "TRANSCRIBING");
-      lv_label_set_text(s_dictate_chip_hint, "");
-      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
-      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xF59E0B), 0);
-      lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xF59E0B), 0);
-      break;
+      case DICT_TRANSCRIBING:
+         lv_label_set_text(s_dictate_chip_label, "TRANSCRIBING");
+         lv_label_set_text(s_dictate_chip_hint, "");
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xF59E0B), 0);
+         lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xF59E0B), 0);
+         break;
 
-   case DICT_SAVED:
-      lv_label_set_text(s_dictate_chip_label, "Saved");
-      lv_label_set_text(s_dictate_chip_hint, "");
-      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_OK);
-      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x22C55E), 0);
-      lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0x22C55E), 0);
-      break;
+      case DICT_SAVED:
+         lv_label_set_text(s_dictate_chip_label, "Saved");
+         lv_label_set_text(s_dictate_chip_hint, "");
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_OK);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x22C55E), 0);
+         lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0x22C55E), 0);
+         break;
 
-   case DICT_FAILED:
-      lv_label_set_text(s_dictate_chip_label, "FAILED");
-      lv_label_set_text(s_dictate_chip_hint, "TAP TO RETRY");
-      lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
-      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
-      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
-      break;
+      case DICT_FAILED:
+         lv_label_set_text(s_dictate_chip_label, "FAILED");
+         lv_label_set_text(s_dictate_chip_hint, "TAP TO RETRY");
+         lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
+         break;
    }
 }
 

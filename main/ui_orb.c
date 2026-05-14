@@ -614,7 +614,7 @@ void ui_orb_destroy(void) {
    if (s_halo) {
       lv_anim_delete(s_halo, halo_opa_anim_cb);
    }
-   /* PR 2: tear down caption + saved-fade timer. */
+   /* PR 2: tear down caption + saved-fade timer + record-elapsed timer. */
    if (s_orb_caption) {
       lv_obj_del(s_orb_caption);
       s_orb_caption = NULL;
@@ -622,6 +622,10 @@ void ui_orb_destroy(void) {
    if (s_saved_fade_timer) {
       lv_timer_del(s_saved_fade_timer);
       s_saved_fade_timer = NULL;
+   }
+   if (s_rec_timer_label) {
+      lv_timer_del(s_rec_timer_label);
+      s_rec_timer_label = NULL;
    }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
