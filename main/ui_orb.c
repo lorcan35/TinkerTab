@@ -1021,11 +1021,24 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
       case DICT_FAILED:
          paint_pipeline_body(0xE74C3C);
          paint_pipeline_halo(0xFF5C50);
-         snprintf(buf, sizeof(buf), "%s  ·  TAP TO RETRY", fail_reason_caption(event->fail_reason));
+         /* Drop the unicode mid-dot — FONT_HEADING (montserrat bold 22)
+          * doesn't carry U+00B7, so it rendered as a missing-glyph box.
+          * Use generous spaces to keep the parts visually separated. */
+         snprintf(buf, sizeof(buf), "%s   TAP TO RETRY", fail_reason_caption(event->fail_reason));
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
          set_caption_text(buf);
          break;
    }
 }
 
-bool ui_orb_pipeline_active(void) { return s_pipeline.state != DICT_IDLE; }
+bool ui_orb_pipeline_active(void) {
+   /* Poll the authoritative state machine directly rather than the
+    * cached s_pipeline.  s_pipeline is updated by the LVGL-async
+    * subscriber, which runs AFTER any synchronous caller that resets
+    * the pipeline state (e.g., orb_click_cb's pipeline-clear-before-Ask
+    * path).  Reading voice_dictation_get() avoids a window where
+    * is-pipeline-active returns stale true and suppresses the Ask
+    * overlay's chrome. */
+   dict_event_t e = voice_dictation_get();
+   return e.state != DICT_IDLE;
+}

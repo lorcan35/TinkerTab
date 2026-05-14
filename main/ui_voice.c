@@ -31,6 +31,7 @@
 #include "task_worker.h"
 #include "ui_core.h" /* tab5_lv_async_call (#258) */
 #include "ui_notes.h"
+#include "ui_orb.h" /* PR 2 polish: ui_orb_pipeline_active() for overlay suppression */
 #include "ui_theme.h" /* TT #328 Wave 4: TH_MODE_*/ TH_STATUS_ *tokens for state - icon hues * /
 #include "voice.h" /* W7-E.4c: voice_is_channel_reply_armed + getters */
 
@@ -1212,6 +1213,23 @@ static void show_state_listening(void)
      * amber-family PROCESSING / SPEAKING. */
     set_state_icon(LV_SYMBOL_AUDIO, TH_MODE_LOCAL);
 
+    /* PR 2 polish: when the dictation pipeline is on-flight, the orb is
+     * already painted with pipeline visuals (red body, hero caption,
+     * Dictate chip-as-cancel).  Suppress the voice overlay's "I'm here.
+     * Go." status text + LISTENING sub-caption + red stop button — they
+     * overlap the home-resident Dictate chip and double up the messaging.
+     * The pipeline + chip own this surface during dictation. */
+    if (ui_orb_pipeline_active()) {
+       if (s_lbl_status) lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+       if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+       if (s_send_btn) lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+       if (s_lbl_transcript) lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
+       if (s_lbl_dots) lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+       if (s_wave_cont) lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
+       if (s_lbl_rec_time) lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+       return;
+    }
+
     /* Clean up READY-state orb click handler if still attached */
     lv_obj_clear_flag(s_orb_container, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_event_cb(s_orb_container, orb_ready_click_cb);
@@ -1325,6 +1343,20 @@ static void show_state_processing(const char *detail)
     * speaking (blue). */
    set_state_icon(LV_SYMBOL_REFRESH, 0xA78BFA);
    render_queue_badge();
+
+   /* PR 2 polish: pipeline UPLOADING / TRANSCRIBING own the surface.
+    * Suppress overlay chrome so the hero caption + Dictate chip read
+    * cleanly without overlap. */
+   if (ui_orb_pipeline_active()) {
+      if (s_lbl_status) lv_obj_add_flag(s_lbl_status, LV_OBJ_FLAG_HIDDEN);
+      if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+      if (s_send_btn) lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+      if (s_lbl_transcript) lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
+      if (s_lbl_dots) lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+      if (s_lbl_rec_time) lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+      if (s_response_label) lv_obj_add_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+      return;
+   }
    /* Note: this is called repeatedly as LLM tokens arrive.
     * detail = STT text (first call), then LLM text (subsequent calls).
     * We use voice_get_stt_text() and voice_get_llm_text() to distinguish. */

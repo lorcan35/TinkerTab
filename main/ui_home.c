@@ -257,6 +257,10 @@ static void mode_chip_click_cb(lv_event_t *e); /* TT #370 */
 /* PR 2: Dictate chip tap + pipeline subscriber. */
 static void dictate_chip_tap_cb(lv_event_t *e);
 static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data);
+/* PR 2 polish: chrome-fade forward decls (used by chip subscriber). */
+static void chrome_fade_anim_cb(void *obj, int32_t v);
+#define CHROME_DIM_OPA 0
+#define CHROME_FULL_OPA 255
 /* U19 (#206): rail callbacks removed with the rail itself. */
 static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
@@ -1734,6 +1738,16 @@ static void orb_click_cb(lv_event_t *e)
         ui_home_show_toast("Reconnecting to Dragon… try again in a moment.");
         return;
     }
+    /* PR 2 polish: tapping the orb to Ask should always start clean.
+     * If a previous dictation left the pipeline in a transient terminal
+     * state (FAILED/SAVED), reset it to IDLE so the orb's Ask visuals
+     * aren't shadowed by stale "CANCELLED · TAP TO RETRY" text. */
+    dict_event_t pe = voice_dictation_get();
+    if (pe.state == DICT_FAILED || pe.state == DICT_SAVED) {
+       voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE,
+                                  (uint32_t)(esp_timer_get_time() / 1000));
+    }
+
     ui_voice_show();
     voice_start_listening();
 }
@@ -2050,6 +2064,24 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
    if (event->state != DICT_RECORDING && s_dictate_chip_rec_t) {
       lv_timer_del(s_dictate_chip_rec_t);
       s_dictate_chip_rec_t = NULL;
+   }
+
+   /* PR 2 polish: pipeline non-IDLE → force chip fully visible even if
+    * the chrome fade dimmed it during voice-active.  IDLE → let normal
+    * fade rules apply. */
+   if (event->state != DICT_IDLE) {
+      lv_anim_delete(s_dictate_chip, chrome_fade_anim_cb);
+      lv_obj_set_style_opa(s_dictate_chip, CHROME_FULL_OPA, LV_PART_MAIN);
+   } else {
+      voice_state_t vs = voice_get_state();
+      bool voice_active = (vs == VOICE_STATE_LISTENING || vs == VOICE_STATE_PROCESSING || vs == VOICE_STATE_SPEAKING);
+      if (voice_active) {
+         lv_anim_delete(s_dictate_chip, chrome_fade_anim_cb);
+         lv_obj_set_style_opa(s_dictate_chip, CHROME_DIM_OPA, LV_PART_MAIN);
+      } else {
+         lv_anim_delete(s_dictate_chip, chrome_fade_anim_cb);
+         lv_obj_set_style_opa(s_dictate_chip, CHROME_FULL_OPA, LV_PART_MAIN);
+      }
    }
 
    /* Default styling = IDLE.  Per-state branches mutate from this base. */
@@ -3108,15 +3140,9 @@ static void chrome_fade_anim_cb(void *obj, int32_t v) {
 }
 
 /* TT #511 wave-1.5: chrome fades to FULLY invisible (not dim) during
- * voice.  Tried opa=50 first — home's s_state_word ("listening" /
- * "thinking" / "speaking" — see ui_home_update_status state_hint
- * switch) overlapped at the same y as the voice overlay's own text
- * labels ("I'm here. Go.", thinking dots, "speaking…").  Same for
- * s_greet_line vs the overlay caption.  Fully hiding the home chrome
- * is the cleaner fix: the orb stays at center, status bar stays at
- * top, voice overlay text floats over an otherwise-empty home. */
-#define CHROME_DIM_OPA 0
-#define CHROME_FULL_OPA 255
+ * voice.  CHROME_DIM_OPA / CHROME_FULL_OPA defined near the top of the
+ * file (PR 2 polish forward decls) so the chip-subscriber can reference
+ * them without ordering games. */
 #define CHROME_FADE_MS 250
 
 static void chrome_fade_to(lv_obj_t *obj, int target) {
@@ -3140,6 +3166,14 @@ static void ui_home_chrome_fade(bool voice_active) {
    chrome_fade_to(s_mode_chip, target);
    chrome_fade_to(s_now_card, target);
    chrome_fade_to(s_say_pill, target);
+   /* PR 2 polish: also fade the Dictate chip during regular Ask listening
+    * — otherwise the voice overlay's red stop button at y=750 collides
+    * with the chip at y=762 and the user can't tell which to tap.  But
+    * during a dictation pipeline (RECORDING / UPLOADING / TRANSCRIBING /
+    * SAVED / FAILED) we WANT the chip visible — it acts as the cancel
+    * affordance + state mirror.  Override the fade target accordingly. */
+   int chip_target = (voice_active && !ui_orb_pipeline_active()) ? CHROME_DIM_OPA : CHROME_FULL_OPA;
+   chrome_fade_to(s_dictate_chip, chip_target);
 }
 
 void ui_home_orb_aliveness_sync(void) {
