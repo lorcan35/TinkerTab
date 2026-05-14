@@ -98,10 +98,17 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 #define ORB_GLOW_LAYERS    4         /* concentric circles for radial gradient */
 
 #define CLOSE_BTN_SZ       56
-#define CLOSE_BTN_MARGIN   16
+/* TT #511 wave-1.7: X close button moved BELOW the status bar (was
+ * 16 px from top, overlapping the "Thursday • HH:MM" time text).  80 px
+ * margin clears the status bar entirely. */
+#define CLOSE_BTN_MARGIN_X 16
+#define CLOSE_BTN_MARGIN_Y 80
 
 /* Chat area — between orb and send button */
-#define ORB_Y_OFFSET       -280       /* move orb upward from center */
+/* Wave-1.8: orb moved back to y=320 (upper-third); voice text offset
+ * returns to anchor below it.  -260 → status label at 640 + 150 -
+ * 260 + 30 = 560, sitting ~50 px below the orb's bottom edge (~410). */
+#define ORB_Y_OFFSET -260
 #define CHAT_TOP           440        /* y where chat area starts */
 #define CHAT_BOTTOM        1020       /* y where chat area ends (above send btn) */
 #define CHAT_PAD_X         24         /* horizontal padding */
@@ -125,7 +132,10 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 
 /* Send/Stop button (shown during LISTENING) */
 #define SEND_BTN_SZ        80
-#define SEND_BTN_Y         1050      /* y-center from top */
+/* Wave-1.8: orb back to upper-third → status text now ends around
+ * y=620, so the stop button at y=750 keeps a tight ~80 px pairing
+ * with the text without falling to the very bottom of the screen. */
+#define SEND_BTN_Y 750               /* y-center from top */
 #define SEND_ICON_SZ       24        /* inner square "stop" icon */
 
 /* Mic dot pulse animation */
@@ -1099,8 +1109,7 @@ static void build_close_button(lv_obj_t *parent)
     s_close_btn = lv_obj_create(parent);
     if (!s_close_btn) { ESP_LOGE(TAG, "OOM creating close button"); return; }
     lv_obj_set_size(s_close_btn, CLOSE_BTN_SZ, CLOSE_BTN_SZ);
-    lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT,
-                 -(int32_t)CLOSE_BTN_MARGIN, CLOSE_BTN_MARGIN);
+    lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, -(int32_t)CLOSE_BTN_MARGIN_X, CLOSE_BTN_MARGIN_Y);
     lv_obj_set_style_radius(s_close_btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(s_close_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_close_btn, 0, 0);
@@ -1184,7 +1193,15 @@ static void set_state_icon(const char *glyph, uint32_t color_hex) {
    }
    lv_label_set_text(s_lbl_state_icon, glyph);
    lv_obj_set_style_text_color(s_lbl_state_icon, lv_color_hex(color_hex), 0);
-   lv_obj_clear_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+   /* TT #511 wave-1.7: the new ui_orb state machine already conveys
+    * state via comet (PROCESSING) / bloom (LISTENING) / steady halo
+    * (SPEAKING) / circadian (IDLE).  Showing a separate purple
+    * refresh icon + music-note + check glyph on top of the orb is
+    * redundant.  Keep the obj for compat (state handlers still set
+    * its text); force HIDDEN at the un-hide site so it never
+    * renders. */
+   lv_obj_add_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+   (void)glyph;
 }
 
 static void show_state_listening(void)
@@ -1220,8 +1237,15 @@ static void show_state_listening(void)
     } else {
         lv_label_set_text(s_lbl_status, "I'm here. Go.");
         if (s_lbl_sub) {
-            lv_label_set_text(s_lbl_sub, "LISTENING  \xe2\x80\xa2  RELEASE TO SEND");
-            lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+           /* TT #511 wave-1.9 (smoothness fix #2): copy was
+            * "LISTENING • RELEASE TO SEND" — but the gesture is
+            * tap-once, not hold-to-talk (the latter was retired
+            * years ago).  "RELEASE TO SEND" was a lie that
+            * confused users about what gesture was active.  New
+            * copy matches the actual affordance: tap-stop or
+            * wait it out. */
+           lv_label_set_text(s_lbl_sub, "LISTENING  \xe2\x80\xa2  TAP STOP TO SEND");
+           lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
         }
     }
     lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_36, 0);
@@ -1238,17 +1262,24 @@ static void show_state_listening(void)
     /* Show send/stop button so user knows how to stop recording */
     lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
 
-    /* Show recording duration timer — large and prominent */
+    /* TT #511 wave-1.9 (smoothness fix #1): hide the countdown clock
+     * in Ask mode.  The 30 s (now 60 s — see voice.c MAX_RECORD_FRAMES_ASK)
+     * cap is a silent safety net, not something the user needs to
+     * watch tick down.  The red panic-color at 5 s was actively
+     * stressful for a voice assistant.  Dictation mode still shows
+     * elapsed time (long-form recording flow where duration matters).
+     * Timer + label obj kept alive so dictation works; just don't
+     * show the label in Ask. */
     s_rec_seconds = 0;
     if (voice_get_mode() == VOICE_MODE_ASK) {
-        lv_label_set_text(s_lbl_rec_time, "0:30 left");
+       lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_label_set_text(s_lbl_rec_time, "0:00");
+        lv_obj_set_style_text_font(s_lbl_rec_time, FONT_HEADING, 0);
+        lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_CYAN), 0);
+        lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
+        lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_style_text_font(s_lbl_rec_time, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_CYAN), 0);
-    lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
-    lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
 
     /* Show send/stop button */
@@ -1265,6 +1296,14 @@ static void show_state_listening(void)
  * PROCESSING and SPEAKING both re-evaluate without duplicating code. */
 static void render_queue_badge(void)
 {
+   /* TT #511 wave-1.7: "+N QUEUED" caption suppressed.  Confusing
+    * noise alongside the clean status line + orb motion; the queued
+    * turn is still processed, just not announced.  If queue depth
+    * matters in a future flow, surface it via a toast or status-bar
+    * indicator instead of stacking text under the orb. */
+   if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+   return;
+#if 0  /* dead-coded; preserved for cherry-pick reference */
     if (!s_lbl_sub) return;
     int depth = voice_get_queue_depth();
     if (depth > 0) {
@@ -1276,6 +1315,7 @@ static void render_queue_badge(void)
     } else {
         lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
     }
+#endif /* dead-coded — see TT #511 wave-1.7 comment */
 }
 
 static void show_state_processing(const char *detail)
@@ -1351,8 +1391,10 @@ static void show_state_processing(const char *detail)
         /* STT arrived but no LLM yet — show thinking status.
          * TinkerClaw mode: "Agent thinking..." to signal agent reasoning */
         uint8_t vmode = tab5_settings_get_voice_mode();
-        lv_label_set_text(s_lbl_status,
-            vmode == VOICE_MODE_TINKERCLAW ? "Agent thinking." : "Thinking.");
+        /* TT #511 wave-1.7: dropped the trailing period and the
+         * separate dots-animation; the comet orbit is the motion
+         * cue, the text is just the noun. */
+        lv_label_set_text(s_lbl_status, vmode == VOICE_MODE_TINKERCLAW ? "Agent thinking" : "Thinking");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_MID), 0);
         lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
@@ -1366,7 +1408,11 @@ static void show_state_processing(const char *detail)
             lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE), 0);
             lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0,
                          ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
-            lv_obj_clear_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+            /* TT #511 wave-1.7: animated dots redundant with the new
+             * ui_orb's skill-rim comet (the orbit itself is the
+             * "thinking" visual).  Keep obj + timer for compat;
+             * force HIDDEN so it never renders. */
+            lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
             s_dot_timer = lv_timer_create(dot_timer_cb, ANIM_DOT_MS, NULL);
         }
     }
