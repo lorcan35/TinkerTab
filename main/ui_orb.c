@@ -18,7 +18,8 @@
 #include <stdlib.h> /* malloc/free for presence-call marshalling */
 #include <time.h>
 
-#include "config.h" /* FONT_CAPTION for pipeline-state caption (PR 2) */
+#include "config.h"    /* FONT_CAPTION for pipeline-state caption (PR 2) */
+#include "debug_obs.h" /* tab5_debug_obs_event for pipeline-cb tracing (PR 2) */
 #include "esp_log.h"
 #include "esp_timer.h" /* esp_timer_get_time for RECORDING caption timer (PR 2) */
 #include "imu.h"       /* tab5_imu_read for tilt-driven specular drift */
@@ -591,6 +592,14 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       s_pipeline_sub = voice_dictation_subscribe_lvgl(orb_pipeline_cb, NULL);
       ESP_LOGI(TAG, "pipeline subscriber registered handle=%d", s_pipeline_sub);
    }
+   /* Rehydrate from current pipeline state — the subscriber only fires on
+    * future transitions, so a re-created orb stays at IDLE visuals even
+    * when the pipeline is mid-cycle.  Read current state and drive paint
+    * immediately. */
+   {
+      dict_event_t cur = voice_dictation_get();
+      ui_orb_set_pipeline_state(&cur);
+   }
 
    ESP_LOGI(TAG, "orb created at (%d, %d), size %d", cx, cy, ORB_SIZE);
 }
@@ -781,14 +790,25 @@ lv_obj_t *ui_orb_get_body(void) { return s_body; }
 /* Paint the orb body in the pipeline-state tint.  Caller is responsible
  * for setting the caption text + showing the caption label.
  *
- * Uses the same body widget that the voice-state painter paints into.
- * The previous body styling (circadian gradient, etc.) is shadowed by
- * the solid tint until pipeline returns to IDLE. */
+ * s_body is a vertical linear gradient (paint_body_for_hour /
+ * paint_for_tone write both bg_color = top stop and bg_grad_color =
+ * bottom stop).  Writing only bg_color leaves the bottom stop at the
+ * previous state's edge color, which produces a muddy mix instead of
+ * a clean state indicator.  Darken the requested hue ~45% for the
+ * bottom stop to keep the lit-sphere luster instead of going flat;
+ * stamp s_last_painted_hour = -1 so a clock-driven hour-repaint can't
+ * immediately revert the tint. */
 static void paint_pipeline_body(uint32_t color_hex) {
    if (!s_body) return;
+   uint8_t r = (color_hex >> 16) & 0xFF;
+   uint8_t g = (color_hex >> 8) & 0xFF;
+   uint8_t b = color_hex & 0xFF;
+   uint32_t bot = ((uint32_t)((r * 45) / 100) << 16) | ((uint32_t)((g * 45) / 100) << 8) | (uint32_t)((b * 45) / 100);
    lv_obj_set_style_bg_color(s_body, lv_color_hex(color_hex), LV_PART_MAIN);
-   /* Keep the radial-gradient luster for depth — only tint, don't go
-    * flat.  The existing body uses LV_GRAD_DIR_VER; preserve. */
+   lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
+   lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
+   lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_MAIN);
+   s_last_painted_hour = -1;
 }
 
 static const char *fail_reason_caption(dict_fail_t r) {
@@ -852,6 +872,12 @@ static void rec_timer_label_cb(lv_timer_t *t) {
  * forward to the public state-driver. */
 static void orb_pipeline_cb(const dict_event_t *event, void *user_data) {
    (void)user_data;
+   if (event) {
+      char detail[48];
+      snprintf(detail, sizeof(detail), "%s/%s", voice_dictation_state_name(event->state),
+               voice_dictation_fail_name(event->fail_reason));
+      tab5_debug_obs_event("pipeline.orb_cb", detail);
+   }
    ui_orb_set_pipeline_state(event);
 }
 

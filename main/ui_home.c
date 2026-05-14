@@ -849,6 +849,13 @@ lv_obj_t *ui_home_create(void)
        s_dictate_chip_sub = voice_dictation_subscribe_lvgl(dictate_chip_pipeline_cb, NULL);
        ESP_LOGI(TAG, "Dictate chip subscriber registered handle=%d", s_dictate_chip_sub);
     }
+    /* Rehydrate from current pipeline state — the subscriber only fires on
+     * future transitions, so a re-rendered home stays at IDLE chip visuals
+     * even when the pipeline is mid-cycle. */
+    {
+       dict_event_t cur = voice_dictation_get();
+       dictate_chip_pipeline_cb(&cur, NULL);
+    }
 
     /* TT #511 wave-1.6 (change B): now-card killed from idle.
      * Obj still created so channel-notification code that writes to

@@ -52,17 +52,35 @@ void voice_dictation_init(void) {
    /* Lazily create the mutex on first call.  Subsequent calls reuse the
     * existing handle so init remains idempotent.  We deliberately do NOT
     * destroy + recreate because callers in other tasks may already be
-    * spinning on a take. */
+    * spinning on a take.
+    *
+    * IMPORTANT: We do NOT clear s_subs here.  In TinkerTab boot order
+    * `ui_home_create` runs on the main task BEFORE the deferred LVGL-
+    * timer init callback fires `voice_dictation_init`.  ui_orb_create's
+    * pipeline subscription registers via voice_dictation_subscribe()
+    * during ui_home_create — wiping s_subs at init time would silently
+    * kill any already-registered subscriber and leave pipeline state
+    * machine fires unobserved at the UI.  BSS zero-init already gives
+    * us an empty subscriber table at first boot; nothing more is needed.
+    *
+    * s_event is BSS-zero-initialised too, but we leave the explicit
+    * field initialisers here (still idempotent — equivalent of a no-op
+    * after the first call) so the contract "init starts at DICT_IDLE
+    * with note_slot=-1" remains visible at the init site. */
    if (s_lock == NULL) {
       s_lock = xSemaphoreCreateRecursiveMutex();
    }
 
    dict_lock();
-   memset(&s_event, 0, sizeof(s_event));
-   s_event.state = DICT_IDLE;
-   s_event.fail_reason = DICT_FAIL_NONE;
-   s_event.note_slot = -1;
-   memset(s_subs, 0, sizeof(s_subs));
+   if (s_event.state == 0 && s_event.note_slot == 0) {
+      /* First-init path — BSS-zero state has note_slot=0 which is a
+       * valid slot id; fix it to the sentinel.  Re-entry path leaves
+       * the existing s_event alone (a dictation might already be in
+       * flight if another module called set_state before init). */
+      s_event.state = DICT_IDLE;
+      s_event.fail_reason = DICT_FAIL_NONE;
+      s_event.note_slot = -1;
+   }
    dict_unlock();
 }
 
