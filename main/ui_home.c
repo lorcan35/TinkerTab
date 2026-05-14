@@ -40,6 +40,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "imu.h" /* TT #512 — IMU-driven specular highlight */
 #include "media_cache.h"
 #include "settings.h"
 #include "spring_anim.h" /* Phase 2 of #42 — toast slide-in */
@@ -124,12 +125,24 @@ static lv_obj_t *s_ring_outer      = NULL;
 static lv_obj_t *s_ring_mid        = NULL;
 static lv_obj_t *s_ring_inner      = NULL;
 static lv_obj_t *s_orb             = NULL;
+/* TT #512 — static drop-shadow ellipse under the orb.  Grounds the
+ * sphere so it reads as a floating object instead of a sticker.  No
+ * animation; sits in z-order BEHIND s_orb. */
+static lv_obj_t *s_orb_shadow = NULL;
 /* TT #507 buttery-smooth pass: inner specular highlight that pulses
  * INSIDE the orb instead of pulsing the whole orb body.  The orb's
  * gradient stays stable (no whole-region redraw per frame = no refresh
  * flicker), the small highlight draws much less area each tick so
  * motion reads clean even at 30 Hz. */
 static lv_obj_t *s_orb_highlight = NULL;
+/* TT #512 — IMU-driven specular highlight state.  20 Hz timer polls
+ * BMI270 accel, low-pass filters into EMA vars, repositions
+ * s_orb_highlight within the orb so the bright glint drifts as the
+ * device tilts.  Reads as "real ball, light fixed in the room"
+ * — the missing physical cue that made prior orbs feel painted. */
+static lv_timer_t *s_orb_specular_timer = NULL;
+static float s_spec_dx_ema = 0.0f;
+static float s_spec_dy_ema = 0.0f;
 /* TT #501 — orb aliveness pool.
  *
  *  - s_orb_breath_anim: the ambient breath anim handle (4 s opacity
@@ -254,6 +267,9 @@ static void orb_shadow_set_opa_cb(void *obj, int32_t v);
 static void orb_highlight_set_opa_cb(void *obj, int32_t v);
 static void halo_inner_set_border_opa_cb(void *obj, int32_t v);
 static void halo_outer_set_bg_opa_cb(void *obj, int32_t v);
+/* TT #512 — IMU-driven specular drift, armed by create / disarmed by destroy. */
+static void orb_specular_start(void);
+static void orb_specular_stop(void);
 static void ripple_set_radius_cb(void *obj, int32_t r);
 static void ripple_set_opa_cb(void *obj, int32_t v);
 /* v4·D Phase 4g: widget_prompt hit-zone tap routing */
@@ -713,25 +729,22 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_align(s_time_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_letter_space(s_time_label, 1, 0);
 
-    /* ── Orb stage (halos + rings + orb) ───────────────────── */
-    /* Halos: dim amber circles, stacked largest-first so opacity adds. */
-    s_halo_outer = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_halo_outer);
-    pos_centered(s_halo_outer, ORB_CY - HALO_OUTER / 2, HALO_OUTER, HALO_OUTER);
-    lv_obj_set_style_radius(s_halo_outer, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_halo_outer, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(s_halo_outer, 18, 0);   /* ~7% */
-    lv_obj_clear_flag(s_halo_outer, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    /* ── Orb stage (drop shadow + orb) ───────────────────── */
+    /* TT #512 — halos REMOVED.  The amber halo circles behind the orb
+     * read as flat 2D plates the sphere sat on top of, breaking the
+     * "floating orb" illusion the #510 vertical-gradient sphere was
+     * meant to create.  Pointers stay NULL; every site that touches
+     * them already null-guards, including the destroy path and the
+     * breath/peak anims.  See [[project-orb-aliveness-arc-2026-05-14]]. */
+    s_halo_outer = NULL;
+    s_halo_inner = NULL;
 
-    s_halo_inner = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_halo_inner);
-    pos_centered(s_halo_inner, ORB_CY - HALO_INNER / 2, HALO_INNER, HALO_INNER);
-    lv_obj_set_style_radius(s_halo_inner, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_halo_inner, lv_color_hex(TH_AMBER), 0);
-    /* TT #508 v3: was 38 (15%) — looked like a second concentric ring.
-     * 16 (6%) makes it blend with halo_outer for a single soft haze. */
-    lv_obj_set_style_bg_opa(s_halo_inner, 16, 0);
-    lv_obj_clear_flag(s_halo_inner, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    /* TT #512 — no drop shadow either.  A hard-edged ellipse under the
+     * orb just becomes the next "flat 2D thing on top of which the
+     * sphere sits."  In a dark void, a lit sphere needs no ground.
+     * The gradient on the orb body alone communicates roundness;
+     * roundness alone communicates "orb."  Subtraction. */
+    s_orb_shadow = NULL;
 
     /* Rings: border-only circles for a "composed" orb. */
     s_ring_outer = lv_obj_create(s_screen);
@@ -782,12 +795,32 @@ lv_obj_t *ui_home_create(void)
     ui_fb_icon(s_orb); /* TT #328 Wave 10 — opacity dip on press */
     lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
 
-    /* TT #508 — ember removed.  TT #507's inner specular highlight
-     * still read as "ball inside ball" + the user explicitly said
-     * "looks ass."  Clean orb with warm outer glow is the better
-     * aesthetic.  s_orb_highlight stays NULL; anim refs guard against
-     * it. */
-    s_orb_highlight = NULL;
+    /* TT #512 — IMU-driven specular glint.  Replaces #507's pulsing
+     * concentric highlight (which read as ball-in-ball).  This one
+     * doesn't pulse — it DRIFTS as the device tilts, driven by the
+     * BMI270 accelerometer.  Wide soft cream ellipse in the upper-
+     * left quadrant, opa 90 so it blends with the orb's lit-side
+     * gradient instead of stamping on top of it.  Clipped to the
+     * orb's circular boundary (child of s_orb with parent radius
+     * full).  The drift is the "alive" — no flicker, no second-orb
+     * effect, just light playing on a curved surface as you move. */
+    {
+       const int hi_w = 64;
+       const int hi_h = 40;
+       const int hi_rest_x = (ORB_SIZE / 2) - (hi_w / 2) - 18; /* upper-left */
+       const int hi_rest_y = 16;
+       s_orb_highlight = lv_obj_create(s_orb);
+       lv_obj_remove_style_all(s_orb_highlight);
+       lv_obj_set_size(s_orb_highlight, hi_w, hi_h);
+       lv_obj_set_pos(s_orb_highlight, hi_rest_x, hi_rest_y);
+       lv_obj_set_style_radius(s_orb_highlight, LV_RADIUS_CIRCLE, 0);
+       lv_obj_set_style_bg_color(s_orb_highlight, lv_color_hex(0xFFF5E0), 0);
+       lv_obj_set_style_bg_opa(s_orb_highlight, 95, 0);
+       lv_obj_clear_flag(s_orb_highlight, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    }
+    s_spec_dx_ema = 0.0f;
+    s_spec_dy_ema = 0.0f;
+    orb_specular_start();
 
     /* TT #508: hide the 3 concentric inner rings.  They were "tree
      * rings" against the dark background — looked like a radio dial,
@@ -2331,6 +2364,7 @@ void ui_home_destroy(void)
        lv_timer_delete(s_orb_peak_timer);
        s_orb_peak_timer = NULL;
     }
+    orb_specular_stop(); /* TT #512 — kill IMU drift timer */
     if (s_orb) {
        lv_anim_delete(s_orb, orb_set_opa_cb);
        lv_anim_delete(s_orb, orb_shadow_set_opa_cb);
@@ -2378,6 +2412,7 @@ void ui_home_destroy(void)
     s_halo_outer = s_halo_inner = NULL;
     s_ring_outer = s_ring_mid = s_ring_inner = NULL;
     s_orb = NULL;
+    s_orb_shadow = NULL;    /* TT #512 — child of s_screen; freed with it. */
     s_orb_highlight = NULL; /* TT #507 — child of s_orb; just clear handle. */
     s_state_word = s_greet_line = NULL;
     s_mode_chip = s_mode_dot = s_mode_name = s_mode_sub = NULL;
@@ -2929,6 +2964,60 @@ static void orb_breath_start(void) {
    }
 
    s_orb_breath_running = true;
+}
+
+/* TT #512 — IMU-driven specular drift.  Runs on the LVGL thread via
+ * lv_timer; no marshalling needed.  Reads BMI270 accel, low-passes
+ * heavily (alpha=0.12) to silence high-frequency noise, maps gravity
+ * vector to highlight offset within the orb.  Light source is FIXED
+ * in world space — tilt right → highlight slides left (gravity
+ * along +x pulls the lit-side toward -x).  Soft clamp at ±22 px so
+ * the highlight never approaches the orb edge.  Caller (create) sets
+ * the resting position; we add delta on top. */
+static void orb_specular_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_orb_highlight) return;
+   tab5_imu_data_t d;
+   if (tab5_imu_read(&d) != ESP_OK) return;
+
+   /* Map accel.x/y (in g) to pixel offset.  18 px per g feels right
+    * on a 180 px orb — visible at desk-flat tilt, never extreme. */
+   const float k_xy = 18.0f;
+   const float target_dx = -d.accel.x * k_xy; /* tilt right → highlight left */
+   const float target_dy = d.accel.y * k_xy;  /* tilt forward → highlight up */
+   const float alpha = 0.12f;
+   s_spec_dx_ema += alpha * (target_dx - s_spec_dx_ema);
+   s_spec_dy_ema += alpha * (target_dy - s_spec_dy_ema);
+
+   /* Soft clamp */
+   const float lim = 22.0f;
+   float dx = s_spec_dx_ema;
+   float dy = s_spec_dy_ema;
+   if (dx > lim) dx = lim;
+   if (dx < -lim) dx = -lim;
+   if (dy > lim) dy = lim;
+   if (dy < -lim) dy = -lim;
+
+   /* Resting upper-left coordinate (must match create) */
+   const int hi_w = 64;
+   const int rest_x = (ORB_SIZE / 2) - (hi_w / 2) - 18;
+   const int rest_y = 16;
+   lv_obj_set_pos(s_orb_highlight, rest_x + (int)dx, rest_y + (int)dy);
+}
+
+static void orb_specular_start(void) {
+   if (!s_orb_highlight) return;
+   if (s_orb_specular_timer) return;
+   /* 50 ms = 20 Hz.  Cheap because lv_obj_set_pos invalidates only
+    * the highlight's bounding box, and we never resize it. */
+   s_orb_specular_timer = lv_timer_create(orb_specular_tick_cb, 50, NULL);
+}
+
+static void orb_specular_stop(void) {
+   if (s_orb_specular_timer) {
+      lv_timer_delete(s_orb_specular_timer);
+      s_orb_specular_timer = NULL;
+   }
 }
 
 /* Stop halo breath anim + clamp back to rest values.  TT #508 v2:

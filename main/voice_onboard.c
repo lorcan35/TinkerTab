@@ -105,25 +105,13 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
  * cold-start.  On success the failover gate flips to READY; on any
  * failure (probe timeout, infer hang, NPU stall) it flips to UNAVAILABLE
  * and stays there until the next reboot. */
-/* TT #328 Wave 3 P0 #12 — surface K144 warm-up failure so the user knows
- * Onboard mode + Local-failover are dead until reboot.  Marshalled to the
- * LVGL thread because the warmup job runs on tab5_worker.
- *
- * Wave 13 — banner copy adapts to retry-budget state.  While retries
- * remain, tell the user we'll keep trying and where to manually retry.
- * Once exhausted, fall back to the original "needs power-cycle" guidance. */
-static void k144_unavailable_banner_async(void *arg) {
-   bool exhausted = (bool)(uintptr_t)arg;
-   if (exhausted) {
-      ui_home_show_error_banner("Onboard LLM unavailable — power-cycle K144 to retry.",
-                                NULL /* non-dismissable until next reboot */);
-   } else {
-      ui_home_show_error_banner(
-          "Onboard LLM offline — auto-retrying every 60s. Tap Settings → Onboard for "
-          "manual retry.",
-          NULL);
-   }
-}
+/* TT #511 — banner suppressed.  K144 unavailability is still logged via
+ * the obs ring (`m5.warmup unavailable` + `error.k144 <reason>`) and the
+ * auto-retry timer + manual recovery path are unchanged; only the
+ * top-bar visual banner is gone.  Reason: the persistent banner clutters
+ * the home screen on every K144-less boot.  Diagnostics live in
+ * GET /m5 + GET /events. */
+static void k144_unavailable_banner_async(void *arg) { (void)arg; }
 
 /* esp_timer callback — fires off the esp_timer dispatcher task.  Must
  * NOT block; we simply enqueue the worker job that does the real
