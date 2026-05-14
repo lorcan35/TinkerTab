@@ -189,6 +189,7 @@ const char *voice_current_turn_id(void) { return s_current_turn_id[0] ? s_curren
  * mid-PTT" without auto-cutting normal questions.  60 s leaves
  * generous headroom for longer thoughts. */
 #define MAX_RECORD_FRAMES_ASK 3000
+#define MAX_RECORD_FRAMES_DICT       15000   /* PR 1: 5 min hard cap on dictation */
 
 // ---------------------------------------------------------------------------
 // State
@@ -776,6 +777,17 @@ static void mic_capture_task(void *arg)
            if (voice_get_mode() == VOICE_MODE_ASK && frames_sent >= MAX_RECORD_FRAMES_ASK) {
               ESP_LOGI(TAG, "Max recording duration reached (%ds)", MAX_RECORD_FRAMES_ASK * TAB5_VOICE_CHUNK_MS / 1000);
               voice_set_state(VOICE_STATE_LISTENING, "max_duration");
+              break;
+           }
+
+           /* PR 1: parallel 5-min hard cap on dictation.  Mirrors the ASK
+            * cap above — log, drive the pipeline state machine into
+            * FAILED with reason TOO_LONG, and break out of the mic loop
+            * using the same pattern that's proven safe in ASK mode. */
+           if (voice_get_mode() == VOICE_MODE_DICTATE && frames_sent >= MAX_RECORD_FRAMES_DICT) {
+              ESP_LOGW(TAG, "Dictation hit 5-min cap — auto-stopping");
+              voice_dictation_set_state(DICT_FAILED, DICT_FAIL_TOO_LONG,
+                                        (uint32_t)(esp_timer_get_time() / 1000));
               break;
            }
 
