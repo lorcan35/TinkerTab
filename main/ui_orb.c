@@ -160,6 +160,7 @@ static dict_event_t s_pipeline = {
 };
 static lv_obj_t *s_orb_caption = NULL;  /* Label below the orb body */
 static lv_timer_t *s_saved_fade_timer = NULL;  /* SAVED → IDLE 2s timer */
+static lv_timer_t *s_rec_timer_label = NULL;  /* updates RECORDING caption every 200 ms */
 
 /* ── Circadian palette ───────────────────────────────────────────────── */
 
@@ -599,7 +600,7 @@ void ui_orb_destroy(void) {
    if (s_halo) {
       lv_anim_delete(s_halo, halo_opa_anim_cb);
    }
-   /* PR 2: tear down caption + saved-fade timer. */
+   /* PR 2: tear down caption + saved-fade timer + record-elapsed timer. */
    if (s_orb_caption) {
       lv_obj_del(s_orb_caption);
       s_orb_caption = NULL;
@@ -607,6 +608,10 @@ void ui_orb_destroy(void) {
    if (s_saved_fade_timer) {
       lv_timer_del(s_saved_fade_timer);
       s_saved_fade_timer = NULL;
+   }
+   if (s_rec_timer_label) {
+      lv_timer_del(s_rec_timer_label);
+      s_rec_timer_label = NULL;
    }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
@@ -802,6 +807,29 @@ static void saved_fade_to_idle_cb(lv_timer_t *t) {
                              (uint32_t)(esp_timer_get_time() / 1000));
 }
 
+/* Update the RECORDING caption with live elapsed time.  Stops itself
+ * if the pipeline has left RECORDING (defensive — set_pipeline_state
+ * also tears it down explicitly). */
+static void rec_timer_label_cb(lv_timer_t *t) {
+   (void)t;
+   if (s_pipeline.state != DICT_RECORDING) {
+      if (s_rec_timer_label) {
+         lv_timer_del(s_rec_timer_label);
+         s_rec_timer_label = NULL;
+      }
+      return;
+   }
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t dur_ms = (s_pipeline.started_ms && now_ms >= s_pipeline.started_ms)
+                       ? (now_ms - s_pipeline.started_ms)
+                       : 0;
+   uint32_t s = dur_ms / 1000;
+   char buf[40];
+   snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu",
+            (unsigned long)(s / 60), (unsigned long)(s % 60));
+   if (s_orb_caption) lv_label_set_text(s_orb_caption, buf);
+}
+
 void ui_orb_set_pipeline_state(const dict_event_t *event) {
    if (!event) return;
    s_pipeline = *event;
@@ -810,6 +838,12 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
    if (event->state != DICT_SAVED && s_saved_fade_timer) {
       lv_timer_del(s_saved_fade_timer);
       s_saved_fade_timer = NULL;
+   }
+
+   /* Stop the live elapsed-time timer when leaving RECORDING. */
+   if (event->state != DICT_RECORDING && s_rec_timer_label) {
+      lv_timer_del(s_rec_timer_label);
+      s_rec_timer_label = NULL;
    }
 
    char buf[64];
@@ -838,6 +872,10 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
       snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu",
                (unsigned long)(s / 60), (unsigned long)(s % 60));
       set_caption_text(buf);
+      /* Spawn the 200 ms tick that keeps the M:SS caption live. */
+      if (!s_rec_timer_label) {
+         s_rec_timer_label = lv_timer_create(rec_timer_label_cb, 200, NULL);
+      }
       break;
    }
 
