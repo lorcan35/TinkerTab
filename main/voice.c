@@ -182,7 +182,12 @@ const char *voice_current_turn_id(void) { return s_current_turn_id[0] ? s_curren
 #define DICTATION_WARN_3S_FRAMES     150
 #define DICTATION_WARN_4S_FRAMES     200
 /* DICTATION_TEXT_SIZE moved to voice.h (TT #331 Wave 23 SRP-A1). */
-#define MAX_RECORD_FRAMES_ASK        1500
+/* TT #511 wave-1.9 (smoothness fix #3): bumped from 1500 (30 s) to
+ * 3000 (60 s).  With the countdown timer hidden in ASK mode the cap
+ * is now a true silent safety net — covers "user walked away
+ * mid-PTT" without auto-cutting normal questions.  60 s leaves
+ * generous headroom for longer thoughts. */
+#define MAX_RECORD_FRAMES_ASK 3000
 
 // ---------------------------------------------------------------------------
 // State
