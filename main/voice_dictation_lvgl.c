@@ -6,8 +6,8 @@
 
 typedef struct {
    dict_subscriber_t cb;
-   void             *user_data;
-   dict_event_t      event;
+   void *user_data;
+   dict_event_t event;
 } dict_marshal_t;
 
 static void dict_marshal_lvgl_cb(void *arg) {
@@ -18,7 +18,7 @@ static void dict_marshal_lvgl_cb(void *arg) {
 
 static void dict_marshal_dispatch(const dict_event_t *e, void *user_data) {
    dict_subscriber_t real_cb = ((void **)user_data)[0];
-   void *real_user_data      = ((void **)user_data)[1];
+   void *real_user_data = ((void **)user_data)[1];
    dict_marshal_t *m = malloc(sizeof(*m));
    if (!m) return;
    m->cb = real_cb;

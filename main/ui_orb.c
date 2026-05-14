@@ -20,14 +20,14 @@
 
 #include "config.h" /* FONT_CAPTION for pipeline-state caption (PR 2) */
 #include "esp_log.h"
-#include "esp_timer.h"        /* esp_timer_get_time for RECORDING caption timer (PR 2) */
-#include "imu.h"              /* tab5_imu_read for tilt-driven specular drift */
+#include "esp_timer.h" /* esp_timer_get_time for RECORDING caption timer (PR 2) */
+#include "imu.h"       /* tab5_imu_read for tilt-driven specular drift */
 #include "lvgl.h"
-#include "ui_core.h"          /* tab5_lv_async_call for cross-thread repaints */
-#include "voice.h"            /* voice_get_current_rms for the LISTENING bloom */
-#include "voice_dictation.h"       /* pipeline-state types (PR 2) */
-#include "voice_dictation_lvgl.h"  /* LVGL-marshalled subscriber (PR 2) */
-#include "widget.h"                /* widget_tone_t for paint_for_tone */
+#include "ui_core.h"              /* tab5_lv_async_call for cross-thread repaints */
+#include "voice.h"                /* voice_get_current_rms for the LISTENING bloom */
+#include "voice_dictation.h"      /* pipeline-state types (PR 2) */
+#include "voice_dictation_lvgl.h" /* LVGL-marshalled subscriber (PR 2) */
+#include "widget.h"               /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
 
@@ -152,15 +152,15 @@ static uint8_t s_last_painted_mode = 0;
  * route through the pipeline-state painter and the voice-state painter
  * is suppressed.  IDLE → revert to voice-state painting. */
 static dict_event_t s_pipeline = {
-   .state = DICT_IDLE,
-   .fail_reason = DICT_FAIL_NONE,
-   .started_ms = 0,
-   .stopped_ms = 0,
-   .last_change_ms = 0,
-   .note_slot = -1,
+    .state = DICT_IDLE,
+    .fail_reason = DICT_FAIL_NONE,
+    .started_ms = 0,
+    .stopped_ms = 0,
+    .last_change_ms = 0,
+    .note_slot = -1,
 };
-static lv_obj_t *s_orb_caption = NULL;  /* Label below the orb body */
-static lv_timer_t *s_saved_fade_timer = NULL;  /* SAVED → IDLE 2s timer */
+static lv_obj_t *s_orb_caption = NULL;        /* Label below the orb body */
+static lv_timer_t *s_saved_fade_timer = NULL; /* SAVED → IDLE 2s timer */
 static lv_timer_t *s_rec_timer_label = NULL;  /* updates RECORDING caption every 200 ms */
 
 /* ── Circadian palette ───────────────────────────────────────────────── */
@@ -793,13 +793,20 @@ static void paint_pipeline_body(uint32_t color_hex) {
 
 static const char *fail_reason_caption(dict_fail_t r) {
    switch (r) {
-   case DICT_FAIL_AUTH:      return "AUTH";
-   case DICT_FAIL_NETWORK:   return "NETWORK";
-   case DICT_FAIL_EMPTY:     return "EMPTY — got silence";
-   case DICT_FAIL_NO_AUDIO:  return "NO AUDIO";
-   case DICT_FAIL_TOO_LONG:  return "TOO LONG (5 min cap)";
-   case DICT_FAIL_CANCELLED: return "CANCELLED";
-   default:                  return "FAIL";
+      case DICT_FAIL_AUTH:
+         return "AUTH";
+      case DICT_FAIL_NETWORK:
+         return "NETWORK";
+      case DICT_FAIL_EMPTY:
+         return "EMPTY — got silence";
+      case DICT_FAIL_NO_AUDIO:
+         return "NO AUDIO";
+      case DICT_FAIL_TOO_LONG:
+         return "TOO LONG (5 min cap)";
+      case DICT_FAIL_CANCELLED:
+         return "CANCELLED";
+      default:
+         return "FAIL";
    }
 }
 
@@ -817,8 +824,7 @@ static void hide_caption(void) {
 static void saved_fade_to_idle_cb(lv_timer_t *t) {
    (void)t;
    s_saved_fade_timer = NULL;
-   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE,
-                             (uint32_t)(esp_timer_get_time() / 1000));
+   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
 }
 
 /* Update the RECORDING caption with live elapsed time.  Stops itself
@@ -834,13 +840,10 @@ static void rec_timer_label_cb(lv_timer_t *t) {
       return;
    }
    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-   uint32_t dur_ms = (s_pipeline.started_ms && now_ms >= s_pipeline.started_ms)
-                       ? (now_ms - s_pipeline.started_ms)
-                       : 0;
+   uint32_t dur_ms = (s_pipeline.started_ms && now_ms >= s_pipeline.started_ms) ? (now_ms - s_pipeline.started_ms) : 0;
    uint32_t s = dur_ms / 1000;
    char buf[40];
-   snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu",
-            (unsigned long)(s / 60), (unsigned long)(s % 60));
+   snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
    if (s_orb_caption) lv_label_set_text(s_orb_caption, buf);
 }
 
@@ -870,70 +873,64 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
    char buf[64];
    switch (event->state) {
-   case DICT_IDLE:
-      hide_caption();
-      /* Repaint via the voice-state painter so the orb returns to its
-       * normal IDLE/LISTENING/PROCESSING/SPEAKING visuals.  Re-paint
-       * body for current hour too — paint_pipeline_body() shadowed it. */
-      paint_body_for_hour(orb_effective_hour());
-      ui_orb_set_state(s_state);
-      return;
+      case DICT_IDLE:
+         hide_caption();
+         /* Repaint via the voice-state painter so the orb returns to its
+          * normal IDLE/LISTENING/PROCESSING/SPEAKING visuals.  Re-paint
+          * body for current hour too — paint_pipeline_body() shadowed it. */
+         paint_body_for_hour(orb_effective_hour());
+         ui_orb_set_state(s_state);
+         return;
 
-   case DICT_RECORDING: {
-      /* Engage the existing LISTENING state machine so the mic-RMS-driven
-       * halo bloom fires.  Our pipeline body tint overrides the body
-       * colour, but the bloom mechanic (halo opacity from mic RMS) still
-       * runs because it manipulates s_halo, not s_body. */
-      ui_orb_set_state(ORB_STATE_LISTENING);
-      paint_pipeline_body(0xE74C3C);
-      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-      uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms)
-                          ? (now_ms - event->started_ms)
-                          : 0;
-      uint32_t s = dur_ms / 1000;
-      snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu",
-               (unsigned long)(s / 60), (unsigned long)(s % 60));
-      set_caption_text(buf);
-      /* Spawn the 200 ms tick that keeps the M:SS caption live. */
-      if (!s_rec_timer_label) {
-         s_rec_timer_label = lv_timer_create(rec_timer_label_cb, 200, NULL);
+      case DICT_RECORDING: {
+         /* Engage the existing LISTENING state machine so the mic-RMS-driven
+          * halo bloom fires.  Our pipeline body tint overrides the body
+          * colour, but the bloom mechanic (halo opacity from mic RMS) still
+          * runs because it manipulates s_halo, not s_body. */
+         ui_orb_set_state(ORB_STATE_LISTENING);
+         paint_pipeline_body(0xE74C3C);
+         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+         uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
+         uint32_t s = dur_ms / 1000;
+         snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+         set_caption_text(buf);
+         /* Spawn the 200 ms tick that keeps the M:SS caption live. */
+         if (!s_rec_timer_label) {
+            s_rec_timer_label = lv_timer_create(rec_timer_label_cb, 200, NULL);
+         }
+         break;
       }
-      break;
-   }
 
-   case DICT_UPLOADING:
-      paint_pipeline_body(0xF59E0B);
-      set_caption_text("UPLOADING…");
-      break;
+      case DICT_UPLOADING:
+         paint_pipeline_body(0xF59E0B);
+         set_caption_text("UPLOADING…");
+         break;
 
-   case DICT_TRANSCRIBING:
-      paint_pipeline_body(0xF59E0B);
-      set_caption_text("TRANSCRIBING…");
-      /* Reuse the existing PROCESSING comet animation for visual
-       * continuity. */
-      ui_orb_set_state(ORB_STATE_PROCESSING);
-      break;
+      case DICT_TRANSCRIBING:
+         paint_pipeline_body(0xF59E0B);
+         set_caption_text("TRANSCRIBING…");
+         /* Reuse the existing PROCESSING comet animation for visual
+          * continuity. */
+         ui_orb_set_state(ORB_STATE_PROCESSING);
+         break;
 
-   case DICT_SAVED:
-      paint_pipeline_body(0x22C55E);
-      set_caption_text("✓ Saved");
-      /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
-       * one already exists (rapid SAVED re-entry), don't stack. */
-      if (!s_saved_fade_timer) {
-         s_saved_fade_timer = lv_timer_create(saved_fade_to_idle_cb, 2000, NULL);
-         if (s_saved_fade_timer) lv_timer_set_repeat_count(s_saved_fade_timer, 1);
-      }
-      break;
+      case DICT_SAVED:
+         paint_pipeline_body(0x22C55E);
+         set_caption_text("✓ Saved");
+         /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
+          * one already exists (rapid SAVED re-entry), don't stack. */
+         if (!s_saved_fade_timer) {
+            s_saved_fade_timer = lv_timer_create(saved_fade_to_idle_cb, 2000, NULL);
+            if (s_saved_fade_timer) lv_timer_set_repeat_count(s_saved_fade_timer, 1);
+         }
+         break;
 
-   case DICT_FAILED:
-      paint_pipeline_body(0xE74C3C);
-      snprintf(buf, sizeof(buf), "● %s — tap to retry",
-               fail_reason_caption(event->fail_reason));
-      set_caption_text(buf);
-      break;
+      case DICT_FAILED:
+         paint_pipeline_body(0xE74C3C);
+         snprintf(buf, sizeof(buf), "● %s — tap to retry", fail_reason_caption(event->fail_reason));
+         set_caption_text(buf);
+         break;
    }
 }
 
-bool ui_orb_pipeline_active(void) {
-   return s_pipeline.state != DICT_IDLE;
-}
+bool ui_orb_pipeline_active(void) { return s_pipeline.state != DICT_IDLE; }
