@@ -35,6 +35,7 @@
 #include "voice.h"               /* g_voice_ws extern + voice_set_state */
 #include "voice_billing.h"       /* receipt + budget */
 #include "voice_codec.h"         /* VOICE_CODEC_OPUS_UPLINK_ENABLED */
+#include "voice_dictation.h"     /* PR 1: pipeline state machine transitions */
 #include "voice_messages_sync.h" /* W3-C-d: drain offline queue on reconnect */
 #include "voice_onboard.h"       /* K144 failover hooks */
 #include "voice_video.h"         /* VID0 magic peek + downlink decode */
@@ -792,6 +793,8 @@ void voice_ws_proto_handle_text(const char *data, int len) {
        * few ms later anyway, no UI flicker visible. */
       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
       voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
+      /* PR 1: pipeline transition for the cancelled path. */
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
    } else if (strcmp(type_str, "dictation_summary") == 0) {
       cJSON *title = cJSON_GetObjectItem(root, "title");
       cJSON *summary = cJSON_GetObjectItem(root, "summary");
@@ -805,6 +808,15 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       }
       ESP_LOGI(TAG, "Dictation summary: \"%s\"", s_dictation_title);
       voice_set_state(VOICE_STATE_READY, "dictation_summary");
+
+      /* PR 1: pipeline transition.  Non-empty summary → SAVED; empty
+       * both → FAILED(EMPTY). */
+      const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+      if (s_dictation_title[0] || s_dictation_summary[0]) {
+         voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, now);
+      } else {
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, now);
+      }
    } else if (strcmp(type_str, "note_created") == 0) {
       cJSON *nid = cJSON_GetObjectItem(root, "note_id");
       cJSON *ntitle = cJSON_GetObjectItem(root, "title");
@@ -1398,6 +1410,15 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
          /* Flush playback so we don't keep speaking into a dead pipe. */
          voice_playback_buf_reset();
          tab5_audio_speaker_enable(false);
+         /* PR 1: if a dictation was mid-pipeline, fail it with NETWORK
+          * so the UI surfaces the disconnect.  No-op when pipeline is
+          * already IDLE/SAVED/FAILED. */
+         {
+            dict_state_t cur_dict = voice_dictation_get().state;
+            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING || cur_dict == DICT_TRANSCRIBING) {
+               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+            }
+         }
          /* Tab5 audit F5 (2026-04-20): if the drop landed MID-TURN (voice
           * state was PROCESSING or SPEAKING), surface a toast so the user
           * knows why the reply stopped.  Previously a mid-turn Dragon

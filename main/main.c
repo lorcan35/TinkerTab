@@ -56,6 +56,7 @@
 #include "ui_theme.h"
 #include "ui_voice.h"
 #include "voice.h"
+#include "voice_dictation.h"
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
 #include "voice_solo.h"
@@ -111,6 +112,10 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
      * Runs after voice_init() (which ui_voice_init wraps) so the worker
      * queue + voice state machine are up. */
     voice_solo_init();
+    /* PR 1: dictation pipeline state machine.  Idempotent; subscribers
+     * register lazily once their owning screen / surface is created.
+     * Must run after voice_init since transitions are driven from voice.c. */
+    voice_dictation_init();
     /* TT #328 Wave 10 — persistent floating home button on lv_layer_top.
      * Hidden by default; non-home screens toggle it via
      * ui_chrome_set_home_visible(true) on show, (false) on destroy. */
