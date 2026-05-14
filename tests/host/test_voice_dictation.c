@@ -137,6 +137,69 @@ static int test_note_slot_persists_through_pipeline(void) {
    return 0;
 }
 
+static int test_failed_from_uploading_auth(void) {
+   voice_dictation_init();
+   mock_sub_t m = {0};
+   voice_dictation_subscribe(mock_cb, &m);
+
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_FAILED,    DICT_FAIL_AUTH, 2100);
+
+   CHECK_EQ(m.last.state, DICT_FAILED);
+   CHECK_EQ(m.last.fail_reason, DICT_FAIL_AUTH);
+   return 0;
+}
+
+static int test_failed_from_transcribing_empty(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING,    DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 2000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
+   voice_dictation_set_state(DICT_FAILED,       DICT_FAIL_EMPTY, 2400);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_FAILED);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_EMPTY);
+   return 0;
+}
+
+static int test_retry_from_failed(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED,    DICT_FAIL_NETWORK, 1100);
+   /* User taps retry → caller drives UPLOADING. */
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 5000);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_UPLOADING);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);   /* cleared on leave-FAILED */
+   return 0;
+}
+
+static int test_cancel_from_recording(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, 1500);
+   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, 1600);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_IDLE);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);
+   return 0;
+}
+
+static int test_failed_clears_reason_on_idle(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_AUTH, 2000);
+   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, 3000);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);
+   return 0;
+}
+
 int main(void) {
    if (test_init_state_is_idle()) return 1;
    if (test_idle_to_recording_fires_subscriber()) return 1;
@@ -144,6 +207,11 @@ int main(void) {
    if (test_idempotent_same_state()) return 1;
    if (test_invalid_backward_transition_blocked()) return 1;
    if (test_note_slot_persists_through_pipeline()) return 1;
+   if (test_failed_from_uploading_auth()) return 1;
+   if (test_failed_from_transcribing_empty()) return 1;
+   if (test_retry_from_failed()) return 1;
+   if (test_cancel_from_recording()) return 1;
+   if (test_failed_clears_reason_on_idle()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }
