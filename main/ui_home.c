@@ -376,11 +376,16 @@ static void orb_paint_for_mode(uint8_t mode)
 {
     if (!s_orb) return;
     (void)mode;
-    /* v4·D Sovereign Halo: the orb IS the brand -- treat it like a lantern.
-     * Mode identity lives on the small mode-chip dot under the lede, not
-     * on the orb.  TT #503: gradient stops are now hour-of-day driven
-     * via pick_circadian_palette() instead of the fixed amber.  Mode
-     * still doesn't affect the orb color — only time does. */
+    /* TT #510 buttery sphere — VERTICAL gradient with dramatically
+     * widened color range.  Tried LVGL radial gradient (#510 v1) but
+     * the render cost on a 180 px circle hangs Tab5 at boot.
+     * Workaround: classic "lit from above" effect via bright-cream-
+     * top → deep-dark-bottom vertical gradient.  The eye reads this
+     * as a 3D sphere lit from above (basic but effective).
+     *
+     * Top color = a fixed bright highlight (cream-amber).
+     * Bottom color = the hour-palette's shadow color, darkened
+     * further for a strong terminator. */
     int hour;
     if (s_orb_force_hour >= 0) {
        hour = s_orb_force_hour;
@@ -391,10 +396,23 @@ static void orb_paint_for_mode(uint8_t mode)
        localtime_r(&now, &tm_local);
        hour = tm_local.tm_hour;
     }
-    uint32_t top = 0, bot = 0;
-    pick_circadian_palette(hour, &top, &bot);
-    lv_obj_set_style_bg_color(s_orb, lv_color_hex(top), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
+    uint32_t mid = 0, edge = 0;
+    pick_circadian_palette(hour, &mid, &edge);
+    (void)mid; /* unused in this approach — only the dark stop is hue-shifted */
+
+    /* Darken the edge color significantly (>50%) for a strong shadow
+     * side.  Makes the orb's vertical gradient span enough luminosity
+     * range to read as 3D. */
+    uint8_t er = (edge >> 16) & 0xFF;
+    uint8_t eg = (edge >> 8) & 0xFF;
+    uint8_t eb = edge & 0xFF;
+    er >>= 1; /* halve each channel — much darker bottom */
+    eg >>= 1;
+    eb >>= 1;
+
+    /* Fixed bright cream-amber for the lit side, always warm. */
+    lv_obj_set_style_bg_color(s_orb, lv_color_hex(0xFFEBC4), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(s_orb, lv_color_make(er, eg, eb), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
     s_last_painted_hour = hour;
