@@ -25,8 +25,9 @@
 #include "lvgl.h"
 #include "ui_core.h"          /* tab5_lv_async_call for cross-thread repaints */
 #include "voice.h"            /* voice_get_current_rms for the LISTENING bloom */
-#include "voice_dictation.h"  /* pipeline-state types (PR 2) */
-#include "widget.h"           /* widget_tone_t for paint_for_tone */
+#include "voice_dictation.h"       /* pipeline-state types (PR 2) */
+#include "voice_dictation_lvgl.h"  /* LVGL-marshalled subscriber (PR 2) */
+#include "widget.h"                /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
 
@@ -501,6 +502,10 @@ static void comet_stop(void) {
 
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
 
+/* Forward decl for the pipeline subscriber bridge (PR 2) — body lives
+ * near ui_orb_set_pipeline_state below; ui_orb_create takes its address. */
+static void orb_pipeline_cb(const dict_event_t *event, void *user_data);
+
 void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    if (s_body || !parent) {
       ESP_LOGW(TAG, "ui_orb_create skipped (s_body=%p parent=%p)", s_body, parent);
@@ -578,6 +583,15 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    /* IDLE state arms tilt drift by default. */
    tilt_start();
 
+   /* PR 2: subscribe to the dictation pipeline.  Callbacks land on the
+    * LVGL thread thanks to the _lvgl variant.  Static guard so a
+    * subsequent create/destroy/create cycle doesn't double-subscribe. */
+   static int s_pipeline_sub = -1;
+   if (s_pipeline_sub < 0) {
+      s_pipeline_sub = voice_dictation_subscribe_lvgl(orb_pipeline_cb, NULL);
+      ESP_LOGI(TAG, "pipeline subscriber registered handle=%d", s_pipeline_sub);
+   }
+
    ESP_LOGI(TAG, "orb created at (%d, %d), size %d", cx, cy, ORB_SIZE);
 }
 
@@ -600,7 +614,7 @@ void ui_orb_destroy(void) {
    if (s_halo) {
       lv_anim_delete(s_halo, halo_opa_anim_cb);
    }
-   /* PR 2: tear down caption + saved-fade timer + record-elapsed timer. */
+   /* PR 2: tear down caption + saved-fade timer. */
    if (s_orb_caption) {
       lv_obj_del(s_orb_caption);
       s_orb_caption = NULL;
@@ -608,10 +622,6 @@ void ui_orb_destroy(void) {
    if (s_saved_fade_timer) {
       lv_timer_del(s_saved_fade_timer);
       s_saved_fade_timer = NULL;
-   }
-   if (s_rec_timer_label) {
-      lv_timer_del(s_rec_timer_label);
-      s_rec_timer_label = NULL;
    }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
@@ -828,6 +838,14 @@ static void rec_timer_label_cb(lv_timer_t *t) {
    snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu",
             (unsigned long)(s / 60), (unsigned long)(s % 60));
    if (s_orb_caption) lv_label_set_text(s_orb_caption, buf);
+}
+
+/* Subscriber bridge: voice_dictation fires this on the LVGL thread
+ * (because we subscribe via voice_dictation_subscribe_lvgl).  Just
+ * forward to the public state-driver. */
+static void orb_pipeline_cb(const dict_event_t *event, void *user_data) {
+   (void)user_data;
+   ui_orb_set_pipeline_state(event);
 }
 
 void ui_orb_set_pipeline_state(const dict_event_t *event) {
