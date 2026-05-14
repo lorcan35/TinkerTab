@@ -1857,6 +1857,12 @@ esp_err_t voice_stop_listening(void)
       ui_home_show_toast("Saved offline — will sync to Notes when Dragon's back");
       voice_reset_activity_timestamp();
       voice_set_state(VOICE_STATE_READY, "offline_saved");
+      /* PR 1: pipeline transition — offline path queues an upload-when-
+       * Dragon-returns retry, so the higher-level state is UPLOADING.
+       * Fire BEFORE the mode flip back to ASK so the gate (mode ==
+       * DICTATE) is still true. */
+      voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE,
+                                (uint32_t)(esp_timer_get_time() / 1000));
       voice_modes_set_internal(VOICE_MODE_ASK);
       return ESP_OK;
    }
@@ -1907,6 +1913,14 @@ esp_err_t voice_stop_listening(void)
     }
 
     voice_reset_activity_timestamp();
+
+    /* PR 1: pipeline transition driven by mode.  Skip if this wasn't
+     * a dictation stop (e.g. voice-ask path, which doesn't touch the
+     * dictation pipeline at all). */
+    if (voice_get_mode() == VOICE_MODE_DICTATE) {
+       voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE,
+                                 (uint32_t)(esp_timer_get_time() / 1000));
+    }
 
     voice_set_state(VOICE_STATE_PROCESSING, NULL);
     return ESP_OK;
