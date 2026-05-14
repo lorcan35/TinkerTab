@@ -22,10 +22,11 @@
 
 #pragma once
 
-#include "lvgl.h"
-#include "widget.h" /* widget_tone_t */
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "lvgl.h"
+#include "widget.h" /* widget_tone_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,10 +35,10 @@ extern "C" {
 /* ── State machine ──────────────────────────────────────────────────── */
 
 typedef enum {
-   ORB_STATE_IDLE = 0,    /* Default: circadian + tilt-spec + (presence dim). */
-   ORB_STATE_LISTENING,   /* Mic hot: voice-bloom + listening-lean + tilt-spec. */
-   ORB_STATE_PROCESSING,  /* LLM / tool active: skill-comet only (everything else freezes). */
-   ORB_STATE_SPEAKING,    /* TTS playing: steady warm halo, no motion. */
+   ORB_STATE_IDLE = 0,   /* Default: circadian + tilt-spec + (presence dim). */
+   ORB_STATE_LISTENING,  /* Mic hot: voice-bloom + listening-lean + tilt-spec. */
+   ORB_STATE_PROCESSING, /* LLM / tool active: skill-comet only (everything else freezes). */
+   ORB_STATE_SPEAKING,   /* TTS playing: steady warm halo, no motion. */
 } ui_orb_state_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────────── */
