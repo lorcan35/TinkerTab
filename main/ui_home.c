@@ -2839,12 +2839,35 @@ void ui_home_orb_aliveness_sync(void) {
    if (!s_orb) return;
    voice_state_t st = voice_get_state();
    bool active = (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING);
+   /* Legacy halo-peak + halo-breath paths from #501/#508.  Both anims
+    * target s_halo_outer / s_halo_inner which are NULL-stubbed in the
+    * wave-1 redesign — these calls are now no-op'd by their internal
+    * null guards.  Kept here only so the function compiles cleanly
+    * until the leftover anim infrastructure is deleted in a follow-up. */
    if (active) {
       if (s_orb_peak_timer == NULL) orb_peak_start();
    } else {
       if (s_orb_peak_timer) orb_peak_stop();
       if (!s_orb_breath_running) orb_breath_start();
    }
+
+   /* TT #511 wave-1: route voice states to the new ui_orb state machine. */
+   ui_orb_state_t orb_s;
+   switch (st) {
+      case VOICE_STATE_LISTENING:
+         orb_s = ORB_STATE_LISTENING;
+         break;
+      case VOICE_STATE_PROCESSING:
+         orb_s = ORB_STATE_PROCESSING;
+         break;
+      case VOICE_STATE_SPEAKING:
+         orb_s = ORB_STATE_SPEAKING;
+         break;
+      default:
+         orb_s = ORB_STATE_IDLE;
+         break;
+   }
+   ui_orb_set_state(orb_s);
 }
 
 /* Pause both anim modes (overlay opened, screen left).  Restored via

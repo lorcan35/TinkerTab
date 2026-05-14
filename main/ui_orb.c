@@ -21,6 +21,7 @@
 #include "imu.h" /* tab5_imu_read for tilt-driven specular drift */
 #include "lvgl.h"
 #include "ui_core.h" /* tab5_lv_async_call for cross-thread repaints */
+#include "voice.h"   /* voice_get_current_rms for the LISTENING bloom */
 #include "widget.h"  /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
@@ -61,14 +62,46 @@ static const char *TAG = "ui_orb";
 /* Poll period for the IMU/highlight tick (ms). */
 #define ORB_TILT_PERIOD_MS 50 /* 20 Hz */
 
+/* ── Listening lean ──────────────────────────────────────────────────── */
+
+/* When LISTENING engages, the specular's REST point eases from the
+ * upper-left IDLE position toward the screen-center (+down, +right) so
+ * the orb appears to "turn to face" the user.  Tilt drift continues on
+ * top — the lean changes the BASE point the drift orbits. */
+#define ORB_LEAN_REST_X ((ORB_SIZE / 2) - (ORB_SPEC_W / 2) - 4)
+#define ORB_LEAN_REST_Y 30
+#define ORB_LEAN_ANIM_MS 220
+
+/* ── Voice bloom ─────────────────────────────────────────────────────── */
+
+/* Soft amber halo sibling-behind the orb body.  When LISTENING,
+ * bg_opa is driven by mic RMS so the halo visibly pulses with the
+ * user's voice volume.  At idle (and in all other states) it stays
+ * at opa 0.  Color tracks circadian "top" stop so dawn-bloom looks
+ * different from night-bloom; intensity is per-state. */
+#define ORB_HALO_DIAM 260
+#define ORB_HALO_OPA_FLOOR 24   /* always-on minimum during LISTENING */
+#define ORB_HALO_OPA_CEILING 90 /* peak at full RMS */
+#define ORB_BLOOM_PERIOD_MS 100 /* 10 Hz */
+#define ORB_BLOOM_ALPHA 0.30f   /* EMA smoothing for RMS */
+
 /* ── Module state ────────────────────────────────────────────────────── */
 
 static lv_obj_t *s_root = NULL; /* parent container (= the home screen) */
 static lv_obj_t *s_body = NULL; /* the lit sphere itself */
 static lv_obj_t *s_spec = NULL; /* tilt-driven specular highlight (child of s_body) */
+static lv_obj_t *s_halo = NULL; /* voice-bloom halo (sibling-BEHIND s_body) */
 static lv_timer_t *s_tilt_timer = NULL;
+static lv_timer_t *s_bloom_timer = NULL;
 static float s_tilt_dx_ema = 0.0f;
 static float s_tilt_dy_ema = 0.0f;
+static float s_bloom_rms_ema = 0.0f;
+/* Effective rest position for the specular highlight.  Animated via
+ * `lean_anim_*` when entering/leaving LISTENING; tilt_tick reads these
+ * as the base around which the IMU drift orbits.  Initialized at the
+ * IDLE rest in ui_orb_create. */
+static int s_spec_rest_x_eff = ORB_SPEC_REST_X;
+static int s_spec_rest_y_eff = ORB_SPEC_REST_Y;
 static ui_orb_state_t s_state = ORB_STATE_IDLE;
 static bool s_presence_near = true;
 static int8_t s_force_hour = -1; /* -1 = use real RTC */
@@ -209,7 +242,7 @@ static void tilt_tick_cb(lv_timer_t *t) {
    if (dy > (float)ORB_TILT_LIMIT) dy = (float)ORB_TILT_LIMIT;
    if (dy < -(float)ORB_TILT_LIMIT) dy = -(float)ORB_TILT_LIMIT;
 
-   lv_obj_set_pos(s_spec, ORB_SPEC_REST_X + (int)dx, ORB_SPEC_REST_Y + (int)dy);
+   lv_obj_set_pos(s_spec, s_spec_rest_x_eff + (int)dx, s_spec_rest_y_eff + (int)dy);
 }
 
 static void tilt_start(void) {
@@ -226,8 +259,81 @@ static void tilt_stop(void) {
    if (s_spec) {
       s_tilt_dx_ema = 0.0f;
       s_tilt_dy_ema = 0.0f;
-      lv_obj_set_pos(s_spec, ORB_SPEC_REST_X, ORB_SPEC_REST_Y);
+      lv_obj_set_pos(s_spec, s_spec_rest_x_eff, s_spec_rest_y_eff);
    }
+}
+
+/* ── Listening lean ──────────────────────────────────────────────────── */
+
+static void lean_anim_rest_x_cb(void *obj, int32_t v) {
+   (void)obj;
+   s_spec_rest_x_eff = (int)v;
+}
+static void lean_anim_rest_y_cb(void *obj, int32_t v) {
+   (void)obj;
+   s_spec_rest_y_eff = (int)v;
+   /* When tilt is paused (PROCESSING / SPEAKING) the spec wouldn't
+    * otherwise repaint during the lean anim — directly drive it so
+    * the user still sees the lean motion if it fires while paused. */
+   if (s_spec && s_tilt_timer == NULL) {
+      lv_obj_set_pos(s_spec, s_spec_rest_x_eff, s_spec_rest_y_eff);
+   }
+}
+
+static void lean_anim_to(int target_x, int target_y) {
+   if (!s_spec) return;
+   /* Dual-axis anim — one var per axis */
+   lv_anim_t ax;
+   lv_anim_init(&ax);
+   lv_anim_set_var(&ax, s_spec);
+   lv_anim_set_exec_cb(&ax, lean_anim_rest_x_cb);
+   lv_anim_set_values(&ax, s_spec_rest_x_eff, target_x);
+   lv_anim_set_time(&ax, ORB_LEAN_ANIM_MS);
+   lv_anim_set_path_cb(&ax, lv_anim_path_ease_out);
+   lv_anim_start(&ax);
+
+   lv_anim_t ay;
+   lv_anim_init(&ay);
+   lv_anim_set_var(&ay, s_spec);
+   lv_anim_set_exec_cb(&ay, lean_anim_rest_y_cb);
+   lv_anim_set_values(&ay, s_spec_rest_y_eff, target_y);
+   lv_anim_set_time(&ay, ORB_LEAN_ANIM_MS);
+   lv_anim_set_path_cb(&ay, lv_anim_path_ease_out);
+   lv_anim_start(&ay);
+}
+
+static void lean_enter(void) { lean_anim_to(ORB_LEAN_REST_X, ORB_LEAN_REST_Y); }
+static void lean_exit(void) { lean_anim_to(ORB_SPEC_REST_X, ORB_SPEC_REST_Y); }
+
+/* ── Voice bloom ─────────────────────────────────────────────────────── */
+
+static void bloom_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_halo) return;
+   float rms = voice_get_current_rms();
+   if (rms < 0.0f) rms = 0.0f;
+   if (rms > 1.0f) rms = 1.0f;
+   s_bloom_rms_ema = (ORB_BLOOM_ALPHA * rms) + ((1.0f - ORB_BLOOM_ALPHA) * s_bloom_rms_ema);
+   int opa = ORB_HALO_OPA_FLOOR + (int)((float)(ORB_HALO_OPA_CEILING - ORB_HALO_OPA_FLOOR) * s_bloom_rms_ema);
+   if (opa < 0) opa = 0;
+   if (opa > 255) opa = 255;
+   lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
+}
+
+static void bloom_start(void) {
+   if (s_bloom_timer || !s_halo) return;
+   s_bloom_rms_ema = 0.0f;
+   lv_obj_set_style_bg_opa(s_halo, ORB_HALO_OPA_FLOOR, LV_PART_MAIN);
+   s_bloom_timer = lv_timer_create(bloom_tick_cb, ORB_BLOOM_PERIOD_MS, NULL);
+}
+
+static void bloom_stop(void) {
+   if (s_bloom_timer) {
+      lv_timer_delete(s_bloom_timer);
+      s_bloom_timer = NULL;
+   }
+   if (s_halo) lv_obj_set_style_bg_opa(s_halo, 0, LV_PART_MAIN);
+   s_bloom_rms_ema = 0.0f;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
@@ -238,6 +344,19 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       return;
    }
    s_root = parent;
+
+   /* Halo FIRST so it sits BEHIND s_body in z-order (LVGL draws siblings
+    * in creation order).  s_body's opa-cover gradient masks the part of
+    * the halo overlapping the orb; only the outer "bloom" ring shows. */
+   s_halo = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_halo);
+   lv_obj_set_size(s_halo, ORB_HALO_DIAM, ORB_HALO_DIAM);
+   lv_obj_set_pos(s_halo, cx - (ORB_HALO_DIAM / 2), cy - (ORB_HALO_DIAM / 2));
+   lv_obj_set_style_radius(s_halo, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_color(s_halo, lv_color_hex(0xFFB870), 0);
+   lv_obj_set_style_bg_opa(s_halo, 0, 0); /* invisible at rest */
+   lv_obj_clear_flag(s_halo, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
    s_body = lv_obj_create(parent);
    lv_obj_remove_style_all(s_body);
    lv_obj_set_size(s_body, ORB_SIZE, ORB_SIZE);
@@ -272,33 +391,44 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
 }
 
 void ui_orb_destroy(void) {
-   /* Stop tilt timer first — its callback dereferences s_spec, so we
-    * must not leave it scheduled past the screen tear-down. */
+   /* Stop timers first — their callbacks dereference module statics,
+    * so they must not be scheduled past the screen tear-down. */
    tilt_stop();
+   bloom_stop();
+   /* Cancel any in-flight lean anims targeting s_spec. */
+   if (s_spec) {
+      lv_anim_delete(s_spec, lean_anim_rest_x_cb);
+      lv_anim_delete(s_spec, lean_anim_rest_y_cb);
+   }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
     * a subsequent ui_orb_create on a fresh screen starts clean. */
    s_root = NULL;
    s_body = NULL;
    s_spec = NULL;
+   s_halo = NULL;
    s_state = ORB_STATE_IDLE;
    s_last_painted_hour = -1;
    s_tilt_dx_ema = 0.0f;
    s_tilt_dy_ema = 0.0f;
+   s_bloom_rms_ema = 0.0f;
+   s_spec_rest_x_eff = ORB_SPEC_REST_X;
+   s_spec_rest_y_eff = ORB_SPEC_REST_Y;
 }
 
 /* ── State driver ────────────────────────────────────────────────────── */
 
 void ui_orb_set_state(ui_orb_state_t s) {
    if (s == s_state) return;
-   ESP_LOGD(TAG, "state %d → %d", (int)s_state, (int)s);
+   ui_orb_state_t prev = s_state;
+   ESP_LOGD(TAG, "state %d → %d", (int)prev, (int)s);
    s_state = s;
 
-   /* Step 4: tilt drift runs in IDLE + LISTENING (creates the
-    * always-physical feel + lets the user point at the orb during
-    * voice).  In PROCESSING + SPEAKING the highlight freezes — the
-    * state's own motion (comet, halo) carries the action, and a
-    * drifting highlight would compete. */
+   /* Step 4: tilt drift runs in IDLE + LISTENING (always-physical
+    * feel + lets the user point at the orb during voice).  In
+    * PROCESSING + SPEAKING the highlight freezes — the state's own
+    * motion (comet, halo) carries the action; a drifting highlight
+    * would compete. */
    switch (s) {
       case ORB_STATE_IDLE:
       case ORB_STATE_LISTENING:
@@ -308,6 +438,16 @@ void ui_orb_set_state(ui_orb_state_t s) {
       case ORB_STATE_SPEAKING:
          tilt_stop();
          break;
+   }
+
+   /* Step 5: voice bloom + listening lean are tied to LISTENING.
+    * Edge-triggered: only on enter / exit transitions. */
+   if (s == ORB_STATE_LISTENING && prev != ORB_STATE_LISTENING) {
+      bloom_start();
+      lean_enter();
+   } else if (s != ORB_STATE_LISTENING && prev == ORB_STATE_LISTENING) {
+      bloom_stop();
+      lean_exit();
    }
 }
 
