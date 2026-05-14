@@ -26,7 +26,8 @@
 #include <stdint.h>
 
 #include "lvgl.h"
-#include "widget.h" /* widget_tone_t */
+#include "voice_dictation.h" /* dict_event_t, dict_state_t (PR 2) */
+#include "widget.h"          /* widget_tone_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -114,6 +115,25 @@ lv_obj_t *ui_orb_get_root(void);
  *  that needs to attach children (e.g. status pip).  Discouraged for new
  *  code; prefer adding behaviors inside ui_orb itself. */
 lv_obj_t *ui_orb_get_body(void);
+
+/* ── Pipeline state (PR 2) ──────────────────────────────────────────── */
+
+/* Drive the orb's pipeline-state painting.  Takes precedence over the
+ * voice-state machine (IDLE/LISTENING/PROCESSING/SPEAKING) when pipeline
+ * state is anything except DICT_IDLE.  On DICT_IDLE, orb returns to the
+ * voice-state-driven visuals it had before.
+ *
+ * Safe to call only on the LVGL thread — callers using the dictation
+ * pipeline subscriber API should subscribe via voice_dictation_subscribe_lvgl
+ * to get automatic marshalling.
+ *
+ * The `event` is taken by value (caller may pass a stack copy). */
+void ui_orb_set_pipeline_state(const dict_event_t *event);
+
+/* Returns true if the orb is currently in a non-IDLE pipeline state and
+ * thus the voice-state painting is suppressed.  Used by ui_home's
+ * voice-state callback to know whether to skip orb repaints. */
+bool ui_orb_pipeline_active(void);
 
 #ifdef __cplusplus
 }

@@ -18,12 +18,15 @@
 #include <stdlib.h> /* malloc/free for presence-call marshalling */
 #include <time.h>
 
+#include "config.h" /* FONT_CAPTION for pipeline-state caption (PR 2) */
 #include "esp_log.h"
-#include "imu.h" /* tab5_imu_read for tilt-driven specular drift */
+#include "esp_timer.h"        /* esp_timer_get_time for RECORDING caption timer (PR 2) */
+#include "imu.h"              /* tab5_imu_read for tilt-driven specular drift */
 #include "lvgl.h"
-#include "ui_core.h" /* tab5_lv_async_call for cross-thread repaints */
-#include "voice.h"   /* voice_get_current_rms for the LISTENING bloom */
-#include "widget.h"  /* widget_tone_t for paint_for_tone */
+#include "ui_core.h"          /* tab5_lv_async_call for cross-thread repaints */
+#include "voice.h"            /* voice_get_current_rms for the LISTENING bloom */
+#include "voice_dictation.h"  /* pipeline-state types (PR 2) */
+#include "widget.h"           /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
 
@@ -143,6 +146,20 @@ static bool s_presence_near = true;
 static int8_t s_force_hour = -1; /* -1 = use real RTC */
 static int s_last_painted_hour = -1;
 static uint8_t s_last_painted_mode = 0;
+
+/* PR 2: pipeline state overlay.  When != DICT_IDLE, all paint cycles
+ * route through the pipeline-state painter and the voice-state painter
+ * is suppressed.  IDLE → revert to voice-state painting. */
+static dict_event_t s_pipeline = {
+   .state = DICT_IDLE,
+   .fail_reason = DICT_FAIL_NONE,
+   .started_ms = 0,
+   .stopped_ms = 0,
+   .last_change_ms = 0,
+   .note_slot = -1,
+};
+static lv_obj_t *s_orb_caption = NULL;  /* Label below the orb body */
+static lv_timer_t *s_saved_fade_timer = NULL;  /* SAVED → IDLE 2s timer */
 
 /* ── Circadian palette ───────────────────────────────────────────────── */
 
@@ -716,3 +733,16 @@ void ui_orb_ripple_for_tool(const char *tool_name) {
 lv_obj_t *ui_orb_get_root(void) { return s_root; }
 
 lv_obj_t *ui_orb_get_body(void) { return s_body; }
+
+/* ── Pipeline state (PR 2) ───────────────────────────────────────────── */
+
+void ui_orb_set_pipeline_state(const dict_event_t *event) {
+   if (!event) return;
+   s_pipeline = *event;
+   /* The actual painting is implemented in subsequent tasks (Tasks 3-7
+    * land per-state visuals).  This task just lands the API surface. */
+}
+
+bool ui_orb_pipeline_active(void) {
+   return s_pipeline.state != DICT_IDLE;
+}
