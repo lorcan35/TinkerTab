@@ -424,6 +424,11 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
       return;
 
    case DICT_RECORDING: {
+      /* Engage the existing LISTENING state machine so the mic-RMS-driven
+       * halo bloom fires.  Our pipeline body tint overrides the body
+       * colour, but the bloom mechanic (halo opacity from mic RMS) still
+       * runs because it manipulates s_halo, not s_body. */
+      ui_orb_set_state(ORB_STATE_LISTENING);
       paint_pipeline_body(0xE74C3C);
       uint32_t dur_ms = (uint32_t)(esp_timer_get_time() / 1000) - event->started_ms;
       uint32_t s = dur_ms / 1000;
