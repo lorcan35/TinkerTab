@@ -2756,12 +2756,20 @@ void ui_home_set_error_banner_visible(bool visible) {
  * animation = orb's outer shadow_opa pulses softly.  Orb body STILL.
  * Reads as a lit ember whose halo gently brightens/dims — no flicker
  * because only the SHADOW region invalidates per tick, not the orb. */
-#define ORB_BREATH_PERIOD_MS 5000 /* slower, more meditative */
-/* TT #508 v3: barely-perceptible swell so the halo reads as ambient
- * warmth, not a visible ring.  12→30 opa is ~5→12 % bg fill — softly
- * felt, not seen as motion. */
-#define ORB_SHADOW_OPA_MIN 12
-#define ORB_SHADOW_OPA_MAX 30
+/* TT #509 — choppy fix.  User reported choppy through TT #501→#508;
+ * the real root cause was VALUE GRANULARITY combined with bad refresh
+ * pacing.
+ *   #508 had 12→30 opa (18 levels) over 5 s ≈ 3.6 levels/sec.  At
+ *   30 fps that means LVGL only changes the integer value every ~8
+ *   frames → visible "hold-hold-hold-STEP" pattern reads as choppy.
+ * Fix: WIDEN the range and SPEED UP the cycle.  60 levels over 3 s
+ * = 20 levels/sec ≈ 1.5 frames per integer change.  Virtually every
+ * frame visibly differs → eye perceives continuous fade.
+ * Paired with the sdkconfig revert to LV_DEF_REFR_PERIOD=33ms which
+ * matches actual frame render time, giving UNIFORM frame pacing. */
+#define ORB_BREATH_PERIOD_MS 3000
+#define ORB_SHADOW_OPA_MIN 20
+#define ORB_SHADOW_OPA_MAX 80
 /* Legacy constants kept for peak-meter compatibility (orb_peak_tick_cb
  * still references these; rewired to drive shadow_opa below). */
 #define ORB_HIGHLIGHT_OPA_MIN 100
