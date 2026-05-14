@@ -52,10 +52,40 @@ void voice_dictation_unsubscribe(int handle) {
    s_subs[handle].user_data = NULL;
 }
 
+static void dict_dispatch(void) {
+   for (int i = 0; i < DICT_MAX_SUBSCRIBERS; i++) {
+      if (s_subs[i].in_use && s_subs[i].cb) {
+         s_subs[i].cb(&s_event, s_subs[i].user_data);
+      }
+   }
+}
+
 void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason,
                                uint32_t now_ms) {
-   /* Implemented in Task 3. */
-   (void)new_state; (void)fail_reason; (void)now_ms;
+   /* Idempotent — same-state re-entry is a no-op (avoids spamming
+    * subscribers during a chatty caller that re-asserts state). */
+   if (new_state == s_event.state && fail_reason == s_event.fail_reason) {
+      return;
+   }
+
+   if (new_state == DICT_RECORDING) {
+      s_event.started_ms = now_ms;
+      s_event.stopped_ms = 0;
+   } else if (s_event.state == DICT_RECORDING) {
+      /* Leaving RECORDING — capture stop time. */
+      s_event.stopped_ms = now_ms;
+   }
+
+   if (new_state == DICT_IDLE) {
+      /* Reset session-specific fields when fully returning to IDLE. */
+      s_event.note_slot = -1;
+   }
+
+   s_event.state = new_state;
+   s_event.fail_reason = (new_state == DICT_FAILED) ? fail_reason : DICT_FAIL_NONE;
+   s_event.last_change_ms = now_ms;
+
+   dict_dispatch();
 }
 
 void voice_dictation_set_note_slot(int slot) {

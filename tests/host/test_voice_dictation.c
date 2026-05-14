@@ -39,8 +39,39 @@ static int test_init_state_is_idle(void) {
    return 0;
 }
 
+/* Subscriber that records the last event it saw. */
+typedef struct {
+   int           call_count;
+   dict_event_t  last;
+} mock_sub_t;
+
+static void mock_cb(const dict_event_t *e, void *ud) {
+   mock_sub_t *m = (mock_sub_t *)ud;
+   m->call_count++;
+   m->last = *e;
+}
+
+static int test_idle_to_recording_fires_subscriber(void) {
+   voice_dictation_init();
+   mock_sub_t m = {0};
+   int h = voice_dictation_subscribe(mock_cb, &m);
+   CHECK(h >= 0);
+
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 12345);
+
+   CHECK_EQ(m.call_count, 1);
+   CHECK_EQ(m.last.state, DICT_RECORDING);
+   CHECK_EQ((int)m.last.started_ms, 12345);
+   CHECK_EQ((int)m.last.last_change_ms, 12345);
+
+   dict_event_t snapshot = voice_dictation_get();
+   CHECK_EQ(snapshot.state, DICT_RECORDING);
+   return 0;
+}
+
 int main(void) {
    if (test_init_state_is_idle()) return 1;
+   if (test_idle_to_recording_fires_subscriber()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }
