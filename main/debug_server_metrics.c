@@ -64,6 +64,7 @@
 #include "tool_log.h"
 #include "ui_core.h"     /* ui_core_get_fps */
 #include "ui_keyboard.h" /* ui_keyboard_is_visible / dump_layout */
+#include "ui_orb.h"      /* TT #511 step 8 — POST /orb/presence dim test endpoint */
 #include "voice.h"
 #include "wifi.h"
 
@@ -228,6 +229,25 @@ static esp_err_t imu_handler(httpd_req_t *req) {
       cJSON_AddBoolToObject(root, "ok", false);
       cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
    }
+   return send_json_resp(req, root);
+}
+
+/* ── POST /orb/presence?p=0|1 ────────────────────────────────────────── */
+
+/* TT #511 wave-1 step 8: debug-server hook for the orb's presence-wake
+ * dim machinery.  The auto-trigger from camera face-detection is wave-2
+ * follow-up; this endpoint lets us test the dim VISUAL behavior in
+ * isolation.  p=1 → orb at full brightness; p=0 → orb dims to ~33%. */
+static esp_err_t orb_presence_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   char q[32] = {0}, v[8] = {0};
+   httpd_req_get_url_query_str(req, q, sizeof(q));
+   httpd_query_key_value(q, "p", v, sizeof(v));
+   int p = atoi(v);
+   bool near = (p != 0);
+   ui_orb_set_presence(near);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "near", near);
    return send_json_resp(req, root);
 }
 
@@ -538,6 +558,8 @@ void debug_server_metrics_register(httpd_handle_t server) {
    static const httpd_uri_t uri_logs_tail = {.uri = "/logs/tail", .method = HTTP_GET, .handler = logs_tail_handler};
    static const httpd_uri_t uri_battery = {.uri = "/battery", .method = HTTP_GET, .handler = battery_handler};
    static const httpd_uri_t uri_imu = {.uri = "/imu", .method = HTTP_GET, .handler = imu_handler};
+   static const httpd_uri_t uri_orb_presence = {
+       .uri = "/orb/presence", .method = HTTP_POST, .handler = orb_presence_handler};
    static const httpd_uri_t uri_disp_bright = {
        .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler};
    static const httpd_uri_t uri_audio_get = {.uri = "/audio", .method = HTTP_GET, .handler = audio_handler};
@@ -558,6 +580,7 @@ void debug_server_metrics_register(httpd_handle_t server) {
    httpd_register_uri_handler(server, &uri_logs_tail);
    httpd_register_uri_handler(server, &uri_battery);
    httpd_register_uri_handler(server, &uri_imu);
+   httpd_register_uri_handler(server, &uri_orb_presence);
    httpd_register_uri_handler(server, &uri_disp_bright);
    httpd_register_uri_handler(server, &uri_audio_get);
    httpd_register_uri_handler(server, &uri_audio_post);

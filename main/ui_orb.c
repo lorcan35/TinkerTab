@@ -15,6 +15,7 @@
 #include "ui_orb.h"
 
 #include <stdint.h>
+#include <stdlib.h> /* malloc/free for presence-call marshalling */
 #include <time.h>
 
 #include "esp_log.h"
@@ -105,6 +106,17 @@ static const char *TAG = "ui_orb";
  * transition into/out of voice playback feels coupled. */
 #define ORB_SPEAKING_HALO_OPA 70
 #define ORB_SPEAKING_FADE_MS 240
+
+/* ── Presence wake (camera-driven, cross-state dim) ──────────────────── */
+
+/* When the room is empty (camera samples no face for ≥ N seconds), the
+ * orb dims to ~33% opacity AND its motion timers slow ×0.4.  When a face
+ * reappears, snap back to 100%.  The dim is a GLOBAL multiplier on top
+ * of every state's own motion — not counted toward the per-state motion
+ * budget (which is "exactly one active motion per state"). */
+#define ORB_PRESENCE_AWAKE_OPA 255 /* LV_OPA_COVER */
+#define ORB_PRESENCE_ASLEEP_OPA 85 /* ≈33 % */
+#define ORB_PRESENCE_FADE_MS 600   /* gentle eyelid close/open */
 
 /* ── Module state ────────────────────────────────────────────────────── */
 
@@ -609,10 +621,54 @@ ui_orb_state_t ui_orb_get_state(void) { return s_state; }
 
 /* ── Hardware-aware hooks ────────────────────────────────────────────── */
 
+/* Anim cb for the presence-dim fade.  Applies the global opa multiplier
+ * to s_body + s_halo + s_comet (s_spec is a child of s_body so it
+ * inherits).  Run on the LVGL thread via tab5_lv_async_call from the
+ * (eventually camera-driven) presence sampler. */
+static void presence_opa_anim_cb(void *obj, int32_t v) {
+   (void)obj;
+   if (s_body) lv_obj_set_style_opa(s_body, (lv_opa_t)v, LV_PART_MAIN);
+   if (s_halo) lv_obj_set_style_opa(s_halo, (lv_opa_t)v, LV_PART_MAIN);
+   if (s_comet) lv_obj_set_style_opa(s_comet, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+typedef struct {
+   bool near;
+} presence_call_t;
+
+static void presence_apply_async(void *arg) {
+   presence_call_t *c = (presence_call_t *)arg;
+   if (!c) return;
+   bool near = c->near;
+   free(c);
+
+   int target = near ? ORB_PRESENCE_AWAKE_OPA : ORB_PRESENCE_ASLEEP_OPA;
+   /* Read current opa from s_body — they're all in sync because we
+    * always write all three together. */
+   int cur = s_body ? lv_obj_get_style_opa(s_body, LV_PART_MAIN) : target;
+   if (s_body) lv_anim_delete(s_body, presence_opa_anim_cb);
+   /* One anim drives the cb that touches all three objs; use s_body
+    * as the var so the anim is delete-able as a single handle. */
+   if (!s_body) return;
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_body);
+   lv_anim_set_exec_cb(&a, presence_opa_anim_cb);
+   lv_anim_set_values(&a, cur, target);
+   lv_anim_set_time(&a, ORB_PRESENCE_FADE_MS);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+}
+
 void ui_orb_set_presence(bool near) {
    if (s_presence_near == near) return;
    s_presence_near = near;
-   /* Step 8 wires opa override on s_body via tab5_lv_async_call. */
+   /* Marshal to LVGL thread — caller may be tab5_worker (future
+    * camera sampler) or the debug-server httpd task. */
+   presence_call_t *c = (presence_call_t *)malloc(sizeof(*c));
+   if (!c) return;
+   c->near = near;
+   tab5_lv_async_call(presence_apply_async, c);
 }
 
 static void orb_force_repaint_async_cb(void *arg) {
