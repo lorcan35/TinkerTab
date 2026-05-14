@@ -759,11 +759,119 @@ lv_obj_t *ui_orb_get_body(void) { return s_body; }
 
 /* ── Pipeline state (PR 2) ───────────────────────────────────────────── */
 
+/* Paint the orb body in the pipeline-state tint.  Caller is responsible
+ * for setting the caption text + showing the caption label.
+ *
+ * Uses the same body widget that the voice-state painter paints into.
+ * The previous body styling (circadian gradient, etc.) is shadowed by
+ * the solid tint until pipeline returns to IDLE. */
+static void paint_pipeline_body(uint32_t color_hex) {
+   if (!s_body) return;
+   lv_obj_set_style_bg_color(s_body, lv_color_hex(color_hex), LV_PART_MAIN);
+   /* Keep the radial-gradient luster for depth — only tint, don't go
+    * flat.  The existing body uses LV_GRAD_DIR_VER; preserve. */
+}
+
+static const char *fail_reason_caption(dict_fail_t r) {
+   switch (r) {
+   case DICT_FAIL_AUTH:      return "AUTH";
+   case DICT_FAIL_NETWORK:   return "NETWORK";
+   case DICT_FAIL_EMPTY:     return "EMPTY — got silence";
+   case DICT_FAIL_NO_AUDIO:  return "NO AUDIO";
+   case DICT_FAIL_TOO_LONG:  return "TOO LONG (5 min cap)";
+   case DICT_FAIL_CANCELLED: return "CANCELLED";
+   default:                  return "FAIL";
+   }
+}
+
+static void set_caption_text(const char *text) {
+   if (!s_orb_caption || !text) return;
+   lv_label_set_text(s_orb_caption, text);
+   lv_obj_clear_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void hide_caption(void) {
+   if (s_orb_caption) lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Timer cb for SAVED → IDLE auto-fade. */
+static void saved_fade_to_idle_cb(lv_timer_t *t) {
+   (void)t;
+   s_saved_fade_timer = NULL;
+   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE,
+                             (uint32_t)(esp_timer_get_time() / 1000));
+}
+
 void ui_orb_set_pipeline_state(const dict_event_t *event) {
    if (!event) return;
    s_pipeline = *event;
-   /* The actual painting is implemented in subsequent tasks (Tasks 3-7
-    * land per-state visuals).  This task just lands the API surface. */
+
+   /* Tear down the SAVED auto-fade timer when leaving SAVED. */
+   if (event->state != DICT_SAVED && s_saved_fade_timer) {
+      lv_timer_del(s_saved_fade_timer);
+      s_saved_fade_timer = NULL;
+   }
+
+   char buf[64];
+   switch (event->state) {
+   case DICT_IDLE:
+      hide_caption();
+      /* Repaint via the voice-state painter so the orb returns to its
+       * normal IDLE/LISTENING/PROCESSING/SPEAKING visuals.  Re-paint
+       * body for current hour too — paint_pipeline_body() shadowed it. */
+      paint_body_for_hour(orb_effective_hour());
+      ui_orb_set_state(s_state);
+      return;
+
+   case DICT_RECORDING: {
+      /* Engage the existing LISTENING state machine so the mic-RMS-driven
+       * halo bloom fires.  Our pipeline body tint overrides the body
+       * colour, but the bloom mechanic (halo opacity from mic RMS) still
+       * runs because it manipulates s_halo, not s_body. */
+      ui_orb_set_state(ORB_STATE_LISTENING);
+      paint_pipeline_body(0xE74C3C);
+      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms)
+                          ? (now_ms - event->started_ms)
+                          : 0;
+      uint32_t s = dur_ms / 1000;
+      snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu",
+               (unsigned long)(s / 60), (unsigned long)(s % 60));
+      set_caption_text(buf);
+      break;
+   }
+
+   case DICT_UPLOADING:
+      paint_pipeline_body(0xF59E0B);
+      set_caption_text("UPLOADING…");
+      break;
+
+   case DICT_TRANSCRIBING:
+      paint_pipeline_body(0xF59E0B);
+      set_caption_text("TRANSCRIBING…");
+      /* Reuse the existing PROCESSING comet animation for visual
+       * continuity. */
+      ui_orb_set_state(ORB_STATE_PROCESSING);
+      break;
+
+   case DICT_SAVED:
+      paint_pipeline_body(0x22C55E);
+      set_caption_text("✓ Saved");
+      /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
+       * one already exists (rapid SAVED re-entry), don't stack. */
+      if (!s_saved_fade_timer) {
+         s_saved_fade_timer = lv_timer_create(saved_fade_to_idle_cb, 2000, NULL);
+         if (s_saved_fade_timer) lv_timer_set_repeat_count(s_saved_fade_timer, 1);
+      }
+      break;
+
+   case DICT_FAILED:
+      paint_pipeline_body(0xE74C3C);
+      snprintf(buf, sizeof(buf), "● %s — tap to retry",
+               fail_reason_caption(event->fail_reason));
+      set_caption_text(buf);
+      break;
+   }
 }
 
 bool ui_orb_pipeline_active(void) {
