@@ -229,11 +229,19 @@ static void paint_body_for_hour(int hour) {
 void ui_orb_paint_for_mode(uint8_t mode) {
    s_last_painted_mode = mode;
    if (!s_body) return;
+   /* PR 2: pipeline-state paint takes precedence — don't shadow the
+    * RECORDING/UPLOADING/TRANSCRIBING/SAVED/FAILED body tint with the
+    * circadian palette while a dictation is on-flight.  Mode bookkeeping
+    * above still records the latest mode so DICT_IDLE can repaint
+    * correctly when the pipeline returns. */
+   if (ui_orb_pipeline_active()) return;
    paint_body_for_hour(orb_effective_hour());
 }
 
 void ui_orb_paint_for_tone(widget_tone_t tone) {
    if (!s_body) return;
+   /* PR 2: pipeline-state paint takes precedence over widget tone. */
+   if (ui_orb_pipeline_active()) return;
    uint32_t top, bot;
    switch (tone) {
       case WIDGET_TONE_CALM:
@@ -271,6 +279,8 @@ void ui_orb_paint_for_tone(widget_tone_t tone) {
 
 void ui_orb_repaint_if_hour_changed(void) {
    if (!s_body) return;
+   /* PR 2: clock-driven repaints stay parked until DICT_IDLE returns. */
+   if (ui_orb_pipeline_active()) return;
    int h = orb_effective_hour();
    if (h != s_last_painted_hour) paint_body_for_hour(h);
 }
