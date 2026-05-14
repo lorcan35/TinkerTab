@@ -73,11 +73,11 @@ static const char *TAG = "ui_home";
 
 /* Orb stage — v4·D Sovereign Halo (Phase 1a: geometry bump only).
  * Orb 156→180 (voice-first identity), halos scaled 1.18x, rings scaled 1.16x.
- * Stage position centered-down (TT #511 wave-1.6 UI cleanup pass).  Was 320
- * (upper-third), moved to 550 so the orb is the visual center.  Greeting +
- * say-pill shift below it. */
+ * Stage position back to upper-third (wave-1.8 user feedback after 1.6
+ * went too sparse — orb-in-center left too much empty bottom-half).
+ * Greeting + mode chip sit below in the rich middle band. */
 #define ORB_CX            (SW / 2)
-#define ORB_CY 550
+#define ORB_CY            320
 #define ORB_SIZE          180
 #define HALO_OUTER        520
 #define HALO_INNER        340
@@ -689,20 +689,19 @@ lv_obj_t *ui_home_create(void)
      * emile" label with an editorial subtitle matching d-sovereign-halo
      * mockup exactly.  Uses LABEL_LONG_WRAP so the em-dash clause can
      * break gracefully on narrow content if the greeting grows. */
-    /* TT #511 wave-1.6 (change C): greeting promoted as the primary
-     * human-warmth piece, anchored just below the now-centered orb
-     * (ORB_CY=550 → orb bottom at 640).  Lifted text color from
-     * TH_TEXT_SECONDARY to TH_TEXT_PRIMARY so it reads as content,
-     * not auxiliary chrome. */
+    /* Wave-1.8: greeting back at y=640 (below the upper-third orb) and
+     * color reverted from PRIMARY to SECONDARY so it reads as a soft
+     * subtitle, not the visual anchor.  Time-of-day variants still
+     * fire via trail_for_hour. */
     s_greet_line = lv_label_create(s_screen);
     lv_label_set_long_mode(s_greet_line, LV_LABEL_LONG_WRAP);
     lv_label_set_text(s_greet_line, trail_for_hour(9));
     lv_obj_set_style_text_font(s_greet_line, FONT_CHAT_EMPH, 0);
-    lv_obj_set_style_text_color(s_greet_line, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_color(s_greet_line, lv_color_hex(TH_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_letter_space(s_greet_line, 0, 0);
     lv_obj_set_width(s_greet_line, SW - 2 * SIDE_PAD);
     lv_obj_set_style_text_align(s_greet_line, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(s_greet_line, SIDE_PAD, 700);
+    lv_obj_set_pos(s_greet_line, SIDE_PAD, 640);
 
     /* TT #511 wave-1.6 (change F): mode chip killed from home.  Was
      * a 360 × 52 pill at y=680 showing current voice mode — info that
@@ -763,9 +762,10 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(chip_chev, FONT_SMALL, 0);
     lv_obj_set_style_text_color(chip_chev, lv_color_hex(TH_TEXT_DIM), 0);
 
-    /* TT #511 wave-1.6 (change F): mode chip permanently hidden.
-     * Long-press orb still opens the mode sheet. */
-    lv_obj_add_flag(s_mode_chip, LV_OBJ_FLAG_HIDDEN);
+    /* Wave-1.8: mode chip restored.  1.6's hide-it-entirely went too
+     * far — user wanted at-a-glance visibility of current voice mode
+     * without having to remember + long-press to open the sheet.
+     * The chip stays clickable and opens the mode sheet on tap. */
 
     /* TT #511 wave-1.6 (change B): now-card killed from idle.
      * Obj still created so channel-notification code that writes to

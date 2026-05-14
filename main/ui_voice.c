@@ -105,13 +105,10 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 #define CLOSE_BTN_MARGIN_Y 80
 
 /* Chat area — between orb and send button */
-/* TT #511 wave-1.6 (change G): voice text now anchors BELOW the
- * home-screen ui_orb (which centers at y=550, bottom edge y=640).
- * Was -280 (top-third when the voice overlay had its own orb).
- * -100 puts the status label at y = 640 + ORB_SZ_LISTEN/2 +
- * ORB_Y_OFFSET + 30 = 640 + 150 - 100 + 30 = 720 — exactly 80 px
- * below the home orb. */
-#define ORB_Y_OFFSET -100
+/* Wave-1.8: orb moved back to y=320 (upper-third); voice text offset
+ * returns to anchor below it.  -260 → status label at 640 + 150 -
+ * 260 + 30 = 560, sitting ~50 px below the orb's bottom edge (~410). */
+#define ORB_Y_OFFSET -260
 #define CHAT_TOP           440        /* y where chat area starts */
 #define CHAT_BOTTOM        1020       /* y where chat area ends (above send btn) */
 #define CHAT_PAD_X         24         /* horizontal padding */
@@ -135,12 +132,10 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 
 /* Send/Stop button (shown during LISTENING) */
 #define SEND_BTN_SZ        80
-/* TT #511 wave-1.6 (change G): stop button anchored close to the
- * voice text block (which now ends around y=820 after the
- * ORB_Y_OFFSET shift).  Was 1050 (very bottom).  900 gives a tight
- * 80 px gap between text and button so the cancel affordance reads
- * as paired with the listening action. */
-#define SEND_BTN_Y 900               /* y-center from top */
+/* Wave-1.8: orb back to upper-third → status text now ends around
+ * y=620, so the stop button at y=750 keeps a tight ~80 px pairing
+ * with the text without falling to the very bottom of the screen. */
+#define SEND_BTN_Y 750               /* y-center from top */
 #define SEND_ICON_SZ       24        /* inner square "stop" icon */
 
 /* Mic dot pulse animation */
