@@ -2739,6 +2739,49 @@ void ui_home_set_error_banner_visible(bool visible) {
 #define ORB_RIPPLE_OPA_START 200
 #define ORB_RIPPLE_OPA_END 0
 
+/* Choppy-fix pass:
+ *
+ * `lv_anim_path_ease_in_out` is a cubic-bezier approximation of sine but
+ * combined with `set_playback_time` it has a perceptible HITCH at min
+ * and max — the anim flips direction in a single tick which reads as
+ * a stutter on a 30-Hz refresh loop.  Switch to a true sine path over
+ * the FULL period (no playback) so motion is continuous + smooth at
+ * every frame transition.
+ *
+ * Also: opacity-only animation reads as a fade, not motion — the
+ * orb's edge stays still.  Add a SCALE transform anim (252 ↔ 264 on
+ * LVGL 9's transform_scale, where 256 = 1.0) so the orb itself
+ * actually deforms.  4-5 px breath motion at 180 px diameter is
+ * visible without being distracting. */
+
+/* True sine path over the full anim duration.
+ *
+ * Returns the current animated value, sweeping from `start_value` →
+ * `end_value` → `start_value` over one full period.  Uses fixed-point
+ * cosine via LVGL's lv_trigo_sin (LV_TRIGO_SIN_MAX = 32768 = 1.0).
+ *
+ * Formula: value = start + (end - start) * (1 - cos(2π·t/dur)) / 2
+ *   t=0   → cos=1 → factor=0 → value=start
+ *   t=dur/2 → cos=-1 → factor=1 → value=end
+ *   t=dur → cos=1 → factor=0 → value=start  (loops cleanly)
+ *
+ * No playback_time needed; the path itself returns to start at t=dur,
+ * which means REPEAT_INFINITE just continues the sine wave without a
+ * direction-flip hitch.  This is the choppy-fix. */
+static int32_t breath_sine_path(const lv_anim_t *a) {
+   if (a->duration <= 0) return a->start_value;
+   int32_t phase_deg = (int32_t)(((int64_t)a->act_time * 360) / a->duration);
+   /* cos(x) = sin(x + 90); LVGL returns -32768..32768. */
+   int32_t cos_val = lv_trigo_sin(phase_deg + 90);
+   /* (1 - cos) maps [-1, 1] cos to [0, 2] in 32768-scaled units, i.e.
+    * 0..65536.  Multiply by (end-start) then divide by 65536 (>>16). */
+   int32_t one_minus_cos = LV_TRIGO_SIN_MAX - cos_val; /* 0..65536 */
+   int32_t span = a->end_value - a->start_value;
+   /* Symmetric round to nearest; avoids edge-pixel pop from int div. */
+   int32_t delta = (int32_t)(((int64_t)one_minus_cos * span) / (2 * LV_TRIGO_SIN_MAX));
+   return a->start_value + delta;
+}
+
 /* lv_anim setter for opacity on s_orb — used by breath. */
 static void orb_set_opa_cb(void *obj, int32_t v) {
    if (!obj) return;
@@ -2757,6 +2800,13 @@ static void halo_outer_set_bg_opa_cb(void *obj, int32_t v) {
    lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
 }
 
+/* NOTE: orb_set_scale_cb was removed — LVGL 9 PARTIAL render mode has
+ * a dirty-rect bug with animated transform_scale (splash framebuffer
+ * bleeds through the orb's periphery).  See comment in orb_breath_start
+ * for the trade-off; geometric motion would require a different LVGL
+ * render approach.  Pure opacity + halo counter-phase still gives a
+ * visible breath, especially with the new sine path (no hitch). */
+
 /* Start the ambient 4 s sine breath.  Idempotent — safe to call when
  * already running (we delete any prior anim first).  Smooth-as-fuck
  * pass: three coordinated anims hit max/min in lockstep:
@@ -2772,50 +2822,69 @@ static void orb_breath_start(void) {
    if (s_halo_inner) lv_anim_delete(s_halo_inner, halo_inner_set_border_opa_cb);
    if (s_halo_outer) lv_anim_delete(s_halo_outer, halo_outer_set_bg_opa_cb);
 
-   /* Orb opacity — primary anim (lantern brightening) */
+   /* All four breath anims share the same full-period custom sine path
+    * so they're frame-coherent + free of the ease_in_out + playback
+    * transition hitch.  Same `set_time(ORB_BREATH_PERIOD_MS)`, no
+    * playback_time — the sine path itself makes the value return to
+    * the start at t=dur, so REPEAT_INFINITE just loops cleanly. */
+
+   /* Orb opacity */
    lv_anim_t a;
    lv_anim_init(&a);
    lv_anim_set_var(&a, s_orb);
    lv_anim_set_exec_cb(&a, orb_set_opa_cb);
    lv_anim_set_values(&a, ORB_BREATH_OPA_MIN, ORB_BREATH_OPA_MAX);
-   lv_anim_set_time(&a, ORB_BREATH_PERIOD_MS / 2);
-   lv_anim_set_playback_time(&a, ORB_BREATH_PERIOD_MS / 2);
+   lv_anim_set_time(&a, ORB_BREATH_PERIOD_MS);
    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_set_path_cb(&a, breath_sine_path);
    lv_anim_start(&a);
 
-   /* Inner halo border — counter-phase (dim as orb brightens) */
+   /* NOTE: scale transform anim removed.  LVGL 9 PARTIAL render mode
+    * has a known dirty-rect issue when transform_scale is animated on
+    * an object with a fixed lv_obj_set_size: the obj's logical bounds
+    * stay constant but the visual scale exceeds them, so the
+    * invalidator misses the periphery and stale framebuffer content
+    * from prior screens (splash, in our case) bleeds through.  The
+    * opacity + halo counter-phase already provide the breath motion;
+    * geometric motion would require a different approach (e.g.
+    * actual obj_set_size with re-anchoring, or a separate dedicated
+    * render-mode-FULL pass).  Revisit if perceived motion is still
+    * insufficient after the sine path fix. */
+
+   /* Inner halo border — counter-phase via inverted sine (start MAX,
+    * sine path normally goes 0→1→0, so inverting via lv_values inversed). */
    if (s_halo_inner) {
       lv_anim_t b;
       lv_anim_init(&b);
       lv_anim_set_var(&b, s_halo_inner);
       lv_anim_set_exec_cb(&b, halo_inner_set_border_opa_cb);
-      /* Reverse: start MAX, fall to MIN, swing back to MAX. */
+      /* sine_path returns 0→1→0 over duration, so MAX→MIN→MAX naturally
+       * happens when we set values(MAX, MIN) — the path's 0 maps to MAX,
+       * peak maps to MIN.  Reads as counter-phase to the orb (which
+       * goes MIN→MAX→MIN). */
       lv_anim_set_values(&b, HALO_INNER_BREATH_MAX, HALO_INNER_BREATH_MIN);
-      lv_anim_set_time(&b, ORB_BREATH_PERIOD_MS / 2);
-      lv_anim_set_playback_time(&b, ORB_BREATH_PERIOD_MS / 2);
+      lv_anim_set_time(&b, ORB_BREATH_PERIOD_MS);
       lv_anim_set_repeat_count(&b, LV_ANIM_REPEAT_INFINITE);
-      lv_anim_set_path_cb(&b, lv_anim_path_ease_in_out);
+      lv_anim_set_path_cb(&b, breath_sine_path);
       lv_anim_start(&b);
    }
 
-   /* Outer halo bg — same counter-phase, subtler */
+   /* Outer halo bg — same counter-phase */
    if (s_halo_outer) {
       lv_anim_t c;
       lv_anim_init(&c);
       lv_anim_set_var(&c, s_halo_outer);
       lv_anim_set_exec_cb(&c, halo_outer_set_bg_opa_cb);
       lv_anim_set_values(&c, HALO_OUTER_BREATH_MAX, HALO_OUTER_BREATH_MIN);
-      lv_anim_set_time(&c, ORB_BREATH_PERIOD_MS / 2);
-      lv_anim_set_playback_time(&c, ORB_BREATH_PERIOD_MS / 2);
+      lv_anim_set_time(&c, ORB_BREATH_PERIOD_MS);
       lv_anim_set_repeat_count(&c, LV_ANIM_REPEAT_INFINITE);
-      lv_anim_set_path_cb(&c, lv_anim_path_ease_in_out);
+      lv_anim_set_path_cb(&c, breath_sine_path);
       lv_anim_start(&c);
    }
    s_orb_breath_running = true;
 }
 
-/* Stop ALL three breath anims and clamp each back to its rest value.
+/* Stop both opacity + halo breath anims and clamp back to rest values.
  * Called before peak meter takes over, or on overlay-hide. */
 static void orb_breath_stop(void) {
    if (!s_orb) return;
