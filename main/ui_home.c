@@ -58,6 +58,8 @@
 #include "ui_theme.h"
 #include "ui_voice.h"
 #include "voice.h"
+#include "voice_dictation.h"      /* PR 2: Dictate chip pipeline state */
+#include "voice_dictation_lvgl.h" /* PR 2: LVGL-marshalled subscriber */
 #include "voice_onboard.h"
 #include "widget.h"
 #include "widget_icons.h"    /* TT #69 — icon library + render */
@@ -251,6 +253,9 @@ static void now_card_long_press_cb(lv_event_t *e);
 static void sys_click_cb(lv_event_t *e);
 static void mode_chip_long_press_cb(lv_event_t *e);
 static void mode_chip_click_cb(lv_event_t *e); /* TT #370 */
+/* PR 2: Dictate chip tap + pipeline subscriber. */
+static void dictate_chip_tap_cb(lv_event_t *e);
+static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data);
 /* U19 (#206): rail callbacks removed with the rail itself. */
 static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
@@ -828,6 +833,19 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_color(s_dictate_chip_icon, lv_color_hex(TH_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(s_dictate_chip_icon, FONT_CAPTION, 0);
     lv_obj_align(s_dictate_chip_icon, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    /* PR 2 Task 8: tap fires voice_start_dictation in IDLE / voice_cancel
+     * in RECORDING / restart in FAILED. */
+    lv_obj_add_event_cb(s_dictate_chip, dictate_chip_tap_cb, LV_EVENT_CLICKED, NULL);
+
+    /* PR 2 Task 9: subscribe the chip to the dictation pipeline.  LVGL-
+     * thread marshalling is handled by the _lvgl variant.  Static guard
+     * so a screen recreate cycle doesn't double-subscribe. */
+    static int s_dictate_chip_sub = -1;
+    if (s_dictate_chip_sub < 0) {
+        s_dictate_chip_sub = voice_dictation_subscribe_lvgl(dictate_chip_pipeline_cb, NULL);
+        ESP_LOGI(TAG, "Dictate chip subscriber registered handle=%d", s_dictate_chip_sub);
+    }
 
     /* TT #511 wave-1.6 (change B): now-card killed from idle.
      * Obj still created so channel-notification code that writes to
@@ -1965,6 +1983,99 @@ static void mode_chip_click_cb(lv_event_t *e) {
    tab5_settings_set_mode_hint_seen(true);
    extern void ui_mode_sheet_show(void);
    ui_mode_sheet_show();
+}
+
+/* PR 2: Dictate chip tap.  IDLE → start dictation.  RECORDING → cancel
+ * via voice_cancel + drive pipeline straight to FAILED(CANCELLED) so
+ * the UI is responsive without waiting for Dragon's ack.  Other states
+ * are no-ops in v1 — future polish: FAILED → retry, SAVED → dismiss. */
+static void dictate_chip_tap_cb(lv_event_t *e) {
+   (void)e;
+   dict_event_t dp = voice_dictation_get();
+   if (dp.state == DICT_IDLE || dp.state == DICT_FAILED) {
+      esp_err_t err = voice_start_dictation();
+      if (err != ESP_OK) {
+         ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(err));
+      }
+   } else if (dp.state == DICT_RECORDING) {
+      voice_cancel();
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED,
+                                (uint32_t)(esp_timer_get_time() / 1000));
+   }
+}
+
+/* PR 2: keep the Dictate chip's label / hint / icon / border colour in
+ * sync with the dictation pipeline state.  Mirrors the orb's heroic
+ * painting at a compact chip scale. */
+static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data) {
+   (void)user_data;
+   if (!event) return;
+   if (!s_dictate_chip || !s_dictate_chip_label || !s_dictate_chip_hint ||
+       !s_dictate_chip_icon || !s_dictate_chip_dot) {
+      return;
+   }
+
+   /* Default styling = IDLE.  Per-state branches mutate from this base. */
+   lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x262637), 0);
+   lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xE74C3C), 0);
+
+   char buf[40];
+   switch (event->state) {
+   case DICT_IDLE:
+      lv_label_set_text(s_dictate_chip_label, "Dictate");
+      lv_label_set_text(s_dictate_chip_hint, "TAP TO START");
+      lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(TH_TEXT_DIM), 0);
+      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_AUDIO);
+      break;
+
+   case DICT_RECORDING: {
+      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms)
+                          ? (now_ms - event->started_ms)
+                          : 0;
+      uint32_t s = dur_ms / 1000;
+      snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s / 60),
+               (unsigned long)(s % 60));
+      lv_label_set_text(s_dictate_chip_label, "RECORDING");
+      lv_label_set_text(s_dictate_chip_hint, buf);
+      lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
+      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_CLOSE);
+      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
+      break;
+   }
+
+   case DICT_UPLOADING:
+      lv_label_set_text(s_dictate_chip_label, "UPLOADING");
+      lv_label_set_text(s_dictate_chip_hint, "");
+      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_UPLOAD);
+      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xF59E0B), 0);
+      lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xF59E0B), 0);
+      break;
+
+   case DICT_TRANSCRIBING:
+      lv_label_set_text(s_dictate_chip_label, "TRANSCRIBING");
+      lv_label_set_text(s_dictate_chip_hint, "");
+      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
+      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xF59E0B), 0);
+      lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xF59E0B), 0);
+      break;
+
+   case DICT_SAVED:
+      lv_label_set_text(s_dictate_chip_label, "Saved");
+      lv_label_set_text(s_dictate_chip_hint, "");
+      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_OK);
+      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x22C55E), 0);
+      lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0x22C55E), 0);
+      break;
+
+   case DICT_FAILED:
+      lv_label_set_text(s_dictate_chip_label, "FAILED");
+      lv_label_set_text(s_dictate_chip_hint, "TAP TO RETRY");
+      lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
+      lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
+      lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
+      break;
+   }
 }
 
 /* U24 (#206): set by now_card_long_press_cb when a long-press just
