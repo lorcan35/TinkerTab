@@ -2851,7 +2851,15 @@ static void chrome_fade_anim_cb(void *obj, int32_t v) {
    if (obj) lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
 }
 
-#define CHROME_DIM_OPA 50 /* ~20 % */
+/* TT #511 wave-1.5: chrome fades to FULLY invisible (not dim) during
+ * voice.  Tried opa=50 first — home's s_state_word ("listening" /
+ * "thinking" / "speaking" — see ui_home_update_status state_hint
+ * switch) overlapped at the same y as the voice overlay's own text
+ * labels ("I'm here. Go.", thinking dots, "speaking…").  Same for
+ * s_greet_line vs the overlay caption.  Fully hiding the home chrome
+ * is the cleaner fix: the orb stays at center, status bar stays at
+ * top, voice overlay text floats over an otherwise-empty home. */
+#define CHROME_DIM_OPA 0
 #define CHROME_FULL_OPA 255
 #define CHROME_FADE_MS 250
 
