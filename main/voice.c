@@ -58,6 +58,7 @@
 #include "ui_voice.h"
 #include "voice_billing.h"   /* SOLID-audit SRP-3: receipt + budget + cap-downgrade */
 #include "voice_codec.h"     /* #262: OPUS encode/decode wrapper */
+#include "voice_dictation.h" /* PR 1: dictation pipeline state machine */
 #include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
 #include "voice_modes.h"     /* TT #331 Wave 23 SRP-A2: 5-tier mode dispatch */
 #include "voice_solo.h"      /* W4-B (TT #375): vmode=5 SOLO_DIRECT mic-audio dispatch */
@@ -1690,6 +1691,12 @@ esp_err_t voice_start_dictation(void)
     s_mic_running = true;
     /* #284: signal persistent mic task. */
     if (s_mic_event_sem) xSemaphoreGive(s_mic_event_sem);
+
+    /* PR 1: drive the dictation pipeline state machine.  The pipeline
+     * is a separate higher-level state; the existing voice_state_t
+     * (LISTENING/PROCESSING/READY) is unchanged. */
+    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE,
+                              (uint32_t)(esp_timer_get_time() / 1000));
 
     voice_set_state(VOICE_STATE_LISTENING, offline ? "offline" : NULL);
     return ESP_OK;
