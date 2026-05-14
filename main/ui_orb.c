@@ -577,17 +577,20 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_set_style_bg_opa(s_comet, 0, 0);
    lv_obj_clear_flag(s_comet, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-   /* PR 2: caption label below the orb for pipeline state text
-    * ("● RECORDING 0:23", "UPLOADING…", "TRANSCRIBING…", "✓ Saved").
-    * Sits 24 px below the orb body, transparent background, caption
-    * font.  Hidden by default — paint_pipeline_state shows it. */
+   /* PR 2: hero caption below the orb for pipeline state — sized to read
+    * as a primary status indicator (Montserrat Bold 22 px), not a
+    * footnote.  Pure text, no unicode bullets — those rendered as
+    * missing-glyph rectangles in the 16 px caption font and made the
+    * label feel fragile.  Hidden by default; paint_pipeline_state shows
+    * + colors the text per state. */
    s_orb_caption = lv_label_create(parent);
    if (s_orb_caption) {
       lv_label_set_text(s_orb_caption, "");
-      lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xE8E8EF), 0);
-      lv_obj_set_style_text_font(s_orb_caption, FONT_CAPTION, 0);
-      lv_obj_set_style_text_letter_space(s_orb_caption, 2, 0);
-      lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 24);
+      lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xF8F8FB), 0);
+      lv_obj_set_style_text_font(s_orb_caption, FONT_HEADING, 0);
+      lv_obj_set_style_text_letter_space(s_orb_caption, 1, 0);
+      lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 22);
+      lv_obj_move_foreground(s_orb_caption);
       lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
    }
 
@@ -873,7 +876,7 @@ static void rec_timer_label_cb(lv_timer_t *t) {
    uint32_t dur_ms = (s_pipeline.started_ms && now_ms >= s_pipeline.started_ms) ? (now_ms - s_pipeline.started_ms) : 0;
    uint32_t s = dur_ms / 1000;
    char buf[40];
-   snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+   snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
    if (s_orb_caption) lv_label_set_text(s_orb_caption, buf);
 }
 
@@ -928,7 +931,8 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
          uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
          uint32_t s = dur_ms / 1000;
-         snprintf(buf, sizeof(buf), "● RECORDING %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+         snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
          set_caption_text(buf);
          /* Spawn the 200 ms tick that keeps the M:SS caption live. */
          if (!s_rec_timer_label) {
@@ -939,12 +943,14 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
       case DICT_UPLOADING:
          paint_pipeline_body(0xF59E0B);
-         set_caption_text("UPLOADING…");
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
+         set_caption_text("UPLOADING");
          break;
 
       case DICT_TRANSCRIBING:
          paint_pipeline_body(0xF59E0B);
-         set_caption_text("TRANSCRIBING…");
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
+         set_caption_text("TRANSCRIBING");
          /* Reuse the existing PROCESSING comet animation for visual
           * continuity. */
          ui_orb_set_state(ORB_STATE_PROCESSING);
@@ -952,7 +958,8 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
       case DICT_SAVED:
          paint_pipeline_body(0x22C55E);
-         set_caption_text("✓ Saved");
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);
+         set_caption_text("SAVED");
          /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
           * one already exists (rapid SAVED re-entry), don't stack. */
          if (!s_saved_fade_timer) {
@@ -963,7 +970,8 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
       case DICT_FAILED:
          paint_pipeline_body(0xE74C3C);
-         snprintf(buf, sizeof(buf), "● %s — tap to retry", fail_reason_caption(event->fail_reason));
+         snprintf(buf, sizeof(buf), "%s  ·  TAP TO RETRY", fail_reason_caption(event->fail_reason));
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
          set_caption_text(buf);
          break;
    }
