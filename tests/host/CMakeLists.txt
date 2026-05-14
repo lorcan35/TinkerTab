@@ -44,10 +44,11 @@ target_compile_options(test_spring_anim PRIVATE -Wno-unused-variable -Wno-unused
 target_link_libraries(test_spring_anim PRIVATE m)
 add_test(NAME spring_anim COMMAND test_spring_anim)
 
-# voice_dictation — pipeline state machine (PR 1).
+# voice_dictation — pipeline state machine (PR 1).  Picks up the
+# tests/host/shim/freertos/ no-op recursive-mutex shim from SHIM_DIR.
 add_executable(test_voice_dictation
     test_voice_dictation.c
     ${MAIN_DIR}/voice_dictation.c
 )
-target_include_directories(test_voice_dictation PRIVATE ${MAIN_DIR})
+target_include_directories(test_voice_dictation PRIVATE ${SHIM_DIR} ${MAIN_DIR})
 add_test(NAME voice_dictation COMMAND test_voice_dictation)

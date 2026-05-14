@@ -3,9 +3,29 @@
  * as a terminal branch).  Multiple UI surfaces subscribe and render
  * the same state.
  *
- * Designed for host-testability: zero ESP-IDF deps in voice_dictation.c.
- * Callers pass monotonic timestamps in ms.  See spec at
+ * Designed for host-testability: zero ESP-IDF deps beyond the freertos
+ * semphr.h primitives in voice_dictation.c (which the host build shims
+ * to no-ops under tests/host/shim/freertos/).  Callers pass monotonic
+ * timestamps in ms.  See spec at
  * docs/superpowers/specs/2026-05-14-dictation-pipeline-notes-redesign-design.md
+ *
+ * THREAD SAFETY:
+ *   - All public functions are thread-safe.  The module is protected by
+ *     a single FreeRTOS recursive mutex created lazily on first init.
+ *     Multiple concurrent FreeRTOS tasks (mic capture, WS event handler,
+ *     ui_notes transcription_queue_task, httpd) may call any function
+ *     freely.
+ *   - Subscribers MAY call `voice_dictation_get()` or
+ *     `voice_dictation_set_state()` from within their callback — the
+ *     mutex is recursive, so re-entry from the dispatch path is safe.
+ *   - Subscribers MUST NOT block indefinitely in their callback.  The
+ *     mutex is held for the entire dispatch loop, so a blocking
+ *     subscriber blocks every other caller in the system.  Subscribers
+ *     should defer real work to a worker task (e.g. tab5_worker).
+ *   - Subscribers SHOULD NOT call `voice_dictation_subscribe()` or
+ *     `voice_dictation_unsubscribe()` from within a callback — mutating
+ *     the subscriber table while the dispatch loop is iterating is
+ *     undefined.
  */
 #pragma once
 
@@ -68,7 +88,14 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason,
                                uint32_t now_ms);
 
 /* Attach a note slot to the current pipeline (called when SD WAV starts).
- * Persists through subsequent transitions until next IDLE. */
+ * Persists through subsequent transitions until next IDLE.
+ *
+ * Contract:
+ *   - Only honoured when current state is DICT_RECORDING or DICT_UPLOADING
+ *     (the window during which a note slot has meaning).  Outside that
+ *     window the call is silently ignored.
+ *   - Any `slot < -1` is clamped to -1 (clear).  Negative values other
+ *     than -1 are not meaningful and reserved. */
 void voice_dictation_set_note_slot(int slot);
 
 /* Snapshot current state.  Thread-safe (returns a copy under lock). */

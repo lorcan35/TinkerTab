@@ -240,6 +240,63 @@ static int test_subscriber_table_full_returns_minus_one(void) {
    return 0;
 }
 
+static int test_set_note_slot_rejected_in_idle(void) {
+   voice_dictation_init();
+   voice_dictation_set_note_slot(42);            /* in IDLE — should be ignored */
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.note_slot, -1);                    /* unchanged */
+   return 0;
+}
+
+static int test_set_note_slot_accepted_in_recording(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_note_slot(7);
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.note_slot, 7);
+   return 0;
+}
+
+static int test_set_note_slot_accepted_in_uploading(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 2000);
+   voice_dictation_set_note_slot(11);
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.note_slot, 11);
+   return 0;
+}
+
+static int test_set_note_slot_rejected_after_saved(void) {
+   voice_dictation_init();
+   voice_dictation_set_state(DICT_RECORDING,    DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING,    DICT_FAIL_NONE, 2000);
+   voice_dictation_set_note_slot(13);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
+   voice_dictation_set_state(DICT_SAVED,        DICT_FAIL_NONE, 2400);
+   voice_dictation_set_note_slot(99);            /* should be ignored — past upload window */
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.note_slot, 13);                    /* still the legit one from UPLOADING */
+   return 0;
+}
+
+/* Subscriber that re-enters into voice_dictation_get() to verify the
+ * recursive lock works. */
+static int g_reentrant_get_state = -1;
+static void reentrant_cb(const dict_event_t *e, void *ud) {
+   (void)e; (void)ud;
+   dict_event_t inner = voice_dictation_get();   /* MUST not deadlock */
+   g_reentrant_get_state = (int)inner.state;
+}
+
+static int test_subscriber_can_reenter_get(void) {
+   voice_dictation_init();
+   voice_dictation_subscribe(reentrant_cb, NULL);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   CHECK_EQ(g_reentrant_get_state, (int)DICT_RECORDING);
+   return 0;
+}
+
 int main(void) {
    if (test_init_state_is_idle()) return 1;
    if (test_idle_to_recording_fires_subscriber()) return 1;
@@ -255,6 +312,11 @@ int main(void) {
    if (test_multiple_subscribers_all_fire()) return 1;
    if (test_unsubscribe_stops_callbacks()) return 1;
    if (test_subscriber_table_full_returns_minus_one()) return 1;
+   if (test_set_note_slot_rejected_in_idle()) return 1;
+   if (test_set_note_slot_accepted_in_recording()) return 1;
+   if (test_set_note_slot_accepted_in_uploading()) return 1;
+   if (test_set_note_slot_rejected_after_saved()) return 1;
+   if (test_subscriber_can_reenter_get()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }
