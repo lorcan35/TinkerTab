@@ -17,7 +17,9 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "voice.h" /* voice_start_dictation, voice_stop_listening, voice_get_dictation_text, voice_get_state */
+#include "voice_dictation.h"
 
 static const char *TAG = "debug_dictation";
 
@@ -64,10 +66,40 @@ static esp_err_t dictation_handler(httpd_req_t *req) {
    return ESP_OK;
 }
 
+/* ── Dictation pipeline state snapshot ───────────────────────────────── */
+/* GET /dictation_pipeline — live snapshot of the dict_event_t state held
+ * by voice_dictation.c.  Used by PR 2 (orb + Dictate chip), PR 3 (Notes
+ * Timeline), and the end-to-end verification step at the close of PR 1. */
+static esp_err_t pipeline_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+
+   dict_event_t e = voice_dictation_get();
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddStringToObject(root, "state", voice_dictation_state_name(e.state));
+   cJSON_AddStringToObject(root, "reason", voice_dictation_fail_name(e.fail_reason));
+   cJSON_AddNumberToObject(root, "started_ms", (double)e.started_ms);
+   cJSON_AddNumberToObject(root, "stopped_ms", (double)e.stopped_ms);
+   cJSON_AddNumberToObject(root, "last_change_ms", (double)e.last_change_ms);
+   cJSON_AddNumberToObject(root, "note_slot", (double)e.note_slot);
+   cJSON_AddNumberToObject(root, "now_ms", (double)(esp_timer_get_time() / 1000));
+
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_sendstr(req, json);
+   free(json);
+   return ESP_OK;
+}
+
 void debug_server_dictation_register(httpd_handle_t server) {
    const httpd_uri_t uri_dictation_post = {.uri = "/dictation", .method = HTTP_POST, .handler = dictation_handler};
    const httpd_uri_t uri_dictation_get = {.uri = "/dictation", .method = HTTP_GET, .handler = dictation_handler};
    httpd_register_uri_handler(server, &uri_dictation_post);
    httpd_register_uri_handler(server, &uri_dictation_get);
    ESP_LOGI(TAG, "Dictation endpoint family registered (2 URIs, 1 handler)");
+
+   const httpd_uri_t uri_pipeline = {.uri = "/dictation_pipeline", .method = HTTP_GET, .handler = pipeline_handler};
+   httpd_register_uri_handler(server, &uri_pipeline);
+   ESP_LOGI(TAG, "Dictation pipeline endpoint registered");
 }
