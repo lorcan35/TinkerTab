@@ -129,6 +129,9 @@ static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
 static lv_obj_t *s_body = NULL;  /* the lit sphere itself */
 static lv_obj_t *s_spec = NULL;  /* tilt-driven specular highlight (child of s_body) */
 static lv_obj_t *s_halo = NULL;  /* voice-bloom halo (sibling-BEHIND s_body) */
+static lv_obj_t *s_ripple_a = NULL;   /* PR 2 polish: sonar ripple A — outermost-expanding ring during RECORDING */
+static lv_obj_t *s_ripple_b = NULL;   /* PR 2 polish: sonar ripple B — phase-offset by 50% so a new ripple is always rising as the prior fades */
+static lv_timer_t *s_ripple_timer = NULL; /* 16 ms tick for ripple geometry */
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -542,6 +545,37 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    s_orb_cx = cx;
    s_orb_cy = cy;
 
+   /* PR 2 polish: sonar ripple rings — two phase-offset transparent
+    * circles that grow outward from the orb body and fade.  Hidden by
+    * default; shown only during DICT_RECORDING.  Created BEFORE s_halo
+    * so their z-order is behind everything (the body fully masks the
+    * inner portion; only the outer expanding ring is visible).  Two
+    * rings 50% out of phase so the ripple cadence feels continuous
+    * instead of pulsing once a cycle. */
+   s_ripple_a = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_ripple_a);
+   lv_obj_set_size(s_ripple_a, ORB_SIZE, ORB_SIZE);
+   lv_obj_set_pos(s_ripple_a, cx - (ORB_SIZE / 2), cy - (ORB_SIZE / 2));
+   lv_obj_set_style_radius(s_ripple_a, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_opa(s_ripple_a, 0, 0); /* outline only */
+   lv_obj_set_style_border_width(s_ripple_a, 3, 0);
+   lv_obj_set_style_border_color(s_ripple_a, lv_color_hex(0xFF5C50), 0);
+   lv_obj_set_style_border_opa(s_ripple_a, 0, 0); /* invisible at rest */
+   lv_obj_clear_flag(s_ripple_a, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_ripple_a, LV_OBJ_FLAG_HIDDEN);
+
+   s_ripple_b = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_ripple_b);
+   lv_obj_set_size(s_ripple_b, ORB_SIZE, ORB_SIZE);
+   lv_obj_set_pos(s_ripple_b, cx - (ORB_SIZE / 2), cy - (ORB_SIZE / 2));
+   lv_obj_set_style_radius(s_ripple_b, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_opa(s_ripple_b, 0, 0);
+   lv_obj_set_style_border_width(s_ripple_b, 3, 0);
+   lv_obj_set_style_border_color(s_ripple_b, lv_color_hex(0xFF5C50), 0);
+   lv_obj_set_style_border_opa(s_ripple_b, 0, 0);
+   lv_obj_clear_flag(s_ripple_b, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_ripple_b, LV_OBJ_FLAG_HIDDEN);
+
    /* Halo FIRST so it sits BEHIND s_body in z-order (LVGL draws siblings
     * in creation order).  s_body's opa-cover gradient masks the part of
     * the halo overlapping the orb; only the outer "bloom" ring shows. */
@@ -834,6 +868,62 @@ static void reset_pipeline_halo(void) {
    lv_obj_set_style_bg_color(s_halo, lv_color_hex(0xFFB870), LV_PART_MAIN);
 }
 
+/* PR 2 polish: sonar ripple drive.  Each ring grows from the body's
+ * diameter out to a comfortable margin past the halo, fading its
+ * border opacity from a confident peak to invisible over the cycle.
+ * Two rings 50% out of phase keep the cadence continuous.  Tick at
+ * ~60 Hz for smooth interpolation. */
+#define RIPPLE_CYCLE_MS 1800
+#define RIPPLE_MIN_PX ORB_SIZE
+#define RIPPLE_MAX_PX (ORB_HALO_DIAM + 60)
+#define RIPPLE_PEAK_OPA 180
+
+static void ripple_paint_one(lv_obj_t *o, float frac) {
+   if (!o) return;
+   /* Ease-out for the geometry growth so the ring decelerates as it
+    * expands — feels like a real ripple slowing as it propagates. */
+   float eased = 1.0f - (1.0f - frac) * (1.0f - frac);
+   int span = RIPPLE_MAX_PX - RIPPLE_MIN_PX;
+   int size = RIPPLE_MIN_PX + (int)(eased * (float)span);
+   lv_obj_set_size(o, size, size);
+   lv_obj_set_pos(o, s_orb_cx - size / 2, s_orb_cy - size / 2);
+   /* Opacity falls linearly from peak to 0 over the cycle. */
+   int opa = (int)((1.0f - frac) * RIPPLE_PEAK_OPA);
+   if (opa < 0) opa = 0;
+   if (opa > 255) opa = 255;
+   lv_obj_set_style_border_opa(o, (lv_opa_t)opa, LV_PART_MAIN);
+}
+
+static void ripple_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_ripple_a || !s_ripple_b) return;
+   uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t phase_a = t_ms % RIPPLE_CYCLE_MS;
+   uint32_t phase_b = (t_ms + RIPPLE_CYCLE_MS / 2) % RIPPLE_CYCLE_MS;
+   ripple_paint_one(s_ripple_a, (float)phase_a / (float)RIPPLE_CYCLE_MS);
+   ripple_paint_one(s_ripple_b, (float)phase_b / (float)RIPPLE_CYCLE_MS);
+}
+
+static void ripple_start(uint32_t color_hex) {
+   if (!s_ripple_a || !s_ripple_b) return;
+   lv_obj_set_style_border_color(s_ripple_a, lv_color_hex(color_hex), LV_PART_MAIN);
+   lv_obj_set_style_border_color(s_ripple_b, lv_color_hex(color_hex), LV_PART_MAIN);
+   lv_obj_clear_flag(s_ripple_a, LV_OBJ_FLAG_HIDDEN);
+   lv_obj_clear_flag(s_ripple_b, LV_OBJ_FLAG_HIDDEN);
+   if (!s_ripple_timer) {
+      s_ripple_timer = lv_timer_create(ripple_tick_cb, 16, NULL);
+   }
+}
+
+static void ripple_stop(void) {
+   if (s_ripple_timer) {
+      lv_timer_del(s_ripple_timer);
+      s_ripple_timer = NULL;
+   }
+   if (s_ripple_a) lv_obj_add_flag(s_ripple_a, LV_OBJ_FLAG_HIDDEN);
+   if (s_ripple_b) lv_obj_add_flag(s_ripple_b, LV_OBJ_FLAG_HIDDEN);
+}
+
 /* Paint the orb body in the pipeline-state tint.  Caller is responsible
  * for setting the caption text + showing the caption label.
  *
@@ -960,6 +1050,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
       case DICT_IDLE:
          hide_caption();
          reset_pipeline_halo();
+         ripple_stop();
          /* Repaint via the voice-state painter so the orb returns to its
           * normal IDLE/LISTENING/PROCESSING/SPEAKING visuals.  Re-paint
           * body for current hour too — paint_pipeline_body() shadowed it. */
@@ -975,6 +1066,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          ui_orb_set_state(ORB_STATE_LISTENING);
          paint_pipeline_body(0xE74C3C);
          paint_pipeline_halo(0xFF5C50); /* warm red halo glow */
+         ripple_start(0xFF7A6F);        /* sonar rings expanding outward */
          uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
          uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
          uint32_t s = dur_ms / 1000;
@@ -989,6 +1081,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
       }
 
       case DICT_UPLOADING:
+         ripple_stop();
          paint_pipeline_body(0xF59E0B);
          paint_pipeline_halo(0xFFB347); /* amber glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
@@ -996,6 +1089,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          break;
 
       case DICT_TRANSCRIBING:
+         ripple_stop();
          paint_pipeline_body(0xF59E0B);
          paint_pipeline_halo(0xFFB347); /* amber glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
@@ -1006,6 +1100,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          break;
 
       case DICT_SAVED:
+         ripple_stop();
          paint_pipeline_body(0x22C55E);
          paint_pipeline_halo(0x4ADE80); /* mint glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);
@@ -1019,6 +1114,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          break;
 
       case DICT_FAILED:
+         ripple_stop();
          paint_pipeline_body(0xE74C3C);
          paint_pipeline_halo(0xFF5C50);
          /* Drop the unicode mid-dot — FONT_HEADING (montserrat bold 22)
