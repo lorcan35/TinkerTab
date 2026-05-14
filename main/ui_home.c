@@ -2835,10 +2835,57 @@ static void orb_peak_stop(void) {
 
 /* Public: kick the orb anim system to match the current voice state.
  * Called from voice_set_state() via ui_home_refresh_sys_label. */
+/* TT #511 wave-1.5 — home chrome fade during in-place listening.
+ *
+ * When voice is active (LISTENING / PROCESSING / SPEAKING), fade the
+ * home screen's text + mode-chip + now-card + say-pill down to a
+ * heavily-dimmed opacity so the orb (which keeps rendering full at the
+ * center) reads as THE focus.  The voice overlay's BG is transparent
+ * (see ui_voice.c build_overlay) so home content shows through; this
+ * fade is what gives the visual "screen calms down, orb takes over"
+ * effect rather than a noisy backdrop.
+ *
+ * Status bar at top (Remote ngrok / sys label / time) stays at full —
+ * connectivity context matters during voice. */
+static void chrome_fade_anim_cb(void *obj, int32_t v) {
+   if (obj) lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+#define CHROME_DIM_OPA 50 /* ~20 % */
+#define CHROME_FULL_OPA 255
+#define CHROME_FADE_MS 250
+
+static void chrome_fade_to(lv_obj_t *obj, int target) {
+   if (!obj) return;
+   lv_anim_delete(obj, chrome_fade_anim_cb);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, obj);
+   lv_anim_set_exec_cb(&a, chrome_fade_anim_cb);
+   int cur = lv_obj_get_style_opa(obj, LV_PART_MAIN);
+   lv_anim_set_values(&a, cur, target);
+   lv_anim_set_time(&a, CHROME_FADE_MS);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+}
+
+static void ui_home_chrome_fade(bool voice_active) {
+   int target = voice_active ? CHROME_DIM_OPA : CHROME_FULL_OPA;
+   chrome_fade_to(s_state_word, target);
+   chrome_fade_to(s_greet_line, target);
+   chrome_fade_to(s_mode_chip, target);
+   chrome_fade_to(s_now_card, target);
+   chrome_fade_to(s_say_pill, target);
+}
+
 void ui_home_orb_aliveness_sync(void) {
    if (!s_orb) return;
    voice_state_t st = voice_get_state();
    bool active = (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING);
+   /* TT #511 wave-1.5: dim home chrome while voice is active so the
+    * orb (rendering through the transparent voice overlay) reads as
+    * the focal point.  Status bar at top stays full. */
+   ui_home_chrome_fade(active);
    /* Legacy halo-peak + halo-breath paths from #501/#508.  Both anims
     * target s_halo_outer / s_halo_inner which are NULL-stubbed in the
     * wave-1 redesign — these calls are now no-op'd by their internal
