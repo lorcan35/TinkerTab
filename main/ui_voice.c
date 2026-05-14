@@ -1237,8 +1237,15 @@ static void show_state_listening(void)
     } else {
         lv_label_set_text(s_lbl_status, "I'm here. Go.");
         if (s_lbl_sub) {
-            lv_label_set_text(s_lbl_sub, "LISTENING  \xe2\x80\xa2  RELEASE TO SEND");
-            lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+           /* TT #511 wave-1.9 (smoothness fix #2): copy was
+            * "LISTENING • RELEASE TO SEND" — but the gesture is
+            * tap-once, not hold-to-talk (the latter was retired
+            * years ago).  "RELEASE TO SEND" was a lie that
+            * confused users about what gesture was active.  New
+            * copy matches the actual affordance: tap-stop or
+            * wait it out. */
+           lv_label_set_text(s_lbl_sub, "LISTENING  \xe2\x80\xa2  TAP STOP TO SEND");
+           lv_obj_clear_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
         }
     }
     lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_36, 0);
@@ -1255,17 +1262,24 @@ static void show_state_listening(void)
     /* Show send/stop button so user knows how to stop recording */
     lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
 
-    /* Show recording duration timer — large and prominent */
+    /* TT #511 wave-1.9 (smoothness fix #1): hide the countdown clock
+     * in Ask mode.  The 30 s (now 60 s — see voice.c MAX_RECORD_FRAMES_ASK)
+     * cap is a silent safety net, not something the user needs to
+     * watch tick down.  The red panic-color at 5 s was actively
+     * stressful for a voice assistant.  Dictation mode still shows
+     * elapsed time (long-form recording flow where duration matters).
+     * Timer + label obj kept alive so dictation works; just don't
+     * show the label in Ask. */
     s_rec_seconds = 0;
     if (voice_get_mode() == VOICE_MODE_ASK) {
-        lv_label_set_text(s_lbl_rec_time, "0:30 left");
+       lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_label_set_text(s_lbl_rec_time, "0:00");
+        lv_obj_set_style_text_font(s_lbl_rec_time, FONT_HEADING, 0);
+        lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_CYAN), 0);
+        lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
+        lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_style_text_font(s_lbl_rec_time, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_lbl_rec_time, lv_color_hex(VO_CYAN), 0);
-    lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
-    lv_obj_clear_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
 
     /* Show send/stop button */
