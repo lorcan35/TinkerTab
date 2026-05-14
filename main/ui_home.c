@@ -73,10 +73,11 @@ static const char *TAG = "ui_home";
 
 /* Orb stage — v4·D Sovereign Halo (Phase 1a: geometry bump only).
  * Orb 156→180 (voice-first identity), halos scaled 1.18x, rings scaled 1.16x.
- * Stage position unchanged (ORB_CY=320). No shadow primitives — glow comes
- * from the concentric ring + 2-stop radial recipe already in use. */
+ * Stage position centered-down (TT #511 wave-1.6 UI cleanup pass).  Was 320
+ * (upper-third), moved to 550 so the orb is the visual center.  Greeting +
+ * say-pill shift below it. */
 #define ORB_CX            (SW / 2)
-#define ORB_CY            320
+#define ORB_CY 550
 #define ORB_SIZE          180
 #define HALO_OUTER        520
 #define HALO_INNER        340
@@ -668,32 +669,49 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(pip_lbl, FONT_SMALL, 0);
     lv_obj_center(pip_lbl);
 
-    /* ── State word + greet line (below orb) ───────────────── */
+    /* TT #511 wave-1.6 (change A): state-word killed.  The orb's lit
+     * state + status bar's green dot + bottom say-pill all already
+     * say "ready" — a fifth anchor was just noise.  Obj still created
+     * so existing ui_home_update_status writes to it don't crash; flag
+     * keeps it permanently invisible. */
     s_state_word = lv_label_create(s_screen);
     lv_label_set_text(s_state_word, "ready");
-    lv_obj_set_style_text_font(s_state_word, FONT_CLOCK, 0);  /* Montserrat 48 */
+    lv_obj_set_style_text_font(s_state_word, FONT_CLOCK, 0);
     lv_obj_set_style_text_color(s_state_word, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(s_state_word, -1, 0);
     lv_obj_set_width(s_state_word, SW);
     lv_obj_set_style_text_align(s_state_word, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(s_state_word, 0, 555);
+    lv_obj_add_flag(s_state_word, LV_OBJ_FLAG_HIDDEN);
 
     /* v4·D Sovereign Halo trail line — 24 px Fraunces italic serif that
      * sits under the state word.  Replaces the tiny all-caps "evening,
      * emile" label with an editorial subtitle matching d-sovereign-halo
      * mockup exactly.  Uses LABEL_LONG_WRAP so the em-dash clause can
      * break gracefully on narrow content if the greeting grows. */
+    /* TT #511 wave-1.6 (change C): greeting promoted as the primary
+     * human-warmth piece, anchored just below the now-centered orb
+     * (ORB_CY=550 → orb bottom at 640).  Lifted text color from
+     * TH_TEXT_SECONDARY to TH_TEXT_PRIMARY so it reads as content,
+     * not auxiliary chrome. */
     s_greet_line = lv_label_create(s_screen);
     lv_label_set_long_mode(s_greet_line, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(s_greet_line, trail_for_hour(9));  /* ui_home_update_status rewrites live */
+    lv_label_set_text(s_greet_line, trail_for_hour(9));
     lv_obj_set_style_text_font(s_greet_line, FONT_CHAT_EMPH, 0);
-    lv_obj_set_style_text_color(s_greet_line, lv_color_hex(TH_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_color(s_greet_line, lv_color_hex(TH_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_letter_space(s_greet_line, 0, 0);
     lv_obj_set_width(s_greet_line, SW - 2 * SIDE_PAD);
     lv_obj_set_style_text_align(s_greet_line, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(s_greet_line, SIDE_PAD, 640);
+    lv_obj_set_pos(s_greet_line, SIDE_PAD, 700);
 
-    /* ── Mode chip (pill, centered at y=680) ─────────────────── */
+    /* TT #511 wave-1.6 (change F): mode chip killed from home.  Was
+     * a 360 × 52 pill at y=680 showing current voice mode — info that
+     * lives in the user's head (they set the mode) and the orb's color
+     * (circadian; future wave-2 may add mode-tint).  Pill is now
+     * created HIDDEN — the long-press-orb gesture still opens the
+     * mode sheet for active switching.  Status-bar mode dot is a
+     * potential follow-up if the at-a-glance check turns out to
+     * matter; for now, clean wins. */
     s_mode_chip = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_mode_chip);
     pos_centered(s_mode_chip, 680, 360, 52);
@@ -745,8 +763,16 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(chip_chev, FONT_SMALL, 0);
     lv_obj_set_style_text_color(chip_chev, lv_color_hex(TH_TEXT_DIM), 0);
 
-    /* ── Now-slot card ─────────────────────────────────────── */
-    /* Live-line: no fill, 1 px borders on TOP + BOTTOM only (hairline rails) */
+    /* TT #511 wave-1.6 (change F): mode chip permanently hidden.
+     * Long-press orb still opens the mode sheet. */
+    lv_obj_add_flag(s_mode_chip, LV_OBJ_FLAG_HIDDEN);
+
+    /* TT #511 wave-1.6 (change B): now-card killed from idle.
+     * Obj still created so channel-notification code that writes to
+     * s_now_kicker / s_now_lede doesn't crash on NULL; HIDDEN keeps
+     * the divider-framed idle hint row out of the composition.
+     * If a notification surfaces here in the future, clear the flag
+     * dynamically (kept that path open). */
     s_now_card = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_now_card);
     lv_obj_set_pos(s_now_card, CARD_X, CARD_Y);
@@ -814,6 +840,11 @@ lv_obj_t *ui_home_create(void)
     /* Hidden until a widget with a known icon name arrives. */
     lv_obj_add_flag(s_now_icon, LV_OBJ_FLAG_HIDDEN);
 
+    /* TT #511 wave-1.6 (change B): hide the whole now-card row by
+     * default.  Subtree (kicker / lede / accent / icon) stays for
+     * future re-show via lv_obj_clear_flag on this parent. */
+    lv_obj_add_flag(s_now_card, LV_OBJ_FLAG_HIDDEN);
+
     /* ── Say pill (108 px) ─────────────────────────────────── */
     const int strip_y = SH - STRIP_BOT_PAD - SAY_GAP - SAY_H;
     s_say_pill = lv_obj_create(s_screen);
@@ -852,14 +883,23 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_color(mic_mark, lv_color_hex(TH_BG), 0);
     lv_obj_align(mic_mark, LV_ALIGN_CENTER, 0, -6);
 
-    /* W8: copy was "Hold to speak" but the say-pill is bound to tap
-     * (click) only — long-press is on the orb above.  Renamed to match
-     * the actual gesture. */
+    /* TT #511 wave-1.6 (change D): the music-note mic disc was a
+     * redundant audio symbol — the orb itself is the audio cue.
+     * Hide the amber circle + glyph to keep the pill clean.  Pill
+     * stays click-active; just no left-side icon. */
+    lv_obj_add_flag(s_say_mic, LV_OBJ_FLAG_HIDDEN);
+
+    /* TT #511 wave-1.6 (change D): the say-pill becomes a single
+     * centered line — "Hold orb for modes" — which is the actually
+     * useful affordance reveal (long-press secret).  "Tap to talk"
+     * was redundant with the orb itself. */
     s_say_label_main = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_main, "Tap to talk");
-    lv_obj_set_pos(s_say_label_main, 116, 26);
-    lv_obj_set_style_text_font(s_say_label_main, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_say_label_main, lv_color_hex(TH_TEXT_PRIMARY), 0);
+    lv_label_set_text(s_say_label_main, "Hold orb for modes");
+    lv_obj_set_width(s_say_label_main, CARD_W - 80);
+    lv_obj_set_pos(s_say_label_main, 40, (SAY_H - 28) / 2);
+    lv_obj_set_style_text_font(s_say_label_main, FONT_BODY, 0);
+    lv_obj_set_style_text_color(s_say_label_main, lv_color_hex(TH_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_align(s_say_label_main, LV_TEXT_ALIGN_CENTER, 0);
 
     /* TT #328 Wave 7 — was 'OR SAY "DRAGON"'.  Wake-word stack was
      * retired in #162 (TDM-slot mapping unworkable without a custom
@@ -878,12 +918,12 @@ lv_obj_t *ui_home_create(void)
      * ORB above, not on the pill.  Pre-W8 "HOLD FOR MODES" was
      * ambiguous about which surface the hold applies to — visible
      * confusion in audit screenshots. */
+    /* TT #511 wave-1.6 (change D): subtitle merged into the main
+     * label.  Obj created hidden so the chrome-fade loop still has a
+     * valid pointer; never rendered. */
     s_say_label_sub = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_sub, "HOLD ORB FOR MODES");
-    lv_obj_set_pos(s_say_label_sub, 116, 60);
-    lv_obj_set_style_text_font(s_say_label_sub, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(s_say_label_sub, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_style_text_letter_space(s_say_label_sub, 4, 0);
+    lv_label_set_text(s_say_label_sub, "");
+    lv_obj_add_flag(s_say_label_sub, LV_OBJ_FLAG_HIDDEN);
 
     /* ── Menu chip (56×56, right edge of say pill) ─────────────
      * v4·D Sovereign Halo: the 4-dot grid replaces the full nav rail.

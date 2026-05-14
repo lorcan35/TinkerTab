@@ -397,8 +397,27 @@ static void halo_anim_to(int target_opa) {
    lv_anim_start(&a);
 }
 
-static void speaking_enter(void) { halo_anim_to(ORB_SPEAKING_HALO_OPA); }
-static void speaking_exit(void) { halo_anim_to(0); }
+/* TT #511 wave-1.6 (change H): SPEAKING also brightens the body's
+ * top stop from cream-amber (0xFFEBC4) to near-white-warm (0xFFF8DC).
+ * Reads as "voice is coming out, the sphere is glowing slightly
+ * hotter."  Reverts to circadian palette on exit. */
+static void speaking_body_tint(bool active) {
+   if (!s_body) return;
+   if (active) {
+      lv_obj_set_style_bg_color(s_body, lv_color_hex(0xFFF8DC), LV_PART_MAIN);
+   } else {
+      paint_body_for_hour(orb_effective_hour());
+   }
+}
+
+static void speaking_enter(void) {
+   halo_anim_to(ORB_SPEAKING_HALO_OPA);
+   speaking_body_tint(true);
+}
+static void speaking_exit(void) {
+   halo_anim_to(0);
+   speaking_body_tint(false);
+}
 
 /* ── Skill-rim comet ─────────────────────────────────────────────────── */
 
