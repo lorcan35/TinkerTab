@@ -184,6 +184,7 @@ static lv_obj_t *s_dictate_chip = NULL;
 static lv_obj_t *s_dictate_chip_dot = NULL;   /* breathing dot, left edge */
 static lv_obj_t *s_dictate_chip_label = NULL; /* "Dictate" / "RECORDING" / etc. */
 static lv_obj_t *s_dictate_chip_hint = NULL;  /* "TAP TO START" / "0:23" / etc. */
+static lv_timer_t *s_dictate_chip_rec_t = NULL; /* PR 2 polish: ticks chip hint M:SS during RECORDING */
 static lv_obj_t *s_dictate_chip_icon = NULL;  /* 🎤 / × / 🔄 / ✓ */
 
 /* Now-slot card (widget live target + empty-state) */
@@ -2013,6 +2014,27 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
    }
 }
 
+/* PR 2 polish: timer cb that refreshes the chip's M:SS hint every 200 ms
+ * while RECORDING is active.  Self-stopping when pipeline leaves RECORDING. */
+static void dictate_chip_rec_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_dictate_chip_hint) return;
+   dict_event_t e = voice_dictation_get();
+   if (e.state != DICT_RECORDING) {
+      if (s_dictate_chip_rec_t) {
+         lv_timer_del(s_dictate_chip_rec_t);
+         s_dictate_chip_rec_t = NULL;
+      }
+      return;
+   }
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t dur_ms = (e.started_ms && now_ms >= e.started_ms) ? (now_ms - e.started_ms) : 0;
+   uint32_t s = dur_ms / 1000;
+   char buf[24];
+   snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+   lv_label_set_text(s_dictate_chip_hint, buf);
+}
+
 /* PR 2: keep the Dictate chip's label / hint / icon / border colour in
  * sync with the dictation pipeline state.  Mirrors the orb's heroic
  * painting at a compact chip scale. */
@@ -2022,6 +2044,12 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
    if (!s_dictate_chip || !s_dictate_chip_label || !s_dictate_chip_hint || !s_dictate_chip_icon ||
        !s_dictate_chip_dot) {
       return;
+   }
+
+   /* Tear down the chip M:SS ticker if we're leaving RECORDING. */
+   if (event->state != DICT_RECORDING && s_dictate_chip_rec_t) {
+      lv_timer_del(s_dictate_chip_rec_t);
+      s_dictate_chip_rec_t = NULL;
    }
 
    /* Default styling = IDLE.  Per-state branches mutate from this base. */
@@ -2047,6 +2075,13 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
          lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
          lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_CLOSE);
          lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
+         /* Spawn the 200 ms M:SS ticker so the chip's elapsed time keeps
+          * pace with the orb hero caption.  The pipeline subscriber only
+          * fires on state transitions, so the duration would otherwise
+          * stay frozen at the value computed on RECORDING entry. */
+         if (!s_dictate_chip_rec_t) {
+            s_dictate_chip_rec_t = lv_timer_create(dictate_chip_rec_tick_cb, 200, NULL);
+         }
          break;
       }
 

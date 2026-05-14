@@ -380,7 +380,23 @@ static void bloom_tick_cb(lv_timer_t *t) {
    if (rms < 0.0f) rms = 0.0f;
    if (rms > 1.0f) rms = 1.0f;
    s_bloom_rms_ema = (ORB_BLOOM_ALPHA * rms) + ((1.0f - ORB_BLOOM_ALPHA) * s_bloom_rms_ema);
-   int opa = ORB_HALO_OPA_FLOOR + (int)((float)(ORB_HALO_OPA_CEILING - ORB_HALO_OPA_FLOOR) * s_bloom_rms_ema);
+   /* PR 2 polish: during pipeline RECORDING (vs ambient LISTENING) bump
+    * the floor + ceiling so the halo reads as a confident "I'm listening"
+    * glow even when the user isn't speaking, plus add a 2-second sin
+    * breath so the orb feels alive instead of static.  Outside pipeline
+    * RECORDING, fall back to the ambient bloom envelope.  */
+   int floor_v = ORB_HALO_OPA_FLOOR;
+   int ceil_v = ORB_HALO_OPA_CEILING;
+   if (s_pipeline.state == DICT_RECORDING) {
+      floor_v = 110;
+      ceil_v = 180;
+      /* Slow breath: 0.5 Hz triangle wave on the floor itself, ±20 opa. */
+      uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      uint32_t phase = t_ms % 2000;
+      int delta = (phase < 1000) ? (int)(phase / 25) : (int)((2000 - phase) / 25); /* 0..40 */
+      floor_v += (delta - 20);
+   }
+   int opa = floor_v + (int)((float)(ceil_v - floor_v) * s_bloom_rms_ema);
    if (opa < 0) opa = 0;
    if (opa > 255) opa = 255;
    lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
@@ -800,6 +816,24 @@ lv_obj_t *ui_orb_get_body(void) { return s_body; }
 
 /* ── Pipeline state (PR 2) ───────────────────────────────────────────── */
 
+/* PR 2: paint the halo (s_halo) in the pipeline-state hue so the
+ * LISTENING bloom + steady SPEAKING halo blend with the body tint
+ * instead of bleeding the default cream-amber over a red/amber/green
+ * body.  Keep the existing opacity envelope (bloom timer + speaking
+ * fade); we only retune the color stop. */
+static void paint_pipeline_halo(uint32_t color_hex) {
+   if (!s_halo) return;
+   lv_obj_set_style_bg_color(s_halo, lv_color_hex(color_hex), LV_PART_MAIN);
+}
+
+/* Reset halo to its default cream-amber baseline (used on DICT_IDLE
+ * so subsequent voice-state visuals — IDLE/LISTENING/PROCESSING/
+ * SPEAKING — read with their original palette). */
+static void reset_pipeline_halo(void) {
+   if (!s_halo) return;
+   lv_obj_set_style_bg_color(s_halo, lv_color_hex(0xFFB870), LV_PART_MAIN);
+}
+
 /* Paint the orb body in the pipeline-state tint.  Caller is responsible
  * for setting the caption text + showing the caption label.
  *
@@ -846,6 +880,14 @@ static const char *fail_reason_caption(dict_fail_t r) {
 static void set_caption_text(const char *text) {
    if (!s_orb_caption || !text) return;
    lv_label_set_text(s_orb_caption, text);
+   /* Re-anchor the label after its size changed — lv_obj_align_to is a
+    * one-shot in LVGL 9.x, so the original create-time alignment was
+    * computed against a 0-width empty label and the rendered text drifted
+    * to the right.  Re-call here so each state's text re-centers under
+    * the orb. */
+   if (s_body) {
+      lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 22);
+   }
    lv_obj_clear_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -877,7 +919,10 @@ static void rec_timer_label_cb(lv_timer_t *t) {
    uint32_t s = dur_ms / 1000;
    char buf[40];
    snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
-   if (s_orb_caption) lv_label_set_text(s_orb_caption, buf);
+   if (s_orb_caption) {
+      lv_label_set_text(s_orb_caption, buf);
+      if (s_body) lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 22);
+   }
 }
 
 /* Subscriber bridge: voice_dictation fires this on the LVGL thread
@@ -914,6 +959,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
    switch (event->state) {
       case DICT_IDLE:
          hide_caption();
+         reset_pipeline_halo();
          /* Repaint via the voice-state painter so the orb returns to its
           * normal IDLE/LISTENING/PROCESSING/SPEAKING visuals.  Re-paint
           * body for current hour too — paint_pipeline_body() shadowed it. */
@@ -928,6 +974,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
           * runs because it manipulates s_halo, not s_body. */
          ui_orb_set_state(ORB_STATE_LISTENING);
          paint_pipeline_body(0xE74C3C);
+         paint_pipeline_halo(0xFF5C50); /* warm red halo glow */
          uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
          uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
          uint32_t s = dur_ms / 1000;
@@ -943,12 +990,14 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
       case DICT_UPLOADING:
          paint_pipeline_body(0xF59E0B);
+         paint_pipeline_halo(0xFFB347); /* amber glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
          set_caption_text("UPLOADING");
          break;
 
       case DICT_TRANSCRIBING:
          paint_pipeline_body(0xF59E0B);
+         paint_pipeline_halo(0xFFB347); /* amber glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
          set_caption_text("TRANSCRIBING");
          /* Reuse the existing PROCESSING comet animation for visual
@@ -958,6 +1007,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
       case DICT_SAVED:
          paint_pipeline_body(0x22C55E);
+         paint_pipeline_halo(0x4ADE80); /* mint glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);
          set_caption_text("SAVED");
          /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
@@ -970,6 +1020,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
 
       case DICT_FAILED:
          paint_pipeline_body(0xE74C3C);
+         paint_pipeline_halo(0xFF5C50);
          snprintf(buf, sizeof(buf), "%s  ·  TAP TO RETRY", fail_reason_caption(event->fail_reason));
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
          set_caption_text(buf);
