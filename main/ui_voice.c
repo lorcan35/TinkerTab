@@ -98,7 +98,11 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 #define ORB_GLOW_LAYERS    4         /* concentric circles for radial gradient */
 
 #define CLOSE_BTN_SZ       56
-#define CLOSE_BTN_MARGIN   16
+/* TT #511 wave-1.7: X close button moved BELOW the status bar (was
+ * 16 px from top, overlapping the "Thursday • HH:MM" time text).  80 px
+ * margin clears the status bar entirely. */
+#define CLOSE_BTN_MARGIN_X 16
+#define CLOSE_BTN_MARGIN_Y 80
 
 /* Chat area — between orb and send button */
 /* TT #511 wave-1.6 (change G): voice text now anchors BELOW the
@@ -1110,8 +1114,7 @@ static void build_close_button(lv_obj_t *parent)
     s_close_btn = lv_obj_create(parent);
     if (!s_close_btn) { ESP_LOGE(TAG, "OOM creating close button"); return; }
     lv_obj_set_size(s_close_btn, CLOSE_BTN_SZ, CLOSE_BTN_SZ);
-    lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT,
-                 -(int32_t)CLOSE_BTN_MARGIN, CLOSE_BTN_MARGIN);
+    lv_obj_align(s_close_btn, LV_ALIGN_TOP_RIGHT, -(int32_t)CLOSE_BTN_MARGIN_X, CLOSE_BTN_MARGIN_Y);
     lv_obj_set_style_radius(s_close_btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(s_close_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_close_btn, 0, 0);
@@ -1195,7 +1198,15 @@ static void set_state_icon(const char *glyph, uint32_t color_hex) {
    }
    lv_label_set_text(s_lbl_state_icon, glyph);
    lv_obj_set_style_text_color(s_lbl_state_icon, lv_color_hex(color_hex), 0);
-   lv_obj_clear_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+   /* TT #511 wave-1.7: the new ui_orb state machine already conveys
+    * state via comet (PROCESSING) / bloom (LISTENING) / steady halo
+    * (SPEAKING) / circadian (IDLE).  Showing a separate purple
+    * refresh icon + music-note + check glyph on top of the orb is
+    * redundant.  Keep the obj for compat (state handlers still set
+    * its text); force HIDDEN at the un-hide site so it never
+    * renders. */
+   lv_obj_add_flag(s_lbl_state_icon, LV_OBJ_FLAG_HIDDEN);
+   (void)glyph;
 }
 
 static void show_state_listening(void)
@@ -1276,6 +1287,14 @@ static void show_state_listening(void)
  * PROCESSING and SPEAKING both re-evaluate without duplicating code. */
 static void render_queue_badge(void)
 {
+   /* TT #511 wave-1.7: "+N QUEUED" caption suppressed.  Confusing
+    * noise alongside the clean status line + orb motion; the queued
+    * turn is still processed, just not announced.  If queue depth
+    * matters in a future flow, surface it via a toast or status-bar
+    * indicator instead of stacking text under the orb. */
+   if (s_lbl_sub) lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
+   return;
+#if 0  /* dead-coded; preserved for cherry-pick reference */
     if (!s_lbl_sub) return;
     int depth = voice_get_queue_depth();
     if (depth > 0) {
@@ -1287,6 +1306,7 @@ static void render_queue_badge(void)
     } else {
         lv_obj_add_flag(s_lbl_sub, LV_OBJ_FLAG_HIDDEN);
     }
+#endif /* dead-coded — see TT #511 wave-1.7 comment */
 }
 
 static void show_state_processing(const char *detail)
@@ -1362,8 +1382,10 @@ static void show_state_processing(const char *detail)
         /* STT arrived but no LLM yet — show thinking status.
          * TinkerClaw mode: "Agent thinking..." to signal agent reasoning */
         uint8_t vmode = tab5_settings_get_voice_mode();
-        lv_label_set_text(s_lbl_status,
-            vmode == VOICE_MODE_TINKERCLAW ? "Agent thinking." : "Thinking.");
+        /* TT #511 wave-1.7: dropped the trailing period and the
+         * separate dots-animation; the comet orbit is the motion
+         * cue, the text is just the noun. */
+        lv_label_set_text(s_lbl_status, vmode == VOICE_MODE_TINKERCLAW ? "Agent thinking" : "Thinking");
         lv_obj_set_style_text_color(s_lbl_status, lv_color_hex(VO_TEXT_MID), 0);
         lv_obj_set_style_text_font(s_lbl_status, &lv_font_montserrat_28, 0);
         lv_obj_align(s_lbl_status, LV_ALIGN_CENTER, 0,
@@ -1377,7 +1399,11 @@ static void show_state_processing(const char *detail)
             lv_obj_set_style_text_color(s_lbl_dots, lv_color_hex(VO_PURPLE), 0);
             lv_obj_align(s_lbl_dots, LV_ALIGN_CENTER, 0,
                          ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
-            lv_obj_clear_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
+            /* TT #511 wave-1.7: animated dots redundant with the new
+             * ui_orb's skill-rim comet (the orbit itself is the
+             * "thinking" visual).  Keep obj + timer for compat;
+             * force HIDDEN so it never renders. */
+            lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
             s_dot_timer = lv_timer_create(dot_timer_cb, ANIM_DOT_MS, NULL);
         }
     }
