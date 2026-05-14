@@ -56,6 +56,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "imu.h" /* TT #511 diagnose-first — GET /imu live accel/gyro read */
 #include "lvgl.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
@@ -63,6 +64,7 @@
 #include "tool_log.h"
 #include "ui_core.h"     /* ui_core_get_fps */
 #include "ui_keyboard.h" /* ui_keyboard_is_visible / dump_layout */
+#include "ui_orb.h"      /* TT #511 step 8 — POST /orb/presence dim test endpoint */
 #include "voice.h"
 #include "wifi.h"
 
@@ -186,6 +188,66 @@ static esp_err_t battery_handler(httpd_req_t *req) {
    } else {
       cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
    }
+   return send_json_resp(req, root);
+}
+
+/* ── GET /imu ─────────────────────────────────────────────────────────
+ *
+ * Live BMI270 read.  Diagnose-first companion for the orb-redesign tilt
+ * specular (TT #511 attempt didn't visibly move the highlight; we need
+ * to verify the IMU is actually producing non-zero values before we
+ * wire it to LVGL again).  Returns:
+ *
+ *   { "ok": true,
+ *     "accel": { "x": -0.02, "y": -0.01, "z": 0.99 },
+ *     "gyro":  { "x": 0.4,   "y": -0.1,  "z": 0.0  },
+ *     "age_ms": 12 }
+ *
+ *   { "ok": false, "error": "ESP_ERR_NOT_FOUND" }   on read failure
+ *
+ * Bearer-auth, same as siblings.  Synchronous I2C; budget ~2 ms.
+ */
+static esp_err_t imu_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   int64_t t0 = esp_timer_get_time();
+   tab5_imu_data_t d = {0};
+   esp_err_t r = tab5_imu_read(&d);
+   int64_t age_us = esp_timer_get_time() - t0;
+   cJSON *root = cJSON_CreateObject();
+   if (r == ESP_OK) {
+      cJSON_AddBoolToObject(root, "ok", true);
+      cJSON *acc = cJSON_AddObjectToObject(root, "accel");
+      cJSON_AddNumberToObject(acc, "x", (double)d.accel.x);
+      cJSON_AddNumberToObject(acc, "y", (double)d.accel.y);
+      cJSON_AddNumberToObject(acc, "z", (double)d.accel.z);
+      cJSON *gy = cJSON_AddObjectToObject(root, "gyro");
+      cJSON_AddNumberToObject(gy, "x", (double)d.gyro.x);
+      cJSON_AddNumberToObject(gy, "y", (double)d.gyro.y);
+      cJSON_AddNumberToObject(gy, "z", (double)d.gyro.z);
+      cJSON_AddNumberToObject(root, "age_ms", (double)(age_us / 1000));
+   } else {
+      cJSON_AddBoolToObject(root, "ok", false);
+      cJSON_AddStringToObject(root, "error", esp_err_to_name(r));
+   }
+   return send_json_resp(req, root);
+}
+
+/* ── POST /orb/presence?p=0|1 ────────────────────────────────────────── */
+
+/* TT #511 wave-1 step 8: debug-server hook for the orb's presence-wake
+ * dim machinery.  The auto-trigger from camera face-detection is wave-2
+ * follow-up; this endpoint lets us test the dim VISUAL behavior in
+ * isolation.  p=1 → orb at full brightness; p=0 → orb dims to ~33%. */
+static esp_err_t orb_presence_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   char q[32] = {0}, v[8] = {0};
+   httpd_req_get_url_query_str(req, q, sizeof(q));
+   httpd_query_key_value(q, "p", v, sizeof(v));
+   int p = atoi(v);
+   bool near = (p != 0);
+   ui_orb_set_presence(near);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "near", near);
    return send_json_resp(req, root);
 }
 
@@ -495,6 +557,9 @@ void debug_server_metrics_register(httpd_handle_t server) {
    static const httpd_uri_t uri_tasks = {.uri = "/tasks", .method = HTTP_GET, .handler = tasks_handler};
    static const httpd_uri_t uri_logs_tail = {.uri = "/logs/tail", .method = HTTP_GET, .handler = logs_tail_handler};
    static const httpd_uri_t uri_battery = {.uri = "/battery", .method = HTTP_GET, .handler = battery_handler};
+   static const httpd_uri_t uri_imu = {.uri = "/imu", .method = HTTP_GET, .handler = imu_handler};
+   static const httpd_uri_t uri_orb_presence = {
+       .uri = "/orb/presence", .method = HTTP_POST, .handler = orb_presence_handler};
    static const httpd_uri_t uri_disp_bright = {
        .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler};
    static const httpd_uri_t uri_audio_get = {.uri = "/audio", .method = HTTP_GET, .handler = audio_handler};
@@ -514,6 +579,8 @@ void debug_server_metrics_register(httpd_handle_t server) {
    httpd_register_uri_handler(server, &uri_tasks);
    httpd_register_uri_handler(server, &uri_logs_tail);
    httpd_register_uri_handler(server, &uri_battery);
+   httpd_register_uri_handler(server, &uri_imu);
+   httpd_register_uri_handler(server, &uri_orb_presence);
    httpd_register_uri_handler(server, &uri_disp_bright);
    httpd_register_uri_handler(server, &uri_audio_get);
    httpd_register_uri_handler(server, &uri_audio_post);

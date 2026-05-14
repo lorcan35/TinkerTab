@@ -53,6 +53,7 @@
 #include "ui_keyboard.h"
 #include "ui_memory.h"
 #include "ui_notes.h"
+#include "ui_orb.h"
 #include "ui_settings.h"
 #include "ui_theme.h"
 #include "ui_voice.h"
@@ -241,8 +242,9 @@ static void mode_chip_click_cb(lv_event_t *e); /* TT #370 */
 /* U19 (#206): rail callbacks removed with the rail itself. */
 static bool any_overlay_visible(void);
 static void show_toast_internal(const char *text);
-static void orb_paint_for_mode(uint8_t mode);
-static void orb_paint_for_tone(widget_tone_t tone);
+/* TT #511 wave-1 redesign: orb_paint_for_mode / _for_tone moved into
+ * the new ui_orb.{c,h} module; forward decls removed.  Call sites use
+ * ui_orb_paint_for_mode / ui_orb_paint_for_tone directly. */
 /* TT #328 Wave 9 — first-launch mode-chip discoverability hint cb. */
 static void mode_hint_fire_cb(lv_timer_t *t);
 /* TT #328 Wave 11 — orb status pip painter (P0 #16). */
@@ -330,158 +332,20 @@ static void format_right_time(char *buf, size_t n, const struct tm *tm)
  * binary + visually no-one notices a 1-hour difference within a phase.
  * 7 phases (dawn/morning/midday/afternoon/sunset/dusk/night) is the
  * sweet spot — enough motion to feel alive, simple enough to debug. */
-static int8_t s_orb_force_hour = -1; /* -1 = real time; 0..23 = override */
+/* TT #511 wave-1 redesign: pick_circadian_palette, orb_paint_for_mode,
+ * orb_repaint_if_hour_changed, orb_force_repaint_async_cb, and the
+ * s_orb_force_hour / s_last_painted_hour bookkeeping all moved into
+ * the new ui_orb.{c,h} module.  Public ui_home APIs below stay as
+ * thin shims so existing callers (debug_server_nav.c) keep working
+ * unchanged. */
 
-static void pick_circadian_palette(int hour, uint32_t *top, uint32_t *bot) {
-   /* Wrap any out-of-range into [0,23]. */
-   if (hour < 0 || hour > 23) hour = 12;
-   if (hour >= 5 && hour <= 6) {
-      /* Dawn — pale gold → coral */
-      *top = 0xFFE4A8;
-      *bot = 0xE89A6B;
-   } else if (hour >= 7 && hour <= 10) {
-      /* Morning — warm yellow → amber */
-      *top = 0xFFD568;
-      *bot = 0xD2811A;
-   } else if (hour >= 11 && hour <= 14) {
-      /* Midday — the historic v4·D Sovereign Halo default */
-      *top = 0xFFC75A;
-      *bot = 0xB9650A;
-   } else if (hour >= 15 && hour <= 17) {
-      /* Afternoon — orange → terracotta */
-      *top = 0xFF9E55;
-      *bot = 0xA04A0E;
-   } else if (hour >= 18 && hour <= 20) {
-      /* Sunset — rose-gold → maroon */
-      *top = 0xFF8050;
-      *bot = 0x8B3010;
-   } else if (hour >= 21 && hour <= 22) {
-      /* Dusk — burnished bronze → dark amber */
-      *top = 0xD5A050;
-      *bot = 0x804008;
-   } else {
-      /* Night (23 + 0-4) — muted brass → near-black ember */
-      *top = 0x7F6535;
-      *bot = 0x2A1F0F;
-   }
-}
-
-/* Hour-change tracker — `ui_home_update_status` calls
- * `orb_repaint_if_hour_changed()` on every 2 s refresh tick, but
- * actual paint only fires when the hour rolls over (or after a
- * `orb_force_hour` mutation).  Cheap. */
-static int s_last_painted_hour = -1;
-
-static void orb_paint_for_mode(uint8_t mode)
-{
-    if (!s_orb) return;
-    (void)mode;
-    /* TT #510 buttery sphere — VERTICAL gradient with dramatically
-     * widened color range.  Tried LVGL radial gradient (#510 v1) but
-     * the render cost on a 180 px circle hangs Tab5 at boot.
-     * Workaround: classic "lit from above" effect via bright-cream-
-     * top → deep-dark-bottom vertical gradient.  The eye reads this
-     * as a 3D sphere lit from above (basic but effective).
-     *
-     * Top color = a fixed bright highlight (cream-amber).
-     * Bottom color = the hour-palette's shadow color, darkened
-     * further for a strong terminator. */
-    int hour;
-    if (s_orb_force_hour >= 0) {
-       hour = s_orb_force_hour;
-    } else {
-       time_t now = 0;
-       time(&now);
-       struct tm tm_local;
-       localtime_r(&now, &tm_local);
-       hour = tm_local.tm_hour;
-    }
-    uint32_t mid = 0, edge = 0;
-    pick_circadian_palette(hour, &mid, &edge);
-    (void)mid; /* unused in this approach — only the dark stop is hue-shifted */
-
-    /* Darken the edge color significantly (>50%) for a strong shadow
-     * side.  Makes the orb's vertical gradient span enough luminosity
-     * range to read as 3D. */
-    uint8_t er = (edge >> 16) & 0xFF;
-    uint8_t eg = (edge >> 8) & 0xFF;
-    uint8_t eb = edge & 0xFF;
-    er >>= 1; /* halve each channel — much darker bottom */
-    eg >>= 1;
-    eb >>= 1;
-
-    /* Fixed bright cream-amber for the lit side, always warm. */
-    lv_obj_set_style_bg_color(s_orb, lv_color_hex(0xFFEBC4), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_color(s_orb, lv_color_make(er, eg, eb), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
-    s_last_painted_hour = hour;
-}
-
-/* Re-paint the orb if the current effective hour differs from the
- * last painted hour.  Called from ui_home_update_status (2 s tick)
- * so the orb visibly drifts during a long session. */
-static void orb_repaint_if_hour_changed(void) {
-   if (!s_orb) return;
-   int hour;
-   if (s_orb_force_hour >= 0) {
-      hour = s_orb_force_hour;
-   } else {
-      time_t now = 0;
-      time(&now);
-      struct tm tm_local;
-      localtime_r(&now, &tm_local);
-      hour = tm_local.tm_hour;
-   }
-   if (hour != s_last_painted_hour) {
-      orb_paint_for_mode(s_badge_mode);
-   }
-}
-
-/* LVGL-thread cb that does the actual repaint after a force_hour mutation. */
-static void orb_force_repaint_async_cb(void *arg) {
-   (void)arg;
-   if (s_orb) orb_paint_for_mode(s_badge_mode);
-}
-
-/* Public: debug-server endpoint hook.  Set h=-1 to clear the override
- * and return to real time.  h=0..23 simulates that hour for the next
- * orb repaint.  Returns the effective hour after the set.
- *
- * THREAD-SAFE: the override mutation is two int writes (a 2-step race
- * is fine — the next refresh tick re-reads cleanly).  The actual LVGL
- * repaint is marshalled via tab5_lv_async_call so this can be called
- * from httpd / WS / any non-LVGL task.  Calling LVGL functions
- * directly from the httpd task starves the LVGL thread on rapid
- * bursts (TASK_WDT trip — surfaced by the TT #503 24-hour walk). */
 int ui_home_orb_force_hour(int h) {
    if (h < -1 || h > 23) return -2; /* invalid */
-   s_orb_force_hour = (int8_t)h;
-   s_last_painted_hour = -1; /* force next refresh tick to repaint */
-   /* Best-effort immediate repaint via the W14-H10 lv_async_call
-    * wrapper so a caller polling right after the POST sees the new
-    * gradient without waiting 2 s for the refresh tick. */
-   tab5_lv_async_call(orb_force_repaint_async_cb, NULL);
+   ui_orb_force_hour(h);
    return (h < 0) ? -1 : h;
 }
 
-/* Public: read the EFFECTIVE hour the orb is committed to — the value
- * that the next paint will use.  Decoupled from `s_last_painted_hour`
- * (which tracks the most recent painted hour) so callers polling right
- * after a force_hour POST see the committed state even if the async
- * repaint hasn't flushed yet.
- *
- *   - If override is set (s_orb_force_hour >= 0) → return that.
- *   - Otherwise → return the current real-time hour from localtime_r.
- *   - Never returns -1 in normal operation. */
-int ui_home_orb_current_hour(void) {
-   if (s_orb_force_hour >= 0) return (int)s_orb_force_hour;
-   time_t now = 0;
-   time(&now);
-   struct tm tm_local;
-   localtime_r(&now, &tm_local);
-   return tm_local.tm_hour;
-}
+int ui_home_orb_current_hour(void) { return ui_orb_get_effective_hour(); }
 
 /* TT #328 Wave 11 P0 #16 — paint the orb status pip based on what the
  * next tap will actually do.  Hidden when the default tap-to-listen
@@ -527,23 +391,7 @@ static void paint_orb_pip_for_context(void) {
 
 /* Widget-tone orb override — used when a live widget claims the slot.
  * calm=emerald, active=amber, approaching=amber-hot, urgent=rose, done=settled. */
-static void orb_paint_for_tone(widget_tone_t tone)
-{
-    if (!s_orb) return;
-    uint32_t top, bot;
-    switch (tone) {
-        case WIDGET_TONE_CALM:        top = 0x7DE69F; bot = 0x166C3A; break;
-        case WIDGET_TONE_ACTIVE:      top = 0xFFC75A; bot = 0xB9650A; break;
-        case WIDGET_TONE_APPROACHING: top = 0xFFB637; bot = 0xD97706; break;
-        case WIDGET_TONE_URGENT:      top = 0xFF7E95; bot = 0xF43F5E; break;
-        case WIDGET_TONE_DONE:        top = 0xBBFFCC; bot = 0x0E5E2A; break;
-        default:                      top = 0xFFC75A; bot = 0xB9650A; break;
-    }
-    lv_obj_set_style_bg_color(s_orb, lv_color_hex(top), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_color(s_orb, lv_color_hex(bot), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_dir(s_orb, LV_GRAD_DIR_VER, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_orb, LV_OPA_COVER, LV_PART_MAIN);
-}
+/* orb_paint_for_tone moved to ui_orb.c as ui_orb_paint_for_tone. */
 
 /* Phase 4 of #42: bouncy dot pulse on mode cycle.
  *
@@ -620,7 +468,7 @@ static void update_mode_ui(uint8_t mode)
    if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
    if (s_mode_name) lv_label_set_text(s_mode_name, s_mode_short[mode]);
    if (s_mode_sub) lv_label_set_text(s_mode_sub, s_mode_tagline[mode]);
-   orb_paint_for_mode(mode);
+   ui_orb_paint_for_mode(mode);
 
    /* Phase 4 (#42): pulse the dot only on actual mode changes (not the
     * initial chip creation paint).  Without the first-paint guard, the
@@ -713,25 +561,16 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_align(s_time_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_letter_space(s_time_label, 1, 0);
 
-    /* ── Orb stage (halos + rings + orb) ───────────────────── */
-    /* Halos: dim amber circles, stacked largest-first so opacity adds. */
-    s_halo_outer = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_halo_outer);
-    pos_centered(s_halo_outer, ORB_CY - HALO_OUTER / 2, HALO_OUTER, HALO_OUTER);
-    lv_obj_set_style_radius(s_halo_outer, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_halo_outer, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(s_halo_outer, 18, 0);   /* ~7% */
-    lv_obj_clear_flag(s_halo_outer, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-
-    s_halo_inner = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_halo_inner);
-    pos_centered(s_halo_inner, ORB_CY - HALO_INNER / 2, HALO_INNER, HALO_INNER);
-    lv_obj_set_style_radius(s_halo_inner, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_halo_inner, lv_color_hex(TH_AMBER), 0);
-    /* TT #508 v3: was 38 (15%) — looked like a second concentric ring.
-     * 16 (6%) makes it blend with halo_outer for a single soft haze. */
-    lv_obj_set_style_bg_opa(s_halo_inner, 16, 0);
-    lv_obj_clear_flag(s_halo_inner, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    /* ── Orb stage ──────────────────────────────────────────────
+     * TT #511 wave-1: halos REMOVED.  The 520 px / 340 px amber discs
+     * behind the orb read as flat 2D plates the sphere sat on top of,
+     * breaking the floating-sphere illusion of the #510 vertical-
+     * gradient body.  Pointers stay NULL; every site that touches
+     * them already null-guards (breath anim, peak meter, destroy
+     * path).  See docs/superpowers/specs/2026-05-14-orb-redesign-
+     * design.md §1 for context. */
+    s_halo_outer = NULL;
+    s_halo_inner = NULL;
 
     /* Rings: border-only circles for a "composed" orb. */
     s_ring_outer = lv_obj_create(s_screen);
@@ -770,17 +609,20 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_border_opa(s_ring_inner, 60, 0);
     lv_obj_clear_flag(s_ring_inner, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-    /* The orb itself — 156 px, 2-stop vertical gradient, no shadow. */
-    s_orb = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_orb);
-    pos_centered(s_orb, ORB_CY - ORB_SIZE / 2, ORB_SIZE, ORB_SIZE);
-    lv_obj_set_style_radius(s_orb, LV_RADIUS_CIRCLE, 0);
-    orb_paint_for_mode(s_badge_mode);
-    lv_obj_add_flag(s_orb, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(s_orb, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_orb, orb_click_cb, LV_EVENT_CLICKED, NULL);
-    ui_fb_icon(s_orb); /* TT #328 Wave 10 — opacity dip on press */
-    lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+    /* TT #511 wave-1: the orb body itself + its circadian paint +
+     * initial sizing live in ui_orb.  Click + long-press handlers
+     * stay here (they bridge to voice / mode-sheet, which are home
+     * concerns).  s_orb is kept as a local alias to the body obj so
+     * legacy code that touches it (status pip child, dead halo/ring
+     * anim guards, etc.) keeps compiling without further surgery. */
+    ui_orb_create(s_screen, SW / 2, ORB_CY);
+    ui_orb_paint_for_mode(s_badge_mode);
+    s_orb = ui_orb_get_body();
+    if (s_orb) {
+       lv_obj_add_event_cb(s_orb, orb_click_cb, LV_EVENT_CLICKED, NULL);
+       ui_fb_icon(s_orb); /* TT #328 Wave 10 — opacity dip on press */
+       lv_obj_add_event_cb(s_orb, orb_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+    }
 
     /* TT #508 — ember removed.  TT #507's inner specular highlight
      * still read as "ball inside ball" + the user explicitly said
@@ -1104,7 +946,7 @@ lv_obj_t *ui_home_create(void)
     /* TT #503: paint the orb at the current hour-of-day immediately
      * instead of waiting for the first refresh tick.  Without this the
      * orb shows the previous boot's last-painted hour for up to 2 s. */
-    orb_repaint_if_hour_changed();
+    ui_orb_repaint_if_hour_changed();
 
     if (s_refresh_timer == NULL) {
         /* 2 s safety-net poll — the real state push is from voice.c via
@@ -1252,7 +1094,7 @@ void ui_home_update_status(void)
     /* TT #503: re-paint the orb if hour rolled over since last paint.
      * One-shot per hour — pick_circadian_palette is pure-data so the
      * check is microsecond-scale on the no-op path. */
-    orb_repaint_if_hour_changed();
+    ui_orb_repaint_if_hour_changed();
 
     /* TT #328 Wave 11 P0 #16 — keep the orb status pip in sync with the
      * branching state so the user sees what tap will do at a glance. */
@@ -1627,7 +1469,7 @@ void ui_home_update_status(void)
             const char *cur = lv_label_get_text(s_now_lede);
             if (!cur || strcmp(cur, buf) != 0) lv_label_set_text(s_now_lede, buf);
         }
-        orb_paint_for_tone(live_w->tone);
+        ui_orb_paint_for_tone(live_w->tone);
     } else {
         /* Empty-state kicker + lede — Sovereign Halo live-line uses a
          * single short word on the left so the lede has room to breathe. */
@@ -1684,7 +1526,7 @@ void ui_home_update_status(void)
             const char *cur = lv_label_get_text(s_now_lede);
             if (!cur || strcmp(cur, lede) != 0) lv_label_set_text(s_now_lede, lede);
         }
-        orb_paint_for_mode(s_badge_mode);
+        ui_orb_paint_for_mode(s_badge_mode);
     }
 
     /* Mode chip (re-read from NVS) */
@@ -2374,6 +2216,7 @@ void ui_home_destroy(void)
        s_channel_card = NULL;
     }
     if (s_screen) { lv_obj_del(s_screen); s_screen = NULL; }
+    ui_orb_destroy(); /* TT #511: clear ui_orb's handles + state machine. */
     s_sys_dot = s_sys_label = s_time_label = NULL;
     s_halo_outer = s_halo_inner = NULL;
     s_ring_outer = s_ring_mid = s_ring_inner = NULL;
@@ -2996,12 +2839,35 @@ void ui_home_orb_aliveness_sync(void) {
    if (!s_orb) return;
    voice_state_t st = voice_get_state();
    bool active = (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_SPEAKING);
+   /* Legacy halo-peak + halo-breath paths from #501/#508.  Both anims
+    * target s_halo_outer / s_halo_inner which are NULL-stubbed in the
+    * wave-1 redesign — these calls are now no-op'd by their internal
+    * null guards.  Kept here only so the function compiles cleanly
+    * until the leftover anim infrastructure is deleted in a follow-up. */
    if (active) {
       if (s_orb_peak_timer == NULL) orb_peak_start();
    } else {
       if (s_orb_peak_timer) orb_peak_stop();
       if (!s_orb_breath_running) orb_breath_start();
    }
+
+   /* TT #511 wave-1: route voice states to the new ui_orb state machine. */
+   ui_orb_state_t orb_s;
+   switch (st) {
+      case VOICE_STATE_LISTENING:
+         orb_s = ORB_STATE_LISTENING;
+         break;
+      case VOICE_STATE_PROCESSING:
+         orb_s = ORB_STATE_PROCESSING;
+         break;
+      case VOICE_STATE_SPEAKING:
+         orb_s = ORB_STATE_SPEAKING;
+         break;
+      default:
+         orb_s = ORB_STATE_IDLE;
+         break;
+   }
+   ui_orb_set_state(orb_s);
 }
 
 /* Pause both anim modes (overlay opened, screen left).  Restored via
@@ -3140,12 +3006,14 @@ static void ripple_async_cb(void *arg) {
  * from the WS task (the call into LVGL is marshalled via the W14-H10
  * tab5_lv_async_call wrapper). */
 void ui_home_orb_ripple_for_tool(const char *tool_name) {
-   if (!s_orb) return;
-   uint32_t color = ripple_color_for_tool(tool_name);
-   ripple_args_t *args = (ripple_args_t *)malloc(sizeof(*args));
-   if (!args) return;
-   args->color = color;
-   tab5_lv_async_call(ripple_async_cb, args);
+   /* TT #511 wave-1 step 6: comet replaces the ripple shower.
+    * voice.c is already in VOICE_STATE_PROCESSING during tool_call
+    * messages, so the orb is already showing the comet via the
+    * voice_set_state → ui_home_orb_aliveness_sync bridge.  This
+    * function stays as a no-op binary-compat shim so
+    * voice_ws_proto.c keeps linking; the ripple_pool + per-tool
+    * color logic is dead code, cleaned up in a follow-up. */
+   (void)tool_name;
 }
 
 /* Wave 7 F5 crash surface: paint the orb rose for ~2.5 s so a mid-turn
@@ -3154,13 +3022,13 @@ void ui_home_orb_ripple_for_tool(const char *tool_name) {
 static void orb_pulse_revert_cb(lv_timer_t *t)
 {
     lv_timer_del(t);
-    if (s_orb) orb_paint_for_mode(s_badge_mode);
+    if (s_orb) ui_orb_paint_for_mode(s_badge_mode);
 }
 
 void ui_home_pulse_orb_alert(void)
 {
     if (!s_orb) return;
-    orb_paint_for_tone(WIDGET_TONE_URGENT);
+    ui_orb_paint_for_tone(WIDGET_TONE_URGENT);
     lv_timer_t *rev = lv_timer_create(orb_pulse_revert_cb, 2500, NULL);
     if (rev) lv_timer_set_repeat_count(rev, 1);
 }

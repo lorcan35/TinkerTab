@@ -113,16 +113,11 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
  * remain, tell the user we'll keep trying and where to manually retry.
  * Once exhausted, fall back to the original "needs power-cycle" guidance. */
 static void k144_unavailable_banner_async(void *arg) {
-   bool exhausted = (bool)(uintptr_t)arg;
-   if (exhausted) {
-      ui_home_show_error_banner("Onboard LLM unavailable — power-cycle K144 to retry.",
-                                NULL /* non-dismissable until next reboot */);
-   } else {
-      ui_home_show_error_banner(
-          "Onboard LLM offline — auto-retrying every 60s. Tap Settings → Onboard for "
-          "manual retry.",
-          NULL);
-   }
+   (void)arg;
+   /* TT #511 wave-1: banner suppressed — it cluttered the home screen
+    * on every K144-less boot.  Diagnostics live in `m5.warmup` /
+    * `error.k144` obs events + GET /m5; on-tap toast still fires when
+    * the user actively touches Onboard while it's unhealthy. */
 }
 
 /* esp_timer callback — fires off the esp_timer dispatcher task.  Must

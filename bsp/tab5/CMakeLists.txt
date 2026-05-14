@@ -2,7 +2,8 @@ if(NOT IDF_TARGET STREQUAL "linux")
     idf_component_register(
         SRCS "display.c" "esp_lcd_st7123.c" "touch.c"
              "audio.c" "mic.c" "camera.c"
-             "io_expander.c" "battery.c" "imu.c" "tab5_rtc.c" "bluetooth.c"
+             "io_expander.c" "battery.c" "imu.c" "bmi270_config.c"
+             "tab5_rtc.c" "bluetooth.c"
              "uart_port_c.c"
         INCLUDE_DIRS "."
         REQUIRES esp_lcd esp_psram driver esp_driver_i2c esp_driver_i2s
