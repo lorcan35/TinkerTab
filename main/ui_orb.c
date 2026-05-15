@@ -34,7 +34,7 @@ static const char *TAG = "ui_orb";
 
 /* ── Sizing / layout constants ──────────────────────────────────────── */
 
-#define ORB_SIZE 180 /* body diameter — matches v4·C Ambient Canvas */
+#define ORB_SIZE 280 /* body diameter — TT #541 hero scale (was 180) */
 
 /* ── Specular highlight (tilt-driven) ───────────────────────────────── */
 
@@ -99,10 +99,10 @@ static const char *TAG = "ui_orb";
  * at opa 0.  Color tracks circadian "top" stop so dawn-bloom looks
  * different from night-bloom; intensity is per-state. */
 #define ORB_HALO_DIAM 260
-#define ORB_HALO_OPA_FLOOR 24   /* always-on minimum during LISTENING */
-#define ORB_HALO_OPA_CEILING 90 /* peak at full RMS */
-#define ORB_BLOOM_PERIOD_MS 100 /* 10 Hz */
-#define ORB_BLOOM_ALPHA 0.30f   /* EMA smoothing for RMS */
+#define ORB_HALO_OPA_FLOOR 40    /* TT #541: was 24 — visible at rest during LISTENING */
+#define ORB_HALO_OPA_CEILING 160 /* TT #541: was 90 — louder peak when user speaks */
+#define ORB_BLOOM_PERIOD_MS 100  /* 10 Hz */
+#define ORB_BLOOM_ALPHA 0.50f    /* TT #541: was 0.30 — faster reaction to speech onset */
 
 /* ── Speaking halo (SPEAKING state) ──────────────────────────────────── */
 
@@ -404,8 +404,12 @@ static void bloom_tick_cb(lv_timer_t *t) {
    int floor_v = ORB_HALO_OPA_FLOOR;
    int ceil_v = ORB_HALO_OPA_CEILING;
    if (s_pipeline.state == DICT_RECORDING) {
-      floor_v = 110;
-      ceil_v = 180;
+      /* TT #541: louder bloom envelope for a hero-scale orb.  Floor is
+       * a confident "I'm listening" glow even when the user is silent;
+       * ceiling is roomy enough to read voice peaks against the bigger
+       * body without saturating. */
+      floor_v = 150;
+      ceil_v = 220;
       /* Slow breath: 0.5 Hz triangle wave on the floor itself, ±20 opa. */
       uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
       uint32_t phase = t_ms % 2000;

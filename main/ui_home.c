@@ -79,13 +79,15 @@ static const char *TAG = "ui_home";
  * went too sparse — orb-in-center left too much empty bottom-half).
  * Greeting + mode chip sit below in the rich middle band. */
 #define ORB_CX            (SW / 2)
-#define ORB_CY            320
-#define ORB_SIZE          180
+#define ORB_CY 340
+#define ORB_SIZE 280 /* TT #541 — must match ui_orb.c ORB_SIZE */
 #define HALO_OUTER        520
 #define HALO_INNER        340
-#define RING_OUTER        310
-#define RING_MID          240
-#define RING_INNER        196
+/* TT #541 — rings scaled with the bigger orb so the inner ring sits
+ * just outside the body (was 310/240/196 around a 180 px orb). */
+#define RING_OUTER 480
+#define RING_MID 380
+#define RING_INNER 320
 
 /* v4·D Sovereign Halo live-line — replaces the 240 px NOW card.
  * Kicker + lede + optional right meta, top + bottom hairline borders,
