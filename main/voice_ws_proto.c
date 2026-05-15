@@ -854,6 +854,21 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
       if (s_dictation_title[0] || s_dictation_summary[0]) {
          voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, now);
+         /* PR 3 follow-up: surface the dictation as a local Tab5 note
+          * so it appears on the Notes timeline.  Path A (local
+          * "+ NEW VOICE NOTE" → ui_notes_start_recording) already owns
+          * its slot; this handler only fires for Path B (FAB / home
+          * Dictate chip via voice_start_dictation with no local slot).
+          * The async helper marshals to LVGL thread + no-ops if a
+          * local slot is already active so we don't duplicate. */
+         const char *transcript = voice_get_dictation_text();
+         if (transcript && transcript[0]) {
+            ui_notes_add_dictated_async(transcript);
+         } else if (s_dictation_summary[0]) {
+            ui_notes_add_dictated_async(s_dictation_summary);
+         } else {
+            ui_notes_add_dictated_async(s_dictation_title);
+         }
       } else {
          voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, now);
       }
@@ -877,6 +892,15 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       ESP_LOGW(TAG, "Dictation post-processing failed: %s — pipeline → SAVED (note already exists)", err_str);
       voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
       voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+      /* PR 3 follow-up: same local-note creation path as
+       * dictation_summary above.  Dragon auto-created its own note
+       * before the LLM step failed, so the transcript is the user's
+       * captured content even though we don't have a title/summary.
+       * Surface it on Tab5's Notes timeline. */
+      const char *transcript = voice_get_dictation_text();
+      if (transcript && transcript[0]) {
+         ui_notes_add_dictated_async(transcript);
+      }
    } else if (strcmp(type_str, "llm_done") == 0) {
       cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
       ESP_LOGI(TAG, "LLM done (%.0fms) | heap_dma_free=%u largest=%u", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,

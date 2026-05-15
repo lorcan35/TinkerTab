@@ -60,3 +60,12 @@ int ui_notes_clear_failed(void);
 
 /** S6: Sync all pending (needs_sync) notes to Dragon. Call on reconnect. */
 void ui_notes_sync_pending(void);
+
+/** PR 3 follow-up: add a dictated note from the WS pipeline path (FAB
+ *  or home Dictate chip) — Dragon's `dictation_summary` doesn't create
+ *  a Tab5-local slot otherwise.  Marshals to the LVGL thread via
+ *  tab5_lv_async_call so it's safe to call from the WS event task.
+ *  No-op if a local-recording slot is already active (the
+ *  "+ NEW VOICE NOTE" button path owns that slot via
+ *  ui_notes_start_recording).  Caller owns the string; we copy. */
+void ui_notes_add_dictated_async(const char *transcript);
