@@ -101,6 +101,18 @@ typedef enum {
 #define MAX_AUDIO_PATH 64
 #define MAX_NOTE_REC_SECS 300 /* 5 min hard cap on SD recording */
 
+/* PR 3 cleanup pass: layout constants hoisted to file scope so the
+ * dynamic-relayout helper (notes_relayout_list) can use them outside
+ * ui_notes_create.  SEARCH_H is the collapsed-by-default search ta
+ * height; FILTER_H is the four-pill row; PROC_H is the processing
+ * row that the pipeline subscriber paints; FAB_SZ is the amber dictate
+ * button.  Per-screen ui_notes_create still re-#defines these locally
+ * for documentation context — the file-scope decls win at compile time. */
+#define SEARCH_H 48
+#define FILTER_H 44
+#define PROC_H 56
+#define FAB_SZ 64
+
 /* PR 3: classification of the note's content.  Informs the timeline filter
  * pills (All / Voice / Text / Pending) and feeds PR 4's action chips.
  * NOTE_TYPE_AUTO is the legacy compatibility value — when loaded from JSON
@@ -2343,6 +2355,19 @@ static void proc_rec_tick_cb(lv_timer_t *t) {
    lv_label_set_text(s_proc_label, buf);
 }
 
+/* Dynamic list y: when the processing row is hidden, the list slides
+ * up by PROC_H+8 px so we don't waste ~64 px of vertical real estate
+ * showing an empty placeholder.  Called whenever proc_paint_state
+ * toggles the row's visibility. */
+static void notes_relayout_list(bool proc_visible) {
+   if (!s_list) return;
+   int y_with = TOPBAR_H + 8 + FILTER_H + PROC_H + 8;
+   int y_without = TOPBAR_H + 8 + FILTER_H + 4;
+   int y = proc_visible ? y_with : y_without;
+   lv_obj_set_pos(s_list, 0, y);
+   lv_obj_set_size(s_list, SW, OVERLAY_H - y - 4);
+}
+
 static void proc_paint_state(const dict_event_t *e) {
    if (!s_proc_row || !s_proc_orb || !s_proc_label) return;
    if (!e || e->state == DICT_IDLE) {
@@ -2351,8 +2376,10 @@ static void proc_paint_state(const dict_event_t *e) {
          lv_timer_del(s_proc_rec_ticker);
          s_proc_rec_ticker = NULL;
       }
+      notes_relayout_list(false);
       return;
    }
+   notes_relayout_list(true);
    lv_obj_clear_flag(s_proc_row, LV_OBJ_FLAG_HIDDEN);
    /* mini-orb hue tracks pipeline state, mirroring the heroic orb */
    uint32_t body_hex = 0xE74C3C;
@@ -2495,7 +2522,11 @@ static void refresh_list(void)
           lv_obj_t *lbl = lv_obj_get_child(s_topbar_clear, 0);
           if (lbl) {
              char b[24];
-             snprintf(b, sizeof(b), "CLEAR %d FAILED", failed_count);
+             /* Compact badge: warning + count.  Red bg + border on the
+              * chip telegraphs "failed"; the leading exclamation mark
+              * adds urgency without depending on a unicode dot glyph
+              * that the caption font may not carry. */
+             snprintf(b, sizeof(b), "! %d", failed_count);
              lv_label_set_text(lbl, b);
           }
           lv_obj_clear_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
@@ -2584,28 +2615,31 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_add_flag(meta, LV_OBJ_FLAG_HIDDEN);
     s_topbar_meta = meta;
 
-    /* CLEAR FAILED (N) — appears only when any FAILED entries exist.
-     * Tap drops them all in one shot via ui_notes_clear_failed.  Sits
-     * between title and meta; hidden by default until refresh_list sees
-     * a non-zero failure count.  -200 offset clears the meta label
-     * which sits at right -24 and is ~140 px wide. */
+    /* Clear-failed badge — tiny red chip with just the count, sits
+     * immediately to the right of the "Notes" title.  Was a chunky
+     * "CLEAR 2 FAILED" pill hogging the topbar centre; the per-row
+     * × buttons already let you delete individual failed notes, so
+     * this bulk action only needs to be discoverable, not loud.
+     * Hidden when failed_count == 0; refresh_list sets the label
+     * to "● N" with the live count. */
     lv_obj_t *clear_btn = lv_button_create(tb);
-    lv_obj_set_size(clear_btn, LV_SIZE_CONTENT, TOPBAR_H - 8);
-    lv_obj_align(clear_btn, LV_ALIGN_RIGHT_MID, -200, 0);
-    lv_obj_set_style_bg_opa(clear_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_size(clear_btn, LV_SIZE_CONTENT, 28);
+    lv_obj_align(clear_btn, LV_ALIGN_LEFT_MID, 130, 0);
+    lv_obj_set_style_bg_color(clear_btn, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_bg_opa(clear_btn, LV_OPA_20, 0);
     lv_obj_set_style_border_width(clear_btn, 1, 0);
     lv_obj_set_style_border_color(clear_btn, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_border_opa(clear_btn, LV_OPA_40, 0);
-    lv_obj_set_style_radius(clear_btn, 8, 0);
+    lv_obj_set_style_border_opa(clear_btn, LV_OPA_50, 0);
+    lv_obj_set_style_radius(clear_btn, 14, 0);
     lv_obj_set_style_pad_hor(clear_btn, 10, 0);
     lv_obj_set_style_pad_ver(clear_btn, 0, 0);
     lv_obj_set_style_shadow_width(clear_btn, 0, 0);
     lv_obj_add_event_cb(clear_btn, cb_clear_failed, LV_EVENT_CLICKED, NULL);
     lv_obj_t *clear_lbl = lv_label_create(clear_btn);
-    lv_label_set_text(clear_lbl, "CLEAR FAILED");
+    lv_label_set_text(clear_lbl, "0");
     lv_obj_set_style_text_color(clear_lbl, lv_color_hex(COL_RED), 0);
     lv_obj_set_style_text_font(clear_lbl, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(clear_lbl, 2, 0);
+    lv_obj_set_style_text_letter_space(clear_lbl, 0, 0);
     lv_obj_center(clear_lbl);
     lv_obj_add_flag(clear_btn, LV_OBJ_FLAG_HIDDEN); /* shown by refresh_list */
     s_topbar_clear = clear_btn;
@@ -2729,11 +2763,10 @@ lv_obj_t *ui_notes_create(void)
       lv_obj_add_event_cb(pen, cb_topbar_text_tap, LV_EVENT_CLICKED, NULL);
    }
 
-/* PR 3: filter-pill row sits at the top of the content area (no
- * btn-row above it anymore — voice = FAB, text = topbar pencil).
- * 44 px tall; four equal-width pills with 8 px gaps; active pill
- * gets amber background, inactive pills are dark-pill style. */
-#define FILTER_H 44
+   /* PR 3: filter-pill row sits at the top of the content area (no
+    * btn-row above it anymore — voice = FAB, text = topbar pencil).
+    * 44 px tall; four equal-width pills with 8 px gaps; active pill
+    * gets amber background, inactive pills are dark-pill style. */
    s_filter_row = lv_obj_create(s_screen);
    lv_obj_remove_style_all(s_filter_row);
    lv_obj_set_size(s_filter_row, SW, FILTER_H);
@@ -2829,8 +2862,10 @@ lv_obj_t *ui_notes_create(void)
 
    /* Scrollable notes list — gains ~132px from reduced button row + search bar */
    s_list = lv_obj_create(s_screen);
-   lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - 8 - FILTER_H - 4 - PROC_H - 8);
-   lv_obj_set_pos(s_list, 0, TOPBAR_H + 8 + FILTER_H + PROC_H + 8);
+   /* Initial size — proc row starts hidden so list takes the full
+    * available vertical real estate.  notes_relayout_list() snaps
+    * to the right offset whenever the pipeline state changes. */
+   notes_relayout_list(false);
    lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
    lv_obj_set_style_border_width(s_list, 0, 0);
    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
@@ -2870,6 +2905,15 @@ lv_obj_t *ui_notes_create(void)
    refresh_list();
    ui_keyboard_set_layout_cb(notes_keyboard_layout_cb);
 
+   /* Hide the global keyboard trigger button while on Notes — the
+    * pencil icon in the topbar already exposes text entry, so the
+    * lv_layer_top trigger button is redundant clutter stacking
+    * between the FAB and the home button on the right edge. */
+   {
+      lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
+      if (kbd) lv_obj_add_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+   }
+
    ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
    return s_screen;
 }
@@ -2904,6 +2948,13 @@ void ui_notes_destroy(void)
     ui_keyboard_set_layout_cb(NULL);
     hide_recording_indicator();
     hide_input_area();
+    /* Restore the global keyboard trigger we hid in ui_notes_create
+     * — leaving it hidden would break text entry on screens that
+     * rely on the lv_layer_top button (e.g., the Wi-Fi password ta). */
+    {
+       lv_obj_t *kbd = ui_keyboard_get_trigger_btn();
+       if (kbd) lv_obj_clear_flag(kbd, LV_OBJ_FLAG_HIDDEN);
+    }
     /* Edit overlay is a child of s_screen, so lv_obj_del(s_screen) destroys it.
      * Just clear the pointers. */
     s_edit_overlay = NULL;
