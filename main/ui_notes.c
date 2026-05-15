@@ -635,6 +635,7 @@ static void cb_clear_failed(lv_event_t *e);
 static void cb_search_changed(lv_event_t *e);
 static void refresh_list(void);
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx);
+static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, int note_idx, day_section_t sec);
 static lv_obj_t *make_topbar(lv_obj_t *parent);
 static void show_input_area(void);
 static void hide_input_area(void);
@@ -2077,168 +2078,192 @@ static void cb_clear_failed(lv_event_t *e) {
 }
 
 /* ── Note card widget ──────────────────────────────────── */
-static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx)
-{
-    note_entry_t n = *note;
+static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, int note_idx, day_section_t sec) {
+   note_entry_t n = *note;
 
-    /* #170 follow-up: under sustained rapid-nav stress the LVGL pool can
-     * transiently exhaust, making lv_*_create() return NULL.  Every
-     * subsequent set_text / align / style-set on that NULL pointer
-     * panics.  Short-circuit the card build if ANY of the essential
-     * objects fail to allocate.  Worst case we drop one or two note
-     * cards for this refresh — the next refresh will retry and usually
-     * succeed once the pool has breathed. */
+   /* #170 follow-up: under sustained rapid-nav stress the LVGL pool can
+    * transiently exhaust, making lv_*_create() return NULL.  Every
+    * subsequent set_text / align / style-set on that NULL pointer
+    * panics.  Short-circuit the card build if ANY of the essential
+    * objects fail to allocate.  Worst case we drop one or two note
+    * cards for this refresh — the next refresh will retry and usually
+    * succeed once the pool has breathed. */
 
-    /* Card — compact, flex column layout. Tap for full view. */
-    lv_obj_t *card = lv_obj_create(parent);
-    if (!card) return;
-    lv_obj_set_width(card, lv_pct(100));
-    lv_obj_set_height(card, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_height(card, 160, 0);  /* FIX N1: cap card height */
-    /* v5: flat row, hairline rule underneath — no rounded bubble. */
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x08080E), 0); /* TH_BG */
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 0, 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0x1C1C28), 0); /* TH_HAIRLINE */
-    lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_pad_all(card, 12, 0);
-    lv_obj_set_style_pad_row(card, 6, 0);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);  /* Stack header + preview vertically */
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_GESTURE_BUBBLE);  /* Bug fix: prevent gesture bubbling to s_screen cb_back */
-    lv_obj_set_ext_click_area(card, 10);
-    lv_obj_add_event_cb(card, cb_note_tap, LV_EVENT_CLICKED,
-                       (void *)(intptr_t)note_idx);
+   /* Card — compact, flex column layout. Tap for full view. */
+   lv_obj_t *card = lv_obj_create(parent);
+   if (!card) return;
+   lv_obj_set_width(card, lv_pct(100));
+   lv_obj_set_height(card, LV_SIZE_CONTENT);
+   lv_obj_set_style_max_height(card, 160, 0); /* FIX N1: cap card height */
+   /* v5: flat row, hairline rule underneath — no rounded bubble. */
+   lv_obj_set_style_bg_color(card, lv_color_hex(0x08080E), 0); /* TH_BG */
+   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(card, 0, 0);
+   lv_obj_set_style_border_width(card, 1, 0);
+   lv_obj_set_style_border_color(card, lv_color_hex(0x1C1C28), 0); /* TH_HAIRLINE */
+   lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
+   lv_obj_set_style_pad_all(card, 12, 0);
+   lv_obj_set_style_pad_row(card, 6, 0);
+   lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN); /* Stack header + preview vertically */
+   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_clear_flag(card, LV_OBJ_FLAG_GESTURE_BUBBLE); /* Bug fix: prevent gesture bubbling to s_screen cb_back */
+   lv_obj_set_ext_click_area(card, 10);
+   lv_obj_add_event_cb(card, cb_note_tap, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
 
-    /* Row 1: timestamp + badge + action buttons (all in one line) */
-    lv_obj_t *header = lv_obj_create(card);
-    if (!header) return;  /* lv_obj_del(card) not needed — lv_obj_del(parent) will cascade */
-    lv_obj_remove_style_all(header);
-    lv_obj_set_size(header, lv_pct(100), 44);  /* 44px matches touch target height */
-    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+   /* Row 1: timestamp + badge + action buttons (all in one line) */
+   lv_obj_t *header = lv_obj_create(card);
+   if (!header) return; /* lv_obj_del(card) not needed — lv_obj_del(parent) will cascade */
+   lv_obj_remove_style_all(header);
+   lv_obj_set_size(header, lv_pct(100), 44); /* 44px matches touch target height */
+   lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Timestamp — 14pt for compact display */
-    lv_obj_t *ts = lv_label_create(header);
-    if (!ts) return;
-    char ts_buf[32];
-    static const char *mn[] = {"Jan","Feb","Mar","Apr","May","Jun",
-                                "Jul","Aug","Sep","Oct","Nov","Dec"};
-    int mi = (n.month >= 1 && n.month <= 12) ? n.month - 1 : 0;
-    snprintf(ts_buf, sizeof(ts_buf), "%s %d, %02d:%02d",
-             mn[mi], n.day, n.hour, n.minute);
-    lv_label_set_text(ts, ts_buf);
-    lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
-    lv_obj_set_style_text_font(ts, FONT_CAPTION, 0);
-    lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
+   /* Section-aware timestamp: when the row is grouped under Today /
+    * Yesterday the section header already says the day, so the row
+    * just shows HH:MM and reads cleaner.  For This week / Earlier we
+    * include the month + day so the user can tell rows apart at a
+    * glance. */
+   lv_obj_t *ts = lv_label_create(header);
+   if (!ts) return;
+   char ts_buf[32];
+   static const char *mn[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+   int mi = (n.month >= 1 && n.month <= 12) ? n.month - 1 : 0;
+   if (sec == DAY_SECTION_TODAY || sec == DAY_SECTION_YESTERDAY) {
+      snprintf(ts_buf, sizeof(ts_buf), "%02d:%02d", n.hour, n.minute);
+   } else {
+      snprintf(ts_buf, sizeof(ts_buf), "%s %d  %02d:%02d", mn[mi], n.day, n.hour, n.minute);
+   }
+   lv_label_set_text(ts, ts_buf);
+   lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
+   lv_obj_set_style_text_font(ts, FONT_CAPTION, 0);
+   lv_obj_align(ts, LV_ALIGN_LEFT_MID, 0, 0);
 
-    /* v5: kill the colored Material pill. Use a letter-spaced caption
-     * in amber (or red on failure) inline next to the timestamp.  On
-     * FAILED state, the badge now surfaces the specific failure reason
-     * instead of a generic "FAIL" — so the user knows whether the
-     * server is unreachable (NETWORK), the auth token is missing
-     * (AUTH), the audio came back empty (EMPTY), the WAV is gone
-     * (NO AUDIO), or the recording hit the 5-min cap (TOO LONG). */
-    lv_obj_t *badge = lv_label_create(header);
-    if (!badge) return;
-    const char *badge_text;
-    uint32_t badge_color;
-    switch (n.state) {
-    case NOTE_STATE_RECORDED:     badge_text = "\xe2\x80\xa2 REC";    badge_color = COL_AMBER; break;
-    case NOTE_STATE_TRANSCRIBING: badge_text = "\xe2\x80\xa2 . . .";  badge_color = COL_AMBER; break;
-    case NOTE_STATE_TRANSCRIBED:  badge_text = "\xe2\x80\xa2 VOICE";  badge_color = COL_AMBER; break;
-    case NOTE_STATE_FAILED:
-       switch (n.fail_reason) {
-          case NOTE_FAIL_AUTH:
-             badge_text = "\xe2\x80\xa2 AUTH";
-             break;
-          case NOTE_FAIL_EMPTY:
-             badge_text = "\xe2\x80\xa2 EMPTY";
-             break;
-          case NOTE_FAIL_NO_AUDIO:
-             badge_text = "\xe2\x80\xa2 NO AUDIO";
-             break;
-          case NOTE_FAIL_TOO_LONG:
-             badge_text = "\xe2\x80\xa2 TOO LONG";
-             break;
-          case NOTE_FAIL_NETWORK:
-             badge_text = "\xe2\x80\xa2 NETWORK";
-             break;
-          default:
-             badge_text = "\xe2\x80\xa2 FAIL";
-             break;
-       }
-       badge_color = COL_RED;
-       break;
-    default:                      badge_text = n.is_voice ? "\xe2\x80\xa2 VOICE" : "\xe2\x80\xa2 TEXT";
-                                  badge_color = COL_AMBER; break;
-    }
-    lv_label_set_text(badge, badge_text);
-    lv_obj_set_style_text_color(badge, lv_color_hex(badge_color), 0);
-    lv_obj_set_style_text_font(badge, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(badge, 3, 0);
-    lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
+   /* v5: kill the colored Material pill. Use a letter-spaced caption
+    * in amber (or red on failure) inline next to the timestamp.  On
+    * FAILED state, the badge now surfaces the specific failure reason
+    * instead of a generic "FAIL" — so the user knows whether the
+    * server is unreachable (NETWORK), the auth token is missing
+    * (AUTH), the audio came back empty (EMPTY), the WAV is gone
+    * (NO AUDIO), or the recording hit the 5-min cap (TOO LONG). */
+   /* Type badge — sentence-cased, lower letter-spacing, dimmer hue for
+    * passive note metadata; red only when the state is actively
+    * surfacing a failure reason that the user can act on.  Was an
+    * all-caps amber pill that read like a CTA. */
+   lv_obj_t *badge = lv_label_create(header);
+   if (!badge) return;
+   const char *badge_text;
+   uint32_t badge_color;
+   switch (n.state) {
+      case NOTE_STATE_RECORDED:
+         badge_text = "Recording";
+         badge_color = 0x8E8E98;
+         break;
+      case NOTE_STATE_TRANSCRIBING:
+         badge_text = "Transcribing";
+         badge_color = 0x8E8E98;
+         break;
+      case NOTE_STATE_TRANSCRIBED:
+         badge_text = "Voice";
+         badge_color = 0x8E8E98;
+         break;
+      case NOTE_STATE_FAILED:
+         switch (n.fail_reason) {
+            case NOTE_FAIL_AUTH:
+               badge_text = "Auth fail";
+               break;
+            case NOTE_FAIL_EMPTY:
+               badge_text = "Empty";
+               break;
+            case NOTE_FAIL_NO_AUDIO:
+               badge_text = "No audio";
+               break;
+            case NOTE_FAIL_TOO_LONG:
+               badge_text = "Too long";
+               break;
+            case NOTE_FAIL_NETWORK:
+               badge_text = "Network";
+               break;
+            default:
+               badge_text = "Failed";
+               break;
+         }
+         badge_color = COL_RED;
+         break;
+      default:
+         badge_text = n.is_voice ? "Voice" : "Text";
+         badge_color = 0x8E8E98;
+         break;
+   }
+   lv_label_set_text(badge, badge_text);
+   lv_obj_set_style_text_color(badge, lv_color_hex(badge_color), 0);
+   lv_obj_set_style_text_font(badge, FONT_CAPTION, 0);
+   lv_obj_set_style_text_letter_space(badge, 0, 0);
+   lv_obj_align_to(badge, ts, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
-    /* Delete button — 44x44 touch target, dark bg, red X */
-    lv_obj_t *del = lv_button_create(header);
-    if (!del) return;
-    lv_obj_set_size(del, 44, 44);
-    lv_obj_align(del, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(del, lv_color_hex(COL_BORDER), 0);
-    lv_obj_set_style_bg_opa(del, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(del, 8, 0);
-    lv_obj_set_style_border_width(del, 0, 0);
-    lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED,
-                       (void *)(intptr_t)note_idx);
-    lv_obj_t *del_lbl = lv_label_create(del);
-    if (!del_lbl) return;
-    lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
-    lv_obj_set_style_text_color(del_lbl, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_text_font(del_lbl, FONT_CAPTION, 0);
-    lv_obj_center(del_lbl);
+   /* Delete — outlined ghost button so the action stays accessible at
+    * a 44 px touch target but doesn't compete with the note content
+    * for visual weight.  Was a filled-dark pill with red icon; now a
+    * transparent outline with a dimmer glyph that lights up on press. */
+   lv_obj_t *del = lv_button_create(header);
+   if (!del) return;
+   lv_obj_set_size(del, 44, 44);
+   lv_obj_align(del, LV_ALIGN_RIGHT_MID, 0, 0);
+   lv_obj_set_style_bg_opa(del, LV_OPA_TRANSP, 0);
+   lv_obj_set_style_radius(del, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_border_width(del, 0, 0);
+   lv_obj_set_style_bg_color(del, lv_color_hex(COL_RED), LV_PART_MAIN | LV_STATE_PRESSED);
+   lv_obj_set_style_bg_opa(del, LV_OPA_20, LV_PART_MAIN | LV_STATE_PRESSED);
+   lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
+   lv_obj_t *del_lbl = lv_label_create(del);
+   if (!del_lbl) return;
+   lv_label_set_text(del_lbl, LV_SYMBOL_TRASH);
+   lv_obj_set_style_text_color(del_lbl, lv_color_hex(0x6A6A72), 0);
+   lv_obj_set_style_text_font(del_lbl, FONT_CAPTION, 0);
+   lv_obj_center(del_lbl);
 
-    /* Action button — 44x44 touch target next to delete.  Play (green)
-     * for transcribed/recorded notes with audio; Retry (amber) for
-     * FAILED notes with audio so the user can re-attempt upload from
-     * the list without diving into an edit overlay. */
-    if (n.audio_path[0]) {
-       bool is_retry = (n.state == NOTE_STATE_FAILED);
-       lv_obj_t *act = lv_button_create(header);
-       if (!act) return;
-       lv_obj_set_size(act, 44, 44);
-       lv_obj_align(act, LV_ALIGN_RIGHT_MID, -48, 0);
-       lv_obj_set_style_bg_color(act, lv_color_hex(is_retry ? COL_AMBER : COL_MINT), 0);
-       lv_obj_set_style_bg_opa(act, LV_OPA_COVER, 0);
-       lv_obj_set_style_radius(act, 8, 0);
-       lv_obj_set_style_border_width(act, 0, 0);
-       lv_obj_add_event_cb(act, is_retry ? cb_note_retry : cb_note_play, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
-       lv_obj_t *act_lbl = lv_label_create(act);
-       if (!act_lbl) return;
-       lv_label_set_text(act_lbl, is_retry ? LV_SYMBOL_REFRESH : LV_SYMBOL_PLAY);
-       lv_obj_set_style_text_color(act_lbl, lv_color_hex(COL_WHITE), 0);
-       lv_obj_set_style_text_font(act_lbl, FONT_CAPTION, 0);
-       lv_obj_center(act_lbl);
-    }
+   /* Action button — outlined ghost (was filled solid).  Play stays
+    * mint-tinted, retry stays amber-tinted via the icon color; the
+    * background only fills on press for tactile feedback. */
+   if (n.audio_path[0]) {
+      bool is_retry = (n.state == NOTE_STATE_FAILED);
+      lv_obj_t *act = lv_button_create(header);
+      if (!act) return;
+      lv_obj_set_size(act, 44, 44);
+      lv_obj_align(act, LV_ALIGN_RIGHT_MID, -48, 0);
+      lv_obj_set_style_bg_opa(act, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_radius(act, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_border_width(act, 1, 0);
+      lv_obj_set_style_border_color(act, lv_color_hex(is_retry ? COL_AMBER : COL_MINT), 0);
+      lv_obj_set_style_border_opa(act, LV_OPA_50, 0);
+      lv_obj_set_style_bg_color(act, lv_color_hex(is_retry ? COL_AMBER : COL_MINT), LV_PART_MAIN | LV_STATE_PRESSED);
+      lv_obj_set_style_bg_opa(act, LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
+      lv_obj_add_event_cb(act, is_retry ? cb_note_retry : cb_note_play, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
+      lv_obj_t *act_lbl = lv_label_create(act);
+      if (!act_lbl) return;
+      lv_label_set_text(act_lbl, is_retry ? LV_SYMBOL_REFRESH : LV_SYMBOL_PLAY);
+      lv_obj_set_style_text_color(act_lbl, lv_color_hex(is_retry ? COL_AMBER : COL_MINT), 0);
+      lv_obj_set_style_text_font(act_lbl, FONT_CAPTION, 0);
+      lv_obj_center(act_lbl);
+   }
 
-    /* FIX N1+N4: Note preview — truncated to ~100 chars, smaller font */
-    lv_obj_t *preview = lv_label_create(card);
-    if (!preview) return;  /* exact crash site from #170 follow-up coredump */
-    /* Truncate long text for card preview — full text in edit overlay */
-    char preview_text[120];
-    const char *src = n.text;
-    /* Skip "[Untitled Note] " prefix (N7) */
-    if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
-    if (strlen(src) > 100) {
-        snprintf(preview_text, sizeof(preview_text), "%.100s...", src);
-    } else {
-        strncpy(preview_text, src, sizeof(preview_text) - 1);
-        preview_text[sizeof(preview_text) - 1] = '\0';
-    }
-    lv_label_set_text(preview, preview_text);
-    lv_obj_set_style_text_color(preview, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(preview, FONT_BODY, 0);
-    lv_obj_set_width(preview, lv_pct(100));
+   /* FIX N1+N4: Note preview — truncated to ~100 chars, smaller font */
+   lv_obj_t *preview = lv_label_create(card);
+   if (!preview) return; /* exact crash site from #170 follow-up coredump */
+   /* Truncate long text for card preview — full text in edit overlay */
+   char preview_text[120];
+   const char *src = n.text;
+   /* Skip "[Untitled Note] " prefix (N7) */
+   if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
+   if (strlen(src) > 100) {
+      snprintf(preview_text, sizeof(preview_text), "%.100s...", src);
+   } else {
+      strncpy(preview_text, src, sizeof(preview_text) - 1);
+      preview_text[sizeof(preview_text) - 1] = '\0';
+   }
+   lv_label_set_text(preview, preview_text);
+   lv_obj_set_style_text_color(preview, lv_color_hex(COL_WHITE), 0);
+   lv_obj_set_style_text_font(preview, FONT_BODY, 0);
+   lv_obj_set_width(preview, lv_pct(100));
 }
 
 /* ── PR 3: day-section grouping ─────────────────────────── */
@@ -2271,13 +2296,13 @@ static day_section_t classify_note_day(const note_entry_t *n) {
 static const char *day_section_label(day_section_t s) {
    switch (s) {
       case DAY_SECTION_TODAY:
-         return "TODAY";
+         return "Today";
       case DAY_SECTION_YESTERDAY:
-         return "YESTERDAY";
+         return "Yesterday";
       case DAY_SECTION_THIS_WEEK:
-         return "THIS WEEK";
+         return "This week";
       case DAY_SECTION_OLDER:
-         return "OLDER";
+         return "Earlier";
    }
    return "";
 }
@@ -2306,13 +2331,18 @@ static bool note_matches_filter(const note_entry_t *n) {
 }
 
 static void add_day_section_header(lv_obj_t *parent, day_section_t s) {
+   /* Softer, notebook-style heading.  Was an all-caps amber line that
+    * read as terminal output; now it's title-cased dimmed-white with
+    * tight letter-spacing so the bucket reads as a quiet caption above
+    * its rows rather than competing with the note content for
+    * attention. */
    lv_obj_t *lbl = lv_label_create(parent);
    lv_label_set_text(lbl, day_section_label(s));
-   lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
-   lv_obj_set_style_text_color(lbl, lv_color_hex(0xF59E0B), 0);
-   lv_obj_set_style_text_letter_space(lbl, 2, 0);
-   lv_obj_set_style_pad_top(lbl, 8, 0);
-   lv_obj_set_style_pad_bottom(lbl, 4, 0);
+   lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(0xA0A0AA), 0);
+   lv_obj_set_style_text_letter_space(lbl, 0, 0);
+   lv_obj_set_style_pad_top(lbl, 14, 0);
+   lv_obj_set_style_pad_bottom(lbl, 6, 0);
 }
 
 /* PR 3: paint the filter pills so the active one gets amber bg + dark
@@ -2569,7 +2599,7 @@ static void refresh_list(void)
            add_day_section_header(s_list, sec);
            cur_section = (int)sec;
         }
-        add_note_card(s_list, &s_notes[idx], idx);
+        add_note_card_sectioned(s_list, &s_notes[idx], idx, sec);
         shown++;
     }
     if (shown == 0 && s_search_text[0]) {
