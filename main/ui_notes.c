@@ -758,6 +758,57 @@ static void __attribute__((unused)) voice_state_cb(voice_state_t state, const ch
     }
 }
 
+/* Forward decl — s_rec_note_slot is defined further down with the
+ * recording-flow statics but the dictated-async helper below uses it
+ * to skip duplicate creation when the local "+ NEW VOICE NOTE" flow
+ * already owns a slot. */
+static int s_rec_note_slot;
+
+/* PR 3 follow-up: deferred WS-thread → LVGL-thread dictated-note add.
+ * The dictation_summary handler in voice_ws_proto.c calls
+ * ui_notes_add_dictated_async with a transcript; we copy the bytes
+ * into PSRAM (s_notes touches PSRAM but refresh_list touches LVGL,
+ * so this MUST run on the LVGL thread) and dispatch via
+ * tab5_lv_async_call.  The callback runs ui_notes_add directly and
+ * frees the heap buffer. */
+static void notes_add_dictated_async_cb(void *arg) {
+   char *text = (char *)arg;
+   if (!text) return;
+   /* Skip if the local-recording flow already owns a slot (the
+    * "+ NEW VOICE NOTE" path on Notes — ui_notes_start_recording
+    * sets s_rec_note_slot >= 0 until ui_notes_stop_recording
+    * finalises it).  Without this guard a single dictation would
+    * land twice on the timeline. */
+   if (s_rec_note_slot >= 0) {
+      ESP_LOGI(TAG, "Skipping pipeline-add — local recording slot %d already active", s_rec_note_slot);
+      free(text);
+      return;
+   }
+   if (text[0]) {
+      int idx = ui_notes_add(text, true);
+      if (idx >= 0 && s_notes && idx >= 0 && idx < MAX_NOTES) {
+         /* Tag the new note as a voice dictation explicitly so the
+          * Notes filter pill 'Voice' picks it up without relying on
+          * legacy is_voice (which is also set above). */
+         s_notes[idx].type = NOTE_TYPE_VOICE;
+         /* notes_save will see the dirty type field on next sync;
+          * ui_notes_add already triggered a save, so re-save here. */
+         notes_save();
+      }
+   }
+   free(text);
+}
+
+void ui_notes_add_dictated_async(const char *transcript) {
+   if (!transcript || !transcript[0]) return;
+   size_t n = strnlen(transcript, MAX_NOTE_LEN - 1);
+   char *copy = (char *)malloc(n + 1);
+   if (!copy) return;
+   memcpy(copy, transcript, n);
+   copy[n] = '\0';
+   tab5_lv_async_call(notes_add_dictated_async_cb, copy);
+}
+
 /* ── Note storage API ──────────────────────────────────── */
 int ui_notes_add(const char *text, bool is_voice)
 {
