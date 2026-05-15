@@ -654,56 +654,58 @@ static void show_recording_indicator(void)
 
     s_rec_seconds = 0;
 
-    /* Bar: full width, 40px tall, positioned below search bar above notes list.
-     * Search bar ends at TOPBAR_H + BTN_ROW_H + SEARCH_H + 4.
-     * We insert the indicator right there and push list down. */
-    #define REC_BAR_Y  (TOPBAR_H + BTN_ROW_H + 48 /* SEARCH_H */ + 8)
-    #define REC_BAR_H  40
+/* Bar: full width, 40px tall, positioned below search bar above notes list.
+ * Layout (post-cleanup, May 2026): topbar (48) → filter pills (44) →
+ * processing row (56) → list.  Recording-bar reuses the slot the
+ * processing row would occupy when no pipeline is active.
+ * We insert the indicator right there and push list down. */
+#define REC_BAR_Y (TOPBAR_H + 8 + 44 /* FILTER_H */ + 8)
+#define REC_BAR_H 40
 
-    s_rec_indicator = lv_obj_create(s_screen);
-    lv_obj_set_size(s_rec_indicator, SW - 32, REC_BAR_H);
-    lv_obj_set_pos(s_rec_indicator, 16, REC_BAR_Y);
-    lv_obj_set_style_bg_color(s_rec_indicator, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_bg_opa(s_rec_indicator, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_rec_indicator, 8, 0);
-    lv_obj_set_style_border_width(s_rec_indicator, 1, 0);
-    lv_obj_set_style_border_color(s_rec_indicator, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_border_opa(s_rec_indicator, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(s_rec_indicator, LV_OBJ_FLAG_SCROLLABLE);
+   s_rec_indicator = lv_obj_create(s_screen);
+   lv_obj_set_size(s_rec_indicator, SW - 32, REC_BAR_H);
+   lv_obj_set_pos(s_rec_indicator, 16, REC_BAR_Y);
+   lv_obj_set_style_bg_color(s_rec_indicator, lv_color_hex(COL_CARD), 0);
+   lv_obj_set_style_bg_opa(s_rec_indicator, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(s_rec_indicator, 8, 0);
+   lv_obj_set_style_border_width(s_rec_indicator, 1, 0);
+   lv_obj_set_style_border_color(s_rec_indicator, lv_color_hex(COL_RED), 0);
+   lv_obj_set_style_border_opa(s_rec_indicator, LV_OPA_COVER, 0);
+   lv_obj_clear_flag(s_rec_indicator, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Red pulsing dot — 8px circle */
-    s_rec_dot = lv_obj_create(s_rec_indicator);
-    lv_obj_remove_style_all(s_rec_dot);
-    lv_obj_set_size(s_rec_dot, 12, 12);
-    lv_obj_align(s_rec_dot, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_set_style_bg_color(s_rec_dot, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_bg_opa(s_rec_dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_rec_dot, LV_RADIUS_CIRCLE, 0);
+   /* Red pulsing dot — 8px circle */
+   s_rec_dot = lv_obj_create(s_rec_indicator);
+   lv_obj_remove_style_all(s_rec_dot);
+   lv_obj_set_size(s_rec_dot, 12, 12);
+   lv_obj_align(s_rec_dot, LV_ALIGN_LEFT_MID, 12, 0);
+   lv_obj_set_style_bg_color(s_rec_dot, lv_color_hex(COL_RED), 0);
+   lv_obj_set_style_bg_opa(s_rec_dot, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(s_rec_dot, LV_RADIUS_CIRCLE, 0);
 
-    /* "Recording..." text */
-    s_rec_text_lbl = lv_label_create(s_rec_indicator);
-    lv_label_set_text(s_rec_text_lbl, "Recording...");
-    lv_obj_set_style_text_color(s_rec_text_lbl, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(s_rec_text_lbl, FONT_BODY, 0);
-    lv_obj_align(s_rec_text_lbl, LV_ALIGN_LEFT_MID, 32, 0);
+   /* "Recording..." text */
+   s_rec_text_lbl = lv_label_create(s_rec_indicator);
+   lv_label_set_text(s_rec_text_lbl, "Recording...");
+   lv_obj_set_style_text_color(s_rec_text_lbl, lv_color_hex(COL_WHITE), 0);
+   lv_obj_set_style_text_font(s_rec_text_lbl, FONT_BODY, 0);
+   lv_obj_align(s_rec_text_lbl, LV_ALIGN_LEFT_MID, 32, 0);
 
-    /* Elapsed time */
-    s_rec_time_lbl = lv_label_create(s_rec_indicator);
-    lv_label_set_text(s_rec_time_lbl, "0:00");
-    lv_obj_set_style_text_color(s_rec_time_lbl, lv_color_hex(COL_RED), 0);
-    lv_obj_set_style_text_font(s_rec_time_lbl, FONT_BODY, 0);
-    lv_obj_align(s_rec_time_lbl, LV_ALIGN_RIGHT_MID, -12, 0);
+   /* Elapsed time */
+   s_rec_time_lbl = lv_label_create(s_rec_indicator);
+   lv_label_set_text(s_rec_time_lbl, "0:00");
+   lv_obj_set_style_text_color(s_rec_time_lbl, lv_color_hex(COL_RED), 0);
+   lv_obj_set_style_text_font(s_rec_time_lbl, FONT_BODY, 0);
+   lv_obj_align(s_rec_time_lbl, LV_ALIGN_RIGHT_MID, -12, 0);
 
-    /* Push the notes list down to make room */
-    if (s_list) {
-        lv_obj_set_pos(s_list, 0, REC_BAR_Y + REC_BAR_H + 4);
-        lv_obj_set_height(s_list, USABLE_H - (REC_BAR_Y + REC_BAR_H + 4));
-    }
+   /* Push the notes list down to make room */
+   if (s_list) {
+      lv_obj_set_pos(s_list, 0, REC_BAR_Y + REC_BAR_H + 4);
+      lv_obj_set_height(s_list, USABLE_H - (REC_BAR_Y + REC_BAR_H + 4));
+   }
 
-    /* Start 1-second update timer */
-    s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
+   /* Start 1-second update timer */
+   s_rec_timer = lv_timer_create(rec_timer_cb, 1000, NULL);
 
-    ESP_LOGI(TAG, "Recording indicator shown");
+   ESP_LOGI(TAG, "Recording indicator shown");
 }
 
 static void hide_recording_indicator(void)
@@ -723,9 +725,9 @@ static void hide_recording_indicator(void)
 
     /* Restore list position */
     if (s_list) {
-        #define LIST_Y_NORMAL (TOPBAR_H + BTN_ROW_H + 48 /* SEARCH_H */ + 10)
-        lv_obj_set_pos(s_list, 0, LIST_Y_NORMAL);
-        lv_obj_set_height(s_list, USABLE_H - LIST_Y_NORMAL);
+#define LIST_Y_NORMAL (TOPBAR_H + 8 + 44 /* FILTER_H */ + 56 /* PROC_H */ + 16)
+       lv_obj_set_pos(s_list, 0, LIST_Y_NORMAL);
+       lv_obj_set_height(s_list, USABLE_H - LIST_Y_NORMAL);
     }
 
     ESP_LOGI(TAG, "Recording indicator hidden");
@@ -2422,6 +2424,37 @@ static void cb_proc_close_tap(lv_event_t *e) {
    }
 }
 
+/* Topbar magnifier tap → toggle search ta visibility.  When showing,
+ * also pop the keyboard so the user can type immediately. */
+void cb_topbar_search_tap(lv_event_t *e) {
+   (void)e;
+   if (!s_search_ta) return;
+   if (lv_obj_has_flag(s_search_ta, LV_OBJ_FLAG_HIDDEN)) {
+      lv_obj_clear_flag(s_search_ta, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_move_foreground(s_search_ta);
+      ui_keyboard_show(s_search_ta);
+   } else {
+      ui_keyboard_hide();
+      lv_obj_add_flag(s_search_ta, LV_OBJ_FLAG_HIDDEN);
+      /* Clear filter when collapsing so the list returns to full view. */
+      if (lv_textarea_get_text(s_search_ta)) {
+         lv_textarea_set_text(s_search_ta, "");
+         s_search_text[0] = '\0';
+         refresh_list();
+      }
+   }
+}
+
+/* Topbar pencil tap → open the existing text-input area (kept around
+ * for typed notes).  Mirrors the legacy cb_new_text path. */
+void cb_topbar_text_tap(lv_event_t *e) {
+   (void)e;
+   /* Re-uses cb_new_text logic via a synthetic event.  Cleaner than
+    * forward-declaring the impl. */
+   extern void cb_new_text(lv_event_t * e);
+   cb_new_text(NULL);
+}
+
 void cb_filter_pill_tap(lv_event_t *e) {
    lv_obj_t *p = lv_event_get_target(e);
    int idx = (int)(uintptr_t)lv_obj_get_user_data(p);
@@ -2539,13 +2572,16 @@ static lv_obj_t *make_topbar(lv_obj_t *parent)
     lv_obj_set_style_text_letter_space(title, -1, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 24, 0);
 
-    /* Count/size meta — refreshed elsewhere when the note list changes. */
+    /* Count/size meta — kept allocated for backwards-compat with
+     * refresh_list which still sets the text, but hidden by default.
+     * The topbar real estate is now used by the magnifier + pencil
+     * icons (created in ui_notes_create alongside the rest of the
+     * cleanup pass).  refresh_list's write to a hidden label is a
+     * no-op; if we want to surface the count later we can flip the
+     * hidden flag without re-plumbing. */
     lv_obj_t *meta = lv_label_create(tb);
-    lv_label_set_text(meta, "\xe2\x80\xa2");  /* placeholder until first refresh */
-    lv_obj_set_style_text_color(meta, lv_color_hex(0x6A6A72), 0);
-    lv_obj_set_style_text_font(meta, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(meta, 3, 0);
-    lv_obj_align(meta, LV_ALIGN_RIGHT_MID, -24, 0);
+    lv_label_set_text(meta, "");
+    lv_obj_add_flag(meta, LV_OBJ_FLAG_HIDDEN);
     s_topbar_meta = meta;
 
     /* CLEAR FAILED (N) — appears only when any FAILED entries exist.
@@ -2642,78 +2678,66 @@ lv_obj_t *ui_notes_create(void)
 
     make_topbar(s_screen);
 
-    /* ── Voice + Text buttons (compact row) ─────────────── */
-    lv_obj_t *btn_row = lv_obj_create(s_screen);
-    lv_obj_set_size(btn_row, SW, BTN_ROW_H);
-    lv_obj_set_pos(btn_row, 0, TOPBAR_H);
-    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(btn_row, 0, 0);
-    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+/* Cleanup pass (post-PR-3): the BTN_ROW_H+SEARCH_H stack (legacy
+ * "+ NEW VOICE NOTE" / "+ NEW TEXT NOTE" buttons + always-on
+ * search bar) is gone.  Voice entry → amber FAB bottom-right;
+ * text entry → pencil icon in the topbar; search → magnifier
+ * icon in the topbar that expands a slim collapsible ta below
+ * the filter pills.  Net: list gained ~130 px of vertical
+ * real estate and the screen has one clear primary action. */
+#define SEARCH_H 48
+   s_search_ta = lv_textarea_create(s_screen);
+   lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
+   lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + 4);
+   lv_textarea_set_one_line(s_search_ta, true);
+   lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " search what you wrote...");
+   lv_obj_set_style_bg_color(s_search_ta, lv_color_hex(COL_CARD), 0);
+   lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_WHITE), 0);
+   lv_obj_set_style_text_font(s_search_ta, FONT_SECONDARY, 0);
+   lv_obj_set_style_border_width(s_search_ta, 1, 0);
+   lv_obj_set_style_border_color(s_search_ta, lv_color_hex(COL_BORDER), 0);
+   lv_obj_set_style_radius(s_search_ta, 8, 0);
+   lv_obj_set_style_pad_left(s_search_ta, 16, 0);
+   lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_LABEL3), LV_PART_TEXTAREA_PLACEHOLDER);
+   lv_obj_add_flag(s_search_ta, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
+   if (s_search_text[0]) lv_textarea_set_text(s_search_ta, s_search_text);
+   lv_obj_add_event_cb(s_search_ta, cb_search_tap, LV_EVENT_CLICKED, NULL);
+   lv_obj_add_event_cb(s_search_ta, cb_search_changed, LV_EVENT_VALUE_CHANGED, NULL);
+   /* Collapsed by default — toggled by the topbar magnifier icon. */
+   lv_obj_add_flag(s_search_ta, LV_OBJ_FLAG_HIDDEN);
 
-    /* v5 flat actions — no fill, no border, no radius. Transparent rows
-     * with amber + muted caption text. Functional: cb_new_voice + cb_new_text
-     * unchanged. */
-    lv_obj_t *vbtn = lv_button_create(btn_row);
-    lv_obj_remove_style_all(vbtn);
-    lv_obj_set_size(vbtn, SW/2 - 24, ACTION_BTN_H);
-    lv_obj_align(vbtn, LV_ALIGN_LEFT_MID, 12, 0);
-    lv_obj_set_style_bg_opa(vbtn, LV_OPA_TRANSP, 0);
-    lv_obj_add_event_cb(vbtn, cb_new_voice, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *vicon = lv_label_create(vbtn);
-    lv_label_set_text(vicon, "+ NEW VOICE NOTE");
-    lv_obj_set_style_text_color(vicon, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_text_font(vicon, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(vicon, 3, 0);
-    lv_obj_center(vicon);
+   /* Topbar icons: magnifier (toggle search) + pencil (new text note). */
+   {
+      extern void cb_topbar_search_tap(lv_event_t * e);
+      extern void cb_topbar_text_tap(lv_event_t * e);
+      lv_obj_t *mag = lv_label_create(s_screen);
+      lv_label_set_text(mag, LV_SYMBOL_LOOP);
+      lv_obj_set_style_text_color(mag, lv_color_hex(COL_LABEL2), 0);
+      lv_obj_set_style_text_font(mag, FONT_HEADING, 0);
+      lv_obj_align(mag, LV_ALIGN_TOP_RIGHT, -76, 10);
+      lv_obj_add_flag(mag, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_ext_click_area(mag, 18);
+      lv_obj_add_event_cb(mag, cb_topbar_search_tap, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *tbtn = lv_button_create(btn_row);
-    lv_obj_remove_style_all(tbtn);
-    lv_obj_set_size(tbtn, SW/2 - 24, ACTION_BTN_H);
-    lv_obj_align(tbtn, LV_ALIGN_RIGHT_MID, -12, 0);
-    lv_obj_set_style_bg_opa(tbtn, LV_OPA_TRANSP, 0);
-    lv_obj_add_event_cb(tbtn, cb_new_text, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *ticon = lv_label_create(tbtn);
-    lv_label_set_text(ticon, "+ NEW TEXT NOTE");
-    lv_obj_set_style_text_color(ticon, lv_color_hex(0x6A6A72), 0);
-    lv_obj_set_style_text_font(ticon, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(ticon, 3, 0);
-    lv_obj_center(ticon);
+      lv_obj_t *pen = lv_label_create(s_screen);
+      lv_label_set_text(pen, LV_SYMBOL_EDIT);
+      lv_obj_set_style_text_color(pen, lv_color_hex(COL_AMBER), 0);
+      lv_obj_set_style_text_font(pen, FONT_HEADING, 0);
+      lv_obj_align(pen, LV_ALIGN_TOP_RIGHT, -24, 10);
+      lv_obj_add_flag(pen, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_ext_click_area(pen, 18);
+      lv_obj_add_event_cb(pen, cb_topbar_text_tap, LV_EVENT_CLICKED, NULL);
+   }
 
-    /* M2: Search bar — 48px tall for comfortable touch */
-    #define SEARCH_H 48
-    s_search_ta = lv_textarea_create(s_screen);
-    lv_obj_set_size(s_search_ta, SW - 32, SEARCH_H);
-    lv_obj_set_pos(s_search_ta, 16, TOPBAR_H + BTN_ROW_H + 4);
-    lv_textarea_set_one_line(s_search_ta, true);
-    lv_textarea_set_placeholder_text(s_search_ta, LV_SYMBOL_LOOP " search what you wrote...");
-    lv_obj_set_style_bg_color(s_search_ta, lv_color_hex(COL_CARD), 0);
-    lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_WHITE), 0);
-    lv_obj_set_style_text_font(s_search_ta, FONT_SECONDARY, 0);
-    lv_obj_set_style_border_width(s_search_ta, 1, 0);
-    lv_obj_set_style_border_color(s_search_ta, lv_color_hex(COL_BORDER), 0);
-    lv_obj_set_style_radius(s_search_ta, 8, 0);
-    lv_obj_set_style_pad_left(s_search_ta, 16, 0);
-    lv_obj_set_style_text_color(s_search_ta, lv_color_hex(COL_LABEL3),
-                                LV_PART_TEXTAREA_PLACEHOLDER);
-    lv_obj_add_flag(s_search_ta, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_CLICK_FOCUSABLE);
-    if (s_search_text[0]) lv_textarea_set_text(s_search_ta, s_search_text);
-    lv_obj_add_event_cb(s_search_ta, cb_search_tap, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_event_cb(s_search_ta, cb_search_changed, LV_EVENT_VALUE_CHANGED, NULL);
-
-    /* Divider */
-    lv_obj_t *div = lv_obj_create(s_screen);
-    lv_obj_set_size(div, SW, 2);
-    lv_obj_set_pos(div, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 8);
-    lv_obj_set_style_bg_color(div, lv_color_hex(COL_CARD), 0);
-
-/* PR 3: filter-pill row sits between the divider and the list.
+/* PR 3: filter-pill row sits at the top of the content area (no
+ * btn-row above it anymore — voice = FAB, text = topbar pencil).
  * 44 px tall; four equal-width pills with 8 px gaps; active pill
  * gets amber background, inactive pills are dark-pill style. */
 #define FILTER_H 44
    s_filter_row = lv_obj_create(s_screen);
    lv_obj_remove_style_all(s_filter_row);
    lv_obj_set_size(s_filter_row, SW, FILTER_H);
-   lv_obj_set_pos(s_filter_row, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14);
+   lv_obj_set_pos(s_filter_row, 0, TOPBAR_H + 8);
    lv_obj_set_style_pad_hor(s_filter_row, 16, 0);
    lv_obj_set_style_pad_top(s_filter_row, 4, 0);
    lv_obj_set_flex_flow(s_filter_row, LV_FLEX_FLOW_ROW);
@@ -2755,7 +2779,7 @@ lv_obj_t *ui_notes_create(void)
    s_proc_row = lv_obj_create(s_screen);
    lv_obj_remove_style_all(s_proc_row);
    lv_obj_set_size(s_proc_row, SW - 32, PROC_H);
-   lv_obj_set_pos(s_proc_row, 16, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14 + FILTER_H + 4);
+   lv_obj_set_pos(s_proc_row, 16, TOPBAR_H + 8 + FILTER_H + 4);
    lv_obj_set_style_bg_color(s_proc_row, lv_color_hex(0x141420), 0);
    lv_obj_set_style_bg_opa(s_proc_row, LV_OPA_COVER, 0);
    lv_obj_set_style_border_width(s_proc_row, 1, 0);
@@ -2805,8 +2829,8 @@ lv_obj_t *ui_notes_create(void)
 
    /* Scrollable notes list — gains ~132px from reduced button row + search bar */
    s_list = lv_obj_create(s_screen);
-   lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - BTN_ROW_H - SEARCH_H - 10 - FILTER_H - 4 - PROC_H - 8);
-   lv_obj_set_pos(s_list, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14 + FILTER_H + PROC_H + 8);
+   lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - 8 - FILTER_H - 4 - PROC_H - 8);
+   lv_obj_set_pos(s_list, 0, TOPBAR_H + 8 + FILTER_H + PROC_H + 8);
    lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
    lv_obj_set_style_border_width(s_list, 0, 0);
    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
