@@ -14,6 +14,7 @@
 
 #include "ui_orb.h"
 
+#include <math.h> /* sinf for idle breath + lissajous spec drift (TT #543) */
 #include <stdint.h>
 #include <stdlib.h> /* malloc/free for presence-call marshalling */
 #include <time.h>
@@ -145,6 +146,14 @@ static lv_obj_t *s_saved_burst = NULL;          /* PR 2 polish: one-shot green r
 static lv_timer_t *s_saved_burst_timer = NULL;
 static uint32_t s_saved_burst_t0 = 0;         /* ms uptime when burst started, for elapsed-frac math */
 static lv_timer_t *s_body_pulse_timer = NULL; /* PR 2 polish: body heartbeat scale during RECORDING */
+static lv_timer_t *s_idle_breath_timer = NULL; /* TT #543: idle-only slow breath */
+
+/* Forward declarations — body_pulse + idle_breath helpers are defined
+ * alongside the paint helpers near the bottom of the file but the state
+ * machine in ui_orb_set_state needs them earlier. */
+static void body_pulse_stop(void);
+static void idle_breath_start(void);
+static void idle_breath_stop(void);
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -324,7 +333,22 @@ static void tilt_tick_cb(lv_timer_t *t) {
    if (dy > (float)ORB_TILT_LIMIT) dy = (float)ORB_TILT_LIMIT;
    if (dy < -(float)ORB_TILT_LIMIT) dy = -(float)ORB_TILT_LIMIT;
 
-   lv_obj_set_pos(s_spec, s_spec_rest_x_eff + (int)dx, s_spec_rest_y_eff + (int)dy);
+   /* TT #543: autonomous lissajous drift on top of the tilt motion.  Two
+    * incommensurate periods (3.5 s on x, 4.7 s on y, +π/4 phase offset)
+    * so the highlight traces an aperiodic figure-eight even when the
+    * device is dead still on a desk.  Amplitude 3 px keeps the motion
+    * subliminal — barely visible at a glance, registers over seconds
+    * as "real lit sphere under a slowly moving sun."  Real tilt input
+    * rides on top + dominates when the user actually moves the device. */
+   const float two_pi = 6.28318530718f;
+   uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   float px = (float)(t_ms % 3500) / 3500.0f;
+   float py = (float)(t_ms % 4700) / 4700.0f;
+   const float drift_amp = 3.0f;
+   float drift_x = drift_amp * sinf(px * two_pi);
+   float drift_y = drift_amp * sinf(py * two_pi + 0.7854f /* π/4 */);
+
+   lv_obj_set_pos(s_spec, s_spec_rest_x_eff + (int)(dx + drift_x), s_spec_rest_y_eff + (int)(dy + drift_y));
 }
 
 static void tilt_start(void) {
@@ -699,8 +723,9 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
    }
 
-   /* IDLE state arms tilt drift by default. */
+   /* IDLE state arms tilt drift + idle breath by default. */
    tilt_start();
+   idle_breath_start();
 
    /* PR 2: subscribe to the dictation pipeline.  Callbacks land on the
     * LVGL thread thanks to the _lvgl variant.  Static guard so a
@@ -727,6 +752,8 @@ void ui_orb_destroy(void) {
     * so they must not be scheduled past the screen tear-down. */
    tilt_stop();
    bloom_stop();
+   idle_breath_stop();
+   body_pulse_stop();
    /* Cancel any in-flight lean anims targeting s_spec. */
    if (s_spec) {
       lv_anim_delete(s_spec, lean_anim_rest_x_cb);
@@ -793,6 +820,15 @@ void ui_orb_set_state(ui_orb_state_t s) {
       case ORB_STATE_SPEAKING:
          tilt_stop();
          break;
+   }
+
+   /* TT #543: idle breath halo opa pulse runs in IDLE only.  Stop on
+    * any other state so bloom (LISTENING) / speaking-halo (SPEAKING) /
+    * pipeline state owners can drive s_halo without contention. */
+   if (s == ORB_STATE_IDLE) {
+      idle_breath_start();
+   } else {
+      idle_breath_stop();
    }
 
    /* Step 5: voice bloom + listening lean are tied to LISTENING.
@@ -1092,6 +1128,60 @@ static void body_pulse_stop(void) {
       lv_obj_set_style_transform_scale_x(s_body, 256, LV_PART_MAIN);
       lv_obj_set_style_transform_scale_y(s_body, 256, LV_PART_MAIN);
    }
+}
+
+/* ── Idle breath (TT #543) ───────────────────────────────────────────── */
+
+/* Very slow, very subtle halo opacity pulse, IDLE-only.  Reads as
+ * "alive without trying."  Initial implementation used transform_scale
+ * on s_body but that forced gradient re-rasterization on every tick,
+ * stalling the UI task long enough to trip the watchdog.  Halo opacity
+ * is the same mechanism as the existing voice bloom — solid color, no
+ * gradient, cheap repaint.  Animates between 0 and 28 opa over 4 s
+ * sine path so the orb's outer rim softly respires.  Bloom and breath
+ * share s_halo but never run concurrently (bloom = LISTENING only;
+ * breath = IDLE only, plus pipeline-active yields). */
+#define IDLE_BREATH_PERIOD_MS 4000
+#define IDLE_BREATH_AMPLITUDE 28 /* peak halo opa during breath */
+
+static int s_idle_breath_last_opa = 0;
+
+static void idle_breath_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_halo) return;
+   /* Pipeline states own the halo — RECORDING uses the bloom envelope,
+    * the speaking-halo fade owns it during SPEAKING.  Yield. */
+   if (ui_orb_pipeline_active()) return;
+   if (s_state != ORB_STATE_IDLE) return;
+   uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   float phase = (float)(t_ms % IDLE_BREATH_PERIOD_MS) / (float)IDLE_BREATH_PERIOD_MS;
+   /* sin(2π·phase) → half-rectified so the halo only adds (never goes
+    * negative); ramps 0 → A → 0 over the cycle. */
+   float s = sinf(phase * 6.28318530718f);
+   if (s < 0.0f) s = 0.0f;
+   int opa = (int)(s * (float)IDLE_BREATH_AMPLITUDE);
+   if (opa == s_idle_breath_last_opa) return;
+   s_idle_breath_last_opa = opa;
+   lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
+}
+
+static void idle_breath_start(void) {
+   if (!s_halo || s_idle_breath_timer) return;
+   s_idle_breath_last_opa = 0;
+   /* 200 ms tick = 5 Hz; over a 4 s cycle that's 20 samples — smooth
+    * enough for a ~28 opa pulse without burning render budget. */
+   s_idle_breath_timer = lv_timer_create(idle_breath_tick_cb, 200, NULL);
+}
+
+static void idle_breath_stop(void) {
+   if (s_idle_breath_timer) {
+      lv_timer_del(s_idle_breath_timer);
+      s_idle_breath_timer = NULL;
+   }
+   /* Don't force halo opa here — bloom_start / speaking halo / pipeline
+    * state owners may be about to drive it. Each of those callers sets
+    * the opa they want on enter. */
+   s_idle_breath_last_opa = 0;
 }
 
 /* Paint the orb body in the pipeline-state tint.  Caller is responsible
