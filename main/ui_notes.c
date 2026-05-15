@@ -2770,19 +2770,16 @@ lv_obj_t *ui_notes_create(void)
    /* Collapsed by default — toggled by the topbar magnifier icon. */
    lv_obj_add_flag(s_search_ta, LV_OBJ_FLAG_HIDDEN);
 
-   /* Topbar icons: magnifier (toggle search) + pencil (new text note). */
+   /* Topbar pencil: text-note entry.  The magnifier search icon was
+    * removed because LVGL ships no proper magnifying-glass glyph —
+    * LV_SYMBOL_LOOP renders as a refresh-arrow which read more like
+    * "retry" than "search" and confused the affordance.  Search is
+    * a secondary action; the filter pills already cover the primary
+    * "find by type" navigation.  We keep cb_topbar_search_tap +
+    * the collapsed search ta around so a future, glyph-aware
+    * iteration can re-introduce search without re-plumbing. */
    {
-      extern void cb_topbar_search_tap(lv_event_t * e);
       extern void cb_topbar_text_tap(lv_event_t * e);
-      lv_obj_t *mag = lv_label_create(s_screen);
-      lv_label_set_text(mag, LV_SYMBOL_LOOP);
-      lv_obj_set_style_text_color(mag, lv_color_hex(COL_LABEL2), 0);
-      lv_obj_set_style_text_font(mag, FONT_HEADING, 0);
-      lv_obj_align(mag, LV_ALIGN_TOP_RIGHT, -76, 10);
-      lv_obj_add_flag(mag, LV_OBJ_FLAG_CLICKABLE);
-      lv_obj_set_ext_click_area(mag, 18);
-      lv_obj_add_event_cb(mag, cb_topbar_search_tap, LV_EVENT_CLICKED, NULL);
-
       lv_obj_t *pen = lv_label_create(s_screen);
       lv_label_set_text(pen, LV_SYMBOL_EDIT);
       lv_obj_set_style_text_color(pen, lv_color_hex(COL_AMBER), 0);
@@ -2903,23 +2900,28 @@ lv_obj_t *ui_notes_create(void)
    lv_obj_set_style_pad_hor(s_list, 16, 0);
    lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
 
-/* PR 3: amber dictate FAB — bottom-right above the nav bar.  Tap
- * fires voice_start_dictation (the same path the home Dictate chip
- * uses) so a recording started here flows through the pipeline +
- * surfaces on the processing row above. */
-#define FAB_SZ 64
+   /* PR 3: amber dictate FAB — bottom-right above the nav bar.  Tap
+    * fires voice_start_dictation (the same path the home Dictate chip
+    * uses) so a recording started here flows through the pipeline +
+    * surfaces on the processing row above. */
    s_fab = lv_obj_create(s_screen);
    lv_obj_remove_style_all(s_fab);
    lv_obj_set_size(s_fab, FAB_SZ, FAB_SZ);
-   lv_obj_set_pos(s_fab, SW - FAB_SZ - 24, USABLE_H - FAB_SZ - 24);
+   /* Position the FAB above the global home button (which lv_layer_top
+    * paints at the bottom-right corner with a similar circular outline
+    * treatment).  Without the extra clearance the two circles read as
+    * a single 2-button stack and the user mis-taps.  +20 px breathing
+    * room + a smaller halo shadow gives the FAB its own personality
+    * without competing for visual weight. */
+   lv_obj_set_pos(s_fab, SW - FAB_SZ - 24, USABLE_H - FAB_SZ - 24 - 80);
    lv_obj_set_style_radius(s_fab, LV_RADIUS_CIRCLE, 0);
    lv_obj_set_style_bg_color(s_fab, lv_color_hex(0xF59E0B), 0);
    lv_obj_set_style_bg_opa(s_fab, LV_OPA_COVER, 0);
    lv_obj_set_style_border_width(s_fab, 0, 0);
-   lv_obj_set_style_shadow_width(s_fab, 18, 0);
+   lv_obj_set_style_shadow_width(s_fab, 12, 0);
    lv_obj_set_style_shadow_color(s_fab, lv_color_hex(0xF59E0B), 0);
-   lv_obj_set_style_shadow_opa(s_fab, LV_OPA_50, 0);
-   lv_obj_set_style_shadow_offset_y(s_fab, 6, 0);
+   lv_obj_set_style_shadow_opa(s_fab, LV_OPA_30, 0);
+   lv_obj_set_style_shadow_offset_y(s_fab, 4, 0);
    lv_obj_clear_flag(s_fab, LV_OBJ_FLAG_SCROLLABLE);
    lv_obj_add_flag(s_fab, LV_OBJ_FLAG_CLICKABLE);
    {
