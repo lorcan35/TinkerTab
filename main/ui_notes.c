@@ -549,6 +549,30 @@ static void notes_load(void)
     ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
 }
 
+/* ── PR 3: filter pills + day-section state ─────────────── */
+typedef enum {
+   NOTE_FILTER_ALL = 0,
+   NOTE_FILTER_VOICE,
+   NOTE_FILTER_TEXT,
+   NOTE_FILTER_PENDING, /* placeholder for PR 4 pending_chip filter */
+} note_filter_t;
+static note_filter_t s_filter = NOTE_FILTER_ALL;
+
+typedef enum {
+   DAY_SECTION_TODAY = 0,
+   DAY_SECTION_YESTERDAY,
+   DAY_SECTION_THIS_WEEK,
+   DAY_SECTION_OLDER,
+} day_section_t;
+
+static lv_obj_t *s_filter_row   = NULL;
+static lv_obj_t *s_filter_pill[4] = {NULL};
+static lv_obj_t *s_proc_row     = NULL;   /* processing row with mini-orb */
+static lv_obj_t *s_proc_orb     = NULL;
+static lv_obj_t *s_proc_label   = NULL;
+static lv_obj_t *s_proc_close   = NULL;
+static lv_obj_t *s_fab          = NULL;   /* amber dictate FAB */
+
 /* ── Screen state ──────────────────────────────────────── */
 static lv_obj_t *s_screen      = NULL;
 static lv_obj_t *s_list        = NULL;
@@ -2151,6 +2175,103 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_width(preview, lv_pct(100));
 }
 
+/* ── PR 3: day-section grouping ─────────────────────────── */
+
+static int days_since_2000_local(uint8_t y, uint8_t m, uint8_t d) {
+   /* Cheap monotonic day index for comparison.  Uses tm_yday math via
+    * mktime to handle month lengths correctly. */
+   struct tm t = {0};
+   t.tm_year = 100 + (int)y; /* tm_year is years since 1900 */
+   t.tm_mon = (m > 0 ? m - 1 : 0);
+   t.tm_mday = d;
+   t.tm_hour = 12;
+   time_t tt = mktime(&t);
+   return (int)(tt / 86400);
+}
+
+static day_section_t classify_note_day(const note_entry_t *n) {
+   time_t now = time(NULL);
+   struct tm nt;
+   localtime_r(&now, &nt);
+   int today = days_since_2000_local((uint8_t)(nt.tm_year - 100), (uint8_t)(nt.tm_mon + 1), (uint8_t)nt.tm_mday);
+   int nd = days_since_2000_local(n->year, n->month, n->day);
+   int delta = today - nd;
+   if (delta <= 0) return DAY_SECTION_TODAY;
+   if (delta == 1) return DAY_SECTION_YESTERDAY;
+   if (delta < 7) return DAY_SECTION_THIS_WEEK;
+   return DAY_SECTION_OLDER;
+}
+
+static const char *day_section_label(day_section_t s) {
+   switch (s) {
+      case DAY_SECTION_TODAY:     return "TODAY";
+      case DAY_SECTION_YESTERDAY: return "YESTERDAY";
+      case DAY_SECTION_THIS_WEEK: return "THIS WEEK";
+      case DAY_SECTION_OLDER:     return "OLDER";
+   }
+   return "";
+}
+
+/* PR 3: filter predicate.  AUTO type falls back to is_voice for
+ * pre-PR-4 notes so the timeline behaves identically. */
+static bool note_matches_filter(const note_entry_t *n) {
+   if (s_filter == NOTE_FILTER_ALL) return true;
+   if (s_filter == NOTE_FILTER_VOICE) {
+      if (n->type == NOTE_TYPE_VOICE || n->type == NOTE_TYPE_LIST || n->type == NOTE_TYPE_REMINDER) return true;
+      if (n->type == NOTE_TYPE_AUTO && n->is_voice) return true;
+      return false;
+   }
+   if (s_filter == NOTE_FILTER_TEXT) {
+      if (n->type == NOTE_TYPE_TEXT) return true;
+      if (n->type == NOTE_TYPE_AUTO && !n->is_voice) return true;
+      return false;
+   }
+   if (s_filter == NOTE_FILTER_PENDING) {
+      /* PR 3 placeholder — pending_chip is unpopulated until PR 4.
+       * For now treat FAILED notes as "pending" so the filter shows
+       * something useful pre-PR-4. */
+      return n->state == NOTE_STATE_FAILED;
+   }
+   return true;
+}
+
+static void add_day_section_header(lv_obj_t *parent, day_section_t s) {
+   lv_obj_t *lbl = lv_label_create(parent);
+   lv_label_set_text(lbl, day_section_label(s));
+   lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(0xF59E0B), 0);
+   lv_obj_set_style_text_letter_space(lbl, 2, 0);
+   lv_obj_set_style_pad_top(lbl, 8, 0);
+   lv_obj_set_style_pad_bottom(lbl, 4, 0);
+}
+
+/* PR 3: paint the filter pills so the active one gets amber bg + dark
+ * text; inactive ones get dark-pill bg + neutral text.  Called whenever
+ * s_filter changes (on tap or on screen create). */
+void ui_notes_paint_filter_pills(void) {
+   for (int i = 0; i < 4; i++) {
+      lv_obj_t *p = s_filter_pill[i];
+      if (!p) continue;
+      bool active = ((int)s_filter == i);
+      lv_obj_set_style_bg_color(p, lv_color_hex(active ? 0xF59E0B : 0x141420), 0);
+      lv_obj_set_style_border_color(p, lv_color_hex(active ? 0xF59E0B : 0x262637), 0);
+      lv_obj_t *lbl = lv_obj_get_child(p, 0);
+      if (lbl) {
+         lv_obj_set_style_text_color(lbl, lv_color_hex(active ? 0x141420 : 0xE8E8EF), 0);
+      }
+   }
+}
+
+void cb_filter_pill_tap(lv_event_t *e) {
+   lv_obj_t *p = lv_event_get_target(e);
+   int idx = (int)(uintptr_t)lv_obj_get_user_data(p);
+   if (idx < 0 || idx > 3) return;
+   if ((int)s_filter == idx) return; /* no-op when tapping the active pill */
+   s_filter = (note_filter_t)idx;
+   ui_notes_paint_filter_pills();
+   refresh_list();
+}
+
 /* ── Refresh list ───────────────────────────────────────── */
 static void refresh_list(void)
 {
@@ -2202,6 +2323,12 @@ static void refresh_list(void)
     }
 
     int shown = 0;
+    /* PR 3: emit day-section headers as we walk the (already-reverse-
+     * chronological) notes ring.  A header is emitted the first time
+     * we see a row whose classify_note_day() bucket differs from the
+     * previous header.  Tracks the last emitted bucket via cur_section
+     * with -1 as the sentinel for "no header emitted yet". */
+    int cur_section = -1;
     for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
         int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
         if (!s_notes[idx].used) continue;
@@ -2209,6 +2336,14 @@ static void refresh_list(void)
         if (s_search_text[0]) {
             /* N1: Case-insensitive search */
             if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
+        }
+        /* PR 3: filter pill predicate */
+        if (!note_matches_filter(&s_notes[idx])) continue;
+        /* PR 3: emit a day-section header when entering a new bucket. */
+        day_section_t sec = classify_note_day(&s_notes[idx]);
+        if ((int)sec != cur_section) {
+           add_day_section_header(s_list, sec);
+           cur_section = (int)sec;
         }
         add_note_card(s_list, &s_notes[idx], idx);
         shown++;
@@ -2411,10 +2546,52 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_pos(div, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 8);
     lv_obj_set_style_bg_color(div, lv_color_hex(COL_CARD), 0);
 
+    /* PR 3: filter-pill row sits between the divider and the list.
+     * 44 px tall; four equal-width pills with 8 px gaps; active pill
+     * gets amber background, inactive pills are dark-pill style. */
+    #define FILTER_H 44
+    s_filter_row = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_filter_row);
+    lv_obj_set_size(s_filter_row, SW, FILTER_H);
+    lv_obj_set_pos(s_filter_row, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14);
+    lv_obj_set_style_pad_hor(s_filter_row, 16, 0);
+    lv_obj_set_style_pad_top(s_filter_row, 4, 0);
+    lv_obj_set_flex_flow(s_filter_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(s_filter_row, 8, 0);
+    lv_obj_clear_flag(s_filter_row, LV_OBJ_FLAG_SCROLLABLE);
+    {
+       static const char *PILL_LABELS[4] = {"All", "Voice", "Text", "Pending"};
+       int pill_w = (SW - 32 - 24) / 4; /* 24 = 3*8 column gaps */
+       for (int i = 0; i < 4; i++) {
+          lv_obj_t *p = lv_obj_create(s_filter_row);
+          lv_obj_remove_style_all(p);
+          lv_obj_set_size(p, pill_w, FILTER_H - 12);
+          lv_obj_set_style_radius(p, 18, 0);
+          lv_obj_set_style_bg_color(p, lv_color_hex(0x141420), 0);
+          lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+          lv_obj_set_style_border_width(p, 1, 0);
+          lv_obj_set_style_border_color(p, lv_color_hex(0x262637), 0);
+          lv_obj_clear_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+          lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE);
+          lv_obj_t *lbl = lv_label_create(p);
+          lv_label_set_text(lbl, PILL_LABELS[i]);
+          lv_obj_set_style_text_color(lbl, lv_color_hex(0xE8E8EF), 0);
+          lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+          lv_obj_center(lbl);
+          lv_obj_set_user_data(p, (void *)(uintptr_t)i);
+          extern void cb_filter_pill_tap(lv_event_t *e);
+          lv_obj_add_event_cb(p, cb_filter_pill_tap, LV_EVENT_CLICKED, NULL);
+          s_filter_pill[i] = p;
+       }
+       /* Initial active-pill paint reflecting s_filter (default = ALL). */
+       extern void ui_notes_paint_filter_pills(void);
+       ui_notes_paint_filter_pills();
+    }
+
     /* Scrollable notes list — gains ~132px from reduced button row + search bar */
     s_list = lv_obj_create(s_screen);
-    lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - BTN_ROW_H - SEARCH_H - 10);
-    lv_obj_set_pos(s_list, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 10);
+    lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - BTN_ROW_H - SEARCH_H - 10 - FILTER_H - 4);
+    lv_obj_set_pos(s_list, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14 + FILTER_H);
     lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
