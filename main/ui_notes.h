@@ -69,3 +69,19 @@ void ui_notes_sync_pending(void);
  *  "+ NEW VOICE NOTE" button path owns that slot via
  *  ui_notes_start_recording).  Caller owns the string; we copy. */
 void ui_notes_add_dictated_async(const char *transcript);
+
+/** #537: arm a SD WAV recording for an incoming pipeline-path dictation
+ *  (Home Dictate chip / chat overlay mic).  Opens a new WAV file +
+ *  reserves a note slot in NOTE_STATE_RECORDED state — the existing
+ *  ui_notes_write_audio() hook in voice.c's mic capture task will
+ *  populate the file frame-by-frame.  Returns true if the slot was
+ *  armed, false if SD isn't mounted or another recording is already
+ *  in flight (FAB or prior arm).  Called from the LVGL thread. */
+bool ui_notes_pipeline_arm_recording(void);
+
+/** #537: cancel a pipeline-armed recording.  Closes the WAV, deletes
+ *  the half-written file from SD, and removes the dangling note slot
+ *  from the timeline.  No-op if no pipeline-armed recording exists
+ *  (FAB-armed slots are untouched).  Idempotent.  Called on user-
+ *  initiated cancel + on dictation_postprocessing_cancelled WS frames. */
+void ui_notes_pipeline_cancel_recording(void);

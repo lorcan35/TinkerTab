@@ -2017,12 +2017,20 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
    (void)e;
    dict_event_t dp = voice_dictation_get();
    if (dp.state == DICT_IDLE || dp.state == DICT_FAILED) {
+      /* #537: arm a SD WAV before starting the pipeline so the mic
+       * capture task's ui_notes_write_audio() hook actually has a
+       * file to write to.  On dictation_summary the slot is finalised
+       * with the transcript + audio_path; on cancel/error we discard
+       * the WAV via ui_notes_pipeline_cancel_recording. */
+      bool armed = ui_notes_pipeline_arm_recording();
       esp_err_t err = voice_start_dictation();
       if (err != ESP_OK) {
          ESP_LOGW(TAG, "voice_start_dictation failed: %s", esp_err_to_name(err));
+         if (armed) ui_notes_pipeline_cancel_recording();
       }
    } else if (dp.state == DICT_RECORDING) {
       voice_cancel();
+      ui_notes_pipeline_cancel_recording();
       voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
    }
 }
