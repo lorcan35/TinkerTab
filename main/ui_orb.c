@@ -135,14 +135,15 @@ static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
 static lv_obj_t *s_body = NULL;  /* the lit sphere itself */
 static lv_obj_t *s_spec = NULL;  /* tilt-driven specular highlight (child of s_body) */
 static lv_obj_t *s_halo = NULL;  /* voice-bloom halo (sibling-BEHIND s_body) */
-static lv_obj_t *s_ripple_a = NULL;   /* PR 2 polish: sonar ripple A — outermost-expanding ring during RECORDING */
-static lv_obj_t *s_ripple_b = NULL;   /* PR 2 polish: sonar ripple B — phase-offset by 50% so a new ripple is always rising as the prior fades */
-static lv_timer_t *s_ripple_timer = NULL; /* 16 ms tick for ripple geometry */
-static lv_obj_t *s_thinking_arc = NULL;   /* PR 2 polish: rotating arc segment around body during TRANSCRIBING */
+static lv_obj_t *s_ripple_a = NULL; /* PR 2 polish: sonar ripple A — outermost-expanding ring during RECORDING */
+static lv_obj_t *s_ripple_b =
+    NULL; /* PR 2 polish: sonar ripple B — phase-offset by 50% so a new ripple is always rising as the prior fades */
+static lv_timer_t *s_ripple_timer = NULL;       /* 16 ms tick for ripple geometry */
+static lv_obj_t *s_thinking_arc = NULL;         /* PR 2 polish: rotating arc segment around body during TRANSCRIBING */
 static lv_timer_t *s_thinking_arc_timer = NULL; /* drives the arc's rotation */
-static lv_obj_t *s_saved_burst = NULL;     /* PR 2 polish: one-shot green ring on SAVED entry */
+static lv_obj_t *s_saved_burst = NULL;          /* PR 2 polish: one-shot green ring on SAVED entry */
 static lv_timer_t *s_saved_burst_timer = NULL;
-static uint32_t s_saved_burst_t0 = 0;      /* ms uptime when burst started, for elapsed-frac math */
+static uint32_t s_saved_burst_t0 = 0;         /* ms uptime when burst started, for elapsed-frac math */
 static lv_timer_t *s_body_pulse_timer = NULL; /* PR 2 polish: body heartbeat scale during RECORDING */
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
@@ -1235,7 +1236,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          paint_pipeline_halo(0xFF5C50); /* warm red halo glow */
          ripple_start(0xFF7A6F);        /* sonar rings expanding outward */
          thinking_arc_stop();
-         body_pulse_start();            /* heartbeat pulse on body scale */
+         body_pulse_start(); /* heartbeat pulse on body scale */
          uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
          uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
          uint32_t s = dur_ms / 1000;
@@ -1276,7 +1277,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          ripple_stop();
          body_pulse_stop();
          thinking_arc_stop();
-         saved_burst_fire();             /* one-shot expanding green ring */
+         saved_burst_fire(); /* one-shot expanding green ring */
          paint_pipeline_body(0x22C55E);
          paint_pipeline_halo(0x4ADE80); /* mint glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);

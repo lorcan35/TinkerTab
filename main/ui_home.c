@@ -181,11 +181,11 @@ static lv_obj_t *s_mode_sub        = NULL;  /* "LOCAL + CLOUD" */
  * icon / border colour.  Tap → voice_start_dictation (in IDLE) or
  * voice_cancel (in RECORDING) — wired in Tasks 8-9. */
 static lv_obj_t *s_dictate_chip = NULL;
-static lv_obj_t *s_dictate_chip_dot = NULL;   /* breathing dot, left edge */
-static lv_obj_t *s_dictate_chip_label = NULL; /* "Dictate" / "RECORDING" / etc. */
-static lv_obj_t *s_dictate_chip_hint = NULL;  /* "TAP TO START" / "0:23" / etc. */
+static lv_obj_t *s_dictate_chip_dot = NULL;     /* breathing dot, left edge */
+static lv_obj_t *s_dictate_chip_label = NULL;   /* "Dictate" / "RECORDING" / etc. */
+static lv_obj_t *s_dictate_chip_hint = NULL;    /* "TAP TO START" / "0:23" / etc. */
 static lv_timer_t *s_dictate_chip_rec_t = NULL; /* PR 2 polish: ticks chip hint M:SS during RECORDING */
-static lv_obj_t *s_dictate_chip_icon = NULL;  /* 🎤 / × / 🔄 / ✓ */
+static lv_obj_t *s_dictate_chip_icon = NULL;    /* 🎤 / × / 🔄 / ✓ */
 
 /* Now-slot card (widget live target + empty-state) */
 static lv_obj_t *s_now_card        = NULL;
@@ -1744,8 +1744,7 @@ static void orb_click_cb(lv_event_t *e)
      * aren't shadowed by stale "CANCELLED · TAP TO RETRY" text. */
     dict_event_t pe = voice_dictation_get();
     if (pe.state == DICT_FAILED || pe.state == DICT_SAVED) {
-       voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE,
-                                  (uint32_t)(esp_timer_get_time() / 1000));
+       voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
     }
 
     ui_voice_show();
