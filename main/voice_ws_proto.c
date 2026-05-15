@@ -871,6 +871,43 @@ void voice_ws_proto_handle_text(const char *data, int len) {
          } else {
             ui_notes_add_dictated_async(s_dictation_title);
          }
+         /* PR 4: parse Dragon's optional `proposed_action` classifier
+          * output + attach it as a pending_chip on the freshly-added
+          * slot.  Forward-compat: missing field → no chip rendered.
+          * Confidence floor (75) is enforced inside ui_notes. */
+         cJSON *pa = cJSON_GetObjectItem(root, "proposed_action");
+         if (cJSON_IsObject(pa)) {
+            cJSON *jkind = cJSON_GetObjectItem(pa, "kind");
+            cJSON *jconf = cJSON_GetObjectItem(pa, "confidence");
+            cJSON *jpayload = cJSON_GetObjectItem(pa, "payload");
+            uint8_t kind = 0;
+            if (cJSON_IsString(jkind) && jkind->valuestring) {
+               if (strcmp(jkind->valuestring, "reminder") == 0)
+                  kind = 1;
+               else if (strcmp(jkind->valuestring, "list") == 0)
+                  kind = 2;
+            }
+            uint8_t confidence = 0;
+            if (cJSON_IsNumber(jconf)) {
+               double c = jconf->valuedouble;
+               /* Spec sends 0.0-1.0; multiply to 0-100.  Be lenient if a
+                * future Dragon build sends 0-100 directly. */
+               confidence = (uint8_t)(c > 1.0 ? c : c * 100.0);
+            }
+            char payload_buf[128] = {0};
+            if (cJSON_IsObject(jpayload)) {
+               /* Reminder: extract `when` (ISO datetime).  List: payload
+                * is informational; we currently only need the kind tag
+                * since Tab5 splits on commas itself. */
+               cJSON *jwhen = cJSON_GetObjectItem(jpayload, "when");
+               if (cJSON_IsString(jwhen) && jwhen->valuestring) {
+                  strncpy(payload_buf, jwhen->valuestring, sizeof(payload_buf) - 1);
+               }
+            }
+            if (kind != 0) {
+               ui_notes_attach_pending_chip_async(kind, confidence, payload_buf);
+            }
+         }
       } else {
          voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, now);
       }

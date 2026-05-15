@@ -127,11 +127,28 @@ typedef enum {
    NOTE_TYPE_REMINDER,
 } note_type_t;
 
-/* PR 3: storage slot for PR 4's "convert to reminder?" / "make a list?"
- * action chips.  Empty in PR 3 — the field exists so PR 4 can populate
- * without a second on-disk migration.  JSON key "pc" is reserved. */
+/* PR 4: action-chip pending state.  Dragon's classifier proposes a
+ * conversion (reminder or list) after dictation_summary; the chip
+ * renders below the row body when kind != PENDING_NONE and confidence
+ * is at or above PENDING_CONFIDENCE_FLOOR.  Tap ✓ confirms (schedules
+ * notification / flips type); tap ✕ clears.  Persisted as JSON object
+ * under key "pc". */
+typedef enum {
+   PENDING_NONE = 0,
+   PENDING_REMINDER = 1,
+   PENDING_LIST = 2,
+} pending_kind_t;
+
+#define PENDING_CONFIDENCE_FLOOR 75 /* 0-100; chip hidden below this */
+#define PENDING_PAYLOAD_LEN 128
+
 typedef struct {
-   uint8_t _reserved;
+   uint8_t kind;       /* pending_kind_t */
+   uint8_t confidence; /* 0-100 */
+   char payload[PENDING_PAYLOAD_LEN];
+   /* Reminder payload format: ISO-8601 datetime, e.g. "2026-05-19T18:00".
+    * List payload format: a single comma + delimiter signal like
+    * "delim=comma" — Tab5 splits the transcript itself on confirm. */
 } pending_chip_t;
 
 /* ── Note storage ───────────────────────────────────────── */
@@ -340,6 +357,14 @@ static void notes_save(void)
         if (n->type != NOTE_TYPE_AUTO) {
            cJSON_AddNumberToObject(obj, "ty", (int)n->type);
         }
+        /* PR 4: persist pending_chip when populated. */
+        if (n->pending.kind != PENDING_NONE) {
+           cJSON *pc = cJSON_CreateObject();
+           cJSON_AddNumberToObject(pc, "k", n->pending.kind);
+           cJSON_AddNumberToObject(pc, "c", n->pending.confidence);
+           cJSON_AddStringToObject(pc, "p", n->pending.payload);
+           cJSON_AddItemToObject(obj, "pc", pc);
+        }
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -521,6 +546,20 @@ static void notes_load(void)
         n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
         cJSON *jty = cJSON_GetObjectItem(item, "ty");
         n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
+        /* PR 4: load pending_chip; missing keys default to PENDING_NONE. */
+        cJSON *jpc = cJSON_GetObjectItem(item, "pc");
+        memset(&n->pending, 0, sizeof(n->pending));
+        if (cJSON_IsObject(jpc)) {
+           cJSON *jk = cJSON_GetObjectItem(jpc, "k");
+           cJSON *jc = cJSON_GetObjectItem(jpc, "c");
+           cJSON *jp = cJSON_GetObjectItem(jpc, "p");
+           if (cJSON_IsNumber(jk)) n->pending.kind = (uint8_t)jk->valuedouble;
+           if (cJSON_IsNumber(jc)) n->pending.confidence = (uint8_t)jc->valuedouble;
+           if (cJSON_IsString(jp) && jp->valuestring) {
+              strncpy(n->pending.payload, jp->valuestring, PENDING_PAYLOAD_LEN - 1);
+              n->pending.payload[PENDING_PAYLOAD_LEN - 1] = '\0';
+           }
+        }
         n->used = true;
         loaded++;
     }
@@ -781,6 +820,8 @@ static void __attribute__((unused)) voice_state_cb(voice_state_t state, const ch
 static int s_rec_note_slot;
 static bool s_pipeline_armed_slot;
 static FILE *s_rec_file;
+static int find_most_recent_used_slot(void);
+static void pending_chip_apply_inline(int idx);
 
 /* PR 3 follow-up: deferred WS-thread → LVGL-thread dictated-note add.
  * The dictation_summary handler in voice_ws_proto.c calls
@@ -807,7 +848,12 @@ static void notes_add_dictated_async_cb(void *arg) {
          s_notes[s_rec_note_slot].used = true;
          if (s_note_count < MAX_NOTES) s_note_count++;
       }
+      int finalized_slot = s_rec_note_slot;
       ui_notes_stop_recording(text[0] ? text : NULL);
+      /* PR 4: attach any pending chip from the WS handoff buffer to
+       * the slot we just finalised — this same-frame inline path
+       * sidesteps LVGL's LIFO async ordering. */
+      pending_chip_apply_inline(finalized_slot);
       free(text);
       return;
    }
@@ -822,15 +868,19 @@ static void notes_add_dictated_async_cb(void *arg) {
       return;
    }
    if (text[0]) {
-      int idx = ui_notes_add(text, true);
-      if (idx >= 0 && s_notes && idx >= 0 && idx < MAX_NOTES) {
+      ui_notes_add(text, true);
+      /* ui_notes_add stored at (s_next_slot - 1) and bumped s_next_slot;
+       * find_most_recent_used_slot returns that same index. */
+      int idx = find_most_recent_used_slot();
+      if (idx >= 0 && idx < MAX_NOTES) {
          /* Tag the new note as a voice dictation explicitly so the
           * Notes filter pill 'Voice' picks it up without relying on
           * legacy is_voice (which is also set above). */
          s_notes[idx].type = NOTE_TYPE_VOICE;
-         /* notes_save will see the dirty type field on next sync;
-          * ui_notes_add already triggered a save, so re-save here. */
+         /* PR 4: attach any pending chip from the WS handoff. */
+         pending_chip_apply_inline(idx);
          notes_save();
+         refresh_list();
       }
    }
    free(text);
@@ -1145,6 +1195,145 @@ void ui_notes_pipeline_cancel_recording(void) {
    s_rec_samples = 0;
    notes_save();
    refresh_list();
+}
+
+/* PR 4: pending-chip async attach. */
+typedef struct {
+   uint8_t kind;
+   uint8_t confidence;
+   char payload[PENDING_PAYLOAD_LEN];
+} pending_chip_msg_t;
+
+static int find_most_recent_used_slot(void) {
+   /* Walk back from s_next_slot through the ring, return the most-recent
+    * used slot index, or -1 if none. */
+   for (int i = 0; i < MAX_NOTES; i++) {
+      int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
+      if (s_notes[idx].used) return idx;
+   }
+   return -1;
+}
+
+/* Pending-chip handoff buffer.  Set by the WS RX thread when a
+ * dictation_summary frame carries a proposed_action; consumed by the
+ * LVGL-thread notes_add_dictated_async_cb AFTER it lands the new note.
+ *
+ * LVGL's lv_async_call is implemented as a LIFO (`_lv_ll_ins_head`),
+ * so queuing two callbacks (add then attach) makes the attach run
+ * first — exactly off-by-one against the just-added slot.  Instead we
+ * stash the chip data here and the same add cb attaches it inline
+ * after the slot is finalised. */
+static pending_chip_msg_t s_pending_chip_handoff = {0};
+static bool s_pending_chip_pending = false;
+static SemaphoreHandle_t s_pending_chip_mutex = NULL;
+
+static void pending_chip_apply_inline(int idx) {
+   if (idx < 0 || idx >= MAX_NOTES) return;
+   if (!s_pending_chip_mutex) return;
+   xSemaphoreTake(s_pending_chip_mutex, portMAX_DELAY);
+   if (s_pending_chip_pending) {
+      s_notes[idx].pending.kind = s_pending_chip_handoff.kind;
+      s_notes[idx].pending.confidence = s_pending_chip_handoff.confidence;
+      size_t plen = strnlen(s_pending_chip_handoff.payload, PENDING_PAYLOAD_LEN - 1);
+      memcpy(s_notes[idx].pending.payload, s_pending_chip_handoff.payload, plen);
+      s_notes[idx].pending.payload[plen] = '\0';
+      ESP_LOGI(TAG, "Pending chip → slot %d (kind=%u conf=%u)", idx, s_notes[idx].pending.kind,
+               s_notes[idx].pending.confidence);
+      memset(&s_pending_chip_handoff, 0, sizeof(s_pending_chip_handoff));
+      s_pending_chip_pending = false;
+   }
+   xSemaphoreGive(s_pending_chip_mutex);
+}
+
+void ui_notes_attach_pending_chip_async(uint8_t kind, uint8_t confidence, const char *payload) {
+   if (kind == PENDING_NONE) return;
+   if (confidence < PENDING_CONFIDENCE_FLOOR) return; /* below floor — don't surface */
+   if (!s_pending_chip_mutex) {
+      s_pending_chip_mutex = xSemaphoreCreateMutex();
+      if (!s_pending_chip_mutex) return;
+   }
+   xSemaphoreTake(s_pending_chip_mutex, portMAX_DELAY);
+   s_pending_chip_handoff.kind = kind;
+   s_pending_chip_handoff.confidence = confidence;
+   s_pending_chip_handoff.payload[0] = '\0';
+   if (payload && payload[0]) {
+      size_t plen = strnlen(payload, PENDING_PAYLOAD_LEN - 1);
+      memcpy(s_pending_chip_handoff.payload, payload, plen);
+      s_pending_chip_handoff.payload[plen] = '\0';
+   }
+   s_pending_chip_pending = true;
+   xSemaphoreGive(s_pending_chip_mutex);
+}
+
+/* PR 4: scheduler-notification POST helper.  Fires when the user taps ✓
+ * on a reminder chip.  Re-uses the same auth + URL pattern as
+ * sync_note_to_dragon_task.  Fire-and-forget; pending_chip is cleared
+ * locally regardless of HTTP outcome (the user's intent was confirmed). */
+typedef struct {
+   char when_iso[40];
+   char label[120];
+} scheduler_post_args_t;
+
+static void scheduler_post_task(void *arg) {
+   scheduler_post_args_t *a = (scheduler_post_args_t *)arg;
+   char dhost[64];
+   tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+   char url[160];
+   snprintf(url, sizeof(url), "http://%s:%d/api/v1/scheduler/notifications", dhost, 3502);
+
+   cJSON *body = cJSON_CreateObject();
+   cJSON_AddStringToObject(body, "when", a->when_iso);
+   cJSON_AddStringToObject(body, "label", a->label);
+   char *json = cJSON_PrintUnformatted(body);
+   cJSON_Delete(body);
+   if (!json) {
+      free(a);
+      vTaskSuspend(NULL);
+      return;
+   }
+   esp_http_client_config_t cfg = {
+       .url = url,
+       .method = HTTP_METHOD_POST,
+       .timeout_ms = 10000,
+   };
+   esp_http_client_handle_t client = esp_http_client_init(&cfg);
+   esp_http_client_set_header(client, "Content-Type", "application/json");
+   char dtok[80];
+   if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
+      char auth_hdr[96];
+      snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
+      esp_http_client_set_header(client, "Authorization", auth_hdr);
+   }
+   esp_http_client_set_post_field(client, json, strlen(json));
+   esp_err_t err = esp_http_client_perform(client);
+   int status = esp_http_client_get_status_code(client);
+   if (err == ESP_OK && (status == 200 || status == 201)) {
+      ESP_LOGI(TAG, "Reminder scheduled on Dragon (status=%d): %s @ %s", status, a->label, a->when_iso);
+   } else {
+      ESP_LOGW(TAG, "Reminder schedule failed: err=%s status=%d", esp_err_to_name(err), status);
+   }
+   esp_http_client_cleanup(client);
+   free(json);
+   free(a);
+   vTaskSuspend(NULL);
+}
+
+static void scheduler_post(const char *when_iso, const char *label) {
+   if (!when_iso || !when_iso[0]) return;
+   if (!tab5_wifi_connected()) {
+      ESP_LOGW(TAG, "Scheduler post skipped — WiFi not connected");
+      return;
+   }
+   scheduler_post_args_t *args = calloc(1, sizeof(*args));
+   if (!args) return;
+   size_t wlen = strnlen(when_iso, sizeof(args->when_iso) - 1);
+   memcpy(args->when_iso, when_iso, wlen);
+   args->when_iso[wlen] = '\0';
+   const char *lab = label ? label : "Reminder";
+   size_t llen = strnlen(lab, sizeof(args->label) - 1);
+   memcpy(args->label, lab, llen);
+   args->label[llen] = '\0';
+   xTaskCreatePinnedToCore(scheduler_post_task, "sched_post", 4096, args, 3, NULL, 0);
 }
 
 void ui_notes_write_audio(const int16_t *samples, size_t count)
@@ -2148,6 +2337,94 @@ static void cb_note_retry(lv_event_t *e) {
    ESP_LOGI(TAG, "Retry queued for note [%d]: %s", idx, s_notes[idx].audio_path);
 }
 
+/* PR 4: action-chip tap handlers ─────────────────────────────────── */
+
+/* Format an ISO-8601 datetime as "Tue 6 PM" (short, friendly).
+ * Robust to malformed input — falls back to the raw string. */
+static void format_reminder_when(const char *iso, char *out, size_t out_sz) {
+   int Y = 0, M = 0, D = 0, h = 0, m = 0;
+   if (sscanf(iso, "%d-%d-%dT%d:%d", &Y, &M, &D, &h, &m) != 5) {
+      size_t ilen = strnlen(iso, out_sz - 1);
+      memcpy(out, iso, ilen);
+      out[ilen] = '\0';
+      return;
+   }
+   struct tm tm = {0};
+   tm.tm_year = Y - 1900;
+   tm.tm_mon = M - 1;
+   tm.tm_mday = D;
+   tm.tm_hour = h;
+   tm.tm_min = m;
+   mktime(&tm); /* fills tm_wday */
+   static const char *wd[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+   const char *ampm = (h >= 12) ? "PM" : "AM";
+   int h12 = h % 12;
+   if (h12 == 0) h12 = 12;
+   if (m == 0) {
+      snprintf(out, out_sz, "%s %d %s", wd[tm.tm_wday % 7], h12, ampm);
+   } else {
+      snprintf(out, out_sz, "%s %d:%02d %s", wd[tm.tm_wday % 7], h12, m, ampm);
+   }
+}
+
+/* Reformat a comma-separated transcript into newline-prefixed bullets. */
+static void reformat_list_text(char *text) {
+   char buf[MAX_NOTE_LEN];
+   size_t out = 0;
+   buf[out++] = '\xe2'; /* prepend a leading bullet */
+   buf[out++] = '\x80';
+   buf[out++] = '\xa2';
+   buf[out++] = ' ';
+   const char *p = text;
+   while (*p && out < sizeof(buf) - 6) {
+      while (*p == ' ' || *p == ',') p++;
+      while (*p && *p != ',' && out < sizeof(buf) - 6) {
+         buf[out++] = *p++;
+      }
+      if (*p == ',') {
+         /* Insert "\n• " */
+         buf[out++] = '\n';
+         buf[out++] = '\xe2';
+         buf[out++] = '\x80';
+         buf[out++] = '\xa2';
+         buf[out++] = ' ';
+         p++;
+      }
+   }
+   buf[out] = '\0';
+   snprintf(text, MAX_NOTE_LEN, "%s", buf);
+}
+
+static void cb_chip_confirm(lv_event_t *e) {
+   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= MAX_NOTES || !s_notes[idx].used) return;
+   note_entry_t *n = &s_notes[idx];
+   if (n->pending.kind == PENDING_REMINDER) {
+      char preview_txt[120];
+      size_t plen = strnlen(n->text, sizeof(preview_txt) - 1);
+      memcpy(preview_txt, n->text, plen);
+      preview_txt[plen] = '\0';
+      scheduler_post(n->pending.payload, preview_txt);
+      n->type = NOTE_TYPE_REMINDER;
+   } else if (n->pending.kind == PENDING_LIST) {
+      reformat_list_text(n->text);
+      n->type = NOTE_TYPE_LIST;
+   }
+   memset(&n->pending, 0, sizeof(n->pending));
+   notes_save();
+   refresh_list();
+   ESP_LOGI(TAG, "Pending chip confirmed for slot %d", idx);
+}
+
+static void cb_chip_dismiss(lv_event_t *e) {
+   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= MAX_NOTES || !s_notes[idx].used) return;
+   memset(&s_notes[idx].pending, 0, sizeof(s_notes[idx].pending));
+   notes_save();
+   refresh_list();
+   ESP_LOGI(TAG, "Pending chip dismissed for slot %d", idx);
+}
+
 /* Bulk-delete all FAILED notes.  Calls the public ui_notes_clear_failed
  * which already knows how to drop entries safely. */
 static void cb_clear_failed(lv_event_t *e) {
@@ -2176,7 +2453,11 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!card) return;
    lv_obj_set_width(card, lv_pct(100));
    lv_obj_set_height(card, LV_SIZE_CONTENT);
-   lv_obj_set_style_max_height(card, 160, 0); /* FIX N1: cap card height */
+   /* FIX N1 capped cards at 160 px to keep the timeline scannable.  PR 4
+    * lifts the cap to 230 px when an action chip is going to render below
+    * the preview so the chip isn't clipped. */
+   bool has_chip = (note->pending.kind != PENDING_NONE && note->pending.confidence >= PENDING_CONFIDENCE_FLOOR);
+   lv_obj_set_style_max_height(card, has_chip ? 230 : 160, 0);
    /* v5: flat row, hairline rule underneath — no rounded bubble. */
    lv_obj_set_style_bg_color(card, lv_color_hex(0x08080E), 0); /* TH_BG */
    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -2346,6 +2627,85 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    lv_obj_set_style_text_color(preview, lv_color_hex(COL_WHITE), 0);
    lv_obj_set_style_text_font(preview, FONT_BODY, 0);
    lv_obj_set_width(preview, lv_pct(100));
+
+   /* PR 4: action chip — proposed reminder / list conversion from Dragon.
+    * Rendered below the row body when kind != NONE and confidence >= floor.
+    * Soft amber pill with a leading emoji-style indicator + label + ✓ + ✕.
+    * Tap ✓ → schedules notification (reminder) or reformats text (list) +
+    * clears chip.  Tap ✕ → clears chip, leaves note untouched. */
+   if (n.pending.kind != PENDING_NONE && n.pending.confidence >= PENDING_CONFIDENCE_FLOOR) {
+      lv_obj_t *chip = lv_obj_create(card);
+      if (!chip) return;
+      lv_obj_remove_style_all(chip);
+      lv_obj_set_width(chip, lv_pct(100));
+      lv_obj_set_height(chip, 56);
+      lv_obj_set_style_bg_color(chip, lv_color_hex(0x1F1F2A), 0);
+      lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(chip, 12, 0);
+      lv_obj_set_style_border_width(chip, 1, 0);
+      lv_obj_set_style_border_color(chip, lv_color_hex(COL_AMBER), 0);
+      lv_obj_set_style_border_opa(chip, LV_OPA_40, 0);
+      lv_obj_set_style_pad_left(chip, 14, 0);
+      lv_obj_set_style_pad_right(chip, 6, 0);
+      lv_obj_set_style_margin_top(chip, 10, 0);
+      lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+
+      /* Label: "Set reminder Tue 6 PM" or "Make a list (4 items)". */
+      char label_buf[120];
+      if (n.pending.kind == PENDING_REMINDER) {
+         char when_short[40];
+         format_reminder_when(n.pending.payload, when_short, sizeof(when_short));
+         snprintf(label_buf, sizeof(label_buf), LV_SYMBOL_BELL "  Set reminder %s", when_short);
+      } else {
+         /* Count commas as a rough item count for the chip hint. */
+         int items = 1;
+         for (const char *q = n.text; *q; q++) {
+            if (*q == ',') items++;
+         }
+         snprintf(label_buf, sizeof(label_buf), LV_SYMBOL_LIST "  Make a list (%d items)", items);
+      }
+      lv_obj_t *lbl = lv_label_create(chip);
+      if (!lbl) return;
+      lv_label_set_text(lbl, label_buf);
+      lv_obj_set_style_text_color(lbl, lv_color_hex(COL_AMBER), 0);
+      lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+      lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+
+      /* ✕ dismiss button — rightmost, dim gray. */
+      lv_obj_t *dismiss = lv_button_create(chip);
+      if (!dismiss) return;
+      lv_obj_set_size(dismiss, 44, 44);
+      lv_obj_align(dismiss, LV_ALIGN_RIGHT_MID, 0, 0);
+      lv_obj_set_style_bg_opa(dismiss, LV_OPA_TRANSP, 0);
+      lv_obj_set_style_radius(dismiss, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_border_width(dismiss, 0, 0);
+      lv_obj_set_style_bg_color(dismiss, lv_color_hex(0x6A6A72), LV_PART_MAIN | LV_STATE_PRESSED);
+      lv_obj_set_style_bg_opa(dismiss, LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
+      lv_obj_add_event_cb(dismiss, cb_chip_dismiss, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
+      lv_obj_t *dismiss_lbl = lv_label_create(dismiss);
+      if (!dismiss_lbl) return;
+      lv_label_set_text(dismiss_lbl, LV_SYMBOL_CLOSE);
+      lv_obj_set_style_text_color(dismiss_lbl, lv_color_hex(0x8A8A92), 0);
+      lv_obj_set_style_text_font(dismiss_lbl, FONT_CAPTION, 0);
+      lv_obj_center(dismiss_lbl);
+
+      /* ✓ confirm button — to the left of dismiss, filled amber. */
+      lv_obj_t *confirm = lv_button_create(chip);
+      if (!confirm) return;
+      lv_obj_set_size(confirm, 44, 44);
+      lv_obj_align(confirm, LV_ALIGN_RIGHT_MID, -52, 0);
+      lv_obj_set_style_bg_color(confirm, lv_color_hex(COL_AMBER), 0);
+      lv_obj_set_style_bg_opa(confirm, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(confirm, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_border_width(confirm, 0, 0);
+      lv_obj_add_event_cb(confirm, cb_chip_confirm, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
+      lv_obj_t *confirm_lbl = lv_label_create(confirm);
+      if (!confirm_lbl) return;
+      lv_label_set_text(confirm_lbl, LV_SYMBOL_OK);
+      lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(COL_BG), 0);
+      lv_obj_set_style_text_font(confirm_lbl, FONT_CAPTION, 0);
+      lv_obj_center(confirm_lbl);
+   }
 }
 
 /* ── PR 3: day-section grouping ─────────────────────────── */
@@ -2404,9 +2764,13 @@ static bool note_matches_filter(const note_entry_t *n) {
       return false;
    }
    if (s_filter == NOTE_FILTER_PENDING) {
-      /* PR 3 placeholder — pending_chip is unpopulated until PR 4.
-       * For now treat FAILED notes as "pending" so the filter shows
-       * something useful pre-PR-4. */
+      /* PR 4: a note is "pending" when Dragon's classifier proposed a
+       * conversion (reminder / list) and the user hasn't confirmed or
+       * dismissed yet AND the proposal cleared the confidence floor.
+       * FAILED notes also count — they still need user attention. */
+      if (n->pending.kind != PENDING_NONE && n->pending.confidence >= PENDING_CONFIDENCE_FLOOR) {
+         return true;
+      }
       return n->state == NOTE_STATE_FAILED;
    }
    return true;

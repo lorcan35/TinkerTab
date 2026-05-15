@@ -85,3 +85,13 @@ bool ui_notes_pipeline_arm_recording(void);
  *  (FAB-armed slots are untouched).  Idempotent.  Called on user-
  *  initiated cancel + on dictation_postprocessing_cancelled WS frames. */
 void ui_notes_pipeline_cancel_recording(void);
+
+/** PR 4: attach a Dragon-classifier proposed_action to the most recent
+ *  note (the one just created by ui_notes_add_dictated_async).  Async-
+ *  safe: marshals to the LVGL thread.  Caller passes kind / confidence
+ *  / payload as parsed from the dictation_summary frame; ui_notes
+ *  stores them on the matching slot and triggers a refresh so the
+ *  action chip renders.  kind: 1=reminder, 2=list.  Confidence is
+ *  0-100; below PENDING_CONFIDENCE_FLOOR (75) the chip is suppressed.
+ *  Caller owns the payload string; we copy. */
+void ui_notes_attach_pending_chip_async(uint8_t kind, uint8_t confidence, const char *payload);
