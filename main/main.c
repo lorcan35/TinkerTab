@@ -112,10 +112,17 @@ static void deferred_overlay_init_cb(lv_timer_t *t)
      * Runs after voice_init() (which ui_voice_init wraps) so the worker
      * queue + voice state machine are up. */
     voice_solo_init();
-    /* PR 1: dictation pipeline state machine.  Idempotent; subscribers
-     * register lazily once their owning screen / surface is created.
-     * Must run after voice_init since transitions are driven from voice.c. */
-    voice_dictation_init();
+    /* PR 1: dictation pipeline state machine — moved to early app_main
+     * (before ui_home_create) so subscribers registered during
+     * ui_orb_create / ui_home_create survive.  Keeping a sanity call
+     * here is harmless (init wipes s_subs by design for host test
+     * compatibility; if anyone re-runs it after subscribers register,
+     * subscriptions are lost).  Belt-and-suspenders: the call below
+     * is a NOP for the lock (already created in early init) and clears
+     * s_event back to DICT_IDLE — but there are no subscribers yet
+     * at this stage in the deferred callback, so the wipe is empty. */
+    /* voice_dictation_init() intentionally NOT called here — see early
+     * init in app_main(). */
     /* TT #328 Wave 10 — persistent floating home button on lv_layer_top.
      * Hidden by default; non-home screens toggle it via
      * ui_chrome_set_home_visible(true) on show, (false) on destroy. */
@@ -553,6 +560,13 @@ void app_main(void)
         tab5_ui_lock();
         ui_splash_destroy();
         ui_theme_init();  // must run before any screen that uses TH_* styles
+        /* PR 2 / dictation pipeline: init the state machine + mutex BEFORE
+         * any UI module that subscribes during create (ui_home_create →
+         * ui_orb_create + the chip subscribe in ui_home).  Keeping init in
+         * the deferred LVGL callback wiped any already-registered subscribers
+         * at the 100 ms timer tick.  Init is mutex-only here; no LVGL deps. */
+        extern void voice_dictation_init(void);
+        voice_dictation_init();
         extern void widget_store_init(void);
         widget_store_init();  // widget platform — bounded PSRAM cache
         extern void chat_store_init(void);

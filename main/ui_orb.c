@@ -18,12 +18,17 @@
 #include <stdlib.h> /* malloc/free for presence-call marshalling */
 #include <time.h>
 
+#include "config.h"    /* FONT_CAPTION for pipeline-state caption (PR 2) */
+#include "debug_obs.h" /* tab5_debug_obs_event for pipeline-cb tracing (PR 2) */
 #include "esp_log.h"
-#include "imu.h" /* tab5_imu_read for tilt-driven specular drift */
+#include "esp_timer.h" /* esp_timer_get_time for RECORDING caption timer (PR 2) */
+#include "imu.h"       /* tab5_imu_read for tilt-driven specular drift */
 #include "lvgl.h"
-#include "ui_core.h" /* tab5_lv_async_call for cross-thread repaints */
-#include "voice.h"   /* voice_get_current_rms for the LISTENING bloom */
-#include "widget.h"  /* widget_tone_t for paint_for_tone */
+#include "ui_core.h"              /* tab5_lv_async_call for cross-thread repaints */
+#include "voice.h"                /* voice_get_current_rms for the LISTENING bloom */
+#include "voice_dictation.h"      /* pipeline-state types (PR 2) */
+#include "voice_dictation_lvgl.h" /* LVGL-marshalled subscriber (PR 2) */
+#include "widget.h"               /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
 
@@ -118,12 +123,28 @@ static const char *TAG = "ui_orb";
 #define ORB_PRESENCE_ASLEEP_OPA 85 /* ≈33 % */
 #define ORB_PRESENCE_FADE_MS 600   /* gentle eyelid close/open */
 
+/* PR 2 polish: TRANSCRIBING rotating-arc sizing — used both at widget
+ * creation and inside the tick driver, so the defines live up here. */
+#define THINKING_ARC_DIAM (ORB_SIZE + 28)
+#define THINKING_ARC_PERIOD_MS 1800
+#define THINKING_ARC_SWEEP 90
+
 /* ── Module state ────────────────────────────────────────────────────── */
 
 static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
 static lv_obj_t *s_body = NULL;  /* the lit sphere itself */
 static lv_obj_t *s_spec = NULL;  /* tilt-driven specular highlight (child of s_body) */
 static lv_obj_t *s_halo = NULL;  /* voice-bloom halo (sibling-BEHIND s_body) */
+static lv_obj_t *s_ripple_a = NULL; /* PR 2 polish: sonar ripple A — outermost-expanding ring during RECORDING */
+static lv_obj_t *s_ripple_b =
+    NULL; /* PR 2 polish: sonar ripple B — phase-offset by 50% so a new ripple is always rising as the prior fades */
+static lv_timer_t *s_ripple_timer = NULL;       /* 16 ms tick for ripple geometry */
+static lv_obj_t *s_thinking_arc = NULL;         /* PR 2 polish: rotating arc segment around body during TRANSCRIBING */
+static lv_timer_t *s_thinking_arc_timer = NULL; /* drives the arc's rotation */
+static lv_obj_t *s_saved_burst = NULL;          /* PR 2 polish: one-shot green ring on SAVED entry */
+static lv_timer_t *s_saved_burst_timer = NULL;
+static uint32_t s_saved_burst_t0 = 0;         /* ms uptime when burst started, for elapsed-frac math */
+static lv_timer_t *s_body_pulse_timer = NULL; /* PR 2 polish: body heartbeat scale during RECORDING */
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -143,6 +164,21 @@ static bool s_presence_near = true;
 static int8_t s_force_hour = -1; /* -1 = use real RTC */
 static int s_last_painted_hour = -1;
 static uint8_t s_last_painted_mode = 0;
+
+/* PR 2: pipeline state overlay.  When != DICT_IDLE, all paint cycles
+ * route through the pipeline-state painter and the voice-state painter
+ * is suppressed.  IDLE → revert to voice-state painting. */
+static dict_event_t s_pipeline = {
+    .state = DICT_IDLE,
+    .fail_reason = DICT_FAIL_NONE,
+    .started_ms = 0,
+    .stopped_ms = 0,
+    .last_change_ms = 0,
+    .note_slot = -1,
+};
+static lv_obj_t *s_orb_caption = NULL;        /* Label below the orb body */
+static lv_timer_t *s_saved_fade_timer = NULL; /* SAVED → IDLE 2s timer */
+static lv_timer_t *s_rec_timer_label = NULL;  /* updates RECORDING caption every 200 ms */
 
 /* ── Circadian palette ───────────────────────────────────────────────── */
 
@@ -209,11 +245,19 @@ static void paint_body_for_hour(int hour) {
 void ui_orb_paint_for_mode(uint8_t mode) {
    s_last_painted_mode = mode;
    if (!s_body) return;
+   /* PR 2: pipeline-state paint takes precedence — don't shadow the
+    * RECORDING/UPLOADING/TRANSCRIBING/SAVED/FAILED body tint with the
+    * circadian palette while a dictation is on-flight.  Mode bookkeeping
+    * above still records the latest mode so DICT_IDLE can repaint
+    * correctly when the pipeline returns. */
+   if (ui_orb_pipeline_active()) return;
    paint_body_for_hour(orb_effective_hour());
 }
 
 void ui_orb_paint_for_tone(widget_tone_t tone) {
    if (!s_body) return;
+   /* PR 2: pipeline-state paint takes precedence over widget tone. */
+   if (ui_orb_pipeline_active()) return;
    uint32_t top, bot;
    switch (tone) {
       case WIDGET_TONE_CALM:
@@ -251,6 +295,8 @@ void ui_orb_paint_for_tone(widget_tone_t tone) {
 
 void ui_orb_repaint_if_hour_changed(void) {
    if (!s_body) return;
+   /* PR 2: clock-driven repaints stay parked until DICT_IDLE returns. */
+   if (ui_orb_pipeline_active()) return;
    int h = orb_effective_hour();
    if (h != s_last_painted_hour) paint_body_for_hour(h);
 }
@@ -350,7 +396,23 @@ static void bloom_tick_cb(lv_timer_t *t) {
    if (rms < 0.0f) rms = 0.0f;
    if (rms > 1.0f) rms = 1.0f;
    s_bloom_rms_ema = (ORB_BLOOM_ALPHA * rms) + ((1.0f - ORB_BLOOM_ALPHA) * s_bloom_rms_ema);
-   int opa = ORB_HALO_OPA_FLOOR + (int)((float)(ORB_HALO_OPA_CEILING - ORB_HALO_OPA_FLOOR) * s_bloom_rms_ema);
+   /* PR 2 polish: during pipeline RECORDING (vs ambient LISTENING) bump
+    * the floor + ceiling so the halo reads as a confident "I'm listening"
+    * glow even when the user isn't speaking, plus add a 2-second sin
+    * breath so the orb feels alive instead of static.  Outside pipeline
+    * RECORDING, fall back to the ambient bloom envelope.  */
+   int floor_v = ORB_HALO_OPA_FLOOR;
+   int ceil_v = ORB_HALO_OPA_CEILING;
+   if (s_pipeline.state == DICT_RECORDING) {
+      floor_v = 110;
+      ceil_v = 180;
+      /* Slow breath: 0.5 Hz triangle wave on the floor itself, ±20 opa. */
+      uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      uint32_t phase = t_ms % 2000;
+      int delta = (phase < 1000) ? (int)(phase / 25) : (int)((2000 - phase) / 25); /* 0..40 */
+      floor_v += (delta - 20);
+   }
+   int opa = floor_v + (int)((float)(ceil_v - floor_v) * s_bloom_rms_ema);
    if (opa < 0) opa = 0;
    if (opa > 255) opa = 255;
    lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
@@ -483,6 +545,10 @@ static void comet_stop(void) {
 
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
 
+/* Forward decl for the pipeline subscriber bridge (PR 2) — body lives
+ * near ui_orb_set_pipeline_state below; ui_orb_create takes its address. */
+static void orb_pipeline_cb(const dict_event_t *event, void *user_data);
+
 void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    if (s_body || !parent) {
       ESP_LOGW(TAG, "ui_orb_create skipped (s_body=%p parent=%p)", s_body, parent);
@@ -491,6 +557,52 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    s_root = parent;
    s_orb_cx = cx;
    s_orb_cy = cy;
+
+   /* PR 2 polish: sonar ripple rings — two phase-offset transparent
+    * circles that grow outward from the orb body and fade.  Hidden by
+    * default; shown only during DICT_RECORDING.  Created BEFORE s_halo
+    * so their z-order is behind everything (the body fully masks the
+    * inner portion; only the outer expanding ring is visible).  Two
+    * rings 50% out of phase so the ripple cadence feels continuous
+    * instead of pulsing once a cycle. */
+   s_ripple_a = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_ripple_a);
+   lv_obj_set_size(s_ripple_a, ORB_SIZE, ORB_SIZE);
+   lv_obj_set_pos(s_ripple_a, cx - (ORB_SIZE / 2), cy - (ORB_SIZE / 2));
+   lv_obj_set_style_radius(s_ripple_a, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_opa(s_ripple_a, 0, 0); /* outline only */
+   lv_obj_set_style_border_width(s_ripple_a, 3, 0);
+   lv_obj_set_style_border_color(s_ripple_a, lv_color_hex(0xFF5C50), 0);
+   lv_obj_set_style_border_opa(s_ripple_a, 0, 0); /* invisible at rest */
+   lv_obj_clear_flag(s_ripple_a, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_ripple_a, LV_OBJ_FLAG_HIDDEN);
+
+   s_ripple_b = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_ripple_b);
+   lv_obj_set_size(s_ripple_b, ORB_SIZE, ORB_SIZE);
+   lv_obj_set_pos(s_ripple_b, cx - (ORB_SIZE / 2), cy - (ORB_SIZE / 2));
+   lv_obj_set_style_radius(s_ripple_b, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_opa(s_ripple_b, 0, 0);
+   lv_obj_set_style_border_width(s_ripple_b, 3, 0);
+   lv_obj_set_style_border_color(s_ripple_b, lv_color_hex(0xFF5C50), 0);
+   lv_obj_set_style_border_opa(s_ripple_b, 0, 0);
+   lv_obj_clear_flag(s_ripple_b, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_ripple_b, LV_OBJ_FLAG_HIDDEN);
+
+   /* PR 2 polish: SAVED burst — one-shot expanding green ring on
+    * DICT_SAVED entry.  Created behind everything; only visible during
+    * the 700 ms burst.  Same border-only outline style as the ripples. */
+   s_saved_burst = lv_obj_create(parent);
+   lv_obj_remove_style_all(s_saved_burst);
+   lv_obj_set_size(s_saved_burst, ORB_SIZE, ORB_SIZE);
+   lv_obj_set_pos(s_saved_burst, cx - (ORB_SIZE / 2), cy - (ORB_SIZE / 2));
+   lv_obj_set_style_radius(s_saved_burst, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_opa(s_saved_burst, 0, 0);
+   lv_obj_set_style_border_width(s_saved_burst, 4, 0);
+   lv_obj_set_style_border_color(s_saved_burst, lv_color_hex(0x4ADE80), 0);
+   lv_obj_set_style_border_opa(s_saved_burst, 0, 0);
+   lv_obj_clear_flag(s_saved_burst, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_saved_burst, LV_OBJ_FLAG_HIDDEN);
 
    /* Halo FIRST so it sits BEHIND s_body in z-order (LVGL draws siblings
     * in creation order).  s_body's opa-cover gradient masks the part of
@@ -543,8 +655,65 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_set_style_bg_opa(s_comet, 0, 0);
    lv_obj_clear_flag(s_comet, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
+   /* PR 2 polish: rotating arc for TRANSCRIBING — sibling AFTER s_body
+    * so the arc draws ON TOP of the body's edge.  Created with the
+    * main/knob/indicator parts neutralised, indicator carries the
+    * visible sweep that the tick callback rotates. */
+   s_thinking_arc = lv_arc_create(parent);
+   if (s_thinking_arc) {
+      lv_obj_remove_style(s_thinking_arc, NULL, LV_PART_KNOB);
+      lv_obj_set_size(s_thinking_arc, THINKING_ARC_DIAM, THINKING_ARC_DIAM);
+      lv_obj_set_pos(s_thinking_arc, cx - THINKING_ARC_DIAM / 2, cy - THINKING_ARC_DIAM / 2);
+      lv_arc_set_bg_angles(s_thinking_arc, 0, 360);
+      lv_arc_set_angles(s_thinking_arc, 0, THINKING_ARC_SWEEP);
+      lv_arc_set_value(s_thinking_arc, 0);
+      lv_obj_set_style_arc_width(s_thinking_arc, 4, LV_PART_INDICATOR);
+      lv_obj_set_style_arc_color(s_thinking_arc, lv_color_hex(0xFCD34D), LV_PART_INDICATOR);
+      lv_obj_set_style_arc_opa(s_thinking_arc, LV_OPA_COVER, LV_PART_INDICATOR);
+      lv_obj_set_style_arc_width(s_thinking_arc, 0, LV_PART_MAIN);
+      lv_obj_set_style_arc_opa(s_thinking_arc, 0, LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(s_thinking_arc, 0, LV_PART_MAIN);
+      lv_obj_remove_flag(s_thinking_arc, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(s_thinking_arc, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(s_thinking_arc, LV_OBJ_FLAG_HIDDEN);
+   }
+
+   /* PR 2: hero caption below the orb for pipeline state — sized to read
+    * as a primary status indicator (Montserrat Bold 22 px), not a
+    * footnote.  Pure text, no unicode bullets — those rendered as
+    * missing-glyph rectangles in the 16 px caption font and made the
+    * label feel fragile.  Hidden by default; paint_pipeline_state shows
+    * + colors the text per state. */
+   s_orb_caption = lv_label_create(parent);
+   if (s_orb_caption) {
+      lv_label_set_text(s_orb_caption, "");
+      lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xF8F8FB), 0);
+      lv_obj_set_style_text_font(s_orb_caption, FONT_HEADING, 0);
+      lv_obj_set_style_text_letter_space(s_orb_caption, 1, 0);
+      lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 22);
+      lv_obj_move_foreground(s_orb_caption);
+      lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
+   }
+
    /* IDLE state arms tilt drift by default. */
    tilt_start();
+
+   /* PR 2: subscribe to the dictation pipeline.  Callbacks land on the
+    * LVGL thread thanks to the _lvgl variant.  Static guard so a
+    * subsequent create/destroy/create cycle doesn't double-subscribe. */
+   static int s_pipeline_sub = -1;
+   if (s_pipeline_sub < 0) {
+      s_pipeline_sub = voice_dictation_subscribe_lvgl(orb_pipeline_cb, NULL);
+      ESP_LOGI(TAG, "pipeline subscriber registered handle=%d", s_pipeline_sub);
+   }
+   /* Rehydrate from current pipeline state — the subscriber only fires on
+    * future transitions, so a re-created orb stays at IDLE visuals even
+    * when the pipeline is mid-cycle.  Read current state and drive paint
+    * immediately. */
+   {
+      dict_event_t cur = voice_dictation_get();
+      ui_orb_set_pipeline_state(&cur);
+   }
 
    ESP_LOGI(TAG, "orb created at (%d, %d), size %d", cx, cy, ORB_SIZE);
 }
@@ -567,6 +736,19 @@ void ui_orb_destroy(void) {
    /* Cancel any in-flight speaking-halo fade. */
    if (s_halo) {
       lv_anim_delete(s_halo, halo_opa_anim_cb);
+   }
+   /* PR 2: tear down caption + saved-fade timer + record-elapsed timer. */
+   if (s_orb_caption) {
+      lv_obj_del(s_orb_caption);
+      s_orb_caption = NULL;
+   }
+   if (s_saved_fade_timer) {
+      lv_timer_del(s_saved_fade_timer);
+      s_saved_fade_timer = NULL;
+   }
+   if (s_rec_timer_label) {
+      lv_timer_del(s_rec_timer_label);
+      s_rec_timer_label = NULL;
    }
    /* The body's parent (the home screen) owns the actual delete via its
     * own destroy path; here we only clear our handles + reset state so
@@ -716,3 +898,422 @@ void ui_orb_ripple_for_tool(const char *tool_name) {
 lv_obj_t *ui_orb_get_root(void) { return s_root; }
 
 lv_obj_t *ui_orb_get_body(void) { return s_body; }
+
+/* ── Pipeline state (PR 2) ───────────────────────────────────────────── */
+
+/* PR 2: paint the halo (s_halo) in the pipeline-state hue so the
+ * LISTENING bloom + steady SPEAKING halo blend with the body tint
+ * instead of bleeding the default cream-amber over a red/amber/green
+ * body.  Keep the existing opacity envelope (bloom timer + speaking
+ * fade); we only retune the color stop. */
+static void paint_pipeline_halo(uint32_t color_hex) {
+   if (!s_halo) return;
+   lv_obj_set_style_bg_color(s_halo, lv_color_hex(color_hex), LV_PART_MAIN);
+}
+
+/* Reset halo to its default cream-amber baseline (used on DICT_IDLE
+ * so subsequent voice-state visuals — IDLE/LISTENING/PROCESSING/
+ * SPEAKING — read with their original palette). */
+static void reset_pipeline_halo(void) {
+   if (!s_halo) return;
+   lv_obj_set_style_bg_color(s_halo, lv_color_hex(0xFFB870), LV_PART_MAIN);
+}
+
+/* PR 2 polish: sonar ripple drive.  Each ring grows from the body's
+ * diameter out to a comfortable margin past the halo, fading its
+ * border opacity from a confident peak to invisible over the cycle.
+ * Two rings 50% out of phase keep the cadence continuous.  Tick at
+ * ~60 Hz for smooth interpolation. */
+#define RIPPLE_CYCLE_MS 1800
+#define RIPPLE_MIN_PX ORB_SIZE
+#define RIPPLE_MAX_PX (ORB_HALO_DIAM + 60)
+#define RIPPLE_PEAK_OPA 180
+
+static void ripple_paint_one(lv_obj_t *o, float frac) {
+   if (!o) return;
+   /* Ease-out for the geometry growth so the ring decelerates as it
+    * expands — feels like a real ripple slowing as it propagates. */
+   float eased = 1.0f - (1.0f - frac) * (1.0f - frac);
+   int span = RIPPLE_MAX_PX - RIPPLE_MIN_PX;
+   int size = RIPPLE_MIN_PX + (int)(eased * (float)span);
+   lv_obj_set_size(o, size, size);
+   lv_obj_set_pos(o, s_orb_cx - size / 2, s_orb_cy - size / 2);
+   /* Opacity falls linearly from peak to 0 over the cycle. */
+   int opa = (int)((1.0f - frac) * RIPPLE_PEAK_OPA);
+   if (opa < 0) opa = 0;
+   if (opa > 255) opa = 255;
+   lv_obj_set_style_border_opa(o, (lv_opa_t)opa, LV_PART_MAIN);
+}
+
+static void ripple_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_ripple_a || !s_ripple_b) return;
+   uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t phase_a = t_ms % RIPPLE_CYCLE_MS;
+   uint32_t phase_b = (t_ms + RIPPLE_CYCLE_MS / 2) % RIPPLE_CYCLE_MS;
+   ripple_paint_one(s_ripple_a, (float)phase_a / (float)RIPPLE_CYCLE_MS);
+   ripple_paint_one(s_ripple_b, (float)phase_b / (float)RIPPLE_CYCLE_MS);
+}
+
+static void ripple_start(uint32_t color_hex) {
+   if (!s_ripple_a || !s_ripple_b) return;
+   lv_obj_set_style_border_color(s_ripple_a, lv_color_hex(color_hex), LV_PART_MAIN);
+   lv_obj_set_style_border_color(s_ripple_b, lv_color_hex(color_hex), LV_PART_MAIN);
+   lv_obj_clear_flag(s_ripple_a, LV_OBJ_FLAG_HIDDEN);
+   lv_obj_clear_flag(s_ripple_b, LV_OBJ_FLAG_HIDDEN);
+   if (!s_ripple_timer) {
+      s_ripple_timer = lv_timer_create(ripple_tick_cb, 16, NULL);
+   }
+}
+
+static void ripple_stop(void) {
+   if (s_ripple_timer) {
+      lv_timer_del(s_ripple_timer);
+      s_ripple_timer = NULL;
+   }
+   if (s_ripple_a) lv_obj_add_flag(s_ripple_a, LV_OBJ_FLAG_HIDDEN);
+   if (s_ripple_b) lv_obj_add_flag(s_ripple_b, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ── TRANSCRIBING rotating arc ───────────────────────────────────────── */
+
+/* A 90°-sweep amber arc orbits around the body.  Reads as a "loading
+ * spinner" — clearer "I'm thinking" than the existing comet's tiny dot.
+ * Geometry defines hoisted to the top of the file. */
+
+static void thinking_arc_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_thinking_arc) return;
+   uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   int rotation = (int)((t_ms * 360 / THINKING_ARC_PERIOD_MS) % 360);
+   lv_arc_set_angles(s_thinking_arc, rotation, (rotation + THINKING_ARC_SWEEP) % 360);
+}
+
+static void thinking_arc_start(uint32_t color_hex) {
+   if (!s_thinking_arc) return;
+   lv_obj_set_style_arc_color(s_thinking_arc, lv_color_hex(color_hex), LV_PART_INDICATOR);
+   lv_obj_clear_flag(s_thinking_arc, LV_OBJ_FLAG_HIDDEN);
+   if (!s_thinking_arc_timer) {
+      s_thinking_arc_timer = lv_timer_create(thinking_arc_tick_cb, 16, NULL);
+   }
+}
+
+static void thinking_arc_stop(void) {
+   if (s_thinking_arc_timer) {
+      lv_timer_del(s_thinking_arc_timer);
+      s_thinking_arc_timer = NULL;
+   }
+   if (s_thinking_arc) lv_obj_add_flag(s_thinking_arc, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* ── SAVED celebratory burst ─────────────────────────────────────────── */
+
+/* On DICT_SAVED entry, a single green ring flies outward + fades in
+ * ~700 ms.  Self-stops once the cycle completes. */
+#define SAVED_BURST_DURATION_MS 700
+#define SAVED_BURST_MIN_PX ORB_SIZE
+#define SAVED_BURST_MAX_PX (ORB_HALO_DIAM + 80)
+#define SAVED_BURST_PEAK_OPA 230
+
+static void saved_burst_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_saved_burst) return;
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t elapsed = (now_ms >= s_saved_burst_t0) ? (now_ms - s_saved_burst_t0) : 0;
+   if (elapsed >= SAVED_BURST_DURATION_MS) {
+      if (s_saved_burst_timer) {
+         lv_timer_del(s_saved_burst_timer);
+         s_saved_burst_timer = NULL;
+      }
+      lv_obj_add_flag(s_saved_burst, LV_OBJ_FLAG_HIDDEN);
+      return;
+   }
+   float frac = (float)elapsed / (float)SAVED_BURST_DURATION_MS;
+   /* Cubic ease-out so the burst flies out fast then settles. */
+   float inv = 1.0f - frac;
+   float eased = 1.0f - inv * inv * inv;
+   int span = SAVED_BURST_MAX_PX - SAVED_BURST_MIN_PX;
+   int size = SAVED_BURST_MIN_PX + (int)(eased * (float)span);
+   lv_obj_set_size(s_saved_burst, size, size);
+   lv_obj_set_pos(s_saved_burst, s_orb_cx - size / 2, s_orb_cy - size / 2);
+   int opa = (int)((1.0f - frac) * SAVED_BURST_PEAK_OPA);
+   lv_obj_set_style_border_opa(s_saved_burst, (lv_opa_t)opa, LV_PART_MAIN);
+}
+
+static void saved_burst_fire(void) {
+   if (!s_saved_burst) return;
+   s_saved_burst_t0 = (uint32_t)(esp_timer_get_time() / 1000);
+   lv_obj_set_size(s_saved_burst, SAVED_BURST_MIN_PX, SAVED_BURST_MIN_PX);
+   lv_obj_set_pos(s_saved_burst, s_orb_cx - SAVED_BURST_MIN_PX / 2, s_orb_cy - SAVED_BURST_MIN_PX / 2);
+   lv_obj_set_style_border_opa(s_saved_burst, SAVED_BURST_PEAK_OPA, LV_PART_MAIN);
+   lv_obj_clear_flag(s_saved_burst, LV_OBJ_FLAG_HIDDEN);
+   if (!s_saved_burst_timer) {
+      s_saved_burst_timer = lv_timer_create(saved_burst_tick_cb, 16, NULL);
+   }
+}
+
+/* ── Body heartbeat during RECORDING ─────────────────────────────────── */
+
+/* Subtle ±2.3% scale pulse on s_body, 1.2 s cycle.  Adds a literal
+ * heartbeat feel on top of sonar ripples + halo breath.  LVGL 9's
+ * transform_scale uses 256 = 1.0×; pivot snapped to body centre. */
+#define BODY_PULSE_PERIOD_MS 1200
+#define BODY_PULSE_AMPLITUDE 6
+
+static void body_pulse_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_body) return;
+   uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t phase = t_ms % BODY_PULSE_PERIOD_MS;
+   float half = BODY_PULSE_PERIOD_MS / 2.0f;
+   float tri = (phase < half) ? ((float)phase / half) : (1.0f - ((float)phase - half) / half);
+   int scale = 256 + (int)((tri * 2.0f - 1.0f) * (float)BODY_PULSE_AMPLITUDE);
+   lv_obj_set_style_transform_scale_x(s_body, scale, LV_PART_MAIN);
+   lv_obj_set_style_transform_scale_y(s_body, scale, LV_PART_MAIN);
+}
+
+static void body_pulse_start(void) {
+   if (!s_body || s_body_pulse_timer) return;
+   lv_obj_set_style_transform_pivot_x(s_body, ORB_SIZE / 2, LV_PART_MAIN);
+   lv_obj_set_style_transform_pivot_y(s_body, ORB_SIZE / 2, LV_PART_MAIN);
+   s_body_pulse_timer = lv_timer_create(body_pulse_tick_cb, 16, NULL);
+}
+
+static void body_pulse_stop(void) {
+   if (s_body_pulse_timer) {
+      lv_timer_del(s_body_pulse_timer);
+      s_body_pulse_timer = NULL;
+   }
+   if (s_body) {
+      lv_obj_set_style_transform_scale_x(s_body, 256, LV_PART_MAIN);
+      lv_obj_set_style_transform_scale_y(s_body, 256, LV_PART_MAIN);
+   }
+}
+
+/* Paint the orb body in the pipeline-state tint.  Caller is responsible
+ * for setting the caption text + showing the caption label.
+ *
+ * s_body is a vertical linear gradient (paint_body_for_hour /
+ * paint_for_tone write both bg_color = top stop and bg_grad_color =
+ * bottom stop).  Writing only bg_color leaves the bottom stop at the
+ * previous state's edge color, which produces a muddy mix instead of
+ * a clean state indicator.  Darken the requested hue ~45% for the
+ * bottom stop to keep the lit-sphere luster instead of going flat;
+ * stamp s_last_painted_hour = -1 so a clock-driven hour-repaint can't
+ * immediately revert the tint. */
+static void paint_pipeline_body(uint32_t color_hex) {
+   if (!s_body) return;
+   uint8_t r = (color_hex >> 16) & 0xFF;
+   uint8_t g = (color_hex >> 8) & 0xFF;
+   uint8_t b = color_hex & 0xFF;
+   uint32_t bot = ((uint32_t)((r * 45) / 100) << 16) | ((uint32_t)((g * 45) / 100) << 8) | (uint32_t)((b * 45) / 100);
+   lv_obj_set_style_bg_color(s_body, lv_color_hex(color_hex), LV_PART_MAIN);
+   lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
+   lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
+   lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_MAIN);
+   s_last_painted_hour = -1;
+}
+
+static const char *fail_reason_caption(dict_fail_t r) {
+   switch (r) {
+      case DICT_FAIL_AUTH:
+         return "AUTH";
+      case DICT_FAIL_NETWORK:
+         return "NETWORK";
+      case DICT_FAIL_EMPTY:
+         return "EMPTY — got silence";
+      case DICT_FAIL_NO_AUDIO:
+         return "NO AUDIO";
+      case DICT_FAIL_TOO_LONG:
+         return "TOO LONG (5 min cap)";
+      case DICT_FAIL_CANCELLED:
+         return "CANCELLED";
+      default:
+         return "FAIL";
+   }
+}
+
+static void set_caption_text(const char *text) {
+   if (!s_orb_caption || !text) return;
+   lv_label_set_text(s_orb_caption, text);
+   /* Re-anchor the label after its size changed — lv_obj_align_to is a
+    * one-shot in LVGL 9.x, so the original create-time alignment was
+    * computed against a 0-width empty label and the rendered text drifted
+    * to the right.  Re-call here so each state's text re-centers under
+    * the orb. */
+   if (s_body) {
+      lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 22);
+   }
+   lv_obj_clear_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void hide_caption(void) {
+   if (s_orb_caption) lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Timer cb for SAVED → IDLE auto-fade. */
+static void saved_fade_to_idle_cb(lv_timer_t *t) {
+   (void)t;
+   s_saved_fade_timer = NULL;
+   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+}
+
+/* Update the RECORDING caption with live elapsed time.  Stops itself
+ * if the pipeline has left RECORDING (defensive — set_pipeline_state
+ * also tears it down explicitly). */
+static void rec_timer_label_cb(lv_timer_t *t) {
+   (void)t;
+   if (s_pipeline.state != DICT_RECORDING) {
+      if (s_rec_timer_label) {
+         lv_timer_del(s_rec_timer_label);
+         s_rec_timer_label = NULL;
+      }
+      return;
+   }
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t dur_ms = (s_pipeline.started_ms && now_ms >= s_pipeline.started_ms) ? (now_ms - s_pipeline.started_ms) : 0;
+   uint32_t s = dur_ms / 1000;
+   char buf[40];
+   snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+   if (s_orb_caption) {
+      lv_label_set_text(s_orb_caption, buf);
+      if (s_body) lv_obj_align_to(s_orb_caption, s_body, LV_ALIGN_OUT_BOTTOM_MID, 0, 22);
+   }
+}
+
+/* Subscriber bridge: voice_dictation fires this on the LVGL thread
+ * (because we subscribe via voice_dictation_subscribe_lvgl).  Just
+ * forward to the public state-driver. */
+static void orb_pipeline_cb(const dict_event_t *event, void *user_data) {
+   (void)user_data;
+   if (event) {
+      char detail[48];
+      snprintf(detail, sizeof(detail), "%s/%s", voice_dictation_state_name(event->state),
+               voice_dictation_fail_name(event->fail_reason));
+      tab5_debug_obs_event("pipeline.orb_cb", detail);
+   }
+   ui_orb_set_pipeline_state(event);
+}
+
+void ui_orb_set_pipeline_state(const dict_event_t *event) {
+   if (!event) return;
+   s_pipeline = *event;
+
+   /* Tear down the SAVED auto-fade timer when leaving SAVED. */
+   if (event->state != DICT_SAVED && s_saved_fade_timer) {
+      lv_timer_del(s_saved_fade_timer);
+      s_saved_fade_timer = NULL;
+   }
+
+   /* Stop the live elapsed-time timer when leaving RECORDING. */
+   if (event->state != DICT_RECORDING && s_rec_timer_label) {
+      lv_timer_del(s_rec_timer_label);
+      s_rec_timer_label = NULL;
+   }
+
+   char buf[64];
+   switch (event->state) {
+      case DICT_IDLE:
+         hide_caption();
+         reset_pipeline_halo();
+         ripple_stop();
+         thinking_arc_stop();
+         body_pulse_stop();
+         /* Repaint via the voice-state painter so the orb returns to its
+          * normal IDLE/LISTENING/PROCESSING/SPEAKING visuals.  Re-paint
+          * body for current hour too — paint_pipeline_body() shadowed it. */
+         paint_body_for_hour(orb_effective_hour());
+         ui_orb_set_state(s_state);
+         return;
+
+      case DICT_RECORDING: {
+         /* Engage the existing LISTENING state machine so the mic-RMS-driven
+          * halo bloom fires.  Our pipeline body tint overrides the body
+          * colour, but the bloom mechanic (halo opacity from mic RMS) still
+          * runs because it manipulates s_halo, not s_body. */
+         ui_orb_set_state(ORB_STATE_LISTENING);
+         paint_pipeline_body(0xE74C3C);
+         paint_pipeline_halo(0xFF5C50); /* warm red halo glow */
+         ripple_start(0xFF7A6F);        /* sonar rings expanding outward */
+         thinking_arc_stop();
+         body_pulse_start(); /* heartbeat pulse on body scale */
+         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+         uint32_t dur_ms = (event->started_ms && now_ms >= event->started_ms) ? (now_ms - event->started_ms) : 0;
+         uint32_t s = dur_ms / 1000;
+         snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
+         set_caption_text(buf);
+         /* Spawn the 200 ms tick that keeps the M:SS caption live. */
+         if (!s_rec_timer_label) {
+            s_rec_timer_label = lv_timer_create(rec_timer_label_cb, 200, NULL);
+         }
+         break;
+      }
+
+      case DICT_UPLOADING:
+         ripple_stop();
+         body_pulse_stop();
+         thinking_arc_start(0xFCD34D); /* amber spinner */
+         paint_pipeline_body(0xF59E0B);
+         paint_pipeline_halo(0xFFB347); /* amber glow */
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
+         set_caption_text("UPLOADING");
+         break;
+
+      case DICT_TRANSCRIBING:
+         ripple_stop();
+         body_pulse_stop();
+         thinking_arc_start(0xFCD34D); /* amber spinner */
+         paint_pipeline_body(0xF59E0B);
+         paint_pipeline_halo(0xFFB347); /* amber glow */
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFE4B5), 0);
+         set_caption_text("TRANSCRIBING");
+         /* Reuse the existing PROCESSING comet animation for visual
+          * continuity. */
+         ui_orb_set_state(ORB_STATE_PROCESSING);
+         break;
+
+      case DICT_SAVED:
+         ripple_stop();
+         body_pulse_stop();
+         thinking_arc_stop();
+         saved_burst_fire(); /* one-shot expanding green ring */
+         paint_pipeline_body(0x22C55E);
+         paint_pipeline_halo(0x4ADE80); /* mint glow */
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);
+         set_caption_text("SAVED");
+         /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
+          * one already exists (rapid SAVED re-entry), don't stack. */
+         if (!s_saved_fade_timer) {
+            s_saved_fade_timer = lv_timer_create(saved_fade_to_idle_cb, 2000, NULL);
+            if (s_saved_fade_timer) lv_timer_set_repeat_count(s_saved_fade_timer, 1);
+         }
+         break;
+
+      case DICT_FAILED:
+         ripple_stop();
+         body_pulse_stop();
+         thinking_arc_stop();
+         paint_pipeline_body(0xE74C3C);
+         paint_pipeline_halo(0xFF5C50);
+         /* Drop the unicode mid-dot — FONT_HEADING (montserrat bold 22)
+          * doesn't carry U+00B7, so it rendered as a missing-glyph box.
+          * Use generous spaces to keep the parts visually separated. */
+         snprintf(buf, sizeof(buf), "%s   TAP TO RETRY", fail_reason_caption(event->fail_reason));
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
+         set_caption_text(buf);
+         break;
+   }
+}
+
+bool ui_orb_pipeline_active(void) {
+   /* Poll the authoritative state machine directly rather than the
+    * cached s_pipeline.  s_pipeline is updated by the LVGL-async
+    * subscriber, which runs AFTER any synchronous caller that resets
+    * the pipeline state (e.g., orb_click_cb's pipeline-clear-before-Ask
+    * path).  Reading voice_dictation_get() avoids a window where
+    * is-pipeline-active returns stale true and suppresses the Ask
+    * overlay's chrome. */
+   dict_event_t e = voice_dictation_get();
+   return e.state != DICT_IDLE;
+}

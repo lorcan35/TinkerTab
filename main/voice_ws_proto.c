@@ -50,6 +50,46 @@ static const char *TAG = "tab5_voice_ws";
  * in voice.c.  No external readers — kept here so the dropped-frame
  * accounting stays colocated with the sender that increments it. */
 static int s_audio_drop_count = 0;
+/* PR 2 polish: grace-period timer for TRANSCRIBING WS drops.  Armed when
+ * the WS disconnects mid-transcription, fires after ~45 s, only flips
+ * the pipeline to FAILED if it's still stuck at TRANSCRIBING.  Cancelled
+ * by a fresh DICT_SAVED / DICT_FAILED transition from the summary
+ * handlers, which leave the pipeline in a terminal state the timer's
+ * check skips. */
+static esp_timer_handle_t s_tx_grace_timer = NULL;
+
+static void tx_grace_timer_fired(void *arg) {
+   (void)arg;
+   dict_event_t e = voice_dictation_get();
+   if (e.state == DICT_TRANSCRIBING) {
+      ESP_LOGW(TAG, "TRANSCRIBING grace window expired — flipping pipeline to FAILED/NETWORK");
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+   } else {
+      ESP_LOGI(TAG, "TRANSCRIBING grace timer fired but pipeline already resolved (state=%s) — no-op",
+               voice_dictation_state_name(e.state));
+   }
+}
+
+void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms) {
+   if (s_tx_grace_timer == NULL) {
+      const esp_timer_create_args_t args = {
+          .callback = tx_grace_timer_fired,
+          .arg = NULL,
+          .dispatch_method = ESP_TIMER_TASK,
+          .name = "tx_grace",
+      };
+      if (esp_timer_create(&args, &s_tx_grace_timer) != ESP_OK) {
+         ESP_LOGE(TAG, "Failed to create TRANSCRIBING grace timer; falling back to immediate FAIL");
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+         return;
+      }
+   }
+   /* Stop any prior arming so we always have a full fresh window from
+    * the latest disconnect. */
+   esp_timer_stop(s_tx_grace_timer);
+   esp_timer_start_once(s_tx_grace_timer, (uint64_t)timeout_ms * 1000);
+   ESP_LOGI(TAG, "TRANSCRIBING grace timer armed: %u ms before pipeline flips to FAILED", (unsigned)timeout_ms);
+}
 
 /* SemaphoreHandle_t externs — defined in voice.c, used by the JSON RX
  * dispatcher + UI-async helpers below.  Declared here (not in voice.h)
@@ -822,6 +862,21 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       cJSON *ntitle = cJSON_GetObjectItem(root, "title");
       ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"", cJSON_IsString(nid) ? nid->valuestring : "?",
                cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
+   } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
+      /* PR 2 polish: Dragon's STT + auto-note-create completed but the
+       * LLM summary step failed (no_llm_available, generation error,
+       * etc.).  The note IS saved on Dragon (it was created from the
+       * STT transcript before the LLM step), so transition the pipeline
+       * to SAVED rather than leaving it stuck at TRANSCRIBING.  We use
+       * SAVED here even though there's no title/summary because the
+       * user's intent was captured — the note exists, just without an
+       * auto-generated heading.  Tab5's Notes screen will pick it up
+       * on next sync with a fallback title from the transcript. */
+      cJSON *err = cJSON_GetObjectItem(root, "error");
+      const char *err_str = (cJSON_IsString(err) && err->valuestring) ? err->valuestring : "unknown";
+      ESP_LOGW(TAG, "Dictation post-processing failed: %s — pipeline → SAVED (note already exists)", err_str);
+      voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
+      voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
    } else if (strcmp(type_str, "llm_done") == 0) {
       cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
       ESP_LOGI(TAG, "LLM done (%.0fms) | heap_dma_free=%u largest=%u", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,
@@ -1410,13 +1465,28 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
          /* Flush playback so we don't keep speaking into a dead pipe. */
          voice_playback_buf_reset();
          tab5_audio_speaker_enable(false);
-         /* PR 1: if a dictation was mid-pipeline, fail it with NETWORK
-          * so the UI surfaces the disconnect.  No-op when pipeline is
-          * already IDLE/SAVED/FAILED. */
+         /* PR 2 polish: WS drop during dictation pipeline.
+          *
+          * RECORDING / UPLOADING — the audio frames we were streaming
+          * went into a dead pipe, no recovery is possible.  Fail
+          * immediately so the user can retry.
+          *
+          * TRANSCRIBING — Dragon's blocking LLM summary call may have
+          * starved the WS for >60 s and triggered an ngrok idle-close.
+          * The WS auto-reconnects within ~600 ms (esp_websocket_client
+          * built-in).  Don't flip the pipeline to FAILED right away —
+          * instead arm a 45 s grace timer.  If `dictation_summary` or
+          * `dictation_postprocessing_error` arrives on the reconnected
+          * WS during that window, the pipeline reaches SAVED naturally
+          * and the timer's pipeline-state check will skip the FAIL.
+          * If the window expires with no resolution, then FAIL. */
          {
             dict_state_t cur_dict = voice_dictation_get().state;
-            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING || cur_dict == DICT_TRANSCRIBING) {
+            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING) {
                voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+            } else if (cur_dict == DICT_TRANSCRIBING) {
+               extern void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms);
+               voice_ws_arm_transcribe_grace_timer(45000);
             }
          }
          /* Tab5 audit F5 (2026-04-20): if the drop landed MID-TURN (voice
