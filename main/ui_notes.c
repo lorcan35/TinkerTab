@@ -1817,11 +1817,10 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_clear_flag(s_edit_overlay, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_move_foreground(s_edit_overlay);
 
-    /* ── v5 spec shot-07 right: paper-like editor. No card, no buttons.
-     *   Topbar  : 'NOTES • SAVED n SEC AGO'  |  ·  ← CANCEL  /  SAVE →
-     *   Body    : full-width flat textarea, no border, just padded text.
-     * Cancel and Save stay as small amber/muted caption links on the
-     * right side of the topbar so they're out of the way of the page. */
+    /* ── Paper-like editor.  Topbar runs a soft sentence-case caption
+     *   on the left (kind · date · time) and two flat text actions on
+     *   the right.  No card, no border, no all-caps — matches the row
+     *   typography pass on the list. */
     lv_obj_t *tb = lv_obj_create(s_edit_overlay);
     lv_obj_set_size(tb, SW, TOPBAR_H + 16);
     lv_obj_set_pos(tb, 0, 0);
@@ -1832,23 +1831,23 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_border_side(tb, LV_BORDER_SIDE_BOTTOM, 0);
     lv_obj_clear_flag(tb, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Left caption: 'NOTES • <time> • <voice|text>' */
+    /* Left caption: 'Voice note · May 14 · 17:24' (sentence case, mid-dot) */
     char sys_buf[80];
-    static const char *mn[] = {"JAN","FEB","MAR","APR","MAY","JUN",
-                                "JUL","AUG","SEP","OCT","NOV","DEC"};
+    static const char *mn[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
     int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
-    snprintf(sys_buf, sizeof(sys_buf),
-             "NOTES  \xe2\x80\xa2  %s %d  \xe2\x80\xa2  %02d:%02d  \xe2\x80\xa2  %s",
-             mn[mi], n->day, n->hour, n->minute,
-             n->is_voice ? "VOICE" : "TEXT");
+    /* Bullet glyph (U+2022, \xe2\x80\xa2) is the only sub-glyph in our
+     * Montserrat builds; U+00B7 middle-dot is missing and renders as a
+     * tofu rectangle.  Soft amber bullet keeps the separator quiet. */
+    snprintf(sys_buf, sizeof(sys_buf), "%s note  \xe2\x80\xa2  %s %d  \xe2\x80\xa2  %02d:%02d",
+             n->is_voice ? "Voice" : "Text", mn[mi], n->day, n->hour, n->minute);
     lv_obj_t *sys = lv_label_create(tb);
     lv_label_set_text(sys, sys_buf);
-    lv_obj_set_style_text_font(sys, FONT_CAPTION, 0);
-    lv_obj_set_style_text_color(sys, lv_color_hex(0x6A6A72), 0);
-    lv_obj_set_style_text_letter_space(sys, 3, 0);
+    lv_obj_set_style_text_font(sys, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(sys, lv_color_hex(0x8A8A92), 0);
+    lv_obj_set_style_text_letter_space(sys, 0, 0);
     lv_obj_align(sys, LV_ALIGN_LEFT_MID, 24, 0);
 
-    /* Right-side actions: CANCEL + SAVE as caption links (flat, no card). */
+    /* Right-side actions: Cancel + Save as flat text links. */
     lv_obj_t *cancel_btn = lv_button_create(tb);
     lv_obj_remove_style_all(cancel_btn);
     lv_obj_set_size(cancel_btn, 100, TOPBAR_H);
@@ -1856,10 +1855,10 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(cancel_btn, cb_edit_close, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
-    lv_label_set_text(cancel_lbl, "CANCEL");
-    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(0x6A6A72), 0);
-    lv_obj_set_style_text_font(cancel_lbl, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(cancel_lbl, 3, 0);
+    lv_label_set_text(cancel_lbl, "Cancel");
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(0x8A8A92), 0);
+    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
+    lv_obj_set_style_text_letter_space(cancel_lbl, 0, 0);
     lv_obj_center(cancel_lbl);
 
     lv_obj_t *save_btn = lv_button_create(tb);
@@ -1869,10 +1868,10 @@ static void cb_note_tap(lv_event_t *e)
     lv_obj_set_style_bg_opa(save_btn, LV_OPA_TRANSP, 0);
     lv_obj_add_event_cb(save_btn, cb_edit_save, LV_EVENT_CLICKED, NULL);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
-    lv_label_set_text(save_lbl, "SAVE");
+    lv_label_set_text(save_lbl, "Save");
     lv_obj_set_style_text_color(save_lbl, lv_color_hex(COL_AMBER), 0);
-    lv_obj_set_style_text_font(save_lbl, FONT_CAPTION, 0);
-    lv_obj_set_style_text_letter_space(save_lbl, 3, 0);
+    lv_obj_set_style_text_font(save_lbl, FONT_BODY, 0);
+    lv_obj_set_style_text_letter_space(save_lbl, 0, 0);
     lv_obj_center(save_lbl);
 
     /* ── Large textarea — flat, no card, paper-like. */
@@ -2567,15 +2566,6 @@ static void refresh_list(void)
     if (!s_list) return;
     lv_obj_clean(s_list);
 
-    if (s_note_count == 0) {
-        lv_obj_t *empty = lv_label_create(s_list);
-        lv_label_set_text(empty, "No notes yet.\n\nTap Voice to record\na note, or Text to type one.");
-        lv_obj_set_style_text_color(empty, lv_color_hex(COL_LABEL2), 0);
-        lv_obj_set_style_text_font(empty, FONT_HEADING, 0);
-        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
-        return;
-    }
-
     int shown = 0;
     /* PR 3: emit day-section headers as we walk the (already-reverse-
      * chronological) notes ring.  A header is emitted the first time
@@ -2602,12 +2592,54 @@ static void refresh_list(void)
         add_note_card_sectioned(s_list, &s_notes[idx], idx, sec);
         shown++;
     }
-    if (shown == 0 && s_search_text[0]) {
-        lv_obj_t *nf = lv_label_create(s_list);
-        lv_label_set_text(nf, "No matching notes");
-        lv_obj_set_style_text_color(nf, lv_color_hex(COL_LABEL2), 0);
-        lv_obj_set_style_text_font(nf, FONT_TITLE, 0);
-        lv_obj_set_style_text_align(nf, LV_TEXT_ALIGN_CENTER, 0);
+    if (shown == 0) {
+       const char *head = NULL;
+       const char *body = NULL;
+       if (s_search_text[0]) {
+          head = "No matches";
+          body = "Try a different word.";
+       } else {
+          switch (s_filter) {
+             case NOTE_FILTER_VOICE:
+                head = "No voice notes yet";
+                body = "Tap the amber mic to dictate one.";
+                break;
+             case NOTE_FILTER_TEXT:
+                head = "No typed notes yet";
+                body = "Tap the pencil to write one.";
+                break;
+             case NOTE_FILTER_PENDING:
+                head = "Nothing pending";
+                body = "Reminders + lists will gather here.";
+                break;
+             case NOTE_FILTER_ALL:
+             default:
+                head = "No notes yet";
+                body = "Tap the amber mic to dictate,\nor the pencil to type.";
+                break;
+          }
+       }
+       lv_obj_t *empty = lv_obj_create(s_list);
+       lv_obj_remove_style_all(empty);
+       lv_obj_set_size(empty, SW, 220);
+       lv_obj_set_style_bg_opa(empty, LV_OPA_TRANSP, 0);
+       lv_obj_clear_flag(empty, LV_OBJ_FLAG_SCROLLABLE);
+       lv_obj_set_flex_flow(empty, LV_FLEX_FLOW_COLUMN);
+       lv_obj_set_flex_align(empty, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+       lv_obj_set_style_pad_top(empty, 80, 0);
+       lv_obj_set_style_pad_row(empty, 10, 0);
+
+       lv_obj_t *h = lv_label_create(empty);
+       lv_label_set_text(h, head);
+       lv_obj_set_style_text_color(h, lv_color_hex(0xC8C8D2), 0);
+       lv_obj_set_style_text_font(h, FONT_HEADING, 0);
+       lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
+
+       lv_obj_t *b = lv_label_create(empty);
+       lv_label_set_text(b, body);
+       lv_obj_set_style_text_color(b, lv_color_hex(0x6A6A72), 0);
+       lv_obj_set_style_text_font(b, FONT_BODY, 0);
+       lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
     }
 }
 
