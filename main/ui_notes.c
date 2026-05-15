@@ -38,6 +38,7 @@
 #include "ui_voice.h"
 #include "voice.h"
 #include "voice_dictation.h"
+#include "voice_dictation_lvgl.h" /* PR 3: pipeline subscriber for processing row */
 #include "wifi.h"
 
 static const char *TAG = "ui_notes";
@@ -100,12 +101,35 @@ typedef enum {
 #define MAX_AUDIO_PATH 64
 #define MAX_NOTE_REC_SECS 300 /* 5 min hard cap on SD recording */
 
+/* PR 3: classification of the note's content.  Informs the timeline filter
+ * pills (All / Voice / Text / Pending) and feeds PR 4's action chips.
+ * NOTE_TYPE_AUTO is the legacy compatibility value — when loaded from JSON
+ * we leave it as AUTO and the render path falls back to `is_voice` so the
+ * timeline behaves identically until a new dictation lands with a concrete
+ * type from Dragon.  PR 4 introduces NOTE_TYPE_LIST + NOTE_TYPE_REMINDER. */
+typedef enum {
+   NOTE_TYPE_AUTO = 0,
+   NOTE_TYPE_TEXT,
+   NOTE_TYPE_VOICE,
+   NOTE_TYPE_LIST,
+   NOTE_TYPE_REMINDER,
+} note_type_t;
+
+/* PR 3: storage slot for PR 4's "convert to reminder?" / "make a list?"
+ * action chips.  Empty in PR 3 — the field exists so PR 4 can populate
+ * without a second on-disk migration.  JSON key "pc" is reserved. */
+typedef struct {
+   uint8_t _reserved;
+} pending_chip_t;
+
 /* ── Note storage ───────────────────────────────────────── */
 typedef struct {
     char text[MAX_NOTE_LEN];
     char audio_path[MAX_AUDIO_PATH]; /* e.g. "/sdcard/rec/0042.wav" or "" */
     note_state_t state;
     note_fail_t fail_reason;
+    note_type_t type;       /* PR 3 */
+    pending_chip_t pending; /* PR 3 (reserved for PR 4) */
     bool is_voice;
     uint8_t hour;
     uint8_t minute;
@@ -301,6 +325,9 @@ static void notes_save(void)
         if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
            cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
         }
+        if (n->type != NOTE_TYPE_AUTO) {
+           cJSON_AddNumberToObject(obj, "ty", (int)n->type);
+        }
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -480,6 +507,8 @@ static void notes_load(void)
         n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
         cJSON *jfr = cJSON_GetObjectItem(item, "fr");
         n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
+        cJSON *jty = cJSON_GetObjectItem(item, "ty");
+        n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
         n->used = true;
         loaded++;
     }
@@ -520,6 +549,30 @@ static void notes_load(void)
 
     ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
 }
+
+/* ── PR 3: filter pills + day-section state ─────────────── */
+typedef enum {
+   NOTE_FILTER_ALL = 0,
+   NOTE_FILTER_VOICE,
+   NOTE_FILTER_TEXT,
+   NOTE_FILTER_PENDING, /* placeholder for PR 4 pending_chip filter */
+} note_filter_t;
+static note_filter_t s_filter = NOTE_FILTER_ALL;
+
+typedef enum {
+   DAY_SECTION_TODAY = 0,
+   DAY_SECTION_YESTERDAY,
+   DAY_SECTION_THIS_WEEK,
+   DAY_SECTION_OLDER,
+} day_section_t;
+
+static lv_obj_t *s_filter_row = NULL;
+static lv_obj_t *s_filter_pill[4] = {NULL};
+static lv_obj_t *s_proc_row = NULL; /* processing row with mini-orb */
+static lv_obj_t *s_proc_orb = NULL;
+static lv_obj_t *s_proc_label = NULL;
+static lv_obj_t *s_proc_close = NULL;
+static lv_obj_t *s_fab = NULL; /* amber dictate FAB */
 
 /* ── Screen state ──────────────────────────────────────── */
 static lv_obj_t *s_screen      = NULL;
@@ -2123,6 +2176,211 @@ static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_i
     lv_obj_set_width(preview, lv_pct(100));
 }
 
+/* ── PR 3: day-section grouping ─────────────────────────── */
+
+static int days_since_2000_local(uint8_t y, uint8_t m, uint8_t d) {
+   /* Cheap monotonic day index for comparison.  Uses tm_yday math via
+    * mktime to handle month lengths correctly. */
+   struct tm t = {0};
+   t.tm_year = 100 + (int)y; /* tm_year is years since 1900 */
+   t.tm_mon = (m > 0 ? m - 1 : 0);
+   t.tm_mday = d;
+   t.tm_hour = 12;
+   time_t tt = mktime(&t);
+   return (int)(tt / 86400);
+}
+
+static day_section_t classify_note_day(const note_entry_t *n) {
+   time_t now = time(NULL);
+   struct tm nt;
+   localtime_r(&now, &nt);
+   int today = days_since_2000_local((uint8_t)(nt.tm_year - 100), (uint8_t)(nt.tm_mon + 1), (uint8_t)nt.tm_mday);
+   int nd = days_since_2000_local(n->year, n->month, n->day);
+   int delta = today - nd;
+   if (delta <= 0) return DAY_SECTION_TODAY;
+   if (delta == 1) return DAY_SECTION_YESTERDAY;
+   if (delta < 7) return DAY_SECTION_THIS_WEEK;
+   return DAY_SECTION_OLDER;
+}
+
+static const char *day_section_label(day_section_t s) {
+   switch (s) {
+      case DAY_SECTION_TODAY:
+         return "TODAY";
+      case DAY_SECTION_YESTERDAY:
+         return "YESTERDAY";
+      case DAY_SECTION_THIS_WEEK:
+         return "THIS WEEK";
+      case DAY_SECTION_OLDER:
+         return "OLDER";
+   }
+   return "";
+}
+
+/* PR 3: filter predicate.  AUTO type falls back to is_voice for
+ * pre-PR-4 notes so the timeline behaves identically. */
+static bool note_matches_filter(const note_entry_t *n) {
+   if (s_filter == NOTE_FILTER_ALL) return true;
+   if (s_filter == NOTE_FILTER_VOICE) {
+      if (n->type == NOTE_TYPE_VOICE || n->type == NOTE_TYPE_LIST || n->type == NOTE_TYPE_REMINDER) return true;
+      if (n->type == NOTE_TYPE_AUTO && n->is_voice) return true;
+      return false;
+   }
+   if (s_filter == NOTE_FILTER_TEXT) {
+      if (n->type == NOTE_TYPE_TEXT) return true;
+      if (n->type == NOTE_TYPE_AUTO && !n->is_voice) return true;
+      return false;
+   }
+   if (s_filter == NOTE_FILTER_PENDING) {
+      /* PR 3 placeholder — pending_chip is unpopulated until PR 4.
+       * For now treat FAILED notes as "pending" so the filter shows
+       * something useful pre-PR-4. */
+      return n->state == NOTE_STATE_FAILED;
+   }
+   return true;
+}
+
+static void add_day_section_header(lv_obj_t *parent, day_section_t s) {
+   lv_obj_t *lbl = lv_label_create(parent);
+   lv_label_set_text(lbl, day_section_label(s));
+   lv_obj_set_style_text_font(lbl, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(0xF59E0B), 0);
+   lv_obj_set_style_text_letter_space(lbl, 2, 0);
+   lv_obj_set_style_pad_top(lbl, 8, 0);
+   lv_obj_set_style_pad_bottom(lbl, 4, 0);
+}
+
+/* PR 3: paint the filter pills so the active one gets amber bg + dark
+ * text; inactive ones get dark-pill bg + neutral text.  Called whenever
+ * s_filter changes (on tap or on screen create). */
+void ui_notes_paint_filter_pills(void) {
+   for (int i = 0; i < 4; i++) {
+      lv_obj_t *p = s_filter_pill[i];
+      if (!p) continue;
+      bool active = ((int)s_filter == i);
+      lv_obj_set_style_bg_color(p, lv_color_hex(active ? 0xF59E0B : 0x141420), 0);
+      lv_obj_set_style_border_color(p, lv_color_hex(active ? 0xF59E0B : 0x262637), 0);
+      lv_obj_t *lbl = lv_obj_get_child(p, 0);
+      if (lbl) {
+         lv_obj_set_style_text_color(lbl, lv_color_hex(active ? 0x141420 : 0xE8E8EF), 0);
+      }
+   }
+}
+
+/* ── PR 3: processing row that subscribes to the dictation pipeline ── */
+
+static lv_timer_t *s_proc_rec_ticker = NULL;
+
+static void proc_rec_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_proc_label) return;
+   dict_event_t e = voice_dictation_get();
+   if (e.state != DICT_RECORDING) {
+      if (s_proc_rec_ticker) {
+         lv_timer_del(s_proc_rec_ticker);
+         s_proc_rec_ticker = NULL;
+      }
+      return;
+   }
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t dur_ms = (e.started_ms && now_ms >= e.started_ms) ? (now_ms - e.started_ms) : 0;
+   uint32_t s = dur_ms / 1000;
+   char buf[40];
+   snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+   lv_label_set_text(s_proc_label, buf);
+}
+
+static void proc_paint_state(const dict_event_t *e) {
+   if (!s_proc_row || !s_proc_orb || !s_proc_label) return;
+   if (!e || e->state == DICT_IDLE) {
+      lv_obj_add_flag(s_proc_row, LV_OBJ_FLAG_HIDDEN);
+      if (s_proc_rec_ticker) {
+         lv_timer_del(s_proc_rec_ticker);
+         s_proc_rec_ticker = NULL;
+      }
+      return;
+   }
+   lv_obj_clear_flag(s_proc_row, LV_OBJ_FLAG_HIDDEN);
+   /* mini-orb hue tracks pipeline state, mirroring the heroic orb */
+   uint32_t body_hex = 0xE74C3C;
+   uint32_t edge_hex = 0xFF5C50;
+   const char *txt = "";
+   char buf[40];
+   switch (e->state) {
+      case DICT_RECORDING: {
+         body_hex = 0xE74C3C;
+         edge_hex = 0xFF5C50;
+         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+         uint32_t dur_ms = (e->started_ms && now_ms >= e->started_ms) ? (now_ms - e->started_ms) : 0;
+         uint32_t s = dur_ms / 1000;
+         snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+         txt = buf;
+         if (!s_proc_rec_ticker) s_proc_rec_ticker = lv_timer_create(proc_rec_tick_cb, 200, NULL);
+         break;
+      }
+      case DICT_UPLOADING:
+         body_hex = 0xF59E0B;
+         edge_hex = 0xFCD34D;
+         txt = "UPLOADING";
+         break;
+      case DICT_TRANSCRIBING:
+         body_hex = 0xF59E0B;
+         edge_hex = 0xFCD34D;
+         txt = "TRANSCRIBING";
+         break;
+      case DICT_SAVED:
+         body_hex = 0x22C55E;
+         edge_hex = 0x4ADE80;
+         txt = "SAVED";
+         break;
+      case DICT_FAILED:
+         body_hex = 0xE74C3C;
+         edge_hex = 0xFF5C50;
+         txt = "FAILED  TAP TO RETRY";
+         break;
+      default:
+         break;
+   }
+   if (e->state != DICT_RECORDING && s_proc_rec_ticker) {
+      lv_timer_del(s_proc_rec_ticker);
+      s_proc_rec_ticker = NULL;
+   }
+   lv_obj_set_style_bg_color(s_proc_orb, lv_color_hex(body_hex), 0);
+   lv_obj_set_style_border_color(s_proc_orb, lv_color_hex(edge_hex), 0);
+   lv_label_set_text(s_proc_label, txt);
+}
+
+static void proc_pipeline_cb(const dict_event_t *event, void *user_data) {
+   (void)user_data;
+   if (s_destroying) return;
+   proc_paint_state(event);
+}
+
+static void cb_proc_close_tap(lv_event_t *e) {
+   (void)e;
+   dict_event_t cur = voice_dictation_get();
+   if (cur.state == DICT_RECORDING) {
+      voice_cancel();
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+   } else if (cur.state != DICT_IDLE) {
+      /* For non-RECORDING non-IDLE (UPLOADING/TRANSCRIBING/SAVED/FAILED),
+       * just dismiss the row by snapping back to IDLE.  The dictation
+       * itself can't really be cancelled mid-transcribe, but the row
+       * shouldn't be sticky in the user's face. */
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   }
+}
+
+void cb_filter_pill_tap(lv_event_t *e) {
+   lv_obj_t *p = lv_event_get_target(e);
+   int idx = (int)(uintptr_t)lv_obj_get_user_data(p);
+   if (idx < 0 || idx > 3) return;
+   if ((int)s_filter == idx) return; /* no-op when tapping the active pill */
+   s_filter = (note_filter_t)idx;
+   ui_notes_paint_filter_pills();
+   refresh_list();
+}
+
 /* ── Refresh list ───────────────────────────────────────── */
 static void refresh_list(void)
 {
@@ -2174,6 +2432,12 @@ static void refresh_list(void)
     }
 
     int shown = 0;
+    /* PR 3: emit day-section headers as we walk the (already-reverse-
+     * chronological) notes ring.  A header is emitted the first time
+     * we see a row whose classify_note_day() bucket differs from the
+     * previous header.  Tracks the last emitted bucket via cur_section
+     * with -1 as the sentinel for "no header emitted yet". */
+    int cur_section = -1;
     for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
         int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
         if (!s_notes[idx].used) continue;
@@ -2181,6 +2445,14 @@ static void refresh_list(void)
         if (s_search_text[0]) {
             /* N1: Case-insensitive search */
             if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
+        }
+        /* PR 3: filter pill predicate */
+        if (!note_matches_filter(&s_notes[idx])) continue;
+        /* PR 3: emit a day-section header when entering a new bucket. */
+        day_section_t sec = classify_note_day(&s_notes[idx]);
+        if ((int)sec != cur_section) {
+           add_day_section_header(s_list, sec);
+           cur_section = (int)sec;
         }
         add_note_card(s_list, &s_notes[idx], idx);
         shown++;
@@ -2383,22 +2655,169 @@ lv_obj_t *ui_notes_create(void)
     lv_obj_set_pos(div, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 8);
     lv_obj_set_style_bg_color(div, lv_color_hex(COL_CARD), 0);
 
-    /* Scrollable notes list — gains ~132px from reduced button row + search bar */
-    s_list = lv_obj_create(s_screen);
-    lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - BTN_ROW_H - SEARCH_H - 10);
-    lv_obj_set_pos(s_list, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 10);
-    lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_list, 0, 0);
-    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(s_list, 12, 0);
-    lv_obj_set_style_pad_hor(s_list, 16, 0);
-    lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
+/* PR 3: filter-pill row sits between the divider and the list.
+ * 44 px tall; four equal-width pills with 8 px gaps; active pill
+ * gets amber background, inactive pills are dark-pill style. */
+#define FILTER_H 44
+   s_filter_row = lv_obj_create(s_screen);
+   lv_obj_remove_style_all(s_filter_row);
+   lv_obj_set_size(s_filter_row, SW, FILTER_H);
+   lv_obj_set_pos(s_filter_row, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14);
+   lv_obj_set_style_pad_hor(s_filter_row, 16, 0);
+   lv_obj_set_style_pad_top(s_filter_row, 4, 0);
+   lv_obj_set_flex_flow(s_filter_row, LV_FLEX_FLOW_ROW);
+   lv_obj_set_style_pad_column(s_filter_row, 8, 0);
+   lv_obj_clear_flag(s_filter_row, LV_OBJ_FLAG_SCROLLABLE);
+   {
+      static const char *PILL_LABELS[4] = {"All", "Voice", "Text", "Pending"};
+      int pill_w = (SW - 32 - 24) / 4; /* 24 = 3*8 column gaps */
+      for (int i = 0; i < 4; i++) {
+         lv_obj_t *p = lv_obj_create(s_filter_row);
+         lv_obj_remove_style_all(p);
+         lv_obj_set_size(p, pill_w, FILTER_H - 12);
+         lv_obj_set_style_radius(p, 18, 0);
+         lv_obj_set_style_bg_color(p, lv_color_hex(0x141420), 0);
+         lv_obj_set_style_bg_opa(p, LV_OPA_COVER, 0);
+         lv_obj_set_style_border_width(p, 1, 0);
+         lv_obj_set_style_border_color(p, lv_color_hex(0x262637), 0);
+         lv_obj_clear_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+         lv_obj_add_flag(p, LV_OBJ_FLAG_CLICKABLE);
+         lv_obj_t *lbl = lv_label_create(p);
+         lv_label_set_text(lbl, PILL_LABELS[i]);
+         lv_obj_set_style_text_color(lbl, lv_color_hex(0xE8E8EF), 0);
+         lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+         lv_obj_center(lbl);
+         lv_obj_set_user_data(p, (void *)(uintptr_t)i);
+         extern void cb_filter_pill_tap(lv_event_t * e);
+         lv_obj_add_event_cb(p, cb_filter_pill_tap, LV_EVENT_CLICKED, NULL);
+         s_filter_pill[i] = p;
+      }
+      /* Initial active-pill paint reflecting s_filter (default = ALL). */
+      extern void ui_notes_paint_filter_pills(void);
+      ui_notes_paint_filter_pills();
+   }
 
-    refresh_list();
-    ui_keyboard_set_layout_cb(notes_keyboard_layout_cb);
+/* PR 3: processing row sits at the top of the notes list area.
+ * Mini-orb (28 px circle, colored gradient matching heroic orb) +
+ * state caption + close ×.  Hidden when pipeline == DICT_IDLE. */
+#define PROC_H 56
+   s_proc_row = lv_obj_create(s_screen);
+   lv_obj_remove_style_all(s_proc_row);
+   lv_obj_set_size(s_proc_row, SW - 32, PROC_H);
+   lv_obj_set_pos(s_proc_row, 16, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14 + FILTER_H + 4);
+   lv_obj_set_style_bg_color(s_proc_row, lv_color_hex(0x141420), 0);
+   lv_obj_set_style_bg_opa(s_proc_row, LV_OPA_COVER, 0);
+   lv_obj_set_style_border_width(s_proc_row, 1, 0);
+   lv_obj_set_style_border_color(s_proc_row, lv_color_hex(0x262637), 0);
+   lv_obj_set_style_radius(s_proc_row, 18, 0);
+   lv_obj_set_style_pad_hor(s_proc_row, 14, 0);
+   lv_obj_clear_flag(s_proc_row, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_proc_row, LV_OBJ_FLAG_HIDDEN); /* shown only during pipeline */
 
-    ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
-    return s_screen;
+   s_proc_orb = lv_obj_create(s_proc_row);
+   lv_obj_remove_style_all(s_proc_orb);
+   lv_obj_set_size(s_proc_orb, 28, 28);
+   lv_obj_align(s_proc_orb, LV_ALIGN_LEFT_MID, 0, 0);
+   lv_obj_set_style_radius(s_proc_orb, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_color(s_proc_orb, lv_color_hex(0xE74C3C), 0);
+   lv_obj_set_style_bg_opa(s_proc_orb, LV_OPA_COVER, 0);
+   lv_obj_set_style_border_width(s_proc_orb, 2, 0);
+   lv_obj_set_style_border_color(s_proc_orb, lv_color_hex(0xFF5C50), 0);
+
+   s_proc_label = lv_label_create(s_proc_row);
+   lv_label_set_text(s_proc_label, "");
+   lv_obj_set_style_text_color(s_proc_label, lv_color_hex(0xE8E8EF), 0);
+   lv_obj_set_style_text_font(s_proc_label, FONT_BODY, 0);
+   lv_obj_set_style_text_letter_space(s_proc_label, 1, 0);
+   lv_obj_align(s_proc_label, LV_ALIGN_LEFT_MID, 40, 0);
+
+   s_proc_close = lv_label_create(s_proc_row);
+   lv_label_set_text(s_proc_close, LV_SYMBOL_CLOSE);
+   lv_obj_set_style_text_color(s_proc_close, lv_color_hex(0xE8E8EF), 0);
+   lv_obj_set_style_text_font(s_proc_close, FONT_BODY, 0);
+   lv_obj_align(s_proc_close, LV_ALIGN_RIGHT_MID, 0, 0);
+   lv_obj_add_flag(s_proc_close, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_set_ext_click_area(s_proc_close, 12);
+   lv_obj_add_event_cb(s_proc_close, cb_proc_close_tap, LV_EVENT_CLICKED, NULL);
+
+   /* Subscribe + rehydrate from current pipeline state.  The static
+    * guard prevents double-subscribe across screen recreate cycles. */
+   static int s_proc_sub = -1;
+   if (s_proc_sub < 0) {
+      s_proc_sub = voice_dictation_subscribe_lvgl(proc_pipeline_cb, NULL);
+      ESP_LOGI(TAG, "Notes pipeline subscriber registered handle=%d", s_proc_sub);
+   }
+   {
+      dict_event_t cur = voice_dictation_get();
+      proc_paint_state(&cur);
+   }
+
+   /* Scrollable notes list — gains ~132px from reduced button row + search bar */
+   s_list = lv_obj_create(s_screen);
+   lv_obj_set_size(s_list, SW, OVERLAY_H - TOPBAR_H - BTN_ROW_H - SEARCH_H - 10 - FILTER_H - 4 - PROC_H - 8);
+   lv_obj_set_pos(s_list, 0, TOPBAR_H + BTN_ROW_H + SEARCH_H + 14 + FILTER_H + PROC_H + 8);
+   lv_obj_set_style_bg_opa(s_list, LV_OPA_TRANSP, 0);
+   lv_obj_set_style_border_width(s_list, 0, 0);
+   lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
+   lv_obj_set_style_pad_row(s_list, 12, 0);
+   lv_obj_set_style_pad_hor(s_list, 16, 0);
+   lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
+
+/* PR 3: amber dictate FAB — bottom-right above the nav bar.  Tap
+ * fires voice_start_dictation (the same path the home Dictate chip
+ * uses) so a recording started here flows through the pipeline +
+ * surfaces on the processing row above. */
+#define FAB_SZ 64
+   s_fab = lv_obj_create(s_screen);
+   lv_obj_remove_style_all(s_fab);
+   lv_obj_set_size(s_fab, FAB_SZ, FAB_SZ);
+   lv_obj_set_pos(s_fab, SW - FAB_SZ - 24, USABLE_H - FAB_SZ - 24);
+   lv_obj_set_style_radius(s_fab, LV_RADIUS_CIRCLE, 0);
+   lv_obj_set_style_bg_color(s_fab, lv_color_hex(0xF59E0B), 0);
+   lv_obj_set_style_bg_opa(s_fab, LV_OPA_COVER, 0);
+   lv_obj_set_style_border_width(s_fab, 0, 0);
+   lv_obj_set_style_shadow_width(s_fab, 18, 0);
+   lv_obj_set_style_shadow_color(s_fab, lv_color_hex(0xF59E0B), 0);
+   lv_obj_set_style_shadow_opa(s_fab, LV_OPA_50, 0);
+   lv_obj_set_style_shadow_offset_y(s_fab, 6, 0);
+   lv_obj_clear_flag(s_fab, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_fab, LV_OBJ_FLAG_CLICKABLE);
+   {
+      lv_obj_t *fic = lv_label_create(s_fab);
+      lv_label_set_text(fic, LV_SYMBOL_AUDIO);
+      lv_obj_set_style_text_color(fic, lv_color_hex(0x141420), 0);
+      lv_obj_set_style_text_font(fic, FONT_HEADING, 0);
+      lv_obj_center(fic);
+   }
+   extern void cb_notes_fab_tap(lv_event_t * e);
+   lv_obj_add_event_cb(s_fab, cb_notes_fab_tap, LV_EVENT_CLICKED, NULL);
+
+   refresh_list();
+   ui_keyboard_set_layout_cb(notes_keyboard_layout_cb);
+
+   ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
+   return s_screen;
+}
+
+/* PR 3: amber FAB tap → fires voice_start_dictation.  Same path the home
+ * Dictate chip uses; the pipeline subscriber will then drive the
+ * processing row at the top of the list. */
+void cb_notes_fab_tap(lv_event_t *e) {
+   (void)e;
+   dict_event_t cur = voice_dictation_get();
+   if (cur.state == DICT_RECORDING) {
+      /* Already recording — second tap cancels (matches home chip semantics). */
+      voice_cancel();
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      return;
+   }
+   if (cur.state == DICT_FAILED || cur.state == DICT_SAVED) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   }
+   esp_err_t err = voice_start_dictation();
+   if (err != ESP_OK) {
+      ESP_LOGW(TAG, "Notes FAB tap: voice_start_dictation failed: %s", esp_err_to_name(err));
+   }
 }
 
 void ui_notes_destroy(void)
