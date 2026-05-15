@@ -339,6 +339,34 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://192.168.70.128:8080/m5/models?
 # Self-test (no auth needed)
 curl -s http://192.168.70.128:8080/selftest | python3 -m json.tool
 
+# Dictation pipeline state (PR 1 — TT #519)
+# Reflects the voice_dictation_t state machine: IDLE / RECORDING /
+# UPLOADING / TRANSCRIBING / SAVED / FAILED.  Used by the orb +
+# Dictate chip + Notes processing row + e2e harness for resolution
+# checks.  Reason field carries the FAILED detail (CANCELLED,
+# NETWORK, EMPTY, AUTH, NO_AUDIO, TOO_LONG).
+curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/dictation_pipeline | python3 -m json.tool
+# → {"state":"RECORDING","reason":"NONE","started_ms":52065,
+#    "stopped_ms":0,"last_change_ms":52065,"note_slot":-1,
+#    "now_ms":53090}
+
+# Solo-mode debug helpers (TT #370 — voice_mode=5)
+# /solo/sse_test       — POST a prompt, stream OpenRouter SSE replies
+# /solo/llm_test       — POST a prompt, return non-streaming LLM reply
+# /solo/rag_test       — POST a query, run the on-device RAG retrieval
+#                        path against /sdcard/rag.bin without invoking
+#                        the LLM.  Used during W4 RAG iteration.
+# /solo/inject_audio   — POST PCM bytes (16 kHz mono int16) and route
+#                        through the Solo STT path bypassing the mic.
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/solo/llm_test \
+     -d '{"prompt":"reply with PONG"}' | python3 -m json.tool
+
+# Call mute (#272 Phase 3E follow-up)
+# During an active video call, toggle local mic mute without ending
+# the call.  The downlink + uplink JPEG streams keep flowing; only
+# the AUD0 frames pause while muted.
+curl -s -H "Authorization: Bearer $TOKEN" -X POST http://192.168.70.128:8080/call/mute -d '{"mute":true}'
+
 # ── Harness-friendly endpoints (#293/#294/#296/#297, April 2026) ──
 # Current screen + overlay visibility (chat/voice/settings)
 curl -s -H "Authorization: Bearer $TOKEN" http://192.168.70.128:8080/screen | python3 -m json.tool
