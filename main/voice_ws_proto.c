@@ -835,6 +835,8 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
       /* PR 1: pipeline transition for the cancelled path. */
       voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* #537: discard the pipeline-armed WAV — no transcript is coming. */
+      tab5_lv_async_call((lv_async_cb_t)ui_notes_pipeline_cancel_recording, NULL);
    } else if (strcmp(type_str, "dictation_summary") == 0) {
       cJSON *title = cJSON_GetObjectItem(root, "title");
       cJSON *summary = cJSON_GetObjectItem(root, "summary");

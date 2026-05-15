@@ -776,8 +776,11 @@ static void __attribute__((unused)) voice_state_cb(voice_state_t state, const ch
 /* Forward decl — s_rec_note_slot is defined further down with the
  * recording-flow statics but the dictated-async helper below uses it
  * to skip duplicate creation when the local "+ NEW VOICE NOTE" flow
- * already owns a slot. */
+ * already owns a slot.  #537 adds s_pipeline_armed_slot + s_rec_file
+ * to distinguish the home Dictate chip's pre-armed WAV path. */
 static int s_rec_note_slot;
+static bool s_pipeline_armed_slot;
+static FILE *s_rec_file;
 
 /* PR 3 follow-up: deferred WS-thread → LVGL-thread dictated-note add.
  * The dictation_summary handler in voice_ws_proto.c calls
@@ -789,6 +792,25 @@ static int s_rec_note_slot;
 static void notes_add_dictated_async_cb(void *arg) {
    char *text = (char *)arg;
    if (!text) return;
+   /* #537: if the pipeline-arm path (home Dictate chip / chat mic) opened
+    * a WAV file ahead of this dictation, finalise it now — write the
+    * transcript into the reserved slot, close the WAV, attach audio_path.
+    * This is the path that gives Dragon-routed voice notes a playable
+    * SD recording. */
+   if (s_pipeline_armed_slot && s_rec_note_slot >= 0 && s_rec_file != NULL) {
+      ESP_LOGI(TAG, "Pipeline-armed slot %d → finalising with transcript", s_rec_note_slot);
+      s_pipeline_armed_slot = false;
+      /* The arm path hides the slot (used=false) so a placeholder row
+       * doesn't render in-flight; flip it back before finalisation so
+       * the new transcribed note actually appears on the timeline. */
+      if (s_rec_note_slot < MAX_NOTES && !s_notes[s_rec_note_slot].used) {
+         s_notes[s_rec_note_slot].used = true;
+         if (s_note_count < MAX_NOTES) s_note_count++;
+      }
+      ui_notes_stop_recording(text[0] ? text : NULL);
+      free(text);
+      return;
+   }
    /* Skip if the local-recording flow already owns a slot (the
     * "+ NEW VOICE NOTE" path on Notes — ui_notes_start_recording
     * sets s_rec_note_slot >= 0 until ui_notes_stop_recording
@@ -973,6 +995,13 @@ static uint32_t s_rec_samples = 0;
 static SemaphoreHandle_t s_rec_mutex = NULL;
 static int s_rec_note_slot = -1;
 
+/* #537: pipeline-armed recording flag.  Distinguishes a slot opened by
+ * ui_notes_pipeline_arm_recording (home Dictate chip path) from one
+ * opened by ui_notes_start_recording via the FAB.  The FAB owns its own
+ * stop-via-tap teardown; the pipeline-armed slot is finalised when
+ * dictation_summary arrives or discarded on cancel. */
+static bool s_pipeline_armed_slot = false;
+
 /* WAV header for PCM 16-bit mono */
 static void wav_write_header(FILE *f, uint32_t data_bytes, uint16_t sample_rate)
 {
@@ -1062,6 +1091,60 @@ const char *ui_notes_start_recording(void)
 
     ESP_LOGI(TAG, "Recording started: %s (slot %d)", s_rec_path, s_rec_note_slot);
     return s_rec_path;
+}
+
+/* #537: arm a SD WAV recording for an incoming pipeline-path dictation.
+ * The reserved slot is left with `used = false` until dictation_summary
+ * arrives — the processing row at the top of Notes (and the home Dictate
+ * chip M:SS hint) communicate state during the in-flight phase, so a
+ * placeholder row in the list would be redundant + visually noisy with
+ * an inert play button. */
+bool ui_notes_pipeline_arm_recording(void) {
+   if (s_rec_file != NULL || s_rec_note_slot >= 0) {
+      ESP_LOGI(TAG, "Pipeline arm rejected — recording already in flight (slot %d)", s_rec_note_slot);
+      return false;
+   }
+   const char *wav = ui_notes_start_recording();
+   if (!wav) return false;
+   s_pipeline_armed_slot = true;
+   if (s_rec_note_slot >= 0 && s_rec_note_slot < MAX_NOTES) {
+      /* Hide the row until summary lands.  notes_add_dictated_async_cb
+       * flips used back to true via ui_notes_stop_recording(transcript). */
+      s_notes[s_rec_note_slot].used = false;
+      if (s_note_count > 0) s_note_count--;
+      s_notes[s_rec_note_slot].text[0] = '\0';
+      s_notes[s_rec_note_slot].type = NOTE_TYPE_VOICE;
+   }
+   refresh_list();
+   return true;
+}
+
+/* #537: cancel a pipeline-armed recording.  Closes the WAV, removes the
+ * file, releases the slot. */
+void ui_notes_pipeline_cancel_recording(void) {
+   if (!s_pipeline_armed_slot) return;
+   ESP_LOGI(TAG, "Pipeline-armed slot %d → discarding", s_rec_note_slot);
+   s_pipeline_armed_slot = false;
+
+   if (s_rec_mutex) xSemaphoreTake(s_rec_mutex, portMAX_DELAY);
+   if (s_rec_file) {
+      fclose(s_rec_file);
+      s_rec_file = NULL;
+   }
+   if (s_rec_mutex) xSemaphoreGive(s_rec_mutex);
+
+   if (s_rec_path[0]) {
+      remove(s_rec_path);
+      s_rec_path[0] = '\0';
+   }
+   if (s_rec_note_slot >= 0 && s_rec_note_slot < MAX_NOTES) {
+      s_notes[s_rec_note_slot].used = false;
+      if (s_note_count > 0) s_note_count--;
+   }
+   s_rec_note_slot = -1;
+   s_rec_samples = 0;
+   notes_save();
+   refresh_list();
 }
 
 void ui_notes_write_audio(const int16_t *samples, size_t count)
