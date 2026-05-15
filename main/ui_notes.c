@@ -100,12 +100,35 @@ typedef enum {
 #define MAX_AUDIO_PATH 64
 #define MAX_NOTE_REC_SECS 300 /* 5 min hard cap on SD recording */
 
+/* PR 3: classification of the note's content.  Informs the timeline filter
+ * pills (All / Voice / Text / Pending) and feeds PR 4's action chips.
+ * NOTE_TYPE_AUTO is the legacy compatibility value — when loaded from JSON
+ * we leave it as AUTO and the render path falls back to `is_voice` so the
+ * timeline behaves identically until a new dictation lands with a concrete
+ * type from Dragon.  PR 4 introduces NOTE_TYPE_LIST + NOTE_TYPE_REMINDER. */
+typedef enum {
+   NOTE_TYPE_AUTO = 0,
+   NOTE_TYPE_TEXT,
+   NOTE_TYPE_VOICE,
+   NOTE_TYPE_LIST,
+   NOTE_TYPE_REMINDER,
+} note_type_t;
+
+/* PR 3: storage slot for PR 4's "convert to reminder?" / "make a list?"
+ * action chips.  Empty in PR 3 — the field exists so PR 4 can populate
+ * without a second on-disk migration.  JSON key "pc" is reserved. */
+typedef struct {
+   uint8_t _reserved;
+} pending_chip_t;
+
 /* ── Note storage ───────────────────────────────────────── */
 typedef struct {
     char text[MAX_NOTE_LEN];
     char audio_path[MAX_AUDIO_PATH]; /* e.g. "/sdcard/rec/0042.wav" or "" */
     note_state_t state;
     note_fail_t fail_reason;
+    note_type_t type;           /* PR 3 */
+    pending_chip_t pending;     /* PR 3 (reserved for PR 4) */
     bool is_voice;
     uint8_t hour;
     uint8_t minute;
@@ -301,6 +324,9 @@ static void notes_save(void)
         if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
            cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
         }
+        if (n->type != NOTE_TYPE_AUTO) {
+           cJSON_AddNumberToObject(obj, "ty", (int)n->type);
+        }
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -480,6 +506,8 @@ static void notes_load(void)
         n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
         cJSON *jfr = cJSON_GetObjectItem(item, "fr");
         n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
+        cJSON *jty = cJSON_GetObjectItem(item, "ty");
+        n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
         n->used = true;
         loaded++;
     }
