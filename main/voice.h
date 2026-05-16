@@ -175,6 +175,13 @@ esp_err_t voice_start_dictation(void);
 /** Return the current voice mode (ASK or DICTATE). */
 voice_mode_t voice_get_mode(void);
 
+/** TT #563: true while the mic capture task is actively streaming
+ *  PCM frames (LISTENING, dictating, or in-call).  Used by other
+ *  consumers (e.g. ui_orb's ambient sampler) to YIELD the mic so
+ *  two readers don't race on the same I2S channel — otherwise the
+ *  voice STT would receive partial / corrupted frames. */
+bool voice_mic_is_active(void);
+
 /** Return the accumulated dictation transcript from stt_partial results (PSRAM-backed, up to 64KB). */
 const char *voice_get_dictation_text(void);
 
