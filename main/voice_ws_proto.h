@@ -34,6 +34,12 @@ esp_err_t voice_ws_send_register(void);
 void voice_ws_proto_handle_text(const char *data, int len);
 void voice_ws_proto_handle_binary(const char *data, int len);
 
+/* TT #568: clear the cubic-Hermite upsampler's chunk-boundary context
+ * between turns so the first chunk of a new TTS playback starts clean
+ * (not splicing into the previous turn's tail samples).  Invoked from
+ * the tts_start / tts_end branches of the JSON RX dispatcher. */
+void voice_ws_proto_upsample_reset(void);
+
 /* esp_websocket_client event callback — register with
  * esp_websocket_register_events from voice_ws_start_client in voice.c. */
 void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t event_id, void *event_data);
