@@ -1431,7 +1431,7 @@ static size_t voice_ws_proto_upsample_16k_to_48k(const int16_t *in, size_t in_sa
       out[out_idx++] = y1;                               /* t = 0   (identity = in[i]) */
       out[out_idx++] = hermite_sample_a(y0, y1, y2, y3); /* t = 1/3 between in[i] and in[i+1] */
       out[out_idx++] = hermite_sample_b(y0, y1, y2, y3); /* t = 2/3 between in[i] and in[i+1] */
-      prev_in = y1;                                       /* for next iteration's y0 */
+      prev_in = y1;                                      /* for next iteration's y0 */
    }
 
    /* Save the last input sample for the next call's leading y0. */
