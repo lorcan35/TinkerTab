@@ -185,8 +185,11 @@ static void alive_start(void);
 static void alive_stop(void);
 /* TT #549 alive-motion guard — defined alongside idle_breath statics
  * later in the file but the helpers + state machine reference it
- * earlier. */
+ * earlier.  TT #552 also forward-decls s_idle_breath_last_opa so the
+ * ambient_apply helper can layer the ambient glow on top of the
+ * existing idle breath value. */
 static bool s_alive_running;
+static int s_idle_breath_last_opa;
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -1138,69 +1141,105 @@ void ui_orb_wake(void) {
    }
 }
 
-/* ── Always-alive sphere (TT #549) ───────────────────────────────────── */
+/* ── Always-alive sphere — ambient mic glow (TT #552) ────────────────── */
 
-/* Two slow infinite anims layered on the body + spec so the sphere
- * never reads as static.  Both pause when the orb leaves IDLE
- * (state-owned motion takes priority) and when the dictation
- * pipeline is active (the pipeline tints/fills the body itself). */
+/* Replaced the TT #549 slow infinite LVGL anims (gradient-stop pan +
+ * spec opa) with a mic-driven ambient sampler.  The previous motion
+ * was too subtle to read.  Now: a 3 Hz timer reads a brief mic chunk,
+ * computes RMS, and modulates the halo's bg_opa floor + spec bg_opa
+ * proportional to room sound.  Quiet room → calm dim halo, chatter
+ * or music → visible warm glow.
+ *
+ * Pauses when s_state != IDLE (voice owns the mic during LISTENING /
+ * PROCESSING / SPEAKING) or when the dictation pipeline is active. */
 
-static void alive_grad_anim_cb(void *obj, int32_t v) {
-   if (!obj) return;
-   /* Maps v in [0, 100] to bg_main_stop in [0, 28].  The lit-side stop
-    * extends downward then retracts, slowly shifting the lit-shadow
-    * boundary on the sphere — reads as a planet's terminator
-    * breathing inward and outward. */
-   int stop = v * 28 / 100;
-   lv_obj_set_style_bg_main_stop((lv_obj_t *)obj, stop, LV_PART_MAIN);
+#include <math.h> /* sqrtf */
+
+#include "audio.h" /* tab5_mic_read for ambient sampling */
+
+#define AMBIENT_TICK_MS 200
+#define AMBIENT_FRAMES 64 /* 64 TDM slices = 256 int16_t total, ~1.3 ms @ 48 kHz */
+#define AMBIENT_MIC_TDM_CHANNELS 4
+#define AMBIENT_MIC1_OFFSET 0   /* mic 1 lives in slot 0 of the TDM frame */
+#define AMBIENT_RMS_DIV 2500.0f /* normalise raw RMS into 0..1 — quiet ~250 raw, chatter ~2000+ */
+#define AMBIENT_EMA_ALPHA 0.45f /* faster reaction so the glow visibly tracks sound */
+#define AMBIENT_HALO_FLOOR 30   /* baseline halo opa even in silence — always-on glow */
+#define AMBIENT_HALO_PEAK 180   /* peak halo opa on loud ambient */
+#define AMBIENT_SPEC_FLOOR 130
+#define AMBIENT_SPEC_PEAK 230
+
+static lv_timer_t *s_ambient_timer = NULL;
+static float s_ambient_rms = 0.0f;
+
+static void ambient_apply(void) {
+   if (s_halo) {
+      /* Halo bg_opa = always-on floor + sound boost.  Quiet room still
+       * shows a calm warm glow (the orb is alive); noisy room brightens
+       * dramatically.  The idle breath sine still rides underneath via
+       * s_idle_breath_last_opa, but its 28-opa range is overshadowed
+       * by the ambient envelope — it's still there as a slow modulation
+       * on top of the ambient drive. */
+      int amb = AMBIENT_HALO_FLOOR + (int)(s_ambient_rms * (AMBIENT_HALO_PEAK - AMBIENT_HALO_FLOOR));
+      int opa = amb + (s_idle_breath_last_opa / 3); /* breath at 1/3 weight on top */
+      if (opa < 0) opa = 0;
+      if (opa > 255) opa = 255;
+      lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
+   }
+   if (s_spec) {
+      int spec_opa = AMBIENT_SPEC_FLOOR + (int)(s_ambient_rms * (AMBIENT_SPEC_PEAK - AMBIENT_SPEC_FLOOR));
+      if (spec_opa < AMBIENT_SPEC_FLOOR) spec_opa = AMBIENT_SPEC_FLOOR;
+      if (spec_opa > AMBIENT_SPEC_PEAK) spec_opa = AMBIENT_SPEC_PEAK;
+      lv_obj_set_style_bg_opa(s_spec, (lv_opa_t)spec_opa, LV_PART_MAIN);
+   }
 }
 
-static void alive_spec_anim_cb(void *obj, int32_t v) {
-   if (!obj) return;
-   lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+static void ambient_tick_cb(lv_timer_t *t) {
+   (void)t;
+   /* Yield when voice is using the mic or the pipeline owns the orb. */
+   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active()) return;
+
+   static int16_t buf[AMBIENT_FRAMES * AMBIENT_MIC_TDM_CHANNELS];
+   if (tab5_mic_read(buf, AMBIENT_FRAMES, 20) != ESP_OK) {
+      /* Mic busy or not ready — just decay current EMA so the glow
+       * gently fades rather than freezing. */
+      s_ambient_rms *= 0.9f;
+      ambient_apply();
+      return;
+   }
+   int64_t sqsum = 0;
+   for (int i = 0; i < AMBIENT_FRAMES; i++) {
+      int16_t v = buf[i * AMBIENT_MIC_TDM_CHANNELS + AMBIENT_MIC1_OFFSET];
+      sqsum += (int64_t)v * v;
+   }
+   float rms = sqrtf((float)(sqsum / AMBIENT_FRAMES));
+   /* Normalise to 0..1 — empirical AMBIENT_RMS_DIV calibrated so
+    * silent room ≈ 0.0, ambient chatter ≈ 0.3-0.5, loud music ≈ 0.8+. */
+   float n = rms / AMBIENT_RMS_DIV;
+   if (n < 0.0f) n = 0.0f;
+   if (n > 1.0f) n = 1.0f;
+   s_ambient_rms = (AMBIENT_EMA_ALPHA * n) + ((1.0f - AMBIENT_EMA_ALPHA) * s_ambient_rms);
+   ambient_apply();
 }
 
 static void alive_start(void) {
    if (s_alive_running) return;
    s_alive_running = true;
-   if (s_body) {
-      lv_anim_t a;
-      lv_anim_init(&a);
-      lv_anim_set_var(&a, s_body);
-      lv_anim_set_exec_cb(&a, alive_grad_anim_cb);
-      lv_anim_set_values(&a, 0, 100);
-      lv_anim_set_time(&a, 30000);
-      lv_anim_set_playback_time(&a, 30000);
-      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-      lv_anim_start(&a);
-   }
-   if (s_spec) {
-      lv_anim_t a;
-      lv_anim_init(&a);
-      lv_anim_set_var(&a, s_spec);
-      lv_anim_set_exec_cb(&a, alive_spec_anim_cb);
-      lv_anim_set_values(&a, 120, 160);
-      lv_anim_set_time(&a, 7000);
-      lv_anim_set_playback_time(&a, 7000);
-      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-      lv_anim_start(&a);
+   s_ambient_rms = 0.0f;
+   if (!s_ambient_timer) {
+      s_ambient_timer = lv_timer_create(ambient_tick_cb, AMBIENT_TICK_MS, NULL);
    }
 }
 
 static void alive_stop(void) {
    if (!s_alive_running) return;
    s_alive_running = false;
-   if (s_body) {
-      lv_anim_delete(s_body, alive_grad_anim_cb);
-      /* Snap back to the canonical full-range gradient. */
-      lv_obj_set_style_bg_main_stop(s_body, 0, LV_PART_MAIN);
+   if (s_ambient_timer) {
+      lv_timer_del(s_ambient_timer);
+      s_ambient_timer = NULL;
    }
-   if (s_spec) {
-      lv_anim_delete(s_spec, alive_spec_anim_cb);
-      lv_obj_set_style_bg_opa(s_spec, 140, LV_PART_MAIN);
-   }
+   /* Restore baseline spec opa — halo opa is owned by breath/bloom. */
+   if (s_spec) lv_obj_set_style_bg_opa(s_spec, 140, LV_PART_MAIN);
+   s_ambient_rms = 0.0f;
 }
 
 /* ── SPEAKING fill — sphere-native progress (TT #547) ────────────────── */
@@ -1478,7 +1517,7 @@ static void body_pulse_stop(void) {
  * are declared up at the top of the file with the other layout
  * constants (because sleep_apply_phase needs them earlier). */
 #define IDLE_BREATH_AMPLITUDE 28 /* peak halo opa during breath */
-static int s_idle_breath_last_opa = 0;
+/* s_idle_breath_last_opa forward-declared at top of file. */
 
 /* TT #549 always-alive sphere — slow body gradient-stop pan + slow
  * spec opa breath, both IDLE-only.  Pause during LISTENING /
