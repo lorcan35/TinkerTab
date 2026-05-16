@@ -208,6 +208,9 @@ static int s_idle_breath_last_opa;
 static float s_ambient_rms;
 static float s_ambient_rms_target;
 static int s_ambient_body_stop_last;
+/* TT #561: bottom-color base — set by paint_body_for_hour, scaled by
+ * ambient_apply when audio rises (lit-from-within effect). */
+static uint32_t s_body_bot_base;
 
 /* TT #555 FX state — all default off (current behaviour preserved). */
 static ui_orb_fx_t s_fx = {0};
@@ -387,6 +390,10 @@ static void paint_body_for_hour(int hour) {
    eb = (eb * 7) / 10;
    uint32_t top = 0xFFEBC4;
    uint32_t bot = (er << 16) | (eg << 8) | eb;
+   /* TT #561: stash the bot base so ambient_apply can scale it 0.4×..1.2×
+    * with ambient sound.  Without this the bottom stayed fixed at the
+    * circadian value regardless of sound, masking half of the response. */
+   s_body_bot_base = bot;
    body_canvas_paint(top, bot);
    s_last_painted_hour = hour;
 }
@@ -1520,26 +1527,28 @@ void ui_orb_get_fx(ui_orb_fx_t *out) {
 #define AMBIENT_FRAMES 64          /* 64 TDM slices = 256 int16_t total, ~1.3 ms @ 48 kHz */
 #define AMBIENT_MIC_TDM_CHANNELS 4
 #define AMBIENT_MIC1_OFFSET 0      /* mic 1 lives in slot 0 of the TDM frame */
-#define AMBIENT_RMS_DIV 2500.0f    /* normalise raw RMS into 0..1 — quiet ~250 raw, chatter ~2000+ */
+#define AMBIENT_RMS_DIV 4000.0f    /* TT #561: was 2500; bumped so typical speech maps to 0.5-0.75 not saturated */
 #define AMBIENT_TARGET_ALPHA 0.55f /* target follows new mic readings briskly */
-/* TT #553 follow-up rev3: clearly visible body response to ambient
- * sound.  Two channels:
- *   - bg_main_stop position pushes the lit-side hemisphere DOWN as
- *     sound rises (range 0..100; was 0..38, too subtle).
- *   - bg_color top stop interpolates from baseline cream-amber
- *     toward bright cream-white at peak ambient.  Sphere visibly
- *     brightens, not just shifts.
- * Spec opa still brightens in parallel for wet-glint emphasis.
- *
- * Re-rasterizing the body gradient at 30 Hz (smoother tick) is now
- * affordable thanks to the PR #550 budget bump (CPU 400 + parallel
- * draw + shadow cache) — measured at 44 fps with this load. */
+/* TT #561 redesign: wider response + transient spike flashes.
+ * - SMOOTHED RMS drives both TOP and BOTTOM body colours so the
+ *   whole sphere brightens, not just the lit pole.
+ * - SPIKE detector (instantaneous RMS / smoothed > 2.0) triggers a
+ *   short flash for ~350 ms that pops the orb toward bright white,
+ *   then decays.  Claps, laughs, music transients pop visibly. */
 #define AMBIENT_BODY_STOP_FLOOR 0
 #define AMBIENT_BODY_STOP_PEAK 100
-#define AMBIENT_SPEC_FLOOR 130
-#define AMBIENT_SPEC_PEAK 240
-#define AMBIENT_TOP_COLOR_QUIET 0xFFEBC4 /* baseline lit cream-amber */
-#define AMBIENT_TOP_COLOR_LOUD 0xFFFAEC  /* bright cream-white at peak */
+#define AMBIENT_SPEC_FLOOR 100
+#define AMBIENT_SPEC_PEAK 250
+#define AMBIENT_TOP_COLOR_QUIET 0xFFD09C /* dimmer warm cream — bigger swing room */
+#define AMBIENT_TOP_COLOR_LOUD 0xFFFFE8  /* near-white at peak */
+/* Bottom-color multiplier swings 0.4× (dark) → 1.2× (lit-from-within). */
+#define AMBIENT_BOT_MULT_QUIET_X100 40
+#define AMBIENT_BOT_MULT_LOUD_X100 120
+/* Spike flash detection + recovery. */
+#define AMBIENT_SPIKE_RATIO 2.0f
+#define AMBIENT_SPIKE_MIN_RMS 0.18f
+#define AMBIENT_SPIKE_RECOVER_MS 350
+#define AMBIENT_FLASH_TOP 0xFFFFFF
 
 static lv_timer_t *s_ambient_mic_timer = NULL;
 static lv_timer_t *s_ambient_smooth_timer = NULL;
@@ -1560,32 +1569,75 @@ static uint32_t ambient_lerp_color(uint32_t a, uint32_t b, float t) {
 }
 
 static uint32_t s_ambient_top_color_last = 0;
+static uint32_t s_ambient_bot_color_last = 0;
+/* s_body_bot_base forward-decl'd up top. */
+/* TT #561 spike flash state */
+static uint32_t s_flash_until_ms = 0;
+static float s_flash_strength = 0.0f; /* 0..1, decays during recovery */
+
+/* Lerp a multiplier-scaled bottom color from base × multiplier. */
+static uint32_t ambient_scale_bot(uint32_t base, int mult_x100) {
+   int r = ((base >> 16) & 0xFF) * mult_x100 / 100;
+   int g = ((base >> 8) & 0xFF) * mult_x100 / 100;
+   int b = (base & 0xFF) * mult_x100 / 100;
+   if (r < 0)
+      r = 0;
+   else if (r > 255)
+      r = 255;
+   if (g < 0)
+      g = 0;
+   else if (g > 255)
+      g = 255;
+   if (b < 0)
+      b = 0;
+   else if (b > 255)
+      b = 255;
+   return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
 
 static void ambient_apply(void) {
    /* Rainbow FX owns the body palette while active. */
    bool body_palette_ok = (s_body && !s_fx.rainbow);
+   /* Effective drive value combines smoothed RMS + active spike flash.
+    * Flash overrides toward maximum until it decays. */
+   float drive = s_ambient_rms;
+   if (s_flash_strength > 0.0f) {
+      drive = drive + s_flash_strength * (1.0f - drive);
+      if (drive > 1.0f) drive = 1.0f;
+   }
    if (body_palette_ok) {
-      /* QUANTIZED so the 30 Hz smoother doesn't re-issue the style
-       * change on every tick — only when the top color shifts by a
-       * noticeable amount (mask low 3 bits per channel = 32 effective
-       * levels per channel).  Without this guard the body invalidates
-       * 30×/sec, which trips the mutex budget. */
-      uint32_t top = ambient_lerp_color(AMBIENT_TOP_COLOR_QUIET, AMBIENT_TOP_COLOR_LOUD, s_ambient_rms);
-      uint32_t top_quant = top & 0xF8F8F8;
-      if (top_quant != s_ambient_top_color_last) {
-         s_ambient_top_color_last = top_quant;
-         body_canvas_paint(top_quant, s_body_grad_bot_color);
+      uint32_t top = ambient_lerp_color(AMBIENT_TOP_COLOR_QUIET, AMBIENT_TOP_COLOR_LOUD, drive);
+      /* When a spike flash is firing, lerp the top color further
+       * toward pure white for the pop. */
+      if (s_flash_strength > 0.0f) {
+         top = ambient_lerp_color(top, AMBIENT_FLASH_TOP, s_flash_strength);
       }
-      /* s_ambient_body_stop_last stays for the /orb/motion telemetry. */
-      int stop = AMBIENT_BODY_STOP_FLOOR + (int)(s_ambient_rms * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
+      /* Bottom: scale the circadian base by 0.4×..1.2× with drive. */
+      int mult =
+          AMBIENT_BOT_MULT_QUIET_X100 + (int)(drive * (AMBIENT_BOT_MULT_LOUD_X100 - AMBIENT_BOT_MULT_QUIET_X100));
+      uint32_t bot = ambient_scale_bot(s_body_bot_base, mult);
+      /* Quantize at 0xF0 mask (was 0xF8) so smaller swings trigger
+       * a repaint — more responsive feel. */
+      uint32_t top_quant = top & 0xF0F0F0;
+      uint32_t bot_quant = bot & 0xF0F0F0;
+      if (top_quant != s_ambient_top_color_last || bot_quant != s_ambient_bot_color_last) {
+         s_ambient_top_color_last = top_quant;
+         s_ambient_bot_color_last = bot_quant;
+         body_canvas_paint(top_quant, bot_quant);
+      }
+      int stop = AMBIENT_BODY_STOP_FLOOR + (int)(drive * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
       if (stop != s_ambient_body_stop_last) {
          s_ambient_body_stop_last = stop;
       }
    }
    if (s_spec) {
-      int spec_opa = AMBIENT_SPEC_FLOOR + (int)(s_ambient_rms * (AMBIENT_SPEC_PEAK - AMBIENT_SPEC_FLOOR));
+      int spec_opa = AMBIENT_SPEC_FLOOR + (int)(drive * (AMBIENT_SPEC_PEAK - AMBIENT_SPEC_FLOOR));
+      if (s_flash_strength > 0.0f) {
+         /* Spec also pops to max on flash. */
+         spec_opa += (int)((255 - spec_opa) * s_flash_strength);
+      }
       if (spec_opa < AMBIENT_SPEC_FLOOR) spec_opa = AMBIENT_SPEC_FLOOR;
-      if (spec_opa > AMBIENT_SPEC_PEAK) spec_opa = AMBIENT_SPEC_PEAK;
+      if (spec_opa > 255) spec_opa = 255;
       if (spec_opa != s_ambient_spec_last) {
          s_ambient_spec_last = spec_opa;
          lv_obj_set_style_bg_opa(s_spec, (lv_opa_t)spec_opa, LV_PART_MAIN);
@@ -1601,6 +1653,17 @@ static void ambient_smooth_tick_cb(lv_timer_t *t) {
    /* Approach target each tick — 30 Hz × alpha 0.18 ≈ ~5 frames to
     * cover 60 % of any gap.  Buttery, not lurchy. */
    s_ambient_rms += (s_ambient_rms_target - s_ambient_rms) * AMBIENT_SMOOTH_ALPHA;
+   /* TT #561: decay spike flash strength toward 0.  Linear from 1.0
+    * down to 0 over AMBIENT_SPIKE_RECOVER_MS. */
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   if (s_flash_strength > 0.0f) {
+      if (now_ms >= s_flash_until_ms) {
+         s_flash_strength = 0.0f;
+      } else {
+         uint32_t remaining = s_flash_until_ms - now_ms;
+         s_flash_strength = (float)remaining / (float)AMBIENT_SPIKE_RECOVER_MS;
+      }
+   }
    ambient_apply();
 }
 
@@ -1624,6 +1687,13 @@ static void ambient_mic_tick_cb(lv_timer_t *t) {
    float n = rms / AMBIENT_RMS_DIV;
    if (n < 0.0f) n = 0.0f;
    if (n > 1.0f) n = 1.0f;
+   /* TT #561 spike detector — compare INSTANT (unsmoothed) reading
+    * against current smoothed RMS.  Sharp transient → flash. */
+   if (n > AMBIENT_SPIKE_MIN_RMS && (s_ambient_rms < 0.05f || n > s_ambient_rms * AMBIENT_SPIKE_RATIO)) {
+      uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      s_flash_until_ms = now_ms + AMBIENT_SPIKE_RECOVER_MS;
+      s_flash_strength = 1.0f;
+   }
    /* Update the target with light smoothing — the per-frame smoother
     * below handles the visible interpolation. */
    s_ambient_rms_target = (AMBIENT_TARGET_ALPHA * n) + ((1.0f - AMBIENT_TARGET_ALPHA) * s_ambient_rms_target);
