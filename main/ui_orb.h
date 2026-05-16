@@ -78,6 +78,29 @@ void ui_orb_set_presence(bool near);
  *  wake. */
 void ui_orb_wake(void);
 
+/** TT #553 follow-up: motion-state telemetry for debugging dynamic
+ *  effects.  Returns the live values that drive the orb's animated
+ *  layers so a poller (e.g. /orb/motion debug endpoint) can sample
+ *  over time + plot effectiveness.
+ *
+ *  All fields read on the LVGL thread are guarded against torn reads
+ *  via simple word-aligned access — the caller should be on any task
+ *  but expect a one-tick lag.  Returns false if the orb hasn't been
+ *  created yet. */
+typedef struct {
+   float ambient_rms;        /* live smoothed value 0..1 */
+   float ambient_rms_target; /* mic-sampled target 0..1 (next step the smoother approaches) */
+   uint8_t core_opa;         /* current bg_opa applied to s_inner_core */
+   uint8_t spec_opa;         /* current bg_opa applied to s_spec */
+   uint8_t halo_opa;         /* current bg_opa applied to s_halo (breath/bloom) */
+   uint8_t idle_breath_opa;  /* base breath opa contribution to halo */
+   uint8_t state;            /* ui_orb_state_t (IDLE/LISTENING/PROCESSING/SPEAKING) */
+   uint8_t sleep_phase;      /* 0=AWAKE, 1=DROWSY, 2=ASLEEP */
+   uint32_t uptime_ms;
+} ui_orb_motion_state_t;
+
+bool ui_orb_get_motion_state(ui_orb_motion_state_t *out);
+
 /** Hour-of-day override for circadian palette debug.  -1 = clear override
  *  (returns to real RTC-driven palette).  Honors the existing debug
  *  endpoint POST /orb/force_hour?h=N from #503.  Thread-safe (marshals
