@@ -101,6 +101,26 @@ typedef struct {
 
 bool ui_orb_get_motion_state(ui_orb_motion_state_t *out);
 
+/* ── TT #555 FX playground ──────────────────────────────────────────── */
+
+/* Five independently togglable visual effects so the orb reads like an
+ * organism reacting to its environment.  Each layered on top of the
+ * baseline (idle breath, ambient glow, state-driven motion); user can
+ * mix-and-match via the /orb/fx debug endpoint.
+ *
+ * NONE of these are mutually exclusive with the existing state-driven
+ * motion; each just adds an extra channel of liveliness. */
+typedef struct {
+   bool expand;  /* ambient-RMS-driven scale pulse — orb "breathes" wider on sound */
+   bool spin;    /* slow continuous rotation — sphere appears to turn on its axis */
+   bool glass;   /* glassmorphism: translucent body + top highlight ring */
+   bool rainbow; /* slow palette hue cycle, replaces circadian while active */
+   bool shake;   /* IMU shake detection → brief startle response (organism reaction) */
+} ui_orb_fx_t;
+
+void ui_orb_set_fx(const ui_orb_fx_t *fx);
+void ui_orb_get_fx(ui_orb_fx_t *out);
+
 /** Hour-of-day override for circadian palette debug.  -1 = clear override
  *  (returns to real RTC-driven palette).  Honors the existing debug
  *  endpoint POST /orb/force_hour?h=N from #503.  Thread-safe (marshals

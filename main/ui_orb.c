@@ -208,6 +208,19 @@ static int s_idle_breath_last_opa;
 static float s_ambient_rms;
 static float s_ambient_rms_target;
 static int s_ambient_body_stop_last;
+
+/* TT #555 FX state — all default off (current behaviour preserved). */
+static ui_orb_fx_t s_fx = {0};
+static lv_obj_t *s_glass_ring = NULL;      /* top-inside highlight when fx.glass */
+static lv_timer_t *s_spin_timer = NULL;    /* drives transform_rotation when fx.spin */
+static lv_timer_t *s_rainbow_timer = NULL; /* slow hue cycle when fx.rainbow */
+static lv_timer_t *s_shake_timer = NULL;   /* IMU monitor for shake startle */
+static int s_spin_angle_x10 = 0;           /* 0..3599, LVGL rotation is 0.1° units */
+static float s_rainbow_hue = 0.0f;         /* 0..360 */
+static uint32_t s_shake_recovery_until_ms = 0;
+static int s_shake_scale_offset = 0;  /* 0 at rest, +N during startle */
+static int s_body_baseline_opa = 255; /* restored when fx.glass turns off */
+
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -1186,6 +1199,218 @@ bool ui_orb_get_motion_state(ui_orb_motion_state_t *out) {
    return true;
 }
 
+/* ── TT #555 FX playground ──────────────────────────────────────────── */
+
+/* fx_apply_scale — combines the ambient-driven swell (when fx.expand)
+ * with the shake startle offset (when fx.shake fires).  Both ride on
+ * the body's transform_scale; if neither is active we set 256 (1.0×). */
+static void fx_apply_scale(void) {
+   if (!s_body) return;
+   int scale = 256;
+   if (s_fx.expand) {
+      /* ±16 / 256 = ±6.25 % at rms=1; subtle, organic. */
+      scale += (int)(s_ambient_rms * 16.0f);
+   }
+   if (s_shake_scale_offset) scale += s_shake_scale_offset;
+   lv_obj_set_style_transform_pivot_x(s_body, ORB_SIZE / 2, LV_PART_MAIN);
+   lv_obj_set_style_transform_pivot_y(s_body, ORB_SIZE / 2, LV_PART_MAIN);
+   lv_obj_set_style_transform_scale_x(s_body, scale, LV_PART_MAIN);
+   lv_obj_set_style_transform_scale_y(s_body, scale, LV_PART_MAIN);
+}
+
+/* fx_spin_tick — 30 Hz tick, increments rotation by ~0.6° per tick (so
+ * full 360° revolution every 60 s).  Body's vertical gradient rotates
+ * with it → reads as the sphere turning on its axis. */
+static void fx_spin_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_body || !s_fx.spin) return;
+   s_spin_angle_x10 = (s_spin_angle_x10 + 6) % 3600; /* 6 / 10 = 0.6° per 33 ms tick */
+   lv_obj_set_style_transform_rotation(s_body, s_spin_angle_x10, LV_PART_MAIN);
+}
+
+static void fx_spin_start(void) {
+   if (s_spin_timer) return;
+   s_spin_angle_x10 = 0;
+   s_spin_timer = lv_timer_create(fx_spin_tick_cb, 33, NULL);
+}
+
+static void fx_spin_stop(void) {
+   if (s_spin_timer) {
+      lv_timer_del(s_spin_timer);
+      s_spin_timer = NULL;
+   }
+   if (s_body) {
+      lv_obj_set_style_transform_rotation(s_body, 0, LV_PART_MAIN);
+   }
+   s_spin_angle_x10 = 0;
+}
+
+/* HSV → RGB hex.  h in degrees [0, 360], s + v in [0, 1]. */
+static uint32_t fx_hsv_to_hex(float h, float s, float v) {
+   float c = v * s;
+   float hh = h / 60.0f;
+   float x = c * (1.0f - fabsf(fmodf(hh, 2.0f) - 1.0f));
+   float r = 0, g = 0, b = 0;
+   if (hh < 1) {
+      r = c;
+      g = x;
+   } else if (hh < 2) {
+      r = x;
+      g = c;
+   } else if (hh < 3) {
+      g = c;
+      b = x;
+   } else if (hh < 4) {
+      g = x;
+      b = c;
+   } else if (hh < 5) {
+      r = x;
+      b = c;
+   } else {
+      r = c;
+      b = x;
+   }
+   float m = v - c;
+   uint8_t R = (uint8_t)((r + m) * 255.0f);
+   uint8_t G = (uint8_t)((g + m) * 255.0f);
+   uint8_t B = (uint8_t)((b + m) * 255.0f);
+   return ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
+}
+
+static void fx_rainbow_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_body || !s_fx.rainbow) return;
+   if (ui_orb_pipeline_active() || s_state != ORB_STATE_IDLE) return;
+   /* Full hue revolution every 30 s — 360° / 30000 ms × 200 ms tick
+    * = 2.4° per tick.  Saturation/value picked so colours look
+    * cinematic vs. cartoonish. */
+   s_rainbow_hue = fmodf(s_rainbow_hue + 2.4f, 360.0f);
+   uint32_t top = fx_hsv_to_hex(s_rainbow_hue, 0.45f, 0.95f);
+   uint32_t bot = fx_hsv_to_hex(fmodf(s_rainbow_hue + 40.0f, 360.0f), 0.85f, 0.35f);
+   lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
+   lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
+}
+
+static void fx_rainbow_start(void) {
+   if (s_rainbow_timer) return;
+   s_rainbow_hue = 0.0f;
+   s_rainbow_timer = lv_timer_create(fx_rainbow_tick_cb, 200, NULL);
+}
+
+static void fx_rainbow_stop(void) {
+   if (s_rainbow_timer) {
+      lv_timer_del(s_rainbow_timer);
+      s_rainbow_timer = NULL;
+   }
+   /* Restore the circadian palette. */
+   if (s_body) paint_body_for_hour(orb_effective_hour());
+}
+
+static void fx_glass_apply(bool on) {
+   if (!s_body) return;
+   if (on) {
+      /* Translucent body so background bleeds through faintly.  The
+       * existing spec + the new top highlight ring give the glass
+       * read. */
+      s_body_baseline_opa = lv_obj_get_style_bg_opa(s_body, LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(s_body, 180, LV_PART_MAIN);
+      if (!s_glass_ring) {
+         s_glass_ring = lv_obj_create(s_body);
+         lv_obj_remove_style_all(s_glass_ring);
+         /* Thin top arc — a slim ring inscribed inside the body's
+          * upper hemisphere.  Implemented as a 4-px-tall ellipse
+          * positioned in the lit-side area. */
+         /* Sized so the ring's corners stay inside the body's 140 px
+          * radius circle even when fx.spin rotates the body — at
+          * y=42 from top (= -98 from center), max half-width is
+          * sqrt(140² − 98²) ≈ 100 px.  140-px width keeps a 30 px
+          * margin from the edge. */
+         lv_obj_set_size(s_glass_ring, 140, 4);
+         lv_obj_set_pos(s_glass_ring, (ORB_SIZE - 140) / 2, 42);
+         lv_obj_set_style_radius(s_glass_ring, 2, 0);
+         lv_obj_set_style_bg_color(s_glass_ring, lv_color_hex(0xFFFFFF), 0);
+         lv_obj_set_style_bg_opa(s_glass_ring, 60, 0);
+         lv_obj_set_style_border_width(s_glass_ring, 0, 0);
+         lv_obj_clear_flag(s_glass_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+      } else {
+         lv_obj_clear_flag(s_glass_ring, LV_OBJ_FLAG_HIDDEN);
+      }
+   } else {
+      lv_obj_set_style_bg_opa(s_body, s_body_baseline_opa, LV_PART_MAIN);
+      if (s_glass_ring) lv_obj_add_flag(s_glass_ring, LV_OBJ_FLAG_HIDDEN);
+   }
+}
+
+/* fx_shake_tick — polls IMU 10 Hz.  Computes the "gravity-adjusted"
+ * accel magnitude (i.e. how far off from a constant 1g pull); a
+ * spike above SHAKE_THRESHOLD_G fires a startle: spike scale +24
+ * units for 200 ms, then linear ease back. */
+#define SHAKE_THRESHOLD_G 0.6f
+#define SHAKE_RECOVER_MS 600
+static void fx_shake_tick_cb(lv_timer_t *t) {
+   (void)t;
+   if (!s_fx.shake) return;
+   tab5_imu_data_t d;
+   if (tab5_imu_read(&d) != ESP_OK) return;
+   float mag = sqrtf(d.accel.x * d.accel.x + d.accel.y * d.accel.y + d.accel.z * d.accel.z);
+   float jolt = fabsf(mag - 1.0f); /* deviation from rest gravity */
+   uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   if (jolt > SHAKE_THRESHOLD_G) {
+      s_shake_recovery_until_ms = now_ms + SHAKE_RECOVER_MS;
+      s_shake_scale_offset = 30; /* +12 % momentary swell */
+   } else if (s_shake_recovery_until_ms && now_ms < s_shake_recovery_until_ms) {
+      /* Linear decay over recovery window. */
+      uint32_t remaining = s_shake_recovery_until_ms - now_ms;
+      s_shake_scale_offset = (int)(30 * remaining / SHAKE_RECOVER_MS);
+   } else {
+      s_shake_recovery_until_ms = 0;
+      s_shake_scale_offset = 0;
+   }
+   fx_apply_scale();
+}
+
+static void fx_shake_start(void) {
+   if (s_shake_timer) return;
+   s_shake_recovery_until_ms = 0;
+   s_shake_scale_offset = 0;
+   s_shake_timer = lv_timer_create(fx_shake_tick_cb, 100, NULL);
+}
+
+static void fx_shake_stop(void) {
+   if (s_shake_timer) {
+      lv_timer_del(s_shake_timer);
+      s_shake_timer = NULL;
+   }
+   s_shake_recovery_until_ms = 0;
+   s_shake_scale_offset = 0;
+   fx_apply_scale();
+}
+
+void ui_orb_set_fx(const ui_orb_fx_t *fx) {
+   if (!fx) return;
+   ui_orb_fx_t old = s_fx;
+   s_fx = *fx;
+   if (fx->spin && !old.spin)
+      fx_spin_start();
+   else if (!fx->spin && old.spin)
+      fx_spin_stop();
+   if (fx->rainbow && !old.rainbow)
+      fx_rainbow_start();
+   else if (!fx->rainbow && old.rainbow)
+      fx_rainbow_stop();
+   if (fx->shake && !old.shake)
+      fx_shake_start();
+   else if (!fx->shake && old.shake)
+      fx_shake_stop();
+   if (fx->glass != old.glass) fx_glass_apply(fx->glass);
+   if (!fx->expand && old.expand) fx_apply_scale(); /* snap back to 1.0× */
+}
+
+void ui_orb_get_fx(ui_orb_fx_t *out) {
+   if (!out) return;
+   *out = s_fx;
+}
+
 /* ── Always-alive sphere — ambient mic glow (TT #552) ────────────────── */
 
 /* Replaced the TT #549 slow infinite LVGL anims (gradient-stop pan +
@@ -1218,19 +1443,24 @@ bool ui_orb_get_motion_state(ui_orb_motion_state_t *out) {
 #define AMBIENT_MIC1_OFFSET 0      /* mic 1 lives in slot 0 of the TDM frame */
 #define AMBIENT_RMS_DIV 2500.0f    /* normalise raw RMS into 0..1 — quiet ~250 raw, chatter ~2000+ */
 #define AMBIENT_TARGET_ALPHA 0.55f /* target follows new mic readings briskly */
-/* TT #553 follow-up rev2: drive the SPHERE ITSELF, not an overlay.
- * The body's bg_main_stop position is where the gradient "top color"
- * stops shading toward the bottom color.  By default it's 0 (top
- * stop sits at y=0), so the gradient runs the full body height.
- * Increasing it pushes the lit-side cream-amber DOWN — the lit
- * hemisphere appears to grow as sound rises.  Combined with the
- * spec opa brightening, the sphere reads as lit from within.
- * Range 0..38 — empirical, anything higher reads as the gradient
- * "wrapping" weird. */
+/* TT #553 follow-up rev3: clearly visible body response to ambient
+ * sound.  Two channels:
+ *   - bg_main_stop position pushes the lit-side hemisphere DOWN as
+ *     sound rises (range 0..100; was 0..38, too subtle).
+ *   - bg_color top stop interpolates from baseline cream-amber
+ *     toward bright cream-white at peak ambient.  Sphere visibly
+ *     brightens, not just shifts.
+ * Spec opa still brightens in parallel for wet-glint emphasis.
+ *
+ * Re-rasterizing the body gradient at 30 Hz (smoother tick) is now
+ * affordable thanks to the PR #550 budget bump (CPU 400 + parallel
+ * draw + shadow cache) — measured at 44 fps with this load. */
 #define AMBIENT_BODY_STOP_FLOOR 0
-#define AMBIENT_BODY_STOP_PEAK 38
+#define AMBIENT_BODY_STOP_PEAK 100
 #define AMBIENT_SPEC_FLOOR 130
-#define AMBIENT_SPEC_PEAK 230
+#define AMBIENT_SPEC_PEAK 240
+#define AMBIENT_TOP_COLOR_QUIET 0xFFEBC4 /* baseline lit cream-amber */
+#define AMBIENT_TOP_COLOR_LOUD 0xFFFAEC  /* bright cream-white at peak */
 
 static lv_timer_t *s_ambient_mic_timer = NULL;
 static lv_timer_t *s_ambient_smooth_timer = NULL;
@@ -1238,14 +1468,36 @@ static lv_timer_t *s_ambient_smooth_timer = NULL;
  * forward-decl'd near top. */
 static int s_ambient_spec_last = -1;
 
+/* Lerp two 0xRRGGBB hex colors by t in [0, 1]. */
+static uint32_t ambient_lerp_color(uint32_t a, uint32_t b, float t) {
+   if (t < 0) t = 0;
+   if (t > 1) t = 1;
+   int ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF;
+   int br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF;
+   int r = ar + (int)((br - ar) * t);
+   int g = ag + (int)((bg - ag) * t);
+   int bl = ab + (int)((bb - ab) * t);
+   return ((uint32_t)r << 16) | ((uint32_t)g << 8) | bl;
+}
+
+static uint32_t s_ambient_top_color_last = 0;
+
 static void ambient_apply(void) {
-   if (s_body) {
+   /* Rainbow FX owns the body palette while active. */
+   bool body_palette_ok = (s_body && !s_fx.rainbow);
+   if (body_palette_ok) {
       int stop = AMBIENT_BODY_STOP_FLOOR + (int)(s_ambient_rms * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
       if (stop < 0) stop = 0;
-      if (stop > 80) stop = 80;
+      if (stop > 150) stop = 150;
       if (stop != s_ambient_body_stop_last) {
          s_ambient_body_stop_last = stop;
          lv_obj_set_style_bg_main_stop(s_body, stop, LV_PART_MAIN);
+      }
+      /* Brighten the top stop color as sound rises — sphere glows. */
+      uint32_t top = ambient_lerp_color(AMBIENT_TOP_COLOR_QUIET, AMBIENT_TOP_COLOR_LOUD, s_ambient_rms);
+      if (top != s_ambient_top_color_last) {
+         s_ambient_top_color_last = top;
+         lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
       }
    }
    if (s_spec) {
@@ -1257,6 +1509,8 @@ static void ambient_apply(void) {
          lv_obj_set_style_bg_opa(s_spec, (lv_opa_t)spec_opa, LV_PART_MAIN);
       }
    }
+   /* TT #555: expand FX rides scale on top of the smooth ambient drive. */
+   fx_apply_scale();
 }
 
 static void ambient_smooth_tick_cb(lv_timer_t *t) {

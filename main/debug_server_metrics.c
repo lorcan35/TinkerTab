@@ -277,6 +277,35 @@ static esp_err_t orb_motion_handler(httpd_req_t *req) {
    return send_json_resp(req, root);
 }
 
+/* ── GET/POST /orb/fx — TT #555 effect playground ────────────────────── */
+
+/* GET returns the current flags.  POST takes ?expand=&spin=&glass=
+ * &rainbow=&shake= (each 0|1) to flip independently.  Missing keys
+ * leave the existing value alone so a single-flag toggle doesn't
+ * clobber the others. */
+static esp_err_t orb_fx_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   ui_orb_fx_t fx = {0};
+   ui_orb_get_fx(&fx);
+   if (req->method == HTTP_POST || req->method == HTTP_PUT) {
+      char q[160] = {0}, v[8] = {0};
+      httpd_req_get_url_query_str(req, q, sizeof(q));
+      if (httpd_query_key_value(q, "expand", v, sizeof(v)) == ESP_OK) fx.expand = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "spin", v, sizeof(v)) == ESP_OK) fx.spin = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "glass", v, sizeof(v)) == ESP_OK) fx.glass = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "rainbow", v, sizeof(v)) == ESP_OK) fx.rainbow = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "shake", v, sizeof(v)) == ESP_OK) fx.shake = (atoi(v) != 0);
+      ui_orb_set_fx(&fx);
+   }
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "expand", fx.expand);
+   cJSON_AddBoolToObject(root, "spin", fx.spin);
+   cJSON_AddBoolToObject(root, "glass", fx.glass);
+   cJSON_AddBoolToObject(root, "rainbow", fx.rainbow);
+   cJSON_AddBoolToObject(root, "shake", fx.shake);
+   return send_json_resp(req, root);
+}
+
 /* ── POST /display/brightness?pct=0..100 ─────────────────────────────── */
 
 static esp_err_t display_brightness_handler(httpd_req_t *req) {
@@ -587,6 +616,8 @@ void debug_server_metrics_register(httpd_handle_t server) {
    static const httpd_uri_t uri_orb_presence = {
        .uri = "/orb/presence", .method = HTTP_POST, .handler = orb_presence_handler};
    static const httpd_uri_t uri_orb_motion = {.uri = "/orb/motion", .method = HTTP_GET, .handler = orb_motion_handler};
+   static const httpd_uri_t uri_orb_fx_get = {.uri = "/orb/fx", .method = HTTP_GET, .handler = orb_fx_handler};
+   static const httpd_uri_t uri_orb_fx_post = {.uri = "/orb/fx", .method = HTTP_POST, .handler = orb_fx_handler};
    static const httpd_uri_t uri_disp_bright = {
        .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler};
    static const httpd_uri_t uri_audio_get = {.uri = "/audio", .method = HTTP_GET, .handler = audio_handler};
@@ -609,6 +640,8 @@ void debug_server_metrics_register(httpd_handle_t server) {
    httpd_register_uri_handler(server, &uri_imu);
    httpd_register_uri_handler(server, &uri_orb_presence);
    httpd_register_uri_handler(server, &uri_orb_motion);
+   httpd_register_uri_handler(server, &uri_orb_fx_get);
+   httpd_register_uri_handler(server, &uri_orb_fx_post);
    httpd_register_uri_handler(server, &uri_disp_bright);
    httpd_register_uri_handler(server, &uri_audio_get);
    httpd_register_uri_handler(server, &uri_audio_post);
