@@ -296,23 +296,38 @@ static int orb_effective_hour(void) {
 
 /* ── Paint ───────────────────────────────────────────────────────────── */
 
-/* Vertical gradient: fixed cream-amber top stop (lit side) →
- * halved hour-palette edge color at the bottom (shadow side).
- * The wide luminance range makes the orb read as a 3D lit sphere
- * (TT #510 result, preserved as the body baseline).  */
+/* TT #557 rev2: keep the 2-stop legacy gradient path (multi-stop with
+ * 5 stops blew the render budget on a 280 px body — every invalidation
+ * had to re-interpolate against extra stops at 30 Hz).  Instead REDUCE
+ * the gradient contrast so the per-pixel color delta in RGB565 stays
+ * below the eye's banding threshold (~1 level per 4-5 pixels).
+ *
+ * The previous "halved edge color" path produced ~0.6 RGB units per
+ * pixel — exactly in the "small lines" banding sweet spot.  We now
+ * darken the edge by 0.7× instead of 0.5×; gradient is still visibly
+ * a lit sphere but the bands compress out of perception.  Also store
+ * the active top + bottom so ambient_apply can re-issue without
+ * re-deriving from hour. */
+static uint32_t s_body_grad_top_color = 0xFFEBC4;
+static uint32_t s_body_grad_bot_color = 0x5C3205;
+
 static void paint_body_for_hour(int hour) {
    if (!s_body) return;
    uint32_t mid = 0, edge = 0;
    pick_circadian_palette(hour, &mid, &edge);
    (void)mid;
-   uint8_t er = (edge >> 16) & 0xFF;
-   uint8_t eg = (edge >> 8) & 0xFF;
-   uint8_t eb = edge & 0xFF;
-   er >>= 1;
-   eg >>= 1;
-   eb >>= 1;
-   lv_obj_set_style_bg_color(s_body, lv_color_hex(0xFFEBC4), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_color(s_body, lv_color_make(er, eg, eb), LV_PART_MAIN);
+   uint32_t er = (edge >> 16) & 0xFF;
+   uint32_t eg = (edge >> 8) & 0xFF;
+   uint32_t eb = edge & 0xFF;
+   /* Darken edge by 0.7× (was 0.5×) — softer gradient contrast +
+    * less visible RGB565 banding.  Sphere still reads as 3D-lit. */
+   er = (er * 7) / 10;
+   eg = (eg * 7) / 10;
+   eb = (eb * 7) / 10;
+   s_body_grad_top_color = 0xFFEBC4;
+   s_body_grad_bot_color = (er << 16) | (eg << 8) | eb;
+   lv_obj_set_style_bg_color(s_body, lv_color_hex(s_body_grad_top_color), LV_PART_MAIN);
+   lv_obj_set_style_bg_grad_color(s_body, lv_color_make((uint8_t)er, (uint8_t)eg, (uint8_t)eb), LV_PART_MAIN);
    lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
    lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_MAIN);
    s_last_painted_hour = hour;
@@ -361,6 +376,8 @@ void ui_orb_paint_for_tone(widget_tone_t tone) {
          bot = 0xB9650A;
          break;
    }
+   s_body_grad_top_color = top;
+   s_body_grad_bot_color = bot;
    lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
    lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
    lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
@@ -1287,6 +1304,8 @@ static void fx_rainbow_tick_cb(lv_timer_t *t) {
    s_rainbow_hue = fmodf(s_rainbow_hue + 2.4f, 360.0f);
    uint32_t top = fx_hsv_to_hex(s_rainbow_hue, 0.45f, 0.95f);
    uint32_t bot = fx_hsv_to_hex(fmodf(s_rainbow_hue + 40.0f, 360.0f), 0.85f, 0.35f);
+   s_body_grad_top_color = top;
+   s_body_grad_bot_color = bot;
    lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
    lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
 }
@@ -1486,18 +1505,22 @@ static void ambient_apply(void) {
    /* Rainbow FX owns the body palette while active. */
    bool body_palette_ok = (s_body && !s_fx.rainbow);
    if (body_palette_ok) {
+      /* QUANTIZED so the 30 Hz smoother doesn't re-issue the style
+       * change on every tick — only when the top color shifts by a
+       * noticeable amount (mask low 3 bits per channel = 32 effective
+       * levels per channel).  Without this guard the body invalidates
+       * 30×/sec, which trips the mutex budget. */
+      uint32_t top = ambient_lerp_color(AMBIENT_TOP_COLOR_QUIET, AMBIENT_TOP_COLOR_LOUD, s_ambient_rms);
+      uint32_t top_quant = top & 0xF8F8F8;
+      if (top_quant != s_ambient_top_color_last) {
+         s_ambient_top_color_last = top_quant;
+         s_body_grad_top_color = top_quant;
+         lv_obj_set_style_bg_color(s_body, lv_color_hex(top_quant), LV_PART_MAIN);
+      }
+      /* s_ambient_body_stop_last stays for the /orb/motion telemetry. */
       int stop = AMBIENT_BODY_STOP_FLOOR + (int)(s_ambient_rms * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
-      if (stop < 0) stop = 0;
-      if (stop > 150) stop = 150;
       if (stop != s_ambient_body_stop_last) {
          s_ambient_body_stop_last = stop;
-         lv_obj_set_style_bg_main_stop(s_body, stop, LV_PART_MAIN);
-      }
-      /* Brighten the top stop color as sound rises — sphere glows. */
-      uint32_t top = ambient_lerp_color(AMBIENT_TOP_COLOR_QUIET, AMBIENT_TOP_COLOR_LOUD, s_ambient_rms);
-      if (top != s_ambient_top_color_last) {
-         s_ambient_top_color_last = top;
-         lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
       }
    }
    if (s_spec) {
