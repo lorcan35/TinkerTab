@@ -296,20 +296,83 @@ static int orb_effective_hour(void) {
 
 /* ── Paint ───────────────────────────────────────────────────────────── */
 
-/* TT #557 rev2: keep the 2-stop legacy gradient path (multi-stop with
- * 5 stops blew the render budget on a 280 px body — every invalidation
- * had to re-interpolate against extra stops at 30 Hz).  Instead REDUCE
- * the gradient contrast so the per-pixel color delta in RGB565 stays
- * below the eye's banding threshold (~1 level per 4-5 pixels).
- *
- * The previous "halved edge color" path produced ~0.6 RGB units per
- * pixel — exactly in the "small lines" banding sweet spot.  We now
- * darken the edge by 0.7× instead of 0.5×; gradient is still visibly
- * a lit sphere but the bands compress out of perception.  Also store
- * the active top + bottom so ambient_apply can re-issue without
- * re-deriving from hour. */
+/* TT #559: banding-free body via lv_canvas + baked dither.  All paint
+ * paths (circadian, tone, ambient brightening, rainbow, pipeline tint)
+ * route through body_canvas_paint().  The canvas holds a pre-rendered
+ * ARGB8888 image of the gradient with random ±3 noise dither applied
+ * per pixel — visible RGB565 banding becomes high-frequency noise the
+ * eye averages out as smooth color.  Outside-circle pixels written as
+ * alpha=0 so the canvas reads as round without needing clip_corner. */
+static uint8_t *s_body_canvas_buf = NULL;
+#define BODY_CANVAS_BPP 4 /* ARGB8888 = B G R A in little-endian memory */
 static uint32_t s_body_grad_top_color = 0xFFEBC4;
 static uint32_t s_body_grad_bot_color = 0x5C3205;
+
+static void body_canvas_paint(uint32_t top_hex, uint32_t bot_hex) {
+   if (!s_body_canvas_buf || !s_body) return;
+   s_body_grad_top_color = top_hex;
+   s_body_grad_bot_color = bot_hex;
+   int tr = (top_hex >> 16) & 0xFF;
+   int tg = (top_hex >> 8) & 0xFF;
+   int tb = top_hex & 0xFF;
+   int br = (bot_hex >> 16) & 0xFF;
+   int bg = (bot_hex >> 8) & 0xFF;
+   int bb = bot_hex & 0xFF;
+   const int N = ORB_SIZE;
+   const int half = N / 2;
+   const int r_lim = half - 1;
+   const int r2 = r_lim * r_lim;
+   /* Pseudo-random LCG for the dither — same dither pattern across
+    * frames so the user doesn't see twinkling; we just want spatial
+    * dither to break up bands, not temporal. */
+   uint32_t seed = 0x1f9b3a7c;
+   for (int y = 0; y < N; y++) {
+      int dy = y - half;
+      int dy2 = dy * dy;
+      /* Per-row gradient interpolation (fixed point, 256× scale). */
+      int t256 = (y * 256) / (N - 1);
+      int row_r = tr + ((br - tr) * t256) / 256;
+      int row_g = tg + ((bg - tg) * t256) / 256;
+      int row_b = tb + ((bb - tb) * t256) / 256;
+      for (int x = 0; x < N; x++) {
+         int idx = (y * N + x) * BODY_CANVAS_BPP;
+         int dx = x - half;
+         if (dx * dx + dy2 > r2) {
+            /* Outside the body circle — fully transparent. */
+            s_body_canvas_buf[idx + 0] = 0;
+            s_body_canvas_buf[idx + 1] = 0;
+            s_body_canvas_buf[idx + 2] = 0;
+            s_body_canvas_buf[idx + 3] = 0;
+            continue;
+         }
+         /* LCG step + extract three small noise offsets. */
+         seed = seed * 1664525u + 1013904223u;
+         int n_r = (int)((seed >> 0) & 0x7) - 3; /* −3..+3 */
+         int n_g = (int)((seed >> 8) & 0x7) - 3;
+         int n_b = (int)((seed >> 16) & 0x7) - 3;
+         int r = row_r + n_r;
+         int g = row_g + n_g;
+         int b = row_b + n_b;
+         if (r < 0)
+            r = 0;
+         else if (r > 255)
+            r = 255;
+         if (g < 0)
+            g = 0;
+         else if (g > 255)
+            g = 255;
+         if (b < 0)
+            b = 0;
+         else if (b > 255)
+            b = 255;
+         s_body_canvas_buf[idx + 0] = (uint8_t)b;
+         s_body_canvas_buf[idx + 1] = (uint8_t)g;
+         s_body_canvas_buf[idx + 2] = (uint8_t)r;
+         s_body_canvas_buf[idx + 3] = 255;
+      }
+   }
+   lv_obj_invalidate(s_body);
+}
 
 static void paint_body_for_hour(int hour) {
    if (!s_body) return;
@@ -319,17 +382,12 @@ static void paint_body_for_hour(int hour) {
    uint32_t er = (edge >> 16) & 0xFF;
    uint32_t eg = (edge >> 8) & 0xFF;
    uint32_t eb = edge & 0xFF;
-   /* Darken edge by 0.7× (was 0.5×) — softer gradient contrast +
-    * less visible RGB565 banding.  Sphere still reads as 3D-lit. */
    er = (er * 7) / 10;
    eg = (eg * 7) / 10;
    eb = (eb * 7) / 10;
-   s_body_grad_top_color = 0xFFEBC4;
-   s_body_grad_bot_color = (er << 16) | (eg << 8) | eb;
-   lv_obj_set_style_bg_color(s_body, lv_color_hex(s_body_grad_top_color), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_color(s_body, lv_color_make((uint8_t)er, (uint8_t)eg, (uint8_t)eb), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
-   lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_MAIN);
+   uint32_t top = 0xFFEBC4;
+   uint32_t bot = (er << 16) | (eg << 8) | eb;
+   body_canvas_paint(top, bot);
    s_last_painted_hour = hour;
 }
 
@@ -376,12 +434,7 @@ void ui_orb_paint_for_tone(widget_tone_t tone) {
          bot = 0xB9650A;
          break;
    }
-   s_body_grad_top_color = top;
-   s_body_grad_bot_color = bot;
-   lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
-   lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_MAIN);
+   body_canvas_paint(top, bot);
    /* Tone overrides the hour-driven paint; bookkeeping for orb_repaint_if_hour_changed. */
    s_last_painted_hour = -1;
 }
@@ -734,15 +787,21 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
     * animation that already gives a soft halo-to-bg transition. */
    lv_obj_clear_flag(s_halo, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
-   s_body = lv_obj_create(parent);
-   lv_obj_remove_style_all(s_body);
+   /* TT #559: lv_canvas-backed body for banding-free render.  ARGB8888
+    * buffer in PSRAM, 280×280×4 = 313 KB.  Round shape is achieved by
+    * writing alpha=0 to pixels outside the circle in body_canvas_paint,
+    * so clip_corner is unnecessary (which was the TT #547 trap). */
+   if (!s_body_canvas_buf) {
+      s_body_canvas_buf = heap_caps_malloc(ORB_SIZE * ORB_SIZE * BODY_CANVAS_BPP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   }
+   s_body = lv_canvas_create(parent);
+   if (s_body_canvas_buf) {
+      lv_canvas_set_buffer(s_body, s_body_canvas_buf, ORB_SIZE, ORB_SIZE, LV_COLOR_FORMAT_ARGB8888);
+   }
    lv_obj_set_size(s_body, ORB_SIZE, ORB_SIZE);
    lv_obj_set_pos(s_body, cx - (ORB_SIZE / 2), cy - (ORB_SIZE / 2));
-   lv_obj_set_style_radius(s_body, LV_RADIUS_CIRCLE, 0);
    lv_obj_add_flag(s_body, LV_OBJ_FLAG_CLICKABLE);
    lv_obj_clear_flag(s_body, LV_OBJ_FLAG_SCROLLABLE);
-   /* Initial paint at the current hour.  paint_for_mode is the entry
-    * point ui_home will call later if it wants to refresh on mode change. */
    paint_body_for_hour(orb_effective_hour());
 
    /* TT #511 wave-1 step 4: tilt-driven specular highlight.
@@ -930,6 +989,10 @@ void ui_orb_destroy(void) {
    s_halo = NULL;
    s_comet = NULL;
    s_inner_core = NULL;
+   /* Keep s_body_canvas_buf allocated — it's PSRAM, reused across
+    * create/destroy cycles; freeing + re-allocating would invite
+    * heap fragmentation.  306 KB sits idle in PSRAM which has 16+ MB
+    * free anyway. */
    s_state = ORB_STATE_IDLE;
    s_last_painted_hour = -1;
    s_tilt_dx_ema = 0.0f;
@@ -1304,10 +1367,7 @@ static void fx_rainbow_tick_cb(lv_timer_t *t) {
    s_rainbow_hue = fmodf(s_rainbow_hue + 2.4f, 360.0f);
    uint32_t top = fx_hsv_to_hex(s_rainbow_hue, 0.45f, 0.95f);
    uint32_t bot = fx_hsv_to_hex(fmodf(s_rainbow_hue + 40.0f, 360.0f), 0.85f, 0.35f);
-   s_body_grad_top_color = top;
-   s_body_grad_bot_color = bot;
-   lv_obj_set_style_bg_color(s_body, lv_color_hex(top), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
+   body_canvas_paint(top, bot);
 }
 
 static void fx_rainbow_start(void) {
@@ -1514,8 +1574,7 @@ static void ambient_apply(void) {
       uint32_t top_quant = top & 0xF8F8F8;
       if (top_quant != s_ambient_top_color_last) {
          s_ambient_top_color_last = top_quant;
-         s_body_grad_top_color = top_quant;
-         lv_obj_set_style_bg_color(s_body, lv_color_hex(top_quant), LV_PART_MAIN);
+         body_canvas_paint(top_quant, s_body_grad_bot_color);
       }
       /* s_ambient_body_stop_last stays for the /orb/motion telemetry. */
       int stop = AMBIENT_BODY_STOP_FLOOR + (int)(s_ambient_rms * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
@@ -1946,10 +2005,7 @@ static void paint_pipeline_body(uint32_t color_hex) {
    uint8_t g = (color_hex >> 8) & 0xFF;
    uint8_t b = color_hex & 0xFF;
    uint32_t bot = ((uint32_t)((r * 45) / 100) << 16) | ((uint32_t)((g * 45) / 100) << 8) | (uint32_t)((b * 45) / 100);
-   lv_obj_set_style_bg_color(s_body, lv_color_hex(color_hex), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_color(s_body, lv_color_hex(bot), LV_PART_MAIN);
-   lv_obj_set_style_bg_grad_dir(s_body, LV_GRAD_DIR_VER, LV_PART_MAIN);
-   lv_obj_set_style_bg_opa(s_body, LV_OPA_COVER, LV_PART_MAIN);
+   body_canvas_paint(color_hex, bot);
    s_last_painted_hour = -1;
 }
 
