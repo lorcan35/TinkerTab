@@ -944,19 +944,22 @@ lv_obj_t *ui_home_create(void)
 
     /* ── Say pill (108 px) ─────────────────────────────────── */
     const int strip_y = SH - STRIP_BOT_PAD - SAY_GAP - SAY_H;
+    /* TT #545: "Hold orb for modes" pill chrome killed — the orb itself
+     * is the tap-to-talk target and accepts long-press for the mode
+     * sheet, so the redundant full-width pill was just visual weight.
+     * The container stays alive but transparent so the menu chip
+     * inside it remains tappable + the chrome-fade machinery has the
+     * same handle to fade during voice. */
     s_say_pill = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_say_pill);
     lv_obj_set_pos(s_say_pill, SIDE_PAD, strip_y);
     lv_obj_set_size(s_say_pill, CARD_W, SAY_H);
-    lv_obj_set_style_bg_color(s_say_pill, lv_color_hex(TH_CARD), 0);
-    lv_obj_set_style_bg_opa(s_say_pill, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_say_pill, 54, 0);
-    lv_obj_set_style_border_width(s_say_pill, 1, 0);
-    lv_obj_set_style_border_color(s_say_pill, lv_color_hex(0x1E1E2A), 0);
+    lv_obj_set_style_bg_opa(s_say_pill, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_say_pill, 0, 0);
+    lv_obj_set_style_shadow_opa(s_say_pill, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(s_say_pill, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_say_pill, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_say_pill, orb_click_cb, LV_EVENT_CLICKED, NULL);
-    ui_fb_card(s_say_pill); /* TT #328 Wave 10 */
 
     /* 84 px amber mic disc — inner element, left-aligned inside pill */
     s_say_mic = lv_obj_create(s_say_pill);
@@ -990,13 +993,13 @@ lv_obj_t *ui_home_create(void)
      * centered line — "Hold orb for modes" — which is the actually
      * useful affordance reveal (long-press secret).  "Tap to talk"
      * was redundant with the orb itself. */
+    /* TT #545: label stays allocated for chrome_fade compat but
+     * permanently hidden — the pill no longer carries a visible "Hold
+     * orb for modes" caption.  The orb itself is the talk target +
+     * the long-press surface for the mode sheet. */
     s_say_label_main = lv_label_create(s_say_pill);
-    lv_label_set_text(s_say_label_main, "Hold orb for modes");
-    lv_obj_set_width(s_say_label_main, CARD_W - 80);
-    lv_obj_set_pos(s_say_label_main, 40, (SAY_H - 28) / 2);
-    lv_obj_set_style_text_font(s_say_label_main, FONT_BODY, 0);
-    lv_obj_set_style_text_color(s_say_label_main, lv_color_hex(TH_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_align(s_say_label_main, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(s_say_label_main, "");
+    lv_obj_add_flag(s_say_label_main, LV_OBJ_FLAG_HIDDEN);
 
     /* TT #328 Wave 7 — was 'OR SAY "DRAGON"'.  Wake-word stack was
      * retired in #162 (TDM-slot mapping unworkable without a custom
