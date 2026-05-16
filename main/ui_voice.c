@@ -907,7 +907,13 @@ static void build_overlay(void)
 
     /* closes #115: response text label below the orb.  Simple absolute-
      * positioned label so it's always visible during SPEAKING and for
-     * the auto-hide window afterward. */
+     * the auto-hide window afterward.
+     *
+     * TT #566: the voice-overlay parent is fully transparent (TT #511/#514)
+     * so the home screen's busy ambient layer leaks through behind this
+     * label.  Give the label its own soft dark backdrop card so the
+     * reply text stays readable without bringing back the full opaque
+     * overlay regression. */
     s_response_label = lv_label_create(s_overlay);
     if (s_response_label) {
         lv_label_set_text(s_response_label, "");
@@ -917,6 +923,15 @@ static void build_overlay(void)
         lv_obj_set_style_text_align(s_response_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_line_space(s_response_label, 4, 0);
         lv_obj_set_width(s_response_label, SW - 80);
+        /* Soft scrim card behind the text — TT #566.  bg_opa ~210/255
+         * keeps the home orb halo bleed visible at the edges without
+         * the reply text colors competing with whatever home is
+         * rendering at y≈600. */
+        lv_obj_set_style_bg_color(s_response_label, lv_color_hex(0x0a0a0a), 0);
+        lv_obj_set_style_bg_opa(s_response_label, 210, 0);
+        lv_obj_set_style_pad_all(s_response_label, 12, 0);
+        lv_obj_set_style_radius(s_response_label, 14, 0);
+        lv_obj_set_style_border_width(s_response_label, 0, 0);
         /* Centered below the orb (orb y-center ~360 with halo out to ~515).
          * Place the label at y=580 to clear the orb on all sizes. */
         lv_obj_align(s_response_label, LV_ALIGN_TOP_MID, 0, 600);
