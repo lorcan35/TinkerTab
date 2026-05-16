@@ -1359,31 +1359,36 @@ extern int16_t *s_upsample_buf;
 // handles I2S writes.
 // ---------------------------------------------------------------------------
 /* TT #568: 4-tap cubic Hermite (Catmull-Rom variant) replaces the naive
- * linear interp.  Linear interp had two audible artefacts that Kokoro
- * exposed: (1) frequencies above 8 kHz fold back as aliasing on
- * sibilants/consonants; (2) every WS chunk reset the y0/y1 context
- * causing a click every ~128 ms.
+ * linear interp.  Linear interp had aliasing on Kokoro's sibilants;
+ * Hermite is smoother.
  *
- * Hermite weights derived from the standard basis with finite-difference
- * tangents at t = 1/3 and t = 2/3:
+ * Indexing (CORRECTED — initial PR #569 was off-by-one which made
+ * audio sound robotic/choppy):
  *
- *   out[3i+0] = y1
- *   out[3i+1] = (-2·y0 + 21·y1 +  9·y2 -   y3) / 27
- *   out[3i+2] = (  -y0 +  9·y1 + 21·y2 - 2·y3) / 27
+ *   For each input sample in[i], emit a triple at output position 3i:
+ *     y0 = in[i-1]  (previous, from tail at chunk start)
+ *     y1 = in[i]    (current — outputs as identity at t=0)
+ *     y2 = in[i+1]  (next, edge-mirrors at chunk tail)
+ *     y3 = in[i+2]  (after-next, edge-mirrors at chunk tail)
  *
- * Worst-case int32 magnitude: 33·INT16_MAX = ~1.08e9, well under INT32_MAX.
+ *     out[3i+0] = y1                                       (current sample)
+ *     out[3i+1] = (-2·y0 + 21·y1 +  9·y2 -   y3) / 27      (1/3 between y1, y2)
+ *     out[3i+2] = (  -y0 +  9·y1 + 21·y2 - 2·y3) / 27      (2/3 between y1, y2)
  *
- * `s_upsample_tail[]` holds the trailing y2,y3 from the previous call so
- * consecutive WS chunks splice without the boundary click.  Reset on
- * voice_ws_proto_upsample_reset (called from tts_start in the JSON RX
- * dispatcher) so state doesn't leak across turns.
+ * Hermite weights derived from the standard basis with finite-
+ * difference tangents.  Worst-case int32 magnitude:
+ * 33·INT16_MAX ≈ 1.08e9 — well under INT32_MAX.
+ *
+ * `s_upsample_tail` holds the LAST input sample of the previous chunk
+ * so the new chunk's i=0 iteration has a real y0 instead of edge-
+ * mirroring in[0].  Reset by voice_ws_proto_upsample_reset() at
+ * tts_start so state doesn't leak across turns.
  */
-static int16_t s_upsample_tail[2] = {0, 0};
+static int16_t s_upsample_tail = 0;
 static bool s_upsample_tail_valid = false;
 
 void voice_ws_proto_upsample_reset(void) {
-   s_upsample_tail[0] = 0;
-   s_upsample_tail[1] = 0;
+   s_upsample_tail = 0;
    s_upsample_tail_valid = false;
 }
 
@@ -1413,28 +1418,24 @@ static size_t voice_ws_proto_upsample_16k_to_48k(const int16_t *in, size_t in_sa
 
    size_t out_idx = 0;
 
-   /* y0/y1 for the FIRST output triple come from the trailing context
-    * of the previous chunk (if any), else duplicate in[0].  This eliminates
-    * the chunk-boundary click present in the legacy linear path. */
-   int16_t prev2 = s_upsample_tail_valid ? s_upsample_tail[0] : in[0];
-   int16_t prev1 = s_upsample_tail_valid ? s_upsample_tail[1] : in[0];
+   /* y0 for i=0 comes from the previous chunk's last sample (if any),
+    * else edge-mirror in[0].  Subsequent iterations roll forward. */
+   int16_t prev_in = s_upsample_tail_valid ? s_upsample_tail : in[0];
 
    for (size_t i = 0; i < in_samples; i++) {
       if (out_idx + UPSAMPLE_RATIO > out_capacity) break;
-      int16_t y0 = prev2;
-      int16_t y1 = prev1;
-      int16_t y2 = in[i];
-      int16_t y3 = (i + 1 < in_samples) ? in[i + 1] : in[i];
-      out[out_idx++] = y1;                               /* t = 0   (identity) */
-      out[out_idx++] = hermite_sample_a(y0, y1, y2, y3); /* t = 1/3 */
-      out[out_idx++] = hermite_sample_b(y0, y1, y2, y3); /* t = 2/3 */
-      prev2 = y1;
-      prev1 = y2;
+      int16_t y0 = prev_in;
+      int16_t y1 = in[i];
+      int16_t y2 = (i + 1 < in_samples) ? in[i + 1] : in[in_samples - 1];
+      int16_t y3 = (i + 2 < in_samples) ? in[i + 2] : in[in_samples - 1];
+      out[out_idx++] = y1;                               /* t = 0   (identity = in[i]) */
+      out[out_idx++] = hermite_sample_a(y0, y1, y2, y3); /* t = 1/3 between in[i] and in[i+1] */
+      out[out_idx++] = hermite_sample_b(y0, y1, y2, y3); /* t = 2/3 between in[i] and in[i+1] */
+      prev_in = y1;                                       /* for next iteration's y0 */
    }
 
-   /* Save the last two input samples for the next call's leading context. */
-   s_upsample_tail[0] = (in_samples >= 2) ? in[in_samples - 2] : in[0];
-   s_upsample_tail[1] = in[in_samples - 1];
+   /* Save the last input sample for the next call's leading y0. */
+   s_upsample_tail = in[in_samples - 1];
    s_upsample_tail_valid = true;
 
    return out_idx;
