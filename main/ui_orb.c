@@ -43,8 +43,12 @@ static const char *TAG = "ui_orb";
  * orb to suggest a lit surface.  Clipped by s_body's radius-full corner.
  * Larger than #511's attempt (which was too small + had no working IMU
  * behind it) so the drift is unambiguously visible. */
-#define ORB_SPEC_W 70
-#define ORB_SPEC_H 44
+/* TT #547: specular highlight beefed up for the sphere-native pass —
+ * bigger ellipse + brighter peak opa + soft outer shadow that bleeds
+ * a small glow into the body's lit side.  Reads like wet-sphere sun-
+ * glint instead of a stamped oval. */
+#define ORB_SPEC_W 96
+#define ORB_SPEC_H 56
 
 /* Resting position: upper-left quadrant.  cx-shift = -18 px, cy-shift =
  * 16 px from top.  These should mirror the eye's expectation of "lit
@@ -142,7 +146,11 @@ static lv_obj_t *s_ripple_b =
 static lv_timer_t *s_ripple_timer = NULL;       /* 16 ms tick for ripple geometry */
 static lv_obj_t *s_thinking_arc = NULL;         /* PR 2 polish: rotating arc segment around body during TRANSCRIBING */
 static lv_timer_t *s_thinking_arc_timer = NULL; /* drives the arc's rotation */
-static lv_obj_t *s_tts_arc = NULL;              /* TT #545: TTS scrubber arc — fills clockwise during SPEAKING */
+/* TT #547: replaced the 2D scrubber arc with a sphere-native warm
+ * overlay — a circular sibling of s_body sized identically; bg_opa
+ * animated from 0 to peak over the SPEAKING duration so the sphere
+ * visibly brightens + warms as TTS plays. */
+static lv_obj_t *s_speak_fill = NULL;
 #define TTS_SCRUBBER_DEFAULT_MS 6000
 static lv_obj_t *s_saved_burst = NULL;          /* PR 2 polish: one-shot green ring on SAVED entry */
 static lv_timer_t *s_saved_burst_timer = NULL;
@@ -477,7 +485,9 @@ static void bloom_stop(void) {
       lv_timer_delete(s_bloom_timer);
       s_bloom_timer = NULL;
    }
-   if (s_halo) lv_obj_set_style_bg_opa(s_halo, 0, LV_PART_MAIN);
+   if (s_halo) {
+      lv_obj_set_style_bg_opa(s_halo, 0, LV_PART_MAIN);
+   }
    s_bloom_rms_ema = 0.0f;
 }
 
@@ -661,6 +671,10 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_set_style_radius(s_halo, LV_RADIUS_CIRCLE, 0);
    lv_obj_set_style_bg_color(s_halo, lv_color_hex(0xFFB870), 0);
    lv_obj_set_style_bg_opa(s_halo, 0, 0); /* invisible at rest */
+   /* TT #547 attempted halo corona via outer shadow but even 24 px
+    * blur on a 380 px halo at 5 Hz invalidation crushed the UI task
+    * mutex budget.  Reverted — sticking with the breath/bloom bg_opa
+    * animation that already gives a soft halo-to-bg transition. */
    lv_obj_clear_flag(s_halo, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
    s_body = lv_obj_create(parent);
@@ -684,8 +698,13 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_set_size(s_spec, ORB_SPEC_W, ORB_SPEC_H);
    lv_obj_set_pos(s_spec, ORB_SPEC_REST_X, ORB_SPEC_REST_Y);
    lv_obj_set_style_radius(s_spec, LV_RADIUS_CIRCLE, 0);
-   lv_obj_set_style_bg_color(s_spec, lv_color_hex(0xFFF5E0), 0);
-   lv_obj_set_style_bg_opa(s_spec, 110, 0);
+   lv_obj_set_style_bg_color(s_spec, lv_color_hex(0xFFF8E8), 0);
+   /* TT #547: bigger ellipse + brighter peak.  Tried adding a shadow
+    * for sun-glint glow but the per-tilt-tick (20 Hz) re-render of a
+    * blurred shadow blew the LVGL render budget — reverted to flat
+    * fill.  The 96×56 size + 140 opa peak alone gives a brighter,
+    * wetter highlight than the 70×44 / 110 baseline. */
+   lv_obj_set_style_bg_opa(s_spec, 140, 0);
    lv_obj_clear_flag(s_spec, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
    s_tilt_dx_ema = 0.0f;
    s_tilt_dy_ema = 0.0f;
@@ -725,42 +744,29 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       lv_obj_add_flag(s_thinking_arc, LV_OBJ_FLAG_HIDDEN);
    }
 
-   /* TT #545: TTS scrubber arc — sibling AFTER s_body, same shape as
-    * the thinking arc but with a different motion model.  bg_angles
-    * 270..630 starts the indicator at 12 o'clock and wraps clockwise.
-    * value 0..100 animates from 0 to full ring over the SPEAKING
-    * state, with a 6 s default duration if TTS metadata isn't
-    * available.  Hidden by default. */
-   s_tts_arc = lv_arc_create(parent);
-   if (s_tts_arc) {
-      lv_obj_remove_style(s_tts_arc, NULL, LV_PART_KNOB);
-      lv_obj_set_size(s_tts_arc, THINKING_ARC_DIAM, THINKING_ARC_DIAM);
-      lv_obj_set_pos(s_tts_arc, cx - THINKING_ARC_DIAM / 2, cy - THINKING_ARC_DIAM / 2);
-      /* Full ring, then rotate so the start is at 12 o'clock.  LVGL 9
-       * bg_angles > 360 wraps strangely with set_value; the
-       * bg_angles(0, 360) + rotation(270) pattern is the canonical one
-       * used by the existing thinking arc and lights-up reliably. */
-      lv_arc_set_bg_angles(s_tts_arc, 0, 360);
-      lv_arc_set_rotation(s_tts_arc, 270);
-      lv_arc_set_mode(s_tts_arc, LV_ARC_MODE_NORMAL);
-      lv_arc_set_range(s_tts_arc, 0, 100);
-      lv_arc_set_value(s_tts_arc, 0);
-      /* Indicator: 6 px amber stroke — wider than the thinking arc's 4 px
-       * since the scrubber sits further from the body edge and needs to
-       * read as a progress indicator, not a decorative sweep. */
-      lv_obj_set_style_arc_width(s_tts_arc, 6, LV_PART_INDICATOR);
-      lv_obj_set_style_arc_color(s_tts_arc, lv_color_hex(0xFCD34D), LV_PART_INDICATOR);
-      lv_obj_set_style_arc_opa(s_tts_arc, LV_OPA_COVER, LV_PART_INDICATOR);
-      /* MAIN part = the un-filled portion of the track.  Soft amber at
-       * low opa so the user sees the full ring as a "track" while the
-       * indicator fills clockwise — reads as progress, not a streak. */
-      lv_obj_set_style_arc_width(s_tts_arc, 6, LV_PART_MAIN);
-      lv_obj_set_style_arc_color(s_tts_arc, lv_color_hex(0xFCD34D), LV_PART_MAIN);
-      lv_obj_set_style_arc_opa(s_tts_arc, 40, LV_PART_MAIN);
-      lv_obj_set_style_bg_opa(s_tts_arc, 0, LV_PART_MAIN);
-      lv_obj_remove_flag(s_tts_arc, LV_OBJ_FLAG_CLICKABLE);
-      lv_obj_clear_flag(s_tts_arc, LV_OBJ_FLAG_SCROLLABLE);
-      lv_obj_add_flag(s_tts_arc, LV_OBJ_FLAG_HIDDEN);
+   /* TT #547: sphere-native SPEAKING overlay.  A circular sibling that
+    * sits exactly on top of s_body, animated bg_opa 0 → ~140 over the
+    * SPEAKING duration.  Vertical bg_grad runs from cream-amber top to
+    * brighter cream-amber bottom — combined with the body's existing
+    * lit-sphere gradient underneath, the whole sphere appears to
+    * brighten + warm uniformly as TTS plays.  Reads as the sphere
+    * absorbing sound, no 2D chrome around it.  Same circle shape as
+    * s_body so no clipping or bleed.  Drawing s_speak_fill BEFORE
+    * s_spec ensures the specular highlight stays on top. */
+   s_speak_fill = lv_obj_create(parent);
+   if (s_speak_fill) {
+      lv_obj_remove_style_all(s_speak_fill);
+      lv_obj_set_size(s_speak_fill, ORB_SIZE, ORB_SIZE);
+      lv_obj_set_pos(s_speak_fill, cx - ORB_SIZE / 2, cy - ORB_SIZE / 2);
+      lv_obj_set_style_radius(s_speak_fill, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_color(s_speak_fill, lv_color_hex(0xFFD68A), 0);
+      lv_obj_set_style_bg_grad_color(s_speak_fill, lv_color_hex(0xFFF0C8), 0);
+      lv_obj_set_style_bg_grad_dir(s_speak_fill, LV_GRAD_DIR_VER, 0);
+      lv_obj_set_style_bg_opa(s_speak_fill, 0, 0);
+      lv_obj_set_style_border_width(s_speak_fill, 0, 0);
+      lv_obj_remove_flag(s_speak_fill, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(s_speak_fill, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(s_speak_fill, LV_OBJ_FLAG_HIDDEN);
    }
 
    /* PR 2: hero caption below the orb for pipeline state — sized to read
@@ -1122,37 +1128,53 @@ void ui_orb_wake(void) {
    }
 }
 
-/* ── TTS scrubber arc (TT #545) ──────────────────────────────────────── */
+/* ── SPEAKING fill — sphere-native progress (TT #547) ────────────────── */
 
-static void tts_arc_value_anim_cb(void *obj, int32_t v) {
+/* Opa animation drives the bright cream-amber overlay fading in over
+ * the SPEAKING duration.  The orb visibly warms + brightens as TTS
+ * plays.  Plateaus at peak opa if SPEAKING runs past the estimate;
+ * tts_scrubber_stop fades it out + hides. */
+static void speak_fill_anim_cb(void *obj, int32_t v) {
    if (!obj) return;
-   lv_arc_set_value((lv_obj_t *)obj, v);
+   lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
 }
 
+#define SPEAK_FILL_PEAK_OPA 140
+
 static void tts_scrubber_start(uint32_t duration_ms) {
-   if (!s_tts_arc) return;
+   if (!s_speak_fill) return;
    if (duration_ms == 0) duration_ms = TTS_SCRUBBER_DEFAULT_MS;
-   lv_anim_delete(s_tts_arc, tts_arc_value_anim_cb);
-   lv_arc_set_value(s_tts_arc, 0);
-   lv_obj_clear_flag(s_tts_arc, LV_OBJ_FLAG_HIDDEN);
+   lv_anim_delete(s_speak_fill, speak_fill_anim_cb);
+   lv_obj_set_style_bg_opa(s_speak_fill, 0, LV_PART_MAIN);
+   lv_obj_clear_flag(s_speak_fill, LV_OBJ_FLAG_HIDDEN);
    lv_anim_t a;
    lv_anim_init(&a);
-   lv_anim_set_var(&a, s_tts_arc);
-   lv_anim_set_exec_cb(&a, tts_arc_value_anim_cb);
-   lv_anim_set_values(&a, 0, 100);
+   lv_anim_set_var(&a, s_speak_fill);
+   lv_anim_set_exec_cb(&a, speak_fill_anim_cb);
+   lv_anim_set_values(&a, 0, SPEAK_FILL_PEAK_OPA);
    lv_anim_set_time(&a, duration_ms);
-   lv_anim_set_path_cb(&a, lv_anim_path_linear);
-   /* Plateaus at 100 if SPEAKING runs longer than the estimate — the
-    * stuck-at-full state still reads as "still talking, just past my
-    * guess" without needing a loop. */
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
    lv_anim_start(&a);
 }
 
 static void tts_scrubber_stop(void) {
-   if (!s_tts_arc) return;
-   lv_anim_delete(s_tts_arc, tts_arc_value_anim_cb);
-   lv_obj_add_flag(s_tts_arc, LV_OBJ_FLAG_HIDDEN);
-   lv_arc_set_value(s_tts_arc, 0);
+   if (!s_speak_fill) return;
+   lv_anim_delete(s_speak_fill, speak_fill_anim_cb);
+   /* Quick fade-out instead of instant cut so the brightness doesn't
+    * pop off the moment SPEAKING ends. */
+   int cur = lv_obj_get_style_bg_opa(s_speak_fill, LV_PART_MAIN);
+   if (cur > 0) {
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, s_speak_fill);
+      lv_anim_set_exec_cb(&a, speak_fill_anim_cb);
+      lv_anim_set_values(&a, cur, 0);
+      lv_anim_set_time(&a, 300);
+      lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+      lv_anim_start(&a);
+   } else {
+      lv_obj_add_flag(s_speak_fill, LV_OBJ_FLAG_HIDDEN);
+   }
 }
 
 static void orb_body_press_cb(lv_event_t *e) {

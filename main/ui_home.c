@@ -596,42 +596,15 @@ lv_obj_t *ui_home_create(void)
     s_halo_outer = NULL;
     s_halo_inner = NULL;
 
-    /* Rings: border-only circles for a "composed" orb. */
-    s_ring_outer = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_ring_outer);
-    pos_centered(s_ring_outer, ORB_CY - RING_OUTER / 2, RING_OUTER, RING_OUTER);
-    lv_obj_set_style_radius(s_ring_outer, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(s_ring_outer, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_ring_outer, 1, 0);
-    lv_obj_set_style_border_color(s_ring_outer, lv_color_hex(TH_AMBER), 0);
-    /* TT #507 — dim the outer ring; was 60 → 25 so it reads as soft
-     * atmospheric glow instead of a hard tree-ring. */
-    lv_obj_set_style_border_opa(s_ring_outer, 25, 0);
-    lv_obj_clear_flag(s_ring_outer, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-
-    s_ring_mid = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_ring_mid);
-    pos_centered(s_ring_mid, ORB_CY - RING_MID / 2, RING_MID, RING_MID);
-    lv_obj_set_style_radius(s_ring_mid, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(s_ring_mid, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_ring_mid, 1, 0);
-    lv_obj_set_style_border_color(s_ring_mid, lv_color_hex(TH_AMBER), 0);
-    /* TT #507 — was 90 → 40. */
-    lv_obj_set_style_border_opa(s_ring_mid, 40, 0);
-    lv_obj_clear_flag(s_ring_mid, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-
-    s_ring_inner = lv_obj_create(s_screen);
-    lv_obj_remove_style_all(s_ring_inner);
-    pos_centered(s_ring_inner, ORB_CY - RING_INNER / 2, RING_INNER, RING_INNER);
-    lv_obj_set_style_radius(s_ring_inner, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(s_ring_inner, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_ring_inner, 1, 0);
-    lv_obj_set_style_border_color(s_ring_inner, lv_color_hex(TH_AMBER), 0);
-    /* TT #507 — was 140 → 60.  Inner ring stays the most visible of
-     * the three (it sits closest to the orb body) but no longer
-     * dominates as a stark concentric outline. */
-    lv_obj_set_style_border_opa(s_ring_inner, 60, 0);
-    lv_obj_clear_flag(s_ring_inner, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    /* TT #547: three concentric rings (s_ring_outer / _mid / _inner)
+     * killed — they were 1 px amber border circles at opa 25 / 40 / 60
+     * that reinforced the orb as a 2D composition.  Sphere-native
+     * motion (corona halo, fill-from-bottom glow during SPEAKING) does
+     * the atmospheric job better.  Pointers stay declared NULL so the
+     * tear-down path's null guards stay valid without a refactor. */
+    s_ring_outer = NULL;
+    s_ring_mid = NULL;
+    s_ring_inner = NULL;
 
     /* TT #511 wave-1: the orb body itself + its circadian paint +
      * initial sizing live in ui_orb.  Click + long-press handlers
