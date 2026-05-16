@@ -904,6 +904,10 @@ static void playback_drain_task(void *arg)
                     ESP_LOGI(TAG, "Playback drain complete — transitioning to READY");
                     tab5_audio_speaker_enable(false);
                     voice_set_state(VOICE_STATE_READY, NULL);
+                    /* TT #564: tell Dragon the turn is fully done.
+                     * Best-effort — drain task continues regardless. */
+                    voice_ws_send_ready_ack();
+                    tab5_debug_obs_event("voice.state", "ready_ack");
                 }
                 break;
             }

@@ -30,6 +30,14 @@ esp_err_t voice_ws_send_text(const char *msg);
 esp_err_t voice_ws_send_binary(const void *data, size_t len);
 esp_err_t voice_ws_send_register(void);
 
+/* End-of-turn observability (TT #564).  Sends {"type":"ready_ack",
+ * "mode":<voice_mode>} so Dragon can observe that Tab5 has finished
+ * playback and the orb has returned to READY.  Called by the playback
+ * drain task in voice.c right after the SPEAKING → READY transition.
+ * Best-effort: a closed WS or send failure just no-ops (the next
+ * config_update / register will re-synchronize state). */
+esp_err_t voice_ws_send_ready_ack(void);
+
 /* RX dispatchers — invoked by voice_ws_proto_event_handler. */
 void voice_ws_proto_handle_text(const char *data, int len);
 void voice_ws_proto_handle_binary(const char *data, int len);
