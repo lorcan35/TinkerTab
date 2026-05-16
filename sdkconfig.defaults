@@ -258,3 +258,9 @@ CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
 # stay on the fast path instead of falling back to the slow chunked
 # rasterizer.
 CONFIG_LV_DRAW_LAYER_SIMPLE_BUF_SIZE=65536
+
+# TT #557: tried bumping to 8 stops + multi-stop gradient on the
+# body to dither RGB565 banding, but 5-stop interpolation crushed
+# the per-frame body raster budget at 30 Hz.  Reverted to the
+# legacy 2-stop API with REDUCED gradient contrast (edge darkened
+# 0.7× instead of 0.5×) — bands compress out of perception.
