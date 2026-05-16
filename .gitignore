@@ -46,8 +46,14 @@ Thumbs.db
 *.env
 sdkconfig.local
 
-# Node.js (stitch-designs tooling)
+# Node.js (stitch-designs tooling + docs-site)
 node_modules/
+
+# Docusaurus docs site build artefacts (the docs-site/ tree itself ships
+# its own .gitignore for generated output; these belt-and-braces entries
+# ensure git status stays clean if a sub-.gitignore goes missing).
+docs-site/.docusaurus/
+docs-site/imported/
 
 # Binaries
 *.bin
