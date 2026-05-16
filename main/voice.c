@@ -242,6 +242,8 @@ volatile bool s_using_ngrok = false; /* true once we've switched to the ngrok UR
 static TaskHandle_t  s_mic_task    = NULL;
 static volatile bool s_mic_running = false;
 
+bool voice_mic_is_active(void) { return s_mic_running; }
+
 /* W4-B (TT #375): SOLO mic-capture buffer.  In vmode=5 the mic loop
  * appends downsampled 16 kHz mono PCM here instead of sending over WS
  * to Dragon; on stop, voice_stop_listening hands it to

@@ -1649,7 +1649,11 @@ static void ambient_apply(void) {
 
 static void ambient_smooth_tick_cb(lv_timer_t *t) {
    (void)t;
-   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active()) return;
+   /* TT #563: yield when voice is actively reading the mic.  Two
+    * readers on the same I2S channel corrupt the audio + Dragon's
+    * STT prematurely declares the utterance over → orb jumps
+    * LISTENING → PROCESSING before the user finishes speaking. */
+   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active() || voice_mic_is_active()) return;
    /* Approach target each tick — 30 Hz × alpha 0.18 ≈ ~5 frames to
     * cover 60 % of any gap.  Buttery, not lurchy. */
    s_ambient_rms += (s_ambient_rms_target - s_ambient_rms) * AMBIENT_SMOOTH_ALPHA;
@@ -1669,7 +1673,11 @@ static void ambient_smooth_tick_cb(lv_timer_t *t) {
 
 static void ambient_mic_tick_cb(lv_timer_t *t) {
    (void)t;
-   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active()) return;
+   /* TT #563: yield when voice is actively reading the mic.  Two
+    * readers on the same I2S channel corrupt the audio + Dragon's
+    * STT prematurely declares the utterance over → orb jumps
+    * LISTENING → PROCESSING before the user finishes speaking. */
+   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active() || voice_mic_is_active()) return;
 
    static int16_t buf[AMBIENT_FRAMES * AMBIENT_MIC_TDM_CHANNELS];
    if (tab5_mic_read(buf, AMBIENT_FRAMES, 20) != ESP_OK) {
