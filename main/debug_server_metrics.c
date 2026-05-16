@@ -251,6 +251,32 @@ static esp_err_t orb_presence_handler(httpd_req_t *req) {
    return send_json_resp(req, root);
 }
 
+/* ── GET /orb/motion ─────────────────────────────────────────────────── */
+
+/* TT #553 follow-up: motion telemetry for debugging dynamic effects.
+ * Polled rapidly (e.g. every 50 ms) to plot opa values + ambient RMS
+ * over time so we can SEE the orb's animation responsiveness
+ * quantitatively, not just via static screenshots. */
+static esp_err_t orb_motion_handler(httpd_req_t *req) {
+   if (!check_auth(req)) return ESP_OK;
+   ui_orb_motion_state_t st = {0};
+   bool ok = ui_orb_get_motion_state(&st);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "ok", ok);
+   if (ok) {
+      cJSON_AddNumberToObject(root, "ambient_rms", st.ambient_rms);
+      cJSON_AddNumberToObject(root, "ambient_rms_target", st.ambient_rms_target);
+      cJSON_AddNumberToObject(root, "core_opa", st.core_opa);
+      cJSON_AddNumberToObject(root, "spec_opa", st.spec_opa);
+      cJSON_AddNumberToObject(root, "halo_opa", st.halo_opa);
+      cJSON_AddNumberToObject(root, "idle_breath_opa", st.idle_breath_opa);
+      cJSON_AddNumberToObject(root, "state", st.state);
+      cJSON_AddNumberToObject(root, "sleep_phase", st.sleep_phase);
+      cJSON_AddNumberToObject(root, "uptime_ms", st.uptime_ms);
+   }
+   return send_json_resp(req, root);
+}
+
 /* ── POST /display/brightness?pct=0..100 ─────────────────────────────── */
 
 static esp_err_t display_brightness_handler(httpd_req_t *req) {
@@ -560,6 +586,7 @@ void debug_server_metrics_register(httpd_handle_t server) {
    static const httpd_uri_t uri_imu = {.uri = "/imu", .method = HTTP_GET, .handler = imu_handler};
    static const httpd_uri_t uri_orb_presence = {
        .uri = "/orb/presence", .method = HTTP_POST, .handler = orb_presence_handler};
+   static const httpd_uri_t uri_orb_motion = {.uri = "/orb/motion", .method = HTTP_GET, .handler = orb_motion_handler};
    static const httpd_uri_t uri_disp_bright = {
        .uri = "/display/brightness", .method = HTTP_POST, .handler = display_brightness_handler};
    static const httpd_uri_t uri_audio_get = {.uri = "/audio", .method = HTTP_GET, .handler = audio_handler};
@@ -581,6 +608,7 @@ void debug_server_metrics_register(httpd_handle_t server) {
    httpd_register_uri_handler(server, &uri_battery);
    httpd_register_uri_handler(server, &uri_imu);
    httpd_register_uri_handler(server, &uri_orb_presence);
+   httpd_register_uri_handler(server, &uri_orb_motion);
    httpd_register_uri_handler(server, &uri_disp_bright);
    httpd_register_uri_handler(server, &uri_audio_get);
    httpd_register_uri_handler(server, &uri_audio_post);

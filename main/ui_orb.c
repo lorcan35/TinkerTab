@@ -103,7 +103,20 @@ static const char *TAG = "ui_orb";
  * user's voice volume.  At idle (and in all other states) it stays
  * at opa 0.  Color tracks circadian "top" stop so dawn-bloom looks
  * different from night-bloom; intensity is per-state. */
+/* Halo stayed sized at 260 (smaller than the body) intentionally —
+ * pre-TT #547 the halo was meant to read through s_body's gradient
+ * edge as a soft bleed, not to be a visible ring.  TT #553 follow-
+ * up briefly tried 420 px for an explicit ring + user pivoted to
+ * "in-orb" effects instead, so the halo stays its original size and
+ * the always-alive motion now lives ON / IN the sphere. */
 #define ORB_HALO_DIAM 260
+/* TT #553 follow-up: in-orb core dot — sits visually INSIDE the sphere
+ * and brightens with ambient sound.  130×130 = roughly 46 % of body
+ * diameter — clearly visible but doesn't dominate.  Vertical gradient
+ * (cream top, deeper amber bottom) reinforces the lit-sphere
+ * direction. */
+#define ORB_CORE_W 130
+#define ORB_CORE_H 130
 #define ORB_HALO_OPA_FLOOR 40    /* TT #541: was 24 — visible at rest during LISTENING */
 #define ORB_HALO_OPA_CEILING 160 /* TT #541: was 90 — louder peak when user speaks */
 #define ORB_BLOOM_PERIOD_MS 100  /* 10 Hz */
@@ -140,6 +153,7 @@ static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
 static lv_obj_t *s_body = NULL;  /* the lit sphere itself */
 static lv_obj_t *s_spec = NULL;  /* tilt-driven specular highlight (child of s_body) */
 static lv_obj_t *s_halo = NULL;  /* voice-bloom halo (sibling-BEHIND s_body) */
+static lv_obj_t *s_inner_core = NULL; /* TT #553 follow-up: in-orb ambient core */
 static lv_obj_t *s_ripple_a = NULL; /* PR 2 polish: sonar ripple A — outermost-expanding ring during RECORDING */
 static lv_obj_t *s_ripple_b =
     NULL; /* PR 2 polish: sonar ripple B — phase-offset by 50% so a new ripple is always rising as the prior fades */
@@ -187,9 +201,13 @@ static void alive_stop(void);
  * later in the file but the helpers + state machine reference it
  * earlier.  TT #552 also forward-decls s_idle_breath_last_opa so the
  * ambient_apply helper can layer the ambient glow on top of the
- * existing idle breath value. */
+ * existing idle breath value.  TT #553 follow-up forward-decls the
+ * ambient EMA statics so ui_orb_get_motion_state can read them. */
 static bool s_alive_running;
 static int s_idle_breath_last_opa;
+static float s_ambient_rms;
+static float s_ambient_rms_target;
+static int s_ambient_body_stop_last;
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -718,6 +736,14 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    s_tilt_dx_ema = 0.0f;
    s_tilt_dy_ema = 0.0f;
 
+   /* TT #553 follow-up rev2: inner-core disc removed — read as a
+    * "ball inside a ball" instead of the sphere lit from within.
+    * The ambient drive now lives on s_body's bg_main_stop directly
+    * (the sphere's lit-side hemisphere extends downward as sound
+    * rises) for a genuinely in-sphere effect.  s_inner_core stays
+    * declared NULL so any null-guard reads work.  */
+   s_inner_core = NULL;
+
    /* Skill-rim comet — sibling AFTER s_body so it draws on top.
     * Starts invisible (opa 0); state machine drives fade-in on
     * PROCESSING enter, fade-out on exit. */
@@ -873,6 +899,7 @@ void ui_orb_destroy(void) {
    s_spec = NULL;
    s_halo = NULL;
    s_comet = NULL;
+   s_inner_core = NULL;
    s_state = ORB_STATE_IDLE;
    s_last_painted_hour = -1;
    s_tilt_dx_ema = 0.0f;
@@ -1141,6 +1168,24 @@ void ui_orb_wake(void) {
    }
 }
 
+bool ui_orb_get_motion_state(ui_orb_motion_state_t *out) {
+   if (!out) return false;
+   if (!s_body) return false;
+   out->ambient_rms = s_ambient_rms;
+   out->ambient_rms_target = s_ambient_rms_target;
+   /* `core_opa` field reused for the body-stop value when no inner
+    * core is present.  Polling clients should plot it as either; we
+    * use the same JSON key for backward compat. */
+   out->core_opa = (uint8_t)s_ambient_body_stop_last;
+   out->spec_opa = s_spec ? lv_obj_get_style_bg_opa(s_spec, LV_PART_MAIN) : 0;
+   out->halo_opa = s_halo ? lv_obj_get_style_bg_opa(s_halo, LV_PART_MAIN) : 0;
+   out->idle_breath_opa = (uint8_t)s_idle_breath_last_opa;
+   out->state = (uint8_t)s_state;
+   out->sleep_phase = (uint8_t)s_sleep_phase;
+   out->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   return true;
+}
+
 /* ── Always-alive sphere — ambient mic glow (TT #552) ────────────────── */
 
 /* Replaced the TT #549 slow infinite LVGL anims (gradient-stop pan +
@@ -1157,53 +1202,81 @@ void ui_orb_wake(void) {
 
 #include "audio.h" /* tab5_mic_read for ambient sampling */
 
-#define AMBIENT_TICK_MS 200
-#define AMBIENT_FRAMES 64 /* 64 TDM slices = 256 int16_t total, ~1.3 ms @ 48 kHz */
+/* Two-stage timing for buttery motion:
+ *   - MIC sampler ticks at 200 ms — reads ~1.3 ms of audio, computes
+ *     RMS, sets a TARGET (s_ambient_rms_target).
+ *   - SMOOTH ticker runs at 33 ms (30 Hz) — interpolates the live
+ *     value (s_ambient_rms) toward target with a low alpha so the
+ *     glow eases between samples instead of stepping.
+ * Together: the mic provides the signal, the smoother provides the
+ * smoothness. */
+#define AMBIENT_MIC_TICK_MS 200
+#define AMBIENT_SMOOTH_TICK_MS 33  /* 30 Hz tween */
+#define AMBIENT_SMOOTH_ALPHA 0.18f /* per-tick approach rate toward target */
+#define AMBIENT_FRAMES 64          /* 64 TDM slices = 256 int16_t total, ~1.3 ms @ 48 kHz */
 #define AMBIENT_MIC_TDM_CHANNELS 4
-#define AMBIENT_MIC1_OFFSET 0   /* mic 1 lives in slot 0 of the TDM frame */
-#define AMBIENT_RMS_DIV 2500.0f /* normalise raw RMS into 0..1 — quiet ~250 raw, chatter ~2000+ */
-#define AMBIENT_EMA_ALPHA 0.45f /* faster reaction so the glow visibly tracks sound */
-#define AMBIENT_HALO_FLOOR 30   /* baseline halo opa even in silence — always-on glow */
-#define AMBIENT_HALO_PEAK 180   /* peak halo opa on loud ambient */
+#define AMBIENT_MIC1_OFFSET 0      /* mic 1 lives in slot 0 of the TDM frame */
+#define AMBIENT_RMS_DIV 2500.0f    /* normalise raw RMS into 0..1 — quiet ~250 raw, chatter ~2000+ */
+#define AMBIENT_TARGET_ALPHA 0.55f /* target follows new mic readings briskly */
+/* TT #553 follow-up rev2: drive the SPHERE ITSELF, not an overlay.
+ * The body's bg_main_stop position is where the gradient "top color"
+ * stops shading toward the bottom color.  By default it's 0 (top
+ * stop sits at y=0), so the gradient runs the full body height.
+ * Increasing it pushes the lit-side cream-amber DOWN — the lit
+ * hemisphere appears to grow as sound rises.  Combined with the
+ * spec opa brightening, the sphere reads as lit from within.
+ * Range 0..38 — empirical, anything higher reads as the gradient
+ * "wrapping" weird. */
+#define AMBIENT_BODY_STOP_FLOOR 0
+#define AMBIENT_BODY_STOP_PEAK 38
 #define AMBIENT_SPEC_FLOOR 130
 #define AMBIENT_SPEC_PEAK 230
 
-static lv_timer_t *s_ambient_timer = NULL;
-static float s_ambient_rms = 0.0f;
+static lv_timer_t *s_ambient_mic_timer = NULL;
+static lv_timer_t *s_ambient_smooth_timer = NULL;
+/* s_ambient_rms + s_ambient_rms_target + s_ambient_body_stop_last
+ * forward-decl'd near top. */
+static int s_ambient_spec_last = -1;
 
 static void ambient_apply(void) {
-   if (s_halo) {
-      /* Halo bg_opa = always-on floor + sound boost.  Quiet room still
-       * shows a calm warm glow (the orb is alive); noisy room brightens
-       * dramatically.  The idle breath sine still rides underneath via
-       * s_idle_breath_last_opa, but its 28-opa range is overshadowed
-       * by the ambient envelope — it's still there as a slow modulation
-       * on top of the ambient drive. */
-      int amb = AMBIENT_HALO_FLOOR + (int)(s_ambient_rms * (AMBIENT_HALO_PEAK - AMBIENT_HALO_FLOOR));
-      int opa = amb + (s_idle_breath_last_opa / 3); /* breath at 1/3 weight on top */
-      if (opa < 0) opa = 0;
-      if (opa > 255) opa = 255;
-      lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
+   if (s_body) {
+      int stop = AMBIENT_BODY_STOP_FLOOR + (int)(s_ambient_rms * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
+      if (stop < 0) stop = 0;
+      if (stop > 80) stop = 80;
+      if (stop != s_ambient_body_stop_last) {
+         s_ambient_body_stop_last = stop;
+         lv_obj_set_style_bg_main_stop(s_body, stop, LV_PART_MAIN);
+      }
    }
    if (s_spec) {
       int spec_opa = AMBIENT_SPEC_FLOOR + (int)(s_ambient_rms * (AMBIENT_SPEC_PEAK - AMBIENT_SPEC_FLOOR));
       if (spec_opa < AMBIENT_SPEC_FLOOR) spec_opa = AMBIENT_SPEC_FLOOR;
       if (spec_opa > AMBIENT_SPEC_PEAK) spec_opa = AMBIENT_SPEC_PEAK;
-      lv_obj_set_style_bg_opa(s_spec, (lv_opa_t)spec_opa, LV_PART_MAIN);
+      if (spec_opa != s_ambient_spec_last) {
+         s_ambient_spec_last = spec_opa;
+         lv_obj_set_style_bg_opa(s_spec, (lv_opa_t)spec_opa, LV_PART_MAIN);
+      }
    }
 }
 
-static void ambient_tick_cb(lv_timer_t *t) {
+static void ambient_smooth_tick_cb(lv_timer_t *t) {
    (void)t;
-   /* Yield when voice is using the mic or the pipeline owns the orb. */
+   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active()) return;
+   /* Approach target each tick — 30 Hz × alpha 0.18 ≈ ~5 frames to
+    * cover 60 % of any gap.  Buttery, not lurchy. */
+   s_ambient_rms += (s_ambient_rms_target - s_ambient_rms) * AMBIENT_SMOOTH_ALPHA;
+   ambient_apply();
+}
+
+static void ambient_mic_tick_cb(lv_timer_t *t) {
+   (void)t;
    if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active()) return;
 
    static int16_t buf[AMBIENT_FRAMES * AMBIENT_MIC_TDM_CHANNELS];
    if (tab5_mic_read(buf, AMBIENT_FRAMES, 20) != ESP_OK) {
-      /* Mic busy or not ready — just decay current EMA so the glow
-       * gently fades rather than freezing. */
-      s_ambient_rms *= 0.9f;
-      ambient_apply();
+      /* Mic busy or not ready — let target decay so the glow gently
+       * fades back to baseline rather than freezing. */
+      s_ambient_rms_target *= 0.9f;
       return;
    }
    int64_t sqsum = 0;
@@ -1212,34 +1285,49 @@ static void ambient_tick_cb(lv_timer_t *t) {
       sqsum += (int64_t)v * v;
    }
    float rms = sqrtf((float)(sqsum / AMBIENT_FRAMES));
-   /* Normalise to 0..1 — empirical AMBIENT_RMS_DIV calibrated so
-    * silent room ≈ 0.0, ambient chatter ≈ 0.3-0.5, loud music ≈ 0.8+. */
    float n = rms / AMBIENT_RMS_DIV;
    if (n < 0.0f) n = 0.0f;
    if (n > 1.0f) n = 1.0f;
-   s_ambient_rms = (AMBIENT_EMA_ALPHA * n) + ((1.0f - AMBIENT_EMA_ALPHA) * s_ambient_rms);
-   ambient_apply();
+   /* Update the target with light smoothing — the per-frame smoother
+    * below handles the visible interpolation. */
+   s_ambient_rms_target = (AMBIENT_TARGET_ALPHA * n) + ((1.0f - AMBIENT_TARGET_ALPHA) * s_ambient_rms_target);
 }
 
 static void alive_start(void) {
    if (s_alive_running) return;
    s_alive_running = true;
    s_ambient_rms = 0.0f;
-   if (!s_ambient_timer) {
-      s_ambient_timer = lv_timer_create(ambient_tick_cb, AMBIENT_TICK_MS, NULL);
+   s_ambient_rms_target = 0.0f;
+   s_ambient_body_stop_last = -1;
+   s_ambient_spec_last = -1;
+   if (!s_ambient_mic_timer) {
+      s_ambient_mic_timer = lv_timer_create(ambient_mic_tick_cb, AMBIENT_MIC_TICK_MS, NULL);
+   }
+   if (!s_ambient_smooth_timer) {
+      s_ambient_smooth_timer = lv_timer_create(ambient_smooth_tick_cb, AMBIENT_SMOOTH_TICK_MS, NULL);
    }
 }
 
 static void alive_stop(void) {
    if (!s_alive_running) return;
    s_alive_running = false;
-   if (s_ambient_timer) {
-      lv_timer_del(s_ambient_timer);
-      s_ambient_timer = NULL;
+   if (s_ambient_mic_timer) {
+      lv_timer_del(s_ambient_mic_timer);
+      s_ambient_mic_timer = NULL;
    }
-   /* Restore baseline spec opa — halo opa is owned by breath/bloom. */
+   if (s_ambient_smooth_timer) {
+      lv_timer_del(s_ambient_smooth_timer);
+      s_ambient_smooth_timer = NULL;
+   }
+   /* Restore baselines.  Halo opa is owned by breath/bloom; the body
+    * gradient stop snaps back to 0 (canonical full-range gradient);
+    * spec returns to its baseline peak. */
    if (s_spec) lv_obj_set_style_bg_opa(s_spec, 140, LV_PART_MAIN);
+   if (s_body) lv_obj_set_style_bg_main_stop(s_body, 0, LV_PART_MAIN);
    s_ambient_rms = 0.0f;
+   s_ambient_rms_target = 0.0f;
+   s_ambient_body_stop_last = -1;
+   s_ambient_spec_last = -1;
 }
 
 /* ── SPEAKING fill — sphere-native progress (TT #547) ────────────────── */
