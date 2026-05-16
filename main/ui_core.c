@@ -289,32 +289,37 @@ static void ui_task(void *arg)
     static int64_t last_heartbeat = 0;
 
     while (1) {
-        if (xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            uint32_t time_till_next = lv_timer_handler();
-            xSemaphoreGiveRecursive(s_lvgl_mutex);
+       /* TT #549: timeout bumped 50 → 100 ms.  With the bigger
+        * render budget (CPU 400 MHz + shadow cache + parallel draw)
+        * occasional heavy frames can run longer than 50 ms without
+        * indicating a real stall — silencing those spurious
+        * "mutex timeout" warnings + letting the lock hold longer. */
+       if (xSemaphoreTakeRecursive(s_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+          uint32_t time_till_next = lv_timer_handler();
+          xSemaphoreGiveRecursive(s_lvgl_mutex);
 
-            /* Feed the watchdog — proves this task is alive and not stuck */
-            esp_task_wdt_reset();
+          /* Feed the watchdog — proves this task is alive and not stuck */
+          esp_task_wdt_reset();
 
-            /* Heartbeat log every 5 seconds to detect if task is alive */
-            int64_t now = esp_timer_get_time();
-            if (now - last_heartbeat > 5000000) {
-                ESP_LOGI(TAG, "UI task alive, next=%lu ms, lvgl_fps=%lu",
-                         (unsigned long)time_till_next, (unsigned long)s_fps);
-                last_heartbeat = now;
-            }
+          /* Heartbeat log every 5 seconds to detect if task is alive */
+          int64_t now = esp_timer_get_time();
+          if (now - last_heartbeat > 5000000) {
+             ESP_LOGI(TAG, "UI task alive, next=%lu ms, lvgl_fps=%lu", (unsigned long)time_till_next,
+                      (unsigned long)s_fps);
+             last_heartbeat = now;
+          }
 
-            /* Sleep for the time LVGL suggests, clamped to 5-50ms */
-            if (time_till_next < 5) time_till_next = 5;
-            if (time_till_next > 50) time_till_next = 50;
-            vTaskDelay(pdMS_TO_TICKS(time_till_next));
-        } else {
-            /* Still feed WDT even on mutex timeout — the task isn't stuck,
-             * it just couldn't acquire the lock this iteration */
-            esp_task_wdt_reset();
-            ESP_LOGW(TAG, "UI task: mutex timeout");
-            vTaskDelay(pdMS_TO_TICKS(5));
-        }
+          /* Sleep for the time LVGL suggests, clamped to 5-50ms */
+          if (time_till_next < 5) time_till_next = 5;
+          if (time_till_next > 50) time_till_next = 50;
+          vTaskDelay(pdMS_TO_TICKS(time_till_next));
+       } else {
+          /* Still feed WDT even on mutex timeout — the task isn't stuck,
+           * it just couldn't acquire the lock this iteration */
+          esp_task_wdt_reset();
+          ESP_LOGW(TAG, "UI task: mutex timeout");
+          vTaskDelay(pdMS_TO_TICKS(5));
+       }
     }
 }
 
