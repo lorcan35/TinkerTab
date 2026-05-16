@@ -181,6 +181,12 @@ static void sleep_cycle_stop(void);
 static void orb_body_press_cb(lv_event_t *e);
 static void tts_scrubber_start(uint32_t duration_ms);
 static void tts_scrubber_stop(void);
+static void alive_start(void);
+static void alive_stop(void);
+/* TT #549 alive-motion guard — defined alongside idle_breath statics
+ * later in the file but the helpers + state machine reference it
+ * earlier. */
+static bool s_alive_running;
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -786,9 +792,10 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
    }
 
-   /* IDLE state arms tilt drift + idle breath by default. */
+   /* IDLE state arms tilt drift + idle breath + always-alive motion. */
    tilt_start();
    idle_breath_start();
+   alive_start();
    /* TT #545: arm sleep cycle + wake on every body press.  ui_home
     * already wires its own click/long-press handlers; this is a
     * separate LV_EVENT_PRESSED hook that fires earlier (on touch-
@@ -827,6 +834,7 @@ void ui_orb_destroy(void) {
    body_pulse_stop();
    sleep_cycle_stop();
    tts_scrubber_stop();
+   alive_stop();
    /* Cancel any in-flight lean anims targeting s_spec. */
    if (s_spec) {
       lv_anim_delete(s_spec, lean_anim_rest_x_cb);
@@ -908,8 +916,10 @@ void ui_orb_set_state(ui_orb_state_t s) {
     * pipeline state owners can drive s_halo without contention. */
    if (s == ORB_STATE_IDLE) {
       idle_breath_start();
+      alive_start();
    } else {
       idle_breath_stop();
+      alive_stop();
    }
 
    /* Step 5: voice bloom + listening lean are tied to LISTENING.
@@ -1125,6 +1135,71 @@ void ui_orb_wake(void) {
    s_last_interaction_ms = (uint32_t)(esp_timer_get_time() / 1000);
    if (s_sleep_phase != SLEEP_AWAKE) {
       sleep_apply_phase(SLEEP_AWAKE);
+   }
+}
+
+/* ── Always-alive sphere (TT #549) ───────────────────────────────────── */
+
+/* Two slow infinite anims layered on the body + spec so the sphere
+ * never reads as static.  Both pause when the orb leaves IDLE
+ * (state-owned motion takes priority) and when the dictation
+ * pipeline is active (the pipeline tints/fills the body itself). */
+
+static void alive_grad_anim_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   /* Maps v in [0, 100] to bg_main_stop in [0, 28].  The lit-side stop
+    * extends downward then retracts, slowly shifting the lit-shadow
+    * boundary on the sphere — reads as a planet's terminator
+    * breathing inward and outward. */
+   int stop = v * 28 / 100;
+   lv_obj_set_style_bg_main_stop((lv_obj_t *)obj, stop, LV_PART_MAIN);
+}
+
+static void alive_spec_anim_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+static void alive_start(void) {
+   if (s_alive_running) return;
+   s_alive_running = true;
+   if (s_body) {
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, s_body);
+      lv_anim_set_exec_cb(&a, alive_grad_anim_cb);
+      lv_anim_set_values(&a, 0, 100);
+      lv_anim_set_time(&a, 30000);
+      lv_anim_set_playback_time(&a, 30000);
+      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+      lv_anim_start(&a);
+   }
+   if (s_spec) {
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, s_spec);
+      lv_anim_set_exec_cb(&a, alive_spec_anim_cb);
+      lv_anim_set_values(&a, 120, 160);
+      lv_anim_set_time(&a, 7000);
+      lv_anim_set_playback_time(&a, 7000);
+      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+      lv_anim_start(&a);
+   }
+}
+
+static void alive_stop(void) {
+   if (!s_alive_running) return;
+   s_alive_running = false;
+   if (s_body) {
+      lv_anim_delete(s_body, alive_grad_anim_cb);
+      /* Snap back to the canonical full-range gradient. */
+      lv_obj_set_style_bg_main_stop(s_body, 0, LV_PART_MAIN);
+   }
+   if (s_spec) {
+      lv_anim_delete(s_spec, alive_spec_anim_cb);
+      lv_obj_set_style_bg_opa(s_spec, 140, LV_PART_MAIN);
    }
 }
 
@@ -1405,6 +1480,12 @@ static void body_pulse_stop(void) {
 #define IDLE_BREATH_AMPLITUDE 28 /* peak halo opa during breath */
 static int s_idle_breath_last_opa = 0;
 
+/* TT #549 always-alive sphere — slow body gradient-stop pan + slow
+ * spec opa breath, both IDLE-only.  Pause during LISTENING /
+ * PROCESSING / SPEAKING and any pipeline-active state so the
+ * state-owned motion isn't competing.  (s_alive_running is forward-
+ * declared near the top of the file.) */
+
 static void idle_breath_tick_cb(lv_timer_t *t) {
    (void)t;
    if (!s_halo) return;
@@ -1552,6 +1633,15 @@ static void orb_pipeline_cb(const dict_event_t *event, void *user_data) {
 void ui_orb_set_pipeline_state(const dict_event_t *event) {
    if (!event) return;
    s_pipeline = *event;
+
+   /* TT #549: pause always-alive motion while the pipeline owns the
+    * body's paint — gradient-stop pan + spec opa breath compete with
+    * paint_pipeline_body's tint.  Resume on DICT_IDLE. */
+   if (event->state != DICT_IDLE) {
+      alive_stop();
+   } else {
+      if (s_state == ORB_STATE_IDLE) alive_start();
+   }
 
    /* Tear down the SAVED auto-fade timer when leaving SAVED. */
    if (event->state != DICT_SAVED && s_saved_fade_timer) {

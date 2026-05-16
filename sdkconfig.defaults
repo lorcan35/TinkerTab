@@ -235,3 +235,26 @@ CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 # fixes conn_mode=2 (ngrok / internet-only) being unusable after
 # extended LAN use.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
+# --- TT #549: max hardware budget ---
+# CPU 360 → 400 MHz (ESP32-P4 ceiling).  +11% on every render +
+# voice + WS task budget.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=400
+
+# LVGL shadow rendering: pre-compute + cache 16 blur kernels.  Was 0
+# (every shadow rasterized from scratch on every repaint).  Bumping
+# to 16 makes the corona-halo class of effects feasible — TT #547
+# reverted shadow blur because UI task couldn't finish a frame
+# inside the mutex window.
+CONFIG_LV_DRAW_SW_SHADOW_CACHE_SIZE=16
+
+# LVGL parallel draw across both P4 cores.  Was 1 (single threaded);
+# 2 lets LVGL split each frame's draw tiles across the two CPU
+# cores.  Direct render-budget multiplier.
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+
+# Bigger layer simple buffer (24 KB → 64 KB) so composite effects
+# stay on the fast path instead of falling back to the slow chunked
+# rasterizer.
+CONFIG_LV_DRAW_LAYER_SIMPLE_BUF_SIZE=65536
