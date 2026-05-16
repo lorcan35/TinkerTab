@@ -142,11 +142,25 @@ static lv_obj_t *s_ripple_b =
 static lv_timer_t *s_ripple_timer = NULL;       /* 16 ms tick for ripple geometry */
 static lv_obj_t *s_thinking_arc = NULL;         /* PR 2 polish: rotating arc segment around body during TRANSCRIBING */
 static lv_timer_t *s_thinking_arc_timer = NULL; /* drives the arc's rotation */
+static lv_obj_t *s_tts_arc = NULL;              /* TT #545: TTS scrubber arc — fills clockwise during SPEAKING */
+#define TTS_SCRUBBER_DEFAULT_MS 6000
 static lv_obj_t *s_saved_burst = NULL;          /* PR 2 polish: one-shot green ring on SAVED entry */
 static lv_timer_t *s_saved_burst_timer = NULL;
 static uint32_t s_saved_burst_t0 = 0;         /* ms uptime when burst started, for elapsed-frac math */
 static lv_timer_t *s_body_pulse_timer = NULL; /* PR 2 polish: body heartbeat scale during RECORDING */
 static lv_timer_t *s_idle_breath_timer = NULL; /* TT #543: idle-only slow breath */
+
+/* TT #545 sleep cycle: breath period is runtime-tunable so DROWSY +
+ * ASLEEP can slow it down without re-creating the timer.  Defaults to
+ * IDLE_BREATH_AWAKE_MS but `sleep_apply_phase` writes a longer value
+ * before the next tick reads it.  s_last_interaction_ms is bumped on
+ * any user/voice activity and consulted by sleep_tick_cb to decide
+ * drowsy/asleep transitions. */
+#define IDLE_BREATH_AWAKE_MS 4000
+#define IDLE_BREATH_DROWSY_MS 8000
+#define IDLE_BREATH_ASLEEP_MS 14000
+static uint32_t s_idle_breath_period_ms = IDLE_BREATH_AWAKE_MS;
+static uint32_t s_last_interaction_ms = 0;
 
 /* Forward declarations — body_pulse + idle_breath helpers are defined
  * alongside the paint helpers near the bottom of the file but the state
@@ -154,6 +168,11 @@ static lv_timer_t *s_idle_breath_timer = NULL; /* TT #543: idle-only slow breath
 static void body_pulse_stop(void);
 static void idle_breath_start(void);
 static void idle_breath_stop(void);
+static void sleep_cycle_start(void);
+static void sleep_cycle_stop(void);
+static void orb_body_press_cb(lv_event_t *e);
+static void tts_scrubber_start(uint32_t duration_ms);
+static void tts_scrubber_stop(void);
 static lv_obj_t *s_comet = NULL; /* skill-rim comet (sibling-AFTER s_body so it draws on top) */
 static lv_timer_t *s_tilt_timer = NULL;
 static lv_timer_t *s_bloom_timer = NULL;
@@ -706,6 +725,44 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       lv_obj_add_flag(s_thinking_arc, LV_OBJ_FLAG_HIDDEN);
    }
 
+   /* TT #545: TTS scrubber arc — sibling AFTER s_body, same shape as
+    * the thinking arc but with a different motion model.  bg_angles
+    * 270..630 starts the indicator at 12 o'clock and wraps clockwise.
+    * value 0..100 animates from 0 to full ring over the SPEAKING
+    * state, with a 6 s default duration if TTS metadata isn't
+    * available.  Hidden by default. */
+   s_tts_arc = lv_arc_create(parent);
+   if (s_tts_arc) {
+      lv_obj_remove_style(s_tts_arc, NULL, LV_PART_KNOB);
+      lv_obj_set_size(s_tts_arc, THINKING_ARC_DIAM, THINKING_ARC_DIAM);
+      lv_obj_set_pos(s_tts_arc, cx - THINKING_ARC_DIAM / 2, cy - THINKING_ARC_DIAM / 2);
+      /* Full ring, then rotate so the start is at 12 o'clock.  LVGL 9
+       * bg_angles > 360 wraps strangely with set_value; the
+       * bg_angles(0, 360) + rotation(270) pattern is the canonical one
+       * used by the existing thinking arc and lights-up reliably. */
+      lv_arc_set_bg_angles(s_tts_arc, 0, 360);
+      lv_arc_set_rotation(s_tts_arc, 270);
+      lv_arc_set_mode(s_tts_arc, LV_ARC_MODE_NORMAL);
+      lv_arc_set_range(s_tts_arc, 0, 100);
+      lv_arc_set_value(s_tts_arc, 0);
+      /* Indicator: 6 px amber stroke — wider than the thinking arc's 4 px
+       * since the scrubber sits further from the body edge and needs to
+       * read as a progress indicator, not a decorative sweep. */
+      lv_obj_set_style_arc_width(s_tts_arc, 6, LV_PART_INDICATOR);
+      lv_obj_set_style_arc_color(s_tts_arc, lv_color_hex(0xFCD34D), LV_PART_INDICATOR);
+      lv_obj_set_style_arc_opa(s_tts_arc, LV_OPA_COVER, LV_PART_INDICATOR);
+      /* MAIN part = the un-filled portion of the track.  Soft amber at
+       * low opa so the user sees the full ring as a "track" while the
+       * indicator fills clockwise — reads as progress, not a streak. */
+      lv_obj_set_style_arc_width(s_tts_arc, 6, LV_PART_MAIN);
+      lv_obj_set_style_arc_color(s_tts_arc, lv_color_hex(0xFCD34D), LV_PART_MAIN);
+      lv_obj_set_style_arc_opa(s_tts_arc, 40, LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(s_tts_arc, 0, LV_PART_MAIN);
+      lv_obj_remove_flag(s_tts_arc, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(s_tts_arc, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(s_tts_arc, LV_OBJ_FLAG_HIDDEN);
+   }
+
    /* PR 2: hero caption below the orb for pipeline state — sized to read
     * as a primary status indicator (Montserrat Bold 22 px), not a
     * footnote.  Pure text, no unicode bullets — those rendered as
@@ -726,6 +783,14 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    /* IDLE state arms tilt drift + idle breath by default. */
    tilt_start();
    idle_breath_start();
+   /* TT #545: arm sleep cycle + wake on every body press.  ui_home
+    * already wires its own click/long-press handlers; this is a
+    * separate LV_EVENT_PRESSED hook that fires earlier (on touch-
+    * down, not on tap release) so wake feels instantaneous. */
+   if (s_body) {
+      lv_obj_add_event_cb(s_body, orb_body_press_cb, LV_EVENT_PRESSED, NULL);
+   }
+   sleep_cycle_start();
 
    /* PR 2: subscribe to the dictation pipeline.  Callbacks land on the
     * LVGL thread thanks to the _lvgl variant.  Static guard so a
@@ -754,6 +819,8 @@ void ui_orb_destroy(void) {
    bloom_stop();
    idle_breath_stop();
    body_pulse_stop();
+   sleep_cycle_stop();
+   tts_scrubber_stop();
    /* Cancel any in-flight lean anims targeting s_spec. */
    if (s_spec) {
       lv_anim_delete(s_spec, lean_anim_rest_x_cb);
@@ -805,6 +872,14 @@ void ui_orb_set_state(ui_orb_state_t s) {
    ui_orb_state_t prev = s_state;
    ESP_LOGD(TAG, "state %d → %d", (int)prev, (int)s);
    s_state = s;
+   /* TT #545: any non-IDLE state is a wake event — full opa + reset
+    * idle timer.  Re-entry to IDLE just stamps the timer; sleep_tick
+    * decides when to drowsy/sleep based on subsequent idle duration. */
+   if (s != ORB_STATE_IDLE) {
+      ui_orb_wake();
+   } else {
+      s_last_interaction_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   }
 
    /* Step 4: tilt drift runs in IDLE + LISTENING (always-physical
     * feel + lets the user point at the orb during voice).  In
@@ -853,8 +928,14 @@ void ui_orb_set_state(ui_orb_state_t s) {
     * enough to read as "speaking"; the halo carries the signal. */
    if (s == ORB_STATE_SPEAKING && prev != ORB_STATE_SPEAKING) {
       speaking_enter();
+      /* TT #545: TTS scrubber arc fills clockwise across the orb rim
+       * over the duration of the SPEAKING state.  6 s default; if TTS
+       * runs longer the indicator plateaus at 100% (still reads as
+       * "still talking").  If shorter, tts_scrubber_stop fires below. */
+      tts_scrubber_start(TTS_SCRUBBER_DEFAULT_MS);
    } else if (s != ORB_STATE_SPEAKING && prev == ORB_STATE_SPEAKING) {
       speaking_exit();
+      tts_scrubber_stop();
    }
 }
 
@@ -926,6 +1007,161 @@ void ui_orb_force_hour(int hour) {
 }
 
 int ui_orb_get_effective_hour(void) { return orb_effective_hour(); }
+
+/* ── Sleep cycle (TT #545) ───────────────────────────────────────────── */
+
+/* The orb tracks user/voice interactivity and progressively dims when
+ * left alone.  Three phases:
+ *
+ *   AWAKE   — full opa (255), 4 s breath.
+ *   DROWSY  — opa ~190, 8 s breath.  After 5 min idle.
+ *   ASLEEP  — opa ~120, 14 s breath.  After 30 min idle.
+ *
+ * Wake events: any non-IDLE state transition, any orb body tap, or an
+ * explicit ui_orb_wake() call from outside (e.g. screen touch from
+ * ui_home).  Wake ramps opa back to full over 400 ms.
+ *
+ * Sleep dim runs ONLY while in ORB_STATE_IDLE and the pipeline is not
+ * active — active dictation or any non-idle state keeps the orb at
+ * full brightness regardless of idle duration. */
+#define SLEEP_TICK_MS 5000 /* check every 5 s for snappy transitions */
+#define SLEEP_DROWSY_AT_MS (5 * 60 * 1000)
+#define SLEEP_ASLEEP_AT_MS (30 * 60 * 1000)
+#define SLEEP_AWAKE_OPA 255
+#define SLEEP_DROWSY_OPA 190
+#define SLEEP_ASLEEP_OPA 120
+#define SLEEP_FADE_MS 400
+
+typedef enum {
+   SLEEP_AWAKE = 0,
+   SLEEP_DROWSY,
+   SLEEP_ASLEEP,
+} sleep_phase_t;
+
+static lv_timer_t *s_sleep_timer = NULL;
+static sleep_phase_t s_sleep_phase = SLEEP_AWAKE;
+
+static void sleep_apply_phase(sleep_phase_t phase) {
+   if (phase == s_sleep_phase) return;
+   int target_opa;
+   uint32_t breath_ms;
+   switch (phase) {
+      case SLEEP_DROWSY:
+         target_opa = SLEEP_DROWSY_OPA;
+         breath_ms = IDLE_BREATH_DROWSY_MS;
+         break;
+      case SLEEP_ASLEEP:
+         target_opa = SLEEP_ASLEEP_OPA;
+         breath_ms = IDLE_BREATH_ASLEEP_MS;
+         break;
+      case SLEEP_AWAKE:
+      default:
+         target_opa = SLEEP_AWAKE_OPA;
+         breath_ms = IDLE_BREATH_AWAKE_MS;
+         break;
+   }
+   s_sleep_phase = phase;
+   s_idle_breath_period_ms = breath_ms;
+   ESP_LOGI(TAG, "sleep phase → %d (opa=%d, breath=%lums)", (int)phase, target_opa, (unsigned long)breath_ms);
+
+   if (!s_body) return;
+   int cur = lv_obj_get_style_opa(s_body, LV_PART_MAIN);
+   lv_anim_delete(s_body, presence_opa_anim_cb);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_body);
+   lv_anim_set_exec_cb(&a, presence_opa_anim_cb);
+   lv_anim_set_values(&a, cur, target_opa);
+   lv_anim_set_time(&a, SLEEP_FADE_MS);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+}
+
+static void sleep_tick_cb(lv_timer_t *t) {
+   (void)t;
+   /* Active states keep the orb awake; dictation pipeline does too. */
+   if (s_state != ORB_STATE_IDLE || ui_orb_pipeline_active()) {
+      /* Refresh the interaction stamp so we don't fall straight into
+       * DROWSY the instant we return to IDLE. */
+      s_last_interaction_ms = (uint32_t)(esp_timer_get_time() / 1000);
+      return;
+   }
+   uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+   uint32_t idle = now - s_last_interaction_ms;
+   sleep_phase_t target;
+   if (idle >= SLEEP_ASLEEP_AT_MS)
+      target = SLEEP_ASLEEP;
+   else if (idle >= SLEEP_DROWSY_AT_MS)
+      target = SLEEP_DROWSY;
+   else
+      target = SLEEP_AWAKE;
+   sleep_apply_phase(target);
+}
+
+static void sleep_cycle_start(void) {
+   if (s_sleep_timer) return;
+   s_last_interaction_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   s_sleep_phase = SLEEP_AWAKE;
+   s_idle_breath_period_ms = IDLE_BREATH_AWAKE_MS;
+   s_sleep_timer = lv_timer_create(sleep_tick_cb, SLEEP_TICK_MS, NULL);
+}
+
+static void sleep_cycle_stop(void) {
+   if (s_sleep_timer) {
+      lv_timer_del(s_sleep_timer);
+      s_sleep_timer = NULL;
+   }
+   s_sleep_phase = SLEEP_AWAKE;
+   s_idle_breath_period_ms = IDLE_BREATH_AWAKE_MS;
+}
+
+void ui_orb_wake(void) {
+   s_last_interaction_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   if (s_sleep_phase != SLEEP_AWAKE) {
+      sleep_apply_phase(SLEEP_AWAKE);
+   }
+}
+
+/* ── TTS scrubber arc (TT #545) ──────────────────────────────────────── */
+
+static void tts_arc_value_anim_cb(void *obj, int32_t v) {
+   if (!obj) return;
+   lv_arc_set_value((lv_obj_t *)obj, v);
+}
+
+static void tts_scrubber_start(uint32_t duration_ms) {
+   if (!s_tts_arc) return;
+   if (duration_ms == 0) duration_ms = TTS_SCRUBBER_DEFAULT_MS;
+   lv_anim_delete(s_tts_arc, tts_arc_value_anim_cb);
+   lv_arc_set_value(s_tts_arc, 0);
+   lv_obj_clear_flag(s_tts_arc, LV_OBJ_FLAG_HIDDEN);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_tts_arc);
+   lv_anim_set_exec_cb(&a, tts_arc_value_anim_cb);
+   lv_anim_set_values(&a, 0, 100);
+   lv_anim_set_time(&a, duration_ms);
+   lv_anim_set_path_cb(&a, lv_anim_path_linear);
+   /* Plateaus at 100 if SPEAKING runs longer than the estimate — the
+    * stuck-at-full state still reads as "still talking, just past my
+    * guess" without needing a loop. */
+   lv_anim_start(&a);
+}
+
+static void tts_scrubber_stop(void) {
+   if (!s_tts_arc) return;
+   lv_anim_delete(s_tts_arc, tts_arc_value_anim_cb);
+   lv_obj_add_flag(s_tts_arc, LV_OBJ_FLAG_HIDDEN);
+   lv_arc_set_value(s_tts_arc, 0);
+}
+
+static void orb_body_press_cb(lv_event_t *e) {
+   (void)e;
+   /* Any press on the orb body counts as an interaction — wake even if
+    * the press doesn't escalate to a state transition (long-press menu,
+    * cancel mid-listen, etc.). */
+   ui_orb_wake();
+}
 
 void ui_orb_ripple_for_tool(const char *tool_name) {
    (void)tool_name;
@@ -1141,9 +1377,10 @@ static void body_pulse_stop(void) {
  * sine path so the orb's outer rim softly respires.  Bloom and breath
  * share s_halo but never run concurrently (bloom = LISTENING only;
  * breath = IDLE only, plus pipeline-active yields). */
-#define IDLE_BREATH_PERIOD_MS 4000
+/* TT #545: AWAKE/DROWSY/ASLEEP breath periods + s_idle_breath_period_ms
+ * are declared up at the top of the file with the other layout
+ * constants (because sleep_apply_phase needs them earlier). */
 #define IDLE_BREATH_AMPLITUDE 28 /* peak halo opa during breath */
-
 static int s_idle_breath_last_opa = 0;
 
 static void idle_breath_tick_cb(lv_timer_t *t) {
@@ -1154,7 +1391,8 @@ static void idle_breath_tick_cb(lv_timer_t *t) {
    if (ui_orb_pipeline_active()) return;
    if (s_state != ORB_STATE_IDLE) return;
    uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
-   float phase = (float)(t_ms % IDLE_BREATH_PERIOD_MS) / (float)IDLE_BREATH_PERIOD_MS;
+   uint32_t period = s_idle_breath_period_ms ? s_idle_breath_period_ms : IDLE_BREATH_AWAKE_MS;
+   float phase = (float)(t_ms % period) / (float)period;
    /* sin(2π·phase) → half-rectified so the halo only adds (never goes
     * negative); ramps 0 → A → 0 over the cycle. */
    float s = sinf(phase * 6.28318530718f);

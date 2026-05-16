@@ -71,6 +71,13 @@ ui_orb_state_t ui_orb_get_state(void);
  *  call from non-LVGL tasks (marshals via tab5_lv_async_call internally). */
 void ui_orb_set_presence(bool near);
 
+/** TT #545 sleep cycle: stamp an interaction event + ramp the orb back
+ *  to full brightness if it had drifted into DROWSY / ASLEEP.  Called
+ *  internally on any non-IDLE state transition and on any body press.
+ *  Public so ui_home can wire a screen-wide touch hook for full-screen
+ *  wake. */
+void ui_orb_wake(void);
+
 /** Hour-of-day override for circadian palette debug.  -1 = clear override
  *  (returns to real RTC-driven palette).  Honors the existing debug
  *  endpoint POST /orb/force_hour?h=N from #503.  Thread-safe (marshals
