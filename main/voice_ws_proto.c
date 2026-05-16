@@ -267,6 +267,24 @@ esp_err_t voice_ws_send_register(void) {
 }
 
 // ---------------------------------------------------------------------------
+// End-of-turn ready_ack (Tab5 → Dragon).  TT #564.  Pure observability:
+// emitted by the playback drain task after the SPEAKING → READY
+// transition so Dragon knows the device has fully drained.  Best-effort
+// — WS-closed / send-failure no-ops, the next config_update / register
+// will re-sync state.  Matched on the Dragon side by the new
+// `cmd_type == "ready_ack"` branch shipped in TinkerBox PR #335.
+// ---------------------------------------------------------------------------
+esp_err_t voice_ws_send_ready_ack(void) {
+   if (!g_voice_ws || !esp_websocket_client_is_connected(g_voice_ws)) {
+      return ESP_ERR_INVALID_STATE;
+   }
+   char json[64];
+   int n = snprintf(json, sizeof(json), "{\"type\":\"ready_ack\",\"mode\":%d}", (int)voice_get_mode());
+   if (n < 0 || n >= (int)sizeof(json)) return ESP_ERR_INVALID_SIZE;
+   return voice_ws_send_text(json);
+}
+
+// ---------------------------------------------------------------------------
 // Outbound widget_action (Tab5 → Dragon).  Pure WS-proto concern: builds a
 // JSON frame, rate-limits, sends via voice_ws_send_text.  Pre-extract this
 // lived inline in voice.c at the bottom of the public-API section.
