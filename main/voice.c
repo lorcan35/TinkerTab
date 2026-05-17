@@ -189,7 +189,13 @@ const char *voice_current_turn_id(void) { return s_current_turn_id[0] ? s_curren
  * mid-PTT" without auto-cutting normal questions.  60 s leaves
  * generous headroom for longer thoughts. */
 #define MAX_RECORD_FRAMES_ASK 3000
-#define MAX_RECORD_FRAMES_DICT 15000 /* PR 1: 5 min hard cap on dictation */
+/* TT #572: bumped from 15000 (5 min) to 720000 (4 hr) so meetings,
+ * podcasts, and lectures actually fit.  Still a hard ceiling against
+ * forgotten-zombie tasks — 4 hr matches the longest realistic single-
+ * session use.  Mic chunks are 20 ms (50 frames/s) so 14400 s × 50 =
+ * 720000.  Dragon-side pipeline already streams per-VAD-segment, so
+ * the long session never holds a multi-hundred-MB buffer anywhere. */
+#define MAX_RECORD_FRAMES_DICT 720000
 
 // ---------------------------------------------------------------------------
 // State
@@ -787,7 +793,7 @@ static void mic_capture_task(void *arg)
             * FAILED with reason TOO_LONG, and break out of the mic loop
             * using the same pattern that's proven safe in ASK mode. */
            if (voice_get_mode() == VOICE_MODE_DICTATE && frames_sent >= MAX_RECORD_FRAMES_DICT) {
-              ESP_LOGW(TAG, "Dictation hit 5-min cap — auto-stopping");
+              ESP_LOGW(TAG, "Dictation hit 4-hr safety cap — auto-stopping");
               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_TOO_LONG, (uint32_t)(esp_timer_get_time() / 1000));
               break;
            }

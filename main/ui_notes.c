@@ -99,7 +99,11 @@ typedef enum {
 } note_fail_t;
 
 #define MAX_AUDIO_PATH 64
-#define MAX_NOTE_REC_SECS 300 /* 5 min hard cap on SD recording */
+/* TT #572: bumped from 300 (5 min) to 14400 (4 hr) so the SD recording
+ * keeps up with the WS-streaming cap in voice.c.  Safety guard against
+ * zombie tasks survives — 4 hr is still bounded.  WAV at 16 kHz mono
+ * int16 = 32 KB/s = ~115 MB/hr → ~460 MB for the full 4 hr cap. */
+#define MAX_NOTE_REC_SECS 14400
 
 /* PR 3 cleanup pass: layout constants hoisted to file scope so the
  * dynamic-relayout helper (notes_relayout_list) can use them outside
@@ -1858,10 +1862,11 @@ static void sd_record_task(void *arg)
     }
 
     int frames = 0;
-    /* 5-min hard cap.  Mic chunks are 20 ms (50 frames/s) so 300 s = 15000.
-     * Without this the SD recording would run until the user comes back
-     * and taps stop — a 477 s zombie was the proximate cause for adding
-     * this cap (audit 2026-05-14). */
+    /* 4-hr hard cap (TT #572).  Mic chunks are 20 ms (50 frames/s) so
+     * 14400 s = 720000 frames.  Original 5-min cap was a zombie-task
+     * guard (477 s zombie in audit 2026-05-14); bumped to 4 hr so
+     * meetings / podcasts / lectures fit while still preventing
+     * unbounded recording when the user forgets to stop. */
     const int max_frames = MAX_NOTE_REC_SECS * 50;
     while (s_sd_rec_running) {
         esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
@@ -2507,7 +2512,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
     * instead of a generic "FAIL" — so the user knows whether the
     * server is unreachable (NETWORK), the auth token is missing
     * (AUTH), the audio came back empty (EMPTY), the WAV is gone
-    * (NO AUDIO), or the recording hit the 5-min cap (TOO LONG). */
+    * (NO AUDIO), or the recording hit the 4-hr cap (TOO LONG). */
    /* Type badge — sentence-cased, lower letter-spacing, dimmer hue for
     * passive note metadata; red only when the state is actively
     * surfacing a failure reason that the user can act on.  Was an
