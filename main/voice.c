@@ -642,9 +642,7 @@ static void mic_capture_task(void *arg)
         int frames_sent = 0;
 
         int silence_frames = 0;
-        int total_silence_frames = 0;
         bool had_speech = false;
-        bool auto_stop_warning_shown = false;
 
 #define CALIBRATION_FRAMES 25
         float noise_sum = 0;
@@ -829,34 +827,32 @@ static void mic_capture_task(void *arg)
                  continue;
               }
 
+              /* TT #572 follow-up: dictation is LONG-FORM (meetings,
+               * podcasts, lectures).  The 5-s silence-auto-stop +
+               * auto-stop warning UI used to fire during normal
+               * meeting pauses and end the recording prematurely.
+               *
+               * We keep:
+               *   - VAD-driven per-utterance `segment` markers so
+               *     Dragon's pipeline transcribes incrementally
+               *   - The 4-hr safety cap above (frame-count, not
+               *     silence-based)
+               *
+               * We drop:
+               *   - DICTATION_AUTO_STOP_FRAMES silence-based ending
+               *   - WARN_3S / WARN_4S countdown UI (no longer
+               *     meaningful without auto-stop)
+               *
+               * User taps Stop manually when finished. */
               if (rms < dictation_threshold) {
                  silence_frames++;
-                 total_silence_frames++;
-
-                 if (had_speech && total_silence_frames == DICTATION_WARN_3S_FRAMES) {
-                    ui_voice_show_auto_stop_warning(2);
-                    auto_stop_warning_shown = true;
-                 } else if (had_speech && total_silence_frames == DICTATION_WARN_4S_FRAMES) {
-                    ui_voice_show_auto_stop_warning(1);
-                 }
               } else {
                  if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
                     ESP_LOGI(TAG, "Dictation: pause (%dms), sending segment", silence_frames * TAB5_VOICE_CHUNK_MS);
                     voice_ws_send_text("{\"type\":\"segment\"}");
                  }
-                 if (auto_stop_warning_shown) {
-                    ui_voice_show_auto_stop_warning(0);
-                    auto_stop_warning_shown = false;
-                 }
                  silence_frames = 0;
-                 total_silence_frames = 0;
                  had_speech = true;
-              }
-
-              if (had_speech && total_silence_frames >= DICTATION_AUTO_STOP_FRAMES) {
-                 ESP_LOGI(TAG, "Dictation auto-stop: %ds silence",
-                          DICTATION_AUTO_STOP_FRAMES * TAB5_VOICE_CHUNK_MS / 1000);
-                 break;
               }
            }
         }
@@ -867,12 +863,13 @@ static void mic_capture_task(void *arg)
          * reuses them across sessions.  They're freed only at process
          * shutdown (which never happens on the firmware side). */
 
-        if (voice_get_mode() == VOICE_MODE_DICTATE && had_speech &&
-            total_silence_frames >= DICTATION_AUTO_STOP_FRAMES && g_voice_ws &&
-            esp_websocket_client_is_connected(g_voice_ws)) {
-           voice_ws_send_text("{\"type\":\"stop\"}");
-           voice_set_state(VOICE_STATE_PROCESSING, NULL);
-        }
+        /* TT #572 follow-up: dictation no longer auto-stops on
+         * silence — user taps Stop manually.  The post-loop send-stop
+         * here used to fire when the silence-counter break above
+         * triggered.  Now the loop only exits via user-initiated stop
+         * or the 4-hr cap; the stop frame is already sent by those
+         * code paths, so this block is a dead branch.  Left as a
+         * no-op for clarity. */
 
         ESP_LOGI(TAG, "Mic session end (frames=%d) — back to idle", frames_sent);
         /* #284: drop back to outer while(1) and wait for the next
