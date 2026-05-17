@@ -206,3 +206,10 @@ TAB5_TOKEN=... python3 tests/e2e/runner.py story_smoke story_onboard
 - Wave 2 (atomic touch) blocks Wave 5 (debounce) only weakly — they can land in either order
 - Wave 6 (extract) is parallelisable with Wave 7 (nav)
 - Wave 8 (onboarding) is the most user-impactful but also the most disruptive — defer if scope-tight
+
+## Deferred audit P0s (status as of 2026-05-17)
+
+Two P0s from the original 2026-04-29 audit were deliberately deferred at the end of the 9-wave program (TT #328) as scope-larger-than-fits.  Status restamp ahead of any future Wave 9+ planning:
+
+- **K144 as 5th tier in the 3-dial mode sheet.**  Touches autonomy-dial product semantics — vmode=4 doesn't map cleanly onto the int/voi/aut tier triple today.  **STILL DEFERRED as of 2026-05-17 — re-evaluate after wakeword PR [#576](https://github.com/lorcan35/TinkerTab/pull/576) ships.**  PR #576 keeps the K144 surface narrow (always-on listener, not a mode), so the autonomy-dial product call is still open.
+- **Orb-overload across 4 surfaces.**  Home / chat / voice / notes all show different orb states with different semantics — needs a cross-team IA call to unify.  **STILL DEFERRED as of 2026-05-17 — re-evaluate after wakeword PR [#576](https://github.com/lorcan35/TinkerTab/pull/576) ships.**  PR #576 adds an `ui_orb_ripple_for_tool("wakeword")` invocation that further entangles orb semantics; the IA decision should land before this becomes a 5-surface problem.

@@ -75,6 +75,19 @@ OpenRouter).
 - **Widget Platform (v1)** -- Skills on Dragon emit typed widget state (`live`, `card`,
   `list`, `chart`, `media`, `prompt`); Tab5 renders it opinionatedly. New features ship as
   Python files on Dragon, no firmware flash. See [`docs/WIDGETS.md`](./docs/WIDGETS.md).
+- **Always-on wakeword + on-device dictation via K144** -- Optional Module LLM Kit
+  drives a streaming Zipformer ASR; Tab5 listens for a configurable wake phrase
+  ("tinker" by default) and then captures up to 4 hours of dictation in a PSRAM
+  buffer. Open-vocabulary phrase matching means no model retraining to change the
+  wake or end phrase. See [`docs/PLAN-wakeword.md`](./docs/PLAN-wakeword.md).
+- **Solo Direct mode (vmode=5)** -- Tab5 talks straight to OpenRouter for STT,
+  LLM, and TTS with no Dragon dependency. Per-model NVS keys + on-device RAG
+  against `/sdcard/rag.bin`. See `or_*` NVS keys in
+  [`CLAUDE.md`](./CLAUDE.md).
+- **Mic-driven orb visuals** -- The ambient sphere reacts to room sound with a
+  spike-flash detector for transients. Sphere-native motion (no 2D chrome) and
+  always-alive breathing. Shipped through PRs #547--#562 (orb arc) and
+  refined in PR #574 (four mic-driven additions to IDLE).
 
 ---
 
@@ -482,7 +495,7 @@ The server specification lives in TinkerBox at `docs/protocol.md`.
 | `{"type":"ping"}`                      | JSON    | Keepalive heartbeat (every 15s)      |
 | `{"type":"text","content":"..."}`      | JSON    | Text input (skips STT, goes to LLM) |
 | `{"type":"register",...}`              | JSON    | Device registration on connect       |
-| `{"type":"config_update","voice_mode":0\|1\|2\|3,"llm_model":"..."}` | JSON | Voice mode + LLM picker (modes: 0=Local 1=Hybrid 2=Cloud 3=TinkerClaw). Old `cloud_mode` boolean still accepted for backward compat |
+| `{"type":"config_update","voice_mode":0\|1\|2\|3,"llm_model":"..."}` | JSON | Voice mode + LLM picker (on-the-wire modes: 0=Local 1=Hybrid 2=Cloud 3=TinkerClaw). Tab5 also supports 4=Onboard (K144 LLM, no Dragon) and 5=Solo Direct (OpenRouter direct, no Dragon) as Tab5-side-only modes — they get downconverted to 0 on the wire so Dragon never sees them. Old `cloud_mode` boolean still accepted for backward compat. |
 | `{"type":"clear"}`                     | JSON    | Clear conversation context           |
 
 ### Dragon to Tab5

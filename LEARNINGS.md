@@ -1540,3 +1540,70 @@ Every entry here was learned the hard way. Read this before touching the codebas
 - **Solution:** Armed context state in `voice.c` (4 fields: channel, thread_id, sender, armed-bool), all guarded by `s_state_mutex` (the same mutex protecting voice state transitions).  Four public APIs: `voice_arm_channel_reply` (LVGL task), `voice_disarm_channel_reply` (any), `voice_is_channel_reply_armed` (UI peek), `voice_peek_channel_reply` (UI read-only; W7-E.4c TT #488), `voice_consume_channel_reply` (WS task; atomic read-and-clear).
 - **STT handler intercept:** In `voice_ws_proto.c` the non-DICTATE STT-complete branch checks `voice_consume_channel_reply` BEFORE the existing chat-push + state-transition path.  If armed, calls `voice_send_channel_reply` with the transcript, toasts "Reply sent to {sender}", returns-to-READY, and `cJSON_Delete(root); return;` to skip the LLM dispatch entirely.
 - **Prevention:** When introducing a cross-task hand-off (UI arms a flag → background task consumes it), make the **consume side atomic** and locked alongside whatever state the consumer mutates.  Re-using the existing `s_state_mutex` instead of adding a new one keeps the lock ordering simple — every voice-state transition already takes that mutex, so the armed-flag write happens-before the next state read by construction.
+
+## Cubic-Hermite TTS upsample replaces linear interp (PR #569, 2026-05-15)
+
+- **Date:** 2026-05-15
+- **Symptom:** Kokoro-class TTS playback on Tab5 sounded "choppy" and "buzzy" — high-frequency content sounded harsh.  Other voices (Piper, OpenRouter gpt-audio-mini) sounded fine on the same speaker stack, so the codec wasn't the issue.
+- **Root Cause:** `audio.c`'s 16 kHz → 48 kHz upsample (1:3) was a plain linear interpolator: `out[i] = in[i] + (in[i+1] - in[i]) * frac`.  Linear interp is band-limited only up to ~`f_in/4`; everything above gets aliased.  Kokoro's PCM has more energy near Nyquist than Piper, which is why the artefact only showed on the new voice.  A separate off-by-one (using `in[i-1]` as the "current" sample instead of `in[i]`) added a frame of group-delay error on top of that.
+- **Fix:** PR #568/#569 — replaced the linear interpolator with cubic Hermite (Catmull-Rom variant) using 4 neighboring samples + a chunk-boundary context cache so the kernel doesn't reset across WS chunk boundaries.  Also fixed the off-by-one in the same change (commit `0bc87bb`).  Same CPU class as linear (4× multiply-add per output sample); imperceptible cost on ESP32-P4.  Implementation lives in `main/audio.c`'s upsample function.
+- **Prevention:**
+  1. **Linear interp is fine for content-band 0..f_in/4; everything above aliases.**  If the TTS source has any high-frequency content (modern neural TTS does — Kokoro, gpt-audio-mini, etc.), upgrade to cubic Hermite or windowed-sinc.
+  2. **Always test upsample with a chirp or speech-near-Nyquist sample, not a pure low-frequency tone.**  Linear sounds fine on 100-1000 Hz tones; the artefact only shows on 4-7 kHz content.
+  3. **Chunk-boundary context matters at any kernel size > 1.**  Even cubic Hermite needs to carry 3 samples across chunks; otherwise you get a discontinuity tick at every 20 ms WS chunk boundary.
+
+## Dictation cap bumped 5 min → 4 h for meeting-length recording (PR #573)
+
+- **Date:** 2026-05-15
+- **Symptom:** User started dictating a long meeting summary into the Tab5 mic; recording auto-stopped after 5 minutes with the buffer half-full.  The Notes row showed "EMPTY" because of the truncation point landing mid-sentence.
+- **Root Cause:** `MAX_RECORD_FRAMES_DICT` in `voice.c` was set to 5 min × 60 s × 50 frames/s = 15000 — a defensive cap from when the SD scratch buffer was 32 KB and the auto-stop was the only "stop" path.  Once silence-auto-stop was disabled (PR `16657ba`, "meetings have pauses") + MAX_NOTE_LEN bumped to 32 KB (PR `5b29301`), the time cap became the only meaningful upper bound — and 5 min was too short for the new use case.
+- **Fix:** PR #573 (`02bd802`) — bumped `MAX_RECORD_FRAMES_DICT` to 4 h × 3600 s × 50 frames/s = 720000.  Matches the wakeword dictation cap added in PR #576 (TT #575) so the two dictation surfaces have aligned ceilings.  No SD I/O change needed — 4 h of 16 kHz mono int16 fits inside the existing PSRAM scratch buffer (≈460 MB worst-case; Tab5 has 32 MB but the WS push drains the buffer as it fills, so steady-state working set stays bounded).
+- **Prevention:**
+  1. **When you change a downstream cap (MAX_NOTE_LEN), audit upstream caps in the same path.**  The dictation pipeline has 3 caps (mic frame count, scratch buffer, note text length); changing one without the others creates "silently truncated" UX.
+  2. **Document caps by the use case, not the number.**  `MAX_RECORD_FRAMES_DICT` was a magic constant; a sibling `#define MEETING_LENGTH_S 14400` would have made the original 5 min cap visibly wrong for the meeting use case.
+
+## Four mic-driven sphere additions to IDLE orb (PR #574)
+
+- **Date:** 2026-05-16
+- **Symptom:** The IDLE orb (post-PR #547/#553/#562 ambient sphere) reacted to mic with a single global brightness lift — fine, but a single dimension carried all the information.  User feedback: "I can tell it hears me but I can't tell *what* it's hearing."
+- **Root Cause:** No — this was a feature-add, not a bug.  Captured as a LEARNING because the four-dimension breakdown is reusable design vocabulary for future orb states.
+- **Fix:** PR #574 (`e3e3aaba9`) — four mic-driven additions layered onto the existing sphere:
+  1. **Rim halo** — outer ring brightens with RMS, narrow ramp so it doesn't compete with the spike-flash detector
+  2. **Lit-from-within** — body gradient's center point brightens on sustained energy (1-2 s LPF)
+  3. **Specular wobble** — the specular highlight position jitters on every transient, ~3 px excursion, drives "alive" perception
+  4. **Frequency-band hue tint** — coarse 3-band FFT drives a tiny hue shift (low → warmer, high → cooler) on the gradient, giving the orb visible character per-voice
+- **Prevention:**
+  1. **A single feedback dimension caps user understanding.**  When mic-reactive orbs felt "alive but information-poor," the fix wasn't louder — it was orthogonal dimensions.  Each addition above is a separate scalar mapped to a separate visual primitive, no two competing for the same pixel.
+  2. **Each new dimension needs a kill-switch path.**  All four are independently toggleable in the orb config struct so future sphere designs can pick a subset without code edits.
+
+## K144 KWS unit is officially installed but unusable (supersedes the older "no wake word" learning)
+
+- **Date:** 2026-05-17
+- **Symptom:** PR #576 (TT #575) attempted to use K144's `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01` for the wake-word path — the obvious choice since (a) it's open-vocabulary so no model retraining is required, (b) it's the official keyword-spotting unit in the K144's `sys.lsmode`, (c) the systemd `llm-kws` service was running.  Every `kws.setup` body shape attempted returned `parse_config false` errors.
+- **Root Cause:** The K144 daemon's `kws.setup` parser is broken on this firmware version (v1.3) — no body shape was accepted.  Tried 6+ shapes including the model + keyword combinations the Arduino library suggests + the input-stream shape from `asr.setup`.  All rejected at parse time, before any model loading happens.  Filed as a vendor follow-up; not blocking because there's a working alternative on the same K144.
+- **Fix (the practical path):** Pivoted to ASR-based phrase matching — same K144 audio + asr units already used by Phase 6b autonomous chain (`sherpa-ncnn-streaming-zipformer-20M-2023-02-17`).  We get a strict superset of what `kws.setup` would have given us:
+  - Open-vocabulary at runtime (one string, no retrain) — same as the KWS unit would have offered
+  - Full continuous transcript "for free" — enables on-device long-form dictation in the same task
+  - Known-good unit — already powers vmode=4 on every Tab5 with a K144 stack
+- **Prevention:**
+  1. **`sys.lsmode` only proves "this unit is INSTALLED" — not "this unit's setup verb works."**  Vendor module manifests aren't the same as live-tested capability.  Before scoping a feature against an officially-listed unit, send one `setup` probe with the shapes the library headers suggest.  10-minute probe saves a multi-day pivot.
+  2. **Supersedes the 2026-05-01 LEARNING "Sherpa-onnx KWS is open-vocabulary."**  That entry correctly identified KWS as open-vocab and changed the cost estimate from months to one wave.  This entry adds: even open-vocab KWS doesn't help when the daemon's setup parser is broken.  ASR-based matching is the practical revival path until M5 ships a fix.
+  3. **The KWS dead-end is documented (`docs/PLAN-wakeword.md` "KWS dead-end" section) so future contributors don't repeat the probe.**  Re-probe quarterly if K144 firmware updates; the fix is presumably a single line on the vendor side.
+
+## Always-on K144 ASR for wakeword + on-device dictation (PR #576)
+
+- **Date:** 2026-05-17
+- **Symptom:** Wake-word was retired in TT #162 (TDM-AEC blocker + WakeNet procurement cost).  Tab5 had a K144 stack with a working streaming Zipformer ASR that already powered vmode=4 (Onboard mode autonomous chain) — but only on-demand.  Hands-free wake plus long-form dictation both lived as feature wishes with no clear path on a single-MCU Tab5.
+- **Root Cause:** The original wake-word revival plan assumed a *separate* model class (KWS or WakeNet) was needed for wake detection.  Reusing an existing always-on ASR for substring matching wasn't on the radar because ASR was framed as expensive per-utterance work, not as a continuous stream.
+- **Fix:** PR #576 ships `main/voice_wakeword.{c,h}` (~426 LOC across .c + .h) + `voice_m5_llm_wakeword_setup/_run/_teardown` helpers + lifecycle hooks in `voice_onboard.c`:
+  - K144 chain: audio.setup → asr.setup (no llm, no tts) emits asr.utf-8.stream {delta, finish}
+  - Tab5 task: 2-state machine (IDLE → wake match → LISTENING → end-phrase / silence / 4 h cap → IDLE)
+  - 32 KB PSRAM dictation buffer; default wake "tinker", default end "save note"; defaults cap at 4 h matching #573
+  - UI bridge: toast + orb ripple via `tab5_lv_async_call` on WAKE and DICTATION_FINAL
+  - Arms on warmup READY + every successful Wave 13 reset; tears down when vmode=4 chain takes the UART
+  - Obs events: `wakeword.start`, `wakeword.task`, `wakeword.fire`, `wakeword.dictation`
+- **Live verified 2026-05-17:** wake fired on "tinker" substring at 282 s post-boot.  UI bridge added in `e5426cc` after that test; needs hardware retest.
+- **Prevention:**
+  1. **An always-on ASR is functionally a superset of always-on KWS.**  When the host has spare cycles + power budget + a streaming ASR is already available, ASR-based substring matching is simpler, gives full transcript for free, and dodges the "needs custom KWS model" friction.  Default to this design when the constraints fit.
+  2. **Wakeword + dictation should share a chain.**  Wakeword + dictation aren't two features — they're two consumers of one ASR stream.  One task, one buffer, one state machine cuts code + UART contention vs. two parallel tasks.
+  3. **Lifecycle ownership of a shared hardware resource (K144 UART) needs explicit takeover semantics.**  The wakeword listener tears down when the Phase 6b autonomous chain starts; otherwise both would try to own the chain.  Document who owns the resource in which voice mode; one consumer at a time.

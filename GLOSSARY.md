@@ -32,9 +32,13 @@
 
 **`device_id`** — NVS key (12-hex chars).  Stable identifier sent in WS `register` frame.  MAC-derived on first boot.  Dragon uses this as the primary key in the `devices` table.
 
+**`dictation_buffer`** — 32 KB PSRAM buffer inside [`voice_wakeword.c`](main/voice_wakeword.c) that accumulates ASR partial transcripts during the LISTENING state of the wakeword listener.  Size configurable via `voice_wakeword_config_t.dictation_buf_bytes`; matches the meeting-length 4 h cap from TT #573.  See [`docs/PLAN-wakeword.md`](docs/PLAN-wakeword.md).
+
 **`dragon_host` / `dragon_port`** — NVS keys.  Dragon WS server endpoint.  Defaults from `config.h` / Kconfig but settings UI lets the user change them.  PR [#299](https://github.com/lorcan35/TinkerTab/issues/299) was triggered when the e2e harness's `/input/text` accidentally typed into this field; PR [#300](https://github.com/lorcan35/TinkerTab/pull/300) scoped `/input/text` to the chat input only.
 
 ## E
+
+**`end_phrase`** — Case-insensitive phrase that terminates on-device dictation in the [`voice_wakeword`](main/voice_wakeword.h) module.  Default `"save note"`; empty string disables phrase-based stop (rely on silence cap / 4 h timeout).  Configurable via `voice_wakeword_config_t.end_phrase`.
 
 **E2E harness** — Python scenario runner in [`tests/e2e/`](tests/e2e/) (PR #295).  `Tab5Driver` class wraps the debug HTTP API; `runner.py` runs scenarios with per-step screenshots + event captures + report.json/report.md output.  Three canonical stories: `story_smoke` (~2 min, 14 steps), `story_full` (~2 min, 24 steps), `story_stress` (~10 min, 77 steps).
 
@@ -57,6 +61,10 @@
 **IO Expander** — Two PI4IOE5V6416 chips on system I2C (0x43 + 0x44) controlling power rails (LCD reset, speaker enable, WiFi power, USB 5 V, charging, etc.).  See [`docs/HARDWARE.md`](docs/HARDWARE.md).
 
 **`int_tier`** — NVS key (uint8 0..2) — intelligence dial.  `0=fast`, `1=balanced`, `2=smart`.  Combined with `voi_tier` and `aut_tier` in `tab5_mode_resolve()` to derive the effective `voice_mode` (0/1/2/3).
+
+## K
+
+**`kws_unit`** — K144's `sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01` keyword-spotting unit.  Officially installed (model files present, systemd service running, lists in `sys.lsmode`), but on the current K144 firmware its `kws.setup` rejects every body shape attempted by the wakeword module — `parse_config false`.  Documented as a vendor follow-up; superseded in [`docs/PLAN-wakeword.md`](docs/PLAN-wakeword.md) by ASR-based phrase matching, which gives a strict superset (open-vocabulary at runtime + full transcript for the dictation buffer) on a unit we already trust.
 
 ## L
 
@@ -144,7 +152,7 @@
 
 **`VID0`** — 4-byte ASCII magic on a binary WS frame indicating it's a JPEG video frame for the call relay.  Counterpart: `AUD0` for raw 16 kHz mono int16 PCM.
 
-**`vmode`** — NVS key (uint8 0..3) — voice mode.  `0=Local`, `1=Hybrid`, `2=Cloud`, `3=TinkerClaw`.  Sent to Dragon as `voice_mode` in `config_update`.
+**`vmode`** — NVS key (uint8 0..5) — voice mode.  `0=Local`, `1=Hybrid`, `2=Cloud`, `3=TinkerClaw`, `4=Onboard (K144)`, `5=Solo Direct (OpenRouter)`.  Sent to Dragon as `voice_mode` in `config_update` — but **vmode=4 and vmode=5 are Tab5-side-only**: Tab5 auto-downconverts to 0 on the wire and voice.c's ACK handler filters out Dragon's echo to keep the local NVS at the true 4/5 value.
 
 **`voi_tier`** — NVS key (uint8 0..2) — voice dial.  `0=local Piper`, `1=neutral`, `2=studio OpenRouter`.  Combined with `int_tier` + `aut_tier` to derive the effective voice mode.
 
@@ -155,6 +163,8 @@
 **`voice_video.{c,h}`** — Two-way video calling module.  HW JPEG uplink via the shared encoder + TJPGD downlink decode + `VID0` framing.  `voice_video_start_call` / `voice_video_end_call` are the atomic entry points.  Also exposes `voice_video_encode_rgb565()` so the camera-screen recording feature shares the single HW JPEG engine.
 
 ## W
+
+**`wake_phrase`** — Case-insensitive substring matched against partial transcripts streaming from the K144 ASR (`asr.utf-8.stream`) in the always-on [`voice_wakeword`](main/voice_wakeword.h) listener.  Default `"tinker"`; configurable via `voice_wakeword_start(cfg, ...)`.  Open-vocabulary at runtime — change one string with no model retraining required.  See [`docs/PLAN-wakeword.md`](docs/PLAN-wakeword.md).
 
 **Watchdog reset** — Triggered when (a) the heap watchdog declares fragmentation crisis, or (b) `python -m esptool ... --after watchdog_reset` from a workstation.  Tab5's USB-JTAG doesn't wire RTS to EN, so `default_reset` / `hard_reset` won't cut it for a running app — must use `watchdog_reset`.
 
