@@ -1,0 +1,20 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+
+<!--
+  Advertises TinkerTab docs over mDNS so phones / Tab5 / laptops on the LAN
+  can browse to http://tinker.local without needing the raw IP.
+
+  Install:
+    sudo cp deploy/tinkertab-docs.avahi.service /etc/avahi/services/
+    sudo systemctl reload avahi-daemon
+-->
+
+<service-group>
+  <name replace-wildcards="yes">TinkerTab Docs (%h)</name>
+  <service>
+    <type>_http._tcp</type>
+    <port>80</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>

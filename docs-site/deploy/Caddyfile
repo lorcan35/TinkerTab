@@ -1,0 +1,17 @@
+# TinkerTab docs — LAN-only static site
+#
+# Listening on :80 accepts any host header — covers tinker.local, localhost,
+# and the raw LAN IP without per-host config.  No HTTPS for v1; if we want
+# certs later, swap to:
+#   tinker.local, localhost {
+#     tls internal
+#     ...
+#   }
+# (caddy will mint a local-CA cert; clients have to trust it once.)
+
+:80 {
+	root * /home/rebelforce/projects/TinkerTab/docs-site/build
+	encode gzip
+	file_server
+	try_files {path} {path}/ /404.html
+}

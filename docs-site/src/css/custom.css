@@ -1,0 +1,670 @@
+/**
+ * TinkerTab docs theme — "lab notebook meets terminal"
+ *
+ * A technical-journal aesthetic: cream-paper background, deep ink text,
+ * a distinctive serif voice (Fraunces display + Newsreader body) that
+ * reads like a printed publication, with mono annotations for page
+ * numbers and section markers. Emerald + phosphor flashes are reserved
+ * for moments — voice orb, terminal blocks — instead of slathered as
+ * a brand color.
+ *
+ * Dark mode is the same paper aged into dusk — not a flipped neon
+ * theme. We keep the editorial rhythm in both.
+ */
+
+/* Variable Fraunces gives us SOFT axis for the display warmth +
+   wide weight + italic. Newsreader is Meta foundry's reading serif. */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,30..100;1,9..144,300..900,30..100&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* ── Paper palette ─────────────────────────────────────────── */
+  --tt-paper:        #faf6ea;        /* the page */
+  --tt-paper-2:      #f1ebd9;        /* cards, surfaces, marginalia */
+  --tt-paper-3:      #e6dfca;        /* deeper still — sidebar bg */
+  --tt-ink:          #1a1612;        /* deep ink */
+  --tt-ink-2:        #3a322a;        /* secondary ink */
+  --tt-ink-muted:    #6b5d4e;        /* sepia muted */
+  --tt-rule:         #c9bfa8;        /* hairline */
+
+  /* ── Accents — used SPARINGLY for moments ────────────────── */
+  --tt-leaf:         #0e5c3f;        /* deep emerald — primary action */
+  --tt-leaf-soft:    #4a8b6f;        /* hover / secondary */
+  --tt-phosphor:     #2dd084;        /* voice/orb flash */
+  --tt-vermilion:    #c8553b;        /* alerts, plates, vermilion ink */
+  --tt-amber:        #b87333;        /* secondary plate */
+
+  /* Map back into Infima so Docusaurus internals follow */
+  --ifm-color-primary:           var(--tt-leaf);
+  --ifm-color-primary-dark:      #0a4a32;
+  --ifm-color-primary-darker:    #094328;
+  --ifm-color-primary-darkest:   #07371f;
+  --ifm-color-primary-light:     var(--tt-leaf-soft);
+  --ifm-color-primary-lighter:   #6ba88c;
+  --ifm-color-primary-lightest:  #9fc6b3;
+
+  --ifm-background-color:          var(--tt-paper);
+  --ifm-background-surface-color:  var(--tt-paper-2);
+  --ifm-color-content:             var(--tt-ink);
+  --ifm-color-content-secondary:   var(--tt-ink-muted);
+
+  --ifm-font-family-base: 'Newsreader', 'Iowan Old Style', 'Charter',
+    Georgia, serif;
+  --ifm-heading-font-family: 'Fraunces', 'Newsreader', Georgia, serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', 'SFMono-Regular',
+    Consolas, monospace;
+
+  --ifm-code-background: #ece5d0;
+  --ifm-code-font-size: 90%;
+
+  --ifm-h1-font-size: 3rem;
+  --ifm-h2-font-size: 1.75rem;
+  --ifm-h3-font-size: 1.3rem;
+
+  --ifm-line-height-base: 1.65;
+  --ifm-paragraph-margin-bottom: 1.1rem;
+
+  --docusaurus-highlighted-code-line-bg: rgba(14, 92, 63, 0.10);
+
+  /* Hero atmosphere — paper texture + subtle phosphor halo where the
+     orb sits in the illustration */
+  --tt-hero-grain: radial-gradient(
+      circle at 78% 38%,
+      rgba(45, 208, 132, 0.10),
+      transparent 28%
+    );
+
+  /* Faint paper grain overlay (CSS-only, no image) */
+  --tt-grain:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(26, 22, 18, 0.012) 2px,
+      rgba(26, 22, 18, 0.012) 3px
+    );
+}
+
+[data-theme='dark'] {
+  /* Dark = paper aged into dusk. Same hierarchy, lower light. */
+  --tt-paper:        #14110d;
+  --tt-paper-2:      #1c1814;
+  --tt-paper-3:      #25201b;
+  --tt-ink:          #ede4d0;
+  --tt-ink-2:        #c8bda7;
+  --tt-ink-muted:    #8e8170;
+  --tt-rule:         #4a4135;
+
+  --tt-leaf:         #5fcf9a;
+  --tt-leaf-soft:    #7ad9ad;
+  --tt-phosphor:     #3dff8c;
+  --tt-vermilion:    #e07a64;
+  --tt-amber:        #d49a55;
+
+  --ifm-color-primary:           var(--tt-leaf);
+  --ifm-color-primary-dark:      #4ec087;
+  --ifm-color-primary-darker:    #45b07b;
+  --ifm-color-primary-darkest:   #38966a;
+  --ifm-color-primary-light:     var(--tt-leaf-soft);
+  --ifm-color-primary-lighter:   #8ee0bb;
+  --ifm-color-primary-lightest:  #b1e6cd;
+
+  --ifm-background-color:          var(--tt-paper);
+  --ifm-background-surface-color:  var(--tt-paper-2);
+  --ifm-color-content:             var(--tt-ink);
+  --ifm-color-content-secondary:   var(--tt-ink-muted);
+
+  --ifm-code-background:           #2a241d;
+  --docusaurus-highlighted-code-line-bg: rgba(95, 207, 154, 0.12);
+
+  --tt-hero-grain: radial-gradient(
+      circle at 78% 38%,
+      rgba(61, 255, 140, 0.14),
+      transparent 28%
+    );
+
+  --tt-grain:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 2px,
+      rgba(237, 228, 208, 0.018) 2px,
+      rgba(237, 228, 208, 0.018) 3px
+    );
+}
+
+/* ── Globals ───────────────────────────────────────────────── */
+
+html {
+  font-feature-settings: 'kern', 'liga', 'calt';
+}
+
+body {
+  background: var(--tt-paper);
+  background-image: var(--tt-grain);
+  color: var(--tt-ink);
+  font-family: var(--ifm-font-family-base);
+  font-optical-sizing: auto;
+  font-size: 17px;
+}
+
+/* Display headings — Fraunces with optical sizing + warmth */
+h1, .h1 {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 96, 'wght' 600, 'SOFT' 50;
+  letter-spacing: -0.022em;
+  line-height: 1.05;
+  color: var(--tt-ink);
+}
+
+h2 {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 36, 'wght' 600, 'SOFT' 40;
+  letter-spacing: -0.012em;
+  line-height: 1.18;
+  margin-top: 2.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--tt-rule);
+}
+
+h3 {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 24, 'wght' 600, 'SOFT' 40;
+  letter-spacing: -0.005em;
+  line-height: 1.25;
+  margin-top: 2rem;
+}
+
+h4, h5, h6 {
+  font-family: var(--ifm-font-family-monospace);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  color: var(--tt-ink-muted);
+  margin-top: 1.75rem;
+}
+
+/* Paragraphs — comfortable serif rag */
+p {
+  font-variation-settings: 'opsz' 18;
+  hanging-punctuation: first last;
+  text-wrap: pretty;
+}
+
+/* Drop-cap on the first paragraph after an H1 (intro pages) */
+article > h1 + p::first-letter {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 144, 'wght' 700, 'SOFT' 80;
+  font-size: 4.2em;
+  line-height: 0.85;
+  float: left;
+  margin: 0.05em 0.1em 0 -0.04em;
+  color: var(--tt-leaf);
+}
+
+[data-theme='dark'] article > h1 + p::first-letter {
+  color: var(--tt-leaf-soft);
+}
+
+/* Inline code + code blocks — terminal feel */
+code, kbd {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.88em;
+  font-weight: 500;
+  background: var(--ifm-code-background);
+  padding: 0.05em 0.4em;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--tt-rule) 60%, transparent);
+}
+
+pre code {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 0.86em;
+}
+
+div[class*='codeBlockContainer'] {
+  border: 1px solid var(--tt-rule);
+  border-radius: 4px;
+  background: var(--ifm-code-background);
+}
+
+/* Strong + em */
+strong { color: var(--tt-ink); font-weight: 700; }
+em     { font-style: italic; font-variation-settings: 'opsz' 18; }
+
+/* Links — refined, no underline rainbow */
+a {
+  color: var(--tt-leaf);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, var(--tt-leaf) 35%, transparent);
+  transition: text-decoration-color 0.18s ease, color 0.18s ease;
+}
+
+a:hover {
+  color: var(--tt-leaf);
+  text-decoration-color: var(--tt-leaf);
+}
+
+/* ── Navbar ────────────────────────────────────────────────── */
+
+.navbar {
+  background: var(--tt-paper);
+  border-bottom: 1px solid var(--tt-rule);
+  box-shadow: none;
+  backdrop-filter: blur(8px);
+}
+
+.navbar__title {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 24, 'wght' 700, 'SOFT' 50;
+  letter-spacing: -0.01em;
+  font-size: 1.15rem;
+}
+
+.navbar__brand::after {
+  content: 'docs · vol. 1';
+  margin-left: 0.6rem;
+  padding-left: 0.7rem;
+  border-left: 1px solid var(--tt-rule);
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--tt-ink-muted);
+}
+
+.navbar__link {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--tt-ink-2);
+}
+
+.navbar__link:hover {
+  color: var(--tt-leaf);
+}
+
+/* ── Sidebar — table of contents feel ──────────────────────── */
+
+.theme-doc-sidebar-container,
+.theme-doc-sidebar-menu {
+  background: var(--tt-paper);
+}
+
+aside.theme-doc-sidebar-container {
+  border-right: 1px solid var(--tt-rule) !important;
+}
+
+.menu {
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.95rem;
+  padding: 1rem 0.5rem;
+}
+
+.menu__list-item-collapsible .menu__link,
+.menu__link--sublist-caret {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 18, 'wght' 600, 'SOFT' 40;
+  font-size: 0.92rem;
+  letter-spacing: -0.005em;
+  color: var(--tt-ink);
+  padding: 0.4rem 0.65rem;
+}
+
+.menu__list .menu__list .menu__link {
+  font-family: var(--ifm-font-family-base);
+  font-variation-settings: 'opsz' 16, 'wght' 400;
+  font-size: 0.88rem;
+  color: var(--tt-ink-2);
+  padding: 0.32rem 0.65rem;
+  border-left: 1px solid transparent;
+  border-radius: 0;
+  margin-left: 0.6rem;
+}
+
+.menu__link:hover {
+  background: transparent;
+  color: var(--tt-leaf);
+  border-left-color: var(--tt-rule);
+}
+
+.menu__link--active,
+.menu__link--active:hover {
+  background: transparent;
+  color: var(--tt-leaf);
+  font-weight: 500;
+  border-left-color: var(--tt-leaf);
+}
+
+/* Add a small hair rule above each top-level category */
+.theme-doc-sidebar-item-category-level-1 + .theme-doc-sidebar-item-category-level-1,
+.theme-doc-sidebar-item-link-level-1 + .theme-doc-sidebar-item-category-level-1 {
+  border-top: 1px solid var(--tt-rule);
+  margin-top: 0.4rem;
+  padding-top: 0.3rem;
+}
+
+/* ── Markdown article body ─────────────────────────────────── */
+
+.theme-doc-markdown {
+  max-width: 720px;
+  margin-inline: auto;
+}
+
+article {
+  padding: 1rem 0 4rem;
+}
+
+article h1 {
+  margin-bottom: 1.5rem;
+}
+
+article h1::before {
+  content: '— vol. 1';
+  display: block;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--tt-ink-muted);
+  margin-bottom: 0.6rem;
+}
+
+/* Tables read like printed reference */
+table {
+  font-family: var(--ifm-font-family-base);
+  font-size: 0.95rem;
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.5rem 0;
+}
+
+table th {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--tt-ink-muted);
+  text-align: left;
+  border-bottom: 1.5px solid var(--tt-ink);
+  padding: 0.45rem 0.7rem 0.45rem 0;
+  background: transparent;
+}
+
+table td {
+  border-bottom: 1px solid var(--tt-rule);
+  padding: 0.55rem 0.7rem 0.55rem 0;
+  vertical-align: top;
+}
+
+table tbody tr:hover {
+  background: color-mix(in srgb, var(--tt-leaf) 4%, transparent);
+}
+
+/* Blockquotes feel like marginalia */
+blockquote {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 24, 'wght' 400, 'SOFT' 60;
+  font-style: italic;
+  font-size: 1.18rem;
+  line-height: 1.45;
+  color: var(--tt-ink);
+  border-left: 2px solid var(--tt-leaf);
+  padding: 0.4rem 0 0.4rem 1.5rem;
+  margin: 1.6rem 0;
+}
+
+/* Lists */
+ul, ol {
+  padding-left: 1.4rem;
+}
+
+ul li::marker {
+  color: var(--tt-leaf-soft);
+  content: '— ';
+}
+
+ol li::marker {
+  color: var(--tt-ink-muted);
+  font-family: var(--ifm-font-family-monospace);
+  font-weight: 500;
+}
+
+/* Horizontal rule — typographic ornament */
+hr {
+  border: 0;
+  height: auto;
+  margin: 3rem auto;
+  text-align: center;
+  background: transparent;
+  position: relative;
+}
+
+hr::before {
+  content: '§ § §';
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 18, 'wght' 400;
+  font-size: 0.8rem;
+  letter-spacing: 0.6em;
+  color: var(--tt-ink-muted);
+}
+
+/* ── Admonitions become marginalia plates ──────────────────── */
+
+.theme-admonition {
+  border-radius: 0;
+  border-top: 1px solid var(--tt-ink);
+  border-bottom: 1px solid var(--tt-ink);
+  border-left: 0;
+  border-right: 0;
+  background: transparent !important;
+  padding: 1.1rem 0;
+  margin: 1.8rem 0;
+  position: relative;
+}
+
+.theme-admonition > div:first-child {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--tt-ink-muted);
+  margin-bottom: 0.4rem;
+  padding: 0;
+}
+
+.theme-admonition svg {
+  display: none;
+}
+
+.theme-admonition-note > div:first-child { color: var(--tt-leaf); }
+.theme-admonition-tip > div:first-child { color: var(--tt-leaf); }
+.theme-admonition-warning > div:first-child { color: var(--tt-amber); }
+.theme-admonition-info > div:first-child { color: var(--tt-leaf-soft); }
+.theme-admonition-danger > div:first-child { color: var(--tt-vermilion); }
+
+/* ── Mermaid — stays in a card so it doesn't fight paper ──── */
+
+.docusaurus-mermaid-container {
+  background: var(--tt-paper-2);
+  border: 1px solid var(--tt-rule);
+  border-radius: 0;
+  padding: 1.5rem 1rem;
+  margin: 2rem 0;
+  overflow-x: auto;
+  position: relative;
+}
+
+.docusaurus-mermaid-container::before {
+  content: 'fig.';
+  position: absolute;
+  top: 0.55rem;
+  left: 0.7rem;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.65rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--tt-ink-muted);
+}
+
+[data-theme='dark'] .docusaurus-mermaid-container svg {
+  filter: brightness(0.95) saturate(0.85);
+}
+
+/* ── Buttons — slim editorial ─────────────────────────────── */
+
+.button {
+  font-family: var(--ifm-font-family-monospace);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-size: 0.78rem;
+  border-radius: 0;
+  border: 1.5px solid var(--tt-ink);
+  background: transparent;
+  color: var(--tt-ink);
+  padding: 0.7rem 1.5rem;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.button:hover {
+  background: var(--tt-ink);
+  color: var(--tt-paper);
+  transform: translateY(-1px);
+}
+
+.button--primary {
+  background: var(--tt-leaf);
+  color: var(--tt-paper);
+  border-color: var(--tt-leaf);
+}
+
+.button--primary:hover {
+  background: transparent;
+  color: var(--tt-leaf);
+  border-color: var(--tt-leaf);
+}
+
+.button--secondary {
+  background: transparent;
+  color: var(--tt-ink);
+  border-color: var(--tt-ink);
+}
+
+.button--lg {
+  padding: 0.85rem 1.8rem;
+  font-size: 0.82rem;
+}
+
+/* ── Search ─────────────────────────────────────────────── */
+
+.DocSearch-Button,
+[class*='searchBar_'] {
+  background: var(--tt-paper-2) !important;
+  border: 1px solid var(--tt-rule);
+  border-radius: 0;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.78rem;
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+
+.footer {
+  background: var(--tt-paper);
+  color: var(--tt-ink-muted);
+  border-top: 1px solid var(--tt-rule);
+  padding: 3rem 1.5rem 4rem;
+}
+
+.footer--dark {
+  background: var(--tt-paper);
+  color: var(--tt-ink-muted);
+}
+
+.footer__title {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--tt-ink);
+}
+
+.footer__link-item {
+  font-family: var(--ifm-font-family-base);
+  color: var(--tt-ink-2);
+}
+
+.footer__copyright {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--tt-ink-muted);
+  margin-top: 2rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--tt-rule);
+}
+
+/* ── Pagination — prev/next ─────────────────────────────── */
+
+.pagination-nav__link {
+  background: transparent;
+  border: 1px solid var(--tt-rule);
+  border-radius: 0;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.pagination-nav__link:hover {
+  border-color: var(--tt-leaf);
+  background: color-mix(in srgb, var(--tt-leaf) 5%, transparent);
+}
+
+.pagination-nav__sublabel {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.68rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--tt-ink-muted);
+}
+
+.pagination-nav__label {
+  font-family: var(--ifm-heading-font-family);
+  font-variation-settings: 'opsz' 18, 'wght' 600, 'SOFT' 40;
+  color: var(--tt-ink);
+}
+
+/* ── Last-updated stamp ─────────────────────────────────── */
+
+.theme-last-updated {
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.72rem;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--tt-ink-muted);
+}
+
+/* ── First-paint reveal ─────────────────────────────────── */
+
+@keyframes ttRise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ttRule {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
