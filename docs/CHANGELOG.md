@@ -65,6 +65,14 @@ test the TDM slots to resolve the original blocker.
 - **Wave 18** (`c6fc98a`) — Widget icon library (closes TT #69).  16 built-in glyphs (clock/briefcase/laundry/coffee/book/car/pot/person/droplet/check/alert/sun/moon/cloud/calendar/star) encoded as path-step DSL in `main/widget_icons.{c,h}`; rendered via single `lv_canvas` widget per icon with ARGB8888 PSRAM buffer; tone-driven color (calm→emerald / active→amber / urgent→rose).  Slot rendered top-right of live card; live-verified with clock+active, check+success, alert+urgent.
 - **Wave 19** (`d3cc647`) — OPUS encoder stack overflow root-caused (closes TT #264 + #262).  PR #263 had gated the encoder OFF after panics inside SILK NSQ functions; original investigator bumped voice_mic stack 8 → 16 KB and concluded "not stack overflow."  Wave 19 bisected via a new `/codec/opus_test` synthetic endpoint and found 24 KB is the actual watermark — bumped `MIC_TASK_STACK_SIZE` 16 → 32 KB (PSRAM-backed, free).  esp_audio_codec also bumped 2.4.1 → 2.5.0.  Live: 200 frames encoded clean, ~24 B/frame, 26× compression vs PCM.  Unblocks Phase 2B Tab5→Dragon OPUS uplink.
 
+## Mid-May 2026 — orb arc + dictation + wakeword
+
+- **PR [#569](https://github.com/lorcan35/TinkerTab/pull/569)** (`678cc06`, 2026-05-15) — Cubic-Hermite TTS upsample replaces linear interp.  Fixes choppy Kokoro-class TTS on Tab5's 16 → 48 kHz playback path.  4-sample Catmull-Rom kernel + chunk-boundary context cache in `audio.c`; same CPU class as linear, imperceptible cost.  Companion bugfix `0bc87bb` corrects the off-by-one in the upsampler.
+- **PR [#573](https://github.com/lorcan35/TinkerTab/pull/573)** (`02bd802`, 2026-05-15) — Dictation cap bumped 5 min → 4 h for meeting-length recording.  `MAX_RECORD_FRAMES_DICT` in `voice.c` goes from 15 000 to 720 000 frames; PSRAM scratch buffer + WS drain handle the new ceiling without I/O changes.  Aligns with the wakeword dictation cap (PR #576).
+- **PR [#574](https://github.com/lorcan35/TinkerTab/pull/574)** (`e3aaba9`, 2026-05-16) — Four mic-driven sphere additions to IDLE orb: rim halo (RMS), lit-from-within (LPF energy), specular wobble (transients), and frequency-band hue tint (3-band FFT).  Each toggle-able in the orb config struct; adds orthogonal information dimensions to the existing ambient sphere from PRs #547–#562.
+- **TT [#575](https://github.com/lorcan35/TinkerTab/issues/575)** (2026-05-17) — Tracking issue: "Always-on ASR wakeword + on-device dictation via K144."  Frames the problem (TT #162 retired wake-word due to TDM-AEC blocker; K144 now provides a working streaming Zipformer ASR + KWS dead-end documented) + the design.
+- **PR [#576](https://github.com/lorcan35/TinkerTab/pull/576)** (`83f82e3` + `e5426cc`, 2026-05-17) — Always-on K144 ASR wakeword + on-device dictation.  New `main/voice_wakeword.{c,h}` (state machine + 32 KB PSRAM dictation buffer + force-stop API) + `voice_m5_llm_wakeword_setup/_run/_teardown` chain helpers + lifecycle hooks in `voice_onboard.c` (warmup READY + Wave 13 reset).  UI bridge in commit `e5426cc` adds toast + orb ripple via `tab5_lv_async_call` on WAKE / DICTATION_FINAL.  Live-verified on Tab5 192.168.1.90 (wake fired on "tinker"); UI bridge needs hardware retest.  See [`docs/PLAN-wakeword.md`](PLAN-wakeword.md).
+
 ## Cross-stack waves (May 2026) — see audit doc
 
 For waves W1–W9 of the 2026-05-11 cross-stack audit (SOLO mode, turn_id,
@@ -75,7 +83,7 @@ see [`AUDIT-state-of-stack-2026-05-11.md`](AUDIT-state-of-stack-2026-05-11.md).
 
 ### Wave 20+ candidates
 
-- **KWS revival on K144** — sherpa-onnx-kws-zipformer-gigaspeech is open-vocabulary (pass keyword list at runtime, no custom training).  Resurrects the feature TT #162 retired by sidestepping the ESP32-P4 TDM blocker.  Touches voice mode semantics + mic routing.  See LEARNINGS "Sherpa-onnx KWS is open-vocabulary."
+- **KWS revival on K144** — sherpa-onnx-kws-zipformer-gigaspeech is open-vocabulary (pass keyword list at runtime, no custom training).  **Update 2026-05-17:** PR #576 attempted the direct `kws.setup` path and found the K144 daemon's parser rejects every body shape (`parse_config false`); pivoted to ASR-based phrase matching which gives the same open-vocab guarantee + a free transcript.  Native KWS path remains queued for when M5 fixes the parser upstream — see LEARNINGS "K144 KWS unit is officially installed but unusable."
 
 ### External-hardware push parked
 

@@ -1,9 +1,11 @@
 # Plan — Grove sensor support on Tab5
 
-**Status:** parked, not started.
+> **PARKED since 2026-04-10 — hardware on order.**  This plan is preserved for when the Grove sensor kit lands; no firmware work scheduled until then.  See [`CLAUDE.md`](../CLAUDE.md) "External Hardware Modules" for the parallel K144 / wakeword projects that DO have active branches.
+
+**Status:** parked since 2026-04-10 — hardware on order.
 **Owner:** unassigned.
 **Tracking issue:** TBD (filed alongside this doc).
-**Last updated:** 2026-04-28.
+**Last updated:** 2026-04-28 (status restamp 2026-05-17).
 
 ---
 
