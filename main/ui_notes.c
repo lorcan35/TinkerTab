@@ -75,7 +75,17 @@ static const char *TAG = "ui_notes";
 #define BTN_ROW_H      80      /* Voice/Type button row height (was 160) */
 #define ACTION_BTN_H   56      /* Voice/Type button height (was 120) */
 #define MAX_NOTES      30
-#define MAX_NOTE_LEN   512
+/* TT #572 follow-up: bumped from 512 → 32768 so meeting-length
+ * dictations actually fit.  Every code path that copied a transcript
+ * into note_t.text used strncpy(.., MAX_NOTE_LEN - 1) which silently
+ * truncated 10-min dictations to ~1 paragraph (Dragon held the full
+ * 9269-char transcript, Tab5 was discarding 95% of it on store).
+ *
+ * Memory budget: 30 notes × 32 KB = 960 KB of PSRAM in the note_t
+ * array.  Tab5 has 32 MB PSRAM, currently ~15 MB free at idle —
+ * comfortable.  When the array gets persisted to /sdcard/notes.bin
+ * the on-disk size grows proportionally; SD is 121 GB. */
+#define MAX_NOTE_LEN   32768
 
 /* ── Note states ────────────────────────────────────────── */
 typedef enum {
