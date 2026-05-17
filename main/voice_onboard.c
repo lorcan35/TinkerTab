@@ -20,14 +20,15 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "settings.h"     /* tab5_settings_get_mic_mute (Wave 7) */
-#include "task_worker.h"  /* tab5_worker_enqueue */
-#include "ui_chat.h"      /* ui_chat_add_message */
-#include "ui_core.h"      /* tab5_ui_try_lock / tab5_ui_unlock */
-#include "ui_home.h"      /* ui_home_show_toast */
-#include "voice.h"        /* voice_set_state, VOICE_STATE_* */
-#include "voice_m5_llm.h" /* probe / infer / chain_* */
+#include "settings.h"            /* tab5_settings_get_mic_mute (Wave 7) */
+#include "task_worker.h"         /* tab5_worker_enqueue */
+#include "ui_chat.h"             /* ui_chat_add_message */
+#include "ui_core.h"             /* tab5_ui_try_lock / tab5_ui_unlock */
+#include "ui_home.h"             /* ui_home_show_toast */
+#include "voice.h"               /* voice_set_state, VOICE_STATE_* */
+#include "voice_m5_llm.h"        /* probe / infer / chain_* */
 #include "voice_messages_sync.h" /* W3-C-c: Dragon canonical message store */
+#include "voice_wakeword.h"
 
 static const char *TAG = "voice_onboard";
 
@@ -233,6 +234,16 @@ static void onboard_warmup_job(void *arg) {
       s_m5_failover = M5_FAIL_READY;
       tab5_debug_obs_event("m5.warmup", "ready");
       mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
+      /* Wake-word revival: now that the K144 UART + NPU are confirmed
+       * up, start the always-on ASR chain.  Defaults: wake="tinker",
+       * end-phrase="save note", 32 KB dictation buffer, 4-hour cap.
+       * Logs fire via obs.event for now — no automatic LISTENING
+       * trigger until detection accuracy is validated on hardware.
+       * Failures non-fatal — the LLM path still works without wakeword. */
+      esp_err_t we = voice_wakeword_start(NULL, NULL, NULL);
+      if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
+         ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
+      }
    } else {
       ESP_LOGW(TAG,
                "K144 warm-up %s after %lldms — failover disabled (NPU likely hung; "
@@ -364,6 +375,13 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.warmup", "ready");
       tab5_debug_obs_event("m5.reset", "recovered");
       mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
+      /* Wakeword revival: same hook as the initial warmup path — once
+       * K144 is reachable again, (re-)arm the always-on ASR chain.
+       * Idempotent (start refuses if already running). */
+      esp_err_t we = voice_wakeword_start(NULL, NULL, NULL);
+      if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
+         ESP_LOGW(TAG, "wakeword (re)start skipped: %s", esp_err_to_name(we));
+      }
    } else {
       ESP_LOGW(TAG, "K144 re-warmup %s after %lldms — still unavailable", esp_err_to_name(ie), dt_ms);
       mark_k144_unavailable("reset_warmup_fail");

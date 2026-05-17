@@ -66,6 +66,7 @@ else()
              "m5_stackflow.c"
              "voice_m5_llm.c"
              "voice_onboard.c"
+             "voice_wakeword.c"
         EMBED_TXTFILES "debug_ui.html"
         INCLUDE_DIRS "."
         REQUIRES tab5
