@@ -399,7 +399,12 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
             } else {
                 body[0] = 0;
             }
-            lv_label_set_text(slot->brk_body, body);
+            /* TT #572 follow-up: cloud LLMs frequently wrap sender names
+             * + subjects in `**bold**` markdown — LVGL doesn't parse MD,
+             * so it renders as literal asterisks.  Strip before label-set. */
+            char card_buf[sizeof(body)];
+            md_strip_inline(body, card_buf, sizeof(card_buf));
+            lv_label_set_text(slot->brk_body, card_buf);
             lv_obj_set_pos(slot->brk_body, SIDE_PAD, 40);
             lv_obj_set_size(slot->breakout, 720, BREAK_H);
 
@@ -477,7 +482,11 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
         lv_obj_set_style_text_font(slot->body, FONT_CHAT_MONO, 0);
         lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_TEXT_DIM), 0);
         lv_obj_set_style_text_align(slot->body, LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(slot->body, msg->text);
+        /* TT #572 follow-up: strip markdown so `**bold**` doesn't render
+         * as literal asterisks in the centred-status bubble. */
+        char status_buf[sizeof(msg->text)];
+        md_strip_inline(msg->text, status_buf, sizeof(status_buf));
+        lv_label_set_text(slot->body, status_buf);
         lv_obj_set_pos(slot->body, 0, 0);
         if (slot->ts) lv_obj_add_flag(slot->ts, LV_OBJ_FLAG_HIDDEN);
         return;

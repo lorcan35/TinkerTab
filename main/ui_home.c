@@ -2007,9 +2007,19 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
          if (armed) ui_notes_pipeline_cancel_recording();
       }
    } else if (dp.state == DICT_RECORDING) {
-      voice_cancel();
-      ui_notes_pipeline_cancel_recording();
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* TT #572 follow-up: the original handler called voice_cancel() +
+       * cancel_recording + DICT_FAIL_CANCELLED, which discarded an
+       * entire in-flight dictation (the whole point of tapping the chip
+       * a second time is to FINISH the recording, not throw it away).
+       * Live journal proof: 4 min of clean transcription got marked
+       * CANCELLED on the user's second tap, no Note row ever appeared.
+       *
+       * Correct behaviour: send the normal `stop` frame so Dragon
+       * flushes the buffer, transcribes the tail, and posts back the
+       * dictation_summary → SAVED → Note created.  If the user really
+       * wants to discard a recording they delete the resulting Note
+       * row from the Notes screen (one swipe). */
+      voice_stop_listening();
    }
 }
 

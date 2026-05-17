@@ -75,7 +75,17 @@ static const char *TAG = "ui_notes";
 #define BTN_ROW_H      80      /* Voice/Type button row height (was 160) */
 #define ACTION_BTN_H   56      /* Voice/Type button height (was 120) */
 #define MAX_NOTES      30
-#define MAX_NOTE_LEN   512
+/* TT #572 follow-up: bumped from 512 → 32768 so meeting-length
+ * dictations actually fit.  Every code path that copied a transcript
+ * into note_t.text used strncpy(.., MAX_NOTE_LEN - 1) which silently
+ * truncated 10-min dictations to ~1 paragraph (Dragon held the full
+ * 9269-char transcript, Tab5 was discarding 95% of it on store).
+ *
+ * Memory budget: 30 notes × 32 KB = 960 KB of PSRAM in the note_t
+ * array.  Tab5 has 32 MB PSRAM, currently ~15 MB free at idle —
+ * comfortable.  When the array gets persisted to /sdcard/notes.bin
+ * the on-disk size grows proportionally; SD is 121 GB. */
+#define MAX_NOTE_LEN   32768
 
 /* ── Note states ────────────────────────────────────────── */
 typedef enum {
@@ -99,7 +109,11 @@ typedef enum {
 } note_fail_t;
 
 #define MAX_AUDIO_PATH 64
-#define MAX_NOTE_REC_SECS 300 /* 5 min hard cap on SD recording */
+/* TT #572: bumped from 300 (5 min) to 14400 (4 hr) so the SD recording
+ * keeps up with the WS-streaming cap in voice.c.  Safety guard against
+ * zombie tasks survives — 4 hr is still bounded.  WAV at 16 kHz mono
+ * int16 = 32 KB/s = ~115 MB/hr → ~460 MB for the full 4 hr cap. */
+#define MAX_NOTE_REC_SECS 14400
 
 /* PR 3 cleanup pass: layout constants hoisted to file scope so the
  * dynamic-relayout helper (notes_relayout_list) can use them outside
@@ -327,6 +341,170 @@ void ui_notes_sync_pending(void)
     if (synced > 0) {
         ESP_LOGI(TAG, "Catch-up sync: %d notes queued", synced);
     }
+}
+
+/* Forward decls for the fetch path below — the actual statics live
+ * further down with the rest of the edit-overlay state. */
+static lv_obj_t *s_edit_ta;
+static int       s_edit_idx;
+
+/* ── Fetch full transcript from Dragon (TT #572) ────────────────
+ *
+ * Existing on-disk notes were saved with MAX_NOTE_LEN=512, so their
+ * text is hard-truncated locally even though Dragon holds the full
+ * 9k+ char transcript.  When the user opens the detail view we kick
+ * an async GET against /api/notes?limit=30 and look for a Dragon note
+ * whose first ~100 chars match the local text.  On match (and only
+ * when Dragon's copy is strictly longer), we overwrite local text +
+ * persist + push the new content into the live textarea.
+ *
+ * Fire-and-forget — failures are logged and silently swallowed; the
+ * user sees the existing (truncated) text and can re-trigger by
+ * reopening.  No new struct field needed; matches purely by text
+ * prefix.  When a `dragon_id` field eventually lands this gets
+ * replaced by an O(1) GET /api/notes/{id} lookup.
+ */
+typedef struct {
+   int note_idx;
+} fetch_full_args_t;
+
+static void update_textarea_async_cb(void *user_data) {
+   intptr_t slot = (intptr_t)user_data;
+   if (slot < 0 || slot >= MAX_NOTES) return;
+   if (s_edit_ta && s_edit_idx == (int)slot && s_notes[slot].used) {
+      lv_textarea_set_text(s_edit_ta, s_notes[slot].text);
+      ESP_LOGI(TAG, "Edit textarea refreshed from Dragon (slot %d, %zu chars)",
+               (int)slot, strlen(s_notes[slot].text));
+   }
+}
+
+static void fetch_full_transcript_task(void *arg) {
+   fetch_full_args_t *a = (fetch_full_args_t *)arg;
+   int slot = a->note_idx;
+   free(a);
+
+   if (slot < 0 || slot >= MAX_NOTES || !s_notes[slot].used) {
+      vTaskSuspend(NULL);
+      return;
+   }
+
+   /* Snapshot the first 80 chars of the local truncated text — used
+    * as the match key against Dragon's notes list.  Doing this here
+    * (vs in the worker scope) means the s_notes mutation that the
+    * worker may eventually do can't race with the prefix read. */
+   char prefix[81];
+   strncpy(prefix, s_notes[slot].text, sizeof(prefix) - 1);
+   prefix[sizeof(prefix) - 1] = '\0';
+   size_t local_len = strlen(s_notes[slot].text);
+   if (local_len == 0) {
+      vTaskSuspend(NULL);
+      return;
+   }
+
+   char dhost[64];
+   tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+   char url[160];
+   snprintf(url, sizeof(url), "http://%s:%d/api/notes?limit=30", dhost, 3502);
+
+   esp_http_client_config_t cfg = {
+      .url = url, .method = HTTP_METHOD_GET, .timeout_ms = 8000,
+   };
+   esp_http_client_handle_t client = esp_http_client_init(&cfg);
+   if (!client) { vTaskSuspend(NULL); return; }
+   char dtok[80];
+   if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
+      char auth_hdr[96];
+      snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
+      esp_http_client_set_header(client, "Authorization", auth_hdr);
+   }
+   esp_err_t err = esp_http_client_open(client, 0);
+   if (err != ESP_OK) {
+      ESP_LOGW(TAG, "fetch_full: http_open failed: %s", esp_err_to_name(err));
+      esp_http_client_cleanup(client);
+      vTaskSuspend(NULL);
+      return;
+   }
+   int content_len = esp_http_client_fetch_headers(client);
+   /* Notes-list responses can run to ~256 KB for a busy user.  Cap
+    * at 384 KB; if Dragon ever exceeds that we just give up the
+    * lookup. */
+   if (content_len <= 0 || content_len > 384 * 1024) {
+      ESP_LOGW(TAG, "fetch_full: content_len=%d out of bounds", content_len);
+      esp_http_client_cleanup(client);
+      vTaskSuspend(NULL);
+      return;
+   }
+   char *body = heap_caps_malloc(content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!body) {
+      esp_http_client_cleanup(client);
+      vTaskSuspend(NULL);
+      return;
+   }
+   int got = 0;
+   while (got < content_len) {
+      int r = esp_http_client_read(client, body + got, content_len - got);
+      if (r <= 0) break;
+      got += r;
+   }
+   body[got] = '\0';
+   esp_http_client_cleanup(client);
+
+   cJSON *root = cJSON_Parse(body);
+   heap_caps_free(body);
+   if (!root) {
+      ESP_LOGW(TAG, "fetch_full: JSON parse failed");
+      vTaskSuspend(NULL);
+      return;
+   }
+   cJSON *arr = cJSON_GetObjectItem(root, "notes");
+   if (!cJSON_IsArray(arr)) {
+      cJSON_Delete(root);
+      vTaskSuspend(NULL);
+      return;
+   }
+
+   bool updated = false;
+   cJSON *item;
+   cJSON_ArrayForEach(item, arr) {
+      const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(item, "transcript"));
+      if (!t) continue;
+      /* Match: Dragon's transcript begins with the same 64 chars as
+       * ours.  64 is enough to disambiguate similar-looking notes
+       * while tolerating tiny mid-prefix divergences. */
+      if (strncmp(t, prefix, 64) != 0) continue;
+      size_t remote_len = strlen(t);
+      if (remote_len <= local_len) continue;
+      if (remote_len >= MAX_NOTE_LEN) {
+         ESP_LOGW(TAG, "fetch_full: Dragon transcript %zu > MAX_NOTE_LEN — truncating", remote_len);
+      }
+      strncpy(s_notes[slot].text, t, MAX_NOTE_LEN - 1);
+      s_notes[slot].text[MAX_NOTE_LEN - 1] = '\0';
+      ESP_LOGI(TAG, "fetch_full: slot %d %zu → %zu chars from Dragon",
+               slot, local_len, strlen(s_notes[slot].text));
+      updated = true;
+      break;
+   }
+   cJSON_Delete(root);
+
+   if (updated) {
+      notes_save();
+      tab5_lv_async_call(update_textarea_async_cb, (void *)(intptr_t)slot);
+   }
+   vTaskSuspend(NULL);
+}
+
+static void fetch_full_transcript_from_dragon(int slot) {
+   if (slot < 0 || slot >= MAX_NOTES || !s_notes[slot].used) return;
+   if (!tab5_wifi_connected()) return;
+   /* Only worth fetching when the local copy is anywhere near the old
+    * 512-byte cap — if we already hold ≥4 KB we almost certainly have
+    * the full transcript (a fresh dictation post-32 KB bump). */
+   if (strlen(s_notes[slot].text) >= 4096) return;
+   fetch_full_args_t *a = calloc(1, sizeof(*a));
+   if (!a) return;
+   a->note_idx = slot;
+   xTaskCreatePinnedToCore(fetch_full_transcript_task, "fetch_full",
+                           5120, a, 3, NULL, 0);
 }
 
 static void notes_save(void)
@@ -1858,10 +2036,11 @@ static void sd_record_task(void *arg)
     }
 
     int frames = 0;
-    /* 5-min hard cap.  Mic chunks are 20 ms (50 frames/s) so 300 s = 15000.
-     * Without this the SD recording would run until the user comes back
-     * and taps stop — a 477 s zombie was the proximate cause for adding
-     * this cap (audit 2026-05-14). */
+    /* 4-hr hard cap (TT #572).  Mic chunks are 20 ms (50 frames/s) so
+     * 14400 s = 720000 frames.  Original 5-min cap was a zombie-task
+     * guard (477 s zombie in audit 2026-05-14); bumped to 4 hr so
+     * meetings / podcasts / lectures fit while still preventing
+     * unbounded recording when the user forgets to stop. */
     const int max_frames = MAX_NOTE_REC_SECS * 50;
     while (s_sd_rec_running) {
         esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
@@ -2078,6 +2257,12 @@ static void cb_note_tap(lv_event_t *e)
 
     note_entry_t *n = &s_notes[note_idx];
     s_edit_idx = note_idx;
+
+    /* TT #572 follow-up: if this note's local text is short (likely
+     * a pre-bump truncated copy), kick an async fetch against Dragon.
+     * On match Dragon's longer transcript replaces the local copy +
+     * the textarea text is updated in place via tab5_lv_async_call. */
+    fetch_full_transcript_from_dragon(note_idx);
 
     /* Fullscreen overlay — child of s_screen so it covers the notes list */
     s_edit_overlay = lv_obj_create(s_screen);
@@ -2438,7 +2623,13 @@ static void cb_clear_failed(lv_event_t *e) {
 
 /* ── Note card widget ──────────────────────────────────── */
 static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, int note_idx, day_section_t sec) {
-   note_entry_t n = *note;
+   /* TT #572 follow-up: was `note_entry_t n = *note;` (stack copy).
+    * With MAX_NOTE_LEN bumped from 512 → 32 KB the struct grew to
+    * ~33 KB and this single line blew the UI task stack on every
+    * Notes-screen open — Tab5 reboot, exc_task=ui_task, confirmed
+    * via crashlog.  Use the pointer directly; no caller mutates the
+    * source, so the copy was always unnecessary. */
+   const note_entry_t *n = note;
 
    /* #170 follow-up: under sustained rapid-nav stress the LVGL pool can
     * transiently exhaust, making lv_*_create() return NULL.  Every
@@ -2490,11 +2681,11 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!ts) return;
    char ts_buf[32];
    static const char *mn[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-   int mi = (n.month >= 1 && n.month <= 12) ? n.month - 1 : 0;
+   int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
    if (sec == DAY_SECTION_TODAY || sec == DAY_SECTION_YESTERDAY) {
-      snprintf(ts_buf, sizeof(ts_buf), "%02d:%02d", n.hour, n.minute);
+      snprintf(ts_buf, sizeof(ts_buf), "%02d:%02d", n->hour, n->minute);
    } else {
-      snprintf(ts_buf, sizeof(ts_buf), "%s %d  %02d:%02d", mn[mi], n.day, n.hour, n.minute);
+      snprintf(ts_buf, sizeof(ts_buf), "%s %d  %02d:%02d", mn[mi], n->day, n->hour, n->minute);
    }
    lv_label_set_text(ts, ts_buf);
    lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
@@ -2507,7 +2698,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
     * instead of a generic "FAIL" — so the user knows whether the
     * server is unreachable (NETWORK), the auth token is missing
     * (AUTH), the audio came back empty (EMPTY), the WAV is gone
-    * (NO AUDIO), or the recording hit the 5-min cap (TOO LONG). */
+    * (NO AUDIO), or the recording hit the 4-hr cap (TOO LONG). */
    /* Type badge — sentence-cased, lower letter-spacing, dimmer hue for
     * passive note metadata; red only when the state is actively
     * surfacing a failure reason that the user can act on.  Was an
@@ -2516,7 +2707,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!badge) return;
    const char *badge_text;
    uint32_t badge_color;
-   switch (n.state) {
+   switch (n->state) {
       case NOTE_STATE_RECORDED:
          badge_text = "Recording";
          badge_color = 0x8E8E98;
@@ -2530,7 +2721,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
          badge_color = 0x8E8E98;
          break;
       case NOTE_STATE_FAILED:
-         switch (n.fail_reason) {
+         switch (n->fail_reason) {
             case NOTE_FAIL_AUTH:
                badge_text = "Auth fail";
                break;
@@ -2553,7 +2744,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
          badge_color = COL_RED;
          break;
       default:
-         badge_text = n.is_voice ? "Voice" : "Text";
+         badge_text = n->is_voice ? "Voice" : "Text";
          badge_color = 0x8E8E98;
          break;
    }
@@ -2587,8 +2778,8 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    /* Action button — outlined ghost (was filled solid).  Play stays
     * mint-tinted, retry stays amber-tinted via the icon color; the
     * background only fills on press for tactile feedback. */
-   if (n.audio_path[0]) {
-      bool is_retry = (n.state == NOTE_STATE_FAILED);
+   if (n->audio_path[0]) {
+      bool is_retry = (n->state == NOTE_STATE_FAILED);
       lv_obj_t *act = lv_button_create(header);
       if (!act) return;
       lv_obj_set_size(act, 44, 44);
@@ -2614,7 +2805,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!preview) return; /* exact crash site from #170 follow-up coredump */
    /* Truncate long text for card preview — full text in edit overlay */
    char preview_text[120];
-   const char *src = n.text;
+   const char *src = n->text;
    /* Skip "[Untitled Note] " prefix (N7) */
    if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
    if (strlen(src) > 100) {
@@ -2633,7 +2824,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
     * Soft amber pill with a leading emoji-style indicator + label + ✓ + ✕.
     * Tap ✓ → schedules notification (reminder) or reformats text (list) +
     * clears chip.  Tap ✕ → clears chip, leaves note untouched. */
-   if (n.pending.kind != PENDING_NONE && n.pending.confidence >= PENDING_CONFIDENCE_FLOOR) {
+   if (n->pending.kind != PENDING_NONE && n->pending.confidence >= PENDING_CONFIDENCE_FLOOR) {
       lv_obj_t *chip = lv_obj_create(card);
       if (!chip) return;
       lv_obj_remove_style_all(chip);
@@ -2652,14 +2843,14 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
 
       /* Label: "Set reminder Tue 6 PM" or "Make a list (4 items)". */
       char label_buf[120];
-      if (n.pending.kind == PENDING_REMINDER) {
+      if (n->pending.kind == PENDING_REMINDER) {
          char when_short[40];
-         format_reminder_when(n.pending.payload, when_short, sizeof(when_short));
+         format_reminder_when(n->pending.payload, when_short, sizeof(when_short));
          snprintf(label_buf, sizeof(label_buf), LV_SYMBOL_BELL "  Set reminder %s", when_short);
       } else {
          /* Count commas as a rough item count for the chip hint. */
          int items = 1;
-         for (const char *q = n.text; *q; q++) {
+         for (const char *q = n->text; *q; q++) {
             if (*q == ',') items++;
          }
          snprintf(label_buf, sizeof(label_buf), LV_SYMBOL_LIST "  Make a list (%d items)", items);

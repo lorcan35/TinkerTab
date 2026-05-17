@@ -144,6 +144,18 @@ static esp_err_t chat_handler(httpd_req_t *req) {
     * voice_send_text decide.  When WS is down, the K144 failover (Local
     * mode) or VMODE_LOCAL_ONBOARD path may still complete the turn. */
    ui_chat_push_message("user", text_buf);
+
+   /* Snapshot the voice state BEFORE the send.  voice_send_text returns
+    * ESP_OK in two distinct cases: (a) the WS text frame was actually
+    * dispatched (state was READY), or (b) the text was queued into
+    * s_queued_text because the pipeline is busy (state was
+    * PROCESSING / SPEAKING).  In case (b) the LLM is NOT triggered
+    * until the in-flight turn finishes and the state-transition cb
+    * drains the queue.  Test harnesses (and this very session's debug
+    * Q&A) need to tell the two apart — explicit `queued` flag. */
+   int pre_state = (int)voice_get_state();
+   bool pre_busy = (pre_state == VOICE_STATE_PROCESSING ||
+                    pre_state == VOICE_STATE_SPEAKING);
    esp_err_t send_err = voice_send_text(text_buf);
    bool sent_ok = (send_err == ESP_OK);
 
@@ -151,7 +163,13 @@ static esp_err_t chat_handler(httpd_req_t *req) {
    cJSON_AddStringToObject(root, "text", text_buf);
    cJSON_AddNumberToObject(root, "text_len", (double)strlen(text_buf));
    cJSON_AddBoolToObject(root, "sent", sent_ok);
+   /* Was the WS frame actually dispatched, or just queued?  When
+    * `queued=true`, the LLM is busy on a prior turn and this text
+    * will fire once it finishes (single-slot queue — a third call
+    * before drain OVERWRITES the second). */
+   cJSON_AddBoolToObject(root, "queued", sent_ok && pre_busy);
    cJSON_AddBoolToObject(root, "voice_connected", voice_is_connected());
+   cJSON_AddNumberToObject(root, "voice_state", pre_state);
    if (!sent_ok) {
       cJSON_AddStringToObject(root, "send_status", esp_err_to_name(send_err));
    }
