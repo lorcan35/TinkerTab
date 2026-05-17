@@ -73,6 +73,19 @@ static const char *TAG = "ui_orb";
 /* Poll period for the IMU/highlight tick (ms). */
 #define ORB_TILT_PERIOD_MS 50 /* 20 Hz */
 
+/* Mic-driven spec wobble — declared here (top of file) because
+ * tilt_tick_cb references them and lives well above the ambient block
+ * where the rest of the mic-driven constants are.  Amplitude scales
+ * linearly with smoothed RMS; the two periods are incommensurate so
+ * the wobble doesn't beat with the existing lissajous drift. */
+#define AMBIENT_WOBBLE_AMP_PX 3.0f
+#define AMBIENT_WOBBLE_PERIOD_X_MS 750
+#define AMBIENT_WOBBLE_PERIOD_Y_MS 1130
+
+/* Rim halo width (px) — referenced at ui_orb_create time, so declared
+ * here.  The opa drive + peak live with the rest of the ambient block. */
+#define AMBIENT_RIM_WIDTH_PX 3
+
 /* ── Skill-rim comet (PROCESSING state) ──────────────────────────────── */
 
 /* A single bright disc orbits just outside the orb's body during
@@ -153,6 +166,7 @@ static lv_obj_t *s_root = NULL;  /* parent container (= the home screen) */
 static lv_obj_t *s_body = NULL;  /* the lit sphere itself */
 static lv_obj_t *s_spec = NULL;  /* tilt-driven specular highlight (child of s_body) */
 static lv_obj_t *s_halo = NULL;  /* voice-bloom halo (sibling-BEHIND s_body) */
+static lv_obj_t *s_rim = NULL;   /* mic-transient rim halo (sibling AFTER s_body, white edge ring) */
 static lv_obj_t *s_inner_core = NULL; /* TT #553 follow-up: in-orb ambient core */
 static lv_obj_t *s_ripple_a = NULL; /* PR 2 polish: sonar ripple A — outermost-expanding ring during RECORDING */
 static lv_obj_t *s_ripple_b =
@@ -207,6 +221,8 @@ static bool s_alive_running;
 static int s_idle_breath_last_opa;
 static float s_ambient_rms;
 static float s_ambient_rms_target;
+static float s_ambient_band_treble;        /* 0..1, smoothed treble/total ratio */
+static float s_ambient_band_treble_target; /* updated each mic tick */
 static int s_ambient_body_stop_last;
 /* TT #561: bottom-color base — set by paint_body_for_hour, scaled by
  * ambient_apply when audio rises (lit-from-within effect). */
@@ -492,7 +508,21 @@ static void tilt_tick_cb(lv_timer_t *t) {
    float drift_x = drift_amp * sinf(px * two_pi);
    float drift_y = drift_amp * sinf(py * two_pi + 0.7854f /* π/4 */);
 
-   lv_obj_set_pos(s_spec, s_spec_rest_x_eff + (int)(dx + drift_x), s_spec_rest_y_eff + (int)(dy + drift_y));
+   /* Mic-driven spec wobble — scales linearly with smoothed RMS so a
+    * quiet room contributes nothing (no perceptible jitter), normal
+    * speech ~±1 px, music/loud transients ~±3 px.  Incommensurate
+    * periods (750 / 1130 ms) so the wobble doesn't beat with the
+    * 3500/4700 ms lissajous.  Together they read as a lit sphere
+    * whose surface ripples when sound moves through the room. */
+   float wobble_amp = s_ambient_rms * AMBIENT_WOBBLE_AMP_PX;
+   float wx = (float)(t_ms % AMBIENT_WOBBLE_PERIOD_X_MS) / (float)AMBIENT_WOBBLE_PERIOD_X_MS;
+   float wy = (float)(t_ms % AMBIENT_WOBBLE_PERIOD_Y_MS) / (float)AMBIENT_WOBBLE_PERIOD_Y_MS;
+   float wobble_x = wobble_amp * sinf(wx * two_pi);
+   float wobble_y = wobble_amp * sinf(wy * two_pi + 1.2f);
+
+   lv_obj_set_pos(s_spec,
+                  s_spec_rest_x_eff + (int)(dx + drift_x + wobble_x),
+                  s_spec_rest_y_eff + (int)(dy + drift_y + wobble_y));
 }
 
 static void tilt_start(void) {
@@ -840,6 +870,27 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
     * declared NULL so any null-guard reads work.  */
    s_inner_core = NULL;
 
+   /* Mic-transient rim halo — thin white edge ring sized exactly to
+    * the sphere silhouette.  Sibling AFTER s_body so it draws on top
+    * of the body.  bg-transparent; only the border is visible.
+    * border_opa is held at 0 by default and pulsed by ambient_apply
+    * on each spike-flash for ~350 ms recovery — feels like the
+    * sphere catches a flash of edge-light when a sound hits.  Below
+    * s_comet in z-order so the comet still wins during PROCESSING. */
+   s_rim = lv_obj_create(parent);
+   if (s_rim) {
+      lv_obj_remove_style_all(s_rim);
+      lv_obj_set_size(s_rim, ORB_SIZE, ORB_SIZE);
+      lv_obj_set_pos(s_rim, cx - ORB_SIZE / 2, cy - ORB_SIZE / 2);
+      lv_obj_set_style_radius(s_rim, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_opa(s_rim, 0, 0);
+      lv_obj_set_style_border_width(s_rim, AMBIENT_RIM_WIDTH_PX, 0);
+      lv_obj_set_style_border_color(s_rim, lv_color_hex(0xFFFFFF), 0);
+      lv_obj_set_style_border_opa(s_rim, 0, 0);
+      lv_obj_remove_flag(s_rim, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(s_rim, LV_OBJ_FLAG_SCROLLABLE);
+   }
+
    /* Skill-rim comet — sibling AFTER s_body so it draws on top.
     * Starts invisible (opa 0); state machine drives fade-in on
     * PROCESSING enter, fade-out on exit. */
@@ -994,6 +1045,7 @@ void ui_orb_destroy(void) {
    s_body = NULL;
    s_spec = NULL;
    s_halo = NULL;
+   s_rim = NULL;
    s_comet = NULL;
    s_inner_core = NULL;
    /* Keep s_body_canvas_buf allocated — it's PSRAM, reused across
@@ -1549,6 +1601,24 @@ void ui_orb_get_fx(ui_orb_fx_t *out) {
 #define AMBIENT_SPIKE_MIN_RMS 0.18f
 #define AMBIENT_SPIKE_RECOVER_MS 350
 #define AMBIENT_FLASH_TOP 0xFFFFFF
+/* On spike, push the bottom multiplier above its normal ceiling so the
+ * bottom hemisphere briefly out-shines the top — strobe-inside-shell. */
+#define AMBIENT_FLASH_BOT_BONUS_X100 50
+
+/* Rim halo peak opacity (width declared at top of file with the
+ * other ui_orb_create-time constants).  border_opa is modulated by
+ * flash_strength — pulses for ~350 ms after every transient. */
+#define AMBIENT_RIM_PEAK_OPA 220
+
+/* Frequency-band hue shift — single-pole high-pass to estimate
+ * treble energy.  treble_ratio = hp_rms / total_rms; tracked as a
+ * smoothed band-state and applied as a ±RGB tilt on the top color.
+ * Speech sits near 0.3-0.4 (neutral cream); music sparkle pushes
+ * past 0.5 (cool); bass-heavy content stays under 0.25 (warm). */
+#define AMBIENT_HP_ALPHA 0.85f
+#define AMBIENT_BAND_NEUTRAL 0.4f /* center of the speech band */
+#define AMBIENT_HUE_TINT_R 24     /* ±RGB amplitude at full drive */
+#define AMBIENT_HUE_TINT_B 24
 
 static lv_timer_t *s_ambient_mic_timer = NULL;
 static lv_timer_t *s_ambient_smooth_timer = NULL;
@@ -1612,9 +1682,36 @@ static void ambient_apply(void) {
       if (s_flash_strength > 0.0f) {
          top = ambient_lerp_color(top, AMBIENT_FLASH_TOP, s_flash_strength);
       }
+      /* Frequency-band hue tint — treble-heavy → cool (-R, +B),
+       * bass-heavy → warm (+R, -B), speech → neutral.  Strength
+       * scales with drive so a quiet room stays at the baseline
+       * cream regardless of band balance.  Hue tint applies AFTER
+       * the flash lerp so peak transients still bias toward white. */
+      if (drive > 0.05f && s_flash_strength < 0.05f) {
+         float hue_signed = (s_ambient_band_treble - AMBIENT_BAND_NEUTRAL) * 2.0f;
+         if (hue_signed < -1.0f) hue_signed = -1.0f;
+         if (hue_signed > 1.0f) hue_signed = 1.0f;
+         int tint_r = (int)(-hue_signed * AMBIENT_HUE_TINT_R * drive);
+         int tint_b = (int)(hue_signed * AMBIENT_HUE_TINT_B * drive);
+         int tr = ((top >> 16) & 0xFF) + tint_r;
+         int tg = ((top >> 8) & 0xFF);
+         int tb = (top & 0xFF) + tint_b;
+         if (tr < 0) tr = 0;
+         if (tr > 255) tr = 255;
+         if (tb < 0) tb = 0;
+         if (tb > 255) tb = 255;
+         top = ((uint32_t)tr << 16) | ((uint32_t)tg << 8) | tb;
+      }
       /* Bottom: scale the circadian base by 0.4×..1.2× with drive. */
       int mult =
           AMBIENT_BOT_MULT_QUIET_X100 + (int)(drive * (AMBIENT_BOT_MULT_LOUD_X100 - AMBIENT_BOT_MULT_QUIET_X100));
+      /* Lit-from-within: during spike flash, push the bottom
+       * multiplier above its normal ceiling so the bottom hemisphere
+       * briefly out-shines the top.  Reads as a strobe inside the
+       * translucent shell, complementary to the top→white pop. */
+      if (s_flash_strength > 0.0f) {
+         mult += (int)(s_flash_strength * AMBIENT_FLASH_BOT_BONUS_X100);
+      }
       uint32_t bot = ambient_scale_bot(s_body_bot_base, mult);
       /* Quantize at 0xF0 mask (was 0xF8) so smaller swings trigger
        * a repaint — more responsive feel. */
@@ -1628,6 +1725,18 @@ static void ambient_apply(void) {
       int stop = AMBIENT_BODY_STOP_FLOOR + (int)(drive * (AMBIENT_BODY_STOP_PEAK - AMBIENT_BODY_STOP_FLOOR));
       if (stop != s_ambient_body_stop_last) {
          s_ambient_body_stop_last = stop;
+      }
+   }
+   /* Rim halo — pulses with flash_strength only.  Zero during steady-
+    * state ambient drive; pops to AMBIENT_RIM_PEAK_OPA on transients
+    * and decays with the flash window.  Static last-value guard so we
+    * don't restyle every frame at rest. */
+   if (s_rim) {
+      int rim_opa = (int)(s_flash_strength * AMBIENT_RIM_PEAK_OPA);
+      static int s_rim_opa_last = -1;
+      if (rim_opa != s_rim_opa_last) {
+         s_rim_opa_last = rim_opa;
+         lv_obj_set_style_border_opa(s_rim, (lv_opa_t)rim_opa, LV_PART_MAIN);
       }
    }
    if (s_spec) {
@@ -1657,6 +1766,8 @@ static void ambient_smooth_tick_cb(lv_timer_t *t) {
    /* Approach target each tick — 30 Hz × alpha 0.18 ≈ ~5 frames to
     * cover 60 % of any gap.  Buttery, not lurchy. */
    s_ambient_rms += (s_ambient_rms_target - s_ambient_rms) * AMBIENT_SMOOTH_ALPHA;
+   s_ambient_band_treble +=
+       (s_ambient_band_treble_target - s_ambient_band_treble) * AMBIENT_SMOOTH_ALPHA;
    /* TT #561: decay spike flash strength toward 0.  Linear from 1.0
     * down to 0 over AMBIENT_SPIKE_RECOVER_MS. */
    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -1686,12 +1797,31 @@ static void ambient_mic_tick_cb(lv_timer_t *t) {
       s_ambient_rms_target *= 0.9f;
       return;
    }
+   /* Per-frame loop computes BOTH total RMS and high-pass RMS in a
+    * single pass.  Single-pole HP: hp[n] = α(hp[n-1] + x[n] - x[n-1]).
+    * Static state survives across mic ticks so the filter doesn't
+    * reset every 200 ms (which would cause a transient on every call). */
+   static float hp_state = 0.0f;
+   static int16_t hp_prev = 0;
    int64_t sqsum = 0;
+   int64_t hp_sqsum = 0;
    for (int i = 0; i < AMBIENT_FRAMES; i++) {
       int16_t v = buf[i * AMBIENT_MIC_TDM_CHANNELS + AMBIENT_MIC1_OFFSET];
       sqsum += (int64_t)v * v;
+      hp_state = AMBIENT_HP_ALPHA * (hp_state + (float)(v - hp_prev));
+      hp_prev = v;
+      hp_sqsum += (int64_t)(hp_state * hp_state);
    }
    float rms = sqrtf((float)(sqsum / AMBIENT_FRAMES));
+   float hp_rms = sqrtf((float)(hp_sqsum / AMBIENT_FRAMES));
+   /* Treble ratio — guard against div-by-zero in silence; in that
+    * case the smoothed band drifts toward whatever value the
+    * smoother was last at, which is fine (it's invisible at
+    * drive=0 anyway). */
+   float treble_ratio = (rms > 1.0f) ? (hp_rms / rms) : s_ambient_band_treble_target;
+   if (treble_ratio > 1.0f) treble_ratio = 1.0f;
+   s_ambient_band_treble_target =
+       (0.5f * treble_ratio) + (0.5f * s_ambient_band_treble_target);
    float n = rms / AMBIENT_RMS_DIV;
    if (n < 0.0f) n = 0.0f;
    if (n > 1.0f) n = 1.0f;
@@ -1712,6 +1842,8 @@ static void alive_start(void) {
    s_alive_running = true;
    s_ambient_rms = 0.0f;
    s_ambient_rms_target = 0.0f;
+   s_ambient_band_treble = AMBIENT_BAND_NEUTRAL;
+   s_ambient_band_treble_target = AMBIENT_BAND_NEUTRAL;
    s_ambient_body_stop_last = -1;
    s_ambient_spec_last = -1;
    if (!s_ambient_mic_timer) {
@@ -1735,11 +1867,14 @@ static void alive_stop(void) {
    }
    /* Restore baselines.  Halo opa is owned by breath/bloom; the body
     * gradient stop snaps back to 0 (canonical full-range gradient);
-    * spec returns to its baseline peak. */
+    * spec returns to its baseline peak; rim halo back to invisible. */
    if (s_spec) lv_obj_set_style_bg_opa(s_spec, 140, LV_PART_MAIN);
    if (s_body) lv_obj_set_style_bg_main_stop(s_body, 0, LV_PART_MAIN);
+   if (s_rim) lv_obj_set_style_border_opa(s_rim, 0, LV_PART_MAIN);
    s_ambient_rms = 0.0f;
    s_ambient_rms_target = 0.0f;
+   s_ambient_band_treble = AMBIENT_BAND_NEUTRAL;
+   s_ambient_band_treble_target = AMBIENT_BAND_NEUTRAL;
    s_ambient_body_stop_last = -1;
    s_ambient_spec_last = -1;
 }
