@@ -2453,7 +2453,13 @@ static void cb_clear_failed(lv_event_t *e) {
 
 /* ── Note card widget ──────────────────────────────────── */
 static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, int note_idx, day_section_t sec) {
-   note_entry_t n = *note;
+   /* TT #572 follow-up: was `note_entry_t n = *note;` (stack copy).
+    * With MAX_NOTE_LEN bumped from 512 → 32 KB the struct grew to
+    * ~33 KB and this single line blew the UI task stack on every
+    * Notes-screen open — Tab5 reboot, exc_task=ui_task, confirmed
+    * via crashlog.  Use the pointer directly; no caller mutates the
+    * source, so the copy was always unnecessary. */
+   const note_entry_t *n = note;
 
    /* #170 follow-up: under sustained rapid-nav stress the LVGL pool can
     * transiently exhaust, making lv_*_create() return NULL.  Every
@@ -2505,11 +2511,11 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!ts) return;
    char ts_buf[32];
    static const char *mn[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-   int mi = (n.month >= 1 && n.month <= 12) ? n.month - 1 : 0;
+   int mi = (n->month >= 1 && n->month <= 12) ? n->month - 1 : 0;
    if (sec == DAY_SECTION_TODAY || sec == DAY_SECTION_YESTERDAY) {
-      snprintf(ts_buf, sizeof(ts_buf), "%02d:%02d", n.hour, n.minute);
+      snprintf(ts_buf, sizeof(ts_buf), "%02d:%02d", n->hour, n->minute);
    } else {
-      snprintf(ts_buf, sizeof(ts_buf), "%s %d  %02d:%02d", mn[mi], n.day, n.hour, n.minute);
+      snprintf(ts_buf, sizeof(ts_buf), "%s %d  %02d:%02d", mn[mi], n->day, n->hour, n->minute);
    }
    lv_label_set_text(ts, ts_buf);
    lv_obj_set_style_text_color(ts, lv_color_hex(COL_LABEL2), 0);
@@ -2531,7 +2537,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!badge) return;
    const char *badge_text;
    uint32_t badge_color;
-   switch (n.state) {
+   switch (n->state) {
       case NOTE_STATE_RECORDED:
          badge_text = "Recording";
          badge_color = 0x8E8E98;
@@ -2545,7 +2551,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
          badge_color = 0x8E8E98;
          break;
       case NOTE_STATE_FAILED:
-         switch (n.fail_reason) {
+         switch (n->fail_reason) {
             case NOTE_FAIL_AUTH:
                badge_text = "Auth fail";
                break;
@@ -2568,7 +2574,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
          badge_color = COL_RED;
          break;
       default:
-         badge_text = n.is_voice ? "Voice" : "Text";
+         badge_text = n->is_voice ? "Voice" : "Text";
          badge_color = 0x8E8E98;
          break;
    }
@@ -2602,8 +2608,8 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    /* Action button — outlined ghost (was filled solid).  Play stays
     * mint-tinted, retry stays amber-tinted via the icon color; the
     * background only fills on press for tactile feedback. */
-   if (n.audio_path[0]) {
-      bool is_retry = (n.state == NOTE_STATE_FAILED);
+   if (n->audio_path[0]) {
+      bool is_retry = (n->state == NOTE_STATE_FAILED);
       lv_obj_t *act = lv_button_create(header);
       if (!act) return;
       lv_obj_set_size(act, 44, 44);
@@ -2629,7 +2635,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    if (!preview) return; /* exact crash site from #170 follow-up coredump */
    /* Truncate long text for card preview — full text in edit overlay */
    char preview_text[120];
-   const char *src = n.text;
+   const char *src = n->text;
    /* Skip "[Untitled Note] " prefix (N7) */
    if (strncmp(src, "[Untitled Note] ", 16) == 0) src += 16;
    if (strlen(src) > 100) {
@@ -2648,7 +2654,7 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
     * Soft amber pill with a leading emoji-style indicator + label + ✓ + ✕.
     * Tap ✓ → schedules notification (reminder) or reformats text (list) +
     * clears chip.  Tap ✕ → clears chip, leaves note untouched. */
-   if (n.pending.kind != PENDING_NONE && n.pending.confidence >= PENDING_CONFIDENCE_FLOOR) {
+   if (n->pending.kind != PENDING_NONE && n->pending.confidence >= PENDING_CONFIDENCE_FLOOR) {
       lv_obj_t *chip = lv_obj_create(card);
       if (!chip) return;
       lv_obj_remove_style_all(chip);
@@ -2667,14 +2673,14 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
 
       /* Label: "Set reminder Tue 6 PM" or "Make a list (4 items)". */
       char label_buf[120];
-      if (n.pending.kind == PENDING_REMINDER) {
+      if (n->pending.kind == PENDING_REMINDER) {
          char when_short[40];
-         format_reminder_when(n.pending.payload, when_short, sizeof(when_short));
+         format_reminder_when(n->pending.payload, when_short, sizeof(when_short));
          snprintf(label_buf, sizeof(label_buf), LV_SYMBOL_BELL "  Set reminder %s", when_short);
       } else {
          /* Count commas as a rough item count for the chip hint. */
          int items = 1;
-         for (const char *q = n.text; *q; q++) {
+         for (const char *q = n->text; *q; q++) {
             if (*q == ',') items++;
          }
          snprintf(label_buf, sizeof(label_buf), LV_SYMBOL_LIST "  Make a list (%d items)", items);
