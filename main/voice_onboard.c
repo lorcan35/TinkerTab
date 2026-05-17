@@ -98,6 +98,55 @@ static size_t s_chain_llm_len;
 extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
 /* ---------------------------------------------------------------------- */
+/*  Wakeword event bridge — voice_wakeword task → LVGL UI                  */
+/*                                                                        */
+/*  ui_home_show_toast / ui_orb_ripple_for_tool must run on the LVGL      */
+/*  thread; the wakeword task is a separate FreeRTOS task, so we marshal  */
+/*  via tab5_lv_async_call (LEARNINGS: lv_async_call is NOT thread-safe   */
+/*  so we use the wrapped tab5 helper).  Strings are heap-allocated by    */
+/*  the producer, freed by the LVGL-thread consumer.                      */
+/* ---------------------------------------------------------------------- */
+#include "ui_orb.h"
+
+static void wakeword_toast_async(void *user) {
+   char *txt = (char *)user;
+   if (txt == NULL) return;
+   ui_home_show_toast(txt);
+   ui_orb_ripple_for_tool("wakeword");
+   free(txt);
+}
+
+static void wakeword_event_handler(voice_wakeword_event_t event, const char *text, void *user) {
+   (void)user;
+   switch (event) {
+      case VOICE_WAKEWORD_EVENT_WAKE: {
+         char *msg = strdup("Tinker listening — speak then say \"save note\"");
+         if (msg != NULL) tab5_lv_async_call(wakeword_toast_async, msg);
+         break;
+      }
+      case VOICE_WAKEWORD_EVENT_DICTATION_FINAL: {
+         /* Show first 40 chars of the transcript as a confirmation toast. */
+         const char *src = (text != NULL) ? text : "";
+         char *msg = malloc(72);
+         if (msg != NULL) {
+            size_t take = strlen(src);
+            if (take > 40) take = 40;
+            snprintf(msg, 72, take > 0 ? "Saved: %.*s%s" : "Note saved (silence)", (int)take, src,
+                     take == 40 ? "…" : "");
+            tab5_lv_async_call(wakeword_toast_async, msg);
+         }
+         break;
+      }
+      case VOICE_WAKEWORD_EVENT_DICTATION_PARTIAL:
+      case VOICE_WAKEWORD_EVENT_TRANSCRIPT:
+         /* No UI for partials in this first cut — keeps the toast surface
+          * uncluttered.  Live transcript display can layer in via the
+          * orb caption or a new voice overlay later. */
+         break;
+   }
+}
+
+/* ---------------------------------------------------------------------- */
 /*  Failover jobs                                                         */
 /* ---------------------------------------------------------------------- */
 
@@ -240,7 +289,7 @@ static void onboard_warmup_job(void *arg) {
        * Logs fire via obs.event for now — no automatic LISTENING
        * trigger until detection accuracy is validated on hardware.
        * Failures non-fatal — the LLM path still works without wakeword. */
-      esp_err_t we = voice_wakeword_start(NULL, NULL, NULL);
+      esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
       if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
       }
@@ -378,7 +427,7 @@ static void onboard_reset_failover_job(void *arg) {
       /* Wakeword revival: same hook as the initial warmup path — once
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
-      esp_err_t we = voice_wakeword_start(NULL, NULL, NULL);
+      esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
       if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword (re)start skipped: %s", esp_err_to_name(we));
       }
