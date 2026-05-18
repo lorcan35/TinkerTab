@@ -122,20 +122,35 @@ static void emit_event(voice_wakeword_event_t ev, const char *text) {
 static void wake_window_push(const char *chunk) {
    if (chunk == NULL || chunk[0] == '\0') return;
    size_t add = strlen(chunk);
+   /* TT #606: clamp add up front so the rest of the function never
+    * exceeds WAKE_WINDOW_BYTES.  Old code only handled add > BYTES;
+    * add == BYTES underflowed (WAKE_WINDOW_BYTES - add - 1) to
+    * SIZE_MAX and overran into adjacent BSS, corrupting
+    * s_wake_phrase_alt / s_end_phrase with TV transcript text. */
+   if (add > WAKE_WINDOW_BYTES) add = WAKE_WINDOW_BYTES;
+
    /* Truncate from the left when we'd overflow — keep the most recent
-    * WAKE_WINDOW_BYTES.  Cheaper than ring-buffer math for this size. */
+    * WAKE_WINDOW_BYTES.  Cheaper than ring-buffer math for this size.
+    * Uses (>=) so add == WAKE_WINDOW_BYTES forces a clean reset rather
+    * than the underflow path. */
    if (s_wake_window_len + 1 + add > WAKE_WINDOW_BYTES) {
-      size_t keep = (add > WAKE_WINDOW_BYTES) ? 0 : (WAKE_WINDOW_BYTES - add - 1);
+      size_t keep = (add + 1 >= WAKE_WINDOW_BYTES) ? 0 : (WAKE_WINDOW_BYTES - add - 1);
       if (keep > s_wake_window_len) keep = s_wake_window_len;
       if (keep > 0) memmove(s_wake_window, s_wake_window + s_wake_window_len - keep, keep);
       s_wake_window_len = keep;
    }
-   if (s_wake_window_len > 0) {
+   if (s_wake_window_len > 0 && s_wake_window_len < WAKE_WINDOW_BYTES) {
       s_wake_window[s_wake_window_len++] = ' ';
    }
-   if (add > WAKE_WINDOW_BYTES) add = WAKE_WINDOW_BYTES;
-   memcpy(s_wake_window + s_wake_window_len, chunk, add);
-   s_wake_window_len += add;
+   /* Final defensive clamp — never write past s_wake_window[WAKE_WINDOW_BYTES]
+    * regardless of how we got here. */
+   if (s_wake_window_len + add > WAKE_WINDOW_BYTES) {
+      add = WAKE_WINDOW_BYTES - s_wake_window_len;
+   }
+   if (add > 0) {
+      memcpy(s_wake_window + s_wake_window_len, chunk, add);
+      s_wake_window_len += add;
+   }
    s_wake_window[s_wake_window_len] = '\0';
 }
 
