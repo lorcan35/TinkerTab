@@ -285,6 +285,21 @@ size_t voice_codec_pack_call_audio(uint8_t *out, size_t out_cap,
     return body_len + VOICE_CALL_AUDIO_HEADER_LEN;
 }
 
+/* TT #615 — see voice_codec.h for wire format.  Mirror of pack_call_audio
+ * with WAK0 magic. */
+size_t voice_codec_pack_wake_audio(uint8_t *out, size_t out_cap, const void *body, size_t body_len)
+{
+    if (!out || !body) return 0;
+    if (out_cap < body_len + VOICE_WAKE_AUDIO_HEADER_LEN) return 0;
+    out[0] = 'W'; out[1] = 'A'; out[2] = 'K'; out[3] = '0';
+    out[4] = (uint8_t)((body_len >> 24) & 0xff);
+    out[5] = (uint8_t)((body_len >> 16) & 0xff);
+    out[6] = (uint8_t)((body_len >>  8) & 0xff);
+    out[7] = (uint8_t)( body_len        & 0xff);
+    memcpy(out + VOICE_WAKE_AUDIO_HEADER_LEN, body, body_len);
+    return body_len + VOICE_WAKE_AUDIO_HEADER_LEN;
+}
+
 bool voice_codec_unpack_call_audio(const uint8_t *wire, size_t wire_len,
                                    const uint8_t **out_body, size_t *out_body_len)
 {
