@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "voice.h"
 #include "voice_m5_llm.h"
 
 static const char *TAG = "voice_wakeword";
@@ -166,10 +167,40 @@ static void finish_dictation(const char *reason) {
    wake_window_clear();
 }
 
+/* Self-wake suppression (2026-05-18): K144's mic is always on, so when
+ * Tinker's TTS plays through Tab5's speaker the K144 hears it and the
+ * ASR transcribes Tinker's own response.  If that response contains
+ * the wake word ("I'm Tinker, here to help!" → "i'm thinker here..."),
+ * the matcher fires wake mid-utterance and tries to start a NEW voice
+ * turn while Tinker is still speaking.
+ *
+ * Quietest fix: suppress wake matching while Tab5's voice state is
+ * NOT in a quiescent state (IDLE/READY/CONNECTING).  We also clear
+ * the wake-window every time we suppress so a fragment captured
+ * mid-non-quiescent doesn't pop a stale wake when we return to READY.
+ *
+ * Barge-in (saying "Hey Tinker" to interrupt TTS) is a separate
+ * follow-up that needs voice_cancel() + voice_start_listening()
+ * coordination; not in this fix. */
+static bool wakeword_suppressed_by_voice_state(void) {
+   voice_state_t st = voice_get_state();
+   return (st == VOICE_STATE_LISTENING ||
+           st == VOICE_STATE_PROCESSING ||
+           st == VOICE_STATE_SPEAKING ||
+           st == VOICE_STATE_RECONNECTING);
+}
+
 static void asr_partial_cb(const char *delta, bool finish, void *user) {
    (void)user;
 
    if (s_state == ST_IDLE) {
+      /* Suppress matching while Tinker is mid-turn — K144 hears its
+       * own TTS playback and would re-fire wake on every reply that
+       * contains "tinker" / "thinker". */
+      if (wakeword_suppressed_by_voice_state()) {
+         wake_window_clear();
+         return;
+      }
       /* Push delta into sliding window AND check end-of-segment finish
        * boundary for phrase match.  Match on every push so we catch
        * mid-segment wakes too. */
