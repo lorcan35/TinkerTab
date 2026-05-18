@@ -429,6 +429,75 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
  */
 void voice_m5_llm_chain_teardown(voice_m5_chain_handle_t *handle);
 
+/* ---------------------------------------------------------------------- */
+/*  Always-on ASR listener — audio.setup + asr.setup, no llm/tts.         */
+/*                                                                        */
+/*  Original plan was K144's KWS unit, but `kws.setup` is broken on the   */
+/*  current K144 firmware (parse_config rejects every body shape).  ASR   */
+/*  works and gives us a strict superset of KWS: open-vocab phrase match  */
+/*  + dictation + agentic command capture, all from one stream.  Wake     */
+/*  phrase matching and dictation buffering live in voice_wakeword.c on   */
+/*  top of this stream.                                                   */
+/*                                                                        */
+/*  ASR streaming frames carry `{delta:str, finish:bool}` payloads on the */
+/*  `asr.NNNN` work_id; finish=true marks a speech-segment boundary       */
+/*  (the K144 zipformer's endpoint detector).                             */
+/* ---------------------------------------------------------------------- */
+
+/** Opaque always-on listener handle. */
+typedef struct voice_m5_wakeword_handle voice_m5_wakeword_handle_t;
+
+/**
+ * @brief Invoked from voice_m5_llm_wakeword_run for every ASR partial
+ *        frame.  Caller is responsible for phrase matching, segment
+ *        accumulation, dictation buffering — this layer just delivers
+ *        text.
+ *
+ * @param delta   Partial transcript chunk.  Pointer valid only during
+ *                the call.  May be empty if finish=true with no new text.
+ * @param finish  True on segment-end (zipformer endpoint detected); false
+ *                while the user is still speaking.
+ * @param user    Caller-supplied opaque.
+ */
+typedef void (*voice_m5_wakeword_cb)(const char *delta, bool finish, void *user);
+
+/**
+ * @brief Bring up audio + ASR on K144 in always-on streaming mode.
+ *
+ * Two-stage setup: audio.setup (K144 onboard mic, card0/dev0) then
+ * asr.setup subscribed to sys.pcm with response_format
+ * `asr.utf-8.stream` — same shape used by the proven vmode=4 chain.
+ *
+ * @param[out] out_handle  Receives the handle.  Free with
+ *                         @ref voice_m5_llm_wakeword_teardown.
+ * @param stop_flag        Optional volatile bool for user-stop during
+ *                         K144 NPU warm-up.
+ *
+ * @return ESP_OK on success; ESP_ERR_TIMEOUT / ESP_ERR_INVALID_RESPONSE
+ *         on per-stage failure; ESP_ERR_INVALID_STATE if stop_flag was
+ *         raised; ESP_ERR_NO_MEM on allocation failure.
+ */
+esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag);
+
+/**
+ * @brief Drain asr.utf-8.stream frames, invoking cb on every partial.
+ *
+ * Blocking — runs until @p stop_flag transitions to true OR
+ * @p timeout_s elapses (0 = no timeout).  Frames from any other unit
+ * silently discarded.  cb may be NULL but then the loop is a no-op.
+ *
+ * @return ESP_OK on stop_flag-driven exit;
+ *         ESP_ERR_TIMEOUT on @p timeout_s expiry;
+ *         propagated UART error otherwise.
+ */
+esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
+                                    volatile bool *stop_flag, uint32_t timeout_s);
+
+/**
+ * @brief Tear down — issues `exit` to asr then audio.  Safe with NULL.
+ */
+void voice_m5_llm_wakeword_teardown(voice_m5_wakeword_handle_t *handle);
+
 #ifdef __cplusplus
 }
 #endif

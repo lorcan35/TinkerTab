@@ -1,10 +1,27 @@
-# Plan — Always-on K144 ASR wakeword + on-device dictation
+# Plan — TinkerON always-on wakeword (K144 ASR) + on-device dictation
 
-**Status:** live-verified on Tab5 2026-05-17 — wake fired on "tinker" substring during ASR partial stream; UI bridge (toast + orb ripple) added but needs hardware retest after the UI commit.  Branch `feat/wakeword`; PR [#576](https://github.com/lorcan35/TinkerTab/pull/576) open against `main`.
+**Status:** **LIVE end-to-end on Tab5 192.168.1.90 (2026-05-18, commit `b614a23`).** Said "Hey Tinker — what time is it?" → Tab5 mic opened → Dragon STT → LLM → Kokoro TTS spoke the time back, hands-free.  No orb tap needed.  Branch `feat/wakeword`; PR [#576](https://github.com/lorcan35/TinkerTab/pull/576) open against `main`.
+
+**Brand:** The K144 LLM Module Kit is **branded "TinkerON"** in all user-facing surfaces.  K144 / AX630C / sherpa-ncnn stay as hardware identifiers in technical text + log messages + code symbols.
+
 **Owner:** unassigned.
 **Tracking issue:** TT [#575](https://github.com/lorcan35/TinkerTab/issues/575).
-**Last updated:** 2026-05-17.
+**Last updated:** 2026-05-18.
 **Related:** [`docs/PLAN-m5-llm-module.md`](PLAN-m5-llm-module.md) (Phase 6b autonomous chain — same K144 audio + asr units, different downstream consumer), [`docs/PLAN-k144-chain-hardening.md`](PLAN-k144-chain-hardening.md) (UART mutex + obs ring patterns this reuses).
+
+## Working state (2026-05-18)
+
+Five fixes since the 2026-05-17 "wake-fired-but-toast-only" status, all on commit `b614a23`:
+
+1. **WAKE → real voice turn.**  `voice_onboard.c::wakeword_event_handler` dispatches `voice_start_listening()` on the LVGL thread (the orb-tap pipeline) instead of toast-only.  Tab5 mic captures the user's question, ships to Dragon, runs STT → LLM → TTS round-trip per the active `voice_mode` routing (Local / Hybrid / Cloud / TinkerClaw — same logic as the orb tap, no special case).  K144's dictation-buffer auto-capture is cancelled in the same handler via `voice_wakeword_force_dictation_stop()` so we don't mirror the question into a save-note.
+
+2. **ASR T → Th phonetic alt.**  K144's sherpa-ncnn streaming zipformer consistently transcribes "tinker" → "thinker".  `voice_wakeword.c` auto-derives an alt phrase (swap every "tinker" → "thinker" in the configured wake_phrase) and matches against EITHER variant.  Default wake phrase changed from `"tinker"` to `"hey tinker"` — fewer false positives than bare substring, and "hey tinker" matched as "hey thinker" via the alt path on the live test.
+
+3. **K144 NPU slot fix.**  Boot warmup loads `qwen2.5-0.5B-prefill-20e` (`llm.NNNN`) onto NPU; subsequent `asr.setup` for wakeword fails with `err=-21 'task full'`.  Fix: `voice_m5_llm_release()` runs after warmup-infer success, before `voice_wakeword_start()`, freeing the slot.  Same release added to the auto-recovery reset path.  Net cost: ~3 s warmup on the next vmode=4 turn (LLM re-loads); wakeword actually starts.
+
+4. **sys.reset coordination fix.**  `sys.reset` kills K144's audio + asr units mid-stream, leaving Tab5's wakeword task draining a dead UART.  The subsequent post-warmup `voice_wakeword_start()` then returned `INVALID_STATE` silently because the prior task was still alive.  Fix: `voice_wakeword_stop()` runs BEFORE `sys.reset` in `onboard_reset_failover_job`, AND defensively in `onboard_warmup_job`.
+
+5. **Hardware topology (operational).**  Per the M5Stack docs, the Module13.2 LLM Mate "achieves stacked power supply with Module LLM via the M5-Bus interface" and the K144 draws only ~1.5W at full load — so **Tab5's own USB-C powers the entire stack** (Tab5 → Mate → K144) via M5-Bus.  NO extra USB-C is required to run TinkerON.  The Mate's USB-C is CH340N serial log output (debug only); the K144's top USB-C (M140 port) is USB OTG / Axera ADB (useful when SSH'ing into the K144 Linux from a dev host).  Both can be unplugged in normal operation.  The wedging hit during 2026-05-18 bring-up was K144 daemon state across Tab5 reflashes (stale audio+asr units, NPU task slot collisions), NOT power — addressed by the `voice_m5_llm_release()` + `voice_wakeword_stop()` ordering fixes.
 
 ---
 

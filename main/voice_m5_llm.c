@@ -1488,3 +1488,166 @@ esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
    }
    return ret;
 }
+
+/* ────────────────────────────────────────────────────────────────────── */
+/*  Always-on ASR listener — audio + asr, no llm/tts                      */
+/*                                                                        */
+/*  Original plan was K144's `kws` unit but that path is broken on this   */
+/*  firmware (parse_config rejects every body shape; see                  */
+/*  docs/PLAN-k144-recovery.md follow-up).  ASR works (we use it in       */
+/*  vmode=4) and supports open-vocabulary phrase match by simply scanning */
+/*  the partial transcripts on the Tab5 side.                             */
+/* ────────────────────────────────────────────────────────────────────── */
+
+struct voice_m5_wakeword_handle {
+   char audio_id[32];
+   char asr_id[32];
+};
+
+esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag) {
+   if (out_handle == NULL) return ESP_ERR_INVALID_ARG;
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   M5_LOCK_OR_RETURN(60000);
+
+   voice_m5_wakeword_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   /* 1) audio.setup — K144 onboard mic. Same shape as chain stage 1. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddNumberToObject(d, "capcard", 0);
+      cJSON_AddNumberToObject(d, "capdevice", 0);
+      cJSON_AddNumberToObject(d, "capVolume", 0.5);
+      cJSON_AddNumberToObject(d, "playcard", 0);
+      cJSON_AddNumberToObject(d, "playdevice", 1);
+      cJSON_AddNumberToObject(d, "playVolume", 0.15);
+      err =
+          chain_setup_unit("audio", "audio.setup", d, h->audio_id, sizeof(h->audio_id), M5_SETUP_TIMEOUT_MS, stop_flag);
+      if (err != ESP_OK) goto fail;
+   }
+
+   /* 2) asr.setup — subscribe to sys.pcm, stream utf-8 transcripts back.
+    * Same envelope as the autonomous chain stage 2; the difference is
+    * that nothing downstream consumes asr.NNNN here — Tab5 drains the
+    * stream itself and does phrase matching / dictation buffering. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddStringToObject(d, "model", M5_CHAIN_ASR_MODEL);
+      cJSON_AddStringToObject(d, "response_format", "asr.utf-8.stream");
+      cJSON *inp = cJSON_CreateArray();
+      cJSON_AddItemToArray(inp, cJSON_CreateString("sys.pcm"));
+      cJSON_AddItemToObject(d, "input", inp);
+      cJSON_AddBoolToObject(d, "enoutput", true);
+      err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id), M5_SETUP_TIMEOUT_MS, stop_flag);
+      if (err != ESP_OK) goto fail;
+   }
+
+   M5_UNLOCK();
+   *out_handle = h;
+   ESP_LOGI(TAG, "always-on ASR up: audio=%s asr=%s", h->audio_id, h->asr_id);
+   return ESP_OK;
+
+fail:
+   if (h->asr_id[0]) chain_exit_unit(h->asr_id);
+   if (h->audio_id[0]) chain_exit_unit(h->audio_id);
+   heap_caps_free(h);
+   M5_UNLOCK();
+   return err;
+}
+
+esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
+                                    volatile bool *stop_flag, uint32_t timeout_s) {
+   if (handle == NULL) return ESP_ERR_INVALID_ARG;
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   if (ensure_rx_buf() != ESP_OK) return ESP_ERR_NO_MEM;
+
+   const int64_t deadline_us = (timeout_s > 0) ? esp_timer_get_time() + (int64_t)timeout_s * 1000000 : INT64_MAX;
+
+   while (!(stop_flag != NULL && *stop_flag) && esp_timer_get_time() < deadline_us) {
+      /* Hold the UART lock per outer iteration so concurrent chain probes
+       * can interleave between frames. */
+      if (tab5_port_c_lock(500) != ESP_OK) continue;
+
+      char *nl = memchr(s_rx_buf, '\n', s_rx_len);
+      if (nl == NULL) {
+         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 100);
+         if (n > 0) {
+            s_rx_len += (size_t)n;
+            nl = memchr(s_rx_buf, '\n', s_rx_len);
+         }
+      }
+      if (nl == NULL) {
+         tab5_port_c_unlock();
+         continue;
+      }
+
+      size_t frame_len = (size_t)(nl - s_rx_buf);
+      m5_stackflow_response_t resp = {0};
+      esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, frame_len, &resp);
+      size_t consumed = frame_len + 1;
+      if (consumed < s_rx_len) memmove(s_rx_buf, s_rx_buf + consumed, s_rx_len - consumed);
+      s_rx_len -= consumed;
+      tab5_port_c_unlock();
+
+      if (pe != ESP_OK) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      /* DEBUG (TT wakeword bring-up 2026-05-18): log every frame we
+       * receive so we can see what K144 ASR actually emits when the
+       * matcher fails to fire.  Cheap (one INFO per partial). */
+      ESP_LOGI(TAG, "asr frame: work_id=%s obj=%s",
+               resp.work_id ? resp.work_id : "(null)",
+               resp.object ? resp.object : "(null)");
+      if (resp.work_id == NULL || strcmp(resp.work_id, handle->asr_id) != 0) {
+         m5_stackflow_response_free(&resp);
+         continue;
+      }
+      /* asr.utf-8.stream frames carry {delta, index, finish}.  We deliver
+       * delta + finish to the caller — phrase matching + dictation
+       * buffering live up there. */
+      if (resp.object != NULL && strcmp(resp.object, "asr.utf-8.stream") == 0 && resp.data != NULL) {
+         const char *delta_str = "";
+         bool finished = false;
+         if (cJSON_IsObject(resp.data)) {
+            const cJSON *dj = cJSON_GetObjectItemCaseSensitive(resp.data, "delta");
+            if (cJSON_IsString(dj) && dj->valuestring) delta_str = dj->valuestring;
+            const cJSON *fj = cJSON_GetObjectItemCaseSensitive(resp.data, "finish");
+            finished = cJSON_IsTrue(fj);
+         } else if (cJSON_IsString(resp.data)) {
+            delta_str = resp.data->valuestring ? resp.data->valuestring : "";
+            finished = true;
+         }
+         ESP_LOGI(TAG, "asr delta: finish=%d text=\"%.80s\"", finished, delta_str);
+         if (cb != NULL) cb(delta_str, finished, user);
+      }
+      m5_stackflow_response_free(&resp);
+   }
+
+   if (stop_flag != NULL && *stop_flag) return ESP_OK;
+   return ESP_ERR_TIMEOUT;
+}
+
+void voice_m5_llm_wakeword_teardown(voice_m5_wakeword_handle_t *handle) {
+   if (handle == NULL) return;
+   if (tab5_port_c_lock(5000) != ESP_OK) {
+      ESP_LOGW(TAG, "always-on ASR teardown: uart busy, skipping exits");
+      heap_caps_free(handle);
+      return;
+   }
+   chain_exit_unit(handle->asr_id);
+   chain_exit_unit(handle->audio_id);
+   tab5_port_c_flush();
+   s_rx_len = 0;
+   ESP_LOGI(TAG, "always-on ASR torn down");
+   tab5_port_c_unlock();
+   heap_caps_free(handle);
+}
