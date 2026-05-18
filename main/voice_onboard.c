@@ -774,6 +774,16 @@ static void onboard_chain_drain_task(void *arg) {
    s_chain_started_us = 0;
    s_chain_active = false;
 
+   /* TT #582 — re-arm wakeword now that the chain has released K144's
+    * audio + asr units.  Idempotent (start refuses if already running),
+    * and only meaningful if user has flipped back to a Dragon-using
+    * vmode where wakeword is wanted — but cheap to call regardless. */
+   esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+   if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
+      ESP_LOGW(TAG, "wakeword re-arm after chain stop skipped: %s",
+               esp_err_to_name(we));
+   }
+
    voice_set_state(VOICE_STATE_READY, NULL);
    if (tab5_ui_try_lock(150)) {
       ui_home_show_toast("Onboard chat ended");
@@ -788,6 +798,15 @@ static void onboard_chain_drain_task(void *arg) {
 
 esp_err_t voice_onboard_chain_start(void) {
    if (s_chain_active) return ESP_ERR_INVALID_STATE;
+
+   /* TT #582 — wakeword + chain BOTH want K144's audio + asr units.
+    * If wakeword is running when vmode flips to ONBOARD, the chain's
+    * subsequent audio.setup hits err=-21 'task full'.  Tear down the
+    * wakeword listener first to free the units.  Idempotent — no-op
+    * if not running.  Wakeword re-arms automatically via the
+    * onboard_warmup_job path when user flips back to a Dragon-using
+    * vmode. */
+   voice_wakeword_stop();
 
    /* TT #328 Wave 7 — defense-in-depth mic-mute guard.  voice.c's
     * voice_start_listening already guards before this is called from
