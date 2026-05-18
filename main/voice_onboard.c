@@ -328,7 +328,19 @@ static void onboard_warmup_job(void *arg) {
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
       esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
-      if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
+      if (we == ESP_ERR_INVALID_RESPONSE) {
+         /* TT #580: post-Tab5-reflash, K144's previous-session audio +
+          * asr units are still alive on the daemon.  Daemon refuses
+          * new setup with "task full" / "unit call false".  Trigger
+          * a sys.reset to clear the unit table — the reset's success
+          * branch re-arms wakeword on a clean daemon.  Capped by the
+          * existing 3-attempts-per-boot retry budget. */
+         ESP_LOGW(TAG,
+                  "wakeword start failed (%s) — queueing sys.reset to "
+                  "clear stale K144 daemon units",
+                  esp_err_to_name(we));
+         (void)voice_onboard_reset_failover();
+      } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
       }
    } else {
@@ -478,7 +490,15 @@ static void onboard_reset_failover_job(void *arg) {
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
       esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
-      if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
+      if (we == ESP_ERR_INVALID_RESPONSE) {
+         /* TT #580: still wedged after THIS reset.  Queue another (the
+          * retry budget caps at 3/boot). */
+         ESP_LOGW(TAG,
+                  "wakeword (re)start still failed (%s) — queueing another "
+                  "sys.reset cycle",
+                  esp_err_to_name(we));
+         (void)voice_onboard_reset_failover();
+      } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword (re)start skipped: %s", esp_err_to_name(we));
       }
    } else {
