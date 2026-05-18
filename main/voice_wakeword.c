@@ -243,7 +243,15 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
          emit_event(VOICE_WAKEWORD_EVENT_TRANSCRIPT, delta);
       }
       const char *match = NULL;
-      if (s_wake_window_len > 0) {
+      /* TT #593 — KWS unit emits a sentinel "WAKE" delta on each
+       * keyword hit (synthesized in voice_m5_llm_wakeword_run when
+       * a kws.bool frame arrives).  The K144 daemon has already
+       * confirmed the match against the compiled keyword list, so
+       * we fire wake immediately without sliding-window substring
+       * checks.  ASR fallback path continues to use substring. */
+      if (delta && strcmp(delta, "WAKE") == 0) {
+         match = s_wake_phrase;
+      } else if (s_wake_window_len > 0) {
          if (istrstr(s_wake_window, s_wake_phrase) != NULL) {
             match = s_wake_phrase;
          } else if (s_wake_phrase_alt[0] &&
@@ -392,12 +400,44 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    s_dict_buf[0] = '\0';
    s_dict_buf_len = 0;
 
-   ESP_LOGI(TAG, "starting K144 always-on ASR: wake=\"%s\" end=\"%s\"", s_wake_phrase, s_end_phrase);
+   ESP_LOGI(TAG, "starting K144 always-on listener: wake=\"%s\" end=\"%s\"", s_wake_phrase, s_end_phrase);
    tab5_debug_obs_event("wakeword.start", s_wake_phrase);
 
-   esp_err_t err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
+   /* TT #593 — try the purpose-built KWS unit first.  Convert the
+    * wake phrase + alt to UPPERCASE (text2token.py requires it).
+    * If kws.setup fails (older K144 firmware), fall back to the
+    * full ASR + substring-match path which is the proven baseline. */
+   char kws_main[64], kws_alt[64];
+   for (size_t i = 0; i < sizeof(kws_main) - 1 && s_wake_phrase[i]; i++) {
+      kws_main[i] = toupper((unsigned char)s_wake_phrase[i]);
+      kws_main[i + 1] = '\0';
+   }
+   kws_main[sizeof(kws_main) - 1] = '\0';
+   if (s_wake_phrase_alt[0]) {
+      for (size_t i = 0; i < sizeof(kws_alt) - 1 && s_wake_phrase_alt[i]; i++) {
+         kws_alt[i] = toupper((unsigned char)s_wake_phrase_alt[i]);
+         kws_alt[i + 1] = '\0';
+      }
+      kws_alt[sizeof(kws_alt) - 1] = '\0';
+   } else {
+      kws_alt[0] = '\0';
+   }
+   const char *kws_list[3] = { kws_main, kws_alt[0] ? kws_alt : NULL, NULL };
+   esp_err_t err = voice_m5_llm_kws_wakeword_setup(&s_handle, kws_list, &s_stop_flag);
+   if (err == ESP_OK) {
+      ESP_LOGI(TAG, "using KWS unit (purpose-built keyword spotter)");
+      tab5_debug_obs_event("wakeword.start", "kws_unit");
+   } else {
+      ESP_LOGW(TAG, "kws.setup failed (%s) — falling back to ASR substring match",
+               esp_err_to_name(err));
+      err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
+      if (err == ESP_OK) {
+         ESP_LOGI(TAG, "using ASR substring fallback");
+         tab5_debug_obs_event("wakeword.start", "asr_fallback");
+      }
+   }
    if (err != ESP_OK) {
-      ESP_LOGE(TAG, "ASR chain setup failed: %s", esp_err_to_name(err));
+      ESP_LOGE(TAG, "wakeword chain setup failed: %s", esp_err_to_name(err));
       char detail[48];
       snprintf(detail, sizeof(detail), "fail %s", esp_err_to_name(err));
       tab5_debug_obs_event("wakeword.start", detail);
