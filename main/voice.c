@@ -515,6 +515,23 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
          s_conv_active = false;
       }
    }
+
+   /* TT #615 — Path B wake-stream: tell the wake-stream task about
+    * every state transition so it can gate I2S reads + WS sends to
+    * the quiescent states only.  Also arm on first transition to
+    * READY (Dragon WS handshake complete + initial register ack
+    * landed) and disarm on disconnect. */
+   {
+      extern void voice_wake_stream_on_state_change(int new_state);
+      extern void voice_wake_stream_arm(void);
+      extern void voice_wake_stream_disarm(void);
+      voice_wake_stream_on_state_change((int)new_state);
+      if (new_state == VOICE_STATE_READY && old != VOICE_STATE_READY) {
+         voice_wake_stream_arm();
+      } else if (new_state == VOICE_STATE_IDLE && old != VOICE_STATE_IDLE) {
+         voice_wake_stream_disarm();
+      }
+   }
 }
 
 /* closes #133: runs on the shared worker (16 KB PSRAM stack), safe for
@@ -1154,6 +1171,19 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
 
     s_initialized = true;
     voice_set_state(VOICE_STATE_IDLE, NULL);
+
+    /* TT #615 — Path B wake-stream: spawn the background task that
+     * ships Tab5 mic to Dragon as WAK0 frames during quiescent voice
+     * states.  Arm-on-connect happens in voice_ws_proto when the WS
+     * RX READY frame lands; the task itself idles until armed. */
+    {
+       extern esp_err_t voice_wake_stream_init(void);
+       esp_err_t we = voice_wake_stream_init();
+       if (we != ESP_OK) {
+          ESP_LOGW(TAG, "voice_wake_stream_init failed (%s) — wake-stream disabled", esp_err_to_name(we));
+       }
+    }
+
     ESP_LOGI(TAG, "Voice module initialized");
     return ESP_OK;
 }

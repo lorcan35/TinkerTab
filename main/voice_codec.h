@@ -144,3 +144,21 @@ bool voice_codec_peek_call_audio_magic(const void *data, size_t len);
  * via out_body / out_body_len.  Returns false on malformed input. */
 bool voice_codec_unpack_call_audio(const uint8_t *wire, size_t wire_len,
                                    const uint8_t **out_body, size_t *out_body_len);
+
+/* TT #615 — Path B wakeword audio framing.  When wake-streaming is
+ * armed (WS connected + voice state IDLE/READY), Tab5 mic frames are
+ * tagged with the "WAK0" magic + 4-byte BE length and shipped to
+ * Dragon.  Dragon accumulates a sliding window, runs whisper.cpp
+ * periodically, and on a 'hey tinker' substring match sends back
+ * {"type":"wake"} so Tab5 routes through ui_home_start_voice_turn —
+ * same UX as orb tap.
+ *
+ * Wire format mirrors AUD0 / VID0:
+ *   bytes 0..3 : magic "WAK0" (0x57 0x41 0x4B 0x30)
+ *   bytes 4..7 : payload length (uint32_t big-endian)
+ *   bytes 8..  : raw int16 LE PCM @ 16 kHz mono
+ */
+#define VOICE_WAKE_AUDIO_MAGIC      0x57414B30u   /* "WAK0" big-endian */
+#define VOICE_WAKE_AUDIO_HEADER_LEN 8
+
+size_t voice_codec_pack_wake_audio(uint8_t *out, size_t out_cap, const void *body, size_t body_len);

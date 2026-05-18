@@ -419,6 +419,19 @@ void voice_async_toast(char *text) {
    tab5_lv_async_call(async_show_toast_cb, t);
 }
 
+/* TT #615 — Dragon-side wake event arriving from voice WS RX (any task).
+ * Marshal onto LVGL so ui_home_start_voice_turn can touch overlay
+ * state safely. */
+static void dispatch_dragon_wake_async_cb(void *arg) {
+   (void)arg;
+   extern esp_err_t ui_home_start_voice_turn(const char *source);
+   (void)ui_home_start_voice_turn("dragon_wake");
+}
+
+void voice_ws_proto_dispatch_dragon_wake_async(void) {
+   tab5_lv_async_call(dispatch_dragon_wake_async_cb, NULL);
+}
+
 /* TT #328 Wave 3 — async fire of ui_home_show_error_banner from voice WS
  * task.  Persistent error banner survives across the 2-3 s toast lifetime
  * so the user can't miss a fatal-state notification (auth lockout, device
@@ -627,6 +640,15 @@ void voice_ws_proto_handle_text(const char *data, int len) {
             voice_set_state(VOICE_STATE_PROCESSING, s_stt_text);
          }
       }
+   } else if (strcmp(type_str, "wake") == 0) {
+      /* TT #615 — Path B wake: Dragon's wake detector matched on the
+       * WAK0-streamed audio and is telling Tab5 to open a real voice
+       * turn.  Route through ui_home_start_voice_turn so it goes
+       * through the same UX wrapper as orb-tap. */
+      ESP_LOGI(TAG, "WS wake frame from Dragon — routing through ui_home_start_voice_turn");
+      tab5_debug_obs_event("wake_stream", "wake_event");
+      extern void voice_ws_proto_dispatch_dragon_wake_async(void);
+      voice_ws_proto_dispatch_dragon_wake_async();
    } else if (strcmp(type_str, "tts_start") == 0) {
       /* Audit #80 DMA leak hunt (wave 9): log heap state at the 5
        * interesting boundaries of a chat turn (llm_done, tts_start,
