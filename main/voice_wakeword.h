@@ -119,6 +119,7 @@ typedef struct {
    char wake_phrase_alt[64];  /**< auto-derived T→Th variant (or "") */
    char end_phrase[64];       /**< end-of-dictation phrase */
    uint32_t fire_count;       /**< number of WAKE events fired since arm */
+   uint32_t vad_skip_count;   /**< matches suppressed by VAD pre-gate (TT #595) */
    int64_t last_fire_ms;      /**< esp_timer ms at last wake (0 if never) */
    char last_match[64];       /**< phrase that matched on the last wake */
 } voice_wakeword_status_t;

@@ -79,6 +79,11 @@ static size_t s_wake_window_len = 0;
  * cached callback/user so reconfigure can re-arm with the same wiring,
  * and a 32-entry ASR transcript ring for /tinkeron/transcripts. */
 static uint32_t s_fire_count = 0;
+/* TT #595 — VAD pre-gate skip counter.  Increments every time a
+ * substring match would have fired but was suppressed because the
+ * matching window was too short (likely an ASR hallucination on
+ * silence).  Exposed via voice_wakeword_status() for tuning. */
+static uint32_t s_vad_skip_count = 0;
 static int64_t s_last_fire_us = 0;
 static char s_last_match[64] = {0};
 static voice_wakeword_cb_t s_cached_cb = NULL;
@@ -252,14 +257,35 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
          }
       }
       if (match != NULL) {
-         ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", match, s_wake_window);
-         tab5_debug_obs_event("wakeword.fire", match);
-         /* TT #578: bookkeeping for /tinkeron/status. */
-         s_fire_count++;
-         s_last_fire_us = esp_timer_get_time();
-         strncpy(s_last_match, match, sizeof(s_last_match) - 1);
-         s_last_match[sizeof(s_last_match) - 1] = '\0';
-         enter_listening();
+         /* TT #595 — VAD pre-gate v1: require the sliding window
+          * to be ≥8 chars before a substring match is allowed to fire
+          * wake.  K144's sherpa-ncnn streaming ASR confabulates short
+          * 1-2 word fragments from background noise during silence
+          * ("kincher", "ereb", "thinker") — those would substring-
+          * match "thinker" but contain only that noise.  A real
+          * "Hey Tinker" utterance produces a window with leading
+          * context ("hi there hey tinker"), so the 8-char floor
+          * filters hallucinations without losing real wakes.
+          *
+          * The cheapest VAD we can do without K144 daemon changes:
+          * if the user really spoke the wake phrase, the partial
+          * stream carries more than just the phrase itself.
+          * Hallucinations are typically 4-6 chars of single-word
+          * garbage. */
+         if (s_wake_window_len < 8) {
+            ESP_LOGD(TAG, "wake suppressed by VAD pregate: window=\"%s\" (%u chars)", s_wake_window,
+                     (unsigned)s_wake_window_len);
+            s_vad_skip_count++;
+         } else {
+            ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", match, s_wake_window);
+            tab5_debug_obs_event("wakeword.fire", match);
+            /* TT #578: bookkeeping for /tinkeron/status. */
+            s_fire_count++;
+            s_last_fire_us = esp_timer_get_time();
+            strncpy(s_last_match, match, sizeof(s_last_match) - 1);
+            s_last_match[sizeof(s_last_match) - 1] = '\0';
+            enter_listening();
+         }
       } else if (finish) {
          /* Segment closed without match — clear the window so the next
           * unrelated segment doesn't carry a stale fragment forward. */
@@ -446,6 +472,7 @@ void voice_wakeword_status(voice_wakeword_status_t *out) {
    strncpy(out->end_phrase, s_end_phrase, sizeof(out->end_phrase) - 1);
    out->end_phrase[sizeof(out->end_phrase) - 1] = '\0';
    out->fire_count = s_fire_count;
+   out->vad_skip_count = s_vad_skip_count;
    out->last_fire_ms = s_last_fire_us / 1000;
    strncpy(out->last_match, s_last_match, sizeof(out->last_match) - 1);
    out->last_match[sizeof(out->last_match) - 1] = '\0';
