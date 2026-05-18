@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "debug_obs.h"             /* tab5_debug_obs_event */
 #include "debug_server_internal.h" /* tab5_debug_check_auth */
 #include "esp_err.h"
 #include "esp_http_server.h"
@@ -29,10 +30,11 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "task_worker.h"     /* tab5_worker_enqueue */
-#include "voice_m5_llm.h"    /* sys_reboot, hwinfo accessor */
-#include "voice_onboard.h"   /* failover state names */
-#include "voice_wakeword.h"  /* status + reconfigure_phrase + transcripts */
+#include "settings.h"       /* TT #617 — wake_src */
+#include "task_worker.h"    /* tab5_worker_enqueue */
+#include "voice_m5_llm.h"   /* sys_reboot, hwinfo accessor */
+#include "voice_onboard.h"  /* failover state names */
+#include "voice_wakeword.h" /* status + reconfigure_phrase + transcripts */
 
 static const char *TAG = "debug_tinkeron";
 
@@ -74,6 +76,24 @@ static bool query_get(httpd_req_t *req, const char *key, char *out, size_t cap) 
    if (httpd_query_key_value(qbuf, key, out, cap) != ESP_OK) return false;
    url_decode_inplace(out);
    return true;
+}
+
+static esp_err_t respond_error(httpd_req_t *req, const char *msg, int status_code) {
+   cJSON *obj = cJSON_CreateObject();
+   cJSON_AddStringToObject(obj, "error", msg ? msg : "");
+   char *body = cJSON_PrintUnformatted(obj);
+   cJSON_Delete(obj);
+   if (body == NULL) {
+      httpd_resp_set_status(req, "500 Internal Server Error");
+      return httpd_resp_sendstr(req, "{\"error\":\"json_print_failed\"}");
+   }
+   char status[32];
+   snprintf(status, sizeof(status), "%d Error", status_code);
+   httpd_resp_set_status(req, status);
+   httpd_resp_set_type(req, "application/json");
+   esp_err_t r = httpd_resp_sendstr(req, body);
+   cJSON_free(body);
+   return r;
 }
 
 static esp_err_t respond_json(httpd_req_t *req, cJSON *obj, int status_code) {
@@ -133,6 +153,60 @@ static esp_err_t handle_status(httpd_req_t *req) {
    }
 
    cJSON_AddNumberToObject(root, "uptime_ms", (double)(esp_timer_get_time() / 1000));
+
+   /* TT #617 — surface current wake source */
+   {
+      char src[16] = {0};
+      tab5_settings_get_wake_src(src, sizeof(src));
+      cJSON_AddStringToObject(root, "wake_src", src);
+   }
+
+   return respond_json(req, root, 200);
+}
+
+/* ── POST /tinkeron/wake_src?src=k144|dragon|off ─────────────────── */
+
+static esp_err_t handle_wake_src(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_FAIL;
+   char qry[64] = {0};
+   if (httpd_req_get_url_query_str(req, qry, sizeof(qry)) != ESP_OK) {
+      return respond_error(req, "missing src query param", 400);
+   }
+   char src[16] = {0};
+   if (httpd_query_key_value(qry, "src", src, sizeof(src)) != ESP_OK) {
+      return respond_error(req, "missing src= param", 400);
+   }
+   /* Validate against the known set.  Future ext_pcm will land as a new
+    * branch + value here. */
+   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 && strcmp(src, "off") != 0) {
+      return respond_error(req, "src must be k144|dragon|off", 400);
+   }
+   esp_err_t e = tab5_settings_set_wake_src(src);
+   if (e != ESP_OK) {
+      return respond_error(req, esp_err_to_name(e), 500);
+   }
+   ESP_LOGI(TAG, "/tinkeron/wake_src: set to %s", src);
+   tab5_debug_obs_event("wake_src", src);
+
+   /* Apply immediately: disarm whatever is wrong, arm whatever is right. */
+   if (strcmp(src, "k144") == 0) {
+      extern void voice_wake_stream_disarm(void);
+      voice_wake_stream_disarm();
+      extern esp_err_t voice_onboard_arm_wakeword(void);
+      voice_onboard_arm_wakeword();
+   } else if (strcmp(src, "dragon") == 0) {
+      voice_wakeword_stop();
+      extern void voice_wake_stream_arm(void);
+      voice_wake_stream_arm();
+   } else { /* off */
+      voice_wakeword_stop();
+      extern void voice_wake_stream_disarm(void);
+      voice_wake_stream_disarm();
+   }
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddStringToObject(root, "status", "applied");
+   cJSON_AddStringToObject(root, "wake_src", src);
    return respond_json(req, root, 200);
 }
 
@@ -284,10 +358,17 @@ void debug_server_tinkeron_register(httpd_handle_t server) {
    static const httpd_uri_t uri_transcripts = {
        .uri = "/tinkeron/transcripts", .method = HTTP_GET, .handler = handle_transcripts, .user_ctx = NULL,
    };
+   static const httpd_uri_t uri_wake_src = {
+       .uri = "/tinkeron/wake_src",
+       .method = HTTP_POST,
+       .handler = handle_wake_src,
+       .user_ctx = NULL,
+   };
    httpd_register_uri_handler(server, &uri_status);
    httpd_register_uri_handler(server, &uri_arm);
    httpd_register_uri_handler(server, &uri_phrase);
    httpd_register_uri_handler(server, &uri_reboot);
    httpd_register_uri_handler(server, &uri_transcripts);
-   ESP_LOGI(TAG, "TinkerON debug family registered (5 endpoints)");
+   httpd_register_uri_handler(server, &uri_wake_src);
+   ESP_LOGI(TAG, "TinkerON debug family registered (6 endpoints)");
 }

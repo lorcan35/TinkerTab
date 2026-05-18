@@ -526,8 +526,15 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
       extern void voice_wake_stream_arm(void);
       extern void voice_wake_stream_disarm(void);
       voice_wake_stream_on_state_change((int)new_state);
+      /* TT #617 — gate on wake_src NVS setting.  Only arm Dragon-side
+       * wake-stream if the user picked "dragon".  k144 / off paths
+       * leave the wake-stream task idling (it stays alive but disarmed
+       * so a runtime wake_src flip from k144 → dragon picks up
+       * without a reboot). */
       if (new_state == VOICE_STATE_READY && old != VOICE_STATE_READY) {
-         voice_wake_stream_arm();
+         if (tab5_settings_wake_src_is("dragon")) {
+            voice_wake_stream_arm();
+         }
       } else if (new_state == VOICE_STATE_IDLE && old != VOICE_STATE_IDLE) {
          voice_wake_stream_disarm();
       }
