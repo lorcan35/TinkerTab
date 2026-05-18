@@ -273,8 +273,8 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
           * Hallucinations are typically 4-6 chars of single-word
           * garbage. */
          if (s_wake_window_len < 8) {
-            ESP_LOGD(TAG, "wake suppressed by VAD pregate: window=\"%s\" (%u chars)",
-                     s_wake_window, (unsigned)s_wake_window_len);
+            ESP_LOGD(TAG, "wake suppressed by VAD pregate: window=\"%s\" (%u chars)", s_wake_window,
+                     (unsigned)s_wake_window_len);
             s_vad_skip_count++;
          } else {
             ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", match, s_wake_window);
