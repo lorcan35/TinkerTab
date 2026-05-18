@@ -164,7 +164,7 @@ static esp_err_t handle_status(httpd_req_t *req) {
    return respond_json(req, root, 200);
 }
 
-/* ── POST /tinkeron/wake_src?src=k144|dragon|off ─────────────────── */
+/* ── POST /tinkeron/wake_src?src=k144|dragon|ext_pcm|off ─────────── */
 
 static esp_err_t handle_wake_src(httpd_req_t *req) {
    if (!tab5_debug_check_auth(req)) return ESP_FAIL;
@@ -176,10 +176,9 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
    if (httpd_query_key_value(qry, "src", src, sizeof(src)) != ESP_OK) {
       return respond_error(req, "missing src= param", 400);
    }
-   /* Validate against the known set.  Future ext_pcm will land as a new
-    * branch + value here. */
-   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 && strcmp(src, "off") != 0) {
-      return respond_error(req, "src must be k144|dragon|off", 400);
+   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 &&
+       strcmp(src, "ext_pcm") != 0 && strcmp(src, "off") != 0) {
+      return respond_error(req, "src must be k144|dragon|ext_pcm|off", 400);
    }
    esp_err_t e = tab5_settings_set_wake_src(src);
    if (e != ESP_OK) {
@@ -189,19 +188,28 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
    tab5_debug_obs_event("wake_src", src);
 
    /* Apply immediately: disarm whatever is wrong, arm whatever is right. */
+   extern void voice_wake_stream_disarm(void);
+   extern void voice_wake_stream_arm(void);
+   extern void voice_ext_pcm_stream_disarm(void);
+   extern void voice_ext_pcm_stream_arm(void);
+   extern esp_err_t voice_onboard_arm_wakeword(void);
+
    if (strcmp(src, "k144") == 0) {
-      extern void voice_wake_stream_disarm(void);
       voice_wake_stream_disarm();
-      extern esp_err_t voice_onboard_arm_wakeword(void);
+      voice_ext_pcm_stream_disarm();
       voice_onboard_arm_wakeword();
    } else if (strcmp(src, "dragon") == 0) {
       voice_wakeword_stop();
-      extern void voice_wake_stream_arm(void);
+      voice_ext_pcm_stream_disarm();
       voice_wake_stream_arm();
+   } else if (strcmp(src, "ext_pcm") == 0) {
+      voice_wakeword_stop();
+      voice_wake_stream_disarm();
+      voice_ext_pcm_stream_arm();
    } else { /* off */
       voice_wakeword_stop();
-      extern void voice_wake_stream_disarm(void);
       voice_wake_stream_disarm();
+      voice_ext_pcm_stream_disarm();
    }
 
    cJSON *root = cJSON_CreateObject();

@@ -68,6 +68,7 @@ else()
              "voice_onboard.c"
              "voice_wakeword.c"
              "voice_wake_stream.c"
+             "voice_ext_pcm_stream.c"
         EMBED_TXTFILES "debug_ui.html"
         INCLUDE_DIRS "."
         REQUIRES tab5
