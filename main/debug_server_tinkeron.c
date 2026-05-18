@@ -110,6 +110,7 @@ static esp_err_t handle_status(httpd_req_t *req) {
    cJSON_AddStringToObject(w, "wake_phrase_alt", ww.wake_phrase_alt);
    cJSON_AddStringToObject(w, "end_phrase", ww.end_phrase);
    cJSON_AddNumberToObject(w, "fire_count", ww.fire_count);
+   cJSON_AddNumberToObject(w, "vad_skip_count", ww.vad_skip_count);
    cJSON_AddNumberToObject(w, "last_fire_ms", (double)ww.last_fire_ms);
    cJSON_AddStringToObject(w, "last_match", ww.last_match);
 
