@@ -1,0 +1,32 @@
+# TT #131 — ext_pcm StackFlow unit.
+#
+# Mirrors M5Stack's existing per-unit SConstruct (see main_audio,
+# main_skel).  Drop this directory into the cloned StackFlow repo at
+# `projects/llm_framework/main_ext_pcm/` and run `scons` from the
+# top-level llm_framework project to build.
+#
+# Outputs: build/llm_framework/main_ext_pcm/llm_ext_pcm  (aarch64 ELF)
+# Deploy:  adb push to /opt/m5stack/bin/ on the K144.
+
+import os
+import shutil
+from pathlib import Path
+
+Import('env')
+Import('build_env')
+
+target = 'llm_ext_pcm'
+
+src_files = Glob('src/*.cpp')
+
+local_env = build_env.Clone()
+local_env.Append(CPPDEFINES=['UNIT_NAME=\\"ext_pcm\\"'])
+
+# Link against StackFlow + libhv + pzmq (same set as main_audio).
+local_env.Append(LIBS=['StackFlow', 'hv', 'zmq', 'pthread'])
+local_env.Append(LIBPATH=[
+    os.path.join(os.environ.get('SDK_PATH', ''), 'components', 'hv', 'static_lib'),
+])
+
+bin = local_env.Program(target, src_files)
+Return('bin')
