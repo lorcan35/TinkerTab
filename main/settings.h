@@ -8,10 +8,12 @@
  */
 #pragma once
 
-#include "esp_err.h"
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "esp_err.h"
 
 /**
  * Open the "settings" NVS namespace.  Safe to call repeatedly — only
@@ -179,6 +181,21 @@ esp_err_t tab5_settings_set_voice_mode(uint8_t mode);
 /** Cloud LLM model ID (e.g. "anthropic/claude-3-haiku"). Empty = default. */
 esp_err_t tab5_settings_get_llm_model(char *buf, size_t len);
 esp_err_t tab5_settings_set_llm_model(const char *model);
+
+/** TT #617 — Wake source.  Picks which wakeword detection path runs.
+ *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
+ *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future
+ *  "ext_pcm" (custom K144 unit consuming Tab5 PCM over UART).  Empty
+ *  string → defaults to "dragon" (better mic, post-BSS-overflow-fix). */
+esp_err_t tab5_settings_get_wake_src(char *buf, size_t len);
+esp_err_t tab5_settings_set_wake_src(const char *src);
+
+/** Convenience helpers: parse wake_src and answer which paths should run. */
+static inline bool tab5_settings_wake_src_is(const char *target) {
+   char buf[16];
+   if (tab5_settings_get_wake_src(buf, sizeof(buf)) != ESP_OK) return false;
+   return strcmp(buf, target) == 0;
+}
 
 /* ── Connection mode ────────────────────────────────────────────────── */
 

@@ -97,6 +97,21 @@ static size_t s_chain_llm_len;
 
 extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
+static void wakeword_event_handler(voice_wakeword_event_t event, const char *text, void *user); /* TT #617 fwd-decl */
+
+/* TT #617 — Gate the K144 onboard wakeword on the wake_src NVS setting.
+ * "k144" → arm sherpa-ncnn on K144's own mic (current default for
+ * offline-capable wake).  Other values ("dragon", "off", future
+ * "ext_pcm") skip arming and let the other path own wake. */
+static esp_err_t voice_onboard_arm_k144_wakeword_internal(void) {
+   if (!tab5_settings_wake_src_is("k144")) {
+      ESP_LOGI(TAG, "wake_src != k144 — skipping K144 onboard wakeword arm");
+      tab5_debug_obs_event("wake_src", "skip_k144");
+      return ESP_OK;
+   }
+   return voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+}
+
 /* ---------------------------------------------------------------------- */
 /*  Wakeword event bridge — voice_wakeword task → LVGL UI                  */
 /*                                                                        */
@@ -347,7 +362,7 @@ static void onboard_warmup_job(void *arg) {
        * end-phrase="save note", 32 KB dictation buffer, 4-hour cap.
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
-      esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+      esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
          /* TT #580: post-Tab5-reflash, K144's previous-session audio +
           * asr units are still alive on the daemon.  Daemon refuses
@@ -509,7 +524,7 @@ static void onboard_reset_failover_job(void *arg) {
       /* Wakeword revival: same hook as the initial warmup path — once
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
-      esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+      esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
          /* TT #580: still wedged after THIS reset.  Queue another (the
           * retry budget caps at 3/boot). */
@@ -798,7 +813,7 @@ static void onboard_chain_drain_task(void *arg) {
     * audio + asr units.  Idempotent (start refuses if already running),
     * and only meaningful if user has flipped back to a Dragon-using
     * vmode where wakeword is wanted — but cheap to call regardless. */
-   esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+   esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
    if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
       ESP_LOGW(TAG, "wakeword re-arm after chain stop skipped: %s",
                esp_err_to_name(we));
@@ -902,5 +917,5 @@ int64_t voice_onboard_chain_uptime_ms(void) {
 esp_err_t voice_onboard_arm_wakeword(void) {
    if (s_m5_failover == M5_FAIL_UNAVAILABLE) return ESP_ERR_INVALID_STATE;
    voice_m5_llm_release();
-   return voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+   return voice_onboard_arm_k144_wakeword_internal();
 }

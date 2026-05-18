@@ -486,6 +486,21 @@ esp_err_t tab5_settings_set_llm_model(const char *model)
     return set_str("llm_mdl", model);
 }
 
+/* ── Wake source picker (TT #617) ───────────────────────────────────── */
+
+esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {
+   /* Default "dragon" — Tab5 mic + Dragon whisper.cpp (PR #616).  K144's
+    * onboard mic position is unreliable for cross-room wake until the
+    * ext_pcm unit lands; until then Dragon is the better default.
+    * Override per-deployment via Settings UI or POST /tinkeron/wake_src. */
+   return get_str("wake_src", buf, len, "dragon");
+}
+
+esp_err_t tab5_settings_set_wake_src(const char *src) {
+   if (src == NULL || src[0] == '\0') return ESP_ERR_INVALID_ARG;
+   return set_str("wake_src", src);
+}
+
 /* ── Mic mute ───────────────────────────────────────────────────────── */
 
 uint8_t tab5_settings_get_mic_mute(void)
