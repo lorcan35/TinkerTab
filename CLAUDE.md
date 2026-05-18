@@ -4,6 +4,9 @@
 
 ## Active Investigations — READ FIRST before related work
 
+- **TinkerON (K144) always-on wakeword — LIVE 2026-05-18** → [`docs/PLAN-wakeword.md`](docs/PLAN-wakeword.md), branch `feat/wakeword`, PR [#576](https://github.com/lorcan35/TinkerTab/pull/576), closes TT [#575](https://github.com/lorcan35/TinkerTab/issues/575).
+  Said "Hey Tinker — what time is it?" → Tab5 mic opened → Dragon STT → LLM → Kokoro TTS spoke the time back, hands-free.  Verified live on Tab5 192.168.1.90 (commit `b614a23`).  Wake matcher accepts BOTH `hey tinker` AND `hey thinker` (K144's sherpa-ncnn ASR substitutes T → Th consistently).  WAKE → `voice_start_listening()` (regular orb-tap path → respects per-connection voice_mode routing).  Three K144 stability fixes also landed: `voice_m5_llm_release()` after warmup frees the NPU slot for ASR (fixes `err=-21 task full`); `voice_wakeword_stop()` before `sys.reset` prevents the post-reset re-arm from silently returning `INVALID_STATE`; **both the Mate carrier USB-C AND the K144 top USB-C must be powered independently** — without the Mate's dedicated 5V rail the NPU brownouts under load → `err=-9 unit call false`.  Open items (next-up): self-wake suppression during TTS playback, top-bar "TinkerON armed" status chip, NVS `tinkeron_armed` toggle, Settings UI for arm/disarm + reset, barge-in interrupt mid-TTS.
+
 - **UI/UX hardening — CLOSED** → [`docs/AUDIT-ui-ux-2026-04-29.md`](docs/AUDIT-ui-ux-2026-04-29.md) + [`docs/PLAN-ui-ux-hardening.md`](docs/PLAN-ui-ux-hardening.md) + LEARNINGS "TT #328 UI/UX hardening".
   As of 2026-04-30, 9 wave-by-wave PRs have closed 14/16 audit P0s on `feat/k144-phase6a-baud-switch`: a11y contrast, mode-array drift, mic-button leak, atomic touch injection, toast tones + persistent error banner + 4 new `error.*` obs classes, per-state voice icons, orb safe long-press + undo, universal `ui_tap_gate` debounce, chat-header touch-target lift, shared `widget_mode_dot` extract, nav-sheet 3×3 (Focus tile P0 #4), dead-API removal, onboarding Wi-Fi step, dual mode-control collapse (orb long-press → mode-sheet), and discoverability chevron + first-launch hint.  Two P0s deferred as larger scope: K144 as 5th tier in 3-dial sheet (touches autonomy-dial product semantics) + orb-overload across 4 surfaces (cross-team IA call).
 
@@ -21,7 +24,9 @@ Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scop
 - Plan: [`docs/PLAN-grove.md`](docs/PLAN-grove.md) · Tracking: [#316](https://github.com/lorcan35/TinkerTab/issues/316)
 - Status: parked, hardware on order.  Phase 1 = Port A I2C bring-up + EXT5V_EN pin discovery on the IO expanders.
 
-### M5Stack LLM Module Kit (K144) — DONE 2026-04-29 (Phases 0-6 + 7-wave hardening)
+### M5Stack LLM Module Kit (K144) — branded "TinkerON" — DONE 2026-04-29 (Phases 0-6 + 7-wave hardening)
+
+> **Brand convention (2026-05-18):** The K144 module is referred to as **"TinkerON"** in all user-facing surfaces (Tab5 UI labels, Settings, toasts, product copy).  The names **K144 / AX630C / sherpa-ncnn** remain the canonical hardware identifiers in technical docs + log messages + code symbols (`voice_m5_llm.c`, `voice_onboard.c`, `/api/m5/*` debug endpoints — these stay as-is).  Read "K144" anywhere below as "TinkerON's hardware".  Always-on wakeword listener (TT #575, `feat/wakeword`) is the flagship TinkerON feature.
 - Plan: [`docs/PLAN-m5-llm-module.md`](docs/PLAN-m5-llm-module.md) · Tracking: [#317](https://github.com/lorcan35/TinkerTab/issues/317)
 - **Hardware topology — Mate carrier required:** stack the **Module13.2 LLM Mate** carrier between Tab5 and K144, plug the K144's top USB-C into power.  Direct K144-on-Tab5 stack causes M5-Bus 5V rail collisions that wedge the AX630C NPU silicon (LEARNINGS: "K144 must sit on the Module13.2 LLM Mate carrier").  Stack order:  `Tab5 base → Mate (USB-C powered) → K144`.
 - **Pins:**  UART_NUM_1, TX = GPIO 6, RX = GPIO 7 (Port C UART, M5-Bus pins 16/15 — Mate carrier passes these straight through to Tab5).  115200 8N1.  Avoid UART0 (G37/G38, M5-Bus 13/14) — collides with `idf.py monitor`.
