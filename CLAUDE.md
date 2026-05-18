@@ -114,7 +114,7 @@ Companion repo: [TinkerBox](https://github.com/lorcan35/TinkerBox) (Dragon-side 
 - Local-first, cloud-optional. NPU Llama 1B for offline, cloud APIs for smart mode.
 
 ### Priority Order
-1. VAD + AEC + Wake Word ("Hey Tinker") — makes it hands-free, THE product feature
+1. ~~VAD + AEC + Wake Word ("Hey Tinker") — makes it hands-free, THE product feature~~ ✅ **LIVE 2026-05-18** via TinkerON (K144 always-on ASR) — see Active Investigations.  Open follow-ups: self-wake suppression during TTS playback, top-bar armed status chip, NVS arm toggle, Settings UI, barge-in interrupt.
 2. Desktop SDL2 simulator + dev tooling (fast dev loop without flashing)
 3. Spring animations + battery UI + OTA (polish)
 4. On-device skills/app store + offline knowledge + multi-modal vision
