@@ -1,4 +1,5 @@
 #pragma once
+#include "esp_err.h"
 #include "lvgl.h"
 
 /** Create and show the home screen. Returns the screen object. */
@@ -119,6 +120,21 @@ void ui_home_orb_aliveness_sync(void);
 void ui_home_orb_aliveness_pause(void);
 void ui_home_orb_aliveness_resume(void);
 void ui_home_orb_ripple_for_tool(const char *tool_name);
+
+/** TT #611 — Single entry point for "user wants to start an Ask voice
+ *  turn from this device".  Both the orb-tap handler and the K144
+ *  wakeword handler call this so the UX is identical regardless of
+ *  trigger: overlay-visibility check, 500 ms debounce, WS-connected
+ *  guard with reconnect/toast, dictation-pipeline reset, voice
+ *  overlay show, then voice_start_listening.
+ *
+ *  @param source  Diagnostic label for the obs/log trace
+ *                 (e.g. "orb_tap", "wakeword").  Must be valid for
+ *                 the duration of the call.
+ *  @return ESP_OK on successful entry into LISTENING; ESP_ERR_INVALID_STATE
+ *          if the call was bounced by an overlay/debounce/WS guard
+ *          (toast already shown to the user where applicable). */
+esp_err_t ui_home_start_voice_turn(const char *source);
 
 /** TT #503 orb circadian — gradient stops drift through 7 phases over
  *  24 hours (dawn/morning/midday/afternoon/sunset/dusk/night).
