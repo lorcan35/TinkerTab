@@ -487,6 +487,32 @@ typedef void (*voice_m5_wakeword_cb)(const char *delta, bool finish, void *user)
 esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag);
 
 /**
+ * @brief TT #593 — alternative chain backed by K144's PURPOSE-BUILT
+ *        KWS unit (`sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01`)
+ *        instead of the full streaming ASR.
+ *
+ * Same envelope as @ref voice_m5_llm_wakeword_setup but the asr.setup
+ * stage is replaced with `kws.setup` carrying the runtime keyword
+ * list.  The keyword detector emits `kws.bool` frames on hit, which
+ * @ref voice_m5_llm_wakeword_run translates into a synthetic delta
+ * call with the matched keyword text + finish=true.
+ *
+ * Keyword strings must be UPPERCASE ASCII (the daemon's text2token.py
+ * compiles them against the model's tokens.txt; lowercase tokens
+ * won't compile).  Per-keyword threshold via the `@<float>` suffix:
+ *   "HEY TINKER @0.20"
+ *
+ * @param keywords  NULL-terminated array of keyword strings.  Pointer
+ *                  must remain valid until setup completes (helper
+ *                  builds + sends a JSON array immediately).
+ * @return ESP_OK on success; falls through to caller's ASR-path
+ *         fallback on ESP_ERR_INVALID_RESPONSE (K144 firmware too old).
+ */
+esp_err_t voice_m5_llm_kws_wakeword_setup(voice_m5_wakeword_handle_t **out_handle,
+                                          const char *const *keywords,
+                                          volatile bool *stop_flag);
+
+/**
  * @brief Drain asr.utf-8.stream frames, invoking cb on every partial.
  *
  * Blocking — runs until @p stop_flag transitions to true OR

@@ -1613,6 +1613,91 @@ fail:
    return err;
 }
 
+/* TT #593 — KWS-backed alternative.  Same envelope as
+ * voice_m5_llm_wakeword_setup but stage 2 is kws.setup instead of
+ * asr.setup.  See header for the schema source (M5Module-LLM
+ * api_kws.cpp + StackFlow main_kws/main.cpp). */
+esp_err_t voice_m5_llm_kws_wakeword_setup(voice_m5_wakeword_handle_t **out_handle,
+                                          const char *const *keywords,
+                                          volatile bool *stop_flag) {
+   if (out_handle == NULL || keywords == NULL || keywords[0] == NULL) {
+      return ESP_ERR_INVALID_ARG;
+   }
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   M5_LOCK_OR_RETURN(60000);
+
+   voice_m5_wakeword_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   /* 1) audio.setup — identical to the ASR path. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddNumberToObject(d, "capcard", 0);
+      cJSON_AddNumberToObject(d, "capdevice", 0);
+      cJSON_AddNumberToObject(d, "capVolume", 0.5);
+      cJSON_AddNumberToObject(d, "playcard", 0);
+      cJSON_AddNumberToObject(d, "playdevice", 1);
+      cJSON_AddNumberToObject(d, "playVolume", 0.15);
+      err = chain_setup_unit("audio", "audio.setup", d, h->audio_id, sizeof(h->audio_id),
+                             M5_SETUP_TIMEOUT_MS, stop_flag);
+      if (err != ESP_OK) goto fail;
+   }
+
+   /* 2) kws.setup — purpose-built keyword spotter.
+    *   - model: REQUIRED, must include the -2024-01-01 date suffix
+    *     (bare "...-3.3M" fails parse_config — empirically confirmed
+    *      by M5Module-LLM api_kws.cpp + StackFlow mode_*.json files).
+    *   - response_format: "kws.bool" → daemon emits one frame per hit
+    *     with object="kws.bool", data="", finish=true.  No transcript
+    *     content — caller just gets a binary "wake fired" signal.
+    *   - input: sys.pcm from the audio.setup stage above.
+    *   - enoutput: true (required by parse_config .at() lookup).
+    *   - kws: array of UPPERCASE keyword strings.  text2token.py
+    *     compiles them against the model's tokens.txt at setup time;
+    *     lowercase tokens won't compile.  Per-keyword threshold via
+    *     "PHRASE @0.20" suffix syntax. */
+   {
+      cJSON *d = cJSON_CreateObject();
+      cJSON_AddStringToObject(d, "model",
+                              "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01");
+      cJSON_AddStringToObject(d, "response_format", "kws.bool");
+      cJSON *inp = cJSON_CreateArray();
+      cJSON_AddItemToArray(inp, cJSON_CreateString("sys.pcm"));
+      cJSON_AddItemToObject(d, "input", inp);
+      cJSON_AddBoolToObject(d, "enoutput", true);
+      /* M5Stack's own KWS_ASR.ino example passes a SINGLE keyword string
+       * (not an array).  The daemon's parse_config accepts string OR
+       * array, but the live model_loading path may have a narrower
+       * sweet-spot.  Send just the first (primary) keyword as a string
+       * to mirror the known-working example exactly. */
+      cJSON_AddStringToObject(d, "kws", keywords[0]);
+      /* First-time keyword compile shells out to text2token.py — give
+       * it 30 s like the M5Module-LLM Arduino library does. */
+      err = chain_setup_unit("kws", "kws.setup", d, h->asr_id, sizeof(h->asr_id),
+                             30000, stop_flag);
+      if (err != ESP_OK) goto fail;
+   }
+
+   M5_UNLOCK();
+   *out_handle = h;
+   ESP_LOGI(TAG, "KWS chain up: audio=%s kws=%s", h->audio_id, h->asr_id);
+   return ESP_OK;
+
+fail:
+   if (h->asr_id[0]) chain_exit_unit(h->asr_id);
+   if (h->audio_id[0]) chain_exit_unit(h->audio_id);
+   heap_caps_free(h);
+   M5_UNLOCK();
+   return err;
+}
+
 esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
                                     volatile bool *stop_flag, uint32_t timeout_s) {
    if (handle == NULL) return ESP_ERR_INVALID_ARG;
@@ -1679,6 +1764,16 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
          }
          ESP_LOGI(TAG, "asr delta: finish=%d text=\"%.80s\"", finished, delta_str);
          if (cb != NULL) cb(delta_str, finished, user);
+      }
+      /* TT #593 — kws.bool frame: K144's purpose-built keyword spotter
+       * fires one frame per hit with object="kws.bool" and an empty
+       * data payload (per StackFlow main_kws/main.cpp task_output).
+       * We synthesize a non-empty delta ("WAKE") so the upstream
+       * matcher in voice_wakeword.c can use the same substring path
+       * — saves a separate "KWS hit" code path. */
+      else if (resp.object != NULL && strcmp(resp.object, "kws.bool") == 0) {
+         ESP_LOGI(TAG, "kws hit: work_id=%s", resp.work_id);
+         if (cb != NULL) cb("WAKE", true, user);
       }
       m5_stackflow_response_free(&resp);
    }
