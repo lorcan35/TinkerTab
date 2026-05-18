@@ -52,39 +52,66 @@ adb shell systemctl enable --now llm-ext-pcm.service
 adb shell systemctl status llm-ext-pcm.service
 ```
 
-### Verified working sequence (live on K144 2026-05-18)
+### Verified working flows (live on K144 2026-05-18)
 
-End-to-end test: TCP-push PCM → ZMQ PUB → llm_asr SUB → sherpa-ncnn transcript.
+There are **two equivalent ingestion paths** — both verified end-to-end with
+sherpa-ncnn returning the exact spoken transcript:
+
+#### Path 1 — Custom RPC (production path: Tab5 over UART)
+
+Used by Tab5 firmware: every PCM frame is wrapped in a single JSON envelope
+that goes straight through `llm_sys`'s remote_call to ext_pcm's `ingest`
+handler.  No setup needed; no instance management.
 
 ```bash
-# After deploy, reset the daemon to a clean state, then:
-
-# 1. Boot llm_asr against sys.pcm. THIS BINDS audio's pub at
-#    /tmp/llm/pcm.cap.socket, stealing our ext_pcm bind.
+# 1. asr.setup with input=sys.pcm — audio's _cap() lazily binds
+#    /tmp/llm/pcm.cap.socket, stealing it from our boot-time bind.
 echo '{"request_id":"a","work_id":"asr","action":"setup","object":"asr.setup",
        "data":{"model":"sherpa-ncnn-streaming-zipformer-20M-2023-02-17",
                "input":["sys.pcm"],"response_format":"asr.utf-8.stream",
                "enoutput":true}}' | nc -q 1 localhost 10001
 
-# 2. Tell audio to release its bind.  asr's ZMQ subscriber stays alive and
-#    will auto-reconnect to whoever next binds the URL.
-echo '{"request_id":"c","work_id":"audio","action":"cap_stop_all"}' | nc -q 1 localhost 10001
+# 2. Tell audio to release its bind.  asr's ZMQ subscriber stays alive.
+echo '{"request_id":"c","work_id":"audio","action":"cap_stop_all"}' | \
+    nc -q 1 localhost 10001
 
-# 3. Restart ext_pcm so it reclaims /tmp/llm/pcm.cap.socket.
-adb shell systemctl restart llm-ext-pcm.service
+# 3. Reclaim the URL.  ext_pcm.rebind drops + recreates pub_ctx_ on
+#    /tmp/llm/pcm.cap.socket.  No process restart needed.
+echo '{"request_id":"rb","work_id":"ext_pcm","action":"rebind"}' | \
+    nc -q 1 localhost 10001
 
-# 4. Push raw int16 LE 16 kHz mono PCM to TCP port 9999 (3200-byte frames =
-#    100 ms each, real-time pacing).  ext_pcm forwards each frame on the ZMQ
-#    PUB.  ASR transcripts stream out on asr.utf-8.stream.
-ffmpeg -i your_speech.wav -ar 16000 -ac 1 -f s16le - | nc localhost 9999
+# 4. Per PCM frame (3200 bytes = 100 ms of 16 kHz mono int16), wrap as:
+#    {"work_id":"ext_pcm","action":"ingest","data":"<base64>"}
+#    ext_pcm decodes + publishes to the ZMQ PUB.
 ```
 
-Live verification (2026-05-18): pushed 5.18 s of neutts_a.wav → ASR emitted
-`"it's sunday evening your meeting with sarace in fifty minutes"` — exact
-match for the audio content.  ext_pcm log confirms `pumped 100 frames`.
+This is the wire shape Tab5 will use over the existing UART JSON bridge to
+`llm_sys`.  Bandwidth: 16 kHz × 16-bit × 1.33 base64 ≈ 42 KB/s sustained,
+well within UART's 1.5 Mbps (~187 KB/s) ceiling.
 
-Wake fires (when streaming TinkerTab's mic via UART relay) arrive on
-`asr.utf-8.stream` exactly the same as today's K144-onboard-mic wake path.
+#### Path 2 — TCP listener (dev/host testing)
+
+For dev-host testing via `adb forward tcp:19999 tcp:9999`, push raw int16
+LE 16 kHz mono PCM bytes directly:
+
+```bash
+ffmpeg -i your_speech.wav -ar 16000 -ac 1 -f s16le - | nc localhost 19999
+```
+
+Same internal PUB target, no JSON envelope.  Faster than path 1 for bulk
+testing but only reachable from K144-local or ADB-forwarded clients.
+
+#### Live verification (2026-05-18)
+
+Both paths verified end-to-end against `sherpa-ncnn-streaming-zipformer`:
+pushed 5.18 s of `neutts_a.wav` → ASR emitted *"it's sunday evening your
+meeting with sarah's in fifty minutes"* — exact match for the audio
+content.  ext_pcm log confirms `pumped 100 frames (3200B last)` for path 1
+and `tcp: pumped 100 chunks` for path 2.
+
+Wake fires (when streaming TinkerTab's mic via UART relay using path 1)
+arrive on `asr.utf-8.stream` exactly the same as today's K144-onboard-mic
+wake path.
 
 ### Plan doc + risks
 
