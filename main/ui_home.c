@@ -61,6 +61,7 @@
 #include "voice_dictation.h"      /* PR 2: Dictate chip pipeline state */
 #include "voice_dictation_lvgl.h" /* PR 2: LVGL-marshalled subscriber */
 #include "voice_onboard.h"
+#include "voice_wakeword.h"       /* TT #584: home-screen TinkerON status chip */
 #include "widget.h"
 #include "widget_icons.h"    /* TT #69 — icon library + render */
 #include "widget_mode_dot.h" /* TT #328 Wave 6 */
@@ -114,6 +115,9 @@ static lv_obj_t *s_screen          = NULL;
 /* Status strip */
 static lv_obj_t *s_sys_dot         = NULL;
 static lv_obj_t *s_sys_label       = NULL;  /* left: "ONLINE" / "OFFLINE" / etc */
+/* TT #584 — TinkerON armed indicator: dot + "TINKERON [OFF]" beside ONLINE. */
+static lv_obj_t *s_tinkeron_dot    = NULL;
+static lv_obj_t *s_tinkeron_label  = NULL;
 static lv_obj_t *s_time_label      = NULL;  /* right: "Thursday · 9:42" */
 
 /* F1/F2 full-screen OFFLINE hero (audit 2026-04-20). Shown when NO_WIFI
@@ -575,6 +579,26 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_letter_space(s_sys_label, 3, 0);
     lv_obj_add_flag(s_sys_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_sys_label, sys_click_cb, LV_EVENT_CLICKED, NULL);
+
+    /* TT #584 — TinkerON armed indicator beside ONLINE.  Same visual
+     * idiom: 8 px dot + small-caps label.  Position: ~120 px to the
+     * right of ONLINE (font is monospace-ish at 14 px ≈ 8 px/char;
+     * "ONLINE" + letter_space=3 is ~7 chars × 11 = ~80 px, so +100 is
+     * a safe gap).  Hidden when K144 is UNAVAILABLE. */
+    s_tinkeron_dot = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_tinkeron_dot);
+    lv_obj_set_size(s_tinkeron_dot, 8, 8);
+    lv_obj_set_pos(s_tinkeron_dot, SIDE_PAD + 120, 32);
+    lv_obj_set_style_radius(s_tinkeron_dot, 4, 0);
+    lv_obj_set_style_bg_color(s_tinkeron_dot, lv_color_hex(TH_AMBER), 0);
+    lv_obj_set_style_bg_opa(s_tinkeron_dot, LV_OPA_COVER, 0);
+
+    s_tinkeron_label = lv_label_create(s_screen);
+    lv_label_set_text(s_tinkeron_label, "TINKERON OFF");
+    lv_obj_set_pos(s_tinkeron_label, SIDE_PAD + 138, 26);
+    lv_obj_set_style_text_font(s_tinkeron_label, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(s_tinkeron_label, lv_color_hex(TH_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_letter_space(s_tinkeron_label, 3, 0);
 
     s_time_label = lv_label_create(s_screen);
     lv_label_set_text(s_time_label, "");
@@ -1212,6 +1236,27 @@ void ui_home_update_status(void)
     /* TT #328 Wave 11 P0 #16 — keep the orb status pip in sync with the
      * branching state so the user sees what tap will do at a glance. */
     paint_orb_pip_for_context();
+
+    /* TT #584 — refresh the TinkerON armed chip on every tick.  Green
+     * dot + "TINKERON" when armed; amber dot + "TINKERON OFF" when
+     * not.  Hidden when K144 is currently UNAVAILABLE — the chip
+     * would lie about the listener's state otherwise. */
+    if (s_tinkeron_dot && s_tinkeron_label) {
+        bool armed = voice_wakeword_is_active();
+        /* M5_FAIL_UNAVAILABLE = 3 (enum private to voice_onboard.c).
+         * Hide the chip when K144 is permanently unavailable so we
+         * don't lie about the listener's state. */
+        if (voice_onboard_failover_state() == 3) {
+            lv_obj_add_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_remove_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_bg_color(s_tinkeron_dot,
+                lv_color_hex(armed ? TH_STATUS_GREEN : TH_AMBER), 0);
+            lv_label_set_text(s_tinkeron_label, armed ? "TINKERON" : "TINKERON OFF");
+        }
+    }
 
     /* Edge-state detection — same priority as v5. */
     bool wifi_ok = tab5_wifi_connected();
