@@ -129,6 +129,18 @@ static void wakeword_toast_async(void *user) {
  * next wake. */
 static void wakeword_trigger_voice_turn(void *user) {
    (void)user;
+   /* TT #597 — Barge-in: if wake fires while Tinker is mid-TTS, cancel
+    * the current voice turn first.  voice_cancel() stops in-flight TTS
+    * playback + sends the cancel frame to Dragon so the LLM doesn't
+    * keep streaming.  Then start a fresh listening session.  Small
+    * grace period after cancel so the state machine settles to READY
+    * before we try to open the mic. */
+   if (voice_get_state() == VOICE_STATE_SPEAKING) {
+      ESP_LOGI(TAG, "barge-in: wake during SPEAKING — cancelling current turn");
+      tab5_debug_obs_event("wakeword.fire", "barge_in");
+      voice_cancel();
+      vTaskDelay(pdMS_TO_TICKS(150));
+   }
    esp_err_t err = voice_start_listening();
    if (err != ESP_OK) {
       ESP_LOGW(TAG, "voice_start_listening on wake failed: %s",

@@ -204,10 +204,17 @@ static void finish_dictation(const char *reason) {
  * coordination; not in this fix. */
 static bool wakeword_suppressed_by_voice_state(void) {
    voice_state_t st = voice_get_state();
-   return (st == VOICE_STATE_LISTENING ||
-           st == VOICE_STATE_PROCESSING ||
-           st == VOICE_STATE_SPEAKING ||
-           st == VOICE_STATE_RECONNECTING);
+   /* TT #597 — Barge-in: SPEAKING is NO LONGER suppressed.  The user
+    * may say "Hey Tinker" mid-TTS to interrupt + start a new turn.
+    * The WAKE handler in voice_onboard.c::wakeword_event_handler is
+    * responsible for calling voice_cancel() before voice_start_
+    * listening() when the wake fires during SPEAKING.
+    *
+    * Self-wake risk mitigated by the wake_phrase being multi-word
+    * ("hey tinker", not bare "tinker") + the VAD pre-gate's 8-char
+    * window floor.  Tinker's TTS would have to coincidentally say
+    * the full "hey tinker" phrase to false-trigger, which is rare. */
+   return (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING);
 }
 
 /* TT #578: push every ASR delta into the debug ring buffer.  Cheap —
