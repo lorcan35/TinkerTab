@@ -75,6 +75,21 @@ static uint8_t s_silence_segments_seen = 0;
 static char s_wake_window[WAKE_WINDOW_BYTES + 1];
 static size_t s_wake_window_len = 0;
 
+/* TT #578 — TinkerON debug surface: fire counter, last-fire bookkeeping,
+ * cached callback/user so reconfigure can re-arm with the same wiring,
+ * and a 32-entry ASR transcript ring for /tinkeron/transcripts. */
+static uint32_t s_fire_count = 0;
+static int64_t s_last_fire_us = 0;
+static char s_last_match[64] = {0};
+static voice_wakeword_cb_t s_cached_cb = NULL;
+static void *s_cached_user = NULL;
+
+#define TRANSCRIPT_RING_BYTES 32
+static voice_wakeword_transcript_t s_trans_ring[TRANSCRIPT_RING_BYTES];
+static size_t s_trans_ring_head = 0; /* next slot to write */
+static size_t s_trans_ring_count = 0; /* entries populated (0..32) */
+static portMUX_TYPE s_trans_lock = portMUX_INITIALIZER_UNLOCKED;
+
 /* Case-insensitive substring search.  Returns pointer into haystack on
  * hit, NULL on miss.  Both strings expected to be UTF-8 ASCII for this
  * use case — wake phrases are English and the K144 zipformer emits
@@ -190,8 +205,27 @@ static bool wakeword_suppressed_by_voice_state(void) {
            st == VOICE_STATE_RECONNECTING);
 }
 
+/* TT #578: push every ASR delta into the debug ring buffer.  Cheap —
+ * 32-entry FIFO in static storage.  GET /tinkeron/transcripts pulls
+ * the latest N. */
+static void transcript_ring_push(const char *delta, bool finish) {
+   if (delta == NULL) return;
+   taskENTER_CRITICAL(&s_trans_lock);
+   voice_wakeword_transcript_t *slot = &s_trans_ring[s_trans_ring_head];
+   slot->ms = esp_timer_get_time() / 1000;
+   slot->finish = finish;
+   strncpy(slot->text, delta, sizeof(slot->text) - 1);
+   slot->text[sizeof(slot->text) - 1] = '\0';
+   s_trans_ring_head = (s_trans_ring_head + 1) % TRANSCRIPT_RING_BYTES;
+   if (s_trans_ring_count < TRANSCRIPT_RING_BYTES) s_trans_ring_count++;
+   taskEXIT_CRITICAL(&s_trans_lock);
+}
+
 static void asr_partial_cb(const char *delta, bool finish, void *user) {
    (void)user;
+
+   /* TT #578: every delta into the debug ring before any state branching. */
+   if (delta && delta[0]) transcript_ring_push(delta, finish);
 
    if (s_state == ST_IDLE) {
       /* Suppress matching while Tinker is mid-turn — K144 hears its
@@ -220,6 +254,11 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
       if (match != NULL) {
          ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", match, s_wake_window);
          tab5_debug_obs_event("wakeword.fire", match);
+         /* TT #578: bookkeeping for /tinkeron/status. */
+         s_fire_count++;
+         s_last_fire_us = esp_timer_get_time();
+         strncpy(s_last_match, match, sizeof(s_last_match) - 1);
+         s_last_match[sizeof(s_last_match) - 1] = '\0';
          enter_listening();
       } else if (finish) {
          /* Segment closed without match — clear the window so the next
@@ -333,6 +372,10 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    s_emit_bg = (cfg && cfg->emit_background_transcripts);
    s_cb = cb;
    s_user = user;
+   /* TT #578: cache for voice_wakeword_reconfigure_phrase() so /tinkeron/
+    * wake_phrase can restart with the same callback wiring. */
+   s_cached_cb = cb;
+   s_cached_user = user;
    s_stop_flag = false;
    s_force_dict_stop = false;
    s_state = ST_IDLE;
@@ -390,3 +433,63 @@ void voice_wakeword_stop(void) {
 bool voice_wakeword_is_active(void) { return s_handle != NULL && s_task != NULL; }
 
 void voice_wakeword_force_dictation_stop(void) { s_force_dict_stop = true; }
+
+/* ── TT #578 — TinkerON debug-surface accessors ───────────────────── */
+
+void voice_wakeword_status(voice_wakeword_status_t *out) {
+   if (out == NULL) return;
+   out->armed = voice_wakeword_is_active();
+   strncpy(out->wake_phrase, s_wake_phrase, sizeof(out->wake_phrase) - 1);
+   out->wake_phrase[sizeof(out->wake_phrase) - 1] = '\0';
+   strncpy(out->wake_phrase_alt, s_wake_phrase_alt, sizeof(out->wake_phrase_alt) - 1);
+   out->wake_phrase_alt[sizeof(out->wake_phrase_alt) - 1] = '\0';
+   strncpy(out->end_phrase, s_end_phrase, sizeof(out->end_phrase) - 1);
+   out->end_phrase[sizeof(out->end_phrase) - 1] = '\0';
+   out->fire_count = s_fire_count;
+   out->last_fire_ms = s_last_fire_us / 1000;
+   strncpy(out->last_match, s_last_match, sizeof(out->last_match) - 1);
+   out->last_match[sizeof(out->last_match) - 1] = '\0';
+}
+
+esp_err_t voice_wakeword_reconfigure_phrase(const char *new_phrase) {
+   if (new_phrase == NULL || new_phrase[0] == '\0') return ESP_ERR_INVALID_ARG;
+   /* Need the cached cb/user from the last start so we can preserve UI
+    * wiring across the restart.  If never started, bail. */
+   if (s_cached_cb == NULL && s_cached_user == NULL) {
+      /* Allow user==NULL but require at least one prior start to have
+       * happened — detect via s_wake_phrase being non-empty (cleared
+       * never). */
+      if (s_wake_phrase[0] == '\0') return ESP_ERR_INVALID_STATE;
+   }
+   voice_wakeword_cb_t cb = s_cached_cb;
+   void *user = s_cached_user;
+   voice_wakeword_stop();
+   voice_wakeword_config_t cfg = {
+      .wake_phrase = new_phrase,
+      .end_phrase = s_end_phrase[0] ? s_end_phrase : NULL,
+      .dictation_buf_bytes = s_dict_buf_cap,
+      .silence_segments_to_stop = s_silence_segments_to_stop,
+      .dictation_timeout_s = s_dict_timeout_s,
+      .emit_background_transcripts = s_emit_bg,
+   };
+   return voice_wakeword_start(&cfg, cb, user);
+}
+
+size_t voice_wakeword_get_recent_transcripts(voice_wakeword_transcript_t *out, size_t max) {
+   if (out == NULL || max == 0) return 0;
+   size_t n;
+   taskENTER_CRITICAL(&s_trans_lock);
+   n = s_trans_ring_count < max ? s_trans_ring_count : max;
+   /* Copy newest-last (oldest-first within the n window).  Head points
+    * to next-to-write, so oldest = head - count, wrapping. */
+   size_t start = (s_trans_ring_head + TRANSCRIPT_RING_BYTES - s_trans_ring_count)
+                  % TRANSCRIPT_RING_BYTES;
+   size_t skip = s_trans_ring_count - n;  /* drop oldest if caller wants fewer */
+   start = (start + skip) % TRANSCRIPT_RING_BYTES;
+   for (size_t i = 0; i < n; i++) {
+      size_t idx = (start + i) % TRANSCRIPT_RING_BYTES;
+      out[i] = s_trans_ring[idx];
+   }
+   taskEXIT_CRITICAL(&s_trans_lock);
+   return n;
+}
