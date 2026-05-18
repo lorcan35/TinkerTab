@@ -1601,6 +1601,12 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
          m5_stackflow_response_free(&resp);
          continue;
       }
+      /* DEBUG (TT wakeword bring-up 2026-05-18): log every frame we
+       * receive so we can see what K144 ASR actually emits when the
+       * matcher fails to fire.  Cheap (one INFO per partial). */
+      ESP_LOGI(TAG, "asr frame: work_id=%s obj=%s",
+               resp.work_id ? resp.work_id : "(null)",
+               resp.object ? resp.object : "(null)");
       if (resp.work_id == NULL || strcmp(resp.work_id, handle->asr_id) != 0) {
          m5_stackflow_response_free(&resp);
          continue;
@@ -1620,6 +1626,7 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
             delta_str = resp.data->valuestring ? resp.data->valuestring : "";
             finished = true;
          }
+         ESP_LOGI(TAG, "asr delta: finish=%d text=\"%.80s\"", finished, delta_str);
          if (cb != NULL) cb(delta_str, finished, user);
       }
       m5_stackflow_response_free(&resp);

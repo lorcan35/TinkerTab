@@ -31,7 +31,7 @@ static const char *TAG = "voice_wakeword";
 
 #define WAKEWORD_TASK_STACK 12288
 #define WAKEWORD_TASK_PRIO 4
-#define WAKEWORD_DEFAULT_WAKE "tinker"
+#define WAKEWORD_DEFAULT_WAKE "hey tinker"
 #define WAKEWORD_DEFAULT_END "save note"
 #define WAKEWORD_DEFAULT_BUF_BYTES (32 * 1024)
 #define WAKEWORD_DEFAULT_SILENCE_SEGMENTS 3
@@ -53,6 +53,13 @@ static voice_wakeword_cb_t s_cb = NULL;
 static void *s_user = NULL;
 
 static char s_wake_phrase[64];
+/* K144's sherpa-ncnn streaming zipformer consistently substitutes the
+ * proper noun "tinker" with "thinker" (T → Th).  Verified live
+ * 2026-05-18 — every "Hey Tinker" utterance came back as "hey thinker"
+ * / "thinker" / "hay thinker".  Carry an auto-derived alt phrase so
+ * a literal substring match still hits.  Set when wake_phrase contains
+ * "tinker" (case-insensitive); cleared otherwise. */
+static char s_wake_phrase_alt[64];
 static char s_end_phrase[64];
 static size_t s_dict_buf_cap = 0;
 static uint8_t s_silence_segments_to_stop = 0;
@@ -170,9 +177,18 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
       if (s_emit_bg && delta && delta[0]) {
          emit_event(VOICE_WAKEWORD_EVENT_TRANSCRIPT, delta);
       }
-      if (s_wake_window_len > 0 && istrstr(s_wake_window, s_wake_phrase) != NULL) {
-         ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", s_wake_phrase, s_wake_window);
-         tab5_debug_obs_event("wakeword.fire", s_wake_phrase);
+      const char *match = NULL;
+      if (s_wake_window_len > 0) {
+         if (istrstr(s_wake_window, s_wake_phrase) != NULL) {
+            match = s_wake_phrase;
+         } else if (s_wake_phrase_alt[0] &&
+                    istrstr(s_wake_window, s_wake_phrase_alt) != NULL) {
+            match = s_wake_phrase_alt;
+         }
+      }
+      if (match != NULL) {
+         ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", match, s_wake_window);
+         tab5_debug_obs_event("wakeword.fire", match);
          enter_listening();
       } else if (finish) {
          /* Segment closed without match — clear the window so the next
@@ -244,6 +260,39 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    const char *ep = (cfg && cfg->end_phrase) ? cfg->end_phrase : WAKEWORD_DEFAULT_END;
    strncpy(s_wake_phrase, wp, sizeof(s_wake_phrase) - 1);
    s_wake_phrase[sizeof(s_wake_phrase) - 1] = '\0';
+
+   /* Auto-derive a "tinker → thinker" alternate spelling so the ASR's
+    * consistent mis-hearing doesn't kill the match.  Replace every
+    * standalone occurrence of "tinker" with "thinker" in the alt
+    * buffer.  Substring + case-insensitive — same matcher rules. */
+   s_wake_phrase_alt[0] = '\0';
+   {
+      const char *needle = "tinker";
+      size_t nlen = strlen(needle);
+      const char *p = s_wake_phrase;
+      char *out = s_wake_phrase_alt;
+      char *end = s_wake_phrase_alt + sizeof(s_wake_phrase_alt) - 1;
+      bool found = false;
+      while (*p && out < end) {
+         const char *m = istrstr(p, needle);
+         if (m == NULL) {
+            size_t take = strlen(p);
+            if (out + take > end) take = (size_t)(end - out);
+            memcpy(out, p, take); out += take; break;
+         }
+         found = true;
+         size_t pre = (size_t)(m - p);
+         if (out + pre > end) pre = (size_t)(end - out);
+         memcpy(out, p, pre); out += pre;
+         const char *sub = "thinker";
+         size_t slen = strlen(sub);
+         if (out + slen > end) slen = (size_t)(end - out);
+         memcpy(out, sub, slen); out += slen;
+         p = m + nlen;
+      }
+      *out = '\0';
+      if (!found) s_wake_phrase_alt[0] = '\0';
+   }
    strncpy(s_end_phrase, ep, sizeof(s_end_phrase) - 1);
    s_end_phrase[sizeof(s_end_phrase) - 1] = '\0';
    s_dict_buf_cap = (cfg && cfg->dictation_buf_bytes > 0) ? cfg->dictation_buf_bytes : WAKEWORD_DEFAULT_BUF_BYTES;

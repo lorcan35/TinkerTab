@@ -116,11 +116,37 @@ static void wakeword_toast_async(void *user) {
    free(txt);
 }
 
+/* WAKE → trigger a real voice turn (orb-tap path), not just a toast.
+ * The user said "hey tinker" — they expect to ask a question, not
+ * narrate a note.  voice_start_listening() does exactly what the orb
+ * tap does: opens the mic, ships PCM to Dragon, runs the STT → LLM →
+ * TTS round-trip.
+ *
+ * We also kill the K144 dictation-buffer auto-capture (which would
+ * otherwise mirror the same speech the user is sending to Dragon),
+ * so we don't get a stray "Saved: …" toast at the end of every voice
+ * turn.  The matcher returns to IDLE and continues listening for the
+ * next wake. */
+static void wakeword_trigger_voice_turn(void *user) {
+   (void)user;
+   esp_err_t err = voice_start_listening();
+   if (err != ESP_OK) {
+      ESP_LOGW(TAG, "voice_start_listening on wake failed: %s",
+               esp_err_to_name(err));
+   }
+}
+
 static void wakeword_event_handler(voice_wakeword_event_t event, const char *text, void *user) {
    (void)user;
    switch (event) {
       case VOICE_WAKEWORD_EVENT_WAKE: {
-         char *msg = strdup("Tinker listening — speak then say \"save note\"");
+         /* Trigger the full voice turn on the LVGL thread (mic + WS
+          * dispatch both expect to run on the main task). */
+         tab5_lv_async_call(wakeword_trigger_voice_turn, NULL);
+         /* Cancel the K144 dictation auto-capture so we don't ALSO
+          * mirror the user's question into a "save note". */
+         voice_wakeword_force_dictation_stop();
+         char *msg = strdup("Tinker listening…");
          if (msg != NULL) tab5_lv_async_call(wakeword_toast_async, msg);
          break;
       }
@@ -268,6 +294,10 @@ static void onboard_warmup_job(void *arg) {
    s_m5_failover = M5_FAIL_PROBING;
    ESP_LOGI(TAG, "K144 failover warm-up: probing module...");
    tab5_debug_obs_event("m5.warmup", "start");
+   /* Belt-and-braces: idempotent stop in case anything left the
+    * wakeword task running across boots — see reset_failover_job
+    * for the same rationale. */
+   voice_wakeword_stop();
    esp_err_t pe = voice_m5_llm_probe();
    if (pe != ESP_OK) {
       ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
@@ -283,12 +313,20 @@ static void onboard_warmup_job(void *arg) {
       s_m5_failover = M5_FAIL_READY;
       tab5_debug_obs_event("m5.warmup", "ready");
       mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
-      /* Wake-word revival: now that the K144 UART + NPU are confirmed
-       * up, start the always-on ASR chain.  Defaults: wake="tinker",
+      /* Release the warmup LLM unit BEFORE arming wakeword.  Empirically
+       * (2026-05-18 live retest on Tab5) leaving llm.NNNN allocated
+       * causes the subsequent asr.setup to return err=-21 "task full"
+       * — K144's StackFlow daemon caps concurrent units on the NPU.
+       * The wakeword path doesn't need the LLM at all (audio + asr
+       * only), and vmode=4's chain_start re-allocates llm on its own
+       * (~3 s warm cache).  Net: ~3 s slower first-turn in vmode=4,
+       * but wakeword actually starts.
+       *
+       * Wake-word revival: now that the K144 UART is confirmed up,
+       * start the always-on ASR chain.  Defaults: wake="hey tinker",
        * end-phrase="save note", 32 KB dictation buffer, 4-hour cap.
-       * Logs fire via obs.event for now — no automatic LISTENING
-       * trigger until detection accuracy is validated on hardware.
        * Failures non-fatal — the LLM path still works without wakeword. */
+      voice_m5_llm_release();
       esp_err_t we = voice_wakeword_start(NULL, wakeword_event_handler, NULL);
       if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
@@ -387,6 +425,15 @@ static void onboard_reset_failover_job(void *arg) {
     * back ESP_ERR_INVALID_STATE instead of racing the reset. */
    s_m5_failover = M5_FAIL_PROBING;
 
+   /* Stop the wakeword listener BEFORE sys.reset.  sys.reset kills
+    * K144's audio + asr units mid-stream, leaving Tab5's wakeword
+    * task draining a dead UART.  Stop now, re-arm after warmup ready.
+    * Idempotent — stop is a no-op when not running.  Verified 2026-
+    * 05-18: without this the post-reset re-arm called start() while
+    * the prior task was still alive → INVALID_STATE → silent no-op
+    * → ASR never came back even though K144 was healthy. */
+   voice_wakeword_stop();
+
    esp_err_t re = voice_m5_llm_sys_reset();
    if (re != ESP_OK) {
       ESP_LOGW(TAG,
@@ -424,6 +471,9 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.warmup", "ready");
       tab5_debug_obs_event("m5.reset", "recovered");
       mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
+      /* Same "free LLM slot before ASR" gate as the initial warmup
+       * path — see comment there for why this is required. */
+      voice_m5_llm_release();
       /* Wakeword revival: same hook as the initial warmup path — once
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
