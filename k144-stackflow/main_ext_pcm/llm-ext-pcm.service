@@ -1,0 +1,14 @@
+[Unit]
+Description=llm-ext-pcm Service
+After=llm-sys.service
+Requires=llm-sys.service
+
+[Service]
+ExecStart=/opt/m5stack/bin/llm_ext_pcm
+WorkingDirectory=/opt/m5stack
+Restart=always
+RestartSec=1
+StartLimitInterval=0
+
+[Install]
+WantedBy=multi-user.target

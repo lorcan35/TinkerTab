@@ -40,33 +40,51 @@ scons
 ### Deploy
 
 ```bash
+# 1. Push the cross-compiled binary
 adb push build/llm_framework/main_ext_pcm/llm_ext_pcm \
         /opt/m5stack/bin/llm_ext_pcm
 adb shell chmod +x /opt/m5stack/bin/llm_ext_pcm
-adb shell systemctl restart sys-llm.service   # restarts StackFlow daemon
+
+# 2. Install the systemd unit so it auto-starts AND survives sys.reset
+adb push main_ext_pcm/llm-ext-pcm.service /lib/systemd/system/llm-ext-pcm.service
+adb shell systemctl daemon-reload
+adb shell systemctl enable --now llm-ext-pcm.service
+adb shell systemctl status llm-ext-pcm.service
 ```
 
-### Use
+### Verified working sequence (live on K144 2026-05-18)
 
-From Tab5 (Tier-2 firmware change in voice_wake_stream.c, see plan doc):
+End-to-end test: TCP-push PCM → ZMQ PUB → llm_asr SUB → sherpa-ncnn transcript.
 
-```json
-{"action":"setup", "work_id":"ext_pcm",
- "data":{"sys_pcm_cap_channel":"ipc:///tmp/llm/pcm.cap.socket"}}
+```bash
+# After deploy, reset the daemon to a clean state, then:
 
-{"action":"setup", "work_id":"asr",
- "object":"asr.setup",
- "data":{"model":"sherpa-ncnn-streaming-zipformer-20M-2023-02-17",
-         "input":["sys.pcm"], "response_format":"asr.utf-8.stream",
-         "enoutput":true}}
+# 1. Boot llm_asr against sys.pcm. THIS BINDS audio's pub at
+#    /tmp/llm/pcm.cap.socket, stealing our ext_pcm bind.
+echo '{"request_id":"a","work_id":"asr","action":"setup","object":"asr.setup",
+       "data":{"model":"sherpa-ncnn-streaming-zipformer-20M-2023-02-17",
+               "input":["sys.pcm"],"response_format":"asr.utf-8.stream",
+               "enoutput":true}}' | nc -q 1 localhost 10001
 
-# Then stream PCM frames:
-{"action":"inference", "work_id":"ext_pcm.NNNN",
- "object":"audio.pcm.base64", "data":"<base64 int16 LE 16kHz mono>"}
+# 2. Tell audio to release its bind.  asr's ZMQ subscriber stays alive and
+#    will auto-reconnect to whoever next binds the URL.
+echo '{"request_id":"c","work_id":"audio","action":"cap_stop_all"}' | nc -q 1 localhost 10001
+
+# 3. Restart ext_pcm so it reclaims /tmp/llm/pcm.cap.socket.
+adb shell systemctl restart llm-ext-pcm.service
+
+# 4. Push raw int16 LE 16 kHz mono PCM to TCP port 9999 (3200-byte frames =
+#    100 ms each, real-time pacing).  ext_pcm forwards each frame on the ZMQ
+#    PUB.  ASR transcripts stream out on asr.utf-8.stream.
+ffmpeg -i your_speech.wav -ar 16000 -ac 1 -f s16le - | nc localhost 9999
 ```
 
-Wake fires arrive on `asr.utf-8.stream` exactly the same as today's K144-onboard-mic
-wake path.
+Live verification (2026-05-18): pushed 5.18 s of neutts_a.wav → ASR emitted
+`"it's sunday evening your meeting with sarace in fifty minutes"` — exact
+match for the audio content.  ext_pcm log confirms `pumped 100 frames`.
+
+Wake fires (when streaming TinkerTab's mic via UART relay) arrive on
+`asr.utf-8.stream` exactly the same as today's K144-onboard-mic wake path.
 
 ### Plan doc + risks
 
