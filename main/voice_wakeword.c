@@ -209,9 +209,7 @@ static bool wakeword_suppressed_by_voice_state(void) {
     * ("hey tinker", not bare "tinker") + the VAD pre-gate's 8-char
     * window floor.  Tinker's TTS would have to coincidentally say
     * the full "hey tinker" phrase to false-trigger, which is rare. */
-   return (st == VOICE_STATE_LISTENING ||
-           st == VOICE_STATE_PROCESSING ||
-           st == VOICE_STATE_RECONNECTING);
+   return (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING);
 }
 
 /* TT #578: push every ASR delta into the debug ring buffer.  Cheap —
