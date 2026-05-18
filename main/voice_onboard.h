@@ -112,6 +112,14 @@ bool voice_onboard_chain_active(void);
  *  serial cable. */
 int64_t voice_onboard_chain_uptime_ms(void);
 
+/** TT #586 — re-arm the always-on wakeword listener using the canonical
+ *  event handler from this module.  Settings UI calls this to start
+ *  the listener after the user toggles "Always-on listener" ON.
+ *  Idempotent: returns ESP_ERR_INVALID_STATE if already running.
+ *  No-op if K144 is currently UNAVAILABLE (caller should toast a
+ *  hint to user). */
+esp_err_t voice_onboard_arm_wakeword(void);
+
 #ifdef __cplusplus
 }
 #endif

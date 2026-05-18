@@ -114,6 +114,8 @@ static void k144_chip_tap_cb(lv_event_t *e) {
  * run on the LVGL thread).  Both labels rebuild every Settings show. */
 #include "esp_heap_caps.h" /* heap_caps_calloc for the modelist scratch */
 #include "voice_m5_llm.h"  /* voice_m5_hwinfo_t + sys_hwinfo + sys_version + sys_lsmode */
+#include "voice_onboard.h"  /* TT #586: arm wakeword + reset failover */
+#include "voice_wakeword.h" /* TT #586: is_active for switch state */
 static lv_obj_t *s_k144_gauge_lbl = NULL;
 static lv_obj_t *s_k144_models_lbl = NULL;
 /* Wave 16 — chip widget tracked at file-scope so ui_settings_update()
@@ -804,6 +806,45 @@ static void cb_mic_mute(lv_event_t *e)
     ESP_LOGI(TAG, "Mic mute: %d", on);
     extern void ui_home_refresh_sys_label(void);
     ui_home_refresh_sys_label();
+}
+
+/* TT #586 — TinkerON always-on listener toggle.  ON calls
+ * voice_onboard_arm_wakeword (re-uses the canonical event handler
+ * from voice_onboard.c so toasts + orb ripple stay consistent).
+ * OFF calls voice_wakeword_stop. */
+static void cb_tinkeron_armed(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    ESP_LOGI(TAG, "TinkerON listener: %s", on ? "ARM" : "STOP");
+    if (on) {
+        esp_err_t err = voice_onboard_arm_wakeword();
+        if (err == ESP_ERR_INVALID_STATE) {
+            ui_home_show_toast("TinkerON unavailable — try Reset");
+            /* Revert switch — listener didn't actually arm. */
+            lv_obj_remove_state(sw, LV_STATE_CHECKED);
+        } else if (err != ESP_OK) {
+            ESP_LOGW(TAG, "arm_wakeword failed: %s", esp_err_to_name(err));
+        }
+    } else {
+        voice_wakeword_stop();
+    }
+}
+
+/* TT #586 — Reset TinkerON button.  Same path as POST /m5/reset:
+ * sys.reset to the StackFlow daemon + auto re-warmup + re-arm. */
+static void cb_tinkeron_reset(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "TinkerON reset requested");
+    esp_err_t err = voice_onboard_reset_failover();
+    if (err == ESP_OK) {
+        ui_home_show_toast("TinkerON resetting…");
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        ui_home_show_toast("TinkerON already resetting");
+    } else {
+        ESP_LOGW(TAG, "reset_failover failed: %s", esp_err_to_name(err));
+    }
 }
 
 static void cb_quiet_on(lv_event_t *e)
@@ -1859,6 +1900,44 @@ lv_obj_t *ui_settings_create(void)
             lv_label_set_text_fmt(s_lbl_cap_val, "$%d.%02d", dollars, remc);
         }
     }
+    y += ROW_H + 20;
+
+    /* ════════════════════════════════════════════════════════════════
+     *  SECTION: TINKERON (TT #586 — always-on listener controls)
+     * ════════════════════════════════════════════════════════════════ */
+    feed_wdt();
+    ESP_LOGI(TAG, "Phase 1 — Section: TinkerON");
+    y = mk_section(s_scroll, "TINKERON", acc_voice, y);
+
+    /* Status row: temp + version + chain hwinfo cache (best-effort —
+     * stays blank if K144 is UNAVAILABLE). */
+    {
+        voice_m5_hwinfo_t hw = {0};
+        char ver[16] = {0};
+        bool hwok = (voice_m5_llm_sys_hwinfo(&hw) == ESP_OK);
+        (void)voice_m5_llm_sys_version(ver, sizeof(ver));
+        char status[80];
+        if (hwok && hw.valid) {
+            snprintf(status, sizeof(status), "%s  ·  %ld.%ld°C  ·  load %ld",
+                     ver[0] ? ver : "v?", (long)(hw.temperature_milli_c / 1000),
+                     (long)((hw.temperature_milli_c / 100) % 10), (long)hw.cpu_loadavg);
+        } else {
+            snprintf(status, sizeof(status), "UNAVAILABLE — try Reset");
+        }
+        mk_row_label(s_scroll, status, y);
+        y += ROW_H + 8;
+    }
+
+    /* Always-on listener switch. */
+    mk_row_label(s_scroll, "Always-on listener", y);
+    mk_switch(s_scroll, acc_voice, 660, y,
+              voice_wakeword_is_active(), cb_tinkeron_armed, NULL);
+    y += ROW_H + 8;
+
+    /* Reset TinkerON pill button. */
+    mk_row_label(s_scroll, "Reset module", y);
+    mk_pill_btn(s_scroll, "RESET", acc_voice, lv_color_hex(0xFFFFFF),
+                RIGHT_X - 130, y + 4, 130, ROW_H - 8, 18, cb_tinkeron_reset);
     y += ROW_H + 20;
 
     /* ════════════════════════════════════════════════════════════════

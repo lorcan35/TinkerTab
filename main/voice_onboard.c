@@ -872,3 +872,15 @@ int64_t voice_onboard_chain_uptime_ms(void) {
    if (!s_chain_active || s_chain_started_us == 0) return 0;
    return (esp_timer_get_time() - s_chain_started_us) / 1000;
 }
+
+/* TT #586 — Settings UI entry-point for "Always-on listener" ON.
+ * Idempotent; uses the same wakeword_event_handler as the boot
+ * warmup path so UI bridge (toast + orb ripple) stays consistent.
+ * No-op if K144 is currently UNAVAILABLE — caller should toast a
+ * hint if it cares.  Honours the "release LLM slot before ASR"
+ * gate from the warmup path. */
+esp_err_t voice_onboard_arm_wakeword(void) {
+   if (s_m5_failover == M5_FAIL_UNAVAILABLE) return ESP_ERR_INVALID_STATE;
+   voice_m5_llm_release();
+   return voice_wakeword_start(NULL, wakeword_event_handler, NULL);
+}
