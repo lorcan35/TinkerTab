@@ -346,6 +346,15 @@ char s_llm_text[MAX_TRANSCRIPT_LEN] = {0};
 static char s_queued_text[MAX_TRANSCRIPT_LEN] = {0};
 static bool s_queue_pending = false;
 
+/* TT #613 — Conversation mode (multi-turn follow-ups).  Set true on any
+ * user-initiated voice_start_listening (wake or orb tap).  When voice
+ * transitions SPEAKING → READY, if this flag is still set we defer a
+ * fresh voice_start_listening so the user can ask a follow-up without
+ * re-tapping or re-waking.  Cleared on: voice_cancel, an empty STT
+ * result (silent follow-up means user is done), explicit voice_stop_
+ * listening, or WS disconnect.  Default off until first user trigger. */
+static volatile bool s_conv_active = false;
+
 /* v4·D Phase 3b: per-turn receipt cache moved to voice_billing.c
  * (SOLID-audit SRP-3 extract).  The pre-extract `s_last_receipt_*`
  * statics here were write-only — never read from anywhere — so they
@@ -392,6 +401,7 @@ volatile int64_t s_last_activity_us = 0;
 /* voice_set_state is now declared in voice.h (TT #327 Wave 4b — used by
  * voice_onboard.c to drive state transitions). */
 static void _drain_queued_text_job(void *arg);   /* #133 */
+static void _conv_relisten_job(void *arg);       /* TT #613 */
 static void mic_capture_task(void *arg);
 static void playback_drain_task(void *arg);
 /* handle_text_message → voice_ws_proto_handle_text (voice_ws_proto.h, TT #331). */
@@ -485,6 +495,26 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
          free(pending);
       }
    }
+
+   /* TT #613 — Conversation mode: SPEAKING → READY auto-relisten.
+    *
+    * When the just-finished turn was the trailing edge of a user-
+    * initiated conversation (orb tap or wake), open the mic again so
+    * the user can ask a follow-up without re-triggering.  The flag is
+    * cleared by voice_cancel, by an empty STT result, by voice_stop_
+    * listening, and on WS disconnect.
+    *
+    * Deferred via tab5_worker_enqueue so it runs on the worker's 16 KB
+    * PSRAM stack rather than the 6 KB playback drain stack — same
+    * pattern as the #133 queue drain above. */
+   if (old == VOICE_STATE_SPEAKING && new_state == VOICE_STATE_READY && s_conv_active) {
+      ESP_LOGI(TAG, "conv: SPEAKING→READY edge with conv_active, queueing relisten");
+      tab5_debug_obs_event("voice.conv", "relisten_enqueue");
+      if (tab5_worker_enqueue(_conv_relisten_job, NULL, "voice-conv-relisten") != ESP_OK) {
+         ESP_LOGW(TAG, "conv: relisten enqueue failed; conversation ending");
+         s_conv_active = false;
+      }
+   }
 }
 
 /* closes #133: runs on the shared worker (16 KB PSRAM stack), safe for
@@ -496,6 +526,43 @@ static void _drain_queued_text_job(void *arg)
         voice_send_text(text);
     }
     free(text);
+}
+
+/* TT #613 — Conversation-mode relisten.  Re-opens the mic after a TTS
+ * turn so the user can ask a follow-up without re-tapping/re-waking.
+ * Small 250 ms grace so the playback drain finishes cleanly and the
+ * speaker is fully muted before we open the mic (avoids capturing the
+ * tail of our own TTS).  Bails if conv was already cleared between
+ * enqueue and now (e.g. user tapped stop, WS dropped, etc). */
+static void _conv_relisten_job(void *arg) {
+   (void)arg;
+   if (!s_conv_active) {
+      ESP_LOGI(TAG, "conv-relisten: bailed (conv_active cleared)");
+      return;
+   }
+   /* Brief grace — speaker mute + playback drain settle. */
+   vTaskDelay(pdMS_TO_TICKS(250));
+   if (!s_conv_active) {
+      ESP_LOGI(TAG, "conv-relisten: bailed post-grace (conv_active cleared)");
+      return;
+   }
+   if (!voice_is_connected()) {
+      ESP_LOGI(TAG, "conv-relisten: ws not live, ending conv");
+      s_conv_active = false;
+      return;
+   }
+   if (s_state != VOICE_STATE_READY) {
+      ESP_LOGI(TAG, "conv-relisten: state not READY (s=%d), ending conv", s_state);
+      s_conv_active = false;
+      return;
+   }
+   ESP_LOGI(TAG, "conv-relisten: opening mic for follow-up");
+   tab5_debug_obs_event("voice.conv", "relisten_fire");
+   esp_err_t e = voice_start_listening();
+   if (e != ESP_OK) {
+      ESP_LOGW(TAG, "conv-relisten: voice_start_listening failed (%s), ending conv", esp_err_to_name(e));
+      s_conv_active = false;
+   }
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,6 +1646,13 @@ esp_err_t voice_start_listening(void)
     ESP_LOGI(TAG, "Starting push-to-talk (ask mode%s)", is_solo ? ", solo" : "");
     voice_modes_set_internal(VOICE_MODE_ASK);
 
+    /* TT #613 — Conversation mode arm.  Every user-initiated voice_start_
+     * listening (orb tap, wake, debug /chat) sets s_conv_active so the
+     * SPEAKING→READY edge auto-relistens for a follow-up.  The conv-
+     * relisten path itself ALSO calls voice_start_listening (re-entry),
+     * so this assignment is idempotent across the recursive use. */
+    s_conv_active = true;
+
     /* W4-A: fresh turn_id stamps both the WS frame (where applicable)
      * and any obs events fired during the turn.  SOLO turns get their
      * own turn_id too — even though we don't send a `start` frame,
@@ -1959,6 +2033,16 @@ esp_err_t voice_cancel(void)
     }
     ESP_LOGI(TAG, "Cancelling voice session");
 
+    /* TT #613 — Explicit user cancel ends the conversation.  The
+     * SPEAKING→READY auto-relisten only fires when s_conv_active is
+     * still set, so clearing it here means a mid-TTS interrupt OR a
+     * close-button tap exits conversation mode cleanly. */
+    if (s_conv_active) {
+       ESP_LOGI(TAG, "conv: voice_cancel clears conv_active");
+       tab5_debug_obs_event("voice.conv", "cancel");
+       s_conv_active = false;
+    }
+
     /* W8 (audit 2026-05-11): confirmatory cancel chirp.  Audit found the
      * device was mute on UI interactions; this closes the cancel branch. */
     ui_audio_cue_play(UI_CUE_CANCEL);
@@ -2012,6 +2096,9 @@ esp_err_t voice_disconnect(void)
     s_session_gen++;
 
     s_disconnecting = true;
+
+    /* TT #613 — WS down ends any in-flight conversation. */
+    s_conv_active = false;
 
     /* #262: reset codec to PCM so a stale OPUS state doesn't outlive
      * the reconnect.  Dragon will re-negotiate on the new register. */
