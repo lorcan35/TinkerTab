@@ -150,9 +150,8 @@ static int find_phrase_offset(const char *haystack, const char *needle) {
  * remainder via @p out (NUL-terminated, possibly empty).  We grab the
  * last 6 entries (~last 3-6 seconds of speech) and search for the wake
  * phrase or its T→Th alt — first hit wins, take everything after it. */
-static void extract_post_wake_remainder(const char *wake_phrase,
-                                        const char *wake_phrase_alt,
-                                        char *out, size_t out_cap) {
+static void extract_post_wake_remainder(const char *wake_phrase, const char *wake_phrase_alt, char *out,
+                                        size_t out_cap) {
    if (out == NULL || out_cap == 0) return;
    out[0] = '\0';
 
@@ -209,8 +208,7 @@ static void wakeword_trigger_voice_turn(void *user) {
    voice_wakeword_status_t ww;
    voice_wakeword_status(&ww);
    char remainder[256];
-   extract_post_wake_remainder(ww.wake_phrase, ww.wake_phrase_alt,
-                               remainder, sizeof(remainder));
+   extract_post_wake_remainder(ww.wake_phrase, ww.wake_phrase_alt, remainder, sizeof(remainder));
    /* Heuristic floor — need at least 5 chars + 1 space (a real word
     * boundary).  Empty / single-token remainders fall through to the
     * mic path so a "Hey Tinker" with pause still works. */
@@ -219,8 +217,7 @@ static void wakeword_trigger_voice_turn(void *user) {
       tab5_debug_obs_event("wakeword.fire", "text_path");
       esp_err_t e = voice_send_text(remainder);
       if (e == ESP_OK) return;
-      ESP_LOGW(TAG, "voice_send_text failed (%s) — falling back to mic",
-               esp_err_to_name(e));
+      ESP_LOGW(TAG, "voice_send_text failed (%s) — falling back to mic", esp_err_to_name(e));
    }
 
    esp_err_t err = voice_start_listening();
