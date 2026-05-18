@@ -127,64 +127,6 @@ static void wakeword_toast_async(void *user) {
  * so we don't get a stray "Saved: …" toast at the end of every voice
  * turn.  The matcher returns to IDLE and continues listening for the
  * next wake. */
-/* TT #599 — case-insensitive substring locate, returns offset OR -1. */
-static int find_phrase_offset(const char *haystack, const char *needle) {
-   if (haystack == NULL || needle == NULL || needle[0] == '\0') return -1;
-   size_t nlen = strlen(needle);
-   for (const char *p = haystack; *p; ++p) {
-      size_t i;
-      for (i = 0; i < nlen; i++) {
-         if (p[i] == 0) return -1;
-         char a = p[i], b = needle[i];
-         if (a >= 'A' && a <= 'Z') a += 32;
-         if (b >= 'A' && b <= 'Z') b += 32;
-         if (a != b) break;
-      }
-      if (i == nlen) return (int)(p - haystack) + (int)nlen;
-   }
-   return -1;
-}
-
-/* TT #599 — Build a "rolling text buffer" from the K144 transcript ring
- * by concatenating the last few entries.  Returns the post-wake-phrase
- * remainder via @p out (NUL-terminated, possibly empty).  We grab the
- * last 6 entries (~last 3-6 seconds of speech) and search for the wake
- * phrase or its T→Th alt — first hit wins, take everything after it. */
-static void extract_post_wake_remainder(const char *wake_phrase, const char *wake_phrase_alt, char *out,
-                                        size_t out_cap) {
-   if (out == NULL || out_cap == 0) return;
-   out[0] = '\0';
-
-   voice_wakeword_transcript_t buf[8];
-   size_t n = voice_wakeword_get_recent_transcripts(buf, 8);
-   if (n == 0) return;
-
-   /* Concatenate newest 6 entries with spaces. */
-   char joined[512] = {0};
-   size_t joined_len = 0;
-   size_t start = (n > 6) ? n - 6 : 0;
-   for (size_t i = start; i < n; i++) {
-      size_t add = strlen(buf[i].text);
-      if (joined_len + add + 2 >= sizeof(joined)) break;
-      if (joined_len > 0) joined[joined_len++] = ' ';
-      memcpy(joined + joined_len, buf[i].text, add);
-      joined_len += add;
-   }
-   joined[joined_len] = '\0';
-
-   int off = find_phrase_offset(joined, wake_phrase);
-   if (off < 0 && wake_phrase_alt && wake_phrase_alt[0]) {
-      off = find_phrase_offset(joined, wake_phrase_alt);
-   }
-   if (off < 0) return;
-
-   /* Skip trailing whitespace + punctuation after the phrase. */
-   const char *rest = joined + off;
-   while (*rest == ' ' || *rest == ',' || *rest == '.' || *rest == '?') rest++;
-   strncpy(out, rest, out_cap - 1);
-   out[out_cap - 1] = '\0';
-}
-
 static void wakeword_trigger_voice_turn(void *user) {
    (void)user;
    /* TT #597 — Barge-in: if wake fires while Tinker is mid-TTS, cancel
@@ -200,26 +142,14 @@ static void wakeword_trigger_voice_turn(void *user) {
       vTaskDelay(pdMS_TO_TICKS(150));
    }
 
-   /* TT #599 — Rolling-text fast path: if the K144 has already
-    * transcribed text AFTER the wake phrase (user said it all in one
-    * breath), send that text directly to Dragon and skip the entire
-    * Tab5 mic → audio upload → STT round-trip.  Saves ~2-3 s.
-    * Falls through to voice_start_listening when no remainder. */
-   voice_wakeword_status_t ww;
-   voice_wakeword_status(&ww);
-   char remainder[256];
-   extract_post_wake_remainder(ww.wake_phrase, ww.wake_phrase_alt, remainder, sizeof(remainder));
-   /* Heuristic floor — need at least 5 chars + 1 space (a real word
-    * boundary).  Empty / single-token remainders fall through to the
-    * mic path so a "Hey Tinker" with pause still works. */
-   if (strlen(remainder) >= 5 && strchr(remainder, ' ') != NULL) {
-      ESP_LOGI(TAG, "rolling-text fast path: %.80s", remainder);
-      tab5_debug_obs_event("wakeword.fire", "text_path");
-      esp_err_t e = voice_send_text(remainder);
-      if (e == ESP_OK) return;
-      ESP_LOGW(TAG, "voice_send_text failed (%s) — falling back to mic", esp_err_to_name(e));
-   }
-
+   /* TT #604 — Wake = orb-tap parity.  The rolling-text fast path
+    * (TT #599) was sending K144's sherpa-ncnn transcript directly to
+    * Dragon as a text turn, bypassing Tab5 mic + Dragon STT.  K144's
+    * transcripts of remainders are often garbled ("eight thinker what
+    * time is it"), producing different LLM inputs than orb-tap would.
+    * Per user 2026-05-18: wake should behave identically to tap.  Go
+    * straight to voice_start_listening — same code path as the orb
+    * handler. */
    esp_err_t err = voice_start_listening();
    if (err != ESP_OK) {
       ESP_LOGW(TAG, "voice_start_listening on wake failed: %s",
