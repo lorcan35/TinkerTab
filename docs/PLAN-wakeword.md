@@ -21,7 +21,7 @@ Five fixes since the 2026-05-17 "wake-fired-but-toast-only" status, all on commi
 
 4. **sys.reset coordination fix.**  `sys.reset` kills K144's audio + asr units mid-stream, leaving Tab5's wakeword task draining a dead UART.  The subsequent post-warmup `voice_wakeword_start()` then returned `INVALID_STATE` silently because the prior task was still alive.  Fix: `voice_wakeword_stop()` runs BEFORE `sys.reset` in `onboard_reset_failover_job`, AND defensively in `onboard_warmup_job`.
 
-5. **Hardware topology requirement (operational).**  BOTH the Mate carrier's USB-C AND the K144's top USB-C must be powered independently.  Mate-only or K144-only leads to NPU brownouts under sustained ASR load → `err=-9 'unit call false'` and module wedging needing a power-cycle.  This is now in the runbook + memory under the TinkerON brand entry.
+5. **Hardware topology (operational).**  Per the M5Stack docs, the Module13.2 LLM Mate "achieves stacked power supply with Module LLM via the M5-Bus interface" and the K144 draws only ~1.5W at full load — so **Tab5's own USB-C powers the entire stack** (Tab5 → Mate → K144) via M5-Bus.  NO extra USB-C is required to run TinkerON.  The Mate's USB-C is CH340N serial log output (debug only); the K144's top USB-C (M140 port) is USB OTG / Axera ADB (useful when SSH'ing into the K144 Linux from a dev host).  Both can be unplugged in normal operation.  The wedging hit during 2026-05-18 bring-up was K144 daemon state across Tab5 reflashes (stale audio+asr units, NPU task slot collisions), NOT power — addressed by the `voice_m5_llm_release()` + `voice_wakeword_stop()` ordering fixes.
 
 ---
 
