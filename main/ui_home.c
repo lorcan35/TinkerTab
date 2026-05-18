@@ -1724,54 +1724,69 @@ static void refresh_timer_cb(lv_timer_t *t)
  * trailing CLICKED doesn't also open the listening overlay. */
 static bool s_orb_long_pressed = false;
 
-static void orb_click_cb(lv_event_t *e)
-{
-    (void)e;
-    if (any_overlay_visible()) return;
+/* TT #611 — Single entry point for "user wants to start an Ask voice
+ * turn".  See ui_home.h for the contract.  The orb tap handler and the
+ * K144 wakeword handler both call this so wake = tap, full stop. */
+esp_err_t ui_home_start_voice_turn(const char *source) {
+   const char *src = (source && source[0]) ? source : "unknown";
 
-    /* TT #328 Wave 4 — swallow the trailing CLICKED that LVGL emits after
-     * a LONG_PRESSED.  See s_orb_long_pressed above for full rationale. */
-    if (s_orb_long_pressed) {
-       s_orb_long_pressed = false;
-       return;
-    }
+   if (any_overlay_visible()) {
+      ESP_LOGI(TAG, "start_voice_turn(%s): overlay visible, bouncing", src);
+      return ESP_ERR_INVALID_STATE;
+   }
 
-    /* Tap debounce — prevents SDIO TX copy_buff exhaustion from repeat-taps.
-     * Same 500 ms window as v5. */
-    static uint32_t last_tap_ms = 0;
-    uint32_t now = lv_tick_get();
-    if (now - last_tap_ms < 500) {
-        ESP_LOGI(TAG, "orb/pill tap debounced (dt=%lums)",
-                 (unsigned long)(now - last_tap_ms));
-        return;
-    }
-    last_tap_ms = now;
+   /* Debounce — prevents SDIO TX copy_buff exhaustion from repeat
+    * triggers (rapid taps, multi-fire wake). */
+   static uint32_t last_start_ms = 0;
+   uint32_t now = lv_tick_get();
+   if (now - last_start_ms < 500) {
+      ESP_LOGI(TAG, "start_voice_turn(%s): debounced (dt=%lums)", src, (unsigned long)(now - last_start_ms));
+      return ESP_ERR_INVALID_STATE;
+   }
+   last_start_ms = now;
 
-    ESP_LOGI(TAG, "orb/pill tap -> open voice");
-    /* Wave 15 banner-UX: if the WS is currently disconnected we don't
-     * want to open the LISTENING overlay and then silently drop audio
-     * frames (they go to a closed socket).  Instead, kick off a
-     * reconnect + show a brief toast so the user knows why their tap
-     * didn't do anything yet, then return.  They can tap again when
-     * the top-left pill reads "ready". */
-    if (!voice_is_connected()) {
-        char dhost[64];
-        tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-        if (dhost[0]) voice_connect_async(dhost, TAB5_VOICE_PORT, false);
-        ui_home_show_toast("Reconnecting to Dragon… try again in a moment.");
-        return;
-    }
-    /* PR 2 polish: tapping the orb to Ask should always start clean.
-     * If a previous dictation left the pipeline in a transient terminal
-     * state (FAILED/SAVED), reset it to IDLE so the orb's Ask visuals
-     * aren't shadowed by stale "CANCELLED · TAP TO RETRY" text. */
-    dict_event_t pe = voice_dictation_get();
-    if (pe.state == DICT_FAILED || pe.state == DICT_SAVED) {
-       voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-    }
+   ESP_LOGI(TAG, "start_voice_turn(%s) -> open voice", src);
 
-    ui_voice_show();
-    voice_start_listening();
+   /* If WS is currently disconnected, kick off a reconnect + show a
+    * brief toast so the user knows why nothing happened.  Same UX as
+    * Wave-15 orb tap (don't silently open an overlay then drop the
+    * frames). */
+   if (!voice_is_connected()) {
+      char dhost[64];
+      tab5_settings_get_dragon_host(dhost, sizeof(dhost));
+      if (dhost[0]) voice_connect_async(dhost, TAB5_VOICE_PORT, false);
+      ui_home_show_toast("Reconnecting to Dragon… try again in a moment.");
+      return ESP_ERR_INVALID_STATE;
+   }
+
+   /* PR 2 polish: starting a fresh Ask turn should always start clean.
+    * If a previous dictation left the pipeline in a transient terminal
+    * state (FAILED/SAVED), reset it to IDLE so the orb's Ask visuals
+    * aren't shadowed by stale "CANCELLED · TAP TO RETRY" text. */
+   dict_event_t pe = voice_dictation_get();
+   if (pe.state == DICT_FAILED || pe.state == DICT_SAVED) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   }
+
+   ui_voice_show();
+   return voice_start_listening();
+}
+
+static void orb_click_cb(lv_event_t *e) {
+   (void)e;
+
+   /* TT #328 Wave 4 — swallow the trailing CLICKED that LVGL emits after
+    * a LONG_PRESSED.  See s_orb_long_pressed above for full rationale. */
+   if (s_orb_long_pressed) {
+      s_orb_long_pressed = false;
+      return;
+   }
+
+   /* TT #611 — all the entry-checks + voice overlay open + listen
+    * start moved into ui_home_start_voice_turn so the K144 wakeword
+    * handler can call the same code.  Return is informational; the
+    * helper already showed the relevant toast on rejection. */
+   (void)ui_home_start_voice_turn("orb_tap");
 }
 
 /* v4·D Sovereign Halo: 4-dot chip opens the nav sheet (menu hub) so the

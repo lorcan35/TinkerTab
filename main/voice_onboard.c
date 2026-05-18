@@ -142,18 +142,17 @@ static void wakeword_trigger_voice_turn(void *user) {
       vTaskDelay(pdMS_TO_TICKS(150));
    }
 
-   /* TT #604 — Wake = orb-tap parity.  The rolling-text fast path
-    * (TT #599) was sending K144's sherpa-ncnn transcript directly to
-    * Dragon as a text turn, bypassing Tab5 mic + Dragon STT.  K144's
-    * transcripts of remainders are often garbled ("eight thinker what
-    * time is it"), producing different LLM inputs than orb-tap would.
-    * Per user 2026-05-18: wake should behave identically to tap.  Go
-    * straight to voice_start_listening — same code path as the orb
-    * handler. */
-   esp_err_t err = voice_start_listening();
+   /* TT #611 — Wake = orb-tap parity, properly.  Earlier attempt
+    * (TT #604) called voice_start_listening directly, which matched
+    * the audio path but skipped 5 UX wrapper steps (overlay-visibility
+    * check, debounce, WS-connected guard with reconnect/toast,
+    * dictation pipeline reset, ui_voice_show).  ui_home_start_voice_turn
+    * is the single source of truth for "start an Ask voice turn from
+    * this device" — same function the orb tap handler calls.  Wake
+    * now opens the voice overlay, runs the same guards, identical UX. */
+   esp_err_t err = ui_home_start_voice_turn("wakeword");
    if (err != ESP_OK) {
-      ESP_LOGW(TAG, "voice_start_listening on wake failed: %s",
-               esp_err_to_name(err));
+      ESP_LOGW(TAG, "ui_home_start_voice_turn on wake bounced: %s", esp_err_to_name(err));
    }
 }
 
