@@ -67,6 +67,7 @@
 #include "debug_server_input.h"
 #include "debug_server_internal.h"
 #include "debug_server_m5.h"
+#include "debug_server_tinkeron.h"
 #include "debug_server_metrics.h"
 #include "debug_server_mode.h"
 #include "debug_server_nav.h"
@@ -813,6 +814,8 @@ esp_err_t tab5_debug_server_init(void)
     debug_server_voice_register(server);
     /* Wave 23b (#332): K144 endpoint family registered en-bloc. */
     debug_server_m5_register(server);
+    /* TT #578: TinkerON health + runtime control family. */
+    debug_server_tinkeron_register(server);
     debug_server_call_register(server);
     /* Wave 23b (#332): /dictation family registered en-bloc. */
     debug_server_dictation_register(server);

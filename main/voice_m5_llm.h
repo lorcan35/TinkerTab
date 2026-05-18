@@ -78,6 +78,13 @@ esp_err_t voice_m5_llm_probe(void);
  */
 esp_err_t voice_m5_llm_sys_reset(void);
 
+/* TT #578 — hard hammer: full K144 Linux reboot via sys.reboot.
+ * Use when sys.reset can't unstick the NPU.  Recovery ~30 s vs ~5 s
+ * for sys.reset.  Caller is responsible for the post-reboot wait +
+ * re-warmup.  Reboot doesn't always ack before the kernel cuts the
+ * UART; timeout is treated as best-effort success. */
+esp_err_t voice_m5_llm_sys_reboot(void);
+
 /**
  * @brief K144 hardware status snapshot (Wave 14).
  *
