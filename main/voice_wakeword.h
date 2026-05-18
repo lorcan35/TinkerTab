@@ -109,6 +109,48 @@ bool voice_wakeword_is_active(void);
  *         with whatever has been accumulated so far. */
 void voice_wakeword_force_dictation_stop(void);
 
+/* ── Status accessors (TT #578 — TinkerON debug surface) ──────────── */
+
+/** @brief Snapshot of the listener's runtime state.  All fields are
+ *         output-only; pass storage from the caller. */
+typedef struct {
+   bool armed;                /**< true iff the task is running */
+   char wake_phrase[64];      /**< configured wake phrase (e.g. "hey tinker") */
+   char wake_phrase_alt[64];  /**< auto-derived T→Th variant (or "") */
+   char end_phrase[64];       /**< end-of-dictation phrase */
+   uint32_t fire_count;       /**< number of WAKE events fired since arm */
+   int64_t last_fire_ms;      /**< esp_timer ms at last wake (0 if never) */
+   char last_match[64];       /**< phrase that matched on the last wake */
+} voice_wakeword_status_t;
+
+/** @brief Fill @p out with the current listener status.  All fields are
+ *         populated even when the listener is not armed (armed=false +
+ *         cached config values from the last start). */
+void voice_wakeword_status(voice_wakeword_status_t *out);
+
+/** @brief Restart the listener with a new wake phrase at runtime.
+ *
+ *  Convenience for live A/B testing of phonetic variants without a
+ *  reflash.  Internally: stop → cache new phrase → start with the
+ *  same callback + user pointer that were registered on the last
+ *  successful start.  Returns ESP_ERR_INVALID_STATE if the listener
+ *  has never been started.  On failure the previous phrase is NOT
+ *  preserved — caller is responsible for re-issuing start with the
+ *  known-good phrase. */
+esp_err_t voice_wakeword_reconfigure_phrase(const char *new_phrase);
+
+/** @brief Snapshot one ASR transcript ring-buffer entry. */
+typedef struct {
+   int64_t ms;                /**< esp_timer ms when this delta arrived */
+   bool finish;               /**< whether the K144 marked this as a finish segment */
+   char text[96];             /**< delta payload (silently truncated) */
+} voice_wakeword_transcript_t;
+
+/** @brief Copy up to @p max entries (newest-last) into @p out.  Returns
+ *         the number actually filled.  Ring buffer is 32 entries; older
+ *         deltas are evicted FIFO.  Useful for debug tail. */
+size_t voice_wakeword_get_recent_transcripts(voice_wakeword_transcript_t *out, size_t max);
+
 #ifdef __cplusplus
 }
 #endif

@@ -35,7 +35,7 @@ else()
         SRCS "main.c"
              "sdcard.c" "wifi.c"
              "voice.c" "voice_ws_proto.c" "voice_modes.c" "voice_solo.c" "voice_codec.c" "voice_dictation.c" "voice_dictation_lvgl.c" "voice_video.c" "voice_widget_ws.c" "voice_billing.c" "voice_messages_sync.c" "mode_manager.c"
-             "debug_server.c" "debug_server_m5.c" "debug_server_ota.c"
+             "debug_server.c" "debug_server_m5.c" "debug_server_tinkeron.c" "debug_server_ota.c"
              "debug_server_codec.c" "debug_server_voice.c" "debug_server_mode.c"
              "debug_server_settings.c" "debug_server_wifi.c" "debug_server_dictation.c"
              "debug_server_call.c" "debug_server_camera.c" "debug_server_obs.c"

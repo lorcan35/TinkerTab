@@ -515,6 +515,57 @@ esp_err_t voice_m5_llm_sys_reset(void) {
    return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
 }
 
+/* TT #578 — full hardware reboot of the K144 module via sys.reboot.
+ * Heavier hammer than sys.reset: this restarts the entire Linux on the
+ * AX630C, not just the StackFlow daemon.  Recovery time is ~30 s vs ~5 s
+ * for sys.reset, so use it only when sys.reset can't unstick the NPU.
+ * Caller is responsible for waiting + re-warmup. */
+esp_err_t voice_m5_llm_sys_reboot(void) {
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+   M5_LOCK_OR_RETURN(2000);
+
+   char request_id[32];
+   make_request_id(request_id, sizeof(request_id), "rbt-");
+   const m5_stackflow_request_t req = {
+       .request_id = request_id,
+       .work_id = "sys",
+       .action = "reboot",
+   };
+
+   char tx[256];
+   int tx_len = m5_stackflow_build_request(&req, tx, sizeof(tx));
+   if (tx_len < 0) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+
+   int frame_len = send_and_recv_one_frame(tx, tx_len, 1500);
+   if (frame_len < 0) {
+      M5_UNLOCK();
+      ESP_LOGW(TAG, "sys.reboot: no ack frame (timeout — K144 may already be rebooting)");
+      /* Reboot doesn't always ack before the kernel cuts the UART; treat
+       * timeout as best-effort success.  Caller waits then re-probes. */
+      s_setup_work_id[0] = '\0';
+      return ESP_OK;
+   }
+
+   m5_stackflow_response_t resp = {0};
+   esp_err_t pe = m5_stackflow_parse_response(s_rx_buf, (size_t)frame_len, &resp);
+   bool ok = (pe == ESP_OK) && m5_stackflow_response_matches(&resp, request_id)
+             && resp.error_code == 0;
+   if (ok) {
+      ESP_LOGI(TAG, "sys.reboot acked: %s", resp.error_message ? resp.error_message : "(no msg)");
+      s_setup_work_id[0] = '\0';
+   } else {
+      ESP_LOGW(TAG, "sys.reboot returned error_code=%d msg=%s",
+               resp.error_code, resp.error_message ? resp.error_message : "(none)");
+   }
+   m5_stackflow_response_free(&resp);
+   M5_UNLOCK();
+   return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
 esp_err_t voice_m5_llm_sys_hwinfo(voice_m5_hwinfo_t *out) {
    if (out == NULL) return ESP_ERR_INVALID_ARG;
    memset(out, 0, sizeof(*out));
