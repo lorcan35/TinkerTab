@@ -42,13 +42,15 @@ Tab5 has connectors for stackable + plug-in add-ons.  Two parallel projects scop
   - `tests/e2e/scenarios/runner.py` `story_onboard` (14 steps) covers vmode=4 lifecycle
   - Full retrospective: `LEARNINGS.md` "K144 chain hardening (audit 2026-04-29) — 7-wave program closes 14/18 audit findings"
   - Plan + audit docs: [`docs/AUDIT-k144-chain-2026-04-29.md`](docs/AUDIT-k144-chain-2026-04-29.md), [`docs/PLAN-k144-chain-hardening.md`](docs/PLAN-k144-chain-hardening.md)
+- **Wakeword + on-device dictation wave (TT #575 / PR #576, 2026-05-17):** follow-up to the Wave 1-7 closure that reuses the K144 audio + asr units in a new always-on configuration.  Branch `feat/wakeword` (commits `83f82e3` + `e5426cc`).  Adds `main/voice_wakeword.{c,h}` + `voice_m5_llm_wakeword_setup/_run/_teardown` + lifecycle hooks in `voice_onboard.c` (arms on warmup READY + every successful Wave 13 reset; tears down when vmode=4 chain takes the UART).  Live-verified wake on "tinker" on 2026-05-17; UI bridge (toast + orb ripple) added but needs hardware retest.  KWS unit dead-end (parse_config rejects every body) documented for vendor follow-up.  Full plan: [`docs/PLAN-wakeword.md`](docs/PLAN-wakeword.md).
 - **Live performance:**  ~4.5s boot warm-up (cold-start NPU model load), ~2-3s per turn after warm.  K144 reply renders as a "TINKER" bubble in the chat overlay.
-- **Voice modes — five tiers now (was four):**
+- **Voice modes — six tiers now (was four):**
   - `vmode=0` Local — Dragon Q6A LLM (existing)
   - `vmode=1` Hybrid — Dragon LLM + OpenRouter STT/TTS (existing)
   - `vmode=2` Cloud — OpenRouter LLM + STT + TTS (existing)
   - `vmode=3` TinkerClaw — TinkerClaw Gateway (existing)
   - `vmode=4` Onboard — **K144 LLM, no Dragon needed** (new in Phase 5)
+  - `vmode=5` Solo Direct — **Tab5 talks straight to OpenRouter, no Dragon needed** (TT #370; STT/LLM/TTS all OpenRouter via the `or_*` NVS keys; on-device RAG against `/sdcard/rag.bin` for context)
 - **Failover behavior:**  In Local mode (`vmode=0`), if Dragon WS is unreachable for ≥30s AND the K144 is warm AND the user sends a text turn, voice.c routes to the K144 automatically.  Toast: "Using onboard LLM".  When Dragon comes back, next text turn returns to Dragon and shows "Dragon reconnected" toast.
 - **K144 cold-start guard:**  Boot warm-up posts a probe + one synchronous `voice_m5_llm_infer("hi", ...)` to map the model into NPU memory.  Up to 6 minutes (cold-start budget).  On success the failover gate flips READY; on any failure (probe timeout, NPU hang) it flips UNAVAILABLE.  **TT #328 Wave 13 (`4352e9e`) made UNAVAILABLE recoverable in software** — `voice_onboard_reset_failover()` sends `sys.reset` to the StackFlow daemon, waits for re-init, re-runs the warmup probe.  Auto-retries every 60 s (capped at 3 attempts/boot via `esp_timer`); manual recovery available via tap on the K144 health chip in Settings or `POST /m5/reset` debug endpoint.  Live timing: 9.6 s end-to-end on hardware.  See [`docs/PLAN-k144-recovery.md`](docs/PLAN-k144-recovery.md) for the verified `sys.*` verb surface (probed 2026-05-01) — `sys.reset`, `sys.reboot`, `sys.hwinfo`, `sys.lsmode`, `sys.version` are real; `sys.list`, `sys.status`, `sys.uptime`, `sys.log` are not.  User-facing flows are NEVER blocked by K144 hang behaviors.
 
@@ -747,7 +749,7 @@ Wire layout: `"VID0"` (4 bytes) + `len_be` (4 bytes) + `payload[len]`. Same shap
 2. **Voice Cancel:** `{"type":"cancel"}` — abort current processing
 3. **Keepalive:** `{"type":"ping"}` — JSON heartbeat every 15s during processing
 4. **Text Input:** `{"type":"text","content":"..."}` — skips STT, goes straight to LLM
-5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"..."}` — four-tier mode switch. Backward compat: `cloud_mode` bool still accepted.
+5. **Config Update:** `{"type":"config_update","voice_mode":0|1|2|3,"llm_model":"..."}` — mode switch over the wire.  Backward compat: `cloud_mode` bool still accepted.  **vmode=4 (Onboard) and vmode=5 (Solo Direct) are Tab5-side-only** — Tab5 auto-downconverts to 0 on the wire so Dragon never sees them, and voice.c's `config_update` ACK handler filters out Dragon's echo to keep the local NVS at the true 4/5 value.  This is a protocol feature, not a bug — the on-the-wire shape stays in 0..3 even as Tab5 grows new local-only modes.
 6. **Device Registration:** `{"type":"register","device_id":"...","session_id":"..."}` on WS connect
 7. **Clear History:** `{"type":"clear"}` — reset conversation context (W14-H20: was documented as `clear_history`; Tab5's `voice.c` + Dragon's dispatcher have always agreed on `clear`)
 8. **Channel Reply (W7-E.4):** `{"type":"channel_reply","channel":"telegram","thread_id":"<id>","text":"<reply>"}` — user response to a previously-received `channel_message` (see Dragon→Tab5 #16 below).  Built by `voice_send_channel_reply` in voice.c.  In W7-E.4b mode the next STT-complete transcript is routed through this path instead of normal LLM dispatch when reply context is armed via `voice_arm_channel_reply` (REPLY button on the now-card overlay).  Dragon ACKs asynchronously with `channel_reply_ack`.  Full schema in TinkerBox [`docs/protocol.md`](https://github.com/lorcan35/TinkerBox/blob/main/docs/protocol.md) §20.
@@ -762,7 +764,7 @@ Wire layout: `"VID0"` (4 bytes) + `len_be` (4 bytes) + `payload[len]`. Same shap
 7. **tts_start** / binary TTS / **tts_end** — TTS audio playback
 8. **dictation_summary** — post-processing results: `{"title":"...","summary":"..."}`
 9. **pong** — keepalive response
-10. **config_update** — ACK with applied backend config + cloud_mode state
+10. **config_update** — ACK with applied backend config + cloud_mode state.  ACK payload also carries a `fleet_summary` block (per-device vision capability info from Dragon's fleet registry) that Tab5 uses to enable/disable the vision chip on the chat composer + Settings vision indicator.  When the active model lacks vision the chip greys out client-side.
 11. **error** — error details
 
 ### Dragon → Tab5 (Rich Media — April 2026)
@@ -853,7 +855,7 @@ main/voice.{c,h}          — Voice public API + state machine + mic capture tas
                              playback drain task + listening/dictation/call lifecycles +
                              reconnect watchdog.  Wave 23 thinned voice.c from ~3,668 LOC
                              to ~2,287 LOC by extracting voice_ws_proto (RX/TX dispatch +
-                             event handler) and voice_modes (five-tier routing).
+                             event handler) and voice_modes (six-tier routing).
                              W7-E.4 (#456) adds `voice_send_channel_reply(channel, thread_id,
                              text)` for replying to channel_message frames over the existing
                              voice WS.  W7-E.4b (#471) adds armed-reply context state (4 APIs:
@@ -868,10 +870,11 @@ main/voice_ws_proto.{c,h} — WS frame routing layer: JSON RX dispatcher + binar
                              UI-async helpers (toast / banner / badge dispatchers) +
                              eviction/auth-fail stop workers.  Wave 23 SRP closure for
                              TT #331-A (PR #355).
-main/voice_modes.{c,h}    — Five-tier voice-mode dispatcher: voice_send_config_update*
+main/voice_modes.{c,h}    — Six-tier voice-mode dispatcher: voice_send_config_update*
                              senders + voice_modes_route_text decision (LOCAL / HYBRID /
-                             CLOUD / TINKERCLAW / LOCAL_ONBOARD) + s_voice_mode
-                             ownership.  Wave 23 SRP closure for TT #331-B (PR #356).
+                             CLOUD / TINKERCLAW / LOCAL_ONBOARD / SOLO_DIRECT) + s_voice_mode
+                             ownership.  Wave 23 SRP closure for TT #331-B (PR #356); SOLO
+                             Direct (vmode=5) added via TT #370.
 main/voice_video.{c,h}    — Two-way video call module: HW JPEG uplink + TJPGD downlink
                              decode, VID0 framing, voice_video_start_call/end_call atomics.
 main/voice_codec.{c,h}    — OPUS capability negotiation (decoder ready, encoder gated off
