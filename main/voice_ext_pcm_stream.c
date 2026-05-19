@@ -144,84 +144,19 @@ static void ext_pcm_task(void *arg) {
          continue;
       }
 
-      /* ASR was set up with input=["sys.pcm"], so it subscribes to
-       * /tmp/llm/pcm.cap.socket (audio's PUB URL).  Run the handshake
-       * once to flip URL ownership from audio → ext_pcm:
-       *   1. audio.cap_stop_all   — release audio's bind
-       *   2. ext_pcm.rebind       — ext_pcm reclaims URL; ASR's SUB
-       *                              auto-reconnects (ZMQ IPC)
-       * From then on, every ingest RPC we send to ext_pcm decodes
-       * ADPCM and publishes raw PCM on the URL ASR is listening to. */
+      /* TT #131 — direct-to-asr path: ASR was set up with input=["asr"]
+       * so it subscribes to its OWN inference bus.  K144 main_asr
+       * (custom build) decodes ADPCM inline in task_user_data.  No
+       * handshake needed. */
+      const char *asr_target = voice_wakeword_asr_id();
+      if (asr_target == NULL || asr_target[0] == '\0') {
+         vTaskDelay(pdMS_TO_TICKS(500));
+         continue;
+      }
       if (!s_handshake_done) {
-         /* 3-step handshake with explicit settling time between steps so
-          * the ZMQ IPC SUB on asr's side has time to:
-          *   a. detect audio's bind disappearing (cap_stop_all)
-          *   b. enter its reconnect loop (default ZMQ_RECONNECT_IVL=100ms)
-          *   c. settle on ext_pcm's fresh bind (rebind)
-          * Earlier 150ms gaps were marginal; 500ms is robust. */
-         char hbuf[256];
-
-         /* 1. audio.cap_stop_all — audio releases its PUB bind. */
-         m5_stackflow_request_t req_stop = {
-            .request_id = "ep-cap-stop", .work_id = "audio",
-            .action = "cap_stop_all",
-         };
-         int hlen = m5_stackflow_build_request(&req_stop, hbuf, sizeof(hbuf));
-         if (hlen > 0 && tab5_port_c_lock(2000) == ESP_OK) {
-            tab5_port_c_send(hbuf, (size_t)hlen);
-            tab5_port_c_unlock();
-         }
-         vTaskDelay(pdMS_TO_TICKS(500));
-
-         /* 2. ext_pcm.rebind — ext_pcm takes ownership of the URL. */
-         m5_stackflow_request_t req_rebind = {
-            .request_id = "ep-rebind", .work_id = "ext_pcm",
-            .action = "rebind",
-         };
-         hlen = m5_stackflow_build_request(&req_rebind, hbuf, sizeof(hbuf));
-         if (hlen > 0 && tab5_port_c_lock(2000) == ESP_OK) {
-            tab5_port_c_send(hbuf, (size_t)hlen);
-            tab5_port_c_unlock();
-         }
-         vTaskDelay(pdMS_TO_TICKS(500));
-
-         /* 3. ext_pcm.rebind AGAIN — defensive: any momentary K144-side
-          * lifecycle event could have re-stolen the URL.  Lock it in. */
-         hlen = m5_stackflow_build_request(&req_rebind, hbuf, sizeof(hbuf));
-         if (hlen > 0 && tab5_port_c_lock(2000) == ESP_OK) {
-            tab5_port_c_send(hbuf, (size_t)hlen);
-            tab5_port_c_unlock();
-         }
-         vTaskDelay(pdMS_TO_TICKS(500));
-
-         /* 4. asr.link sys.pcm — force ASR to create a FRESH subscriber.
-          * Its original subscriber from asr.setup is stuck on a stale
-          * IPC inode after our rebind (audio's PUB was the binder at
-          * that moment; the file's been re-created so the SUB's cached
-          * peer is dead).  asr.link with data="sys.pcm" calls
-          * unit_call("audio","cap","sys.pcm") → returns current URL →
-          * subscriber() attaches a new SUB to ext_pcm's live PUB. */
-         const char *asr_id = voice_wakeword_asr_id();
-         if (asr_id && asr_id[0]) {
-            char link_payload[64];
-            snprintf(link_payload, sizeof(link_payload), "\"sys.pcm\"");
-            m5_stackflow_request_t req_link = {
-               .request_id = "ep-asr-link", .work_id = asr_id,
-               .action = "link", .object = "asr.link",
-               .data_string = "sys.pcm",
-            };
-            hlen = m5_stackflow_build_request(&req_link, hbuf, sizeof(hbuf));
-            if (hlen > 0 && tab5_port_c_lock(2000) == ESP_OK) {
-               tab5_port_c_send(hbuf, (size_t)hlen);
-               tab5_port_c_unlock();
-               ESP_LOGI(TAG, "asr.link sys.pcm sent (%s)", asr_id);
-            }
-            vTaskDelay(pdMS_TO_TICKS(500));
-         }
-
+         /* No handshake needed — direct-to-asr path.  Mark done. */
          s_handshake_done = true;
-         tab5_debug_obs_event("ext_pcm_stream", "handshake_done");
-         ESP_LOGI(TAG, "handshake fired — ext_pcm owns /tmp/llm/pcm.cap.socket");
+         ESP_LOGI(TAG, "direct-to-asr path active (target=%s)", asr_target);
       }
 
       /* TT #131 — first-time-armed: negotiate UART up to 1.5 Mbps.
@@ -301,16 +236,14 @@ static void ext_pcm_task(void *arg) {
 
       char rid[24];
       snprintf(rid, sizeof(rid), "ep%lu", (unsigned long)(++s_frame_seq));
-      /* Route to K144's ext_pcm "ingest" RPC — our binary decodes the
-       * ADPCM and publishes raw PCM to /tmp/llm/pcm.cap.socket, which
-       * the K144 ASR (configured with input=["sys.pcm"]) consumes via
-       * its standard subscriber.  Object tag tells ext_pcm to ADPCM-
-       * decode before publishing. */
-      const char *target = "ext_pcm";
+      /* Direct inference to asr.NNNN.  K144 main_asr (custom build)
+       * decodes ADPCM in task_user_data, feeds raw PCM to sherpa-ncnn. */
+      const char *target = voice_wakeword_asr_id();
+      if (target == NULL || target[0] == '\0') continue;
       m5_stackflow_request_t req = {
           .request_id = rid,
           .work_id = target,
-          .action = "ingest",
+          .action = "inference",
           .object = "audio.pcm.adpcm.base64",
           .data_string = b64_buf,
       };
