@@ -183,8 +183,12 @@ static void wakeword_event_handler(voice_wakeword_event_t event, const char *tex
    switch (event) {
       case VOICE_WAKEWORD_EVENT_WAKE: {
          /* TT #131-opt2: audible wake chime — confirms KWS fired before
-          * we start listening for the user's question. */
+          * we start listening for the user's question.  Hold briefly
+          * (cue is 80 ms + codec amp ramp) so the chime actually plays
+          * before voice_start_listening flips the codec to RX and
+          * masks the TX output. */
          ui_audio_cue_play(UI_CUE_INCOMING_HIGH);
+         vTaskDelay(pdMS_TO_TICKS(180));
          /* Trigger the full voice turn on the LVGL thread (mic + WS
           * dispatch both expect to run on the main task). */
          tab5_lv_async_call(wakeword_trigger_voice_turn, NULL);
