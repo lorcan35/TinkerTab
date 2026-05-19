@@ -222,13 +222,14 @@ static void ext_pcm_task(void *arg) {
        * match on ADPCM-degraded audio in live tests despite the round-trip
        * decoding correctly.  At 16 kHz mono int16 → base64 = ~44 KB/s,
        * comfortably under UART 1.5 Mbps (187 KB/s effective). */
-      /* TT #131-opt2: 24× digital gain — 16× gave peaks ~1600 on
-       * normal-volume speech; KWS wants 3000+.  Bump to 24× with
-       * saturation. */
+      /* TT #131-opt2: 16× digital gain — Tab5 ES7210 mic level at default
+       * codec PGA gives raw RMS ~65 on speech, way below the ~3000-4000
+       * the gigaspeech KWS model was tuned against.  6× wasn't enough.
+       * Boost in place with int16 saturation. */
       {
          int16_t *p = (int16_t *)batch_buf;
          for (int k = 0; k < INGEST_RAW_SAMPLES; k++) {
-            int32_t v = (int32_t)p[k] * 24;
+            int32_t v = (int32_t)p[k] * 16;
             if (v > 32767) v = 32767;
             else if (v < -32768) v = -32768;
             p[k] = (int16_t)v;
