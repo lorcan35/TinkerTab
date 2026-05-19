@@ -35,6 +35,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ima_adpcm.h"
 #include "mbedtls/base64.h"
 #include "m5_stackflow.h"
 #include "uart_port_c.h"
@@ -51,27 +52,26 @@
 #define WS_CHUNK_SAMPLES (TAB5_VOICE_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define WS_CHUNK_BYTES (WS_CHUNK_SAMPLES * sizeof(int16_t))
 
-/* Batch N mic chunks per ingest RPC.  K144's UART JSON parser is
- * single-threaded; flooding it at 50 RPCs/sec (one per 20 ms chunk)
- * caused frame drops + remote_call queue blow-up.  Batching 5 chunks =
- * 100 ms of audio per RPC = 10 RPCs/sec is comfortable for both sides. */
-/* TT #131 — keep total JSON envelope ≤ 1024 B so each ingest frame fits
- * in a single K144 linux_uart_read() chunk.  Larger frames span K144's
- * 1024-byte read buffer, and any single-byte UART jitter (even without
- * a frame error) corrupts the JSON.  K144's base64_decode then off-by-
- * ones into `basic_string::erase()` → std::out_of_range → asr daemon
- * crash + systemd respawn.  Live-captured 2026-05-19.
+/* TT #131 — IMA ADPCM 4:1 compression to fit K144 daemon's ~13 KB/s
+ * ingestion ceiling.  Raw 16k mono int16 = 32 KB/s → ADPCM 8 KB/s.
  *
- * 1 chunk = 20 ms × 640 B raw → 856 B base64 → ~920 B JSON envelope.
- * Send rate: 50 fps × 920 B = 46 KB/s.  Comfortably below the 13 KB/s
- * actual K144-daemon ingest ceiling we hit at 1.5 Mbps wire, but the
- * extra headroom lets the wire eat brief stalls from wakeword's recv
- * loop.  Actual K144 throughput will throttle Tab5 via uart TX-ring
- * backpressure once that 8 KB ring fills. */
-#define INGEST_BATCH_CHUNKS 1
+ * Batch 5×20ms = 100 ms of audio per ingest RPC = 10 RPCs/sec.
+ *   1600 samples × 2 B raw         → 3200 B PCM
+ *   ima_adpcm_encode               → 4 + 1600/2 = 804 B ADPCM
+ *   base64 (4×ceil(N/3))           → 1072 B
+ *   JSON envelope                  → ~1200 B per frame
+ *   send rate: 10 fps × 1200 B     → 12 KB/s ✓ fits K144 budget
+ *
+ * NB: JSON > 1024 B spans K144's linux_uart_read() boundary, but
+ * select_json_str handles partial reads correctly (brace-counting
+ * accumulator).  Earlier crash mode was inside K144's asr decode,
+ * not the parser; routing through ext_pcm (our binary) sidesteps it. */
+#define INGEST_BATCH_CHUNKS 5
 #define INGEST_RAW_BYTES (WS_CHUNK_BYTES * INGEST_BATCH_CHUNKS)
-#define INGEST_B64_CAP (((INGEST_RAW_BYTES + 2) / 3) * 4 + 4)
-#define INGEST_TX_CAP (INGEST_B64_CAP + 128)
+#define INGEST_RAW_SAMPLES (INGEST_RAW_BYTES / sizeof(int16_t))
+#define INGEST_ADPCM_CAP (4 + (INGEST_RAW_SAMPLES + 1) / 2)
+#define INGEST_B64_CAP (((INGEST_ADPCM_CAP + 2) / 3) * 4 + 4)
+#define INGEST_TX_CAP (INGEST_B64_CAP + 256)
 
 #define EXT_PCM_TASK_STACK 8192
 /* PRIO 5 = one above voice_wakeword (4).  When wakeword's recv loop
@@ -85,6 +85,7 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
 static TaskHandle_t s_task = NULL;
 static volatile bool s_armed = false;
 static volatile bool s_baud_negotiated = false;
+static volatile bool s_handshake_done = false;
 static volatile int s_voice_state = 0;
 static uint32_t s_frame_seq = 0;
 /* Diagnostic state — updated in pump loop, read by stats accessor. */
@@ -143,13 +144,41 @@ static void ext_pcm_task(void *arg) {
          continue;
       }
 
-      /* No handshake needed — asr was set up with input=["asr"] so it
-       * subscribes to its own inference bus.  We just send inference
-       * RPCs to the wakeword's asr work_id. */
-      const char *asr_id = voice_wakeword_asr_id();
-      if (asr_id == NULL || asr_id[0] == '\0') {
-         vTaskDelay(pdMS_TO_TICKS(500));
-         continue;
+      /* ASR was set up with input=["sys.pcm"], so it subscribes to
+       * /tmp/llm/pcm.cap.socket (audio's PUB URL).  Run the handshake
+       * once to flip URL ownership from audio → ext_pcm:
+       *   1. audio.cap_stop_all   — release audio's bind
+       *   2. ext_pcm.rebind       — ext_pcm reclaims URL; ASR's SUB
+       *                              auto-reconnects (ZMQ IPC)
+       * From then on, every ingest RPC we send to ext_pcm decodes
+       * ADPCM and publishes raw PCM on the URL ASR is listening to. */
+      if (!s_handshake_done) {
+         m5_stackflow_request_t req_stop = {
+            .request_id = "ep-cap-stop",
+            .work_id = "audio",
+            .action = "cap_stop_all",
+         };
+         char hbuf[256];
+         int hlen = m5_stackflow_build_request(&req_stop, hbuf, sizeof(hbuf));
+         if (hlen > 0 && tab5_port_c_lock(2000) == ESP_OK) {
+            tab5_port_c_send(hbuf, (size_t)hlen);
+            tab5_port_c_unlock();
+            vTaskDelay(pdMS_TO_TICKS(150));
+         }
+         m5_stackflow_request_t req_rebind = {
+            .request_id = "ep-rebind",
+            .work_id = "ext_pcm",
+            .action = "rebind",
+         };
+         hlen = m5_stackflow_build_request(&req_rebind, hbuf, sizeof(hbuf));
+         if (hlen > 0 && tab5_port_c_lock(2000) == ESP_OK) {
+            tab5_port_c_send(hbuf, (size_t)hlen);
+            tab5_port_c_unlock();
+            vTaskDelay(pdMS_TO_TICKS(150));
+         }
+         s_handshake_done = true;
+         tab5_debug_obs_event("ext_pcm_stream", "handshake_done");
+         ESP_LOGI(TAG, "handshake fired — ext_pcm owns /tmp/llm/pcm.cap.socket");
       }
 
       /* TT #131 — first-time-armed: negotiate UART up to 1.5 Mbps.
@@ -209,9 +238,18 @@ static void ext_pcm_task(void *arg) {
       if (batch_chunks < INGEST_BATCH_CHUNKS) continue;
       batch_chunks = 0;
 
+      /* IMA ADPCM 4:1 compression — reuse b64_buf temporarily as the
+       * ADPCM scratch since base64 encoder consumes it next. */
+      uint8_t adpcm_scratch[INGEST_ADPCM_CAP + 8];
+      size_t adpcm_len = ima_adpcm_encode((const int16_t *)batch_buf, INGEST_RAW_SAMPLES,
+                                          adpcm_scratch, sizeof(adpcm_scratch));
+      if (adpcm_len == 0) {
+         ESP_LOGW(TAG, "ADPCM encode failed");
+         continue;
+      }
       size_t b64_len = 0;
       int b_err = mbedtls_base64_encode((unsigned char *)b64_buf, INGEST_B64_CAP, &b64_len,
-                                        (const unsigned char *)batch_buf, INGEST_RAW_BYTES);
+                                        adpcm_scratch, adpcm_len);
       if (b_err != 0 || b64_len == 0) {
          ESP_LOGW(TAG, "base64 encode failed: %d", b_err);
          continue;
@@ -220,14 +258,17 @@ static void ext_pcm_task(void *arg) {
 
       char rid[24];
       snprintf(rid, sizeof(rid), "ep%lu", (unsigned long)(++s_frame_seq));
-      /* Re-read asr_id in case wakeword was re-armed; harmless if stale. */
-      const char *target = voice_wakeword_asr_id();
-      if (target == NULL || target[0] == '\0') continue;
+      /* Route to K144's ext_pcm "ingest" RPC — our binary decodes the
+       * ADPCM and publishes raw PCM to /tmp/llm/pcm.cap.socket, which
+       * the K144 ASR (configured with input=["sys.pcm"]) consumes via
+       * its standard subscriber.  Object tag tells ext_pcm to ADPCM-
+       * decode before publishing. */
+      const char *target = "ext_pcm";
       m5_stackflow_request_t req = {
           .request_id = rid,
-          .work_id = target, /* asr.NNNN */
-          .action = "inference",
-          .object = "audio.pcm.base64",
+          .work_id = target,
+          .action = "ingest",
+          .object = "audio.pcm.adpcm.base64",
           .data_string = b64_buf,
       };
       int tx_len = m5_stackflow_build_request(&req, tx_buf, INGEST_TX_CAP);
@@ -284,6 +325,7 @@ esp_err_t voice_ext_pcm_stream_init(void) {
 void voice_ext_pcm_stream_arm(void) {
    if (s_armed) return;
    s_armed = true;
+   s_handshake_done = false; /* fresh handshake on next arm */
    tab5_debug_obs_event("ext_pcm_stream", "arm");
    ESP_LOGI(TAG, "armed");
 }

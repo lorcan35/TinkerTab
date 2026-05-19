@@ -5,7 +5,7 @@ with open(env['PROJECT_TOOL_S']) as f:
     exec(f.read())
 
 # TT #131 — ext_pcm StackFlow unit (host PCM injection for K144 ASR).
-SRCS = [AFile('src/main.cpp')]
+SRCS = [AFile('src/main.cpp'), AFile('src/ima_adpcm.c')]
 INCLUDE = [ADir('.')]
 PRIVATE_INCLUDE = []
 REQUIREMENTS = ['pthread', 'utilities', 'eventpp', 'StackFlow', 'single_header_libs']

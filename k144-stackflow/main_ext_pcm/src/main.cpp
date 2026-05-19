@@ -35,6 +35,9 @@
  *    c. sends an ACK so callers can resolve the live work_id_num
  */
 #include "StackFlow.h"
+extern "C" {
+#include "ima_adpcm.h"
+}
 #include <signal.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -246,29 +249,54 @@ public:
     // pzmq_data.  We parse the data field, base64-decode, publish.
     std::string push_action(pzmq *, const std::shared_ptr<pzmq_data> &raw) {
         if (!pub_ctx_) return std::string("no_pub");
-        // remote_call passes (com_url, full_json) as the two pzmq_data params.
         std::string payload = raw->get_param(1);
         if (payload.empty()) payload = raw->string();
-        std::string b64;
+        std::string b64, object_tag;
         try {
             auto j = nlohmann::json::parse(payload);
             if (j.contains("data") && j["data"].is_string()) {
                 b64 = j["data"].get<std::string>();
             }
+            if (j.contains("object") && j["object"].is_string()) {
+                object_tag = j["object"].get<std::string>();
+            }
         } catch (...) {}
         if (b64.empty()) {
-            std::cerr << "ext_pcm: ingest no_data (payload len=" << payload.size() << ")" << std::endl;
             return std::string("no_data");
         }
-        std::string pcm;
-        if (decode_base64(b64, pcm) <= 0 || pcm.empty()) {
+        std::string decoded;
+        if (decode_base64(b64, decoded) <= 0 || decoded.empty()) {
             std::cerr << "ext_pcm: ingest decode_err (b64 len=" << b64.size() << ")" << std::endl;
             return std::string("decode_err");
         }
+
+        /* TT #131 — if object tag contains "adpcm", decode IMA ADPCM to
+         * raw int16 PCM before publishing.  This lets Tab5 send at 8 KB/s
+         * instead of 32 KB/s, fitting K144's daemon ingest budget. */
+        std::string pcm;
+        if (object_tag.find("adpcm") != std::string::npos) {
+            /* Worst case: every byte = 2 nibbles = 2 samples, plus the
+             * 1-sample header.  Cap at 16k samples (1 sec) to bound. */
+            size_t max_samples = decoded.size() * 2 + 1;
+            if (max_samples > 16000) max_samples = 16000;
+            std::vector<int16_t> samples(max_samples);
+            size_t n = ima_adpcm_decode((const uint8_t *)decoded.data(), decoded.size(),
+                                        samples.data(), samples.size());
+            if (n == 0) {
+                std::cerr << "ext_pcm: adpcm decode failed (in=" << decoded.size() << ")" << std::endl;
+                return std::string("adpcm_err");
+            }
+            pcm.assign((const char *)samples.data(), n * sizeof(int16_t));
+        } else {
+            pcm = std::move(decoded);
+        }
+
         pub_ctx_->send_data(pcm.data(), (int)pcm.size());
         if (++frames_pumped_uart_ % 100 == 0) {
             std::cerr << "ext_pcm uart: pumped " << frames_pumped_uart_
-                      << " frames (" << pcm.size() << "B last)" << std::endl;
+                      << " frames (" << pcm.size() << "B last, "
+                      << (object_tag.find("adpcm") != std::string::npos ? "adpcm" : "pcm")
+                      << ")" << std::endl;
         }
         frames_pumped_++;
         return std::string("ok");

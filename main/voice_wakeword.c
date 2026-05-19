@@ -444,16 +444,13 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    ESP_LOGI(TAG, "starting K144 always-on ASR: wake=\"%s\" end=\"%s\"", s_wake_phrase, s_end_phrase);
    tab5_debug_obs_event("wakeword.start", s_wake_phrase);
 
-   /* TT #131 — when wake_src=ext_pcm, use the Tab5-mic variant of asr.setup
-    * (input=["asr"], no audio unit).  Tab5 ext_pcm_stream then pushes
-    * mic frames as inference RPCs to the returned asr work_id.
-    * Otherwise: original path (input=["sys.pcm"], audio + onboard mic). */
-   esp_err_t err;
-   if (tab5_settings_wake_src_is("ext_pcm")) {
-      err = voice_m5_llm_wakeword_setup_tab5_mic(&s_handle, &s_stop_flag);
-   } else {
-      err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
-   }
+   /* Original path for BOTH k144 + ext_pcm: input=["sys.pcm"], audio.setup
+    * binds /tmp/llm/pcm.cap.socket, ASR subscribes there.  For
+    * wake_src=ext_pcm the voice_ext_pcm_stream pump then issues
+    * audio.cap_stop_all + ext_pcm.rebind to flip the URL ownership to
+    * our ext_pcm binary, which decodes inbound ADPCM and re-publishes
+    * raw PCM on the same URL.  ASR's SUB stays connected. */
+   esp_err_t err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
    if (err != ESP_OK) {
       ESP_LOGE(TAG, "ASR chain setup failed: %s", esp_err_to_name(err));
       char detail[48];
