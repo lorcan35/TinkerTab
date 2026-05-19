@@ -147,24 +147,13 @@ static void ext_pcm_task(void *arg) {
        * K144 /proc/tty/driver/serial showed only 2.6 KB/s incoming
        * vs Tab5's 44 KB/s send rate.  1.5 Mbps = 150 KB/s, ample
        * headroom. */
+      /* Baud negotiation is now done up-front in the picker handler
+       * BEFORE wakeword arms.  Pump just observes the result. */
       if (!s_baud_negotiated) {
-         /* Suppress voice_onboard's auto-retry FIRST.  If we negotiate
-          * baud while it's enabled, a stray sys.hwinfo failure during
-          * the verify-window can cascade into sys.reset → K144 reverts
-          * to 115200 → we're stranded at 1.5 M. */
-         voice_onboard_suppress_auto_retry(true);
-         ESP_LOGI(TAG, "negotiating UART up to 1.5 Mbps for sustained PCM throughput");
-         esp_err_t be = voice_m5_llm_set_baud(1500000);
-         if (be == ESP_OK) {
-            s_baud_negotiated = true;
-            tab5_debug_obs_event("ext_pcm_stream", "baud_1500000");
-            ESP_LOGI(TAG, "UART now at 1.5 Mbps (auto-retry suppressed)");
-         } else {
-            ESP_LOGW(TAG, "baud negotiation failed (%s) — back-off + retry", esp_err_to_name(be));
-            /* Restore auto-retry so K144 can recover from real failures. */
-            voice_onboard_suppress_auto_retry(false);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            continue;
+         s_baud_negotiated = (tab5_port_c_uart_get_baud() == 1500000);
+         if (s_baud_negotiated) {
+            ESP_LOGI(TAG, "pump observes UART at 1.5 Mbps");
+            tab5_debug_obs_event("ext_pcm_stream", "baud_observed_1500000");
          }
       }
 

@@ -206,9 +206,23 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
       voice_wake_stream_arm();
    } else if (strcmp(src, "ext_pcm") == 0) {
       voice_wake_stream_disarm();
-      /* Arm voice_wakeword asynchronously so its asr.setup runs on the
-       * worker.  The ext_pcm pump is gated on voice_wakeword_is_active()
-       * + K144 READY so it won't fight the arm for UART. */
+      /* Reset Tab5 UART to 115200 baseline (K144 may have rebooted to
+       * default underneath us) and bump BOTH sides to 1.5 Mbps BEFORE
+       * arming wakeword.  Doing the negotiation up-front (not from
+       * inside the pump task) avoids lock contention with wakeword's
+       * recv loop. */
+      extern esp_err_t tab5_port_c_uart_set_baud(uint32_t baud);
+      extern void voice_onboard_suppress_auto_retry(bool);
+      extern esp_err_t voice_m5_llm_set_baud(uint32_t);
+      tab5_port_c_uart_set_baud(115200);
+      voice_onboard_suppress_auto_retry(true);
+      esp_err_t be = voice_m5_llm_set_baud(1500000);
+      if (be != ESP_OK) {
+         ESP_LOGW(TAG, "early baud bump failed (%s) — will retry from pump", esp_err_to_name(be));
+         voice_onboard_suppress_auto_retry(false);
+      } else {
+         ESP_LOGI(TAG, "UART pre-bumped to 1.5 Mbps before wakeword arm");
+      }
       voice_onboard_arm_wakeword_async();
       voice_ext_pcm_stream_arm();
    } else { /* off */
