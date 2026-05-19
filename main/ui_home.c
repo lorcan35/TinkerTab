@@ -1239,14 +1239,13 @@ void ui_home_update_status(void)
 
     /* TT #584 — refresh the TinkerON armed chip on every tick.  Green
      * dot + "TINKERON" when armed; amber dot + "TINKERON OFF" when
-     * not.  Hidden when K144 is currently UNAVAILABLE — the chip
-     * would lie about the listener's state otherwise. */
+     * not.  TT #131-opt2: KWS-via-ext_pcm doesn't need K144 LLM warmup,
+     * so don't hide on failover UNAVAILABLE if wakeword is actually
+     * armed — the chip is truthful as long as wake fires. */
     if (s_tinkeron_dot && s_tinkeron_label) {
         bool armed = voice_wakeword_is_active();
-        /* M5_FAIL_UNAVAILABLE = 3 (enum private to voice_onboard.c).
-         * Hide the chip when K144 is permanently unavailable so we
-         * don't lie about the listener's state. */
-        if (voice_onboard_failover_state() == 3) {
+        bool llm_unavail = (voice_onboard_failover_state() == 3);
+        if (llm_unavail && !armed) {
             lv_obj_add_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
         } else {
