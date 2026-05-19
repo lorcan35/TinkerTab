@@ -73,6 +73,10 @@ static volatile bool s_m5_failover_engaged_during_down = false; /* triggers "Dra
 static esp_timer_handle_t s_auto_retry_timer = NULL;
 static int s_auto_retry_count = 0;
 static volatile bool s_auto_retry_exhausted = false;
+/* TT #131 — when ext_pcm is running at high baud, the auto-retry
+ * sys.reset path would wipe K144's baud setting.  Suppress while the
+ * pump owns the channel. */
+static volatile bool s_auto_retry_suppressed = false;
 
 /* ---------------------------------------------------------------------- */
 /*  Chain state                                                           */
@@ -239,6 +243,13 @@ static void k144_unavailable_banner_async(void *arg) {
  * this so it runs M5_AUTO_RETRY_DELAY_US later. */
 static void auto_retry_timer_cb(void *arg) {
    (void)arg;
+   /* TT #131 — ext_pcm pump suppresses auto-retry while it owns the
+    * UART channel at non-default baud.  Skip silently; the pump itself
+    * acts as the liveness probe. */
+   if (s_auto_retry_suppressed) {
+      ESP_LOGD(TAG, "K144 auto-retry suppressed (ext_pcm owns channel)");
+      return;
+   }
    /* Recheck state — manual reset_failover via UI/debug may have
     * already recovered us; if so, skip the auto-retry. */
    if (s_m5_failover == M5_FAIL_READY || s_m5_failover == M5_FAIL_PROBING) {
@@ -256,6 +267,14 @@ static void auto_retry_timer_cb(void *arg) {
 }
 
 static void mark_k144_unavailable(const char *reason) {
+   /* TT #131 — while ext_pcm owns the UART at high baud, voice_onboard's
+    * health checks (sys.hwinfo refresh, etc.) will fail because they're
+    * not aware of the negotiated baud.  Suppress the "unavailable"
+    * cascade so it doesn't trigger sys.reset which wipes K144's baud. */
+   if (s_auto_retry_suppressed) {
+      ESP_LOGD(TAG, "K144 mark_unavailable suppressed (ext_pcm armed): %s", reason);
+      return;
+   }
    s_m5_failover = M5_FAIL_UNAVAILABLE;
    tab5_debug_obs_event("m5.warmup", "unavailable");
    tab5_debug_obs_event("error.k144", reason);
@@ -919,6 +938,20 @@ int64_t voice_onboard_chain_uptime_ms(void) {
  * No-op if K144 is currently UNAVAILABLE — caller should toast a
  * hint if it cares.  Honours the "release LLM slot before ASR"
  * gate from the warmup path. */
+void voice_onboard_suppress_auto_retry(bool suppress) {
+   s_auto_retry_suppressed = suppress;
+   if (suppress) {
+      ESP_LOGI(TAG, "K144 auto-retry suppressed (ext_pcm armed)");
+      tab5_debug_obs_event("m5.reset", "suppressed");
+      /* Force state to READY while suppressed so other consumers that
+       * gate on failover_state==2 don't refuse to proceed. */
+      s_m5_failover = M5_FAIL_READY;
+   } else {
+      ESP_LOGI(TAG, "K144 auto-retry re-enabled");
+      tab5_debug_obs_event("m5.reset", "unsuppressed");
+   }
+}
+
 esp_err_t voice_onboard_arm_wakeword(void) {
    if (s_m5_failover == M5_FAIL_UNAVAILABLE) return ESP_ERR_INVALID_STATE;
    voice_m5_llm_release();

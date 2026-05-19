@@ -148,14 +148,21 @@ static void ext_pcm_task(void *arg) {
        * vs Tab5's 44 KB/s send rate.  1.5 Mbps = 150 KB/s, ample
        * headroom. */
       if (!s_baud_negotiated) {
+         /* Suppress voice_onboard's auto-retry FIRST.  If we negotiate
+          * baud while it's enabled, a stray sys.hwinfo failure during
+          * the verify-window can cascade into sys.reset → K144 reverts
+          * to 115200 → we're stranded at 1.5 M. */
+         voice_onboard_suppress_auto_retry(true);
          ESP_LOGI(TAG, "negotiating UART up to 1.5 Mbps for sustained PCM throughput");
          esp_err_t be = voice_m5_llm_set_baud(1500000);
          if (be == ESP_OK) {
             s_baud_negotiated = true;
             tab5_debug_obs_event("ext_pcm_stream", "baud_1500000");
-            ESP_LOGI(TAG, "UART now at 1.5 Mbps");
+            ESP_LOGI(TAG, "UART now at 1.5 Mbps (auto-retry suppressed)");
          } else {
             ESP_LOGW(TAG, "baud negotiation failed (%s) — back-off + retry", esp_err_to_name(be));
+            /* Restore auto-retry so K144 can recover from real failures. */
+            voice_onboard_suppress_auto_retry(false);
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
          }
@@ -284,11 +291,13 @@ void voice_ext_pcm_stream_disarm(void) {
    s_armed = false;
    /* Drop K144 back to 115200 on disarm so other voice_m5_llm callers
     * (vmode=4 chain, sys.reset) see the canonical baud.  Best-effort —
-    * failures just log. */
+    * failures just log.  Release the auto-retry suppression AFTER the
+    * baud is back to 115200 so future health checks work normally. */
    if (s_baud_negotiated) {
       (void)voice_m5_llm_set_baud(115200);
       s_baud_negotiated = false;
    }
+   voice_onboard_suppress_auto_retry(false);
    tab5_debug_obs_event("ext_pcm_stream", "disarm");
    ESP_LOGI(TAG, "disarmed");
 }

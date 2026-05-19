@@ -120,6 +120,16 @@ int64_t voice_onboard_chain_uptime_ms(void);
  *  hint to user). */
 esp_err_t voice_onboard_arm_wakeword(void);
 
+/** TT #131 — suppress the K144 auto-retry + warmup-failure machinery.
+ *  voice_ext_pcm_stream calls this when armed at high UART baud, because:
+ *    - voice_onboard's auto-retry calls sys.reset, which restarts K144's
+ *      llm-sys and wipes the negotiated 1.5 Mbps baud setting back to
+ *      115200.  Tab5 stays at 1.5M, UART frames corrupt, all data dies.
+ *    - While ext_pcm is pumping, the pump itself is the liveness probe;
+ *      we don't need redundant hwinfo/llm.setup health checks.
+ *  Idempotent.  Released on disarm. */
+void voice_onboard_suppress_auto_retry(bool suppress);
+
 /** TT #131 — async variant safe to call from HTTP / LVGL threads.
  *  Queues a worker job that:
  *    - if K144 is READY: calls voice_onboard_arm_wakeword() inline
