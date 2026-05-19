@@ -194,19 +194,21 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
    extern void voice_ext_pcm_stream_arm(void);
    extern esp_err_t voice_onboard_arm_wakeword(void);
 
+   extern esp_err_t voice_onboard_arm_wakeword_async(void);
    if (strcmp(src, "k144") == 0) {
       voice_wake_stream_disarm();
       voice_ext_pcm_stream_disarm();
-      voice_onboard_arm_wakeword();
+      voice_onboard_arm_wakeword_async();
    } else if (strcmp(src, "dragon") == 0) {
       voice_wakeword_stop();
       voice_ext_pcm_stream_disarm();
       voice_wake_stream_arm();
    } else if (strcmp(src, "ext_pcm") == 0) {
       voice_wake_stream_disarm();
-      /* Arm voice_wakeword FIRST so its asr.setup runs (which lazily binds
-       * audio's PUB).  Then ext_pcm steals the bind during its handshake. */
-      voice_onboard_arm_wakeword();
+      /* Arm voice_wakeword asynchronously so its asr.setup runs on the
+       * worker.  The ext_pcm pump is gated on voice_wakeword_is_active()
+       * + K144 READY so it won't fight the arm for UART. */
+      voice_onboard_arm_wakeword_async();
       voice_ext_pcm_stream_arm();
    } else { /* off */
       voice_wakeword_stop();

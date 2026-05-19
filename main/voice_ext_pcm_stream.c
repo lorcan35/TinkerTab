@@ -80,7 +80,10 @@ static bool quiescent_state(int st) {
  * frames.  Used only for the bring-up handshake — NOT for per-frame
  * ingest (which fire-and-forgets). */
 static esp_err_t handshake_send_recv(const m5_stackflow_request_t *req, uint32_t timeout_ms) {
-   if (tab5_port_c_lock(2000) != ESP_OK) {
+   /* 6 s lock acquire — voice_wakeword's run loop also takes the lock
+    * 10× per second.  Same-priority + round-robin can starve us briefly.
+    * 6 s is well over the wakeword inner-loop budget. */
+   if (tab5_port_c_lock(6000) != ESP_OK) {
       ESP_LOGW(TAG, "port-c lock timeout in handshake");
       return ESP_ERR_TIMEOUT;
    }

@@ -120,6 +120,16 @@ int64_t voice_onboard_chain_uptime_ms(void);
  *  hint to user). */
 esp_err_t voice_onboard_arm_wakeword(void);
 
+/** TT #131 — async variant safe to call from HTTP / LVGL threads.
+ *  Queues a worker job that:
+ *    - if K144 is READY: calls voice_onboard_arm_wakeword() inline
+ *    - if K144 is UNAVAILABLE: triggers reset_failover (whose post-warmup
+ *      hook re-arms wakeword automatically)
+ *    - if K144 is PROBING: re-queues itself after a short delay until
+ *      either READY or UNAVAILABLE
+ *  Idempotent + non-blocking from the caller's perspective. */
+esp_err_t voice_onboard_arm_wakeword_async(void);
+
 #ifdef __cplusplus
 }
 #endif

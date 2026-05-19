@@ -921,3 +921,42 @@ esp_err_t voice_onboard_arm_wakeword(void) {
    voice_m5_llm_release();
    return voice_onboard_arm_k144_wakeword_internal();
 }
+
+/* TT #131 — async wakeword arm with K144 state awareness.  Posted on the
+ * shared worker so HTTP / LVGL callers return immediately; the worker
+ * polls failover state and either arms directly, triggers a daemon reset
+ * (whose post-warmup hook also arms), or re-queues to wait out a probe. */
+static void arm_wakeword_async_job(void *arg) {
+   int attempts = (int)(intptr_t)arg;
+   if (voice_wakeword_is_active()) return; /* already armed */
+
+   int st = (int)s_m5_failover;
+   if (st == (int)M5_FAIL_READY) {
+      esp_err_t we = voice_onboard_arm_wakeword();
+      if (we == ESP_ERR_INVALID_RESPONSE) {
+         ESP_LOGW(TAG, "arm_wakeword_async: arm hit INVALID_RESPONSE — triggering reset");
+         (void)voice_onboard_reset_failover();
+      } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
+         ESP_LOGW(TAG, "arm_wakeword_async: arm err %s", esp_err_to_name(we));
+      }
+      return;
+   }
+   if (st == (int)M5_FAIL_UNAVAILABLE) {
+      ESP_LOGI(TAG, "arm_wakeword_async: K144 unavailable — triggering reset_failover");
+      (void)voice_onboard_reset_failover();
+      return;
+   }
+   /* UNKNOWN or PROBING — wait for the in-flight probe to land.  Cap at
+    * 30 retries × 500 ms = 15 s so we don't loop forever on a permanent
+    * UNKNOWN state. */
+   if (attempts >= 30) {
+      ESP_LOGW(TAG, "arm_wakeword_async: gave up after %d attempts (st=%d)", attempts, st);
+      return;
+   }
+   vTaskDelay(pdMS_TO_TICKS(500));
+   (void)tab5_worker_enqueue(arm_wakeword_async_job, (void *)(intptr_t)(attempts + 1), "arm_wake_retry");
+}
+
+esp_err_t voice_onboard_arm_wakeword_async(void) {
+   return tab5_worker_enqueue(arm_wakeword_async_job, (void *)(intptr_t)0, "arm_wake_async");
+}

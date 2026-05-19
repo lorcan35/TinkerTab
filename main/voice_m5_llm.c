@@ -1681,6 +1681,12 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
          if (cb != NULL) cb(delta_str, finished, user);
       }
       m5_stackflow_response_free(&resp);
+      /* TT #131 — explicit yield so equal-priority tasks (e.g. the
+       * voice_ext_pcm_stream handshake / pump) get a UART-lock window
+       * between our recv iterations.  Without this, when K144 streams
+       * ASR partials continuously the loop relocks the recursive mutex
+       * within microseconds and starves any same-prio waiters. */
+      vTaskDelay(1);
    }
 
    if (stop_flag != NULL && *stop_flag) return ESP_OK;
