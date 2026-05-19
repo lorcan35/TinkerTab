@@ -25,6 +25,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "voice.h"
 #include "voice_m5_llm.h"
@@ -466,7 +467,13 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
       return err;
    }
 
-   BaseType_t ok = xTaskCreate(wakeword_task, "wakeword", WAKEWORD_TASK_STACK, NULL, WAKEWORD_TASK_PRIO, &s_task);
+   /* TT #131 stability: PSRAM-back the 12 KB task stack via WithCaps.
+    * Internal SRAM is tight (~56 KB largest-free at boot); a 12 KB
+    * stack here on top of ext_pcm's 8 KB pushed the heap into
+    * heap_wd's "sram_exhausted" threshold under sustained operation. */
+   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(wakeword_task, "wakeword", WAKEWORD_TASK_STACK,
+                                                   NULL, WAKEWORD_TASK_PRIO, &s_task,
+                                                   tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
    if (ok != pdPASS) {
       ESP_LOGE(TAG, "wakeword task spawn failed");
       voice_m5_llm_wakeword_teardown(s_handle);

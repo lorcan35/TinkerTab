@@ -34,6 +34,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "ima_adpcm.h"
 #include "mbedtls/base64.h"
@@ -222,23 +223,18 @@ static void ext_pcm_task(void *arg) {
        * match on ADPCM-degraded audio in live tests despite the round-trip
        * decoding correctly.  At 16 kHz mono int16 → base64 = ~44 KB/s,
        * comfortably under UART 1.5 Mbps (187 KB/s effective). */
-      /* TT #131-opt2: 24× digital gain with SOFT-CLIP — earlier 24× with
-       * hard saturation killed detection (square-wave distortion).  Now
-       * linear gain up to ±20 000, then 3:1 compression above that.
-       * Preserves the waveform envelope so KWS features stay valid. */
+      /* TT #131-opt2: 16× digital gain — matches verified-firing setting
+       * from 6ca0f7b ("KWS now fires live on Tab5 mic").  Tab5 ES7210 mic
+       * level at default codec PGA gives raw RMS ~65 on speech, way below
+       * the ~3000-4000 the gigaspeech KWS model was tuned against.  Boost
+       * in place with int16 saturation. */
       {
          int16_t *p = (int16_t *)batch_buf;
-         const int32_t KNEE = 20000;
          for (int k = 0; k < INGEST_RAW_SAMPLES; k++) {
-            int32_t g = (int32_t)p[k] * 24;
-            if (g > KNEE) {
-               g = KNEE + (g - KNEE) / 3;
-               if (g > 32767) g = 32767;
-            } else if (g < -KNEE) {
-               g = -KNEE + (g + KNEE) / 3;
-               if (g < -32768) g = -32768;
-            }
-            p[k] = (int16_t)g;
+            int32_t v = (int32_t)p[k] * 16;
+            if (v > 32767) v = 32767;
+            else if (v < -32768) v = -32768;
+            p[k] = (int16_t)v;
          }
       }
       size_t b64_len = 0;
@@ -302,8 +298,14 @@ cleanup:
 
 esp_err_t voice_ext_pcm_stream_init(void) {
    if (s_task != NULL) return ESP_OK;
-   BaseType_t ok = xTaskCreatePinnedToCore(ext_pcm_task, "voice_ext_pcm", EXT_PCM_TASK_STACK, NULL,
-                                           EXT_PCM_TASK_PRIO, &s_task, EXT_PCM_TASK_CORE);
+   /* TT #131 stability: PSRAM-back the 8 KB task stack via WithCaps.
+    * Internal-SRAM boot headroom is ~56 KB largest-free; adding 8 KB +
+    * the 12 KB wakeword stack + cJSON allocs during kws.setup retries
+    * was pushing internal-SRAM largest-free below the 20 KB heap_wd
+    * exhaustion threshold within ~3 min → panic. */
+   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(ext_pcm_task, "voice_ext_pcm", EXT_PCM_TASK_STACK,
+                                                   NULL, EXT_PCM_TASK_PRIO, &s_task,
+                                                   EXT_PCM_TASK_CORE, MALLOC_CAP_SPIRAM);
    if (ok != pdPASS) {
       ESP_LOGE(TAG, "task spawn failed");
       s_task = NULL;

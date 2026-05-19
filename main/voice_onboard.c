@@ -22,13 +22,15 @@
 #include "freertos/task.h"
 #include "settings.h"            /* tab5_settings_get_mic_mute (Wave 7) */
 #include "task_worker.h"         /* tab5_worker_enqueue */
+#include "uart_port_c.h"         /* tab5_port_c_uart_get_baud — TT #131 baud bump check */
 #include "ui_audio_cues.h"       /* ui_audio_cue_play — wake chime (#131-opt2) */
 #include "ui_chat.h"             /* ui_chat_add_message */
 #include "ui_core.h"             /* tab5_ui_try_lock / tab5_ui_unlock */
 #include "ui_home.h"             /* ui_home_show_toast */
 #include "voice.h"               /* voice_set_state, VOICE_STATE_* */
 #include "voice_m5_llm.h"        /* probe / infer / chain_* */
-#include "voice_messages_sync.h" /* W3-C-c: Dragon canonical message store */
+#include "voice_ext_pcm_stream.h" /* TT #131: auto-arm pump on boot */
+#include "voice_messages_sync.h"  /* W3-C-c: Dragon canonical message store */
 #include "voice_wakeword.h"
 
 static const char *TAG = "voice_onboard";
@@ -387,6 +389,29 @@ static void onboard_warmup_job(void *arg) {
        * end-phrase="save note", 32 KB dictation buffer, 4-hour cap.
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
+
+      /* TT #131 2026-05-20: bump UART to 1.5 Mbps BEFORE kws.setup.
+       * Without this the chain comes up at 115200 baud where each ~4.4 KB
+       * inference frame takes ~305 ms to send, capping the pump at ~3 fps
+       * vs the design's 10 fps real-time rate.  Result was KWS getting
+       * choppy fragmentary audio — keyword phonemes split across dropped
+       * frames, "Hey Tinker" never matches.  Previously baud bump was
+       * gated behind a manual POST /tinkeron/wake_src=ext_pcm, which
+       * itself cycles the wakeword chain and re-issues kws.setup — and
+       * those repeated cycles wedge K144's llm_sys dispatch.  Auto-bump
+       * here gives us ONE clean kws.setup at the right baud, no cycling.
+       * On failure: stay at 115200 (kws still partially functional, just
+       * slow).  Skip if baud already set (idempotent). */
+      if (tab5_port_c_uart_get_baud() != 1500000) {
+         esp_err_t be = voice_m5_llm_set_baud(1500000);
+         if (be != ESP_OK) {
+            ESP_LOGW(TAG, "auto baud bump to 1.5 Mbps failed (%s) — staying at 115200",
+                     esp_err_to_name(be));
+         } else {
+            ESP_LOGI(TAG, "auto baud bump to 1.5 Mbps succeeded");
+         }
+      }
+
       esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
          /* TT #580: post-Tab5-reflash, K144's previous-session audio +
@@ -402,6 +427,17 @@ static void onboard_warmup_job(void *arg) {
          (void)voice_onboard_reset_failover();
       } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
+      } else if (we == ESP_OK) {
+         /* TT #131 2026-05-20: wakeword armed cleanly — arm the ext_pcm
+          * pump in the same boot sequence so Tab5 mic immediately flows
+          * to the K144 KWS unit.  Previously this required a manual
+          * POST /tinkeron/wake_src=ext_pcm — which itself re-cycled the
+          * wakeword chain (disarm + re-setup), and the cycling was
+          * wedging K144's llm_sys dispatch.  Auto-arm here keeps the
+          * setup-once invariant: kws.setup happens exactly once per
+          * boot, at 1.5 Mbps, with the pump pre-armed to feed it. */
+         voice_ext_pcm_stream_arm();
+         ESP_LOGI(TAG, "ext_pcm pump auto-armed (Tab5 mic → K144 KWS)");
       }
    } else {
       ESP_LOGW(TAG,

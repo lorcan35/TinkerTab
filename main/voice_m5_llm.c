@@ -75,8 +75,18 @@ static const char *TAG = "voice_m5_llm";
 #define M5_LLM_PROMPT_PREFIX "You are a helpful, concise assistant."
 
 /* Timeouts (ms) for the discrete protocol stages.  Total request budget
- * is the caller-supplied @p timeout_s. */
-#define M5_PING_TIMEOUT_MS 500
+ * is the caller-supplied @p timeout_s.
+ *
+ * TT #131 2026-05-20: bumped PING 500 → 3000.  K144 daemon under
+ * sustained load (load avg 3+ during KWS/ASR streaming) routinely
+ * exceeded 500 ms for sys.ping round-trips, causing onboard_warmup_job
+ * to falsely mark K144 unavailable and then the wakeword chain never
+ * starts → baud bump never happens → audio pump capped at 3 fps.
+ * Observed: K144 reports ttft 367 ms for actual LLM inference; sys.ping
+ * should be faster but goes through the same llm_sys dispatcher and
+ * inherits its scheduling latency.  3000 ms still fast-fails a wedged
+ * K144 (we have 60s auto-retry, so a 3-second probe-cost is fine). */
+#define M5_PING_TIMEOUT_MS 3000
 #define M5_SETUP_TIMEOUT_MS 5000
 
 /* RX scratch — sized for a single TTS response frame (base64 of ~10 sec
