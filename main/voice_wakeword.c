@@ -444,15 +444,16 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    ESP_LOGI(TAG, "starting K144 always-on ASR: wake=\"%s\" end=\"%s\"", s_wake_phrase, s_end_phrase);
    tab5_debug_obs_event("wakeword.start", s_wake_phrase);
 
-   /* TT #131 — for wake_src=ext_pcm use input=["asr"] (Tab5-mic variant).
-    * Custom K144 main_asr binary (TT #131 build) decodes ADPCM in
-    * task_user_data, so Tab5 pushes inference frames DIRECT to asr.NNNN
-    * with object="audio.pcm.adpcm.base64".  No audio.setup, no PUB
-    * binding, no ZMQ SUB dance — bypasses every reliability issue.
-    * For wake_src=k144: original path with K144's onboard mic. */
+   /* TT #131 — for wake_src=ext_pcm use input=["kws"] (Tab5-mic variant).
+    * Custom K144 main_kws binary (TT #131-opt2 build) decodes ADPCM in
+    * task_user_data and emits a single kws.bool on detection.  KWS is
+    * lighter + more deterministic than ASR-based phrase matching, which
+    * confabulated short transcripts on quiet speech.  Tab5 pushes the
+    * same ADPCM inference frames as before; only the target unit changes.
+    * For wake_src=k144: original ASR path with K144's onboard mic. */
    esp_err_t err;
    if (tab5_settings_wake_src_is("ext_pcm")) {
-      err = voice_m5_llm_wakeword_setup_tab5_mic(&s_handle, &s_stop_flag);
+      err = voice_m5_llm_kws_setup_tab5_mic(&s_handle, s_wake_phrase, &s_stop_flag);
    } else {
       err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
    }

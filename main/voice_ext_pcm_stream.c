@@ -70,7 +70,9 @@
 #define INGEST_RAW_BYTES (WS_CHUNK_BYTES * INGEST_BATCH_CHUNKS)
 #define INGEST_RAW_SAMPLES (INGEST_RAW_BYTES / sizeof(int16_t))
 #define INGEST_ADPCM_CAP (4 + (INGEST_RAW_SAMPLES + 1) / 2)
-#define INGEST_B64_CAP (((INGEST_ADPCM_CAP + 2) / 3) * 4 + 4)
+/* TT #131-opt2: sized for RAW PCM base64 (not ADPCM) — KWS needs the
+ * unquantized audio.  INGEST_RAW_BYTES base64 ≈ 4× ADPCM base64. */
+#define INGEST_B64_CAP (((INGEST_RAW_BYTES + 2) / 3) * 4 + 4)
 #define INGEST_TX_CAP (INGEST_B64_CAP + 256)
 
 #define EXT_PCM_TASK_STACK 8192
@@ -216,18 +218,27 @@ static void ext_pcm_task(void *arg) {
       if (batch_chunks < INGEST_BATCH_CHUNKS) continue;
       batch_chunks = 0;
 
-      /* IMA ADPCM 4:1 compression — reuse b64_buf temporarily as the
-       * ADPCM scratch since base64 encoder consumes it next. */
-      uint8_t adpcm_scratch[INGEST_ADPCM_CAP + 8];
-      size_t adpcm_len = ima_adpcm_encode((const int16_t *)batch_buf, INGEST_RAW_SAMPLES,
-                                          adpcm_scratch, sizeof(adpcm_scratch));
-      if (adpcm_len == 0) {
-         ESP_LOGW(TAG, "ADPCM encode failed");
-         continue;
+      /* TT #131-opt2: send RAW PCM (no ADPCM) — KWS spotter wouldn't
+       * match on ADPCM-degraded audio in live tests despite the round-trip
+       * decoding correctly.  At 16 kHz mono int16 → base64 = ~44 KB/s,
+       * comfortably under UART 1.5 Mbps (187 KB/s effective). */
+      /* TT #131-opt2: 6× digital gain — Tab5 ES7210 mic level is ~10× lower
+       * than K144's onboard mic which the gigaspeech KWS model was tuned
+       * against.  Boost in place with int16 saturation to bring features
+       * into the model's expected range. */
+      {
+         int16_t *p = (int16_t *)batch_buf;
+         for (int k = 0; k < INGEST_RAW_SAMPLES; k++) {
+            int32_t v = (int32_t)p[k] * 6;
+            if (v > 32767) v = 32767;
+            else if (v < -32768) v = -32768;
+            p[k] = (int16_t)v;
+         }
       }
       size_t b64_len = 0;
       int b_err = mbedtls_base64_encode((unsigned char *)b64_buf, INGEST_B64_CAP, &b64_len,
-                                        adpcm_scratch, adpcm_len);
+                                        (const uint8_t *)batch_buf,
+                                        (size_t)INGEST_RAW_SAMPLES * sizeof(int16_t));
       if (b_err != 0 || b64_len == 0) {
          ESP_LOGW(TAG, "base64 encode failed: %d", b_err);
          continue;
@@ -236,15 +247,13 @@ static void ext_pcm_task(void *arg) {
 
       char rid[24];
       snprintf(rid, sizeof(rid), "ep%lu", (unsigned long)(++s_frame_seq));
-      /* Direct inference to asr.NNNN.  K144 main_asr (custom build)
-       * decodes ADPCM in task_user_data, feeds raw PCM to sherpa-ncnn. */
       const char *target = voice_wakeword_asr_id();
       if (target == NULL || target[0] == '\0') continue;
       m5_stackflow_request_t req = {
           .request_id = rid,
           .work_id = target,
           .action = "inference",
-          .object = "audio.pcm.adpcm.base64",
+          .object = "audio.pcm.base64",
           .data_string = b64_buf,
       };
       int tx_len = m5_stackflow_build_request(&req, tx_buf, INGEST_TX_CAP);

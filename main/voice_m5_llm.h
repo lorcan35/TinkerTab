@@ -497,6 +497,18 @@ esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_
  *  target inference frames at it.  Returns NULL if handle is NULL. */
 const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handle);
 
+/** TT #131-opt2 — KWS variant of wakeword_setup_tab5_mic.  Bring up the
+ *  K144 sherpa-onnx keyword spotter (main_kws) with @p keyword as the
+ *  target phrase, input=["kws"] so Tab5 pushes ADPCM inference frames
+ *  directly.  K144's main_kws emits a single non-stream `kws.bool`
+ *  response on detection; the recv loop in voice_m5_llm_wakeword_run
+ *  synthesizes a delta of @p keyword + finish=true so existing wakeword
+ *  matchers fire unchanged.  Use this when wake_src=ext_pcm to bypass
+ *  ASR's confabulated transcripts. */
+esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle,
+                                          const char *keyword,
+                                          volatile bool *stop_flag);
+
 /**
  * @brief Drain asr.utf-8.stream frames, invoking cb on every partial.
  *

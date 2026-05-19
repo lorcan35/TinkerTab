@@ -27,6 +27,7 @@
 
 #include "voice_m5_llm.h"
 
+#include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -1558,7 +1559,9 @@ esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
 
 struct voice_m5_wakeword_handle {
    char audio_id[32];
-   char asr_id[32];
+   char asr_id[32];      /* doubles as kws work_id when is_kws=true */
+   bool is_kws;          /* TT #131-opt2: KWS detector instead of ASR */
+   char kws_phrase[64];  /* phrase to deliver on detection (KWS frames carry no text) */
 };
 
 esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag) {
@@ -1673,6 +1676,80 @@ const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handl
    return handle ? handle->asr_id : NULL;
 }
 
+/* TT #131-opt2 — KWS variant of wakeword_setup_tab5_mic.  Same Tab5-push
+ * wire (input=["kws"]) but the K144 unit is the sherpa-onnx keyword
+ * spotter instead of the streaming-zipformer ASR.  KWS is purpose-built
+ * for low-power always-on wake detection: fires a single bool on phrase
+ * hit, no transcripts, no false positives from background TV.  Custom
+ * keyword set at setup time via the kws[] array.  K144's main_kws
+ * binary is patched to decode ADPCM in task_user_data — mirror of the
+ * ASR patch. */
+esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle,
+                                          const char *keyword,
+                                          volatile bool *stop_flag) {
+   if (out_handle == NULL || keyword == NULL || keyword[0] == '\0') return ESP_ERR_INVALID_ARG;
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   M5_LOCK_OR_RETURN(60000);
+
+   voice_m5_wakeword_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+   h->audio_id[0] = '\0';
+   h->is_kws = true;
+   strncpy(h->kws_phrase, keyword, sizeof(h->kws_phrase) - 1);
+   h->kws_phrase[sizeof(h->kws_phrase) - 1] = '\0';
+
+   /* The gigaspeech tokens.txt is UPPERCASE ENGLISH only.  text2token.py
+    * does NOT case-normalize before BPE lookup, so lowercase "hey" /
+    * "tinker" fail with "Can't find token in token table, skipping".
+    * Uppercase the phrase before sending so BPE splits into valid tokens
+    * (e.g. "HEY TINKER" → "▁HE Y ▁T IN K ER"). */
+   char keyword_up[64];
+   {
+      size_t n = strlen(keyword);
+      if (n >= sizeof(keyword_up)) n = sizeof(keyword_up) - 1;
+      for (size_t i = 0; i < n; i++) keyword_up[i] = (char)toupper((unsigned char)keyword[i]);
+      keyword_up[n] = '\0';
+   }
+
+   cJSON *d = cJSON_CreateObject();
+   cJSON_AddStringToObject(d, "model", "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01");
+   cJSON_AddStringToObject(d, "response_format", "kws.bool");
+   cJSON *inp = cJSON_CreateArray();
+   /* input=["kws"] → main_kws.cpp line 887 falls into task_user_data path:
+    * llm_channel->subscriber_work_id("", task_user_data).  KWS subscribes
+    * to its own inference bus; Tab5 pushes ADPCM frames addressed to the
+    * returned kws.NNNN work_id. */
+   cJSON_AddItemToArray(inp, cJSON_CreateString("kws"));
+   cJSON_AddItemToObject(d, "input", inp);
+   cJSON *kws_arr = cJSON_CreateArray();
+   cJSON_AddItemToArray(kws_arr, cJSON_CreateString(keyword_up));
+   cJSON_AddItemToObject(d, "kws", kws_arr);
+   cJSON_AddBoolToObject(d, "enoutput", true);
+   cJSON_AddBoolToObject(d, "enwake_audio", false); /* no chime — Tab5 owns UI feedback */
+   /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
+    * models AND forks text2token.py to compile the keyword tokens.  Live
+    * measurement: 15-25 s on K144 v1.3 cold.  Use a 30 s budget. */
+   err = chain_setup_unit("kws", "kws.setup", d, h->asr_id, sizeof(h->asr_id),
+                          30000, stop_flag);
+   if (err != ESP_OK) {
+      heap_caps_free(h);
+      M5_UNLOCK();
+      return err;
+   }
+
+   M5_UNLOCK();
+   *out_handle = h;
+   ESP_LOGI(TAG, "KWS (Tab5-mic) up: kws=%s phrase=\"%s\"", h->asr_id, h->kws_phrase);
+   return ESP_OK;
+}
+
 esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
                                     volatile bool *stop_flag, uint32_t timeout_s) {
    if (handle == NULL) return ESP_ERR_INVALID_ARG;
@@ -1727,6 +1804,26 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
                resp.object ? resp.object : "(null)");
       if (resp.work_id == NULL || strcmp(resp.work_id, handle->asr_id) != 0) {
          m5_stackflow_response_free(&resp);
+         continue;
+      }
+      /* TT #131-opt2 — KWS path: K144 main_kws emits a single non-stream
+       * `{"object":"kws.bool", "data":true}` on phrase hit.  Synthesize a
+       * partial-callback delivering the configured kws_phrase + finish=true
+       * so the upstream phrase matcher fires identically to the ASR path. */
+      if (handle->is_kws && resp.object != NULL && strstr(resp.object, "kws") != NULL) {
+         bool fired = false;
+         if (cJSON_IsTrue(resp.data)) fired = true;
+         /* Some K144 builds wrap bool as a string "true" inside data; tolerate. */
+         if (!fired && cJSON_IsString(resp.data) && resp.data->valuestring &&
+             strcasecmp(resp.data->valuestring, "true") == 0) {
+            fired = true;
+         }
+         if (fired) {
+            ESP_LOGI(TAG, "kws fire: phrase=\"%s\" work_id=%s", handle->kws_phrase, handle->asr_id);
+            if (cb != NULL) cb(handle->kws_phrase, true, user);
+         }
+         m5_stackflow_response_free(&resp);
+         vTaskDelay(pdMS_TO_TICKS(5));
          continue;
       }
       /* asr.utf-8.stream frames carry {delta, index, finish}.  We deliver
