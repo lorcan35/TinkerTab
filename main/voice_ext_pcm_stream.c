@@ -38,6 +38,8 @@
 #include "mbedtls/base64.h"
 #include "m5_stackflow.h"
 #include "uart_port_c.h"
+#include "voice_onboard.h"
+#include "voice_wakeword.h"
 
 #define TAG "voice_ext_pcm_stream"
 
@@ -164,6 +166,20 @@ static void ext_pcm_task(void *arg) {
    while (1) {
       if (!s_armed || !quiescent_state(s_voice_state) || voice_mic_is_active()) {
          vTaskDelay(pdMS_TO_TICKS(100));
+         continue;
+      }
+
+      /* Critical readiness gates — DO NOT pump until both hold:
+       *
+       *   1. K144 daemon is past warm-up (failover_state==2 READY).
+       *      Pumping before warmup completes saturates the UART and
+       *      starves the warmup probe → infinite reset/retry loop.
+       *
+       *   2. voice_wakeword is armed.  Without it, ASR has no setup
+       *      arranged so audio's lazy _cap() never binds the PUB URL,
+       *      and our cap_stop_all + rebind have nothing to take over. */
+      if (voice_onboard_failover_state() != 2 || !voice_wakeword_is_active()) {
+         vTaskDelay(pdMS_TO_TICKS(500));
          continue;
       }
 
