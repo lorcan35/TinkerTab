@@ -203,8 +203,10 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
       voice_ext_pcm_stream_disarm();
       voice_wake_stream_arm();
    } else if (strcmp(src, "ext_pcm") == 0) {
-      voice_wakeword_stop();
       voice_wake_stream_disarm();
+      /* Arm voice_wakeword FIRST so its asr.setup runs (which lazily binds
+       * audio's PUB).  Then ext_pcm steals the bind during its handshake. */
+      voice_onboard_arm_wakeword();
       voice_ext_pcm_stream_arm();
    } else { /* off */
       voice_wakeword_stop();

@@ -538,6 +538,9 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
          if (tab5_settings_wake_src_is("dragon")) {
             voice_wake_stream_arm();
          } else if (tab5_settings_wake_src_is("ext_pcm")) {
+            /* voice_wakeword owns asr.setup — voice_onboard's warmup/
+             * arm-on-READY handler arms it normally because its gate now
+             * allows ext_pcm.  We only need to arm the PCM pump here. */
             voice_ext_pcm_stream_arm();
          }
       } else if (new_state == VOICE_STATE_IDLE && old != VOICE_STATE_IDLE) {

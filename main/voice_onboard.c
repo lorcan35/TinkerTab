@@ -99,13 +99,15 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
 static void wakeword_event_handler(voice_wakeword_event_t event, const char *text, void *user); /* TT #617 fwd-decl */
 
-/* TT #617 — Gate the K144 onboard wakeword on the wake_src NVS setting.
- * "k144" → arm sherpa-ncnn on K144's own mic (current default for
- * offline-capable wake).  Other values ("dragon", "off", future
- * "ext_pcm") skip arming and let the other path own wake. */
+/* TT #617 / #131 — Gate K144 onboard wakeword on the wake_src setting.
+ *   "k144"    — arm sherpa-ncnn on K144's own mic
+ *   "ext_pcm" — arm sherpa-ncnn but the audio source is Tab5's mic via
+ *               the ext_pcm ingest path; voice_wakeword still subscribes
+ *               to the same asr.utf-8.stream to parse transcripts.
+ *   "dragon"/"off" — skip; another path owns wake. */
 static esp_err_t voice_onboard_arm_k144_wakeword_internal(void) {
-   if (!tab5_settings_wake_src_is("k144")) {
-      ESP_LOGI(TAG, "wake_src != k144 — skipping K144 onboard wakeword arm");
+   if (!tab5_settings_wake_src_is("k144") && !tab5_settings_wake_src_is("ext_pcm")) {
+      ESP_LOGI(TAG, "wake_src != k144/ext_pcm — skipping K144 wakeword arm");
       tab5_debug_obs_event("wake_src", "skip_k144");
       return ESP_OK;
    }

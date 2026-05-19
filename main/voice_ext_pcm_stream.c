@@ -109,55 +109,33 @@ static esp_err_t handshake_send_recv(const m5_stackflow_request_t *req, uint32_t
    return ESP_OK;
 }
 
-/* The three-step handshake that hands /tmp/llm/pcm.cap.socket to ext_pcm
- * so our ingest frames flow through to llm_asr.  Idempotent — re-running
- * is safe and just produces fresh ack lines on the UART. */
+/* Two-step handshake that hands /tmp/llm/pcm.cap.socket from llm_audio to
+ * ext_pcm.  asr.setup is OWNED by voice_wakeword (which arms first when
+ * wake_src=ext_pcm) — it triggers audio's lazy _cap() to bind the URL.
+ * After that, ext_pcm steals the bind so OUR PCM flows to the live ASR
+ * subscriber.  Idempotent. */
 static esp_err_t do_handshake(void) {
-   /* 1. asr.setup with input=sys.pcm.  audio's lazy _cap() binds the URL
-    *    and steals our boot-time bind.  ASR subscribes. */
-   cJSON *asr_data = cJSON_CreateObject();
-   cJSON_AddStringToObject(asr_data, "model", "sherpa-ncnn-streaming-zipformer-20M-2023-02-17");
-   cJSON *inputs = cJSON_AddArrayToObject(asr_data, "input");
-   cJSON_AddItemToArray(inputs, cJSON_CreateString("sys.pcm"));
-   cJSON_AddStringToObject(asr_data, "response_format", "asr.utf-8.stream");
-   cJSON_AddBoolToObject(asr_data, "enoutput", true);
-
+   /* 1. audio.cap_stop_all — release audio's bind on the PUB URL.  ASR's
+    *    SUB stays connected and will reconnect to whoever next binds. */
    m5_stackflow_request_t req1 = {
-       .request_id = "ext-pcm-asr-setup",
-       .work_id = "asr",
-       .action = "setup",
-       .object = "asr.setup",
-       .data_json = asr_data,
-   };
-   esp_err_t e = handshake_send_recv(&req1, 15000);
-   cJSON_Delete(asr_data);
-   if (e != ESP_OK) {
-      ESP_LOGW(TAG, "asr.setup failed (%s)", esp_err_to_name(e));
-      return e;
-   }
-   ESP_LOGI(TAG, "asr.setup sent");
-
-   /* 2. audio.cap_stop_all — release audio's bind on the PUB URL. */
-   m5_stackflow_request_t req2 = {
        .request_id = "ext-pcm-cap-stop",
        .work_id = "audio",
        .action = "cap_stop_all",
    };
-   e = handshake_send_recv(&req2, 3000);
+   esp_err_t e = handshake_send_recv(&req1, 3000);
    if (e != ESP_OK) {
       ESP_LOGW(TAG, "audio.cap_stop_all failed (%s)", esp_err_to_name(e));
       return e;
    }
    ESP_LOGI(TAG, "audio.cap_stop_all sent");
 
-   /* 3. ext_pcm.rebind — ext_pcm reclaims the URL.  ASR's subscriber
-    *    auto-reconnects when the IPC socket file is re-bound. */
-   m5_stackflow_request_t req3 = {
+   /* 2. ext_pcm.rebind — ext_pcm reclaims the URL. */
+   m5_stackflow_request_t req2 = {
        .request_id = "ext-pcm-rebind",
        .work_id = "ext_pcm",
        .action = "rebind",
    };
-   e = handshake_send_recv(&req3, 3000);
+   e = handshake_send_recv(&req2, 3000);
    if (e != ESP_OK) {
       ESP_LOGW(TAG, "ext_pcm.rebind failed (%s)", esp_err_to_name(e));
       return e;
