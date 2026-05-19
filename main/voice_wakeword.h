@@ -104,6 +104,11 @@ void voice_wakeword_stop(void);
 /** @brief Whether the listener is live (chain up + task running). */
 bool voice_wakeword_is_active(void);
 
+/** TT #131 — return the K144 asr work_id (e.g. "asr.1001") for the
+ *  currently-armed listener.  NULL if not armed.  Used by the ext_pcm
+ *  pump to target inference frames at the right asr instance. */
+const char *voice_wakeword_asr_id(void);
+
 /** @brief Force a dictation stop NOW from outside the task.  No-op when
  *         not in the LISTENING state.  Fires the DICTATION_FINAL event
  *         with whatever has been accumulated so far. */

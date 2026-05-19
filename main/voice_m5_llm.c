@@ -1613,6 +1613,60 @@ fail:
    return err;
 }
 
+/* TT #131 — Tab5-mic variant of wakeword_setup.  Skips audio.setup
+ * entirely.  asr.setup uses input=["asr"] which triggers ASR's
+ * task_user_data subscriber path: ASR subscribes to its OWN inference
+ * bus and decodes inference frames addressed to its work_id.  Tab5
+ * pushes PCM as {"action":"inference","work_id":"asr.NNNN",
+ *               "object":"audio.pcm.base64","data":"<base64>"}
+ * Direct path — no audio unit, no ext_pcm publisher, no IPC PUB
+ * contention. */
+esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle,
+                                               volatile bool *stop_flag) {
+   if (out_handle == NULL) return ESP_ERR_INVALID_ARG;
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   M5_LOCK_OR_RETURN(60000);
+
+   voice_m5_wakeword_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+   /* No audio in this path. */
+   h->audio_id[0] = '\0';
+
+   cJSON *d = cJSON_CreateObject();
+   cJSON_AddStringToObject(d, "model", M5_CHAIN_ASR_MODEL);
+   cJSON_AddStringToObject(d, "response_format", "asr.utf-8.stream");
+   cJSON *inp = cJSON_CreateArray();
+   /* input=["asr"] → asr.cpp line ~1060 falls into the task_user_data
+    * branch: llm_channel->subscriber_work_id("", task_user_data).
+    * ASR subscribes to its own inference bus. */
+   cJSON_AddItemToArray(inp, cJSON_CreateString("asr"));
+   cJSON_AddItemToObject(d, "input", inp);
+   cJSON_AddBoolToObject(d, "enoutput", true);
+   err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id),
+                          M5_SETUP_TIMEOUT_MS, stop_flag);
+   if (err != ESP_OK) {
+      heap_caps_free(h);
+      M5_UNLOCK();
+      return err;
+   }
+
+   M5_UNLOCK();
+   *out_handle = h;
+   ESP_LOGI(TAG, "always-on ASR (Tab5-mic) up: asr=%s", h->asr_id);
+   return ESP_OK;
+}
+
+const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handle) {
+   return handle ? handle->asr_id : NULL;
+}
+
 esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
                                     volatile bool *stop_flag, uint32_t timeout_s) {
    if (handle == NULL) return ESP_ERR_INVALID_ARG;

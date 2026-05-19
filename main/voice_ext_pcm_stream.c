@@ -38,6 +38,7 @@
 #include "mbedtls/base64.h"
 #include "m5_stackflow.h"
 #include "uart_port_c.h"
+#include "voice_m5_llm.h"
 #include "voice_onboard.h"
 #include "voice_wakeword.h"
 
@@ -70,7 +71,7 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
 static TaskHandle_t s_task = NULL;
 static volatile bool s_armed = false;
-static volatile bool s_handshake_done = false;
+/* handshake state retained as dead-but-harmless flag — drop in next pass */
 static volatile int s_voice_state = 0;
 static uint32_t s_frame_seq = 0;
 static int64_t s_last_log_us = 0;
@@ -80,79 +81,11 @@ static bool quiescent_state(int st) {
    return (st == 2);
 }
 
-/* Send a request that EXPECTS an ack within @p timeout_ms.  We read +
- * discard the reply so the response buffer doesn't pile up on subsequent
- * frames.  Used only for the bring-up handshake — NOT for per-frame
- * ingest (which fire-and-forgets). */
-static esp_err_t handshake_send_recv(const m5_stackflow_request_t *req, uint32_t timeout_ms) {
-   /* 6 s lock acquire — voice_wakeword's run loop also takes the lock
-    * 10× per second.  Same-priority + round-robin can starve us briefly.
-    * 6 s is well over the wakeword inner-loop budget. */
-   if (tab5_port_c_lock(6000) != ESP_OK) {
-      ESP_LOGW(TAG, "port-c lock timeout in handshake");
-      return ESP_ERR_TIMEOUT;
-   }
-   char tx[1024];
-   int tx_len = m5_stackflow_build_request(req, tx, sizeof(tx));
-   if (tx_len < 0) {
-      tab5_port_c_unlock();
-      return ESP_ERR_NO_MEM;
-   }
-   tab5_port_c_flush();
-   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
-      tab5_port_c_unlock();
-      return ESP_ERR_INVALID_STATE;
-   }
-   /* Drain any newline-terminated frame the K144 sends back.  We don't
-    * actually use the response body — ingest is fire-and-forget — but
-    * we must not let it accumulate in the UART buffer. */
-   char rxbuf[512];
-   int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
-   while (esp_timer_get_time() < deadline) {
-      int n = tab5_port_c_recv(rxbuf, sizeof(rxbuf) - 1, 50);
-      if (n > 0) {
-         rxbuf[n] = '\0';
-         if (memchr(rxbuf, '\n', (size_t)n) != NULL) break;
-      }
-   }
-   tab5_port_c_unlock();
-   return ESP_OK;
-}
-
-/* Two-step handshake that hands /tmp/llm/pcm.cap.socket from llm_audio to
- * ext_pcm.  asr.setup is OWNED by voice_wakeword (which arms first when
- * wake_src=ext_pcm) — it triggers audio's lazy _cap() to bind the URL.
- * After that, ext_pcm steals the bind so OUR PCM flows to the live ASR
- * subscriber.  Idempotent. */
-static esp_err_t do_handshake(void) {
-   /* 1. audio.cap_stop_all — release audio's bind on the PUB URL.  ASR's
-    *    SUB stays connected and will reconnect to whoever next binds. */
-   m5_stackflow_request_t req1 = {
-       .request_id = "ext-pcm-cap-stop",
-       .work_id = "audio",
-       .action = "cap_stop_all",
-   };
-   esp_err_t e = handshake_send_recv(&req1, 3000);
-   if (e != ESP_OK) {
-      ESP_LOGW(TAG, "audio.cap_stop_all failed (%s)", esp_err_to_name(e));
-      return e;
-   }
-   ESP_LOGI(TAG, "audio.cap_stop_all sent");
-
-   /* 2. ext_pcm.rebind — ext_pcm reclaims the URL. */
-   m5_stackflow_request_t req2 = {
-       .request_id = "ext-pcm-rebind",
-       .work_id = "ext_pcm",
-       .action = "rebind",
-   };
-   e = handshake_send_recv(&req2, 3000);
-   if (e != ESP_OK) {
-      ESP_LOGW(TAG, "ext_pcm.rebind failed (%s)", esp_err_to_name(e));
-      return e;
-   }
-   ESP_LOGI(TAG, "ext_pcm.rebind sent — pipeline ready");
-   return ESP_OK;
-}
+/* TT #131 — new architecture: ASR was configured with input=["asr"]
+ * by voice_wakeword (Tab5-mic variant), so it subscribes to its OWN
+ * inference bus.  We push PCM as inference RPC frames directly to the
+ * asr work_id.  No audio.setup, no ext_pcm rebind, no PUB contention —
+ * fire-and-forget through llm_sys's remote_call. */
 
 static void ext_pcm_task(void *arg) {
    (void)arg;
@@ -192,18 +125,13 @@ static void ext_pcm_task(void *arg) {
          continue;
       }
 
-      /* Lazily run the handshake the first time we're armed in a session.
-       * voice_ext_pcm_stream_disarm() clears s_handshake_done so re-arming
-       * issues a fresh handshake. */
-      if (!s_handshake_done) {
-         if (do_handshake() == ESP_OK) {
-            s_handshake_done = true;
-            tab5_debug_obs_event("ext_pcm_stream", "handshake_ok");
-         } else {
-            tab5_debug_obs_event("ext_pcm_stream", "handshake_fail");
-            vTaskDelay(pdMS_TO_TICKS(2000)); /* back off + retry */
-            continue;
-         }
+      /* No handshake needed — asr was set up with input=["asr"] so it
+       * subscribes to its own inference bus.  We just send inference
+       * RPCs to the wakeword's asr work_id. */
+      const char *asr_id = voice_wakeword_asr_id();
+      if (asr_id == NULL || asr_id[0] == '\0') {
+         vTaskDelay(pdMS_TO_TICKS(500));
+         continue;
       }
 
       esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
@@ -244,10 +172,14 @@ static void ext_pcm_task(void *arg) {
 
       char rid[24];
       snprintf(rid, sizeof(rid), "ep%lu", (unsigned long)(++s_frame_seq));
+      /* Re-read asr_id in case wakeword was re-armed; harmless if stale. */
+      const char *target = voice_wakeword_asr_id();
+      if (target == NULL || target[0] == '\0') continue;
       m5_stackflow_request_t req = {
           .request_id = rid,
-          .work_id = "ext_pcm",
-          .action = "ingest",
+          .work_id = target, /* asr.NNNN */
+          .action = "inference",
+          .object = "audio.pcm.base64",
           .data_string = b64_buf,
       };
       int tx_len = m5_stackflow_build_request(&req, tx_buf, INGEST_TX_CAP);
@@ -300,7 +232,6 @@ esp_err_t voice_ext_pcm_stream_init(void) {
 void voice_ext_pcm_stream_arm(void) {
    if (s_armed) return;
    s_armed = true;
-   s_handshake_done = false; /* force fresh handshake */
    tab5_debug_obs_event("ext_pcm_stream", "arm");
    ESP_LOGI(TAG, "armed");
 }
@@ -308,7 +239,6 @@ void voice_ext_pcm_stream_arm(void) {
 void voice_ext_pcm_stream_disarm(void) {
    if (!s_armed) return;
    s_armed = false;
-   s_handshake_done = false;
    tab5_debug_obs_event("ext_pcm_stream", "disarm");
    ESP_LOGI(TAG, "disarmed");
 }

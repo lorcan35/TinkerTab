@@ -486,6 +486,17 @@ typedef void (*voice_m5_wakeword_cb)(const char *delta, bool finish, void *user)
  */
 esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag);
 
+/** TT #131 — Tab5-mic variant.  Skips audio.setup entirely (no K144 mic),
+ *  configures asr.setup with input=["asr"] so ASR subscribes to its OWN
+ *  inference bus.  Tab5 then pushes mic frames as inference RPCs to the
+ *  returned asr work_id.  Bypasses ext_pcm + audio + the URL-bind dance.
+ *  Use this when wake_src=ext_pcm. */
+esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag);
+
+/** TT #131 — get the asr work_id from a handle so the ext_pcm pump can
+ *  target inference frames at it.  Returns NULL if handle is NULL. */
+const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handle);
+
 /**
  * @brief Drain asr.utf-8.stream frames, invoking cb on every partial.
  *
