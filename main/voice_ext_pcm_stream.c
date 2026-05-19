@@ -50,10 +50,13 @@
 #define WS_CHUNK_SAMPLES (TAB5_VOICE_SAMPLE_RATE * TAB5_VOICE_CHUNK_MS / 1000)
 #define WS_CHUNK_BYTES (WS_CHUNK_SAMPLES * sizeof(int16_t))
 
-/* base64 of 3200 bytes = 4268 chars (no padding needed since 3200 % 3 == 2,
- * actual ceil((3200+2)/3)*4 = 4268).  Add JSON envelope overhead and a
- * generous buffer for the request_id digits → 4400 should be plenty. */
-#define INGEST_B64_CAP (((WS_CHUNK_BYTES + 2) / 3) * 4 + 4)
+/* Batch N mic chunks per ingest RPC.  K144's UART JSON parser is
+ * single-threaded; flooding it at 50 RPCs/sec (one per 20 ms chunk)
+ * caused frame drops + remote_call queue blow-up.  Batching 5 chunks =
+ * 100 ms of audio per RPC = 10 RPCs/sec is comfortable for both sides. */
+#define INGEST_BATCH_CHUNKS 5
+#define INGEST_RAW_BYTES (WS_CHUNK_BYTES * INGEST_BATCH_CHUNKS)
+#define INGEST_B64_CAP (((INGEST_RAW_BYTES + 2) / 3) * 4 + 4)
 #define INGEST_TX_CAP (INGEST_B64_CAP + 128)
 
 #define EXT_PCM_TASK_STACK 8192
@@ -158,9 +161,14 @@ static void ext_pcm_task(void *arg) {
    int16_t *tdm_buf =
        heap_caps_malloc(tdm_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    int16_t *mono_buf = heap_caps_malloc(WS_CHUNK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   /* batch_buf accumulates INGEST_BATCH_CHUNKS×WS_CHUNK_BYTES raw PCM
+    * before a single base64 + ingest send.  Reduces UART RPC rate from
+    * 50 fps to 10 fps. */
+   int16_t *batch_buf = heap_caps_malloc(INGEST_RAW_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   int batch_chunks = 0;
    char *b64_buf = heap_caps_malloc(INGEST_B64_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    char *tx_buf = heap_caps_malloc(INGEST_TX_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!tdm_buf || !mono_buf || !b64_buf || !tx_buf) {
+   if (!tdm_buf || !mono_buf || !batch_buf || !b64_buf || !tx_buf) {
       ESP_LOGE(TAG, "buffer alloc failed; ext_pcm stream disabled");
       goto cleanup;
    }
@@ -218,10 +226,16 @@ static void ext_pcm_task(void *arg) {
       /* Re-check state after the I2S read in case mic_task spun up. */
       if (!quiescent_state(s_voice_state) || voice_mic_is_active()) continue;
 
+      /* Append this chunk to the batch.  Send only when full. */
+      memcpy((uint8_t *)batch_buf + batch_chunks * WS_CHUNK_BYTES, mono_buf,
+             (size_t)out_idx * sizeof(int16_t));
+      batch_chunks++;
+      if (batch_chunks < INGEST_BATCH_CHUNKS) continue;
+      batch_chunks = 0;
+
       size_t b64_len = 0;
       int b_err = mbedtls_base64_encode((unsigned char *)b64_buf, INGEST_B64_CAP, &b64_len,
-                                        (const unsigned char *)mono_buf,
-                                        (size_t)out_idx * sizeof(int16_t));
+                                        (const unsigned char *)batch_buf, INGEST_RAW_BYTES);
       if (b_err != 0 || b64_len == 0) {
          ESP_LOGW(TAG, "base64 encode failed: %d", b_err);
          continue;
@@ -263,6 +277,7 @@ static void ext_pcm_task(void *arg) {
 cleanup:
    if (tdm_buf) heap_caps_free(tdm_buf);
    if (mono_buf) heap_caps_free(mono_buf);
+   if (batch_buf) heap_caps_free(batch_buf);
    if (b64_buf) heap_caps_free(b64_buf);
    if (tx_buf) heap_caps_free(tx_buf);
    s_task = NULL;
