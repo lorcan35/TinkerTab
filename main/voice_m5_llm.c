@@ -1689,7 +1689,14 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
 
       char *nl = memchr(s_rx_buf, '\n', s_rx_len);
       if (nl == NULL) {
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 100);
+         /* TT #131 — drop from 100 ms to 5 ms so wakeword's recv loop
+          * holds the UART mutex only briefly per iteration.  When K144
+          * isn't producing transcripts (silence / mic not capturing
+          * relevant audio), the prior 100 ms hold + 5 ms yield made the
+          * pump task starve at 5 % duty cycle, choking ingest below
+          * 1 KB/s even at 1.5 Mbps wire.  5 ms hold means ext_pcm pump
+          * gets ~50 % of the lock window. */
+         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 5);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);

@@ -55,7 +55,20 @@
  * single-threaded; flooding it at 50 RPCs/sec (one per 20 ms chunk)
  * caused frame drops + remote_call queue blow-up.  Batching 5 chunks =
  * 100 ms of audio per RPC = 10 RPCs/sec is comfortable for both sides. */
-#define INGEST_BATCH_CHUNKS 5
+/* TT #131 — keep total JSON envelope ≤ 1024 B so each ingest frame fits
+ * in a single K144 linux_uart_read() chunk.  Larger frames span K144's
+ * 1024-byte read buffer, and any single-byte UART jitter (even without
+ * a frame error) corrupts the JSON.  K144's base64_decode then off-by-
+ * ones into `basic_string::erase()` → std::out_of_range → asr daemon
+ * crash + systemd respawn.  Live-captured 2026-05-19.
+ *
+ * 1 chunk = 20 ms × 640 B raw → 856 B base64 → ~920 B JSON envelope.
+ * Send rate: 50 fps × 920 B = 46 KB/s.  Comfortably below the 13 KB/s
+ * actual K144-daemon ingest ceiling we hit at 1.5 Mbps wire, but the
+ * extra headroom lets the wire eat brief stalls from wakeword's recv
+ * loop.  Actual K144 throughput will throttle Tab5 via uart TX-ring
+ * backpressure once that 8 KB ring fills. */
+#define INGEST_BATCH_CHUNKS 1
 #define INGEST_RAW_BYTES (WS_CHUNK_BYTES * INGEST_BATCH_CHUNKS)
 #define INGEST_B64_CAP (((INGEST_RAW_BYTES + 2) / 3) * 4 + 4)
 #define INGEST_TX_CAP (INGEST_B64_CAP + 128)
