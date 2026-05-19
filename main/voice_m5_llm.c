@@ -1743,6 +1743,19 @@ esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handl
    cJSON_AddItemToObject(d, "kws", kws_arr);
    cJSON_AddBoolToObject(d, "enoutput", true);
    cJSON_AddBoolToObject(d, "enwake_audio", false); /* no chime — Tab5 owns UI feedback */
+   /* TT #131 2026-05-20: explicit detection tuning.  sherpa-onnx-kws
+    * defaults (threshold 0.25, score 1.0) are tuned for close-mic
+    * studio audio.  Tab5's ES7210 mic with 16× digital gain + ADPCM
+    * round-trip leaves the signal weaker than the model's training
+    * conditions, so default threshold rarely fires.  Lower threshold
+    * (more sensitive) + small score boost gets reliable detection on
+    * speaker-distance "Hey Tinker".  These keys are accepted by the
+    * custom K144 main_kws build (`keywords_threshold`, `keywords_score`
+    * are visible in `strings llm_kws`).  False-positive risk is bounded
+    * because the matcher still requires the full token sequence
+    * "▁HE Y ▁T IN K ER" — 6 BPE tokens of acoustic context. */
+   cJSON_AddNumberToObject(d, "keywords_threshold", 0.10);
+   cJSON_AddNumberToObject(d, "keywords_score", 1.5);
    /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
     * models AND forks text2token.py.  Post-K144-reboot it's even slower
     * (cold disk cache).  90 s budget. */
