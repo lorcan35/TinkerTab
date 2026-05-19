@@ -1754,8 +1754,14 @@ esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handl
     * are visible in `strings llm_kws`).  False-positive risk is bounded
     * because the matcher still requires the full token sequence
     * "▁HE Y ▁T IN K ER" — 6 BPE tokens of acoustic context. */
-   cJSON_AddNumberToObject(d, "keywords_threshold", 0.10);
-   cJSON_AddNumberToObject(d, "keywords_score", 1.5);
+   /* 2026-05-20 v2: drop threshold further (0.10 → 0.02) — far-field
+    * audio after the ADPCM/UART round-trip is acoustically weak vs
+    * the gigaspeech training set.  0.02 fires on rough phoneme match;
+    * false-positive risk still bounded by the 6-token sequence
+    * requirement ("▁HE Y ▁T IN K ER"). */
+   cJSON_AddNumberToObject(d, "keywords_threshold", 0.02);
+   cJSON_AddNumberToObject(d, "keywords_score", 2.0);
+   cJSON_AddNumberToObject(d, "max_active_paths", 4);
    /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
     * models AND forks text2token.py.  Post-K144-reboot it's even slower
     * (cold disk cache).  90 s budget. */
