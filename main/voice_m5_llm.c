@@ -796,7 +796,13 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
    cJSON_AddNumberToObject(data, "baud", (double)new_baud);
    cJSON_AddNumberToObject(data, "data_bits", 8);
    cJSON_AddNumberToObject(data, "stop_bits", 1);
-   cJSON_AddStringToObject(data, "parity", "n");
+   /* K144 daemon SAFE_SETTING does `(int)json["parity"]` — passing the
+    * string "n" silently fails the cast inside the detached thread,
+    * which then never reaches serial_stop_work()/serial_work(), so
+    * K144 stays at 115200 while Tab5 flips to the new baud.  Use the
+    * ASCII value 110 (= 'n') which is what main_sys/src/main.cpp:46
+    * stores in `config_serial_parity` by default. */
+   cJSON_AddNumberToObject(data, "parity", 110);
 
    char request_id[32];
    make_request_id(request_id, sizeof(request_id), "uartsetup-");
