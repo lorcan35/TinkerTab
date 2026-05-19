@@ -1734,10 +1734,10 @@ esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handl
    cJSON_AddBoolToObject(d, "enoutput", true);
    cJSON_AddBoolToObject(d, "enwake_audio", false); /* no chime — Tab5 owns UI feedback */
    /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
-    * models AND forks text2token.py to compile the keyword tokens.  Live
-    * measurement: 15-25 s on K144 v1.3 cold.  Use a 30 s budget. */
+    * models AND forks text2token.py.  Post-K144-reboot it's even slower
+    * (cold disk cache).  90 s budget. */
    err = chain_setup_unit("kws", "kws.setup", d, h->asr_id, sizeof(h->asr_id),
-                          30000, stop_flag);
+                          90000, stop_flag);
    if (err != ESP_OK) {
       heap_caps_free(h);
       M5_UNLOCK();
