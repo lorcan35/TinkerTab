@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "settings.h"            /* tab5_settings_get_mic_mute (Wave 7) */
 #include "task_worker.h"         /* tab5_worker_enqueue */
+#include "ui_audio_cues.h"       /* ui_audio_cue_play — wake chime (#131-opt2) */
 #include "ui_chat.h"             /* ui_chat_add_message */
 #include "ui_core.h"             /* tab5_ui_try_lock / tab5_ui_unlock */
 #include "ui_home.h"             /* ui_home_show_toast */
@@ -181,6 +182,9 @@ static void wakeword_event_handler(voice_wakeword_event_t event, const char *tex
    (void)user;
    switch (event) {
       case VOICE_WAKEWORD_EVENT_WAKE: {
+         /* TT #131-opt2: audible wake chime — confirms KWS fired before
+          * we start listening for the user's question. */
+         ui_audio_cue_play(UI_CUE_INCOMING_HIGH);
          /* Trigger the full voice turn on the LVGL thread (mic + WS
           * dispatch both expect to run on the main task). */
          tab5_lv_async_call(wakeword_trigger_voice_turn, NULL);
