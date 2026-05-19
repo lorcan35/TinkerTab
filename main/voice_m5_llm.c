@@ -1681,12 +1681,14 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
          if (cb != NULL) cb(delta_str, finished, user);
       }
       m5_stackflow_response_free(&resp);
-      /* TT #131 — explicit yield so equal-priority tasks (e.g. the
-       * voice_ext_pcm_stream handshake / pump) get a UART-lock window
-       * between our recv iterations.  Without this, when K144 streams
-       * ASR partials continuously the loop relocks the recursive mutex
-       * within microseconds and starves any same-prio waiters. */
-      vTaskDelay(1);
+      /* TT #131 — yield ~5ms so equal-priority lock waiters
+       * (voice_ext_pcm_stream handshake + pump) get a real window.
+       * vTaskDelay(1) was insufficient — with FreeRTOS at 1000Hz tick,
+       * yield-and-immediately-retake the recursive mutex within
+       * microseconds, starving same-priority waiters even after 6 s of
+       * lock(timeout).  pdMS_TO_TICKS(5) gives at least 5 ticks of
+       * release-window per iteration. */
+      vTaskDelay(pdMS_TO_TICKS(5));
    }
 
    if (stop_flag != NULL && *stop_flag) return ESP_OK;

@@ -57,7 +57,9 @@
 #define INGEST_TX_CAP (INGEST_B64_CAP + 128)
 
 #define EXT_PCM_TASK_STACK 8192
-#define EXT_PCM_TASK_PRIO 4
+/* PRIO 5 = one above voice_wakeword (4).  When wakeword's recv loop
+ * yields between iterations, we preempt and claim the UART lock first. */
+#define EXT_PCM_TASK_PRIO 5
 #define EXT_PCM_TASK_CORE 1
 
 extern bool voice_mic_is_active(void);
@@ -172,16 +174,12 @@ static void ext_pcm_task(void *arg) {
          continue;
       }
 
-      /* Critical readiness gates — DO NOT pump until both hold:
-       *
-       *   1. K144 daemon is past warm-up (failover_state==2 READY).
-       *      Pumping before warmup completes saturates the UART and
-       *      starves the warmup probe → infinite reset/retry loop.
-       *
-       *   2. voice_wakeword is armed.  Without it, ASR has no setup
-       *      arranged so audio's lazy _cap() never binds the PUB URL,
-       *      and our cap_stop_all + rebind have nothing to take over. */
-      if (voice_onboard_failover_state() != 2 || !voice_wakeword_is_active()) {
+      /* Gate on voice_wakeword being armed.  That's the only true
+       * prerequisite — wakeword's setup arms audio + asr on K144 (NOT
+       * llm), so failover_state (which gates on llm.setup) is irrelevant
+       * here.  If wakeword is up, asr is up, audio is up; we can claim
+       * the PCM PUB URL. */
+      if (!voice_wakeword_is_active()) {
          vTaskDelay(pdMS_TO_TICKS(500));
          continue;
       }

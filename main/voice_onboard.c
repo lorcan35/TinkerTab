@@ -494,9 +494,12 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.reset", "ack_ok");
    }
 
-   /* Daemon needs ~4 s to reconnect MQTT internally after a soft reset.
-    * 5 s wait is conservative — verified on the live ADB probe. */
-   vTaskDelay(pdMS_TO_TICKS(5000));
+   /* Daemon needs ~4 s to reconnect MQTT internally + ~8-10 s for the
+    * qwen2.5-0.5B LLM model to load into the NPU.  Without the longer
+    * wait the post-reset re-warmup hit "unit call false" (err=-9) because
+    * llm-llm hadn't registered its RPC server yet (TT #131 live debug).
+    * 15 s is conservative — most boots see ready by 12 s. */
+   vTaskDelay(pdMS_TO_TICKS(15000));
 
    /* Re-run the probe + warmup-infer.  Inline-equivalent to
     * onboard_warmup_job but reuses the same observability events for
@@ -922,38 +925,37 @@ esp_err_t voice_onboard_arm_wakeword(void) {
    return voice_onboard_arm_k144_wakeword_internal();
 }
 
-/* TT #131 — async wakeword arm with K144 state awareness.  Posted on the
- * shared worker so HTTP / LVGL callers return immediately; the worker
- * polls failover state and either arms directly, triggers a daemon reset
- * (whose post-warmup hook also arms), or re-queues to wait out a probe. */
+/* TT #131 — async wakeword arm.  Posted on the shared worker so HTTP /
+ * LVGL callers return immediately.
+ *
+ * The wakeword listener only needs audio + asr on K144 (NO llm), so this
+ * path IGNORES the failover_state gate (which gates on llm.setup success)
+ * and just tries voice_onboard_arm_wakeword over and over until asr.setup
+ * lands.  Retries with 2 s backoff, 15 attempts (30 s total).
+ *
+ * If we deferred to reset_failover here we'd lose minutes to the llm
+ * model-load probe + auto-retry budget — for ext_pcm the LLM doesn't
+ * even need to be reachable. */
 static void arm_wakeword_async_job(void *arg) {
    int attempts = (int)(intptr_t)arg;
    if (voice_wakeword_is_active()) return; /* already armed */
 
-   int st = (int)s_m5_failover;
-   if (st == (int)M5_FAIL_READY) {
-      esp_err_t we = voice_onboard_arm_wakeword();
-      if (we == ESP_ERR_INVALID_RESPONSE) {
-         ESP_LOGW(TAG, "arm_wakeword_async: arm hit INVALID_RESPONSE — triggering reset");
-         (void)voice_onboard_reset_failover();
-      } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
-         ESP_LOGW(TAG, "arm_wakeword_async: arm err %s", esp_err_to_name(we));
-      }
+   voice_m5_llm_release(); /* free NPU slot before ASR claims it */
+   esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
+   if (we == ESP_OK || we == ESP_ERR_INVALID_STATE /* already running */) {
+      tab5_debug_obs_event("arm_wake_async", "ok");
       return;
    }
-   if (st == (int)M5_FAIL_UNAVAILABLE) {
-      ESP_LOGI(TAG, "arm_wakeword_async: K144 unavailable — triggering reset_failover");
-      (void)voice_onboard_reset_failover();
+
+   if (attempts >= 15) {
+      ESP_LOGW(TAG, "arm_wakeword_async: gave up after %d attempts (last err=%s)", attempts,
+               esp_err_to_name(we));
+      tab5_debug_obs_event("arm_wake_async", "give_up");
       return;
    }
-   /* UNKNOWN or PROBING — wait for the in-flight probe to land.  Cap at
-    * 30 retries × 500 ms = 15 s so we don't loop forever on a permanent
-    * UNKNOWN state. */
-   if (attempts >= 30) {
-      ESP_LOGW(TAG, "arm_wakeword_async: gave up after %d attempts (st=%d)", attempts, st);
-      return;
-   }
-   vTaskDelay(pdMS_TO_TICKS(500));
+   ESP_LOGW(TAG, "arm_wakeword_async: attempt %d failed (%s) — retrying in 2s", attempts,
+            esp_err_to_name(we));
+   vTaskDelay(pdMS_TO_TICKS(2000));
    (void)tab5_worker_enqueue(arm_wakeword_async_job, (void *)(intptr_t)(attempts + 1), "arm_wake_retry");
 }
 
