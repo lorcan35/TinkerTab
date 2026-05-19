@@ -33,6 +33,7 @@
 #include "settings.h"       /* TT #617 — wake_src */
 #include "task_worker.h"    /* tab5_worker_enqueue */
 #include "voice_m5_llm.h"   /* sys_reboot, hwinfo accessor */
+#include "voice_ext_pcm_stream.h" /* TT #131 stats */
 #include "voice_onboard.h"  /* failover state names */
 #include "voice_wakeword.h" /* status + reconfigure_phrase + transcripts */
 
@@ -352,6 +353,41 @@ static esp_err_t handle_transcripts(httpd_req_t *req) {
    return respond_json(req, root, 200);
 }
 
+/* ── GET /tinkeron/extpcm — Path A live diagnostic ────────────────── */
+
+static esp_err_t handle_extpcm(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_FAIL;
+   voice_ext_pcm_stream_stats_t st;
+   voice_ext_pcm_stream_get_stats(&st);
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "task_running", st.task_running);
+   cJSON_AddBoolToObject(root, "armed", st.armed);
+   cJSON_AddNumberToObject(root, "voice_state", st.voice_state);
+   cJSON_AddBoolToObject(root, "wakeword_active", st.wakeword_active);
+   cJSON_AddStringToObject(root, "asr_id", st.asr_id ? st.asr_id : "");
+   cJSON_AddNumberToObject(root, "frames_pumped", st.frames_pumped);
+   cJSON_AddNumberToObject(root, "last_mic_rms", st.last_mic_rms);
+   cJSON_AddNumberToObject(root, "last_tx_bytes", st.last_tx_bytes);
+   cJSON_AddNumberToObject(root, "last_send_ok", st.last_send_ok);
+   cJSON_AddNumberToObject(root, "last_pump_age_ms", (double)st.last_pump_age_ms);
+
+   /* Hint strings the user can scan at a glance. */
+   const char *hint;
+   if (!st.task_running)             hint = "pump task not running";
+   else if (!st.armed)               hint = "pump disarmed (wake_src != ext_pcm?)";
+   else if (st.voice_state != 2)     hint = "voice state not READY";
+   else if (!st.wakeword_active)     hint = "voice_wakeword not armed (K144 asr.setup pending)";
+   else if (st.asr_id == NULL || st.asr_id[0] == '\0') hint = "asr_id empty (wakeword setup failed?)";
+   else if (st.last_pump_age_ms > 2000) hint = "no recent pump send (UART send failing?)";
+   else if (st.last_send_ok == 0)    hint = "last UART send failed (port C contention?)";
+   else if (st.last_mic_rms < 50)    hint = "mic capture is near-silent (RMS < 50)";
+   else                              hint = "ok — frames flowing with audible mic";
+   cJSON_AddStringToObject(root, "hint", hint);
+
+   return respond_json(req, root, 200);
+}
+
 /* ── Registration ─────────────────────────────────────────────────── */
 
 void debug_server_tinkeron_register(httpd_handle_t server) {
@@ -376,11 +412,15 @@ void debug_server_tinkeron_register(httpd_handle_t server) {
        .handler = handle_wake_src,
        .user_ctx = NULL,
    };
+   static const httpd_uri_t uri_extpcm = {
+       .uri = "/tinkeron/extpcm", .method = HTTP_GET, .handler = handle_extpcm, .user_ctx = NULL,
+   };
    httpd_register_uri_handler(server, &uri_status);
    httpd_register_uri_handler(server, &uri_arm);
    httpd_register_uri_handler(server, &uri_phrase);
    httpd_register_uri_handler(server, &uri_reboot);
    httpd_register_uri_handler(server, &uri_transcripts);
    httpd_register_uri_handler(server, &uri_wake_src);
-   ESP_LOGI(TAG, "TinkerON debug family registered (6 endpoints)");
+   httpd_register_uri_handler(server, &uri_extpcm);
+   ESP_LOGI(TAG, "TinkerON debug family registered (7 endpoints)");
 }

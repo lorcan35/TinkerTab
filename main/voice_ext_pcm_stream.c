@@ -71,9 +71,14 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
 static TaskHandle_t s_task = NULL;
 static volatile bool s_armed = false;
-/* handshake state retained as dead-but-harmless flag — drop in next pass */
+static volatile bool s_baud_negotiated = false;
 static volatile int s_voice_state = 0;
 static uint32_t s_frame_seq = 0;
+/* Diagnostic state — updated in pump loop, read by stats accessor. */
+static volatile uint32_t s_last_mic_rms = 0;
+static volatile uint32_t s_last_tx_bytes = 0;
+static volatile uint32_t s_last_send_ok = 0;
+static volatile int64_t s_last_pump_us = 0;
 static int64_t s_last_log_us = 0;
 
 static bool quiescent_state(int st) {
@@ -134,6 +139,28 @@ static void ext_pcm_task(void *arg) {
          continue;
       }
 
+      /* TT #131 — first-time-armed: negotiate UART up to 1.5 Mbps.
+       * 115200 = 11.5 KB/s but we send ~44 KB/s sustained (16k mono
+       * int16 × 1.33 base64 + JSON envelope), so the kernel UART RX
+       * was DROPPING bytes at 115200 — JSON parser saw garbage and
+       * silently rejected our inference frames.  Live-confirmed:
+       * K144 /proc/tty/driver/serial showed only 2.6 KB/s incoming
+       * vs Tab5's 44 KB/s send rate.  1.5 Mbps = 150 KB/s, ample
+       * headroom. */
+      if (!s_baud_negotiated) {
+         ESP_LOGI(TAG, "negotiating UART up to 1.5 Mbps for sustained PCM throughput");
+         esp_err_t be = voice_m5_llm_set_baud(1500000);
+         if (be == ESP_OK) {
+            s_baud_negotiated = true;
+            tab5_debug_obs_event("ext_pcm_stream", "baud_1500000");
+            ESP_LOGI(TAG, "UART now at 1.5 Mbps");
+         } else {
+            ESP_LOGW(TAG, "baud negotiation failed (%s) — back-off + retry", esp_err_to_name(be));
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+         }
+      }
+
       esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
       if (err != ESP_OK) {
          vTaskDelay(pdMS_TO_TICKS(100));
@@ -150,6 +177,18 @@ static void ext_pcm_task(void *arg) {
          mono_buf[out_idx++] = (int16_t)(sum / WS_DOWNSAMPLE_RATIO);
       }
       if (out_idx == 0) continue;
+
+      /* Compute mic RMS (abs-mean over chunk) so we can tell silence from
+       * speech in /tinkeron/extpcm + serial logs.  Silence ≈ 0;
+       * speech in a normal room ≈ 200-2000+. */
+      {
+         int64_t sum_abs = 0;
+         for (int k = 0; k < out_idx; k++) {
+            int16_t v = mono_buf[k];
+            sum_abs += (v < 0) ? -v : v;
+         }
+         s_last_mic_rms = (uint32_t)(sum_abs / out_idx);
+      }
 
       /* Re-check state after the I2S read in case mic_task spun up. */
       if (!quiescent_state(s_voice_state) || voice_mic_is_active()) continue;
@@ -197,11 +236,15 @@ static void ext_pcm_task(void *arg) {
       }
       int sent = tab5_port_c_send(tx_buf, (size_t)tx_len);
       tab5_port_c_unlock();
+      s_last_tx_bytes = (uint32_t)tx_len;
+      s_last_send_ok  = (sent == tx_len) ? 1 : 0;
       if (sent != tx_len) continue;
 
       int64_t now = esp_timer_get_time();
+      s_last_pump_us = now;
       if (now - s_last_log_us > 5 * 1000000) {
-         ESP_LOGI(TAG, "ext_pcm pumped seq=%lu (last %d bytes tx)", (unsigned long)s_frame_seq, tx_len);
+         ESP_LOGI(TAG, "ext_pcm pumped seq=%lu (tx=%d B, rms=%u) → %s",
+                  (unsigned long)s_frame_seq, tx_len, (unsigned)s_last_mic_rms, target);
          s_last_log_us = now;
       }
    }
@@ -239,6 +282,13 @@ void voice_ext_pcm_stream_arm(void) {
 void voice_ext_pcm_stream_disarm(void) {
    if (!s_armed) return;
    s_armed = false;
+   /* Drop K144 back to 115200 on disarm so other voice_m5_llm callers
+    * (vmode=4 chain, sys.reset) see the canonical baud.  Best-effort —
+    * failures just log. */
+   if (s_baud_negotiated) {
+      (void)voice_m5_llm_set_baud(115200);
+      s_baud_negotiated = false;
+   }
    tab5_debug_obs_event("ext_pcm_stream", "disarm");
    ESP_LOGI(TAG, "disarmed");
 }
@@ -249,4 +299,22 @@ bool voice_ext_pcm_stream_is_active(void) {
 
 void voice_ext_pcm_stream_on_state_change(int new_state) {
    s_voice_state = new_state;
+}
+
+void voice_ext_pcm_stream_get_stats(voice_ext_pcm_stream_stats_t *out) {
+   if (out == NULL) return;
+   out->task_running    = (s_task != NULL);
+   out->armed           = s_armed;
+   out->voice_state     = s_voice_state;
+   out->wakeword_active = voice_wakeword_is_active();
+   out->asr_id          = voice_wakeword_asr_id();
+   out->frames_pumped   = s_frame_seq;
+   out->last_mic_rms    = s_last_mic_rms;
+   out->last_tx_bytes   = s_last_tx_bytes;
+   out->last_send_ok    = s_last_send_ok;
+   if (s_last_pump_us > 0) {
+      out->last_pump_age_ms = (esp_timer_get_time() - s_last_pump_us) / 1000;
+   } else {
+      out->last_pump_age_ms = -1;
+   }
 }
