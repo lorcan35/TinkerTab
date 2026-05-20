@@ -1754,14 +1754,23 @@ esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handl
     * are visible in `strings llm_kws`).  False-positive risk is bounded
     * because the matcher still requires the full token sequence
     * "▁HE Y ▁T IN K ER" — 6 BPE tokens of acoustic context. */
-   /* 2026-05-20 v2: drop threshold further (0.10 → 0.02) — far-field
-    * audio after the ADPCM/UART round-trip is acoustically weak vs
-    * the gigaspeech training set.  0.02 fires on rough phoneme match;
-    * false-positive risk still bounded by the 6-token sequence
-    * requirement ("▁HE Y ▁T IN K ER"). */
+   /* 2026-05-20 v3: K144 main_kws appears to silently ignore top-level
+    * keywords_threshold/score — at 0.02 + clean voice (RMS 3685) we
+    * still got zero matches.  sherpa-onnx native config uses kebab-case
+    * AND a nested "mode_param" object per the model's own config file
+    * format on disk.  Try BOTH name variants in BOTH nesting levels —
+    * whichever K144's JSON parser actually reads will win, the others
+    * are silently dropped (which is the observed behavior). */
    cJSON_AddNumberToObject(d, "keywords_threshold", 0.02);
    cJSON_AddNumberToObject(d, "keywords_score", 2.0);
    cJSON_AddNumberToObject(d, "max_active_paths", 4);
+   cJSON *mp = cJSON_CreateObject();
+   cJSON_AddNumberToObject(mp, "keywords_threshold", 0.02);
+   cJSON_AddNumberToObject(mp, "keywords_score", 2.0);
+   cJSON_AddNumberToObject(mp, "max_active_paths", 4);
+   cJSON_AddNumberToObject(mp, "keywords-threshold", 0.02);
+   cJSON_AddNumberToObject(mp, "keywords-score", 2.0);
+   cJSON_AddItemToObject(d, "mode_param", mp);
    /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
     * models AND forks text2token.py.  Post-K144-reboot it's even slower
     * (cold disk cache).  90 s budget. */
