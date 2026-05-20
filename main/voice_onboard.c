@@ -661,13 +661,13 @@ static void onboard_watchdog_task(void *arg) {
          }
       }
 
-      /* Track recovery outcome: wait long enough for the reset cycle
-       * to fully complete (sys.reset + poll-for-ready up to 90 s +
-       * asr.setup ~5 s + first delta ~5 s).  120 s gives the full
-       * cycle time + margin.  If a new ASR delta arrived since the
-       * kick → reset succeeded.  If still stale → increment counter
-       * for potential sys.reboot escalation next kick. */
-      vTaskDelay(pdMS_TO_TICKS(120000));
+      /* Track recovery outcome: wait for the reset cycle to complete
+       * (sys.reset + poll-for-ready ~64 s + asr.setup ~5 s + first
+       * delta ~5 s).  80 s gives the full cycle time + margin.  If a
+       * new ASR delta arrived since the kick → reset succeeded.  If
+       * still stale → increment counter for sys.reboot escalation
+       * on the next watchdog kick. */
+      vTaskDelay(pdMS_TO_TICKS(80000));
       int64_t check = voice_wakeword_last_delta_us();
       if (check > now) {
          if (s_watchdog_reset_fail_count > 0) {
@@ -731,28 +731,28 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.reset", "ack_ok");
    }
 
-   /* TT #131 2026-05-20: poll for K144 readiness instead of fixed wait.
-    * Daemon needs ~4 s MQTT reconnect + ~8-15 s for llm-llm to register
-    * its RPC server.  Earlier 15 s fixed wait hit cases where K144
-    * needed >20 s — probe timed out (3s budget) and the whole
-    * recovery cycle marked unavailable.  Now: start polling at 8 s
-    * (minimum K144 boot), then ping every 2 s up to 90 s.  Exit
-    * early as soon as ping succeeds.  Most recoveries land at 10-20 s;
-    * pathological at 60-90 s.  Beyond 90 s we give up and escalate. */
+   /* TT #131 2026-05-20 v3: tight poll-for-ready.  The earlier 41-iter
+    * loop burned ~3.5 min in practice — each failed probe takes
+    * M5_PING_TIMEOUT_MS=3000 ms, not zero, so 41×(3+2) ≈ 205 s.  That
+    * exceeded the watchdog cooldown and made it look like the
+    * watchdog "wasn't working".  Now: 8 s boot grace + 14 attempts
+    * × (3 s probe + 1 s sleep) ≈ 64 s max.  Within watchdog cooldown.
+    * Most recoveries land 12-30 s; failure marks unavailable so the
+    * watchdog can escalate to sys.reboot on the next kick. */
    tab5_debug_obs_event("m5.warmup", "start");
    vTaskDelay(pdMS_TO_TICKS(8000)); /* min boot time */
    esp_err_t pe = ESP_ERR_TIMEOUT;
-   for (int i = 0; i < 41; i++) { /* up to 82 s additional, 90 s total */
+   for (int i = 0; i < 14; i++) { /* up to ~56 s additional, ~64 s total */
       pe = voice_m5_llm_probe();
       if (pe == ESP_OK) {
-         ESP_LOGI(TAG, "K144 ping success after %d s post-reset", 8 + i * 2);
+         ESP_LOGI(TAG, "K144 ping success after attempt %d (~%d s post-reset)", i + 1, 8 + i * 4);
          break;
       }
-      vTaskDelay(pdMS_TO_TICKS(2000));
+      vTaskDelay(pdMS_TO_TICKS(1000));
       if (s_chain_stop_flag) break;
    }
    if (pe != ESP_OK) {
-      ESP_LOGW(TAG, "K144 didn't come back within 90 s after sys.reset (%s)", esp_err_to_name(pe));
+      ESP_LOGW(TAG, "K144 didn't come back within ~64 s after sys.reset (%s)", esp_err_to_name(pe));
       mark_k144_unavailable("reset_probe_fail");
       tab5_debug_obs_event("m5.reset", "fail");
       return;
