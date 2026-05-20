@@ -309,6 +309,27 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
       if (s_emit_bg && delta && delta[0]) {
          emit_event(VOICE_WAKEWORD_EVENT_TRANSCRIPT, delta);
       }
+      /* TT #131 2026-05-20: K144's sherpa-ncnn streaming-zipformer-20M
+       * is INCONSISTENT in how it transcribes "Hey Tinker" — observed
+       * renderings across sessions: "thinker", "hick", "hicker",
+       * "hanker", "any hanker thinker", "i'm thinker".  To make the
+       * wake reliable we match against a small set of patterns that
+       * all map to "user said something that sounds like Hey Tinker".
+       *
+       * The 8-char VAD pre-gate (below) keeps short hallucinations
+       * out — "hick" alone in a 5-char window won't fire; "hick"
+       * embedded in a longer window will.  Self-wake during TTS is
+       * already suppressed by voice_state.
+       *
+       * Order matters: try the longest/most-specific first so the
+       * match-detail surfaces the best signal. */
+      static const char *const k_alt_patterns[] = {
+         "thinker",   /* T→Th substitution — most common rendering */
+         "hicker",    /* contracted "Hey Tinker" */
+         "tinker",    /* exact (rare — model usually substitutes) */
+         "hick",      /* heavily-contracted rendering, real session 2026-05-20 */
+         "hanker",    /* observed in "any hanker thinker" rendering */
+      };
       const char *match = NULL;
       if (s_wake_window_len > 0) {
          if (istrstr(s_wake_window, s_wake_phrase) != NULL) {
@@ -316,6 +337,13 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
          } else if (s_wake_phrase_alt[0] &&
                     istrstr(s_wake_window, s_wake_phrase_alt) != NULL) {
             match = s_wake_phrase_alt;
+         } else {
+            for (size_t i = 0; i < sizeof(k_alt_patterns) / sizeof(k_alt_patterns[0]); i++) {
+               if (istrstr(s_wake_window, k_alt_patterns[i]) != NULL) {
+                  match = k_alt_patterns[i];
+                  break;
+               }
+            }
          }
       }
       if (match != NULL) {
