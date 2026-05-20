@@ -64,6 +64,12 @@ static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
    (void)arg;
    if (s_rx == NULL || data == NULL || data_len == 0) return true;
    size_t pushed = xStreamBufferSend(s_rx, data, data_len, 0);
+   /* TT #620 W4 diagnostic: log every RX chunk while we're debugging
+    * Tab5↔K144 USB JSON path.  ESP_LOGD-level → can be silenced via
+    * esp_log_level_set("voice_usb_cdc", ESP_LOG_INFO).  At INFO we
+    * still log a short summary so we can see the byte flow. */
+   ESP_LOGI(TAG, "rx %u bytes (pushed %u): %.*s", (unsigned)data_len, (unsigned)pushed,
+            (int)(data_len > 80 ? 80 : data_len), (const char *)data);
    if (pushed < data_len) {
       /* RX overrun — drop the rest.  Worst-case this is one corrupt
        * StackFlow frame which the JSON parser will reject; next frame
@@ -181,12 +187,35 @@ static void connect_watcher_task(void *arg) {
       esp_err_t err = cdc_acm_host_open(VOICE_USB_CDC_K144_VID, VOICE_USB_CDC_K144_PID, VOICE_USB_CDC_K144_INTERFACE,
                                         &dev_cfg, &hdl);
       if (err == ESP_OK) {
+         /* Assert DTR + RTS so the K144 gadget recognises the host is
+          * present and enables its TX endpoint.  Without this Linux's
+          * f_acm function doesn't wake the tty, so llm_sys's writes to
+          * /dev/ttyGS0 sit in the gadget's TX queue and never reach
+          * the host.  TT #620 W4. */
+         esp_err_t cls = cdc_acm_host_set_control_line_state(hdl, /*dtr=*/true, /*rts=*/true);
+         if (cls != ESP_OK) {
+            ESP_LOGW(TAG, "set_control_line_state(DTR=1,RTS=1): %s — continuing anyway", esp_err_to_name(cls));
+         }
+         /* Set a sensible line coding (baud is virtual on USB but K144
+          * may apply it via termios on /dev/ttyGS0).  Match the K144
+          * sys_config.json values. */
+         const cdc_acm_line_coding_t coding = {
+             .dwDTERate = 1500000,
+             .bCharFormat = 0, /* 1 stop bit */
+             .bParityType = 0, /* none */
+             .bDataBits = 8,
+         };
+         esp_err_t lc = cdc_acm_host_line_coding_set(hdl, &coding);
+         if (lc != ESP_OK) {
+            ESP_LOGW(TAG, "line_coding_set: %s — continuing", esp_err_to_name(lc));
+         }
+
          xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
          s_dev = hdl;
          s_connected = true;
          xSemaphoreGiveRecursive(s_lock);
          stale_open_fails = 0;
-         ESP_LOGI(TAG, "K144 CDC-ACM opened");
+         ESP_LOGI(TAG, "K144 CDC-ACM opened (DTR=1 RTS=1, line coding set)");
          continue;
       }
 
@@ -344,6 +373,8 @@ int voice_usb_cdc_send(const void *buf, size_t len) {
       ESP_LOGW(TAG, "tx_blocking: %s", esp_err_to_name(err));
       return -1;
    }
+   /* TT #620 W4 diagnostic: log TX with first 80 bytes preview. */
+   ESP_LOGI(TAG, "tx %u bytes: %.*s", (unsigned)len, (int)(len > 80 ? 80 : len), (const char *)buf);
    return (int)len;
 }
 

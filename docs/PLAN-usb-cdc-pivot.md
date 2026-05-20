@@ -187,3 +187,37 @@ All StackFlow request/response traffic flows over CDC-ACM:
 ## Acceptance
 
 Per issue #620.  PR squashes to one commit on `main` per wave.
+
+## Status snapshot — 2026-05-20
+
+**Committed + working:**
+- W1: K144 composite gadget — ADB + CDC-ACM + UAC1 all enumerate ✓
+- W2: Tab5 USB host stack — opens K144 CDC-ACM endpoint ✓
+- W3: voice_xport abstraction + NVS xport switch ✓
+- W4: K144 sys_config.json template (points llm_sys at /dev/ttyGS0) ✓
+- K144 watchdog (ax_usb_tinker_event.sh) ✓
+
+**Live-verified end-to-end (dev box ↔ K144 path):**
+```
+$ printf '{"request_id":"diag-1","work_id":"sys","action":"ping"}\n' > /dev/ttyACM1
+$ cat /dev/ttyACM1
+{"created":...,"data":"None","error":{"code":0,"message":""},
+ "object":"None","request_id":"diag-1","work_id":"sys"}
+```
+
+**Known bug — Tab5 USB CDC RX direction silent:**
+- TX from Tab5 → K144 works (`tx 56 bytes: {...}` logged)
+- RX from K144 → Tab5 returns zero bytes (handle_rx callback never fires)
+- DTR=1 + RTS=1 + line_coding_set(1500000) all confirmed via control transfers
+- usb_cdc.connected = true, K144 enumerates cleanly
+
+Likely cause: bulk-IN endpoint isn't being polled by `cdc_acm_host` driver
+in our configuration, OR K144's f_acm gadget needs an additional control
+signal we're missing.
+
+**Production rollback applied 2026-05-20:**
+- K144 `sys_config.json` removed → llm_sys back on /dev/ttyS1 (UART path live)
+- Tab5 NVS `xport` stays at 0 (uart) — UART chain functional
+- All USB code paths remain compiled but inactive
+- To resume USB pivot: fix Tab5 RX bug, re-install K144 sys_config.json via
+  `./scripts/k144/install.sh`, set NVS `xport=1`
