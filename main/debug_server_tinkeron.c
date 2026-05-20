@@ -30,12 +30,12 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "settings.h"       /* TT #617 — wake_src */
-#include "task_worker.h"    /* tab5_worker_enqueue */
-#include "voice_m5_llm.h"   /* sys_reboot, hwinfo accessor */
+#include "settings.h"             /* TT #617 — wake_src */
+#include "task_worker.h"          /* tab5_worker_enqueue */
 #include "voice_ext_pcm_stream.h" /* TT #131 stats */
-#include "voice_onboard.h"  /* failover state names */
-#include "voice_wakeword.h" /* status + reconfigure_phrase + transcripts */
+#include "voice_m5_llm.h"         /* sys_reboot, hwinfo accessor */
+#include "voice_onboard.h"        /* failover state names */
+#include "voice_wakeword.h"       /* status + reconfigure_phrase + transcripts */
 
 static const char *TAG = "debug_tinkeron";
 
@@ -177,8 +177,8 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
    if (httpd_query_key_value(qry, "src", src, sizeof(src)) != ESP_OK) {
       return respond_error(req, "missing src= param", 400);
    }
-   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 &&
-       strcmp(src, "ext_pcm") != 0 && strcmp(src, "off") != 0) {
+   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 && strcmp(src, "ext_pcm") != 0 &&
+       strcmp(src, "off") != 0) {
       return respond_error(req, "src must be k144|dragon|ext_pcm|off", 400);
    }
    esp_err_t e = tab5_settings_set_wake_src(src);
@@ -388,15 +388,24 @@ static esp_err_t handle_extpcm(httpd_req_t *req) {
 
    /* Hint strings the user can scan at a glance. */
    const char *hint;
-   if (!st.task_running)             hint = "pump task not running";
-   else if (!st.armed)               hint = "pump disarmed (wake_src != ext_pcm?)";
-   else if (st.voice_state != 2)     hint = "voice state not READY";
-   else if (!st.wakeword_active)     hint = "voice_wakeword not armed (K144 asr.setup pending)";
-   else if (st.asr_id == NULL || st.asr_id[0] == '\0') hint = "asr_id empty (wakeword setup failed?)";
-   else if (st.last_pump_age_ms > 2000) hint = "no recent pump send (UART send failing?)";
-   else if (st.last_send_ok == 0)    hint = "last UART send failed (port C contention?)";
-   else if (st.last_mic_rms < 50)    hint = "mic capture is near-silent (RMS < 50)";
-   else                              hint = "ok — frames flowing with audible mic";
+   if (!st.task_running)
+      hint = "pump task not running";
+   else if (!st.armed)
+      hint = "pump disarmed (wake_src != ext_pcm?)";
+   else if (st.voice_state != 2)
+      hint = "voice state not READY";
+   else if (!st.wakeword_active)
+      hint = "voice_wakeword not armed (K144 asr.setup pending)";
+   else if (st.asr_id == NULL || st.asr_id[0] == '\0')
+      hint = "asr_id empty (wakeword setup failed?)";
+   else if (st.last_pump_age_ms > 2000)
+      hint = "no recent pump send (UART send failing?)";
+   else if (st.last_send_ok == 0)
+      hint = "last UART send failed (port C contention?)";
+   else if (st.last_mic_rms < 50)
+      hint = "mic capture is near-silent (RMS < 50)";
+   else
+      hint = "ok — frames flowing with audible mic";
    cJSON_AddStringToObject(root, "hint", hint);
 
    return respond_json(req, root, 200);
@@ -427,7 +436,10 @@ void debug_server_tinkeron_register(httpd_handle_t server) {
        .user_ctx = NULL,
    };
    static const httpd_uri_t uri_extpcm = {
-       .uri = "/tinkeron/extpcm", .method = HTTP_GET, .handler = handle_extpcm, .user_ctx = NULL,
+       .uri = "/tinkeron/extpcm",
+       .method = HTTP_GET,
+       .handler = handle_extpcm,
+       .user_ctx = NULL,
    };
    httpd_register_uri_handler(server, &uri_status);
    httpd_register_uri_handler(server, &uri_arm);

@@ -1207,8 +1207,7 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
        extern esp_err_t voice_ext_pcm_stream_init(void);
        esp_err_t ep = voice_ext_pcm_stream_init();
        if (ep != ESP_OK) {
-          ESP_LOGW(TAG, "voice_ext_pcm_stream_init failed (%s) — ext_pcm path disabled",
-                   esp_err_to_name(ep));
+          ESP_LOGW(TAG, "voice_ext_pcm_stream_init failed (%s) — ext_pcm path disabled", esp_err_to_name(ep));
        }
     }
 

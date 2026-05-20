@@ -35,6 +35,7 @@
 #pragma once
 
 #include <stdbool.h>
+
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -49,16 +50,16 @@ void voice_ext_pcm_stream_on_state_change(int new_state);
 
 /** TT #131 — diagnostic stats for /tinkeron/extpcm endpoint. */
 typedef struct {
-    bool task_running;
-    bool armed;
-    int voice_state;
-    bool wakeword_active;
-    const char *asr_id; /* borrowed; may be NULL */
-    uint32_t frames_pumped;
-    uint32_t last_mic_rms;      /* int16 abs-mean of last chunk; 0=silence */
-    uint32_t last_tx_bytes;     /* size of last UART send */
-    uint32_t last_send_ok;      /* 1 = last tab5_port_c_send returned ==tx_len */
-    int64_t last_pump_age_ms;   /* ms since last successful pump */
+   bool task_running;
+   bool armed;
+   int voice_state;
+   bool wakeword_active;
+   const char *asr_id; /* borrowed; may be NULL */
+   uint32_t frames_pumped;
+   uint32_t last_mic_rms;    /* int16 abs-mean of last chunk; 0=silence */
+   uint32_t last_tx_bytes;   /* size of last UART send */
+   uint32_t last_send_ok;    /* 1 = last tab5_port_c_send returned ==tx_len */
+   int64_t last_pump_age_ms; /* ms since last successful pump */
 } voice_ext_pcm_stream_stats_t;
 
 void voice_ext_pcm_stream_get_stats(voice_ext_pcm_stream_stats_t *out);

@@ -1246,14 +1246,13 @@ void ui_home_update_status(void)
         bool armed = voice_wakeword_is_active();
         bool llm_unavail = (voice_onboard_failover_state() == 3);
         if (llm_unavail && !armed) {
-            lv_obj_add_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
+           lv_obj_add_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
+           lv_obj_add_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_obj_remove_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_style_bg_color(s_tinkeron_dot,
-                lv_color_hex(armed ? TH_STATUS_GREEN : TH_AMBER), 0);
-            lv_label_set_text(s_tinkeron_label, armed ? "TINKERON" : "TINKERON OFF");
+           lv_obj_remove_flag(s_tinkeron_dot, LV_OBJ_FLAG_HIDDEN);
+           lv_obj_remove_flag(s_tinkeron_label, LV_OBJ_FLAG_HIDDEN);
+           lv_obj_set_style_bg_color(s_tinkeron_dot, lv_color_hex(armed ? TH_STATUS_GREEN : TH_AMBER), 0);
+           lv_label_set_text(s_tinkeron_label, armed ? "TINKERON" : "TINKERON OFF");
         }
     }
 

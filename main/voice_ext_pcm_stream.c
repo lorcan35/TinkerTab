@@ -37,8 +37,8 @@
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "ima_adpcm.h"
-#include "mbedtls/base64.h"
 #include "m5_stackflow.h"
+#include "mbedtls/base64.h"
 #include "uart_port_c.h"
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
@@ -113,8 +113,7 @@ static void ext_pcm_task(void *arg) {
    (void)arg;
 
    const int tdm_samples = WS_MIC_48K_FRAMES * WS_MIC_TDM_CHANNELS;
-   int16_t *tdm_buf =
-       heap_caps_malloc(tdm_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   int16_t *tdm_buf = heap_caps_malloc(tdm_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    int16_t *mono_buf = heap_caps_malloc(WS_CHUNK_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    /* batch_buf accumulates INGEST_BATCH_CHUNKS×WS_CHUNK_BYTES raw PCM
     * before a single base64 + ingest send.  Reduces UART RPC rate from
@@ -213,8 +212,7 @@ static void ext_pcm_task(void *arg) {
       if (!quiescent_state(s_voice_state) || voice_mic_is_active()) continue;
 
       /* Append this chunk to the batch.  Send only when full. */
-      memcpy((uint8_t *)batch_buf + batch_chunks * WS_CHUNK_BYTES, mono_buf,
-             (size_t)out_idx * sizeof(int16_t));
+      memcpy((uint8_t *)batch_buf + batch_chunks * WS_CHUNK_BYTES, mono_buf, (size_t)out_idx * sizeof(int16_t));
       batch_chunks++;
       if (batch_chunks < INGEST_BATCH_CHUNKS) continue;
       batch_chunks = 0;
@@ -232,14 +230,15 @@ static void ext_pcm_task(void *arg) {
          int16_t *p = (int16_t *)batch_buf;
          for (int k = 0; k < INGEST_RAW_SAMPLES; k++) {
             int32_t v = (int32_t)p[k] * 16;
-            if (v > 32767) v = 32767;
-            else if (v < -32768) v = -32768;
+            if (v > 32767)
+               v = 32767;
+            else if (v < -32768)
+               v = -32768;
             p[k] = (int16_t)v;
          }
       }
       size_t b64_len = 0;
-      int b_err = mbedtls_base64_encode((unsigned char *)b64_buf, INGEST_B64_CAP, &b64_len,
-                                        (const uint8_t *)batch_buf,
+      int b_err = mbedtls_base64_encode((unsigned char *)b64_buf, INGEST_B64_CAP, &b64_len, (const uint8_t *)batch_buf,
                                         (size_t)INGEST_RAW_SAMPLES * sizeof(int16_t));
       if (b_err != 0 || b64_len == 0) {
          ESP_LOGW(TAG, "base64 encode failed: %d", b_err);
@@ -274,14 +273,14 @@ static void ext_pcm_task(void *arg) {
       int sent = tab5_port_c_send(tx_buf, (size_t)tx_len);
       tab5_port_c_unlock();
       s_last_tx_bytes = (uint32_t)tx_len;
-      s_last_send_ok  = (sent == tx_len) ? 1 : 0;
+      s_last_send_ok = (sent == tx_len) ? 1 : 0;
       if (sent != tx_len) continue;
 
       int64_t now = esp_timer_get_time();
       s_last_pump_us = now;
       if (now - s_last_log_us > 5 * 1000000) {
-         ESP_LOGI(TAG, "ext_pcm pumped seq=%lu (tx=%d B, rms=%u) → %s",
-                  (unsigned long)s_frame_seq, tx_len, (unsigned)s_last_mic_rms, target);
+         ESP_LOGI(TAG, "ext_pcm pumped seq=%lu (tx=%d B, rms=%u) → %s", (unsigned long)s_frame_seq, tx_len,
+                  (unsigned)s_last_mic_rms, target);
          s_last_log_us = now;
       }
    }
@@ -303,9 +302,8 @@ esp_err_t voice_ext_pcm_stream_init(void) {
     * the 12 KB wakeword stack + cJSON allocs during kws.setup retries
     * was pushing internal-SRAM largest-free below the 20 KB heap_wd
     * exhaustion threshold within ~3 min → panic. */
-   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(ext_pcm_task, "voice_ext_pcm", EXT_PCM_TASK_STACK,
-                                                   NULL, EXT_PCM_TASK_PRIO, &s_task,
-                                                   EXT_PCM_TASK_CORE, MALLOC_CAP_SPIRAM);
+   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(ext_pcm_task, "voice_ext_pcm", EXT_PCM_TASK_STACK, NULL,
+                                                   EXT_PCM_TASK_PRIO, &s_task, EXT_PCM_TASK_CORE, MALLOC_CAP_SPIRAM);
    if (ok != pdPASS) {
       ESP_LOGE(TAG, "task spawn failed");
       s_task = NULL;
@@ -339,25 +337,21 @@ void voice_ext_pcm_stream_disarm(void) {
    ESP_LOGI(TAG, "disarmed");
 }
 
-bool voice_ext_pcm_stream_is_active(void) {
-   return s_armed && s_task != NULL && quiescent_state(s_voice_state);
-}
+bool voice_ext_pcm_stream_is_active(void) { return s_armed && s_task != NULL && quiescent_state(s_voice_state); }
 
-void voice_ext_pcm_stream_on_state_change(int new_state) {
-   s_voice_state = new_state;
-}
+void voice_ext_pcm_stream_on_state_change(int new_state) { s_voice_state = new_state; }
 
 void voice_ext_pcm_stream_get_stats(voice_ext_pcm_stream_stats_t *out) {
    if (out == NULL) return;
-   out->task_running    = (s_task != NULL);
-   out->armed           = s_armed;
-   out->voice_state     = s_voice_state;
+   out->task_running = (s_task != NULL);
+   out->armed = s_armed;
+   out->voice_state = s_voice_state;
    out->wakeword_active = voice_wakeword_is_active();
-   out->asr_id          = voice_wakeword_asr_id();
-   out->frames_pumped   = s_frame_seq;
-   out->last_mic_rms    = s_last_mic_rms;
-   out->last_tx_bytes   = s_last_tx_bytes;
-   out->last_send_ok    = s_last_send_ok;
+   out->asr_id = voice_wakeword_asr_id();
+   out->frames_pumped = s_frame_seq;
+   out->last_mic_rms = s_last_mic_rms;
+   out->last_tx_bytes = s_last_tx_bytes;
+   out->last_send_ok = s_last_send_ok;
    if (s_last_pump_us > 0) {
       out->last_pump_age_ms = (esp_timer_get_time() - s_last_pump_us) / 1000;
    } else {

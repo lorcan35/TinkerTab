@@ -20,13 +20,13 @@
 #include <string.h>
 
 #include "debug_obs.h"
-#include "settings.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
+#include "settings.h"
 #include "voice.h"
 #include "voice_m5_llm.h"
 
@@ -248,8 +248,8 @@ static bool wakeword_suppressed_by_voice_state(void) {
     * the user gets a "fully idle before re-arm" UX as requested.
     * Net cost: lose mid-TTS barge-in.  Net gain: stability under the
     * sensitive ASR-based wake. */
-   if (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING ||
-       st == VOICE_STATE_RECONNECTING || st == VOICE_STATE_SPEAKING) {
+   if (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING ||
+       st == VOICE_STATE_SPEAKING) {
       s_last_busy_us = esp_timer_get_time();
       return true;
    }
@@ -262,7 +262,7 @@ static bool wakeword_suppressed_by_voice_state(void) {
       if (since_busy_us < (int64_t)WAKE_REARM_GRACE_MS * 1000) {
          return true;
       }
-      s_last_busy_us = 0;  /* grace expired — re-armed */
+      s_last_busy_us = 0; /* grace expired — re-armed */
    }
    return false;
 }
@@ -324,11 +324,11 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
        * Order matters: try the longest/most-specific first so the
        * match-detail surfaces the best signal. */
       static const char *const k_alt_patterns[] = {
-         "thinker",   /* T→Th substitution — most common rendering */
-         "hicker",    /* contracted "Hey Tinker" */
-         "tinker",    /* exact (rare — model usually substitutes) */
-         "hick",      /* heavily-contracted rendering, real session 2026-05-20 */
-         "hanker",    /* observed in "any hanker thinker" rendering */
+          "thinker", /* T→Th substitution — most common rendering */
+          "hicker",  /* contracted "Hey Tinker" */
+          "tinker",  /* exact (rare — model usually substitutes) */
+          "hick",    /* heavily-contracted rendering, real session 2026-05-20 */
+          "hanker",  /* observed in "any hanker thinker" rendering */
       };
       const char *match = NULL;
       if (s_wake_window_len > 0) {
@@ -527,9 +527,8 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
     * Internal SRAM is tight (~56 KB largest-free at boot); a 12 KB
     * stack here on top of ext_pcm's 8 KB pushed the heap into
     * heap_wd's "sram_exhausted" threshold under sustained operation. */
-   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(wakeword_task, "wakeword", WAKEWORD_TASK_STACK,
-                                                   NULL, WAKEWORD_TASK_PRIO, &s_task,
-                                                   tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
+   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(wakeword_task, "wakeword", WAKEWORD_TASK_STACK, NULL,
+                                                   WAKEWORD_TASK_PRIO, &s_task, tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
    if (ok != pdPASS) {
       ESP_LOGE(TAG, "wakeword task spawn failed");
       voice_m5_llm_wakeword_teardown(s_handle);

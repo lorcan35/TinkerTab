@@ -19,18 +19,18 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/idf_additions.h"  /* xTaskCreatePinnedToCoreWithCaps for watchdog */
+#include "freertos/idf_additions.h" /* xTaskCreatePinnedToCoreWithCaps for watchdog */
 #include "freertos/task.h"
-#include "settings.h"            /* tab5_settings_get_mic_mute (Wave 7) */
-#include "task_worker.h"         /* tab5_worker_enqueue */
-#include "uart_port_c.h"         /* tab5_port_c_uart_get_baud — TT #131 baud bump check */
-#include "ui_audio_cues.h"       /* ui_audio_cue_play — wake chime (#131-opt2) */
-#include "ui_chat.h"             /* ui_chat_add_message */
-#include "ui_core.h"             /* tab5_ui_try_lock / tab5_ui_unlock */
-#include "ui_home.h"             /* ui_home_show_toast */
-#include "voice.h"               /* voice_set_state, VOICE_STATE_* */
-#include "voice_m5_llm.h"        /* probe / infer / chain_* */
+#include "settings.h"             /* tab5_settings_get_mic_mute (Wave 7) */
+#include "task_worker.h"          /* tab5_worker_enqueue */
+#include "uart_port_c.h"          /* tab5_port_c_uart_get_baud — TT #131 baud bump check */
+#include "ui_audio_cues.h"        /* ui_audio_cue_play — wake chime (#131-opt2) */
+#include "ui_chat.h"              /* ui_chat_add_message */
+#include "ui_core.h"              /* tab5_ui_try_lock / tab5_ui_unlock */
+#include "ui_home.h"              /* ui_home_show_toast */
+#include "voice.h"                /* voice_set_state, VOICE_STATE_* */
 #include "voice_ext_pcm_stream.h" /* TT #131: auto-arm pump on boot */
+#include "voice_m5_llm.h"         /* probe / infer / chain_* */
 #include "voice_messages_sync.h"  /* W3-C-c: Dragon canonical message store */
 #include "voice_wakeword.h"
 
@@ -379,9 +379,8 @@ static void onboard_warmup_job(void *arg) {
       if (pe == ESP_OK) {
          ESP_LOGI(TAG, "K144 found at 1.5 Mbps — Tab5 baud auto-matched");
       } else {
-         ESP_LOGW(TAG, "K144 unreachable at 115200 AND 1.5 Mbps (%s) — failover disabled",
-                  esp_err_to_name(pe));
-         tab5_port_c_uart_set_baud(115200);  /* revert local */
+         ESP_LOGW(TAG, "K144 unreachable at 115200 AND 1.5 Mbps (%s) — failover disabled", esp_err_to_name(pe));
+         tab5_port_c_uart_set_baud(115200); /* revert local */
          mark_k144_unavailable("probe_fail");
          return;
       }
@@ -446,7 +445,8 @@ static void onboard_warmup_job(void *arg) {
                voice_onboard_suppress_auto_retry(true);
                esp_err_t be = voice_m5_llm_set_baud(1500000);
                if (be != ESP_OK) {
-                  ESP_LOGW(TAG, "post-setup baud bump failed (%s) — pump will run at 115200 (~3 fps)", esp_err_to_name(be));
+                  ESP_LOGW(TAG, "post-setup baud bump failed (%s) — pump will run at 115200 (~3 fps)",
+                           esp_err_to_name(be));
                } else {
                   ESP_LOGI(TAG, "baud bumped to 1.5 Mbps for pump");
                }
@@ -552,11 +552,11 @@ static void onboard_failover_text_job(void *arg) {
 /* ──────────────────────────────────────────────────────────────────── */
 #define WATCHDOG_INTERVAL_MS 10000
 #define WATCHDOG_ASR_STALL_MS 20000
-#define WATCHDOG_COOLDOWN_MS 60000           /* 60 s — was 90 s; faster recovery */
+#define WATCHDOG_COOLDOWN_MS 60000 /* 60 s — was 90 s; faster recovery */
 #define WATCHDOG_PUMP_HEALTHY_MS 1000
-#define WATCHDOG_GRACE_AFTER_BOOT_MS 30000  /* don't fire in first 30 s — chain may still be coming up */
-#define WATCHDOG_RESET_FAIL_CAP 2            /* after 2 consecutive sys.reset failures → escalate to sys.reboot */
-#define WATCHDOG_REBOOT_COOLDOWN_MS 180000   /* 3 min after sys.reboot before considering another */
+#define WATCHDOG_GRACE_AFTER_BOOT_MS 30000 /* don't fire in first 30 s — chain may still be coming up */
+#define WATCHDOG_RESET_FAIL_CAP 2          /* after 2 consecutive sys.reset failures → escalate to sys.reboot */
+#define WATCHDOG_REBOOT_COOLDOWN_MS 180000 /* 3 min after sys.reboot before considering another */
 
 static volatile int64_t s_watchdog_last_kick_us = 0;
 static volatile int64_t s_watchdog_started_us = 0;
@@ -566,9 +566,8 @@ static volatile int64_t s_watchdog_last_reboot_us = 0;
 static void onboard_watchdog_task(void *arg) {
    (void)arg;
    s_watchdog_started_us = esp_timer_get_time();
-   ESP_LOGI(TAG, "K144-ASR watchdog started (poll=%ds, stall=%ds, cooldown=%ds)",
-            WATCHDOG_INTERVAL_MS / 1000, WATCHDOG_ASR_STALL_MS / 1000,
-            WATCHDOG_COOLDOWN_MS / 1000);
+   ESP_LOGI(TAG, "K144-ASR watchdog started (poll=%ds, stall=%ds, cooldown=%ds)", WATCHDOG_INTERVAL_MS / 1000,
+            WATCHDOG_ASR_STALL_MS / 1000, WATCHDOG_COOLDOWN_MS / 1000);
 
    while (1) {
       vTaskDelay(pdMS_TO_TICKS(WATCHDOG_INTERVAL_MS));
@@ -620,12 +619,13 @@ static void onboard_watchdog_task(void *arg) {
 
       /* All gates passed: pump flowing, wakeword armed, K144 ready,
        * but no transcript in 20+ seconds.  K144 ASR cycled. */
-      ESP_LOGW(TAG,
-               "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu, fails=%d) — kicking recovery",
-               delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+      ESP_LOGW(
+          TAG,
+          "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu, fails=%d) — kicking recovery",
+          delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
       char detail[48];
-      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu fails=%d",
-               delta_age_ms / 1000, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu fails=%d", delta_age_ms / 1000,
+               (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
       tab5_debug_obs_event("watchdog", detail);
       s_watchdog_last_kick_us = now;
 
@@ -652,7 +652,7 @@ static void onboard_watchdog_task(void *arg) {
          /* Wait ~60s for K144 hardware reboot + daemon start, then trigger
           * reset_failover to re-establish chain on the freshly-rebooted K144. */
          vTaskDelay(pdMS_TO_TICKS(60000));
-         tab5_port_c_uart_set_baud(115200);  /* K144 boots at default */
+         tab5_port_c_uart_set_baud(115200); /* K144 boots at default */
          (void)voice_onboard_reset_failover();
       } else {
          esp_err_t e = voice_onboard_reset_failover();
@@ -671,14 +671,13 @@ static void onboard_watchdog_task(void *arg) {
       int64_t check = voice_wakeword_last_delta_us();
       if (check > now) {
          if (s_watchdog_reset_fail_count > 0) {
-            ESP_LOGI(TAG, "watchdog: recovery succeeded — clearing fail count (was %d)",
-                     s_watchdog_reset_fail_count);
+            ESP_LOGI(TAG, "watchdog: recovery succeeded — clearing fail count (was %d)", s_watchdog_reset_fail_count);
          }
          s_watchdog_reset_fail_count = 0;
       } else {
          s_watchdog_reset_fail_count++;
-         ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d/%d",
-                  s_watchdog_reset_fail_count, WATCHDOG_RESET_FAIL_CAP);
+         ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d/%d", s_watchdog_reset_fail_count,
+                  WATCHDOG_RESET_FAIL_CAP);
       }
    }
 }
@@ -690,8 +689,7 @@ esp_err_t voice_onboard_start_warmup(void) {
    static volatile bool s_watchdog_spawned = false;
    if (!s_watchdog_spawned) {
       s_watchdog_spawned = true;
-      BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(onboard_watchdog_task, "onboard_wd",
-                                                      4096, NULL, 1, NULL,
+      BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(onboard_watchdog_task, "onboard_wd", 4096, NULL, 1, NULL,
                                                       tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
       if (ok != pdPASS) {
          ESP_LOGW(TAG, "watchdog task spawn failed — running without ASR-stall recovery");
@@ -742,9 +740,9 @@ static void onboard_reset_failover_job(void *arg) {
     * early as soon as ping succeeds.  Most recoveries land at 10-20 s;
     * pathological at 60-90 s.  Beyond 90 s we give up and escalate. */
    tab5_debug_obs_event("m5.warmup", "start");
-   vTaskDelay(pdMS_TO_TICKS(8000));  /* min boot time */
+   vTaskDelay(pdMS_TO_TICKS(8000)); /* min boot time */
    esp_err_t pe = ESP_ERR_TIMEOUT;
-   for (int i = 0; i < 41; i++) {  /* up to 82 s additional, 90 s total */
+   for (int i = 0; i < 41; i++) { /* up to 82 s additional, 90 s total */
       pe = voice_m5_llm_probe();
       if (pe == ESP_OK) {
          ESP_LOGI(TAG, "K144 ping success after %d s post-reset", 8 + i * 2);
@@ -1236,13 +1234,11 @@ static void arm_wakeword_async_job(void *arg) {
    }
 
    if (attempts >= 15) {
-      ESP_LOGW(TAG, "arm_wakeword_async: gave up after %d attempts (last err=%s)", attempts,
-               esp_err_to_name(we));
+      ESP_LOGW(TAG, "arm_wakeword_async: gave up after %d attempts (last err=%s)", attempts, esp_err_to_name(we));
       tab5_debug_obs_event("arm_wake_async", "give_up");
       return;
    }
-   ESP_LOGW(TAG, "arm_wakeword_async: attempt %d failed (%s) — retrying in 2s", attempts,
-            esp_err_to_name(we));
+   ESP_LOGW(TAG, "arm_wakeword_async: attempt %d failed (%s) — retrying in 2s", attempts, esp_err_to_name(we));
    vTaskDelay(pdMS_TO_TICKS(2000));
    (void)tab5_worker_enqueue(arm_wakeword_async_job, (void *)(intptr_t)(attempts + 1), "arm_wake_retry");
 }

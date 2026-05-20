@@ -30,8 +30,8 @@ extern "C" {
 
 /** @brief Bytes needed to encode @p sample_count int16 samples. */
 static inline size_t ima_adpcm_encoded_size(size_t sample_count) {
-    if (sample_count == 0) return 0;
-    return 4 + (sample_count / 2);
+   if (sample_count == 0) return 0;
+   return 4 + (sample_count / 2);
 }
 
 /**

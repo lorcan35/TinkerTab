@@ -1569,9 +1569,9 @@ esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
 
 struct voice_m5_wakeword_handle {
    char audio_id[32];
-   char asr_id[32];      /* doubles as kws work_id when is_kws=true */
-   bool is_kws;          /* TT #131-opt2: KWS detector instead of ASR */
-   char kws_phrase[64];  /* phrase to deliver on detection (KWS frames carry no text) */
+   char asr_id[32];     /* doubles as kws work_id when is_kws=true */
+   bool is_kws;         /* TT #131-opt2: KWS detector instead of ASR */
+   char kws_phrase[64]; /* phrase to deliver on detection (KWS frames carry no text) */
 };
 
 esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag) {
@@ -1640,8 +1640,7 @@ fail:
  *               "object":"audio.pcm.base64","data":"<base64>"}
  * Direct path — no audio unit, no ext_pcm publisher, no IPC PUB
  * contention. */
-esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle,
-                                               volatile bool *stop_flag) {
+esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag) {
    if (out_handle == NULL) return ESP_ERR_INVALID_ARG;
    *out_handle = NULL;
 
@@ -1668,8 +1667,7 @@ esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_
    cJSON_AddItemToArray(inp, cJSON_CreateString("asr"));
    cJSON_AddItemToObject(d, "input", inp);
    cJSON_AddBoolToObject(d, "enoutput", true);
-   err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id),
-                          M5_SETUP_TIMEOUT_MS, stop_flag);
+   err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id), M5_SETUP_TIMEOUT_MS, stop_flag);
    if (err != ESP_OK) {
       heap_caps_free(h);
       M5_UNLOCK();
@@ -1694,8 +1692,7 @@ const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handl
  * keyword set at setup time via the kws[] array.  K144's main_kws
  * binary is patched to decode ADPCM in task_user_data — mirror of the
  * ASR patch. */
-esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle,
-                                          const char *keyword,
+esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle, const char *keyword,
                                           volatile bool *stop_flag) {
    if (out_handle == NULL || keyword == NULL || keyword[0] == '\0') return ESP_ERR_INVALID_ARG;
    *out_handle = NULL;
@@ -1774,8 +1771,7 @@ esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handl
    /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
     * models AND forks text2token.py.  Post-K144-reboot it's even slower
     * (cold disk cache).  90 s budget. */
-   err = chain_setup_unit("kws", "kws.setup", d, h->asr_id, sizeof(h->asr_id),
-                          90000, stop_flag);
+   err = chain_setup_unit("kws", "kws.setup", d, h->asr_id, sizeof(h->asr_id), 90000, stop_flag);
    if (err != ESP_OK) {
       heap_caps_free(h);
       M5_UNLOCK();
