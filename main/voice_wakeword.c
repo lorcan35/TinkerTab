@@ -219,19 +219,43 @@ static void finish_dictation(const char *reason) {
  * Barge-in (saying "Hey Tinker" to interrupt TTS) is a separate
  * follow-up that needs voice_cancel() + voice_start_listening()
  * coordination; not in this fix. */
+/* TT #131 stability 2026-05-20: tracks the moment voice state returned
+ * to READY so we can enforce a post-turn grace period before wake can
+ * re-fire.  Without this grace, K144 ASR's buffered transcripts from
+ * during the turn (often containing fragments of Tinker's own TTS
+ * playback) hit the matcher immediately on READY transition and
+ * false-fire.  500-1000 ms is enough for the ASR engine's streaming
+ * context to flush + Tab5's wake_window to settle on truly-new audio. */
+static int64_t s_last_busy_us = 0;
+#define WAKE_REARM_GRACE_MS 1000
+
 static bool wakeword_suppressed_by_voice_state(void) {
    voice_state_t st = voice_get_state();
-   /* TT #597 — Barge-in: SPEAKING is NO LONGER suppressed.  The user
-    * may say "Hey Tinker" mid-TTS to interrupt + start a new turn.
-    * The WAKE handler in voice_onboard.c::wakeword_event_handler is
-    * responsible for calling voice_cancel() before voice_start_
-    * listening() when the wake fires during SPEAKING.
-    *
-    * Self-wake risk mitigated by the wake_phrase being multi-word
-    * ("hey tinker", not bare "tinker") + the VAD pre-gate's 8-char
-    * window floor.  Tinker's TTS would have to coincidentally say
-    * the full "hey tinker" phrase to false-trigger, which is rare. */
-   return (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING);
+   /* TT #131 2026-05-20: matcher's alt phrase is now bare "thinker"
+    * (one word, much more permissive than the old "hey thinker").
+    * That makes barge-in unsafe — Tinker's own TTS reply commonly
+    * contains "Tinker" → ASR transcribes "thinker" → matcher fires
+    * → cancels its own reply.  Suppress wake during SPEAKING too so
+    * the user gets a "fully idle before re-arm" UX as requested.
+    * Net cost: lose mid-TTS barge-in.  Net gain: stability under the
+    * sensitive ASR-based wake. */
+   if (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING ||
+       st == VOICE_STATE_RECONNECTING || st == VOICE_STATE_SPEAKING) {
+      s_last_busy_us = esp_timer_get_time();
+      return true;
+   }
+   /* Post-busy grace: wait WAKE_REARM_GRACE_MS after state returns to
+    * READY before allowing wake to fire again.  Lets K144 ASR's
+    * streaming-zipformer context flush its just-completed-turn frames
+    * so the next match is against fresh post-turn audio only. */
+   if (s_last_busy_us != 0) {
+      int64_t since_busy_us = esp_timer_get_time() - s_last_busy_us;
+      if (since_busy_us < (int64_t)WAKE_REARM_GRACE_MS * 1000) {
+         return true;
+      }
+      s_last_busy_us = 0;  /* grace expired — re-armed */
+   }
+   return false;
 }
 
 /* TT #578: push every ASR delta into the debug ring buffer.  Cheap —

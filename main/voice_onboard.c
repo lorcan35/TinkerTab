@@ -390,14 +390,36 @@ static void onboard_warmup_job(void *arg) {
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
 
-      /* NOTE: auto baud bump to 1.5 Mbps WAS here as TT #131 fix but
-       * caused Tab5↔K144 sync issues — after Tab5 reboots with K144
-       * still at 1.5M (no cold boot reset on K144 unit), the bump
-       * round-trip races with K144's serial reconfig and the chain
-       * lands in a half-synced state where kws.setup fails silently.
-       * Cleaner: chain comes up at 115200 default; user POSTs
-       * /tinkeron/wake_src=ext_pcm to opt in to 1.5 Mbps real-time
-       * pump (that handler resets Tab5 baseline before bumping). */
+      /* TT #131 stability 2026-05-20: BOOT AUTO-ARM the full Tab5-mic
+       * → K144 ASR chain when NVS wake_src=="ext_pcm".  Previously the
+       * boot path only armed wakeword at 115200; user had to manually
+       * POST /tinkeron/wake_src=ext_pcm after every restart to bump
+       * baud to 1.5 Mbps + arm the ext_pcm pump.  That manual step
+       * was both a UX burden AND it cycled the wakeword chain
+       * (disarm + re-arm), which destabilised K144's llm-asr daemon.
+       *
+       * Now: if user has previously opted in (wake_src=ext_pcm
+       * persisted in NVS), the boot path does the SAME work as the
+       * wake_src=ext_pcm POST handler — reset Tab5 UART baseline to
+       * 115200 (so the bump round-trip starts from known state),
+       * suppress auto-retry, bump baud to 1.5 Mbps, then arm wakeword
+       * + pump.  The K144-stayed-at-1.5M sync issue from the
+       * earlier attempt is avoided because we explicitly reset
+       * baseline BEFORE bumping.  Setup-once invariant preserved:
+       * exactly one asr.setup per boot at the right baud. */
+      bool boot_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
+      if (boot_to_ext_pcm) {
+         ESP_LOGI(TAG, "wake_src=ext_pcm in NVS — boot auto-arming Tab5 mic path");
+         tab5_port_c_uart_set_baud(115200);
+         voice_onboard_suppress_auto_retry(true);
+         esp_err_t be = voice_m5_llm_set_baud(1500000);
+         if (be != ESP_OK) {
+            ESP_LOGW(TAG, "boot baud bump to 1.5 Mbps failed (%s) — wakeword will run at 115200 (pump capped at ~3 fps)",
+                     esp_err_to_name(be));
+         } else {
+            ESP_LOGI(TAG, "boot baud bumped to 1.5 Mbps cleanly");
+         }
+      }
 
       esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
@@ -415,16 +437,16 @@ static void onboard_warmup_job(void *arg) {
       } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
       } else if (we == ESP_OK) {
-         /* TT #131 2026-05-20: wakeword armed cleanly — arm the ext_pcm
-          * pump in the same boot sequence so Tab5 mic immediately flows
-          * to the K144 KWS unit.  Previously this required a manual
-          * POST /tinkeron/wake_src=ext_pcm — which itself re-cycled the
-          * wakeword chain (disarm + re-setup), and the cycling was
-          * wedging K144's llm_sys dispatch.  Auto-arm here keeps the
-          * setup-once invariant: kws.setup happens exactly once per
-          * boot, at 1.5 Mbps, with the pump pre-armed to feed it. */
-         voice_ext_pcm_stream_arm();
-         ESP_LOGI(TAG, "ext_pcm pump auto-armed (Tab5 mic → K144 KWS)");
+         /* TT #131 stability 2026-05-20: arm ext_pcm pump ONLY when
+          * wake_src is configured for ext_pcm.  For other modes
+          * (dragon, mate, off) the pump must stay disarmed — otherwise
+          * it would compete with the active wake source for the Tab5
+          * mic and pollute the K144 ASR with audio that no one is
+          * matching against. */
+         if (boot_to_ext_pcm) {
+            voice_ext_pcm_stream_arm();
+            ESP_LOGI(TAG, "ext_pcm pump auto-armed (Tab5 mic → K144 ASR @ 1.5Mbps)");
+         }
       }
    } else {
       ESP_LOGW(TAG,
@@ -578,8 +600,24 @@ static void onboard_reset_failover_job(void *arg) {
        * uartsetup sometimes fails silently → both ends out of sync
        * across the reset.  Boot warmup path (onboard_warmup_job)
        * does the bump cleanly when Tab5 starts at the 115200 default.
-       * For reset path, user can manually re-bump via
-       * POST /tinkeron/wake_src=ext_pcm if needed. */
+       *
+       * 2026-05-20 update: reset path now ALSO does the bump when
+       * wake_src=ext_pcm, gated on resetting Tab5 baseline to 115200
+       * first (same pattern the wake_src=ext_pcm POST handler uses).
+       * K144 just went through sys.reset so its UART is also at the
+       * default — round-trip starts from known state. */
+      bool reset_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
+      if (reset_to_ext_pcm) {
+         ESP_LOGI(TAG, "wake_src=ext_pcm — reset path bumping baud to 1.5 Mbps");
+         tab5_port_c_uart_set_baud(115200);
+         voice_onboard_suppress_auto_retry(true);
+         esp_err_t be = voice_m5_llm_set_baud(1500000);
+         if (be != ESP_OK) {
+            ESP_LOGW(TAG, "reset-path baud bump failed (%s)", esp_err_to_name(be));
+         } else {
+            ESP_LOGI(TAG, "reset-path baud bumped to 1.5 Mbps");
+         }
+      }
       /* Wakeword revival: same hook as the initial warmup path — once
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
@@ -595,10 +633,12 @@ static void onboard_reset_failover_job(void *arg) {
       } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword (re)start skipped: %s", esp_err_to_name(we));
       } else if (we == ESP_OK) {
-         /* TT #131 2026-05-20: same pump-arm as warmup path so /m5/reset
-          * fully establishes Tab5 mic → K144 KWS in one shot. */
-         voice_ext_pcm_stream_arm();
-         ESP_LOGI(TAG, "ext_pcm pump auto-armed via reset path");
+         /* Same pump arm as warmup path — but only when wake_src is
+          * ext_pcm.  Other modes don't want the Tab5-mic pump running. */
+         if (reset_to_ext_pcm) {
+            voice_ext_pcm_stream_arm();
+            ESP_LOGI(TAG, "ext_pcm pump auto-armed via reset path @ 1.5 Mbps");
+         }
       }
    } else {
       ESP_LOGW(TAG, "K144 re-warmup %s after %lldms — still unavailable", esp_err_to_name(ie), dt_ms);
