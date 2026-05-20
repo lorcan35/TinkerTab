@@ -134,6 +134,14 @@ typedef struct {
  *         cached config values from the last start). */
 void voice_wakeword_status(voice_wakeword_status_t *out);
 
+/** @brief Timestamp of the most-recent ASR delta received from K144,
+ *         in esp_timer_get_time() microseconds (monotonic since boot).
+ *         Returns 0 if no delta has ever arrived this session.  Used by
+ *         the K144-cycling watchdog to detect a stale asr_id binding —
+ *         pump may be sending fine but K144 daemon cycled and our
+ *         cached work_id no longer routes anywhere. */
+int64_t voice_wakeword_last_delta_us(void);
+
 /** @brief Restart the listener with a new wake phrase at runtime.
  *
  *  Convenience for live A/B testing of phonetic variants without a

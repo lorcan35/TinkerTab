@@ -229,6 +229,15 @@ static void finish_dictation(const char *reason) {
 static int64_t s_last_busy_us = 0;
 #define WAKE_REARM_GRACE_MS 1000
 
+/* TT #131 watchdog 2026-05-20: timestamp of the most-recent ASR
+ * delta we received from K144.  Updated in asr_partial_cb.  The
+ * watchdog task in voice_onboard.c polls voice_wakeword_last_delta_us()
+ * and kicks /m5/reset if it goes stale (>20 s) while the pump is
+ * actively sending frames — that pattern means K144's llm-asr
+ * cycled out from under us and our cached asr_id is stale. */
+static int64_t s_last_delta_us = 0;
+int64_t voice_wakeword_last_delta_us(void) { return s_last_delta_us; }
+
 static bool wakeword_suppressed_by_voice_state(void) {
    voice_state_t st = voice_get_state();
    /* TT #131 2026-05-20: matcher's alt phrase is now bare "thinker"
@@ -276,6 +285,11 @@ static void transcript_ring_push(const char *delta, bool finish) {
 
 static void asr_partial_cb(const char *delta, bool finish, void *user) {
    (void)user;
+
+   /* TT #131 watchdog: timestamp ANY delta arrival (including empty
+    * "finish" markers).  Even a finish=true with no text confirms
+    * K144's llm-asr is alive and dispatching to us. */
+   s_last_delta_us = esp_timer_get_time();
 
    /* TT #578: every delta into the debug ring before any state branching. */
    if (delta && delta[0]) transcript_ring_push(delta, finish);

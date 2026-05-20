@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"  /* xTaskCreatePinnedToCoreWithCaps for watchdog */
 #include "freertos/task.h"
 #include "settings.h"            /* tab5_settings_get_mic_mute (Wave 7) */
 #include "task_worker.h"         /* tab5_worker_enqueue */
@@ -535,8 +536,125 @@ static void onboard_failover_text_job(void *arg) {
 /*  Public API — failover                                                 */
 /* ---------------------------------------------------------------------- */
 
+/* ──────────────────────────────────────────────────────────────────── */
+/*  TT #131 stability watchdog 2026-05-20                                */
+/*                                                                       */
+/*  K144's `llm-asr` daemon cycles intermittently (documented quirk).    */
+/*  When it does, Tab5's cached asr_id becomes stale: the pump keeps     */
+/*  sending frames over UART to a work_id that no longer exists on K144, */
+/*  K144 silently drops them, no transcripts come back, wakeword never   */
+/*  fires.  Manual recovery = `systemctl restart llm-sys` + /m5/reset    */
+/*  + /tinkeron/wake_src=ext_pcm.                                        */
+/*                                                                       */
+/*  This watchdog automates that: every WATCHDOG_INTERVAL_MS, check if   */
+/*  the pump is sending frames cleanly (last_pump_age_ms < 1 s) AND      */
+/*  voice_wakeword has received NO ASR delta in WATCHDOG_ASR_STALL_MS    */
+/*  (20 s).  Pump healthy + ASR silent = K144 cycled.  Trigger           */
+/*  voice_onboard_reset_failover() which re-runs the full chain bringup. */
+/*  Cooldown gate prevents thrash: don't re-kick within 90 s of last     */
+/*  kick (recovery itself takes ~30 s).                                  */
+/* ──────────────────────────────────────────────────────────────────── */
+#define WATCHDOG_INTERVAL_MS 10000
+#define WATCHDOG_ASR_STALL_MS 20000
+#define WATCHDOG_COOLDOWN_MS 90000
+#define WATCHDOG_PUMP_HEALTHY_MS 1000
+#define WATCHDOG_GRACE_AFTER_BOOT_MS 30000  /* don't fire in first 30 s — chain may still be coming up */
+
+static volatile int64_t s_watchdog_last_kick_us = 0;
+static volatile int64_t s_watchdog_started_us = 0;
+
+static void onboard_watchdog_task(void *arg) {
+   (void)arg;
+   s_watchdog_started_us = esp_timer_get_time();
+   ESP_LOGI(TAG, "K144-ASR watchdog started (poll=%ds, stall=%ds, cooldown=%ds)",
+            WATCHDOG_INTERVAL_MS / 1000, WATCHDOG_ASR_STALL_MS / 1000,
+            WATCHDOG_COOLDOWN_MS / 1000);
+
+   while (1) {
+      vTaskDelay(pdMS_TO_TICKS(WATCHDOG_INTERVAL_MS));
+
+      /* Only watchdog the ext_pcm path.  Other modes don't have this
+       * Tab5-pumps-to-cached-work_id failure mode. */
+      if (!tab5_settings_wake_src_is("ext_pcm")) continue;
+
+      /* Chain must be in the steady READY state.  Don't kick during
+       * PROBING (a reset is already in flight) or UNAVAILABLE
+       * (auto-retry will handle it). */
+      if (s_m5_failover != M5_FAIL_READY) continue;
+
+      /* Wakeword must be armed — if not, no asr_id binding to be stale. */
+      if (!voice_wakeword_is_active()) continue;
+
+      int64_t now = esp_timer_get_time();
+
+      /* Boot grace: chain may still be coming up cleanly. */
+      if (now - s_watchdog_started_us < (int64_t)WATCHDOG_GRACE_AFTER_BOOT_MS * 1000) continue;
+
+      /* Cooldown after a previous kick. */
+      if (now - s_watchdog_last_kick_us < (int64_t)WATCHDOG_COOLDOWN_MS * 1000) continue;
+
+      voice_ext_pcm_stream_stats_t stats;
+      voice_ext_pcm_stream_get_stats(&stats);
+
+      /* Pump must be actively flowing.  If pump is paused (mid voice
+       * turn) OR stopped, this check shouldn't fire — there's a legit
+       * reason no fresh frames are reaching K144. */
+      if (!stats.task_running || !stats.armed) continue;
+      if (stats.last_pump_age_ms < 0 || stats.last_pump_age_ms > WATCHDOG_PUMP_HEALTHY_MS) continue;
+
+      /* Pump has been pumping but we still need enough samples to draw
+       * a conclusion — fresh setup may not have produced any deltas
+       * yet, that's fine. */
+      if (stats.frames_pumped < 50) continue;
+
+      int64_t last_delta = voice_wakeword_last_delta_us();
+      int64_t delta_age_ms;
+      if (last_delta == 0) {
+         /* Pump has sent 50+ frames but K144 has emitted no transcript
+          * at all — strong signal that asr_id binding is dead. */
+         delta_age_ms = (now - s_watchdog_started_us) / 1000;
+      } else {
+         delta_age_ms = (now - last_delta) / 1000;
+      }
+      if (delta_age_ms < WATCHDOG_ASR_STALL_MS) continue;
+
+      /* All gates passed: pump flowing, wakeword armed, K144 ready,
+       * but no transcript in 20+ seconds.  K144 ASR cycled. */
+      ESP_LOGW(TAG,
+               "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu) — kicking recovery",
+               delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped);
+      char detail[48];
+      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu",
+               delta_age_ms / 1000, (unsigned long)stats.frames_pumped);
+      tab5_debug_obs_event("watchdog", detail);
+      s_watchdog_last_kick_us = now;
+
+      /* Stop wakeword first (frees stale asr_id), then trigger reset
+       * (sends sys.reset to K144 → re-warmup → re-arm wakeword + pump). */
+      voice_wakeword_stop();
+      vTaskDelay(pdMS_TO_TICKS(300));
+      esp_err_t e = voice_onboard_reset_failover();
+      if (e != ESP_OK) {
+         ESP_LOGW(TAG, "watchdog: reset_failover bounce (%s) — will retry next interval", esp_err_to_name(e));
+      }
+   }
+}
+
 esp_err_t voice_onboard_start_warmup(void) {
    if (s_m5_failover != M5_FAIL_UNKNOWN) return ESP_ERR_INVALID_STATE;
+   /* Spawn the K144-ASR-cycling watchdog at the same time as the boot
+    * warmup.  PSRAM-backed stack to keep internal SRAM headroom. */
+   static volatile bool s_watchdog_spawned = false;
+   if (!s_watchdog_spawned) {
+      s_watchdog_spawned = true;
+      BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(onboard_watchdog_task, "onboard_wd",
+                                                      4096, NULL, 1, NULL,
+                                                      tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
+      if (ok != pdPASS) {
+         ESP_LOGW(TAG, "watchdog task spawn failed — running without ASR-stall recovery");
+         s_watchdog_spawned = false;
+      }
+   }
    return tab5_worker_enqueue(onboard_warmup_job, NULL, "m5_warmup");
 }
 
