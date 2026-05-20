@@ -1,0 +1,86 @@
+diff --git a/ext_components/StackFlow/stackflow/StackFlowUtil.cpp b/ext_components/StackFlow/stackflow/StackFlowUtil.cpp
+index 7da3354..3951bf1 100644
+--- a/ext_components/StackFlow/stackflow/StackFlowUtil.cpp
++++ b/ext_components/StackFlow/stackflow/StackFlowUtil.cpp
+@@ -341,7 +341,13 @@ int StackFlows::decode_base64(const std::string &in, std::string &out)
+     int out_size = BASE64_DECODE_OUT_SIZE(in.length());
+     out.resize(out_size);
+     int ret = base64_decode((const char *)in.c_str(), in.length(), (unsigned char *)out.data());
+-    if ((ret > 0) && (ret != out_size)) out.erase(ret);
++    /* TT #131 fix — base64_decode can return ret > out_size on certain
++     * inputs (off-by-one bug).  Clamp to avoid std::out_of_range from
++     * basic_string::erase, which would terminate the daemon. */
++    if (ret > 0) {
++        if (ret > out_size) ret = out_size;
++        if (ret != out_size) out.erase((size_t)ret);
++    }
+     return ret;
+ }
+ 
+diff --git a/projects/llm_framework/main_asr/src/main.cpp b/projects/llm_framework/main_asr/src/main.cpp
+index 024de85..4e36a83 100644
+--- a/projects/llm_framework/main_asr/src/main.cpp
++++ b/projects/llm_framework/main_asr/src/main.cpp
+@@ -4,6 +4,9 @@
+  * SPDX-License-Identifier: MIT
+  */
+ #include "StackFlow.h"
++extern "C" {
++#include "ima_adpcm.h"
++}
+ #include "sherpa-ncnn/csrc/recognizer.h"
+ #include "sherpa-onnx/csrc/offline-recognizer.h"
+ #include "sherpa-onnx/csrc/online-recognizer.h"
+@@ -898,8 +901,14 @@ public:
+ 
+         std::string tmp_msg2;
+         if (object.find("base64") != std::string::npos) {
+-            ret = decode_base64((*next_data), tmp_msg2);
+-            if (ret == -1) {
++            try {
++                ret = decode_base64((*next_data), tmp_msg2);
++            } catch (const std::exception &e) {
++                /* TT #131 — defensive: any std::out_of_range / std::length_error
++                 * from base64_decode shouldn't crash the asr daemon. */
++                ret = -1;
++            }
++            if (ret <= 0) {
+                 error_body["code"]    = -23;
+                 error_body["message"] = "Base64 decoding error.";
+                 send("None", "None", error_body, unit_name_);
+@@ -926,6 +935,35 @@ public:
+             next_data = &tmp_msg4;
+         }
+ 
++        /* TT #131 — IMA ADPCM 4:1 decompression.  Object tag
++         * "audio.pcm.adpcm.base64" means: base64-decoded data is an IMA
++         * ADPCM block (4 B header + nibbles).  Decode to int16 mono PCM
++         * before feeding sherpa-ncnn.  Tab5 compresses 32 KB/s raw PCM
++         * down to 8 KB/s ADPCM to fit the UART control-plane bandwidth.
++         * Note: sherpa-ncnn streaming-zipformer is robust to ADPCM
++         * quantization noise in clean acoustic conditions. */
++        std::string tmp_msg5;
++        if (object.find("adpcm") != std::string::npos) {
++            const uint8_t *in = (const uint8_t *)next_data->data();
++            size_t in_len = next_data->size();
++            if (in_len >= 4) {
++                size_t max_samples = (in_len - 4) * 2 + 1;
++                tmp_msg5.resize(max_samples * sizeof(int16_t));
++                size_t got = ima_adpcm_decode(in, in_len,
++                                              (int16_t *)tmp_msg5.data(),
++                                              max_samples);
++                if (got > 0) {
++                    tmp_msg5.resize(got * sizeof(int16_t));
++                    next_data = &tmp_msg5;
++                } else {
++                    error_body["code"]    = -24;
++                    error_body["message"] = "ADPCM decoding error.";
++                    send("None", "None", error_body, unit_name_);
++                    return;
++                }
++            }
++        }
++
+         llm_task_obj->sys_pcm_on_data((*next_data));
+     }
+ 

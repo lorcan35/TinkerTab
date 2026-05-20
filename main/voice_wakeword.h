@@ -104,6 +104,11 @@ void voice_wakeword_stop(void);
 /** @brief Whether the listener is live (chain up + task running). */
 bool voice_wakeword_is_active(void);
 
+/** TT #131 — return the K144 asr work_id (e.g. "asr.1001") for the
+ *  currently-armed listener.  NULL if not armed.  Used by the ext_pcm
+ *  pump to target inference frames at the right asr instance. */
+const char *voice_wakeword_asr_id(void);
+
 /** @brief Force a dictation stop NOW from outside the task.  No-op when
  *         not in the LISTENING state.  Fires the DICTATION_FINAL event
  *         with whatever has been accumulated so far. */
@@ -128,6 +133,14 @@ typedef struct {
  *         populated even when the listener is not armed (armed=false +
  *         cached config values from the last start). */
 void voice_wakeword_status(voice_wakeword_status_t *out);
+
+/** @brief Timestamp of the most-recent ASR delta received from K144,
+ *         in esp_timer_get_time() microseconds (monotonic since boot).
+ *         Returns 0 if no delta has ever arrived this session.  Used by
+ *         the K144-cycling watchdog to detect a stale asr_id binding —
+ *         pump may be sending fine but K144 daemon cycled and our
+ *         cached work_id no longer routes anywhere. */
+int64_t voice_wakeword_last_delta_us(void);
 
 /** @brief Restart the listener with a new wake phrase at runtime.
  *

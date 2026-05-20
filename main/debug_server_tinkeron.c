@@ -30,11 +30,12 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "settings.h"       /* TT #617 — wake_src */
-#include "task_worker.h"    /* tab5_worker_enqueue */
-#include "voice_m5_llm.h"   /* sys_reboot, hwinfo accessor */
-#include "voice_onboard.h"  /* failover state names */
-#include "voice_wakeword.h" /* status + reconfigure_phrase + transcripts */
+#include "settings.h"             /* TT #617 — wake_src */
+#include "task_worker.h"          /* tab5_worker_enqueue */
+#include "voice_ext_pcm_stream.h" /* TT #131 stats */
+#include "voice_m5_llm.h"         /* sys_reboot, hwinfo accessor */
+#include "voice_onboard.h"        /* failover state names */
+#include "voice_wakeword.h"       /* status + reconfigure_phrase + transcripts */
 
 static const char *TAG = "debug_tinkeron";
 
@@ -164,7 +165,7 @@ static esp_err_t handle_status(httpd_req_t *req) {
    return respond_json(req, root, 200);
 }
 
-/* ── POST /tinkeron/wake_src?src=k144|dragon|off ─────────────────── */
+/* ── POST /tinkeron/wake_src?src=k144|dragon|ext_pcm|off ─────────── */
 
 static esp_err_t handle_wake_src(httpd_req_t *req) {
    if (!tab5_debug_check_auth(req)) return ESP_FAIL;
@@ -176,10 +177,9 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
    if (httpd_query_key_value(qry, "src", src, sizeof(src)) != ESP_OK) {
       return respond_error(req, "missing src= param", 400);
    }
-   /* Validate against the known set.  Future ext_pcm will land as a new
-    * branch + value here. */
-   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 && strcmp(src, "off") != 0) {
-      return respond_error(req, "src must be k144|dragon|off", 400);
+   if (strcmp(src, "k144") != 0 && strcmp(src, "dragon") != 0 && strcmp(src, "ext_pcm") != 0 &&
+       strcmp(src, "off") != 0) {
+      return respond_error(req, "src must be k144|dragon|ext_pcm|off", 400);
    }
    esp_err_t e = tab5_settings_set_wake_src(src);
    if (e != ESP_OK) {
@@ -189,19 +189,46 @@ static esp_err_t handle_wake_src(httpd_req_t *req) {
    tab5_debug_obs_event("wake_src", src);
 
    /* Apply immediately: disarm whatever is wrong, arm whatever is right. */
+   extern void voice_wake_stream_disarm(void);
+   extern void voice_wake_stream_arm(void);
+   extern void voice_ext_pcm_stream_disarm(void);
+   extern void voice_ext_pcm_stream_arm(void);
+   extern esp_err_t voice_onboard_arm_wakeword(void);
+
+   extern esp_err_t voice_onboard_arm_wakeword_async(void);
    if (strcmp(src, "k144") == 0) {
-      extern void voice_wake_stream_disarm(void);
       voice_wake_stream_disarm();
-      extern esp_err_t voice_onboard_arm_wakeword(void);
-      voice_onboard_arm_wakeword();
+      voice_ext_pcm_stream_disarm();
+      voice_onboard_arm_wakeword_async();
    } else if (strcmp(src, "dragon") == 0) {
       voice_wakeword_stop();
-      extern void voice_wake_stream_arm(void);
+      voice_ext_pcm_stream_disarm();
       voice_wake_stream_arm();
+   } else if (strcmp(src, "ext_pcm") == 0) {
+      voice_wake_stream_disarm();
+      /* Reset Tab5 UART to 115200 baseline (K144 may have rebooted to
+       * default underneath us) and bump BOTH sides to 1.5 Mbps BEFORE
+       * arming wakeword.  Doing the negotiation up-front (not from
+       * inside the pump task) avoids lock contention with wakeword's
+       * recv loop. */
+      extern esp_err_t tab5_port_c_uart_set_baud(uint32_t baud);
+      extern void voice_onboard_suppress_auto_retry(bool);
+      extern esp_err_t voice_m5_llm_set_baud(uint32_t);
+      tab5_port_c_uart_set_baud(115200);
+      voice_onboard_suppress_auto_retry(true);
+      esp_err_t be = voice_m5_llm_set_baud(1500000);
+      if (be != ESP_OK) {
+         ESP_LOGW(TAG, "early baud bump failed (%s) — will retry from pump", esp_err_to_name(be));
+         voice_onboard_suppress_auto_retry(false);
+      } else {
+         ESP_LOGI(TAG, "UART pre-bumped to 1.5 Mbps before wakeword arm");
+      }
+      voice_onboard_arm_wakeword_async();
+      voice_ext_pcm_stream_arm();
    } else { /* off */
       voice_wakeword_stop();
-      extern void voice_wake_stream_disarm(void);
       voice_wake_stream_disarm();
+      voice_ext_pcm_stream_disarm();
    }
 
    cJSON *root = cJSON_CreateObject();
@@ -340,6 +367,50 @@ static esp_err_t handle_transcripts(httpd_req_t *req) {
    return respond_json(req, root, 200);
 }
 
+/* ── GET /tinkeron/extpcm — Path A live diagnostic ────────────────── */
+
+static esp_err_t handle_extpcm(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_FAIL;
+   voice_ext_pcm_stream_stats_t st;
+   voice_ext_pcm_stream_get_stats(&st);
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "task_running", st.task_running);
+   cJSON_AddBoolToObject(root, "armed", st.armed);
+   cJSON_AddNumberToObject(root, "voice_state", st.voice_state);
+   cJSON_AddBoolToObject(root, "wakeword_active", st.wakeword_active);
+   cJSON_AddStringToObject(root, "asr_id", st.asr_id ? st.asr_id : "");
+   cJSON_AddNumberToObject(root, "frames_pumped", st.frames_pumped);
+   cJSON_AddNumberToObject(root, "last_mic_rms", st.last_mic_rms);
+   cJSON_AddNumberToObject(root, "last_tx_bytes", st.last_tx_bytes);
+   cJSON_AddNumberToObject(root, "last_send_ok", st.last_send_ok);
+   cJSON_AddNumberToObject(root, "last_pump_age_ms", (double)st.last_pump_age_ms);
+
+   /* Hint strings the user can scan at a glance. */
+   const char *hint;
+   if (!st.task_running)
+      hint = "pump task not running";
+   else if (!st.armed)
+      hint = "pump disarmed (wake_src != ext_pcm?)";
+   else if (st.voice_state != 2)
+      hint = "voice state not READY";
+   else if (!st.wakeword_active)
+      hint = "voice_wakeword not armed (K144 asr.setup pending)";
+   else if (st.asr_id == NULL || st.asr_id[0] == '\0')
+      hint = "asr_id empty (wakeword setup failed?)";
+   else if (st.last_pump_age_ms > 2000)
+      hint = "no recent pump send (UART send failing?)";
+   else if (st.last_send_ok == 0)
+      hint = "last UART send failed (port C contention?)";
+   else if (st.last_mic_rms < 50)
+      hint = "mic capture is near-silent (RMS < 50)";
+   else
+      hint = "ok — frames flowing with audible mic";
+   cJSON_AddStringToObject(root, "hint", hint);
+
+   return respond_json(req, root, 200);
+}
+
 /* ── Registration ─────────────────────────────────────────────────── */
 
 void debug_server_tinkeron_register(httpd_handle_t server) {
@@ -364,11 +435,18 @@ void debug_server_tinkeron_register(httpd_handle_t server) {
        .handler = handle_wake_src,
        .user_ctx = NULL,
    };
+   static const httpd_uri_t uri_extpcm = {
+       .uri = "/tinkeron/extpcm",
+       .method = HTTP_GET,
+       .handler = handle_extpcm,
+       .user_ctx = NULL,
+   };
    httpd_register_uri_handler(server, &uri_status);
    httpd_register_uri_handler(server, &uri_arm);
    httpd_register_uri_handler(server, &uri_phrase);
    httpd_register_uri_handler(server, &uri_reboot);
    httpd_register_uri_handler(server, &uri_transcripts);
    httpd_register_uri_handler(server, &uri_wake_src);
-   ESP_LOGI(TAG, "TinkerON debug family registered (6 endpoints)");
+   httpd_register_uri_handler(server, &uri_extpcm);
+   ESP_LOGI(TAG, "TinkerON debug family registered (7 endpoints)");
 }

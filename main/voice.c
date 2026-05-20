@@ -525,18 +525,27 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
       extern void voice_wake_stream_on_state_change(int new_state);
       extern void voice_wake_stream_arm(void);
       extern void voice_wake_stream_disarm(void);
+      extern void voice_ext_pcm_stream_on_state_change(int new_state);
+      extern void voice_ext_pcm_stream_arm(void);
+      extern void voice_ext_pcm_stream_disarm(void);
       voice_wake_stream_on_state_change((int)new_state);
-      /* TT #617 — gate on wake_src NVS setting.  Only arm Dragon-side
-       * wake-stream if the user picked "dragon".  k144 / off paths
-       * leave the wake-stream task idling (it stays alive but disarmed
-       * so a runtime wake_src flip from k144 → dragon picks up
-       * without a reboot). */
+      voice_ext_pcm_stream_on_state_change((int)new_state);
+      /* TT #617 — gate on wake_src NVS setting.  Only arm the right
+       * wake path for the picked source.  All paths leave the other
+       * tasks idling (alive but disarmed) so runtime wake_src flips
+       * pick up without a reboot. */
       if (new_state == VOICE_STATE_READY && old != VOICE_STATE_READY) {
          if (tab5_settings_wake_src_is("dragon")) {
             voice_wake_stream_arm();
+         } else if (tab5_settings_wake_src_is("ext_pcm")) {
+            /* voice_wakeword owns asr.setup — voice_onboard's warmup/
+             * arm-on-READY handler arms it normally because its gate now
+             * allows ext_pcm.  We only need to arm the PCM pump here. */
+            voice_ext_pcm_stream_arm();
          }
       } else if (new_state == VOICE_STATE_IDLE && old != VOICE_STATE_IDLE) {
          voice_wake_stream_disarm();
+         voice_ext_pcm_stream_disarm();
       }
    }
 }
@@ -1188,6 +1197,17 @@ esp_err_t voice_init(voice_state_cb_t state_cb)
        esp_err_t we = voice_wake_stream_init();
        if (we != ESP_OK) {
           ESP_LOGW(TAG, "voice_wake_stream_init failed (%s) — wake-stream disabled", esp_err_to_name(we));
+       }
+    }
+
+    /* TT #131 — Path A ext_pcm-stream: spawn the background task that
+     * ships Tab5 mic to K144 over Port C UART as ingest-RPC frames.
+     * Arm only when wake_src=="ext_pcm" + voice state hits READY. */
+    {
+       extern esp_err_t voice_ext_pcm_stream_init(void);
+       esp_err_t ep = voice_ext_pcm_stream_init();
+       if (ep != ESP_OK) {
+          ESP_LOGW(TAG, "voice_ext_pcm_stream_init failed (%s) — ext_pcm path disabled", esp_err_to_name(ep));
        }
     }
 

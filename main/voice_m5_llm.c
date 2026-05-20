@@ -27,6 +27,7 @@
 
 #include "voice_m5_llm.h"
 
+#include <ctype.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -74,8 +75,18 @@ static const char *TAG = "voice_m5_llm";
 #define M5_LLM_PROMPT_PREFIX "You are a helpful, concise assistant."
 
 /* Timeouts (ms) for the discrete protocol stages.  Total request budget
- * is the caller-supplied @p timeout_s. */
-#define M5_PING_TIMEOUT_MS 500
+ * is the caller-supplied @p timeout_s.
+ *
+ * TT #131 2026-05-20: bumped PING 500 → 3000.  K144 daemon under
+ * sustained load (load avg 3+ during KWS/ASR streaming) routinely
+ * exceeded 500 ms for sys.ping round-trips, causing onboard_warmup_job
+ * to falsely mark K144 unavailable and then the wakeword chain never
+ * starts → baud bump never happens → audio pump capped at 3 fps.
+ * Observed: K144 reports ttft 367 ms for actual LLM inference; sys.ping
+ * should be faster but goes through the same llm_sys dispatcher and
+ * inherits its scheduling latency.  3000 ms still fast-fails a wedged
+ * K144 (we have 60s auto-retry, so a 3-second probe-cost is fine). */
+#define M5_PING_TIMEOUT_MS 3000
 #define M5_SETUP_TIMEOUT_MS 5000
 
 /* RX scratch — sized for a single TTS response frame (base64 of ~10 sec
@@ -796,7 +807,13 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud) {
    cJSON_AddNumberToObject(data, "baud", (double)new_baud);
    cJSON_AddNumberToObject(data, "data_bits", 8);
    cJSON_AddNumberToObject(data, "stop_bits", 1);
-   cJSON_AddStringToObject(data, "parity", "n");
+   /* K144 daemon SAFE_SETTING does `(int)json["parity"]` — passing the
+    * string "n" silently fails the cast inside the detached thread,
+    * which then never reaches serial_stop_work()/serial_work(), so
+    * K144 stays at 115200 while Tab5 flips to the new baud.  Use the
+    * ASCII value 110 (= 'n') which is what main_sys/src/main.cpp:46
+    * stores in `config_serial_parity` by default. */
+   cJSON_AddNumberToObject(data, "parity", 110);
 
    char request_id[32];
    make_request_id(request_id, sizeof(request_id), "uartsetup-");
@@ -1552,7 +1569,9 @@ esp_err_t voice_m5_llm_recover_baud(uint32_t candidate_baud) {
 
 struct voice_m5_wakeword_handle {
    char audio_id[32];
-   char asr_id[32];
+   char asr_id[32];     /* doubles as kws work_id when is_kws=true */
+   bool is_kws;         /* TT #131-opt2: KWS detector instead of ASR */
+   char kws_phrase[64]; /* phrase to deliver on detection (KWS frames carry no text) */
 };
 
 esp_err_t voice_m5_llm_wakeword_setup(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag) {
@@ -1613,6 +1632,158 @@ fail:
    return err;
 }
 
+/* TT #131 — Tab5-mic variant of wakeword_setup.  Skips audio.setup
+ * entirely.  asr.setup uses input=["asr"] which triggers ASR's
+ * task_user_data subscriber path: ASR subscribes to its OWN inference
+ * bus and decodes inference frames addressed to its work_id.  Tab5
+ * pushes PCM as {"action":"inference","work_id":"asr.NNNN",
+ *               "object":"audio.pcm.base64","data":"<base64>"}
+ * Direct path — no audio unit, no ext_pcm publisher, no IPC PUB
+ * contention. */
+esp_err_t voice_m5_llm_wakeword_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle, volatile bool *stop_flag) {
+   if (out_handle == NULL) return ESP_ERR_INVALID_ARG;
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   M5_LOCK_OR_RETURN(60000);
+
+   voice_m5_wakeword_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+   /* No audio in this path. */
+   h->audio_id[0] = '\0';
+
+   cJSON *d = cJSON_CreateObject();
+   cJSON_AddStringToObject(d, "model", M5_CHAIN_ASR_MODEL);
+   cJSON_AddStringToObject(d, "response_format", "asr.utf-8.stream");
+   cJSON *inp = cJSON_CreateArray();
+   /* input=["asr"] → asr.cpp line ~1060 falls into the task_user_data
+    * branch: llm_channel->subscriber_work_id("", task_user_data).
+    * ASR subscribes to its own inference bus. */
+   cJSON_AddItemToArray(inp, cJSON_CreateString("asr"));
+   cJSON_AddItemToObject(d, "input", inp);
+   cJSON_AddBoolToObject(d, "enoutput", true);
+   err = chain_setup_unit("asr", "asr.setup", d, h->asr_id, sizeof(h->asr_id), M5_SETUP_TIMEOUT_MS, stop_flag);
+   if (err != ESP_OK) {
+      heap_caps_free(h);
+      M5_UNLOCK();
+      return err;
+   }
+
+   M5_UNLOCK();
+   *out_handle = h;
+   ESP_LOGI(TAG, "always-on ASR (Tab5-mic) up: asr=%s", h->asr_id);
+   return ESP_OK;
+}
+
+const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handle) {
+   return handle ? handle->asr_id : NULL;
+}
+
+/* TT #131-opt2 — KWS variant of wakeword_setup_tab5_mic.  Same Tab5-push
+ * wire (input=["kws"]) but the K144 unit is the sherpa-onnx keyword
+ * spotter instead of the streaming-zipformer ASR.  KWS is purpose-built
+ * for low-power always-on wake detection: fires a single bool on phrase
+ * hit, no transcripts, no false positives from background TV.  Custom
+ * keyword set at setup time via the kws[] array.  K144's main_kws
+ * binary is patched to decode ADPCM in task_user_data — mirror of the
+ * ASR patch. */
+esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle, const char *keyword,
+                                          volatile bool *stop_flag) {
+   if (out_handle == NULL || keyword == NULL || keyword[0] == '\0') return ESP_ERR_INVALID_ARG;
+   *out_handle = NULL;
+
+   esp_err_t err = ensure_uart();
+   if (err != ESP_OK) return err;
+
+   M5_LOCK_OR_RETURN(60000);
+
+   voice_m5_wakeword_handle_t *h = heap_caps_calloc(1, sizeof(*h), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (h == NULL) {
+      M5_UNLOCK();
+      return ESP_ERR_NO_MEM;
+   }
+   h->audio_id[0] = '\0';
+   h->is_kws = true;
+   strncpy(h->kws_phrase, keyword, sizeof(h->kws_phrase) - 1);
+   h->kws_phrase[sizeof(h->kws_phrase) - 1] = '\0';
+
+   /* The gigaspeech tokens.txt is UPPERCASE ENGLISH only.  text2token.py
+    * does NOT case-normalize before BPE lookup, so lowercase "hey" /
+    * "tinker" fail with "Can't find token in token table, skipping".
+    * Uppercase the phrase before sending so BPE splits into valid tokens
+    * (e.g. "HEY TINKER" → "▁HE Y ▁T IN K ER"). */
+   char keyword_up[64];
+   {
+      size_t n = strlen(keyword);
+      if (n >= sizeof(keyword_up)) n = sizeof(keyword_up) - 1;
+      for (size_t i = 0; i < n; i++) keyword_up[i] = (char)toupper((unsigned char)keyword[i]);
+      keyword_up[n] = '\0';
+   }
+
+   cJSON *d = cJSON_CreateObject();
+   cJSON_AddStringToObject(d, "model", "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01");
+   cJSON_AddStringToObject(d, "response_format", "kws.bool");
+   cJSON *inp = cJSON_CreateArray();
+   /* input=["kws"] → main_kws.cpp line 887 falls into task_user_data path:
+    * llm_channel->subscriber_work_id("", task_user_data).  KWS subscribes
+    * to its own inference bus; Tab5 pushes ADPCM frames addressed to the
+    * returned kws.NNNN work_id. */
+   cJSON_AddItemToArray(inp, cJSON_CreateString("kws"));
+   cJSON_AddItemToObject(d, "input", inp);
+   cJSON *kws_arr = cJSON_CreateArray();
+   cJSON_AddItemToArray(kws_arr, cJSON_CreateString(keyword_up));
+   cJSON_AddItemToObject(d, "kws", kws_arr);
+   cJSON_AddBoolToObject(d, "enoutput", true);
+   cJSON_AddBoolToObject(d, "enwake_audio", false); /* no chime — Tab5 owns UI feedback */
+   /* TT #131 2026-05-20: explicit detection tuning.  sherpa-onnx-kws
+    * defaults (threshold 0.25, score 1.0) are tuned for close-mic
+    * studio audio.  Tab5's ES7210 mic with 16× digital gain + ADPCM
+    * round-trip leaves the signal weaker than the model's training
+    * conditions, so default threshold rarely fires.  Lower threshold
+    * (more sensitive) + small score boost gets reliable detection on
+    * speaker-distance "Hey Tinker".  These keys are accepted by the
+    * custom K144 main_kws build (`keywords_threshold`, `keywords_score`
+    * are visible in `strings llm_kws`).  False-positive risk is bounded
+    * because the matcher still requires the full token sequence
+    * "▁HE Y ▁T IN K ER" — 6 BPE tokens of acoustic context. */
+   /* 2026-05-20 v3: K144 main_kws appears to silently ignore top-level
+    * keywords_threshold/score — at 0.02 + clean voice (RMS 3685) we
+    * still got zero matches.  sherpa-onnx native config uses kebab-case
+    * AND a nested "mode_param" object per the model's own config file
+    * format on disk.  Try BOTH name variants in BOTH nesting levels —
+    * whichever K144's JSON parser actually reads will win, the others
+    * are silently dropped (which is the observed behavior). */
+   cJSON_AddNumberToObject(d, "keywords_threshold", 0.02);
+   cJSON_AddNumberToObject(d, "keywords_score", 2.0);
+   cJSON_AddNumberToObject(d, "max_active_paths", 4);
+   cJSON *mp = cJSON_CreateObject();
+   cJSON_AddNumberToObject(mp, "keywords_threshold", 0.02);
+   cJSON_AddNumberToObject(mp, "keywords_score", 2.0);
+   cJSON_AddNumberToObject(mp, "max_active_paths", 4);
+   cJSON_AddNumberToObject(mp, "keywords-threshold", 0.02);
+   cJSON_AddNumberToObject(mp, "keywords-score", 2.0);
+   cJSON_AddItemToObject(d, "mode_param", mp);
+   /* KWS setup is heavy — loads sherpa-onnx encoder/decoder/joiner ONNX
+    * models AND forks text2token.py.  Post-K144-reboot it's even slower
+    * (cold disk cache).  90 s budget. */
+   err = chain_setup_unit("kws", "kws.setup", d, h->asr_id, sizeof(h->asr_id), 90000, stop_flag);
+   if (err != ESP_OK) {
+      heap_caps_free(h);
+      M5_UNLOCK();
+      return err;
+   }
+
+   M5_UNLOCK();
+   *out_handle = h;
+   ESP_LOGI(TAG, "KWS (Tab5-mic) up: kws=%s phrase=\"%s\"", h->asr_id, h->kws_phrase);
+   return ESP_OK;
+}
+
 esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
                                     volatile bool *stop_flag, uint32_t timeout_s) {
    if (handle == NULL) return ESP_ERR_INVALID_ARG;
@@ -1629,7 +1800,14 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
 
       char *nl = memchr(s_rx_buf, '\n', s_rx_len);
       if (nl == NULL) {
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 100);
+         /* TT #131 — drop from 100 ms to 5 ms so wakeword's recv loop
+          * holds the UART mutex only briefly per iteration.  When K144
+          * isn't producing transcripts (silence / mic not capturing
+          * relevant audio), the prior 100 ms hold + 5 ms yield made the
+          * pump task starve at 5 % duty cycle, choking ingest below
+          * 1 KB/s even at 1.5 Mbps wire.  5 ms hold means ext_pcm pump
+          * gets ~50 % of the lock window. */
+         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 5);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);
@@ -1662,6 +1840,26 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
          m5_stackflow_response_free(&resp);
          continue;
       }
+      /* TT #131-opt2 — KWS path: K144 main_kws emits a single non-stream
+       * `{"object":"kws.bool", "data":true}` on phrase hit.  Synthesize a
+       * partial-callback delivering the configured kws_phrase + finish=true
+       * so the upstream phrase matcher fires identically to the ASR path. */
+      if (handle->is_kws && resp.object != NULL && strstr(resp.object, "kws") != NULL) {
+         bool fired = false;
+         if (cJSON_IsTrue(resp.data)) fired = true;
+         /* Some K144 builds wrap bool as a string "true" inside data; tolerate. */
+         if (!fired && cJSON_IsString(resp.data) && resp.data->valuestring &&
+             strcasecmp(resp.data->valuestring, "true") == 0) {
+            fired = true;
+         }
+         if (fired) {
+            ESP_LOGI(TAG, "kws fire: phrase=\"%s\" work_id=%s", handle->kws_phrase, handle->asr_id);
+            if (cb != NULL) cb(handle->kws_phrase, true, user);
+         }
+         m5_stackflow_response_free(&resp);
+         vTaskDelay(pdMS_TO_TICKS(5));
+         continue;
+      }
       /* asr.utf-8.stream frames carry {delta, index, finish}.  We deliver
        * delta + finish to the caller — phrase matching + dictation
        * buffering live up there. */
@@ -1681,6 +1879,14 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
          if (cb != NULL) cb(delta_str, finished, user);
       }
       m5_stackflow_response_free(&resp);
+      /* TT #131 — yield ~5ms so equal-priority lock waiters
+       * (voice_ext_pcm_stream handshake + pump) get a real window.
+       * vTaskDelay(1) was insufficient — with FreeRTOS at 1000Hz tick,
+       * yield-and-immediately-retake the recursive mutex within
+       * microseconds, starving same-priority waiters even after 6 s of
+       * lock(timeout).  pdMS_TO_TICKS(5) gives at least 5 ticks of
+       * release-window per iteration. */
+      vTaskDelay(pdMS_TO_TICKS(5));
    }
 
    if (stop_flag != NULL && *stop_flag) return ESP_OK;

@@ -1,0 +1,39 @@
+import os
+
+Import('env')
+with open(env['PROJECT_TOOL_S']) as f:
+    exec(f.read())
+
+# TT #131 — ext_pcm StackFlow unit (host PCM injection for K144 ASR).
+SRCS = [AFile('src/main.cpp'), AFile('src/ima_adpcm.c')]
+INCLUDE = [ADir('.')]
+PRIVATE_INCLUDE = []
+REQUIREMENTS = ['pthread', 'utilities', 'eventpp', 'StackFlow', 'single_header_libs']
+STATIC_LIB = []
+DYNAMIC_LIB = []
+DEFINITIONS = ['-std=c++17']
+DEFINITIONS_PRIVATE = []
+LDFLAGS = ['-static-libstdc++', '-static-libgcc', '-Wl,-rpath=/opt/m5stack/lib',
+           '-Wl,-rpath=/usr/local/m5stack/lib',
+           '-Wl,-rpath=/usr/local/m5stack/lib/gcc-10.3',
+           '-Wl,-rpath=/opt/lib',
+           '-Wl,-rpath=/opt/usr/lib',
+           '-Wl,-rpath=./']
+LINK_SEARCH_PATH = [ADir('../static_lib')]
+STATIC_FILES = []
+
+env['COMPONENTS'].append({
+    'target': 'llm_ext_pcm-1.0',
+    'SRCS': SRCS,
+    'INCLUDE': INCLUDE,
+    'PRIVATE_INCLUDE': PRIVATE_INCLUDE,
+    'REQUIREMENTS': REQUIREMENTS,
+    'STATIC_LIB': STATIC_LIB,
+    'DYNAMIC_LIB': DYNAMIC_LIB,
+    'DEFINITIONS': DEFINITIONS,
+    'DEFINITIONS_PRIVATE': DEFINITIONS_PRIVATE,
+    'LDFLAGS': LDFLAGS,
+    'LINK_SEARCH_PATH': LINK_SEARCH_PATH,
+    'STATIC_FILES': STATIC_FILES,
+    'REGISTER': 'project',
+})

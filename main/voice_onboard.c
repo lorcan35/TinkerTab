@@ -19,15 +19,19 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h" /* xTaskCreatePinnedToCoreWithCaps for watchdog */
 #include "freertos/task.h"
-#include "settings.h"            /* tab5_settings_get_mic_mute (Wave 7) */
-#include "task_worker.h"         /* tab5_worker_enqueue */
-#include "ui_chat.h"             /* ui_chat_add_message */
-#include "ui_core.h"             /* tab5_ui_try_lock / tab5_ui_unlock */
-#include "ui_home.h"             /* ui_home_show_toast */
-#include "voice.h"               /* voice_set_state, VOICE_STATE_* */
-#include "voice_m5_llm.h"        /* probe / infer / chain_* */
-#include "voice_messages_sync.h" /* W3-C-c: Dragon canonical message store */
+#include "settings.h"             /* tab5_settings_get_mic_mute (Wave 7) */
+#include "task_worker.h"          /* tab5_worker_enqueue */
+#include "uart_port_c.h"          /* tab5_port_c_uart_get_baud — TT #131 baud bump check */
+#include "ui_audio_cues.h"        /* ui_audio_cue_play — wake chime (#131-opt2) */
+#include "ui_chat.h"              /* ui_chat_add_message */
+#include "ui_core.h"              /* tab5_ui_try_lock / tab5_ui_unlock */
+#include "ui_home.h"              /* ui_home_show_toast */
+#include "voice.h"                /* voice_set_state, VOICE_STATE_* */
+#include "voice_ext_pcm_stream.h" /* TT #131: auto-arm pump on boot */
+#include "voice_m5_llm.h"         /* probe / infer / chain_* */
+#include "voice_messages_sync.h"  /* W3-C-c: Dragon canonical message store */
 #include "voice_wakeword.h"
 
 static const char *TAG = "voice_onboard";
@@ -73,6 +77,10 @@ static volatile bool s_m5_failover_engaged_during_down = false; /* triggers "Dra
 static esp_timer_handle_t s_auto_retry_timer = NULL;
 static int s_auto_retry_count = 0;
 static volatile bool s_auto_retry_exhausted = false;
+/* TT #131 — when ext_pcm is running at high baud, the auto-retry
+ * sys.reset path would wipe K144's baud setting.  Suppress while the
+ * pump owns the channel. */
+static volatile bool s_auto_retry_suppressed = false;
 
 /* ---------------------------------------------------------------------- */
 /*  Chain state                                                           */
@@ -99,13 +107,15 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
 static void wakeword_event_handler(voice_wakeword_event_t event, const char *text, void *user); /* TT #617 fwd-decl */
 
-/* TT #617 — Gate the K144 onboard wakeword on the wake_src NVS setting.
- * "k144" → arm sherpa-ncnn on K144's own mic (current default for
- * offline-capable wake).  Other values ("dragon", "off", future
- * "ext_pcm") skip arming and let the other path own wake. */
+/* TT #617 / #131 — Gate K144 onboard wakeword on the wake_src setting.
+ *   "k144"    — arm sherpa-ncnn on K144's own mic
+ *   "ext_pcm" — arm sherpa-ncnn but the audio source is Tab5's mic via
+ *               the ext_pcm ingest path; voice_wakeword still subscribes
+ *               to the same asr.utf-8.stream to parse transcripts.
+ *   "dragon"/"off" — skip; another path owns wake. */
 static esp_err_t voice_onboard_arm_k144_wakeword_internal(void) {
-   if (!tab5_settings_wake_src_is("k144")) {
-      ESP_LOGI(TAG, "wake_src != k144 — skipping K144 onboard wakeword arm");
+   if (!tab5_settings_wake_src_is("k144") && !tab5_settings_wake_src_is("ext_pcm")) {
+      ESP_LOGI(TAG, "wake_src != k144/ext_pcm — skipping K144 wakeword arm");
       tab5_debug_obs_event("wake_src", "skip_k144");
       return ESP_OK;
    }
@@ -175,6 +185,9 @@ static void wakeword_event_handler(voice_wakeword_event_t event, const char *tex
    (void)user;
    switch (event) {
       case VOICE_WAKEWORD_EVENT_WAKE: {
+         /* TT #131-opt2: audible wake chime — confirms KWS fired before
+          * we start listening for the user's question. */
+         ui_audio_cue_play(UI_CUE_INCOMING_HIGH);
          /* Trigger the full voice turn on the LVGL thread (mic + WS
           * dispatch both expect to run on the main task). */
          tab5_lv_async_call(wakeword_trigger_voice_turn, NULL);
@@ -237,6 +250,13 @@ static void k144_unavailable_banner_async(void *arg) {
  * this so it runs M5_AUTO_RETRY_DELAY_US later. */
 static void auto_retry_timer_cb(void *arg) {
    (void)arg;
+   /* TT #131 — ext_pcm pump suppresses auto-retry while it owns the
+    * UART channel at non-default baud.  Skip silently; the pump itself
+    * acts as the liveness probe. */
+   if (s_auto_retry_suppressed) {
+      ESP_LOGD(TAG, "K144 auto-retry suppressed (ext_pcm owns channel)");
+      return;
+   }
    /* Recheck state — manual reset_failover via UI/debug may have
     * already recovered us; if so, skip the auto-retry. */
    if (s_m5_failover == M5_FAIL_READY || s_m5_failover == M5_FAIL_PROBING) {
@@ -254,6 +274,14 @@ static void auto_retry_timer_cb(void *arg) {
 }
 
 static void mark_k144_unavailable(const char *reason) {
+   /* TT #131 — while ext_pcm owns the UART at high baud, voice_onboard's
+    * health checks (sys.hwinfo refresh, etc.) will fail because they're
+    * not aware of the negotiated baud.  Suppress the "unavailable"
+    * cascade so it doesn't trigger sys.reset which wipes K144's baud. */
+   if (s_auto_retry_suppressed) {
+      ESP_LOGD(TAG, "K144 mark_unavailable suppressed (ext_pcm armed): %s", reason);
+      return;
+   }
    s_m5_failover = M5_FAIL_UNAVAILABLE;
    tab5_debug_obs_event("m5.warmup", "unavailable");
    tab5_debug_obs_event("error.k144", reason);
@@ -333,11 +361,29 @@ static void onboard_warmup_job(void *arg) {
     * wakeword task running across boots — see reset_failover_job
     * for the same rationale. */
    voice_wakeword_stop();
+
+   /* TT #131 stability 2026-05-20: auto-detect K144's current baud.
+    * Tab5 always boots at 115200 (TAB5_PORT_C_UART_BAUD), but K144
+    * retains its baud across Tab5 reboots — if a previous Tab5
+    * session ran the bump-to-1.5M sequence, K144 is still at 1.5M
+    * after Tab5 cold-boots back to 115200.  Without this detect step
+    * the probe fails at 115200, Tab5 marks K144 unavailable, and the
+    * user has to manually intervene.  With it, Tab5 just switches
+    * its own local baud to match whatever K144 is at. */
    esp_err_t pe = voice_m5_llm_probe();
    if (pe != ESP_OK) {
-      ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
-      mark_k144_unavailable("probe_fail");
-      return;
+      ESP_LOGI(TAG, "K144 probe failed at 115200 — trying 1.5 Mbps (may be from prev session)");
+      tab5_port_c_uart_set_baud(1500000);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      pe = voice_m5_llm_probe();
+      if (pe == ESP_OK) {
+         ESP_LOGI(TAG, "K144 found at 1.5 Mbps — Tab5 baud auto-matched");
+      } else {
+         ESP_LOGW(TAG, "K144 unreachable at 115200 AND 1.5 Mbps (%s) — failover disabled", esp_err_to_name(pe));
+         tab5_port_c_uart_set_baud(115200); /* revert local */
+         mark_k144_unavailable("probe_fail");
+         return;
+      }
    }
    char scratch[64];
    int64_t t0 = esp_timer_get_time();
@@ -362,6 +408,16 @@ static void onboard_warmup_job(void *arg) {
        * end-phrase="save note", 32 KB dictation buffer, 4-hour cap.
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
+
+      bool boot_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
+
+      /* Arm wakeword FIRST at whatever baud we're currently at (115200
+       * default or 1.5M from auto-detect).  asr.setup is a multi-step
+       * handshake that needs clean UART — empirically the bump-then-
+       * setup order failed because asr.setup at 1.5M hit framing
+       * errors and never completed.  Setup at 115200 is clean; pump
+       * can then run at 1.5M which tolerates framing errors via
+       * K144's JSON parser's partial-frame recovery. */
       esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
          /* TT #580: post-Tab5-reflash, K144's previous-session audio +
@@ -377,6 +433,27 @@ static void onboard_warmup_job(void *arg) {
          (void)voice_onboard_reset_failover();
       } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword start skipped: %s", esp_err_to_name(we));
+      } else if (we == ESP_OK) {
+         /* Wakeword armed cleanly at the current baud.  Now if user
+          * opted in to ext_pcm, bump to 1.5 Mbps for real-time pump
+          * throughput (10 fps audio vs 3 fps at 115200).  asr.setup
+          * already done at 115200 so the bump doesn't affect setup
+          * completion; only the pump path runs at 1.5M after this. */
+         if (boot_to_ext_pcm) {
+            if (tab5_port_c_uart_get_baud() != 1500000) {
+               ESP_LOGI(TAG, "wakeword armed — now bumping baud 115200 → 1.5 Mbps for real-time pump");
+               voice_onboard_suppress_auto_retry(true);
+               esp_err_t be = voice_m5_llm_set_baud(1500000);
+               if (be != ESP_OK) {
+                  ESP_LOGW(TAG, "post-setup baud bump failed (%s) — pump will run at 115200 (~3 fps)",
+                           esp_err_to_name(be));
+               } else {
+                  ESP_LOGI(TAG, "baud bumped to 1.5 Mbps for pump");
+               }
+            }
+            voice_ext_pcm_stream_arm();
+            ESP_LOGI(TAG, "ext_pcm pump armed (Tab5 mic → K144 ASR)");
+         }
       }
    } else {
       ESP_LOGW(TAG,
@@ -455,8 +532,170 @@ static void onboard_failover_text_job(void *arg) {
 /*  Public API — failover                                                 */
 /* ---------------------------------------------------------------------- */
 
+/* ──────────────────────────────────────────────────────────────────── */
+/*  TT #131 stability watchdog 2026-05-20                                */
+/*                                                                       */
+/*  K144's `llm-asr` daemon cycles intermittently (documented quirk).    */
+/*  When it does, Tab5's cached asr_id becomes stale: the pump keeps     */
+/*  sending frames over UART to a work_id that no longer exists on K144, */
+/*  K144 silently drops them, no transcripts come back, wakeword never   */
+/*  fires.  Manual recovery = `systemctl restart llm-sys` + /m5/reset    */
+/*  + /tinkeron/wake_src=ext_pcm.                                        */
+/*                                                                       */
+/*  This watchdog automates that: every WATCHDOG_INTERVAL_MS, check if   */
+/*  the pump is sending frames cleanly (last_pump_age_ms < 1 s) AND      */
+/*  voice_wakeword has received NO ASR delta in WATCHDOG_ASR_STALL_MS    */
+/*  (20 s).  Pump healthy + ASR silent = K144 cycled.  Trigger           */
+/*  voice_onboard_reset_failover() which re-runs the full chain bringup. */
+/*  Cooldown gate prevents thrash: don't re-kick within 90 s of last     */
+/*  kick (recovery itself takes ~30 s).                                  */
+/* ──────────────────────────────────────────────────────────────────── */
+#define WATCHDOG_INTERVAL_MS 10000
+#define WATCHDOG_ASR_STALL_MS 20000
+#define WATCHDOG_COOLDOWN_MS 60000 /* 60 s — was 90 s; faster recovery */
+#define WATCHDOG_PUMP_HEALTHY_MS 1000
+#define WATCHDOG_GRACE_AFTER_BOOT_MS 30000 /* don't fire in first 30 s — chain may still be coming up */
+#define WATCHDOG_RESET_FAIL_CAP 2          /* after 2 consecutive sys.reset failures → escalate to sys.reboot */
+#define WATCHDOG_REBOOT_COOLDOWN_MS 180000 /* 3 min after sys.reboot before considering another */
+
+static volatile int64_t s_watchdog_last_kick_us = 0;
+static volatile int64_t s_watchdog_started_us = 0;
+static volatile int s_watchdog_reset_fail_count = 0;
+static volatile int64_t s_watchdog_last_reboot_us = 0;
+
+static void onboard_watchdog_task(void *arg) {
+   (void)arg;
+   s_watchdog_started_us = esp_timer_get_time();
+   ESP_LOGI(TAG, "K144-ASR watchdog started (poll=%ds, stall=%ds, cooldown=%ds)", WATCHDOG_INTERVAL_MS / 1000,
+            WATCHDOG_ASR_STALL_MS / 1000, WATCHDOG_COOLDOWN_MS / 1000);
+
+   while (1) {
+      vTaskDelay(pdMS_TO_TICKS(WATCHDOG_INTERVAL_MS));
+
+      /* Only watchdog the ext_pcm path.  Other modes don't have this
+       * Tab5-pumps-to-cached-work_id failure mode. */
+      if (!tab5_settings_wake_src_is("ext_pcm")) continue;
+
+      /* Chain must be in the steady READY state.  Don't kick during
+       * PROBING (a reset is already in flight) or UNAVAILABLE
+       * (auto-retry will handle it). */
+      if (s_m5_failover != M5_FAIL_READY) continue;
+
+      /* Wakeword must be armed — if not, no asr_id binding to be stale. */
+      if (!voice_wakeword_is_active()) continue;
+
+      int64_t now = esp_timer_get_time();
+
+      /* Boot grace: chain may still be coming up cleanly. */
+      if (now - s_watchdog_started_us < (int64_t)WATCHDOG_GRACE_AFTER_BOOT_MS * 1000) continue;
+
+      /* Cooldown after a previous kick. */
+      if (now - s_watchdog_last_kick_us < (int64_t)WATCHDOG_COOLDOWN_MS * 1000) continue;
+
+      voice_ext_pcm_stream_stats_t stats;
+      voice_ext_pcm_stream_get_stats(&stats);
+
+      /* Pump must be actively flowing.  If pump is paused (mid voice
+       * turn) OR stopped, this check shouldn't fire — there's a legit
+       * reason no fresh frames are reaching K144. */
+      if (!stats.task_running || !stats.armed) continue;
+      if (stats.last_pump_age_ms < 0 || stats.last_pump_age_ms > WATCHDOG_PUMP_HEALTHY_MS) continue;
+
+      /* Pump has been pumping but we still need enough samples to draw
+       * a conclusion — fresh setup may not have produced any deltas
+       * yet, that's fine. */
+      if (stats.frames_pumped < 50) continue;
+
+      int64_t last_delta = voice_wakeword_last_delta_us();
+      int64_t delta_age_ms;
+      if (last_delta == 0) {
+         /* Pump has sent 50+ frames but K144 has emitted no transcript
+          * at all — strong signal that asr_id binding is dead. */
+         delta_age_ms = (now - s_watchdog_started_us) / 1000;
+      } else {
+         delta_age_ms = (now - last_delta) / 1000;
+      }
+      if (delta_age_ms < WATCHDOG_ASR_STALL_MS) continue;
+
+      /* All gates passed: pump flowing, wakeword armed, K144 ready,
+       * but no transcript in 20+ seconds.  K144 ASR cycled. */
+      ESP_LOGW(
+          TAG,
+          "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu, fails=%d) — kicking recovery",
+          delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+      char detail[48];
+      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu fails=%d", delta_age_ms / 1000,
+               (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+      tab5_debug_obs_event("watchdog", detail);
+      s_watchdog_last_kick_us = now;
+
+      /* TT #131 2026-05-20 escalation: after WATCHDOG_RESET_FAIL_CAP
+       * consecutive sys.reset failures, escalate to sys.reboot
+       * (full K144 Linux reboot — ~30 s downtime but guaranteed
+       * unwedge of llm-sys / llm-asr daemons).  Rate-limited to one
+       * sys.reboot per WATCHDOG_REBOOT_COOLDOWN_MS to avoid boot loops. */
+      bool do_reboot = s_watchdog_reset_fail_count >= WATCHDOG_RESET_FAIL_CAP &&
+                       (now - s_watchdog_last_reboot_us) > (int64_t)WATCHDOG_REBOOT_COOLDOWN_MS * 1000;
+
+      voice_wakeword_stop();
+      vTaskDelay(pdMS_TO_TICKS(300));
+
+      if (do_reboot) {
+         ESP_LOGW(TAG, "watchdog: %d consecutive reset fails → escalating to sys.reboot", s_watchdog_reset_fail_count);
+         tab5_debug_obs_event("watchdog", "escalate_reboot");
+         s_watchdog_last_reboot_us = now;
+         s_watchdog_reset_fail_count = 0;
+         esp_err_t re = voice_m5_llm_sys_reboot();
+         if (re != ESP_OK) {
+            ESP_LOGW(TAG, "watchdog: sys.reboot send failed (%s) — K144 may be unreachable", esp_err_to_name(re));
+         }
+         /* Wait ~60s for K144 hardware reboot + daemon start, then trigger
+          * reset_failover to re-establish chain on the freshly-rebooted K144. */
+         vTaskDelay(pdMS_TO_TICKS(60000));
+         tab5_port_c_uart_set_baud(115200); /* K144 boots at default */
+         (void)voice_onboard_reset_failover();
+      } else {
+         esp_err_t e = voice_onboard_reset_failover();
+         if (e != ESP_OK) {
+            ESP_LOGW(TAG, "watchdog: reset_failover bounce (%s)", esp_err_to_name(e));
+         }
+      }
+
+      /* Track recovery outcome: wait long enough for the reset cycle
+       * to fully complete (sys.reset + poll-for-ready up to 90 s +
+       * asr.setup ~5 s + first delta ~5 s).  120 s gives the full
+       * cycle time + margin.  If a new ASR delta arrived since the
+       * kick → reset succeeded.  If still stale → increment counter
+       * for potential sys.reboot escalation next kick. */
+      vTaskDelay(pdMS_TO_TICKS(120000));
+      int64_t check = voice_wakeword_last_delta_us();
+      if (check > now) {
+         if (s_watchdog_reset_fail_count > 0) {
+            ESP_LOGI(TAG, "watchdog: recovery succeeded — clearing fail count (was %d)", s_watchdog_reset_fail_count);
+         }
+         s_watchdog_reset_fail_count = 0;
+      } else {
+         s_watchdog_reset_fail_count++;
+         ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d/%d", s_watchdog_reset_fail_count,
+                  WATCHDOG_RESET_FAIL_CAP);
+      }
+   }
+}
+
 esp_err_t voice_onboard_start_warmup(void) {
    if (s_m5_failover != M5_FAIL_UNKNOWN) return ESP_ERR_INVALID_STATE;
+   /* Spawn the K144-ASR-cycling watchdog at the same time as the boot
+    * warmup.  PSRAM-backed stack to keep internal SRAM headroom. */
+   static volatile bool s_watchdog_spawned = false;
+   if (!s_watchdog_spawned) {
+      s_watchdog_spawned = true;
+      BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(onboard_watchdog_task, "onboard_wd", 4096, NULL, 1, NULL,
+                                                      tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
+      if (ok != pdPASS) {
+         ESP_LOGW(TAG, "watchdog task spawn failed — running without ASR-stall recovery");
+         s_watchdog_spawned = false;
+      }
+   }
    return tab5_worker_enqueue(onboard_warmup_job, NULL, "m5_warmup");
 }
 
@@ -492,18 +731,28 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.reset", "ack_ok");
    }
 
-   /* Daemon needs ~4 s to reconnect MQTT internally after a soft reset.
-    * 5 s wait is conservative — verified on the live ADB probe. */
-   vTaskDelay(pdMS_TO_TICKS(5000));
-
-   /* Re-run the probe + warmup-infer.  Inline-equivalent to
-    * onboard_warmup_job but reuses the same observability events for
-    * monitoring continuity (one m5.warmup ready/unavailable event per
-    * recovery cycle). */
+   /* TT #131 2026-05-20: poll for K144 readiness instead of fixed wait.
+    * Daemon needs ~4 s MQTT reconnect + ~8-15 s for llm-llm to register
+    * its RPC server.  Earlier 15 s fixed wait hit cases where K144
+    * needed >20 s — probe timed out (3s budget) and the whole
+    * recovery cycle marked unavailable.  Now: start polling at 8 s
+    * (minimum K144 boot), then ping every 2 s up to 90 s.  Exit
+    * early as soon as ping succeeds.  Most recoveries land at 10-20 s;
+    * pathological at 60-90 s.  Beyond 90 s we give up and escalate. */
    tab5_debug_obs_event("m5.warmup", "start");
-   esp_err_t pe = voice_m5_llm_probe();
+   vTaskDelay(pdMS_TO_TICKS(8000)); /* min boot time */
+   esp_err_t pe = ESP_ERR_TIMEOUT;
+   for (int i = 0; i < 41; i++) { /* up to 82 s additional, 90 s total */
+      pe = voice_m5_llm_probe();
+      if (pe == ESP_OK) {
+         ESP_LOGI(TAG, "K144 ping success after %d s post-reset", 8 + i * 2);
+         break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      if (s_chain_stop_flag) break;
+   }
    if (pe != ESP_OK) {
-      ESP_LOGW(TAG, "K144 re-probe after reset failed (%s)", esp_err_to_name(pe));
+      ESP_LOGW(TAG, "K144 didn't come back within 90 s after sys.reset (%s)", esp_err_to_name(pe));
       mark_k144_unavailable("reset_probe_fail");
       tab5_debug_obs_event("m5.reset", "fail");
       return;
@@ -521,6 +770,20 @@ static void onboard_reset_failover_job(void *arg) {
       /* Same "free LLM slot before ASR" gate as the initial warmup
        * path — see comment there for why this is required. */
       voice_m5_llm_release();
+      /* NOTE: baud bump deliberately NOT done here.  Earlier attempt
+       * caused Tab5-vs-K144 baud desync on /m5/reset path because the
+       * boot-time bump path can leave Tab5 at 1.5 Mbps while K144's
+       * uartsetup sometimes fails silently → both ends out of sync.
+       *
+       * Order matters: arm wakeword FIRST at 115200 (clean setup),
+       * THEN bump for the pump.  See onboard_warmup_job for rationale. */
+      bool reset_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
+      if (reset_to_ext_pcm && tab5_port_c_uart_get_baud() != 115200) {
+         /* After sys.reset, K144 is at 115200 default.  Sync Tab5 down. */
+         ESP_LOGI(TAG, "reset-path: syncing Tab5 to K144 default 115200 baseline");
+         tab5_port_c_uart_set_baud(115200);
+         vTaskDelay(pdMS_TO_TICKS(50));
+      }
       /* Wakeword revival: same hook as the initial warmup path — once
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
@@ -535,6 +798,20 @@ static void onboard_reset_failover_job(void *arg) {
          (void)voice_onboard_reset_failover();
       } else if (we != ESP_OK && we != ESP_ERR_INVALID_STATE) {
          ESP_LOGW(TAG, "wakeword (re)start skipped: %s", esp_err_to_name(we));
+      } else if (we == ESP_OK) {
+         /* Wakeword armed at 115200 (clean setup), now bump for pump. */
+         if (reset_to_ext_pcm) {
+            if (tab5_port_c_uart_get_baud() != 1500000) {
+               ESP_LOGI(TAG, "reset-path: wakeword armed — bumping baud for pump");
+               voice_onboard_suppress_auto_retry(true);
+               esp_err_t be = voice_m5_llm_set_baud(1500000);
+               if (be != ESP_OK) {
+                  ESP_LOGW(TAG, "reset-path baud bump failed (%s)", esp_err_to_name(be));
+               }
+            }
+            voice_ext_pcm_stream_arm();
+            ESP_LOGI(TAG, "ext_pcm pump armed via reset path");
+         }
       }
    } else {
       ESP_LOGW(TAG, "K144 re-warmup %s after %lldms — still unavailable", esp_err_to_name(ie), dt_ms);
@@ -914,8 +1191,58 @@ int64_t voice_onboard_chain_uptime_ms(void) {
  * No-op if K144 is currently UNAVAILABLE — caller should toast a
  * hint if it cares.  Honours the "release LLM slot before ASR"
  * gate from the warmup path. */
+void voice_onboard_suppress_auto_retry(bool suppress) {
+   s_auto_retry_suppressed = suppress;
+   if (suppress) {
+      ESP_LOGI(TAG, "K144 auto-retry suppressed (ext_pcm armed)");
+      tab5_debug_obs_event("m5.reset", "suppressed");
+      /* Force state to READY while suppressed so other consumers that
+       * gate on failover_state==2 don't refuse to proceed. */
+      s_m5_failover = M5_FAIL_READY;
+   } else {
+      ESP_LOGI(TAG, "K144 auto-retry re-enabled");
+      tab5_debug_obs_event("m5.reset", "unsuppressed");
+   }
+}
+
 esp_err_t voice_onboard_arm_wakeword(void) {
    if (s_m5_failover == M5_FAIL_UNAVAILABLE) return ESP_ERR_INVALID_STATE;
    voice_m5_llm_release();
    return voice_onboard_arm_k144_wakeword_internal();
+}
+
+/* TT #131 — async wakeword arm.  Posted on the shared worker so HTTP /
+ * LVGL callers return immediately.
+ *
+ * The wakeword listener only needs audio + asr on K144 (NO llm), so this
+ * path IGNORES the failover_state gate (which gates on llm.setup success)
+ * and just tries voice_onboard_arm_wakeword over and over until asr.setup
+ * lands.  Retries with 2 s backoff, 15 attempts (30 s total).
+ *
+ * If we deferred to reset_failover here we'd lose minutes to the llm
+ * model-load probe + auto-retry budget — for ext_pcm the LLM doesn't
+ * even need to be reachable. */
+static void arm_wakeword_async_job(void *arg) {
+   int attempts = (int)(intptr_t)arg;
+   if (voice_wakeword_is_active()) return; /* already armed */
+
+   voice_m5_llm_release(); /* free NPU slot before ASR claims it */
+   esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
+   if (we == ESP_OK || we == ESP_ERR_INVALID_STATE /* already running */) {
+      tab5_debug_obs_event("arm_wake_async", "ok");
+      return;
+   }
+
+   if (attempts >= 15) {
+      ESP_LOGW(TAG, "arm_wakeword_async: gave up after %d attempts (last err=%s)", attempts, esp_err_to_name(we));
+      tab5_debug_obs_event("arm_wake_async", "give_up");
+      return;
+   }
+   ESP_LOGW(TAG, "arm_wakeword_async: attempt %d failed (%s) — retrying in 2s", attempts, esp_err_to_name(we));
+   vTaskDelay(pdMS_TO_TICKS(2000));
+   (void)tab5_worker_enqueue(arm_wakeword_async_job, (void *)(intptr_t)(attempts + 1), "arm_wake_retry");
+}
+
+esp_err_t voice_onboard_arm_wakeword_async(void) {
+   return tab5_worker_enqueue(arm_wakeword_async_job, (void *)(intptr_t)0, "arm_wake_async");
 }

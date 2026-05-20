@@ -15,7 +15,15 @@
 static const char *TAG = "uart_port_c";
 
 #define PORT_C_UART_PORT (TAB5_PORT_C_UART_NUM)
-#define PORT_C_UART_RX_BUF_SZ (256)
+/* TT #131 — bump from 256 to 4096.  At 1.5 Mbps, 256 bytes = 1.4 ms of
+ * wire — too small to ride out the wakeword recv-loop holding the mutex. */
+#define PORT_C_UART_RX_BUF_SZ (4096)
+/* TT #131 — was 0 = synchronous-blocking mode for uart_write_bytes.
+ * The pump was parked any time another caller held the recursive UART
+ * mutex (e.g. voice_m5_llm_wakeword_run's recv loop), causing K144 to
+ * see ~3 KB/s ingestion even at 1.5 Mbps.  8 KB ring = ~43 ms of wire,
+ * which comfortably covers wakeword's per-iteration lock-hold. */
+#define PORT_C_UART_TX_BUF_SZ (8192)
 
 static bool s_initialized = false;
 static uint32_t s_current_baud = TAB5_PORT_C_UART_BAUD;
@@ -46,7 +54,8 @@ esp_err_t tab5_port_c_uart_init(void) {
        .source_clk = UART_SCLK_DEFAULT,
    };
 
-   esp_err_t err = uart_driver_install(PORT_C_UART_PORT, PORT_C_UART_RX_BUF_SZ, 0, 0, NULL, 0);
+   esp_err_t err =
+       uart_driver_install(PORT_C_UART_PORT, PORT_C_UART_RX_BUF_SZ, PORT_C_UART_TX_BUF_SZ, 0, NULL, 0);
    if (err != ESP_OK) {
       ESP_LOGE(TAG, "uart_driver_install failed: %s", esp_err_to_name(err));
       return err;

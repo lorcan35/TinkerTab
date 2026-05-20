@@ -24,7 +24,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
+#include "settings.h"
 #include "voice.h"
 #include "voice_m5_llm.h"
 
@@ -217,19 +219,52 @@ static void finish_dictation(const char *reason) {
  * Barge-in (saying "Hey Tinker" to interrupt TTS) is a separate
  * follow-up that needs voice_cancel() + voice_start_listening()
  * coordination; not in this fix. */
+/* TT #131 stability 2026-05-20: tracks the moment voice state returned
+ * to READY so we can enforce a post-turn grace period before wake can
+ * re-fire.  Without this grace, K144 ASR's buffered transcripts from
+ * during the turn (often containing fragments of Tinker's own TTS
+ * playback) hit the matcher immediately on READY transition and
+ * false-fire.  500-1000 ms is enough for the ASR engine's streaming
+ * context to flush + Tab5's wake_window to settle on truly-new audio. */
+static int64_t s_last_busy_us = 0;
+#define WAKE_REARM_GRACE_MS 1000
+
+/* TT #131 watchdog 2026-05-20: timestamp of the most-recent ASR
+ * delta we received from K144.  Updated in asr_partial_cb.  The
+ * watchdog task in voice_onboard.c polls voice_wakeword_last_delta_us()
+ * and kicks /m5/reset if it goes stale (>20 s) while the pump is
+ * actively sending frames — that pattern means K144's llm-asr
+ * cycled out from under us and our cached asr_id is stale. */
+static int64_t s_last_delta_us = 0;
+int64_t voice_wakeword_last_delta_us(void) { return s_last_delta_us; }
+
 static bool wakeword_suppressed_by_voice_state(void) {
    voice_state_t st = voice_get_state();
-   /* TT #597 — Barge-in: SPEAKING is NO LONGER suppressed.  The user
-    * may say "Hey Tinker" mid-TTS to interrupt + start a new turn.
-    * The WAKE handler in voice_onboard.c::wakeword_event_handler is
-    * responsible for calling voice_cancel() before voice_start_
-    * listening() when the wake fires during SPEAKING.
-    *
-    * Self-wake risk mitigated by the wake_phrase being multi-word
-    * ("hey tinker", not bare "tinker") + the VAD pre-gate's 8-char
-    * window floor.  Tinker's TTS would have to coincidentally say
-    * the full "hey tinker" phrase to false-trigger, which is rare. */
-   return (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING);
+   /* TT #131 2026-05-20: matcher's alt phrase is now bare "thinker"
+    * (one word, much more permissive than the old "hey thinker").
+    * That makes barge-in unsafe — Tinker's own TTS reply commonly
+    * contains "Tinker" → ASR transcribes "thinker" → matcher fires
+    * → cancels its own reply.  Suppress wake during SPEAKING too so
+    * the user gets a "fully idle before re-arm" UX as requested.
+    * Net cost: lose mid-TTS barge-in.  Net gain: stability under the
+    * sensitive ASR-based wake. */
+   if (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING ||
+       st == VOICE_STATE_SPEAKING) {
+      s_last_busy_us = esp_timer_get_time();
+      return true;
+   }
+   /* Post-busy grace: wait WAKE_REARM_GRACE_MS after state returns to
+    * READY before allowing wake to fire again.  Lets K144 ASR's
+    * streaming-zipformer context flush its just-completed-turn frames
+    * so the next match is against fresh post-turn audio only. */
+   if (s_last_busy_us != 0) {
+      int64_t since_busy_us = esp_timer_get_time() - s_last_busy_us;
+      if (since_busy_us < (int64_t)WAKE_REARM_GRACE_MS * 1000) {
+         return true;
+      }
+      s_last_busy_us = 0; /* grace expired — re-armed */
+   }
+   return false;
 }
 
 /* TT #578: push every ASR delta into the debug ring buffer.  Cheap —
@@ -251,6 +286,11 @@ static void transcript_ring_push(const char *delta, bool finish) {
 static void asr_partial_cb(const char *delta, bool finish, void *user) {
    (void)user;
 
+   /* TT #131 watchdog: timestamp ANY delta arrival (including empty
+    * "finish" markers).  Even a finish=true with no text confirms
+    * K144's llm-asr is alive and dispatching to us. */
+   s_last_delta_us = esp_timer_get_time();
+
    /* TT #578: every delta into the debug ring before any state branching. */
    if (delta && delta[0]) transcript_ring_push(delta, finish);
 
@@ -269,6 +309,27 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
       if (s_emit_bg && delta && delta[0]) {
          emit_event(VOICE_WAKEWORD_EVENT_TRANSCRIPT, delta);
       }
+      /* TT #131 2026-05-20: K144's sherpa-ncnn streaming-zipformer-20M
+       * is INCONSISTENT in how it transcribes "Hey Tinker" — observed
+       * renderings across sessions: "thinker", "hick", "hicker",
+       * "hanker", "any hanker thinker", "i'm thinker".  To make the
+       * wake reliable we match against a small set of patterns that
+       * all map to "user said something that sounds like Hey Tinker".
+       *
+       * The 8-char VAD pre-gate (below) keeps short hallucinations
+       * out — "hick" alone in a 5-char window won't fire; "hick"
+       * embedded in a longer window will.  Self-wake during TTS is
+       * already suppressed by voice_state.
+       *
+       * Order matters: try the longest/most-specific first so the
+       * match-detail surfaces the best signal. */
+      static const char *const k_alt_patterns[] = {
+          "thinker", /* T→Th substitution — most common rendering */
+          "hicker",  /* contracted "Hey Tinker" */
+          "tinker",  /* exact (rare — model usually substitutes) */
+          "hick",    /* heavily-contracted rendering, real session 2026-05-20 */
+          "hanker",  /* observed in "any hanker thinker" rendering */
+      };
       const char *match = NULL;
       if (s_wake_window_len > 0) {
          if (istrstr(s_wake_window, s_wake_phrase) != NULL) {
@@ -276,6 +337,13 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
          } else if (s_wake_phrase_alt[0] &&
                     istrstr(s_wake_window, s_wake_phrase_alt) != NULL) {
             match = s_wake_phrase_alt;
+         } else {
+            for (size_t i = 0; i < sizeof(k_alt_patterns) / sizeof(k_alt_patterns[0]); i++) {
+               if (istrstr(s_wake_window, k_alt_patterns[i]) != NULL) {
+                  match = k_alt_patterns[i];
+                  break;
+               }
+            }
          }
       }
       if (match != NULL) {
@@ -379,37 +447,20 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    strncpy(s_wake_phrase, wp, sizeof(s_wake_phrase) - 1);
    s_wake_phrase[sizeof(s_wake_phrase) - 1] = '\0';
 
-   /* Auto-derive a "tinker → thinker" alternate spelling so the ASR's
-    * consistent mis-hearing doesn't kill the match.  Replace every
-    * standalone occurrence of "tinker" with "thinker" in the alt
-    * buffer.  Substring + case-insensitive — same matcher rules. */
-   s_wake_phrase_alt[0] = '\0';
-   {
-      const char *needle = "tinker";
-      size_t nlen = strlen(needle);
-      const char *p = s_wake_phrase;
-      char *out = s_wake_phrase_alt;
-      char *end = s_wake_phrase_alt + sizeof(s_wake_phrase_alt) - 1;
-      bool found = false;
-      while (*p && out < end) {
-         const char *m = istrstr(p, needle);
-         if (m == NULL) {
-            size_t take = strlen(p);
-            if (out + take > end) take = (size_t)(end - out);
-            memcpy(out, p, take); out += take; break;
-         }
-         found = true;
-         size_t pre = (size_t)(m - p);
-         if (out + pre > end) pre = (size_t)(end - out);
-         memcpy(out, p, pre); out += pre;
-         const char *sub = "thinker";
-         size_t slen = strlen(sub);
-         if (out + slen > end) slen = (size_t)(end - out);
-         memcpy(out, sub, slen); out += slen;
-         p = m + nlen;
-      }
-      *out = '\0';
-      if (!found) s_wake_phrase_alt[0] = '\0';
+   /* TT #131 2026-05-20: ASR consistently transcribes "Hey Tinker" as
+    * jumbled noise containing the substring "thinker" — e.g. "think
+    * of any hanker thinker agathip kirkique".  The full-phrase alt
+    * "hey thinker" rarely matches because ASR drops/mangles the
+    * leading "hey".  Use just "thinker" as alt — the VAD pre-gate
+    * (8-char window minimum) still filters single-word noise
+    * hallucinations, and self-wake during TTS is already suppressed
+    * by voice_state checks.  Net: catches the proper-noun token
+    * the ASR consistently emits, even when surrounded by garbage. */
+   if (istrstr(s_wake_phrase, "tinker") != NULL) {
+      strncpy(s_wake_phrase_alt, "thinker", sizeof(s_wake_phrase_alt) - 1);
+      s_wake_phrase_alt[sizeof(s_wake_phrase_alt) - 1] = '\0';
+   } else {
+      s_wake_phrase_alt[0] = '\0';
    }
    strncpy(s_end_phrase, ep, sizeof(s_end_phrase) - 1);
    s_end_phrase[sizeof(s_end_phrase) - 1] = '\0';
@@ -443,7 +494,26 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    ESP_LOGI(TAG, "starting K144 always-on ASR: wake=\"%s\" end=\"%s\"", s_wake_phrase, s_end_phrase);
    tab5_debug_obs_event("wakeword.start", s_wake_phrase);
 
-   esp_err_t err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
+   /* TT #131 2026-05-20: wake_src=ext_pcm now uses the ASR variant
+    * (Tab5 mic → K144 main_asr → utf-8 stream → Tab5 string-matcher).
+    * KWS variant proved unreliable — even at 0.02 threshold + 5
+    * parameter-name-variants + clean voice (RMS 3685+) the
+    * sherpa-onnx-kws-zipformer-gigaspeech model wouldn't fire.  The
+    * ASR path is acoustically more robust (full sequence-to-sequence
+    * transducer vs per-token keyword spotter) AND has live-verified
+    * history of producing real transcripts from Tab5-mic audio
+    * (K144 daemon journal Aug 22 12:17/12:20 from commit 88fbf14).
+    * Tab5's voice_wakeword recv loop already handles both shapes
+    * via the is_kws flag — wakeword_setup_tab5_mic doesn't set
+    * is_kws so the matcher does string-match on the transcript
+    * stream (catches "hey tinker" + "hey thinker" — K144's ASR
+    * consistently substitutes T → Th on this phrase). */
+   esp_err_t err;
+   if (tab5_settings_wake_src_is("ext_pcm")) {
+      err = voice_m5_llm_wakeword_setup_tab5_mic(&s_handle, &s_stop_flag);
+   } else {
+      err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
+   }
    if (err != ESP_OK) {
       ESP_LOGE(TAG, "ASR chain setup failed: %s", esp_err_to_name(err));
       char detail[48];
@@ -453,7 +523,12 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
       return err;
    }
 
-   BaseType_t ok = xTaskCreate(wakeword_task, "wakeword", WAKEWORD_TASK_STACK, NULL, WAKEWORD_TASK_PRIO, &s_task);
+   /* TT #131 stability: PSRAM-back the 12 KB task stack via WithCaps.
+    * Internal SRAM is tight (~56 KB largest-free at boot); a 12 KB
+    * stack here on top of ext_pcm's 8 KB pushed the heap into
+    * heap_wd's "sram_exhausted" threshold under sustained operation. */
+   BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(wakeword_task, "wakeword", WAKEWORD_TASK_STACK, NULL,
+                                                   WAKEWORD_TASK_PRIO, &s_task, tskNO_AFFINITY, MALLOC_CAP_SPIRAM);
    if (ok != pdPASS) {
       ESP_LOGE(TAG, "wakeword task spawn failed");
       voice_m5_llm_wakeword_teardown(s_handle);
@@ -479,6 +554,8 @@ void voice_wakeword_stop(void) {
 }
 
 bool voice_wakeword_is_active(void) { return s_handle != NULL && s_task != NULL; }
+
+const char *voice_wakeword_asr_id(void) { return voice_m5_llm_wakeword_asr_id(s_handle); }
 
 void voice_wakeword_force_dictation_stop(void) { s_force_dict_stop = true; }
 
