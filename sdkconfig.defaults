@@ -264,3 +264,12 @@ CONFIG_LV_DRAW_LAYER_SIMPLE_BUF_SIZE=65536
 # the per-frame body raster budget at 30 Hz.  Reverted to the
 # legacy 2-stop API with REDUCED gradient contrast (edge darkened
 # 0.7× instead of 0.5×) — bands compress out of perception.
+
+# TT #620 W2 — bump USB host control transfer buffer.  K144's composite
+# gadget (ADB + 2 CDC + 3 UAC1 interfaces, see scripts/k144/usb-tinker.sh)
+# has a configuration descriptor that exceeds the default 256 byte buffer.
+# 1024 covers any realistic composite shape.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+# Allow USB host stack to allocate DMA buffers in PSRAM (control + bulk).
+# Frees internal SRAM and lets the bigger buffer fit comfortably.
+CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y
