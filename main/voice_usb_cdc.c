@@ -28,6 +28,7 @@
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "io_expander.h" /* tab5_set_usb_5v_en — TT #620 force-assert USB-A 5V */
 #include "usb/cdc_acm_host.h"
 #include "usb/usb_host.h"
 
@@ -115,6 +116,20 @@ static void usb_lib_task(void *arg) {
    }
 }
 
+/* Generic new-device callback — logs every USB device that enumerates
+ * on Tab5's host bus.  Useful for diagnosing why K144 may not be
+ * appearing (wrong cable, wrong jack, 5 V not present, etc.).  Called
+ * from USB Host context — keep it cheap. */
+static void log_any_new_device(usb_device_handle_t usb_dev) {
+   const usb_device_desc_t *desc = NULL;
+   if (usb_host_get_device_descriptor(usb_dev, &desc) == ESP_OK && desc) {
+      ESP_LOGI(TAG, "*** USB device enumerated: vid=0x%04X pid=0x%04X bcdDevice=0x%04X class=0x%02X", desc->idVendor,
+               desc->idProduct, desc->bcdDevice, desc->bDeviceClass);
+   } else {
+      ESP_LOGI(TAG, "*** USB device enumerated (descriptor read failed)");
+   }
+}
+
 static void connect_watcher_task(void *arg) {
    (void)arg;
    ESP_LOGI(TAG, "connect_watcher_task running — polling for K144 (vid=0x%04X pid=0x%04X intf=%d)", VOICE_USB_CDC_K144_VID,
@@ -129,9 +144,9 @@ static void connect_watcher_task(void *arg) {
        .user_arg = NULL,
    };
 
+   int iters = 0;
    while (1) {
       if (s_connected) {
-         /* Wait for disconnect notification */
          if (s_disconnect_sem) {
             xSemaphoreTake(s_disconnect_sem, portMAX_DELAY);
          } else {
@@ -151,13 +166,28 @@ static void connect_watcher_task(void *arg) {
          ESP_LOGI(TAG, "K144 CDC-ACM opened");
          continue;
       }
-      /* ESP_ERR_NOT_FOUND or timeout — wait and try again */
+      /* Every 10 s log what we're seeing — distinguishes "polling but
+       * bus is empty" from "polling and rejected wrong device". */
+      if ((iters++ % 10) == 0) {
+         ESP_LOGI(TAG, "watcher: cdc_acm_host_open → %s (no device on bus yet)", esp_err_to_name(err));
+      }
       vTaskDelay(pdMS_TO_TICKS(K144_CONNECT_RETRY_MS));
    }
 }
 
 esp_err_t voice_usb_cdc_init(void) {
    if (s_initialized) return ESP_OK;
+
+   /* Force-assert Tab5's USB-A 5V rail before the host stack comes up.
+    * io_expander.c sets PI4IOE2 P3 = high in tab5_io_expander_init, but
+    * something later in the boot may clobber the OUT_SET register; do
+    * one belt-and-braces toggle here so the VBUS to any attached
+    * device is definitely live by the time the host PHY enables.  Log
+    * the readback so the diagnostic surface tells us whether the bit
+    * actually latched. */
+   tab5_set_usb_5v_en(true);
+   bool usb5v = tab5_get_usb_5v_en();
+   ESP_LOGI(TAG, "USB-A 5V state (PI4IOE2 P3) = %s", usb5v ? "HIGH (ok)" : "LOW (BAD — VBUS dead)");
 
    if (s_lock == NULL) {
       s_lock = xSemaphoreCreateRecursiveMutex();
@@ -174,7 +204,19 @@ esp_err_t voice_usb_cdc_init(void) {
       if (!s_rx) return ESP_ERR_NO_MEM;
    }
 
-   /* USB host library */
+   /* USB host library — default peripheral_map (BIT0 = HS controller).
+    *
+    * ESP32-P4 has two USB-OTG controllers:
+    *   [0] HS — dedicated USB_DP_HS / USB_DM_HS chip pads → Tab5 USB-A jack
+    *   [1] FS — GPIO 26/27 — shared with USB Serial/JTAG (Tab5 USB-C console)
+    *
+    * M5Tab5-UserDemo (M5Stack reference firmware) uses HS for its USB
+    * keyboard/mouse host code (default peripheral_map).  We match.
+    *
+    * USB Serial/JTAG console (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y) lives
+    * on the FS USB pads through Tab5's USB-C — different block from
+    * USB-OTG-HS, so they don't conflict.
+    */
    const usb_host_config_t host_cfg = {
        .skip_phy_setup = false,
        .intr_flags = ESP_INTR_FLAG_LEVEL1,
@@ -192,12 +234,15 @@ esp_err_t voice_usb_cdc_init(void) {
       return ESP_ERR_NO_MEM;
    }
 
-   /* CDC-ACM driver */
+   /* CDC-ACM driver — register a generic new-device callback so we log
+    * EVERY USB device that enumerates on Tab5's host bus, regardless of
+    * VID/PID.  Diagnostic for the W2 bring-up: tells us whether the
+    * host PHY is actually seeing anything on the wire. */
    const cdc_acm_host_driver_config_t drv_cfg = {
        .driver_task_stack_size = 4096,
        .driver_task_priority = 11,
        .xCoreID = tskNO_AFFINITY,
-       .new_dev_cb = NULL,
+       .new_dev_cb = log_any_new_device,
    };
    err = cdc_acm_host_install(&drv_cfg);
    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {

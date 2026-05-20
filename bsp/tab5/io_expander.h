@@ -18,3 +18,10 @@ void tab5_set_touch_reset(bool active);
 void tab5_set_camera_reset(bool active);
 void tab5_set_speaker_enable(bool en);
 void tab5_reset_display_and_touch(void);
+
+/* TT #620 — explicit USB-A 5V control + diagnostic readback.  Set high
+ * at boot in tab5_io_expander_init; expose so voice_usb_cdc can force-
+ * re-assert before bringing up the USB host stack (defensive, in case
+ * any later code touches PI4IOE2 OUT_SET and clobbers our bit). */
+void tab5_set_usb_5v_en(bool en);
+bool tab5_get_usb_5v_en(void);
