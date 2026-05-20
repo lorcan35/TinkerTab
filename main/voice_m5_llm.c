@@ -41,6 +41,7 @@
 #include "m5_stackflow.h"
 #include "mbedtls/base64.h"
 #include "uart_port_c.h"
+#include "voice_xport.h" /* TT #620 W4 — runtime send/recv/lock route through here */
 
 static const char *TAG = "voice_m5_llm";
 
@@ -51,14 +52,14 @@ static const char *TAG = "voice_m5_llm";
  * call back into voice_m5_llm_* if a future feature needs that. */
 #define M5_LOCK_OR_RETURN(timeout_ms)                                        \
    do {                                                                      \
-      esp_err_t _le = tab5_port_c_lock(timeout_ms);                          \
+      esp_err_t _le = voice_xport_lock(timeout_ms);                          \
       if (_le != ESP_OK) {                                                   \
          ESP_LOGW(TAG, "uart busy (timeout %u ms)", (unsigned)(timeout_ms)); \
          return _le;                                                         \
       }                                                                      \
    } while (0)
 
-#define M5_UNLOCK() tab5_port_c_unlock()
+#define M5_UNLOCK() voice_xport_unlock()
 
 /* ---------------------------------------------------------------------- */
 /*  Tunables — keep co-located with the constants they constrain          */
@@ -141,8 +142,8 @@ static esp_err_t ensure_rx_buf(void) {
  * success (excluding the trailing \n).  The frame is left in s_rx_buf
  * with NUL termination. */
 static int send_and_recv_one_frame(const char *tx, int tx_len, uint32_t timeout_ms) {
-   tab5_port_c_flush();
-   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+   voice_xport_flush();
+   if (voice_xport_send(tx, (size_t)tx_len) != tx_len) {
       ESP_LOGE(TAG, "Port C send truncated");
       return -1;
    }
@@ -154,7 +155,7 @@ static int send_and_recv_one_frame(const char *tx, int tx_len, uint32_t timeout_
    while (esp_timer_get_time() < deadline && s_rx_len < M5_RX_BUF_BYTES - 1) {
       uint32_t remaining = (uint32_t)((deadline - esp_timer_get_time()) / 1000);
       if (remaining > 100) remaining = 100;
-      int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, remaining);
+      int n = voice_xport_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, remaining);
       if (n > 0) {
          s_rx_len += (size_t)n;
          /* Look for the first \n — that's our frame boundary. */
@@ -187,7 +188,7 @@ static esp_err_t stream_collect(const char *expected_request_id, char *output, s
       while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && esp_timer_get_time() < deadline_us) {
          uint32_t budget_ms = (uint32_t)((deadline_us - esp_timer_get_time()) / 1000);
          if (budget_ms > 100) budget_ms = 100;
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
+         int n = voice_xport_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);
@@ -422,8 +423,8 @@ esp_err_t voice_m5_llm_infer(const char *prompt, char *output, size_t output_cap
       return ESP_ERR_NO_MEM;
    }
 
-   tab5_port_c_flush();
-   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+   voice_xport_flush();
+   if (voice_xport_send(tx, (size_t)tx_len) != tx_len) {
       M5_UNLOCK();
       return ESP_FAIL;
    }
@@ -442,7 +443,7 @@ void voice_m5_llm_release(void) {
       s_setup_work_id[0] = '\0';
       return;
    }
-   if (tab5_port_c_lock(2000) != ESP_OK) {
+   if (voice_xport_lock(2000) != ESP_OK) {
       ESP_LOGW(TAG, "release: uart busy, skipping exit (work_id=%s left stale)", s_setup_work_id);
       return;
    }
@@ -462,7 +463,7 @@ void voice_m5_llm_release(void) {
    }
    ESP_LOGI(TAG, "released work_id=%s", s_setup_work_id);
    s_setup_work_id[0] = '\0';
-   tab5_port_c_unlock();
+   voice_xport_unlock();
 }
 
 bool voice_m5_llm_is_ready(void) { return s_setup_work_id[0] != '\0'; }
@@ -1004,8 +1005,8 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
       M5_UNLOCK();
       return ESP_ERR_NO_MEM;
    }
-   tab5_port_c_flush();
-   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+   voice_xport_flush();
+   if (voice_xport_send(tx, (size_t)tx_len) != tx_len) {
       M5_UNLOCK();
       return ESP_FAIL;
    }
@@ -1036,7 +1037,7 @@ esp_err_t voice_m5_llm_tts(const char *text, int16_t *pcm_out, size_t max_sample
       while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && esp_timer_get_time() < deadline_us) {
          uint32_t budget_ms = (uint32_t)((deadline_us - esp_timer_get_time()) / 1000);
          if (budget_ms > 200) budget_ms = 200;
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
+         int n = voice_xport_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);
@@ -1166,8 +1167,8 @@ static esp_err_t chain_setup_unit(const char *work_id_seed, const char *object, 
    cJSON_Delete(data_obj);
    if (tx_len < 0) return ESP_ERR_NO_MEM;
 
-   tab5_port_c_flush();
-   if (tab5_port_c_send(tx, (size_t)tx_len) != tx_len) {
+   voice_xport_flush();
+   if (voice_xport_send(tx, (size_t)tx_len) != tx_len) {
       ESP_LOGE(TAG, "chain setup(%s): port_c send truncated", object);
       return ESP_FAIL;
    }
@@ -1181,7 +1182,7 @@ static esp_err_t chain_setup_unit(const char *work_id_seed, const char *object, 
              !(stop_flag != NULL && *stop_flag)) {
          uint32_t budget_ms = (uint32_t)((deadline_us - esp_timer_get_time()) / 1000);
          if (budget_ms > 100) budget_ms = 100;
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
+         int n = voice_xport_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, budget_ms);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);
@@ -1339,7 +1340,7 @@ void voice_m5_llm_chain_teardown(voice_m5_chain_handle_t *handle) {
     * holds the lock we wait — teardown is best-effort, so a skipped exit
     * leaves K144-side state stale (better than corrupting the live
     * caller's transaction). */
-   if (tab5_port_c_lock(5000) != ESP_OK) {
+   if (voice_xport_lock(5000) != ESP_OK) {
       ESP_LOGW(TAG, "teardown: uart busy, skipping unit exits (work_ids will leak on K144 until reset)");
       heap_caps_free(handle);
       return;
@@ -1352,10 +1353,10 @@ void voice_m5_llm_chain_teardown(voice_m5_chain_handle_t *handle) {
    chain_exit_unit(handle->audio_id);
    /* Drain any in-flight publisher frames so the next chain run starts
     * clean.  Audit #11. */
-   tab5_port_c_flush();
+   voice_xport_flush();
    s_rx_len = 0;
    ESP_LOGI(TAG, "chain torn down");
-   tab5_port_c_unlock();
+   voice_xport_unlock();
    heap_caps_free(handle);
 }
 
@@ -1375,10 +1376,10 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
 
    /* Discard any stale bytes left over from a prior session — without
     * this, the first iteration can parse garbage as a frame.  Audit #11. */
-   if (tab5_port_c_lock(2000) == ESP_OK) {
-      tab5_port_c_flush();
+   if (voice_xport_lock(2000) == ESP_OK) {
+      voice_xport_flush();
       s_rx_len = 0;
-      tab5_port_c_unlock();
+      voice_xport_unlock();
    }
 
    const int64_t deadline_us = (timeout_s == 0) ? INT64_MAX : esp_timer_get_time() + (int64_t)timeout_s * 1000 * 1000;
@@ -1408,7 +1409,7 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
        * between frames.  Holding across the callbacks is intentional for
        * Wave 1 (caller blocks at most one iteration's work; audio_cb
        * blocking is a separate audit item to address later). */
-      if (tab5_port_c_lock(2000) != ESP_OK) {
+      if (voice_xport_lock(2000) != ESP_OK) {
          vTaskDelay(pdMS_TO_TICKS(10));
          continue;
       }
@@ -1417,14 +1418,14 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
       while (nl == NULL && s_rx_len < M5_RX_BUF_BYTES - 1 && !(stop_flag != NULL && *stop_flag) &&
              esp_timer_get_time() < deadline_us) {
          /* Short slice so we can re-check stop_flag and the deadline often. */
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 100);
+         int n = voice_xport_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 100);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);
          }
       }
       if (nl == NULL) {
-         tab5_port_c_unlock();
+         voice_xport_unlock();
          continue;
       }
 
@@ -1438,12 +1439,12 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
       s_rx_len -= consumed;
       if (pe != ESP_OK) {
          m5_stackflow_response_free(&resp);
-         tab5_port_c_unlock();
+         voice_xport_unlock();
          continue;
       }
       if (resp.work_id == NULL || resp.data == NULL) {
          m5_stackflow_response_free(&resp);
-         tab5_port_c_unlock();
+         voice_xport_unlock();
          continue;
       }
 
@@ -1452,7 +1453,7 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
       const bool is_tts = (strcmp(resp.work_id, handle->tts_id) == 0);
       if (!is_asr && !is_llm && !is_tts) {
          m5_stackflow_response_free(&resp);
-         tab5_port_c_unlock();
+         voice_xport_unlock();
          continue;
       }
 
@@ -1511,7 +1512,7 @@ esp_err_t voice_m5_llm_chain_run(voice_m5_chain_handle_t *handle, voice_m5_chain
          }
       }
       m5_stackflow_response_free(&resp);
-      tab5_port_c_unlock();
+      voice_xport_unlock();
    }
 
    heap_caps_free(pcm);
@@ -1796,7 +1797,7 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
    while (!(stop_flag != NULL && *stop_flag) && esp_timer_get_time() < deadline_us) {
       /* Hold the UART lock per outer iteration so concurrent chain probes
        * can interleave between frames. */
-      if (tab5_port_c_lock(500) != ESP_OK) continue;
+      if (voice_xport_lock(500) != ESP_OK) continue;
 
       char *nl = memchr(s_rx_buf, '\n', s_rx_len);
       if (nl == NULL) {
@@ -1807,14 +1808,14 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
           * pump task starve at 5 % duty cycle, choking ingest below
           * 1 KB/s even at 1.5 Mbps wire.  5 ms hold means ext_pcm pump
           * gets ~50 % of the lock window. */
-         int n = tab5_port_c_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 5);
+         int n = voice_xport_recv(s_rx_buf + s_rx_len, M5_RX_BUF_BYTES - 1 - s_rx_len, 5);
          if (n > 0) {
             s_rx_len += (size_t)n;
             nl = memchr(s_rx_buf, '\n', s_rx_len);
          }
       }
       if (nl == NULL) {
-         tab5_port_c_unlock();
+         voice_xport_unlock();
          continue;
       }
 
@@ -1824,7 +1825,7 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
       size_t consumed = frame_len + 1;
       if (consumed < s_rx_len) memmove(s_rx_buf, s_rx_buf + consumed, s_rx_len - consumed);
       s_rx_len -= consumed;
-      tab5_port_c_unlock();
+      voice_xport_unlock();
 
       if (pe != ESP_OK) {
          m5_stackflow_response_free(&resp);
@@ -1895,16 +1896,16 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
 
 void voice_m5_llm_wakeword_teardown(voice_m5_wakeword_handle_t *handle) {
    if (handle == NULL) return;
-   if (tab5_port_c_lock(5000) != ESP_OK) {
+   if (voice_xport_lock(5000) != ESP_OK) {
       ESP_LOGW(TAG, "always-on ASR teardown: uart busy, skipping exits");
       heap_caps_free(handle);
       return;
    }
    chain_exit_unit(handle->asr_id);
    chain_exit_unit(handle->audio_id);
-   tab5_port_c_flush();
+   voice_xport_flush();
    s_rx_len = 0;
    ESP_LOGI(TAG, "always-on ASR torn down");
-   tab5_port_c_unlock();
+   voice_xport_unlock();
    heap_caps_free(handle);
 }

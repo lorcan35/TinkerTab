@@ -23,9 +23,11 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "settings.h"      /* TT #620 W3: tab5_settings_get/set_xport */
 #include "voice_m5_llm.h"  /* TT #327 Wave 5: K144 baud accessor for /m5 */
 #include "voice_onboard.h" /* TT #327 Wave 4b: chain_active + failover_state */
 #include "voice_usb_cdc.h" /* TT #620 W2: USB transport connection state for /m5 */
+#include "voice_xport.h"   /* TT #620 W3: active transport name */
 
 static const char *TAG = "debug_m5";
 
@@ -110,6 +112,11 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    cJSON_AddBoolToObject(usb, "init", voice_usb_cdc_is_initialized());
    cJSON_AddBoolToObject(usb, "connected", voice_usb_cdc_is_connected());
    cJSON_AddItemToObject(root, "usb_cdc", usb);
+
+   /* TT #620 W3 — active transport (uart vs usb_cdc), driven by NVS
+    * `xport` key.  Surfaces so a remote operator can verify which wire
+    * the StackFlow JSON is travelling on without ssh + serial logs. */
+   cJSON_AddStringToObject(root, "xport", voice_xport_name());
 
    /* Wave 14 — hardware status.  `valid` is true only when the cache
     * holds a successfully-parsed sys.hwinfo response; `cache_age_ms`
@@ -268,8 +275,49 @@ static esp_err_t m5_reset_handler(httpd_req_t *req) {
    return ret;
 }
 
+/* TT #620 W3 — POST /m5/xport?x=uart|usb_cdc.
+ *
+ * Flips the active Tab5↔K144 transport: writes the NVS `xport` key +
+ * re-applies via voice_xport_init.  Reboots required only when going
+ * uart → usb_cdc and K144 hasn't enumerated yet — voice_xport_init
+ * will fall back to uart in that case (no harm). */
+static esp_err_t m5_xport_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+
+   char query[64] = {0};
+   uint8_t want = UINT8_MAX;
+   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+      char value[16] = {0};
+      if (httpd_query_key_value(query, "x", value, sizeof(value)) == ESP_OK) {
+         if (strcmp(value, "uart") == 0 || strcmp(value, "0") == 0) want = 0;
+         else if (strcmp(value, "usb_cdc") == 0 || strcmp(value, "1") == 0) want = 1;
+      }
+   }
+
+   if (want > 1) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      httpd_resp_set_type(req, "application/json");
+      return httpd_resp_sendstr(req, "{\"error\":\"x must be uart|usb_cdc|0|1\"}");
+   }
+
+   tab5_settings_set_xport(want);
+   voice_xport_init(3000);
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddStringToObject(root, "xport_requested", want == 1 ? "usb_cdc" : "uart");
+   cJSON_AddStringToObject(root, "xport_active", voice_xport_name());
+   cJSON_AddBoolToObject(root, "ready", voice_xport_is_ready());
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+   esp_err_t ret = httpd_resp_sendstr(req, json);
+   free(json);
+   return ret;
+}
+
 /* ── Public registration entry point ─────────────────────────────────
- * Called once from tab5_debug_server_start() during boot.  All four
+ * Called once from tab5_debug_server_start() during boot.  All five
  * URI structs are local to this function (matching the inline pattern
  * the rest of debug_server.c still uses for the other families). */
 void debug_server_m5_register(httpd_handle_t server) {
@@ -277,9 +325,11 @@ void debug_server_m5_register(httpd_handle_t server) {
    const httpd_uri_t uri_m5_reset = {.uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
    const httpd_uri_t uri_m5_refresh = {.uri = "/m5/refresh", .method = HTTP_POST, .handler = m5_refresh_handler};
    const httpd_uri_t uri_m5_models = {.uri = "/m5/models", .method = HTTP_GET, .handler = m5_models_handler};
+   const httpd_uri_t uri_m5_xport = {.uri = "/m5/xport", .method = HTTP_POST, .handler = m5_xport_handler};
 
    httpd_register_uri_handler(server, &uri_m5_status);
    httpd_register_uri_handler(server, &uri_m5_reset);
+   httpd_register_uri_handler(server, &uri_m5_xport);
    httpd_register_uri_handler(server, &uri_m5_refresh);
    httpd_register_uri_handler(server, &uri_m5_models);
 

@@ -60,6 +60,7 @@
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
 #include "voice_usb_cdc.h"
+#include "voice_xport.h"
 #include "voice_solo.h"
 #include "wifi.h"
 
@@ -696,6 +697,11 @@ void app_main(void)
             ESP_LOGW("main", "voice_usb_cdc_init failed: %s — falling back to UART", esp_err_to_name(ue));
         }
     }
+
+    /* TT #620 W3: pick the active Tab5↔K144 transport based on NVS
+     * `xport` key (default uart).  Waits up to 3 s for USB enumeration
+     * if usb_cdc was requested.  Logs the resolved choice. */
+    (void)voice_xport_init(3000);
 
     /* TT #317 Phase 4: kick off the K144 LLM Module failover warm-up.
      * Posts ONE long-running job to the worker queue; safe to call here

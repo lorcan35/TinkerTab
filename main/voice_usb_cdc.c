@@ -116,15 +116,25 @@ static void usb_lib_task(void *arg) {
    }
 }
 
-/* Generic new-device callback — logs every USB device that enumerates
- * on Tab5's host bus.  Useful for diagnosing why K144 may not be
- * appearing (wrong cable, wrong jack, 5 V not present, etc.).  Called
- * from USB Host context — keep it cheap. */
+/* Track whether the K144 has been seen on the bus since the last
+ * successful open.  The new-device callback flips s_k144_seen true; if
+ * the watcher then keeps failing to open it, we know the host has
+ * stale state and we kick a usb_host_device_free_all() to flush.
+ *
+ * Without this, a Tab5 reflash while K144 USB-C stays plugged in
+ * leaves the host with a stale device entry that cdc_acm_host_open
+ * can't bind to — user used to have to manually unplug+replug the
+ * cable to recover.  TT #620 W4 stability fix. */
+static volatile bool s_k144_seen_on_bus = false;
+
 static void log_any_new_device(usb_device_handle_t usb_dev) {
    const usb_device_desc_t *desc = NULL;
    if (usb_host_get_device_descriptor(usb_dev, &desc) == ESP_OK && desc) {
       ESP_LOGI(TAG, "*** USB device enumerated: vid=0x%04X pid=0x%04X bcdDevice=0x%04X class=0x%02X", desc->idVendor,
                desc->idProduct, desc->bcdDevice, desc->bDeviceClass);
+      if (desc->idVendor == VOICE_USB_CDC_K144_VID && desc->idProduct == VOICE_USB_CDC_K144_PID) {
+         s_k144_seen_on_bus = true;
+      }
    } else {
       ESP_LOGI(TAG, "*** USB device enumerated (descriptor read failed)");
    }
@@ -135,8 +145,14 @@ static void connect_watcher_task(void *arg) {
    ESP_LOGI(TAG, "connect_watcher_task running — polling for K144 (vid=0x%04X pid=0x%04X intf=%d)", VOICE_USB_CDC_K144_VID,
             VOICE_USB_CDC_K144_PID, VOICE_USB_CDC_K144_INTERFACE);
 
+   /* connection_timeout_ms = 200 — the host stack scans its current
+    * device tree first; if K144 is there, open returns in <50 ms.  If
+    * not, return fast so we can poll again and let the new_dev_cb
+    * driven recovery path do its job.  5 s (the example default) was
+    * too long: bursts of "device just enumerated but cdc state stale"
+    * windows got swallowed by the timeout. */
    const cdc_acm_host_device_config_t dev_cfg = {
-       .connection_timeout_ms = 5000,
+       .connection_timeout_ms = 200,
        .out_buffer_size = 4096,
        .in_buffer_size = 4096,
        .event_cb = handle_event,
@@ -145,6 +161,7 @@ static void connect_watcher_task(void *arg) {
    };
 
    int iters = 0;
+   int stale_open_fails = 0;
    while (1) {
       if (s_connected) {
          if (s_disconnect_sem) {
@@ -152,6 +169,11 @@ static void connect_watcher_task(void *arg) {
          } else {
             vTaskDelay(pdMS_TO_TICKS(K144_CONNECT_RETRY_MS));
          }
+         /* On disconnect, the device descriptor is no longer valid;
+          * reset the "seen" flag so the recovery path doesn't false-fire
+          * on the next iteration. */
+         s_k144_seen_on_bus = false;
+         stale_open_fails = 0;
          continue;
       }
 
@@ -163,13 +185,34 @@ static void connect_watcher_task(void *arg) {
          s_dev = hdl;
          s_connected = true;
          xSemaphoreGiveRecursive(s_lock);
+         stale_open_fails = 0;
          ESP_LOGI(TAG, "K144 CDC-ACM opened");
          continue;
       }
+
+      /* Auto-recovery: if K144 enumerated on the bus (new_dev_cb fired)
+       * but cdc_acm_host_open keeps failing, the host has stale device
+       * state — typically left over from a Tab5 reflash while K144's
+       * USB-C stayed plugged in.  After 3 consecutive failures with
+       * device seen on bus, flush all USB host devices to force fresh
+       * enumeration on the next host event loop iteration.  K144's UDC
+       * watchdog (ax_usb_tinker_event.sh) re-binds the gadget within
+       * ~1 s so the device re-enumerates promptly. */
+      if (s_k144_seen_on_bus) {
+         stale_open_fails++;
+         if (stale_open_fails == 3) {
+            ESP_LOGW(TAG, "K144 enumerated but open keeps failing — flushing USB host state");
+            (void)usb_host_device_free_all();
+            s_k144_seen_on_bus = false;
+            stale_open_fails = 0;
+         }
+      }
+
       /* Every 10 s log what we're seeing — distinguishes "polling but
        * bus is empty" from "polling and rejected wrong device". */
       if ((iters++ % 10) == 0) {
-         ESP_LOGI(TAG, "watcher: cdc_acm_host_open → %s (no device on bus yet)", esp_err_to_name(err));
+         ESP_LOGI(TAG, "watcher: cdc_acm_host_open → %s (k144_seen=%d, stale_fails=%d)", esp_err_to_name(err),
+                  (int)s_k144_seen_on_bus, stale_open_fails);
       }
       vTaskDelay(pdMS_TO_TICKS(K144_CONNECT_RETRY_MS));
    }

@@ -21,9 +21,11 @@ if ! ${ADB} devices | grep -q "axera-ax620e"; then
    exit 1
 fi
 
-step "Pushing /soc/scripts/usb-tinker.sh"
+step "Pushing /soc/scripts/usb-tinker.sh + watchdog"
 ${ADB} push "${SCRIPT_DIR}/usb-tinker.sh" /soc/scripts/usb-tinker.sh
 ${ADB} shell "chmod 755 /soc/scripts/usb-tinker.sh"
+${ADB} push "${SCRIPT_DIR}/ax_usb_tinker_event.sh" /usr/local/m5stack/bin/ax_usb_tinker_event.sh
+${ADB} shell "chmod 755 /usr/local/m5stack/bin/ax_usb_tinker_event.sh"
 
 step "Backing up original usb-adb.sh + rc.local (idempotent)"
 ${ADB} shell "[ -f /soc/scripts/usb-adb.sh.orig ] || cp /soc/scripts/usb-adb.sh /soc/scripts/usb-adb.sh.orig"
@@ -32,8 +34,8 @@ ${ADB} shell "[ -f /etc/rc.local.orig ] || cp /etc/rc.local /etc/rc.local.orig"
 step "Pointing rc.local at usb-tinker.sh (replaces usb-adb.sh)"
 ${ADB} shell "sed -i 's|/soc/scripts/usb-adb.sh start|/soc/scripts/usb-tinker.sh start|g' /etc/rc.local"
 
-step "Disabling legacy ax_usb_adb_event.sh watchdog (targets old gadget name)"
-${ADB} shell "sed -i 's|^/usr/local/m5stack/bin/ax_usb_adb_event.sh|#disabled-for-tinker # /usr/local/m5stack/bin/ax_usb_adb_event.sh|' /etc/rc.local"
+step "Replacing legacy ax_usb_adb_event.sh watchdog with the tinker-aware variant"
+${ADB} shell "sed -i 's|^/usr/local/m5stack/bin/ax_usb_adb_event.sh|/usr/local/m5stack/bin/ax_usb_tinker_event.sh|' /etc/rc.local"
 
 step "Verifying rc.local edit"
 ${ADB} shell "grep -n 'usb-tinker\\|usb-adb\\|ax_usb_adb_event' /etc/rc.local /etc/rc.local.orig"

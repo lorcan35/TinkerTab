@@ -609,6 +609,20 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode)
     return set_u8("conn_m", mode);
 }
 
+/* ── Tab5↔K144 transport (TT #620) ──────────────────────────────────── */
+
+uint8_t tab5_settings_get_xport(void)
+{
+    /* 0 = uart (legacy, default), 1 = usb_cdc */
+    return get_u8("xport", 0);
+}
+
+esp_err_t tab5_settings_set_xport(uint8_t xport)
+{
+    if (xport > 1) xport = 0;
+    return set_u8("xport", xport);
+}
+
 /* ── v4·D Sovereign Halo mode dials ─────────────────────────────────── */
 
 /* Three orthogonal dials replace the 4-mode pill. Tab5-side resolver
