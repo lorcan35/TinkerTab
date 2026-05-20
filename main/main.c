@@ -59,6 +59,7 @@
 #include "voice_dictation.h"
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
+#include "voice_usb_cdc.h"
 #include "voice_solo.h"
 #include "wifi.h"
 
@@ -683,6 +684,18 @@ void app_main(void)
      * to call here — LVGL is already up by this point in boot. */
     extern void ui_notification_init(void);
     ui_notification_init();
+
+    /* TT #620 W2: bring up the USB host stack + CDC-ACM driver.  This is
+     * the new transport for K144 control plane (replacing the fragile
+     * 1.5 Mbps M5-Bus UART).  Non-blocking — the watcher task polls for
+     * K144 enumeration on /dev/ttyACM-equivalent.  Safe when K144 isn't
+     * plugged in: the watcher just keeps polling. */
+    {
+        esp_err_t ue = voice_usb_cdc_init();
+        if (ue != ESP_OK) {
+            ESP_LOGW("main", "voice_usb_cdc_init failed: %s — falling back to UART", esp_err_to_name(ue));
+        }
+    }
 
     /* TT #317 Phase 4: kick off the K144 LLM Module failover warm-up.
      * Posts ONE long-running job to the worker queue; safe to call here

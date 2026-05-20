@@ -25,6 +25,7 @@
 #include "esp_timer.h"
 #include "voice_m5_llm.h"  /* TT #327 Wave 5: K144 baud accessor for /m5 */
 #include "voice_onboard.h" /* TT #327 Wave 4b: chain_active + failover_state */
+#include "voice_usb_cdc.h" /* TT #620 W2: USB transport connection state for /m5 */
 
 static const char *TAG = "debug_m5";
 
@@ -101,6 +102,14 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    const char *fs_names[] = {"unknown", "probing", "ready", "unavailable"};
    cJSON_AddStringToObject(root, "failover_state_name", (fs >= 0 && fs <= 3) ? fs_names[fs] : "?");
    cJSON_AddNumberToObject(root, "uart_baud", (double)voice_m5_llm_get_baud());
+
+   /* TT #620 W2 — USB CDC-ACM transport state.  Tab5's USB-A host port
+    * polls for the K144 composite gadget (vid=0x32c9 pid=0x2003 intf=1);
+    * `usb_cdc_connected` flips true the moment K144 enumerates. */
+   cJSON *usb = cJSON_CreateObject();
+   cJSON_AddBoolToObject(usb, "init", voice_usb_cdc_is_initialized());
+   cJSON_AddBoolToObject(usb, "connected", voice_usb_cdc_is_connected());
+   cJSON_AddItemToObject(root, "usb_cdc", usb);
 
    /* Wave 14 — hardware status.  `valid` is true only when the cache
     * holds a successfully-parsed sys.hwinfo response; `cache_age_ms`
