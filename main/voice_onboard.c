@@ -552,12 +552,16 @@ static void onboard_failover_text_job(void *arg) {
 /* ──────────────────────────────────────────────────────────────────── */
 #define WATCHDOG_INTERVAL_MS 10000
 #define WATCHDOG_ASR_STALL_MS 20000
-#define WATCHDOG_COOLDOWN_MS 90000
+#define WATCHDOG_COOLDOWN_MS 60000           /* 60 s — was 90 s; faster recovery */
 #define WATCHDOG_PUMP_HEALTHY_MS 1000
 #define WATCHDOG_GRACE_AFTER_BOOT_MS 30000  /* don't fire in first 30 s — chain may still be coming up */
+#define WATCHDOG_RESET_FAIL_CAP 2            /* after 2 consecutive sys.reset failures → escalate to sys.reboot */
+#define WATCHDOG_REBOOT_COOLDOWN_MS 180000   /* 3 min after sys.reboot before considering another */
 
 static volatile int64_t s_watchdog_last_kick_us = 0;
 static volatile int64_t s_watchdog_started_us = 0;
+static volatile int s_watchdog_reset_fail_count = 0;
+static volatile int64_t s_watchdog_last_reboot_us = 0;
 
 static void onboard_watchdog_task(void *arg) {
    (void)arg;
@@ -617,21 +621,62 @@ static void onboard_watchdog_task(void *arg) {
       /* All gates passed: pump flowing, wakeword armed, K144 ready,
        * but no transcript in 20+ seconds.  K144 ASR cycled. */
       ESP_LOGW(TAG,
-               "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu) — kicking recovery",
-               delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped);
+               "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu, fails=%d) — kicking recovery",
+               delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
       char detail[48];
-      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu",
-               delta_age_ms / 1000, (unsigned long)stats.frames_pumped);
+      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu fails=%d",
+               delta_age_ms / 1000, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
       tab5_debug_obs_event("watchdog", detail);
       s_watchdog_last_kick_us = now;
 
-      /* Stop wakeword first (frees stale asr_id), then trigger reset
-       * (sends sys.reset to K144 → re-warmup → re-arm wakeword + pump). */
+      /* TT #131 2026-05-20 escalation: after WATCHDOG_RESET_FAIL_CAP
+       * consecutive sys.reset failures, escalate to sys.reboot
+       * (full K144 Linux reboot — ~30 s downtime but guaranteed
+       * unwedge of llm-sys / llm-asr daemons).  Rate-limited to one
+       * sys.reboot per WATCHDOG_REBOOT_COOLDOWN_MS to avoid boot loops. */
+      bool do_reboot = s_watchdog_reset_fail_count >= WATCHDOG_RESET_FAIL_CAP &&
+                       (now - s_watchdog_last_reboot_us) > (int64_t)WATCHDOG_REBOOT_COOLDOWN_MS * 1000;
+
       voice_wakeword_stop();
       vTaskDelay(pdMS_TO_TICKS(300));
-      esp_err_t e = voice_onboard_reset_failover();
-      if (e != ESP_OK) {
-         ESP_LOGW(TAG, "watchdog: reset_failover bounce (%s) — will retry next interval", esp_err_to_name(e));
+
+      if (do_reboot) {
+         ESP_LOGW(TAG, "watchdog: %d consecutive reset fails → escalating to sys.reboot", s_watchdog_reset_fail_count);
+         tab5_debug_obs_event("watchdog", "escalate_reboot");
+         s_watchdog_last_reboot_us = now;
+         s_watchdog_reset_fail_count = 0;
+         esp_err_t re = voice_m5_llm_sys_reboot();
+         if (re != ESP_OK) {
+            ESP_LOGW(TAG, "watchdog: sys.reboot send failed (%s) — K144 may be unreachable", esp_err_to_name(re));
+         }
+         /* Wait ~60s for K144 hardware reboot + daemon start, then trigger
+          * reset_failover to re-establish chain on the freshly-rebooted K144. */
+         vTaskDelay(pdMS_TO_TICKS(60000));
+         tab5_port_c_uart_set_baud(115200);  /* K144 boots at default */
+         (void)voice_onboard_reset_failover();
+      } else {
+         esp_err_t e = voice_onboard_reset_failover();
+         if (e != ESP_OK) {
+            ESP_LOGW(TAG, "watchdog: reset_failover bounce (%s)", esp_err_to_name(e));
+         }
+      }
+
+      /* Track recovery outcome: poll over the next 30 s for any new
+       * ASR delta.  If we get one → reset successful, clear fail count.
+       * If still stale → increment fail count for potential escalation. */
+      vTaskDelay(pdMS_TO_TICKS(30000));
+      int64_t check = voice_wakeword_last_delta_us();
+      if (check > now) {
+         /* New delta arrived since the kick — recovery worked. */
+         if (s_watchdog_reset_fail_count > 0) {
+            ESP_LOGI(TAG, "watchdog: recovery succeeded — clearing fail count (was %d)",
+                     s_watchdog_reset_fail_count);
+         }
+         s_watchdog_reset_fail_count = 0;
+      } else {
+         s_watchdog_reset_fail_count++;
+         ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d",
+                  s_watchdog_reset_fail_count);
       }
    }
 }
@@ -686,21 +731,28 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.reset", "ack_ok");
    }
 
-   /* Daemon needs ~4 s to reconnect MQTT internally + ~8-10 s for the
-    * qwen2.5-0.5B LLM model to load into the NPU.  Without the longer
-    * wait the post-reset re-warmup hit "unit call false" (err=-9) because
-    * llm-llm hadn't registered its RPC server yet (TT #131 live debug).
-    * 15 s is conservative — most boots see ready by 12 s. */
-   vTaskDelay(pdMS_TO_TICKS(15000));
-
-   /* Re-run the probe + warmup-infer.  Inline-equivalent to
-    * onboard_warmup_job but reuses the same observability events for
-    * monitoring continuity (one m5.warmup ready/unavailable event per
-    * recovery cycle). */
+   /* TT #131 2026-05-20: poll for K144 readiness instead of fixed wait.
+    * Daemon needs ~4 s MQTT reconnect + ~8-15 s for llm-llm to register
+    * its RPC server.  Earlier 15 s fixed wait hit cases where K144
+    * needed >20 s — probe timed out (3s budget) and the whole
+    * recovery cycle marked unavailable.  Now: start polling at 8 s
+    * (minimum K144 boot), then ping every 2 s up to 90 s.  Exit
+    * early as soon as ping succeeds.  Most recoveries land at 10-20 s;
+    * pathological at 60-90 s.  Beyond 90 s we give up and escalate. */
    tab5_debug_obs_event("m5.warmup", "start");
-   esp_err_t pe = voice_m5_llm_probe();
+   vTaskDelay(pdMS_TO_TICKS(8000));  /* min boot time */
+   esp_err_t pe = ESP_ERR_TIMEOUT;
+   for (int i = 0; i < 41; i++) {  /* up to 82 s additional, 90 s total */
+      pe = voice_m5_llm_probe();
+      if (pe == ESP_OK) {
+         ESP_LOGI(TAG, "K144 ping success after %d s post-reset", 8 + i * 2);
+         break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      if (s_chain_stop_flag) break;
+   }
    if (pe != ESP_OK) {
-      ESP_LOGW(TAG, "K144 re-probe after reset failed (%s)", esp_err_to_name(pe));
+      ESP_LOGW(TAG, "K144 didn't come back within 90 s after sys.reset (%s)", esp_err_to_name(pe));
       mark_k144_unavailable("reset_probe_fail");
       tab5_debug_obs_event("m5.reset", "fail");
       return;
