@@ -569,10 +569,21 @@ static void onboard_failover_text_job(void *arg) {
 #define WATCHDOG_RESET_FAIL_CAP 2          /* after 2 consecutive sys.reset failures → escalate to sys.reboot */
 #define WATCHDOG_REBOOT_COOLDOWN_MS 180000 /* 3 min after sys.reboot before considering another */
 
+/* TT #131 2026-05-20: preventive periodic sys.reboot.  Even with the
+ * UART resync pause + watchdog reactive recovery, K144's daemons can
+ * accumulate state over hours (memory growth in main_asr, NPU task
+ * slot fragmentation, llm-sys MQTT/ZMQ leaks, etc.).  Every 4 hours
+ * of READY uptime, schedule a preventive sys.reboot.  ~60 s of "off"
+ * once per 4 h = >99.5 % uptime.  Only fires when no wake activity
+ * recent (quiet window) so user doesn't lose a mid-conversation. */
+#define WATCHDOG_PREVENTIVE_REBOOT_MS (4LL * 3600LL * 1000LL) /* 4 hours */
+#define WATCHDOG_PREVENTIVE_QUIET_MS 60000                   /* need 60 s without wake fire */
+
 static volatile int64_t s_watchdog_last_kick_us = 0;
 static volatile int64_t s_watchdog_started_us = 0;
 static volatile int s_watchdog_reset_fail_count = 0;
 static volatile int64_t s_watchdog_last_reboot_us = 0;
+static volatile int64_t s_watchdog_ready_since_us = 0; /* when state first entered READY since last preventive reboot */
 
 static void onboard_watchdog_task(void *arg) {
    (void)arg;
@@ -614,6 +625,41 @@ static void onboard_watchdog_task(void *arg) {
 
       voice_ext_pcm_stream_stats_t stats;
       voice_ext_pcm_stream_get_stats(&stats);
+
+      /* TT #131 2026-05-20: preventive periodic sys.reboot.  Reset
+       * K144 every WATCHDOG_PREVENTIVE_REBOOT_MS to clear accumulated
+       * daemon state.  Gated on a quiet window — won't interrupt
+       * mid-conversation.  Only triggers in READY state. */
+      if (!unavailable_kick && s_m5_failover == M5_FAIL_READY) {
+         if (s_watchdog_ready_since_us == 0) s_watchdog_ready_since_us = now;
+         int64_t ready_uptime_ms = (now - s_watchdog_ready_since_us) / 1000;
+         int64_t since_last_reboot_ms = (now - s_watchdog_last_reboot_us) / 1000;
+         /* fire when both elapsed enough AND it's quiet (no recent wake fire) */
+         if (ready_uptime_ms > WATCHDOG_PREVENTIVE_REBOOT_MS &&
+             since_last_reboot_ms > WATCHDOG_PREVENTIVE_REBOOT_MS) {
+            voice_wakeword_status_t wst;
+            voice_wakeword_status(&wst);
+            int64_t since_last_fire_ms =
+                (wst.last_fire_ms > 0) ? ((now / 1000) - (int64_t)wst.last_fire_ms) : INT64_MAX;
+            if (since_last_fire_ms > WATCHDOG_PREVENTIVE_QUIET_MS) {
+               ESP_LOGW(TAG, "watchdog: preventive sys.reboot — 4h READY + quiet, refreshing K144 daemon state");
+               tab5_debug_obs_event("watchdog", "preventive_reboot");
+               s_watchdog_last_reboot_us = now;
+               s_watchdog_ready_since_us = 0; /* reset counter */
+               voice_wakeword_stop();
+               vTaskDelay(pdMS_TO_TICKS(300));
+               (void)voice_m5_llm_sys_reboot();
+               vTaskDelay(pdMS_TO_TICKS(60000));
+               tab5_port_c_uart_set_baud(115200);
+               (void)voice_onboard_reset_failover();
+               vTaskDelay(pdMS_TO_TICKS(80000));
+               continue;
+            }
+         }
+      } else if (s_m5_failover != M5_FAIL_READY) {
+         /* reset the "READY uptime" tracker on any non-READY state */
+         s_watchdog_ready_since_us = 0;
+      }
 
       int64_t delta_age_ms = 0;
       if (unavailable_kick) {

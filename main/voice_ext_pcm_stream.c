@@ -98,6 +98,25 @@ static volatile uint32_t s_last_send_ok = 0;
 static volatile int64_t s_last_pump_us = 0;
 static int64_t s_last_log_us = 0;
 
+/* TT #131 stability 2026-05-20: periodic UART resync.  At 1.5 Mbps the
+ * ESP32-P4 ↔ AX630C clock dividers don't divide evenly; over
+ * sustained continuous transmission the bit clocks drift far enough
+ * that K144's UART receiver starts framing-erroring (~10 % byte
+ * corruption observed in live diagnostics).  Once corrupted bytes
+ * begin, K144's JSON parser drops frames, ASR stops getting input,
+ * watchdog has to do a full sys.reset recovery — 2-3 minutes of
+ * "TinkerOn is off".
+ *
+ * Fix: every UART_RESYNC_INTERVAL_MS of continuous pumping, skip
+ * UART_RESYNC_PAUSE_MS worth of frames.  The receiver sees true
+ * idle (line at logic 1 between bytes; no bytes for >5 char times)
+ * which lets K144's UART driver resynchronize its bit clock against
+ * the line.  ~300 ms of dropped audio is imperceptible in always-on
+ * listening (we're listening for wake, not transcribing speech). */
+#define UART_RESYNC_INTERVAL_MS 60000   /* 1 minute of continuous pumping */
+#define UART_RESYNC_PAUSE_MS    300     /* 300 ms quiet window for resync */
+static int64_t s_last_resync_us = 0;
+
 static bool quiescent_state(int st) {
    /* READY = 2 — same gate voice_wake_stream uses. */
    return (st == 2);
@@ -271,6 +290,29 @@ static void ext_pcm_task(void *arg) {
       if (tx_len < 0) {
          ESP_LOGW(TAG, "build_request failed (out_idx=%d, b64_len=%u)", out_idx, (unsigned)b64_len);
          continue;
+      }
+
+      /* TT #131 stability 2026-05-20: periodic UART resync.  At 1.5 Mbps
+       * the Tab5↔K144 clock dividers don't divide evenly; sustained
+       * continuous transmission accumulates clock drift in K144's UART
+       * receiver until framing errors hit ~10 % (observed live).  Once
+       * that happens, K144's JSON parser drops every frame → ASR
+       * silent → watchdog has to do a multi-minute recovery cycle.
+       *
+       * Prevent the accumulation by giving K144's UART receiver a
+       * UART_RESYNC_PAUSE_MS quiet window every UART_RESYNC_INTERVAL_MS.
+       * During the pause the line is truly idle (logic-1 between
+       * bytes; no bytes for thousands of char times) which lets K144's
+       * UART driver lock back onto the line clock.  300 ms of dropped
+       * audio is imperceptible — we're listening for wake, not
+       * transcribing speech. */
+      int64_t now_pre = esp_timer_get_time();
+      if (s_last_resync_us == 0) s_last_resync_us = now_pre;
+      if (now_pre - s_last_resync_us > (int64_t)UART_RESYNC_INTERVAL_MS * 1000) {
+         tab5_debug_obs_event("ext_pcm_stream", "resync");
+         vTaskDelay(pdMS_TO_TICKS(UART_RESYNC_PAUSE_MS));
+         s_last_resync_us = esp_timer_get_time();
+         continue;  /* skip this frame; next iter starts fresh */
       }
 
       /* Per-frame UART lock.  Hold time ~= tx_len/baud → ~30 ms at
