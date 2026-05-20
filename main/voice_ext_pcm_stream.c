@@ -185,12 +185,22 @@ static void ext_pcm_task(void *arg) {
          continue;
       }
 
+      /* TT #131 2026-05-20: sum slot 0 + slot 1 (both physical MEMS
+       * mics on the Tab5).  Slots 2/3 are unused ES7210 ADC inputs.
+       * Summing both real mics gives ~3 dB SNR improvement vs taking
+       * just slot 0.  Average across the downsample window keeps the
+       * 3:1 48 kHz → 16 kHz reduction; per-pair sum then halved keeps
+       * the int16 range without clipping (each mic on its own can
+       * peak near full-scale).  Net: cleaner audio reaching K144 ASR
+       * → better "thinker"-token emission. */
       int out_idx = 0;
       for (int i = 0; i + WS_DOWNSAMPLE_RATIO - 1 < WS_MIC_48K_FRAMES && out_idx < WS_CHUNK_SAMPLES;
            i += WS_DOWNSAMPLE_RATIO) {
          int32_t sum = 0;
          for (int j = 0; j < WS_DOWNSAMPLE_RATIO; j++) {
-            sum += tdm_buf[(i + j) * WS_MIC_TDM_CHANNELS + WS_MIC_TDM_MIC1_OFF];
+            int32_t mic0 = tdm_buf[(i + j) * WS_MIC_TDM_CHANNELS + 0];
+            int32_t mic1 = tdm_buf[(i + j) * WS_MIC_TDM_CHANNELS + 1];
+            sum += (mic0 + mic1) / 2;  /* averaged pair stays within int16 */
          }
          mono_buf[out_idx++] = (int16_t)(sum / WS_DOWNSAMPLE_RATIO);
       }
