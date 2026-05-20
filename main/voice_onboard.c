@@ -360,11 +360,30 @@ static void onboard_warmup_job(void *arg) {
     * wakeword task running across boots — see reset_failover_job
     * for the same rationale. */
    voice_wakeword_stop();
+
+   /* TT #131 stability 2026-05-20: auto-detect K144's current baud.
+    * Tab5 always boots at 115200 (TAB5_PORT_C_UART_BAUD), but K144
+    * retains its baud across Tab5 reboots — if a previous Tab5
+    * session ran the bump-to-1.5M sequence, K144 is still at 1.5M
+    * after Tab5 cold-boots back to 115200.  Without this detect step
+    * the probe fails at 115200, Tab5 marks K144 unavailable, and the
+    * user has to manually intervene.  With it, Tab5 just switches
+    * its own local baud to match whatever K144 is at. */
    esp_err_t pe = voice_m5_llm_probe();
    if (pe != ESP_OK) {
-      ESP_LOGW(TAG, "K144 probe failed (%s) — failover disabled", esp_err_to_name(pe));
-      mark_k144_unavailable("probe_fail");
-      return;
+      ESP_LOGI(TAG, "K144 probe failed at 115200 — trying 1.5 Mbps (may be from prev session)");
+      tab5_port_c_uart_set_baud(1500000);
+      vTaskDelay(pdMS_TO_TICKS(100));
+      pe = voice_m5_llm_probe();
+      if (pe == ESP_OK) {
+         ESP_LOGI(TAG, "K144 found at 1.5 Mbps — Tab5 baud auto-matched");
+      } else {
+         ESP_LOGW(TAG, "K144 unreachable at 115200 AND 1.5 Mbps (%s) — failover disabled",
+                  esp_err_to_name(pe));
+         tab5_port_c_uart_set_baud(115200);  /* revert local */
+         mark_k144_unavailable("probe_fail");
+         return;
+      }
    }
    char scratch[64];
    int64_t t0 = esp_timer_get_time();
@@ -390,20 +409,27 @@ static void onboard_warmup_job(void *arg) {
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
 
-      /* TT #131 stability 2026-05-20: boot path arms wakeword + ext_pcm
-       * pump at the DEFAULT 115200 baud.  Auto-bumping to 1.5 Mbps from
-       * the boot path proved unreliable — the baud-bump round-trip
-       * races with K144's serial reconfig timing and leaves Tab5 +
-       * K144 at mismatched baud (Tab5 at 1.5M, K144 still at 115200,
-       * UART tx/rx counters both stuck at 0).  Trade-off: at 115200
-       * the pump caps at ~3 fps so K144 ASR gets ~30% of real-time
-       * audio.  The lenient "thinker" matcher still catches the
-       * keyword from fragmentary audio when user is close + loud.
-       * For full real-time, user explicitly POSTs
-       * /tinkeron/wake_src=ext_pcm — that handler does the bump
-       * with verify + revert + the wakeword chain restart needed to
-       * cope with the K144-side fragility. */
+      /* TT #131 stability 2026-05-20: boot auto-arm for wake_src=ext_pcm.
+       * The auto-detect step in the probe (above) already syncs Tab5's
+       * local baud to whatever K144 is at.  Now: if user has opted in
+       * to ext_pcm (wake_src persisted in NVS) AND we're not already
+       * at 1.5 Mbps, bump cleanly via set_baud (which has built-in
+       * uartsetup-ack + 5-ping verify + revert-on-fail).  If we're
+       * already at 1.5 Mbps from the auto-detect, skip the bump. */
       bool boot_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
+      if (boot_to_ext_pcm && tab5_port_c_uart_get_baud() != 1500000) {
+         ESP_LOGI(TAG, "wake_src=ext_pcm — boot bumping baud 115200 → 1.5 Mbps");
+         voice_onboard_suppress_auto_retry(true);
+         esp_err_t be = voice_m5_llm_set_baud(1500000);
+         if (be != ESP_OK) {
+            ESP_LOGW(TAG, "boot baud bump failed (%s) — wakeword will run at 115200 (slower but functional)",
+                     esp_err_to_name(be));
+         } else {
+            ESP_LOGI(TAG, "boot baud bumped to 1.5 Mbps");
+         }
+      } else if (boot_to_ext_pcm) {
+         ESP_LOGI(TAG, "wake_src=ext_pcm — already at 1.5 Mbps from auto-detect");
+      }
 
       esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
