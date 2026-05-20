@@ -661,13 +661,15 @@ static void onboard_watchdog_task(void *arg) {
          }
       }
 
-      /* Track recovery outcome: poll over the next 30 s for any new
-       * ASR delta.  If we get one → reset successful, clear fail count.
-       * If still stale → increment fail count for potential escalation. */
-      vTaskDelay(pdMS_TO_TICKS(30000));
+      /* Track recovery outcome: wait long enough for the reset cycle
+       * to fully complete (sys.reset + poll-for-ready up to 90 s +
+       * asr.setup ~5 s + first delta ~5 s).  120 s gives the full
+       * cycle time + margin.  If a new ASR delta arrived since the
+       * kick → reset succeeded.  If still stale → increment counter
+       * for potential sys.reboot escalation next kick. */
+      vTaskDelay(pdMS_TO_TICKS(120000));
       int64_t check = voice_wakeword_last_delta_us();
       if (check > now) {
-         /* New delta arrived since the kick — recovery worked. */
          if (s_watchdog_reset_fail_count > 0) {
             ESP_LOGI(TAG, "watchdog: recovery succeeded — clearing fail count (was %d)",
                      s_watchdog_reset_fail_count);
@@ -675,8 +677,8 @@ static void onboard_watchdog_task(void *arg) {
          s_watchdog_reset_fail_count = 0;
       } else {
          s_watchdog_reset_fail_count++;
-         ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d",
-                  s_watchdog_reset_fail_count);
+         ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d/%d",
+                  s_watchdog_reset_fail_count, WATCHDOG_RESET_FAIL_CAP);
       }
    }
 }
