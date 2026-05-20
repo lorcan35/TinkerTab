@@ -381,37 +381,20 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    strncpy(s_wake_phrase, wp, sizeof(s_wake_phrase) - 1);
    s_wake_phrase[sizeof(s_wake_phrase) - 1] = '\0';
 
-   /* Auto-derive a "tinker → thinker" alternate spelling so the ASR's
-    * consistent mis-hearing doesn't kill the match.  Replace every
-    * standalone occurrence of "tinker" with "thinker" in the alt
-    * buffer.  Substring + case-insensitive — same matcher rules. */
-   s_wake_phrase_alt[0] = '\0';
-   {
-      const char *needle = "tinker";
-      size_t nlen = strlen(needle);
-      const char *p = s_wake_phrase;
-      char *out = s_wake_phrase_alt;
-      char *end = s_wake_phrase_alt + sizeof(s_wake_phrase_alt) - 1;
-      bool found = false;
-      while (*p && out < end) {
-         const char *m = istrstr(p, needle);
-         if (m == NULL) {
-            size_t take = strlen(p);
-            if (out + take > end) take = (size_t)(end - out);
-            memcpy(out, p, take); out += take; break;
-         }
-         found = true;
-         size_t pre = (size_t)(m - p);
-         if (out + pre > end) pre = (size_t)(end - out);
-         memcpy(out, p, pre); out += pre;
-         const char *sub = "thinker";
-         size_t slen = strlen(sub);
-         if (out + slen > end) slen = (size_t)(end - out);
-         memcpy(out, sub, slen); out += slen;
-         p = m + nlen;
-      }
-      *out = '\0';
-      if (!found) s_wake_phrase_alt[0] = '\0';
+   /* TT #131 2026-05-20: ASR consistently transcribes "Hey Tinker" as
+    * jumbled noise containing the substring "thinker" — e.g. "think
+    * of any hanker thinker agathip kirkique".  The full-phrase alt
+    * "hey thinker" rarely matches because ASR drops/mangles the
+    * leading "hey".  Use just "thinker" as alt — the VAD pre-gate
+    * (8-char window minimum) still filters single-word noise
+    * hallucinations, and self-wake during TTS is already suppressed
+    * by voice_state checks.  Net: catches the proper-noun token
+    * the ASR consistently emits, even when surrounded by garbage. */
+   if (istrstr(s_wake_phrase, "tinker") != NULL) {
+      strncpy(s_wake_phrase_alt, "thinker", sizeof(s_wake_phrase_alt) - 1);
+      s_wake_phrase_alt[sizeof(s_wake_phrase_alt) - 1] = '\0';
+   } else {
+      s_wake_phrase_alt[0] = '\0';
    }
    strncpy(s_end_phrase, ep, sizeof(s_end_phrase) - 1);
    s_end_phrase[sizeof(s_end_phrase) - 1] = '\0';
@@ -445,16 +428,23 @@ esp_err_t voice_wakeword_start(const voice_wakeword_config_t *cfg, voice_wakewor
    ESP_LOGI(TAG, "starting K144 always-on ASR: wake=\"%s\" end=\"%s\"", s_wake_phrase, s_end_phrase);
    tab5_debug_obs_event("wakeword.start", s_wake_phrase);
 
-   /* TT #131 — for wake_src=ext_pcm use input=["kws"] (Tab5-mic variant).
-    * Custom K144 main_kws binary (TT #131-opt2 build) decodes ADPCM in
-    * task_user_data and emits a single kws.bool on detection.  KWS is
-    * lighter + more deterministic than ASR-based phrase matching, which
-    * confabulated short transcripts on quiet speech.  Tab5 pushes the
-    * same ADPCM inference frames as before; only the target unit changes.
-    * For wake_src=k144: original ASR path with K144's onboard mic. */
+   /* TT #131 2026-05-20: wake_src=ext_pcm now uses the ASR variant
+    * (Tab5 mic → K144 main_asr → utf-8 stream → Tab5 string-matcher).
+    * KWS variant proved unreliable — even at 0.02 threshold + 5
+    * parameter-name-variants + clean voice (RMS 3685+) the
+    * sherpa-onnx-kws-zipformer-gigaspeech model wouldn't fire.  The
+    * ASR path is acoustically more robust (full sequence-to-sequence
+    * transducer vs per-token keyword spotter) AND has live-verified
+    * history of producing real transcripts from Tab5-mic audio
+    * (K144 daemon journal Aug 22 12:17/12:20 from commit 88fbf14).
+    * Tab5's voice_wakeword recv loop already handles both shapes
+    * via the is_kws flag — wakeword_setup_tab5_mic doesn't set
+    * is_kws so the matcher does string-match on the transcript
+    * stream (catches "hey tinker" + "hey thinker" — K144's ASR
+    * consistently substitutes T → Th on this phrase). */
    esp_err_t err;
    if (tab5_settings_wake_src_is("ext_pcm")) {
-      err = voice_m5_llm_kws_setup_tab5_mic(&s_handle, s_wake_phrase, &s_stop_flag);
+      err = voice_m5_llm_wakeword_setup_tab5_mic(&s_handle, &s_stop_flag);
    } else {
       err = voice_m5_llm_wakeword_setup(&s_handle, &s_stop_flag);
    }
