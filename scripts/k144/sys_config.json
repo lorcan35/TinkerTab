@@ -1,0 +1,9 @@
+{
+    "config_enable_tcp": 1,
+    "config_serial_dev": "/dev/ttyGS0",
+    "config_serial_baud": 1500000,
+    "config_serial_data_bits": 8,
+    "config_serial_stop_bits": 1,
+    "config_serial_parity": 0,
+    "config_serial_buffer_len": 8192
+}

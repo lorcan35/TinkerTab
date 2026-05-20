@@ -27,6 +27,11 @@ ${ADB} shell "chmod 755 /soc/scripts/usb-tinker.sh"
 ${ADB} push "${SCRIPT_DIR}/ax_usb_tinker_event.sh" /usr/local/m5stack/bin/ax_usb_tinker_event.sh
 ${ADB} shell "chmod 755 /usr/local/m5stack/bin/ax_usb_tinker_event.sh"
 
+step "Pushing /opt/m5stack/sys_config.json — points llm_sys at /dev/ttyGS0"
+${ADB} shell "[ -f /opt/m5stack/sys_config.json ] && cp -n /opt/m5stack/sys_config.json /opt/m5stack/sys_config.json.orig 2>/dev/null || true"
+${ADB} push "${SCRIPT_DIR}/sys_config.json" /opt/m5stack/sys_config.json
+${ADB} shell "systemctl restart llm-sys; sleep 1; systemctl is-active llm-sys"
+
 step "Backing up original usb-adb.sh + rc.local (idempotent)"
 ${ADB} shell "[ -f /soc/scripts/usb-adb.sh.orig ] || cp /soc/scripts/usb-adb.sh /soc/scripts/usb-adb.sh.orig"
 ${ADB} shell "[ -f /etc/rc.local.orig ] || cp /etc/rc.local /etc/rc.local.orig"
