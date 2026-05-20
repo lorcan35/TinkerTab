@@ -20,6 +20,18 @@ extern "C" {
 esp_err_t tab5_port_c_uart_init(void);
 void tab5_port_c_uart_deinit(void);
 bool tab5_port_c_uart_is_initialized(void);
+
+/**
+ * @brief Tear down + reinstall the ESP-IDF UART driver at the current baud.
+ *
+ * Used by the K144-cycling watchdog when sys.reset/sys.reboot keep
+ * ack-failing — the wedge may be Tab5-side (UART driver lost TX/RX sync
+ * or internal ring corrupted by sustained framing errors at 1.5 Mbps).
+ * Holds the recursive UART mutex during the swap so no concurrent
+ * send/recv races the driver teardown.  Preserves the baud rate; caller
+ * is responsible for re-negotiating peer state.
+ */
+esp_err_t tab5_port_c_uart_reinit(void);
 int tab5_port_c_send(const void *buf, size_t len);
 int tab5_port_c_recv(void *buf, size_t len, uint32_t timeout_ms);
 void tab5_port_c_flush(void);

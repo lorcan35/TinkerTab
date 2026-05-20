@@ -86,6 +86,51 @@ void tab5_port_c_uart_deinit(void) {
    s_initialized = false;
 }
 
+esp_err_t tab5_port_c_uart_reinit(void) {
+   if (s_uart_mutex == NULL) return ESP_ERR_INVALID_STATE;
+   /* Hold the mutex across delete+install so concurrent send/recv from
+    * the ext_pcm pump or voice_m5_llm.c can't race the swap.  Recursive
+    * so the watchdog (already holding the lock in its outer flow) is
+    * safe. */
+   if (xSemaphoreTakeRecursive(s_uart_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      ESP_LOGW(TAG, "reinit: mutex busy — skipping");
+      return ESP_ERR_TIMEOUT;
+   }
+
+   uint32_t baud = s_current_baud;
+   if (s_initialized) {
+      uart_driver_delete(PORT_C_UART_PORT);
+      s_initialized = false;
+   }
+
+   const uart_config_t cfg = {
+       .baud_rate = baud,
+       .data_bits = UART_DATA_8_BITS,
+       .parity = UART_PARITY_DISABLE,
+       .stop_bits = UART_STOP_BITS_1,
+       .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+       .source_clk = UART_SCLK_DEFAULT,
+   };
+
+   esp_err_t err = uart_driver_install(PORT_C_UART_PORT, PORT_C_UART_RX_BUF_SZ, PORT_C_UART_TX_BUF_SZ, 0, NULL, 0);
+   if (err == ESP_OK) err = uart_param_config(PORT_C_UART_PORT, &cfg);
+   if (err == ESP_OK) {
+      err = uart_set_pin(PORT_C_UART_PORT, TAB5_PORT_C_UART_TX_GPIO, TAB5_PORT_C_UART_RX_GPIO, UART_PIN_NO_CHANGE,
+                         UART_PIN_NO_CHANGE);
+   }
+
+   if (err != ESP_OK) {
+      ESP_LOGE(TAG, "reinit failed at install/config/pin: %s", esp_err_to_name(err));
+      xSemaphoreGiveRecursive(s_uart_mutex);
+      return err;
+   }
+
+   s_initialized = true;
+   ESP_LOGW(TAG, "Port C UART reinstalled at %lu baud (driver-level wedge recovery)", (unsigned long)baud);
+   xSemaphoreGiveRecursive(s_uart_mutex);
+   return ESP_OK;
+}
+
 bool tab5_port_c_uart_is_initialized(void) { return s_initialized; }
 
 int tab5_port_c_send(const void *buf, size_t len) {

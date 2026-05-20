@@ -17,6 +17,7 @@
 #include "audio.h" /* tab5_audio_play_raw */
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h" /* esp_restart — watchdog self-reboot escalation (TT #131) */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h" /* xTaskCreatePinnedToCoreWithCaps for watchdog */
@@ -568,6 +569,13 @@ static void onboard_failover_text_job(void *arg) {
 #define WATCHDOG_GRACE_AFTER_BOOT_MS 30000 /* don't fire in first 30 s — chain may still be coming up */
 #define WATCHDOG_RESET_FAIL_CAP 2          /* after 2 consecutive sys.reset failures → escalate to sys.reboot */
 #define WATCHDOG_REBOOT_COOLDOWN_MS 180000 /* 3 min after sys.reboot before considering another */
+/* TT #131 2026-05-20: after this many sys.reboot escalations in a row
+ * without K144 ever returning to READY, self-restart Tab5.  Tab5-side
+ * UART driver may be wedged in a way reinit() can't catch; full
+ * esp_restart re-init's everything (incl. UART, voice WS, LVGL).  User
+ * still has to physically intervene if K144 itself is the dead party,
+ * but at least Tab5 won't be holding stale state indefinitely. */
+#define WATCHDOG_SELF_REBOOT_CAP 3
 
 /* TT #131 2026-05-20: preventive periodic sys.reboot.  Even with the
  * UART resync pause + watchdog reactive recovery, K144's daemons can
@@ -584,6 +592,7 @@ static volatile int64_t s_watchdog_started_us = 0;
 static volatile int s_watchdog_reset_fail_count = 0;
 static volatile int64_t s_watchdog_last_reboot_us = 0;
 static volatile int64_t s_watchdog_ready_since_us = 0; /* when state first entered READY since last preventive reboot */
+static volatile int s_watchdog_escalate_count = 0; /* consecutive failed sys.reboot escalations → Tab5 self-restart */
 
 static void onboard_watchdog_task(void *arg) {
    (void)arg;
@@ -707,6 +716,21 @@ static void onboard_watchdog_task(void *arg) {
       voice_wakeword_stop();
       vTaskDelay(pdMS_TO_TICKS(300));
 
+      /* TT #131 2026-05-20: reinstall Tab5's UART driver before each
+       * recovery attempt.  Sustained framing errors at 1.5 Mbps or a
+       * concurrent send during a baud flip can leave the ESP-IDF UART
+       * driver in a state where TX bytes go out fine but RX is dead.
+       * If THAT is the wedge (not K144's daemon), sys.reset/sys.reboot
+       * will ack_fail forever.  A driver reinstall is cheap insurance
+       * — ~50 ms, preserves baud, holds the recursive mutex during
+       * the swap. */
+      esp_err_t ue = tab5_port_c_uart_reinit();
+      if (ue != ESP_OK) {
+         ESP_LOGW(TAG, "watchdog: UART reinit failed (%s) — proceeding anyway", esp_err_to_name(ue));
+      } else {
+         tab5_debug_obs_event("watchdog", "uart_reinit");
+      }
+
       if (do_reboot) {
          ESP_LOGW(TAG, "watchdog: %d consecutive reset fails → escalating to sys.reboot", s_watchdog_reset_fail_count);
          tab5_debug_obs_event("watchdog", "escalate_reboot");
@@ -741,10 +765,32 @@ static void onboard_watchdog_task(void *arg) {
             ESP_LOGI(TAG, "watchdog: recovery succeeded — clearing fail count (was %d)", s_watchdog_reset_fail_count);
          }
          s_watchdog_reset_fail_count = 0;
+         s_watchdog_escalate_count = 0; /* recovery succeeded — clear escalation counter */
       } else {
          s_watchdog_reset_fail_count++;
          ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d/%d", s_watchdog_reset_fail_count,
                   WATCHDOG_RESET_FAIL_CAP);
+         /* If THIS attempt was the sys.reboot escalation and it still
+          * didn't recover, count it.  After WATCHDOG_SELF_REBOOT_CAP
+          * such cycles, esp_restart() Tab5 — every Tab5-side driver
+          * + WS + LVGL re-inits.  If K144 is the dead party, this
+          * doesn't help (user still has to power-cycle the module),
+          * but it stops Tab5 from holding stale state for hours. */
+         if (do_reboot) {
+            s_watchdog_escalate_count++;
+            ESP_LOGW(TAG, "watchdog: escalate_reboot did NOT recover — count now %d/%d", s_watchdog_escalate_count,
+                     WATCHDOG_SELF_REBOOT_CAP);
+            char ec[48];
+            snprintf(ec, sizeof(ec), "escalate_fail count=%d", s_watchdog_escalate_count);
+            tab5_debug_obs_event("watchdog", ec);
+            if (s_watchdog_escalate_count >= WATCHDOG_SELF_REBOOT_CAP) {
+               ESP_LOGE(TAG, "watchdog: %d failed sys.reboot escalations → Tab5 self-restart",
+                        s_watchdog_escalate_count);
+               tab5_debug_obs_event("watchdog", "self_restart");
+               vTaskDelay(pdMS_TO_TICKS(500)); /* let the obs event flush */
+               esp_restart();
+            }
+         }
       }
    }
 }
