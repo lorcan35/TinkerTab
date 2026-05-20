@@ -151,16 +151,20 @@ static void connect_watcher_task(void *arg) {
    ESP_LOGI(TAG, "connect_watcher_task running — polling for K144 (vid=0x%04X pid=0x%04X intf=%d)", VOICE_USB_CDC_K144_VID,
             VOICE_USB_CDC_K144_PID, VOICE_USB_CDC_K144_INTERFACE);
 
-   /* connection_timeout_ms = 200 — the host stack scans its current
-    * device tree first; if K144 is there, open returns in <50 ms.  If
-    * not, return fast so we can poll again and let the new_dev_cb
-    * driven recovery path do its job.  5 s (the example default) was
-    * too long: bursts of "device just enumerated but cdc state stale"
-    * windows got swallowed by the timeout. */
+   /* connection_timeout_ms = 200 — fast retries; 200 ms is plenty if
+    * device is present (scan is fast), and we won't waste time waiting
+    * if it's not.
+    *
+    * in_buffer_size = 512 — match a single USB FS bulk-IN MaxPacket.
+    * StackFlow ack frames are short (~120 bytes); using a 4 KB buffer
+    * for IN means the bulk transfer waits for either 4 KB OR a short
+    * packet to complete.  Some gadget drivers don't reliably emit
+    * short packets on every write, so the smaller buffer ensures the
+    * transfer completes per-MaxPacket boundary instead. */
    const cdc_acm_host_device_config_t dev_cfg = {
        .connection_timeout_ms = 200,
        .out_buffer_size = 4096,
-       .in_buffer_size = 4096,
+       .in_buffer_size = 512,
        .event_cb = handle_event,
        .data_cb = handle_rx,
        .user_arg = NULL,
@@ -196,19 +200,12 @@ static void connect_watcher_task(void *arg) {
          if (cls != ESP_OK) {
             ESP_LOGW(TAG, "set_control_line_state(DTR=1,RTS=1): %s — continuing anyway", esp_err_to_name(cls));
          }
-         /* Set a sensible line coding (baud is virtual on USB but K144
-          * may apply it via termios on /dev/ttyGS0).  Match the K144
-          * sys_config.json values. */
-         const cdc_acm_line_coding_t coding = {
-             .dwDTERate = 1500000,
-             .bCharFormat = 0, /* 1 stop bit */
-             .bParityType = 0, /* none */
-             .bDataBits = 8,
-         };
-         esp_err_t lc = cdc_acm_host_line_coding_set(hdl, &coding);
-         if (lc != ESP_OK) {
-            ESP_LOGW(TAG, "line_coding_set: %s — continuing", esp_err_to_name(lc));
-         }
+         /* Do NOT call cdc_acm_host_line_coding_set — USB CDC line
+          * coding is virtual (baud doesn't apply to USB), and some
+          * gadget drivers apply it via termios on /dev/ttyGS0 which
+          * can fail on non-standard rates (we tried 1500000 earlier
+          * with no joy).  K144's f_acm uses whatever termios llm_sys
+          * sets — leave it alone. */
 
          xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
          s_dev = hdl;
