@@ -576,13 +576,22 @@ static void onboard_watchdog_task(void *arg) {
        * Tab5-pumps-to-cached-work_id failure mode. */
       if (!tab5_settings_wake_src_is("ext_pcm")) continue;
 
-      /* Chain must be in the steady READY state.  Don't kick during
-       * PROBING (a reset is already in flight) or UNAVAILABLE
-       * (auto-retry will handle it). */
-      if (s_m5_failover != M5_FAIL_READY) continue;
+      /* Don't kick during PROBING (a reset is already in flight) —
+       * let that finish first.  But DO kick from UNAVAILABLE because
+       * ext_pcm mode suppresses the auto-retry timer (`s_auto_retry_
+       * suppressed`) — without the watchdog firing here, the chain
+       * stays UNAVAILABLE forever after the first failed recovery. */
+      if (s_m5_failover == M5_FAIL_PROBING) continue;
+      if (s_m5_failover != M5_FAIL_READY && s_m5_failover != M5_FAIL_UNAVAILABLE) continue;
 
-      /* Wakeword must be armed — if not, no asr_id binding to be stale. */
-      if (!voice_wakeword_is_active()) continue;
+      /* For UNAVAILABLE state, skip the wakeword/pump/delta checks —
+       * chain is down by definition.  Just kick recovery (with
+       * potential sys.reboot escalation if fail count is high). */
+      bool unavailable_kick = (s_m5_failover == M5_FAIL_UNAVAILABLE);
+
+      /* Wakeword must be armed (READY-state check only) — if not, no
+       * asr_id binding to be stale. */
+      if (!unavailable_kick && !voice_wakeword_is_active()) continue;
 
       int64_t now = esp_timer_get_time();
 
@@ -595,37 +604,38 @@ static void onboard_watchdog_task(void *arg) {
       voice_ext_pcm_stream_stats_t stats;
       voice_ext_pcm_stream_get_stats(&stats);
 
-      /* Pump must be actively flowing.  If pump is paused (mid voice
-       * turn) OR stopped, this check shouldn't fire — there's a legit
-       * reason no fresh frames are reaching K144. */
-      if (!stats.task_running || !stats.armed) continue;
-      if (stats.last_pump_age_ms < 0 || stats.last_pump_age_ms > WATCHDOG_PUMP_HEALTHY_MS) continue;
-
-      /* Pump has been pumping but we still need enough samples to draw
-       * a conclusion — fresh setup may not have produced any deltas
-       * yet, that's fine. */
-      if (stats.frames_pumped < 50) continue;
-
-      int64_t last_delta = voice_wakeword_last_delta_us();
-      int64_t delta_age_ms;
-      if (last_delta == 0) {
-         /* Pump has sent 50+ frames but K144 has emitted no transcript
-          * at all — strong signal that asr_id binding is dead. */
-         delta_age_ms = (now - s_watchdog_started_us) / 1000;
+      int64_t delta_age_ms = 0;
+      if (unavailable_kick) {
+         /* UNAVAILABLE — chain is already known-down, kick recovery
+          * directly.  Skip the pump/delta gates (irrelevant). */
+         ESP_LOGW(TAG, "watchdog: state=UNAVAILABLE — auto-retry suppressed, watchdog kicking recovery (fails=%d)",
+                  s_watchdog_reset_fail_count);
       } else {
-         delta_age_ms = (now - last_delta) / 1000;
-      }
-      if (delta_age_ms < WATCHDOG_ASR_STALL_MS) continue;
+         /* READY state — check pump+delta freshness gates. */
+         if (!stats.task_running || !stats.armed) continue;
+         if (stats.last_pump_age_ms < 0 || stats.last_pump_age_ms > WATCHDOG_PUMP_HEALTHY_MS) continue;
+         if (stats.frames_pumped < 50) continue;
 
-      /* All gates passed: pump flowing, wakeword armed, K144 ready,
-       * but no transcript in 20+ seconds.  K144 ASR cycled. */
-      ESP_LOGW(
-          TAG,
-          "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu, fails=%d) — kicking recovery",
-          delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+         int64_t last_delta = voice_wakeword_last_delta_us();
+         if (last_delta == 0) {
+            delta_age_ms = (now - s_watchdog_started_us) / 1000;
+         } else {
+            delta_age_ms = (now - last_delta) / 1000;
+         }
+         if (delta_age_ms < WATCHDOG_ASR_STALL_MS) continue;
+
+         ESP_LOGW(TAG,
+                  "watchdog: K144 ASR stale (last delta %lldms ago, pump_age %lldms, frames=%lu, fails=%d) — kicking recovery",
+                  delta_age_ms, stats.last_pump_age_ms, (unsigned long)stats.frames_pumped,
+                  s_watchdog_reset_fail_count);
+      }
       char detail[48];
-      snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu fails=%d", delta_age_ms / 1000,
-               (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+      if (unavailable_kick) {
+         snprintf(detail, sizeof(detail), "unavailable_kick fails=%d", s_watchdog_reset_fail_count);
+      } else {
+         snprintf(detail, sizeof(detail), "asr_stale age=%llds frames=%lu fails=%d", delta_age_ms / 1000,
+                  (unsigned long)stats.frames_pumped, s_watchdog_reset_fail_count);
+      }
       tab5_debug_obs_event("watchdog", detail);
       s_watchdog_last_kick_us = now;
 
