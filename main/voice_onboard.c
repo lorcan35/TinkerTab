@@ -390,36 +390,20 @@ static void onboard_warmup_job(void *arg) {
        * Failures non-fatal — the LLM path still works without wakeword. */
       voice_m5_llm_release();
 
-      /* TT #131 stability 2026-05-20: BOOT AUTO-ARM the full Tab5-mic
-       * → K144 ASR chain when NVS wake_src=="ext_pcm".  Previously the
-       * boot path only armed wakeword at 115200; user had to manually
-       * POST /tinkeron/wake_src=ext_pcm after every restart to bump
-       * baud to 1.5 Mbps + arm the ext_pcm pump.  That manual step
-       * was both a UX burden AND it cycled the wakeword chain
-       * (disarm + re-arm), which destabilised K144's llm-asr daemon.
-       *
-       * Now: if user has previously opted in (wake_src=ext_pcm
-       * persisted in NVS), the boot path does the SAME work as the
-       * wake_src=ext_pcm POST handler — reset Tab5 UART baseline to
-       * 115200 (so the bump round-trip starts from known state),
-       * suppress auto-retry, bump baud to 1.5 Mbps, then arm wakeword
-       * + pump.  The K144-stayed-at-1.5M sync issue from the
-       * earlier attempt is avoided because we explicitly reset
-       * baseline BEFORE bumping.  Setup-once invariant preserved:
-       * exactly one asr.setup per boot at the right baud. */
+      /* TT #131 stability 2026-05-20: boot path arms wakeword + ext_pcm
+       * pump at the DEFAULT 115200 baud.  Auto-bumping to 1.5 Mbps from
+       * the boot path proved unreliable — the baud-bump round-trip
+       * races with K144's serial reconfig timing and leaves Tab5 +
+       * K144 at mismatched baud (Tab5 at 1.5M, K144 still at 115200,
+       * UART tx/rx counters both stuck at 0).  Trade-off: at 115200
+       * the pump caps at ~3 fps so K144 ASR gets ~30% of real-time
+       * audio.  The lenient "thinker" matcher still catches the
+       * keyword from fragmentary audio when user is close + loud.
+       * For full real-time, user explicitly POSTs
+       * /tinkeron/wake_src=ext_pcm — that handler does the bump
+       * with verify + revert + the wakeword chain restart needed to
+       * cope with the K144-side fragility. */
       bool boot_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
-      if (boot_to_ext_pcm) {
-         ESP_LOGI(TAG, "wake_src=ext_pcm in NVS — boot auto-arming Tab5 mic path");
-         tab5_port_c_uart_set_baud(115200);
-         voice_onboard_suppress_auto_retry(true);
-         esp_err_t be = voice_m5_llm_set_baud(1500000);
-         if (be != ESP_OK) {
-            ESP_LOGW(TAG, "boot baud bump to 1.5 Mbps failed (%s) — wakeword will run at 115200 (pump capped at ~3 fps)",
-                     esp_err_to_name(be));
-         } else {
-            ESP_LOGI(TAG, "boot baud bumped to 1.5 Mbps cleanly");
-         }
-      }
 
       esp_err_t we = voice_onboard_arm_k144_wakeword_internal();
       if (we == ESP_ERR_INVALID_RESPONSE) {
@@ -598,26 +582,10 @@ static void onboard_reset_failover_job(void *arg) {
        * caused Tab5-vs-K144 baud desync on /m5/reset path because the
        * boot-time bump path can leave Tab5 at 1.5 Mbps while K144's
        * uartsetup sometimes fails silently → both ends out of sync
-       * across the reset.  Boot warmup path (onboard_warmup_job)
-       * does the bump cleanly when Tab5 starts at the 115200 default.
-       *
-       * 2026-05-20 update: reset path now ALSO does the bump when
-       * wake_src=ext_pcm, gated on resetting Tab5 baseline to 115200
-       * first (same pattern the wake_src=ext_pcm POST handler uses).
-       * K144 just went through sys.reset so its UART is also at the
-       * default — round-trip starts from known state. */
+       * across the reset.  Reverted: chain re-arms at 115200; the
+       * explicit /tinkeron/wake_src=ext_pcm POST handles the bump
+       * with its own verify + revert logic. */
       bool reset_to_ext_pcm = tab5_settings_wake_src_is("ext_pcm");
-      if (reset_to_ext_pcm) {
-         ESP_LOGI(TAG, "wake_src=ext_pcm — reset path bumping baud to 1.5 Mbps");
-         tab5_port_c_uart_set_baud(115200);
-         voice_onboard_suppress_auto_retry(true);
-         esp_err_t be = voice_m5_llm_set_baud(1500000);
-         if (be != ESP_OK) {
-            ESP_LOGW(TAG, "reset-path baud bump failed (%s)", esp_err_to_name(be));
-         } else {
-            ESP_LOGI(TAG, "reset-path baud bumped to 1.5 Mbps");
-         }
-      }
       /* Wakeword revival: same hook as the initial warmup path — once
        * K144 is reachable again, (re-)arm the always-on ASR chain.
        * Idempotent (start refuses if already running). */
