@@ -274,17 +274,28 @@ static void auto_retry_timer_cb(void *arg) {
 }
 
 static void mark_k144_unavailable(const char *reason) {
-   /* TT #131 — while ext_pcm owns the UART at high baud, voice_onboard's
-    * health checks (sys.hwinfo refresh, etc.) will fail because they're
-    * not aware of the negotiated baud.  Suppress the "unavailable"
-    * cascade so it doesn't trigger sys.reset which wipes K144's baud. */
-   if (s_auto_retry_suppressed) {
-      ESP_LOGD(TAG, "K144 mark_unavailable suppressed (ext_pcm armed): %s", reason);
-      return;
-   }
+   /* TT #131 2026-05-20 BUGFIX: the old "suppress when ext_pcm armed"
+    * early-return left state stuck at M5_FAIL_PROBING after a recovery
+    * fail, because state had been set to PROBING by reset_failover_job
+    * and mark_k144_unavailable was the only path to transition it to
+    * UNAVAILABLE.  Symptom: watchdog kicks once, recovery fails, state
+    * stays PROBING, watchdog refuses to re-fire (gated on UNAVAILABLE)
+    * → permanent wedge.  This was the underlying "watchdog isn't
+    * working" complaint.
+    *
+    * Fix: ALWAYS transition state and emit the obs events.  When
+    * suppression is active (ext_pcm path), skip ONLY the
+    * auto-retry-timer scheduling further down — that's what the
+    * original suppression actually wanted to prevent (the timer
+    * fires sys.reset which wipes K144's baud).  Watchdog still
+    * recovers from UNAVAILABLE via its own kick path. */
    s_m5_failover = M5_FAIL_UNAVAILABLE;
    tab5_debug_obs_event("m5.warmup", "unavailable");
    tab5_debug_obs_event("error.k144", reason);
+   if (s_auto_retry_suppressed) {
+      ESP_LOGD(TAG, "K144 unavailable: %s (auto-retry suppressed, watchdog will recover)", reason);
+      return;  /* state SET, just skip the timer below */
+   }
 
    /* Wave 13 — schedule the next auto-retry if we haven't exhausted
     * the budget.  Lazy-create the esp_timer on first use (saves the
