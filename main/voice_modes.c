@@ -77,11 +77,39 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out) {
     * gets OpenRouter (override wins).  The VMODE_LOCAL_ONBOARD branch
     * stays untouched as the "follow preset" path for engine=AUTO. */
    uint8_t llm_eng = tab5_settings_get_llm_engine();
+   bool privacy_lock = tab5_settings_get_privacy_lock();
    {
       char detail[48];
-      snprintf(detail, sizeof(detail), "vmode=%u eng=%u", tab5_settings_get_voice_mode(), llm_eng);
+      snprintf(detail, sizeof(detail), "vmode=%u eng=%u priv=%u", tab5_settings_get_voice_mode(), llm_eng,
+               (unsigned)privacy_lock);
       tab5_debug_obs_event("eng.route_in", detail);
    }
+
+   /* Cap Wave 5 (TT #644) — Privacy lock.  When ON, refuse any dispatch
+    * to Dragon or OpenRouter — only K144 paths are allowed.  We force
+    * K144 routing here when reachable; if K144 isn't ready, surface a
+    * dedicated REFUSED kind so the caller can toast the user. */
+   if (privacy_lock) {
+      if (voice_onboard_failover_state() == 2 /* M5_FAIL_READY */) {
+         esp_err_t fe = voice_onboard_send_text(text);
+         if (fe == ESP_OK) {
+            ESP_LOGI(TAG, "privacy_lock=ON — forced K144 dispatch");
+            tab5_debug_obs_event("eng.route", "priv_k144_ok");
+            out->kind = VOICE_MODES_ROUTE_K144_OK;
+            return;
+         }
+         ESP_LOGW(TAG, "privacy_lock=ON but K144 send_text failed (%s)", esp_err_to_name(fe));
+      }
+      /* K144 not reachable while privacy is locked — refuse the turn
+       * rather than fall through to Dragon/OpenRouter (which would
+       * violate the lock). */
+      ESP_LOGW(TAG, "privacy_lock=ON and K144 unreachable — refusing turn");
+      tab5_debug_obs_event("eng.route", "priv_refused");
+      out->kind = VOICE_MODES_ROUTE_K144_FAILED;
+      out->err = ESP_ERR_INVALID_STATE;
+      return;
+   }
+
    if (llm_eng == LLM_ENG_K144) {
       int fs = voice_onboard_failover_state();
       if (fs == 2 /* M5_FAIL_READY */) {

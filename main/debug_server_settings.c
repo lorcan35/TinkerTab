@@ -124,6 +124,8 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    /* Cap Wave 4 (TT #642): LLM engine override surfaced for harness +
     * Settings round-trip verification. */
    cJSON_AddNumberToObject(root, "llm_engine", tab5_settings_get_llm_engine());
+   /* Cap Wave 5 (TT #644): privacy lock master switch. */
+   cJSON_AddBoolToObject(root, "privacy_lock", tab5_settings_get_privacy_lock());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -428,6 +430,18 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
       }
       if (eng >= 0 && eng < LLM_ENG_COUNT && tab5_settings_set_llm_engine((uint8_t)eng) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("llm_engine"));
+      }
+   }
+   /* Cap Wave 5 (TT #644): privacy lock toggle.  Accept bool or 0/1. */
+   cJSON *pl = cJSON_GetObjectItem(req_json, "privacy_lock");
+   if (pl) {
+      bool on = false;
+      if (cJSON_IsBool(pl))
+         on = cJSON_IsTrue(pl);
+      else if (cJSON_IsNumber(pl))
+         on = pl->valuedouble != 0;
+      if (tab5_settings_set_privacy_lock(on) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("privacy_lock"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");

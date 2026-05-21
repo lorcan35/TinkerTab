@@ -2360,7 +2360,15 @@ esp_err_t voice_send_text(const char *text)
           return ESP_OK;
        case VOICE_MODES_ROUTE_K144_FAILED:
           if (tab5_ui_try_lock(100)) {
-             ui_home_show_toast("Onboard LLM not ready");
+             /* Cap Wave 5 (TT #644): a K144_FAILED while privacy lock
+              * is ON means the lock forced a K144-only dispatch that
+              * couldn't land — surface that distinctly so the user
+              * knows to either turn the lock off OR bring K144 up. */
+             if (tab5_settings_get_privacy_lock()) {
+                ui_home_show_toast("Privacy lock on — K144 not ready");
+             } else {
+                ui_home_show_toast("Onboard LLM not ready");
+             }
              tab5_ui_unlock();
           }
           return route.err;
