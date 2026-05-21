@@ -482,6 +482,12 @@ static void onboard_warmup_job(void *arg) {
    }
 }
 
+/* TT #640 Wave 3: TTS playback job — defined later in the file (used by
+ * the chain).  Forward-declared here so the failover-text path can
+ * enqueue it after a successful K144 reply, giving onboard text turns
+ * the same "speak the reply" UX as Dragon turns. */
+static void onboard_chain_tts_job(void *arg);
+
 /* Per-turn job: caller mallocs the prompt, this job free()s it.  Renders
  * the K144 reply as a regular assistant chat bubble alongside Dragon
  * replies. */
@@ -502,6 +508,11 @@ static void onboard_failover_text_job(void *arg) {
       tab5_ui_unlock();
    }
    voice_set_state(VOICE_STATE_PROCESSING, "K144");
+
+   /* TT #640 Wave 3: tracks whether we handed off to the TTS worker.
+    * When true, the function tail skips the READY flip so the worker
+    * can transition SPEAKING → READY after playback finishes. */
+   bool tts_queued = false;
 
    char reply[1024] = {0};
    esp_err_t ie = voice_m5_llm_infer(prompt, reply, sizeof(reply), M5_FAILOVER_INFER_TIMEOUT_S);
@@ -530,6 +541,25 @@ static void onboard_failover_text_job(void *arg) {
        * is text too. */
       voice_messages_sync_post("user", prompt, "text");
       voice_messages_sync_post("assistant", reply, "text");
+
+      /* TT #640 Wave 3: speak the K144 reply through Tab5's speaker via
+       * the same per-utterance TTS path the autonomous chain uses.
+       * Worker job owns the strdup'd buffer and frees it on exit.
+       * State flow: PROCESSING (already set above) → SPEAKING (here) →
+       * READY (onboard_chain_tts_job flips back after playback).
+       * The function-tail voice_set_state(READY) is skipped when TTS
+       * was queued (tts_queued=true) so we don't pre-empt the worker. */
+      char *tts_text = strdup(reply);
+      if (tts_text) {
+         if (tab5_worker_enqueue(onboard_chain_tts_job, tts_text, "failover_tts") == ESP_OK) {
+            voice_set_state(VOICE_STATE_SPEAKING, "K144");
+            tab5_debug_obs_event("m5.tts", "queued");
+            tts_queued = true;
+         } else {
+            free(tts_text);
+            ESP_LOGW(TAG, "K144 failover TTS enqueue failed");
+         }
+      }
    } else {
       if (tab5_ui_try_lock(150)) {
          ui_home_show_toast("Onboard LLM unavailable");
@@ -541,7 +571,11 @@ static void onboard_failover_text_job(void *arg) {
       if (ie == ESP_ERR_TIMEOUT) s_m5_failover = M5_FAIL_UNAVAILABLE;
    }
 
-   voice_set_state(VOICE_STATE_READY, NULL);
+   /* TT #640 Wave 3: only flip back to READY if TTS isn't already in
+    * flight — the chain_tts_job will handle that transition. */
+   if (!tts_queued) {
+      voice_set_state(VOICE_STATE_READY, NULL);
+   }
    free(prompt);
    s_m5_failover_in_flight = false;
 }
@@ -1022,6 +1056,16 @@ static void onboard_chain_tts_job(void *arg) {
    }
    heap_caps_free(pcm16);
    free(text);
+
+   /* TT #640 Wave 3: restore READY if we were the only K144 path
+    * driving the state machine (failover path flips to SPEAKING before
+    * enqueuing).  The autonomous chain owns its own state transitions
+    * via voice_set_state inside chain_run, so we only flip back when
+    * the chain ISN'T running. */
+   if (!s_chain_active && voice_get_state() == VOICE_STATE_SPEAKING) {
+      voice_set_state(VOICE_STATE_READY, NULL);
+      tab5_debug_obs_event("m5.tts", "done");
+   }
 }
 
 static void onboard_text_callback(const char *text, bool from_llm, bool finish, void *user) {
