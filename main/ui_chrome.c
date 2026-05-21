@@ -9,6 +9,7 @@
 #include "ui_core.h"
 #include "ui_feedback.h"
 #include "ui_home.h"
+#include "ui_nav.h" /* TT #623 — centralised voice-aware nav */
 #include "ui_theme.h"
 
 static const char *TAG = "ui_chrome";
@@ -25,25 +26,17 @@ static void home_btn_click_cb(lv_event_t *e) {
    (void)e;
    extern void tab5_debug_obs_event(const char *kind, const char *detail);
    tab5_debug_obs_event("chrome.home", "click_in");
-   /* Universal tap-debounce — the home button is reachable from every
-    * non-home screen, so a slammed double-tap during a navigation
-    * animation could otherwise stack two screen-loads. */
-   if (!ui_tap_gate("chrome:home", 300)) {
+   /* TT #623 — centralised nav handles tap debounce + voice cancel +
+    * overlay teardown + screen swap.  The old open-coded sequence (gate
+    * → lv_screen_load → set_nav_target) is now one call. */
+   esp_err_t err = tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
+   if (err == ESP_ERR_INVALID_STATE) {
       tab5_debug_obs_event("chrome.home", "debounced");
       return;
    }
-   ESP_LOGI(TAG, "persistent home -> ui_home_get_screen");
-   lv_obj_t *home = ui_home_get_screen();
-   if (home) lv_screen_load(home);
-   /* Hide ourselves — home doesn't want the persistent button (the
-    * mode chip, say-pill, and 4-dot menu chip already cover navigation
-    * intent on home). */
+   /* Hide ourselves — home doesn't want the persistent button. */
    ui_chrome_set_home_visible(false);
-   /* Keep /screen's current-screen field in sync with what we just
-    * loaded.  Without this, the harness sees stale last-/navigate
-    * targets and the persistent-home-button assertion fails. */
-   tab5_debug_set_nav_target("home");
-   tab5_debug_obs_event("chrome.home", "loaded");
+   tab5_debug_obs_event("chrome.home", "nav_to_home");
 }
 
 void ui_chrome_init(void) {

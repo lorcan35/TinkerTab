@@ -42,6 +42,7 @@
 #include "ui_core.h"   /* tab5_lv_async_call (#258) */
 #include "ui_home.h"   /* DIP-1: ui_home_get_screen, ui_home_show_toast */
 #include "ui_keyboard.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
 #include "ui_theme.h"
 #include "voice.h"
 #include "voice_onboard.h"
@@ -205,7 +206,8 @@ static void on_chat_gesture(lv_event_t *e) {
    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
    if (dir == LV_DIR_RIGHT) {
       ui_chat_hide();
-      tab5_debug_set_nav_target("home");
+      /* TT #623 — centralised nav: voice cancel + debounce + obs. */
+      tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
    }
 }
 

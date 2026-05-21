@@ -33,6 +33,7 @@
 #include "tool_log.h"
 #include "ui_core.h"
 #include "ui_home.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
 #include "ui_theme.h"
 #include "voice.h" /* W7-D: voice_send_text for chip-tap demo turns */
 
@@ -168,6 +169,7 @@ static void back_click_cb(lv_event_t *e)
 {
     (void)e;
     ui_agents_hide();
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE); /* TT #623 */
 }
 
 static void overlay_gesture_cb(lv_event_t *e)
@@ -175,6 +177,7 @@ static void overlay_gesture_cb(lv_event_t *e)
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     if (dir == LV_DIR_RIGHT || dir == LV_DIR_BOTTOM) {
         ui_agents_hide();
+        tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE); /* TT #623 */
     }
 }
 

@@ -7,21 +7,24 @@
  */
 
 #include "ui_sessions.h"
-#include "ui_theme.h"
-#include "ui_home.h"
-#include "ui_core.h"
-#include "config.h"
-#include "settings.h"
-#include "task_worker.h"
-#include "esp_log.h"
-#include "esp_http_client.h"
-#include "cJSON.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "cJSON.h"
+#include "config.h"
+#include "esp_http_client.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "settings.h"
+#include "task_worker.h"
+#include "ui_core.h"
+#include "ui_home.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
+#include "ui_theme.h"
 
 static const char *TAG = "ui_sessions";
 
@@ -78,6 +81,8 @@ static void back_click_cb(lv_event_t *e)
 {
     (void)e;
     ui_sessions_hide();
+    /* TT #623 — voice cancel + obs even though we're already on home. */
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
 }
 
 static void overlay_gesture_cb(lv_event_t *e)
@@ -86,6 +91,7 @@ static void overlay_gesture_cb(lv_event_t *e)
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     if (dir == LV_DIR_RIGHT || dir == LV_DIR_BOTTOM) {
         ui_sessions_hide();
+        tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
     }
 }
 

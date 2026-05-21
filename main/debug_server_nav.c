@@ -35,6 +35,7 @@
 #include "ui_core.h" /* tab5_lv_async_call */
 #include "ui_home.h"
 #include "ui_keyboard.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to_name routes /navigate through voice-cancel gate */
 
 /* No TAG here — only ESP_LOG calls below use the literal "nav" tag for
  * historical compat with the original debug_server.c log spelling. */
@@ -59,6 +60,19 @@ void tab5_debug_set_nav_target(const char *name) {
    strncpy(s_nav_target, name, cap);
    s_nav_target[cap] = '\0';
    tab5_debug_obs_event("screen.navigate", s_nav_target);
+}
+
+/* Forward decl — defined further down. */
+static void async_navigate(void *arg);
+
+/* TT #623 — public entry point for the centralised navigation wrapper
+ * `tab5_nav_to()`.  Sets the cached nav-target name + schedules
+ * async_navigate on the LVGL thread.  Same end behaviour as POST
+ * /navigate but reachable from C without going through HTTP. */
+void tab5_debug_trigger_async_navigate(const char *target_name) {
+   if (!target_name || !target_name[0]) return;
+   tab5_debug_set_nav_target(target_name);
+   tab5_lv_async_call(async_navigate, NULL);
 }
 
 static void async_navigate(void *arg) {
@@ -192,9 +206,14 @@ static esp_err_t navigate_handler(httpd_req_t *req) {
     * async_navigate completion. */
    tab5_debug_obs_event("screen.navigate", s_nav_target);
 
-   /* Schedule on LVGL thread (#258 helper takes the recursive LVGL
-    * mutex internally — lv_async_call itself is NOT thread-safe). */
-   tab5_lv_async_call(async_navigate, NULL);
+   /* TT #623 — route through centralised nav so the HTTP endpoint also
+    * gets voice-cancel-then-navigate.  FORCE bypass the 300 ms ui_tap_gate
+    * (we already enforce 500 ms HTTP debounce above) so the test harness
+    * isn't double-debounced. */
+   if (tab5_nav_to_name(s_nav_target, NAV_FLAGS_FORCE) == ESP_ERR_NOT_FOUND) {
+      /* Unknown name — leave behaviour as before so legacy callers don't break. */
+      tab5_lv_async_call(async_navigate, NULL);
+   }
 
    cJSON *root = cJSON_CreateObject();
    cJSON_AddStringToObject(root, "navigated", s_nav_target);

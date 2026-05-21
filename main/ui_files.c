@@ -25,6 +25,7 @@
 #include "ui_core.h"
 #include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
 #include "ui_home.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
 
 static const char *TAG = "ui_files";
 
@@ -95,16 +96,12 @@ static void cb_back_btn(lv_event_t *e)
    if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
       lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
       if (dir != LV_DIR_RIGHT) return;
-   } else if (!ui_tap_gate("files:back", 300)) {
-      return;
    }
     /* At root → destroy screen (go back to home) */
     if (strcmp(current_path, ROOT_PATH) == 0) {
         ui_files_destroy();
-        lv_screen_load(ui_home_get_screen());
-        /* TT #328 Wave 10 follow-up — keep /screen in sync. */
-        extern void tab5_debug_set_nav_target(const char *);
-        tab5_debug_set_nav_target("home");
+        /* TT #623 — centralised nav: debounce + voice cancel + obs. */
+        tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
         return;
     }
     /* Go up one directory */
