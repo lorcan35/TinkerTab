@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "debug_obs.h" /* TT #625 Wave A.2: mode.cancel_for_switch */
 #include "esp_log.h"
 #include "lvgl.h"
 #include "settings.h"
@@ -493,6 +494,20 @@ static void persist_and_notify_dragon(void)
     * UI interactions; the cue closes that gap.  Worker-dispatched so
     * the LVGL caller doesn't block. */
    ui_audio_cue_play(UI_CUE_MODE_SWITCH);
+
+   /* TT #625 Wave A.2 (R6) — vmode change mid-turn used to orphan the
+    * in-flight Dragon STT/LLM/TTS.  Now: if voice is mid-turn, cancel
+    * it cleanly first (voice_cancel also resets wakeword + pauses pump
+    * via Wave A.1), then let the config_update fire so the NEXT turn
+    * uses the new mode.  Toast tells the user what happened. */
+   voice_state_t vs_at_switch = voice_get_state();
+   if (vs_at_switch != VOICE_STATE_IDLE && vs_at_switch != VOICE_STATE_READY) {
+      ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs_at_switch);
+      tab5_debug_obs_event("mode.cancel_for_switch", "");
+      voice_cancel();
+      extern void ui_home_show_toast(const char *);
+      ui_home_show_toast("Switched mode — current turn stopped");
+   }
 
    /* Persist the three tiers + the derived voice_mode + (optional) llm_model. */
    tab5_settings_set_int_tier(s_int_tier);

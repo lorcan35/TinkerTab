@@ -3642,6 +3642,11 @@ void cb_notes_fab_tap(lv_event_t *e) {
    esp_err_t err = voice_start_dictation();
    if (err != ESP_OK) {
       ESP_LOGW(TAG, "Notes FAB tap: voice_start_dictation failed: %s", esp_err_to_name(err));
+      /* TT #625 Wave A.3 — surface mic-busy refusal so the user knows
+       * why the tap appeared to no-op.  Other failure modes (already
+       * dictating, init not done) also benefit from the same toast. */
+      extern void ui_home_show_toast(const char *);
+      ui_home_show_toast("Voice busy — wait for current turn");
    }
 }
 

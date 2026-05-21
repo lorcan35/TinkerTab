@@ -59,10 +59,12 @@
 #include "voice_billing.h"   /* SOLID-audit SRP-3: receipt + budget + cap-downgrade */
 #include "voice_codec.h"     /* #262: OPUS encode/decode wrapper */
 #include "voice_dictation.h" /* PR 1: dictation pipeline state machine */
+#include "voice_ext_pcm_stream.h" /* TT #625 Wave A.1: pump pause on voice_cancel */
 #include "voice_m5_llm.h"    /* TT #317 Phase 4: K144 LLM Module failover */
 #include "voice_modes.h"     /* TT #331 Wave 23 SRP-A2: 5-tier mode dispatch */
 #include "voice_solo.h"      /* W4-B (TT #375): vmode=5 SOLO_DIRECT mic-audio dispatch */
 #include "voice_video.h"     /* #266: live JPEG streaming */
+#include "voice_wakeword.h"  /* TT #625 Wave A.1: force dictation stop on voice_cancel */
 #include "voice_widget_ws.h" /* SOLID-audit SRP-2: widget WS verb dispatch */
 #include "voice_ws_proto.h"  /* TT #331 Wave 23 SRP-A1: WS proto layer */
 #include "widget.h"
@@ -1753,6 +1755,16 @@ esp_err_t voice_start_dictation(void)
       ESP_LOGE(TAG, "Not initialized");
       return ESP_ERR_INVALID_STATE;
    }
+   /* TT #625 Wave A.3 (R7) — mic-busy refuse.  Without this, tapping
+    * Dictate while a Dragon voice turn was mid-PROCESSING spawned a
+    * second mic task on the same I2S RX slot → audio corruption,
+    * both transcripts garbage.  Refuse with a logged obs event;
+    * caller (ui_notes::dictate_chip_tap_cb) shows a toast. */
+   if (s_mic_running) {
+      ESP_LOGW(TAG, "voice_start_dictation refused — mic busy");
+      tab5_debug_obs_event("voice.refused", "dictation_mic_busy");
+      return ESP_ERR_INVALID_STATE;
+   }
     /* TT #328 Wave 9 — when WS is up, require READY state (existing
      * behaviour).  When WS is DOWN (offline-fallback path), accept
      * READY or IDLE or RECONNECTING since those are all valid
@@ -2141,7 +2153,53 @@ esp_err_t voice_cancel(void)
         voice_set_state(VOICE_STATE_IDLE, "cancelled");
     }
 
+    /* TT #625 Wave A.1 (R2) — fix the "can't stop the conversation" loop.
+     * The wakeword module runs its own state machine that drains K144 ASR
+     * partials independent of voice_state.  When the user taps X, we
+     * stop the mic + Dragon side cleanly above — but without this call
+     * the wakeword stays in ST_LISTENING, keeps appending to dict_buf,
+     * and on 5 s of silence fires DICTATION_FINAL which can re-open
+     * voice_start_listening invisibly.  Force the wakeword back to IDLE
+     * here so the next ASR partial goes through the wake matcher again. */
+    extern void voice_wakeword_force_dictation_stop(void);
+    voice_wakeword_force_dictation_stop();
+
+    /* TT #625 Wave A.1 (R2) — belt-and-braces: even with the wakeword
+     * reset above, ext_pcm pump can race for 1-2 frames before the
+     * matcher state propagates.  Pause the pump for 1.5 s so K144's
+     * streaming ASR drains the buffer that captured the TTS we just
+     * stopped, preventing self-wake from lingering "thinker" partials. */
+    voice_ext_pcm_stream_set_paused(true);
+    extern void voice_extpcm_pump_unpause_in(uint32_t ms);
+    voice_extpcm_pump_unpause_in(1500); /* schedule unpause */
+
+    tab5_debug_obs_event("voice.cancel", "done");
     return ESP_OK;
+}
+
+/* TT #625 Wave A.1 — esp_timer one-shot that re-enables the ext_pcm
+ * pump after voice_cancel's quiet window expires.  Kept as a typed
+ * wrapper so we don't UB-cast voice_ext_pcm_stream_set_paused's
+ * (bool) signature into an esp_timer_cb_t (void *) one. */
+static esp_timer_handle_t s_pump_unpause_timer = NULL;
+static void pump_unpause_cb(void *arg) {
+   (void)arg;
+   voice_ext_pcm_stream_set_paused(false);
+   tab5_debug_obs_event("voice.cancel", "pump_resumed");
+}
+void voice_extpcm_pump_unpause_in(uint32_t ms) {
+   if (!s_pump_unpause_timer) {
+      const esp_timer_create_args_t args = {
+          .callback = pump_unpause_cb,
+          .arg = NULL,
+          .name = "pump_unpause",
+      };
+      esp_timer_create(&args, &s_pump_unpause_timer);
+   }
+   if (s_pump_unpause_timer) {
+      esp_timer_stop(s_pump_unpause_timer);
+      esp_timer_start_once(s_pump_unpause_timer, (uint64_t)ms * 1000);
+   }
 }
 
 esp_err_t voice_disconnect(void)
