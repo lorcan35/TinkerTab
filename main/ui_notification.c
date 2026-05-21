@@ -242,6 +242,18 @@ void ui_notification_reply_current(const char *text) {
       return;
    }
 
+   /* TT #629 Wave C.1 (R8b): refuse REPLY taps while a voice turn is in
+    * flight — arming a new reply context mid-PROCESSING would shadow the
+    * STT result of the in-flight turn, routing it to Telegram instead of
+    * the user's LLM.  LISTENING/SPEAKING are fine (user is mid-utterance
+    * or mid-TTS, can reply after).  Only PROCESSING is the dangerous
+    * window. */
+   if (voice_get_state() == VOICE_STATE_PROCESSING) {
+      tab5_debug_obs_event("ui.notif.reply", "refused_processing");
+      ui_home_show_toast_ex("Wait for current reply", UI_TOAST_WARN);
+      return;
+   }
+
    /* W7-E.4b: when caller supplies explicit text, use the legacy direct-
     * send path (debug surfaces + future shortcut paths still use this).
     * When text is NULL/empty, arm the reply context so the next mic-orb

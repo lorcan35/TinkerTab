@@ -468,6 +468,19 @@ void voice_m5_llm_release(void) {
 
 bool voice_m5_llm_is_ready(void) { return s_setup_work_id[0] != '\0'; }
 
+/* TT #629 Wave C.4: cached work_ids snapshot for /m5 obs.  Caller-owned
+ * buffers — short copies so no locking required (s_setup/tts_work_id are
+ * never NULL-terminated past the buffer + the UART worker uses the same
+ * cached value atomically per StackFlow call). */
+void voice_m5_llm_get_work_ids(char *llm_out, size_t llm_cap, char *tts_out, size_t tts_cap) {
+   if (llm_out && llm_cap) {
+      snprintf(llm_out, llm_cap, "%s", s_setup_work_id);
+   }
+   if (tts_out && tts_cap) {
+      snprintf(tts_out, tts_cap, "%s", s_tts_work_id);
+   }
+}
+
 esp_err_t voice_m5_llm_sys_reset(void) {
    esp_err_t err = ensure_uart();
    if (err != ESP_OK) return err;
@@ -516,8 +529,11 @@ esp_err_t voice_m5_llm_sys_reset(void) {
    if (ok) {
       ESP_LOGI(TAG, "sys.reset acked: %s", resp.error_message ? resp.error_message : "(no msg)");
       /* All K144-side work_ids are invalidated by the daemon restart.
-       * Clear our cache so the next infer call re-issues llm.setup. */
+       * Clear our cache so the next infer call re-issues llm.setup.
+       * TT #629 Wave C.2 (R12): TTS work_id was previously left stale —
+       * next voice_m5_llm_tts call would send to a dead handle. */
       s_setup_work_id[0] = '\0';
+      s_tts_work_id[0] = '\0';
    } else {
       ESP_LOGW(TAG, "sys.reset returned error_code=%d msg=%s", resp.error_code,
                resp.error_message ? resp.error_message : "(none)");
@@ -557,8 +573,10 @@ esp_err_t voice_m5_llm_sys_reboot(void) {
       M5_UNLOCK();
       ESP_LOGW(TAG, "sys.reboot: no ack frame (timeout — K144 may already be rebooting)");
       /* Reboot doesn't always ack before the kernel cuts the UART; treat
-       * timeout as best-effort success.  Caller waits then re-probes. */
+       * timeout as best-effort success.  Caller waits then re-probes.
+       * TT #629 Wave C.2 (R12): invalidate TTS work_id too. */
       s_setup_work_id[0] = '\0';
+      s_tts_work_id[0] = '\0';
       return ESP_OK;
    }
 
@@ -568,7 +586,9 @@ esp_err_t voice_m5_llm_sys_reboot(void) {
              && resp.error_code == 0;
    if (ok) {
       ESP_LOGI(TAG, "sys.reboot acked: %s", resp.error_message ? resp.error_message : "(no msg)");
+      /* TT #629 Wave C.2 (R12): invalidate TTS work_id too. */
       s_setup_work_id[0] = '\0';
+      s_tts_work_id[0] = '\0';
    } else {
       ESP_LOGW(TAG, "sys.reboot returned error_code=%d msg=%s",
                resp.error_code, resp.error_message ? resp.error_message : "(none)");

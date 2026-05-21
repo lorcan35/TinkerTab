@@ -193,9 +193,16 @@ static void enter_listening(void) {
    emit_event(VOICE_WAKEWORD_EVENT_WAKE, s_wake_phrase);
 }
 
+/* TT #629 Wave C.4: monotonic counter of DICTATION_FINAL events fired since
+ * boot.  Surfaced via /tinkeron/extpcm so the e2e harness + soak tests can
+ * distinguish "wakeword is quiet" from "wakeword silently stuck in
+ * LISTENING". */
+static uint32_t s_dictation_final_count = 0;
+
 static void finish_dictation(const char *reason) {
    if (s_state != ST_LISTENING) return;
    s_state = ST_IDLE;
+   s_dictation_final_count++;
    char detail[48];
    snprintf(detail, sizeof(detail), "stop %s len=%u", reason, (unsigned)s_dict_buf_len);
    tab5_debug_obs_event("wakeword.dict", detail);
@@ -608,6 +615,30 @@ esp_err_t voice_wakeword_reconfigure_phrase(const char *new_phrase) {
    };
    return voice_wakeword_start(&cfg, cb, user);
 }
+
+/* TT #629 Wave C.4: small observability getters surfaced via /tinkeron/extpcm
+ * for the e2e harness + soak test.  Wakeword internal state machine is
+ * normally invisible — these expose its shape without leaking the enum
+ * to other modules. */
+int voice_wakeword_get_state_value(void) { return (int)s_state; }
+
+const char *voice_wakeword_get_state_name(void) {
+   switch (s_state) {
+      case ST_IDLE:
+         return "IDLE";
+      case ST_LISTENING:
+         return "LISTENING";
+      default:
+         return "?";
+   }
+}
+
+int64_t voice_wakeword_get_ms_since_busy(void) {
+   if (s_last_busy_us == 0) return -1;
+   return (esp_timer_get_time() - s_last_busy_us) / 1000;
+}
+
+uint32_t voice_wakeword_get_dictation_final_count(void) { return s_dictation_final_count; }
 
 size_t voice_wakeword_get_recent_transcripts(voice_wakeword_transcript_t *out, size_t max) {
    if (out == NULL || max == 0) return 0;

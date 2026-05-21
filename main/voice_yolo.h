@@ -66,6 +66,17 @@ esp_err_t voice_yolo_init(void);
 bool voice_yolo_is_ready(void);
 
 /**
+ * @brief Clear the cached yolo work_id so the next voice_yolo_infer call
+ *        re-runs voice_yolo_init against a fresh handle.
+ *
+ * TT #629 Wave C.2 (R12b): K144's sys.reset reboots the StackFlow daemon
+ * and invalidates every cached work_id on Tab5.  Hook this from the
+ * m5.reset:recovered edge in voice_onboard.c so stale "yolo.NNNN"
+ * handles don't survive a K144 daemon restart.
+ */
+void voice_yolo_invalidate(void);
+
+/**
  * @brief Run YOLO11n on a 320×320 JPEG and collect detections.
  *
  * Caller owns @p jpeg; this function base64-encodes internally + sends

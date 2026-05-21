@@ -37,6 +37,12 @@
 
 static const char *TAG = "voice_onboard";
 
+/* TT #629 Wave C.4: last successful K144 reset-recovered timestamp.  Set
+ * inside the recovered branch of onboard_reset_failover_job.  0 means
+ * "never reset since boot".  File-scope static so the same compilation
+ * unit's voice_onboard_ms_since_last_reset accessor can read it. */
+static int64_t s_last_reset_recovered_us = 0;
+
 /* ---------------------------------------------------------------------- */
 /*  Failover state                                                        */
 /*                                                                        */
@@ -880,6 +886,16 @@ static void onboard_reset_failover_job(void *arg) {
       tab5_debug_obs_event("m5.warmup", "ready");
       tab5_debug_obs_event("m5.reset", "recovered");
       mark_k144_recovered(); /* Wave 16 — clear banner + reset retry budget */
+      /* TT #629 Wave C.2 (R12b): K144 daemon restart invalidated every
+       * cached work_id.  voice_m5_llm.c already clears its own llm/tts
+       * handles inside the sys.reset/reboot path; voice_yolo.c does not
+       * — wire the invalidation here so the next yolo.inference call
+       * re-runs voice_yolo_init against a fresh work_id. */
+      extern void voice_yolo_invalidate(void);
+      voice_yolo_invalidate();
+      /* TT #629 Wave C.4: stamp the recovered timestamp so /m5 can
+       * surface "ms since last reset" for soak-test correlation. */
+      s_last_reset_recovered_us = esp_timer_get_time();
       /* Same "free LLM slot before ASR" gate as the initial warmup
        * path — see comment there for why this is required. */
       voice_m5_llm_release();
@@ -1296,6 +1312,11 @@ bool voice_onboard_chain_active(void) { return s_chain_active; }
 int64_t voice_onboard_chain_uptime_ms(void) {
    if (!s_chain_active || s_chain_started_us == 0) return 0;
    return (esp_timer_get_time() - s_chain_started_us) / 1000;
+}
+
+int64_t voice_onboard_ms_since_last_reset(void) {
+   if (s_last_reset_recovered_us == 0) return -1;
+   return (esp_timer_get_time() - s_last_reset_recovered_us) / 1000;
 }
 
 /* TT #586 — Settings UI entry-point for "Always-on listener" ON.

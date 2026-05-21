@@ -112,6 +112,12 @@ bool voice_onboard_chain_active(void);
  *  serial cable. */
 int64_t voice_onboard_chain_uptime_ms(void);
 
+/** TT #629 Wave C.4 — milliseconds since the last successful K144 reset
+ *  recovery (the `m5.reset:recovered` edge).  -1 if no reset has fired
+ *  since boot.  Surfaced via GET /m5 so soak tests can correlate
+ *  cached-work_id invalidation with the reset event. */
+int64_t voice_onboard_ms_since_last_reset(void);
+
 /** TT #586 — re-arm the always-on wakeword listener using the canonical
  *  event handler from this module.  Settings UI calls this to start
  *  the listener after the user toggles "Always-on listener" ON.

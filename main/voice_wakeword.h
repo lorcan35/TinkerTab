@@ -165,6 +165,20 @@ typedef struct {
  *         deltas are evicted FIFO.  Useful for debug tail. */
 size_t voice_wakeword_get_recent_transcripts(voice_wakeword_transcript_t *out, size_t max);
 
+/** TT #629 Wave C.4: observability getters surfaced via /tinkeron/extpcm.
+ *  Returns wakeword internal state machine value (0=IDLE, 1=LISTENING). */
+int voice_wakeword_get_state_value(void);
+
+/** Returns wakeword state as a string ("IDLE"/"LISTENING"). */
+const char *voice_wakeword_get_state_name(void);
+
+/** Milliseconds since last self-wake suppression (TTS bleed grace).  -1
+ *  if never triggered or already cleared. */
+int64_t voice_wakeword_get_ms_since_busy(void);
+
+/** Monotonic count of DICTATION_FINAL events fired since boot. */
+uint32_t voice_wakeword_get_dictation_final_count(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -2484,11 +2484,36 @@ esp_err_t voice_send_channel_reply(const char *channel, const char *thread_id, c
 }
 
 /* W7-E.4b: armed-reply context.  Guarded by s_state_mutex so concurrent
- * STT arrival (WS task) + REPLY button arm (LVGL task) don't race. */
+ * STT arrival (WS task) + REPLY button arm (LVGL task) don't race.
+ * TT #629 Wave C.3: armed context auto-expires after CHANNEL_REPLY_TTL_US
+ * to prevent "wake transcript routed to Telegram by mistake" 30+ minutes
+ * after the user tapped REPLY but never spoke. */
+#define CHANNEL_REPLY_TTL_US (30LL * 1000LL * 1000LL) /* 30 s */
 static char s_reply_channel[16];
 static char s_reply_thread[64];
 static char s_reply_sender[64];
 static bool s_reply_armed = false;
+static int64_t s_reply_armed_at_us = 0;
+
+/* Caller must hold s_state_mutex. */
+static void reply_clear_locked(void) {
+   s_reply_armed = false;
+   s_reply_armed_at_us = 0;
+   s_reply_channel[0] = '\0';
+   s_reply_thread[0] = '\0';
+   s_reply_sender[0] = '\0';
+}
+
+/* Caller must hold s_state_mutex.  Returns true + clears if armed but past TTL. */
+static bool reply_expire_if_stale_locked(void) {
+   if (!s_reply_armed) return false;
+   int64_t age = esp_timer_get_time() - s_reply_armed_at_us;
+   if (age >= CHANNEL_REPLY_TTL_US) {
+      reply_clear_locked();
+      return true;
+   }
+   return false;
+}
 
 void voice_arm_channel_reply(const char *channel, const char *thread_id, const char *sender) {
    if (!channel || !thread_id) return;
@@ -2497,30 +2522,36 @@ void voice_arm_channel_reply(const char *channel, const char *thread_id, const c
    snprintf(s_reply_thread, sizeof(s_reply_thread), "%s", thread_id);
    snprintf(s_reply_sender, sizeof(s_reply_sender), "%s", sender ? sender : "");
    s_reply_armed = true;
+   s_reply_armed_at_us = esp_timer_get_time();
    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
-   ESP_LOGI(TAG, "voice_arm_channel_reply: ch=%s thread=%s sender=%s", channel, thread_id, sender ? sender : "");
+   ESP_LOGI(TAG, "voice_arm_channel_reply: ch=%s thread=%s sender=%s ttl=%ds", channel, thread_id, sender ? sender : "",
+            (int)(CHANNEL_REPLY_TTL_US / 1000000));
 }
 
 void voice_disarm_channel_reply(void) {
    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
-   s_reply_armed = false;
-   s_reply_channel[0] = '\0';
-   s_reply_thread[0] = '\0';
-   s_reply_sender[0] = '\0';
+   reply_clear_locked();
    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
 }
 
 bool voice_is_channel_reply_armed(void) {
    bool armed = false;
+   bool expired = false;
    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   expired = reply_expire_if_stale_locked();
    armed = s_reply_armed;
    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   if (expired) {
+      tab5_debug_obs_event("ui.notif.reply", "expired_ttl");
+   }
    return armed;
 }
 
 bool voice_peek_channel_reply(char *channel_out, char *thread_id_out, char *sender_out) {
    bool armed = false;
+   bool expired = false;
    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   expired = reply_expire_if_stale_locked();
    if (s_reply_armed) {
       armed = true;
       if (channel_out) snprintf(channel_out, 16, "%s", s_reply_channel);
@@ -2528,25 +2559,43 @@ bool voice_peek_channel_reply(char *channel_out, char *thread_id_out, char *send
       if (sender_out) snprintf(sender_out, 64, "%s", s_reply_sender);
    }
    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   if (expired) {
+      tab5_debug_obs_event("ui.notif.reply", "expired_ttl");
+   }
    return armed;
 }
 
 bool voice_consume_channel_reply(char *channel_out, char *thread_id_out, char *sender_out) {
    bool was_armed = false;
+   bool expired = false;
    if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   expired = reply_expire_if_stale_locked();
    if (s_reply_armed) {
       was_armed = true;
       if (channel_out) snprintf(channel_out, 16, "%s", s_reply_channel);
       if (thread_id_out) snprintf(thread_id_out, 64, "%s", s_reply_thread);
       if (sender_out) snprintf(sender_out, 64, "%s", s_reply_sender);
-      s_reply_armed = false;
-      s_reply_channel[0] = '\0';
-      s_reply_thread[0] = '\0';
-      s_reply_sender[0] = '\0';
+      reply_clear_locked();
    }
    if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   if (expired) {
+      tab5_debug_obs_event("ui.notif.reply", "expired_ttl");
+   }
    return was_armed;
 }
+
+/* TT #629 Wave C: expose seconds-since-arm and TTL for /tinkeron/extpcm obs. */
+int voice_channel_reply_age_s(void) {
+   int age = -1;
+   if (s_state_mutex) xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+   if (s_reply_armed) {
+      age = (int)((esp_timer_get_time() - s_reply_armed_at_us) / 1000000LL);
+   }
+   if (s_state_mutex) xSemaphoreGive(s_state_mutex);
+   return age;
+}
+
+int voice_channel_reply_ttl_s(void) { return (int)(CHANNEL_REPLY_TTL_US / 1000000LL); }
 
 /* voice_send_widget_action moved to voice_ws_proto.c (TT #331 Wave 23
  * SRP-A1) — pure WS-proto concern: builds a JSON frame + calls

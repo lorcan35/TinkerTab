@@ -219,6 +219,14 @@ bool voice_consume_channel_reply(char *channel_out, char *thread_id_out, char *s
  *  armed target without consuming it.  Returns true if armed. */
 bool voice_peek_channel_reply(char *channel_out, char *thread_id_out, char *sender_out);
 
+/** TT #629 Wave C.3: seconds since voice_arm_channel_reply, or -1 if
+ *  not armed.  Reflects expiry — expired contexts are cleared on read
+ *  and return -1. */
+int voice_channel_reply_age_s(void);
+
+/** TT #629 Wave C.3: the channel_reply TTL ceiling in seconds (30). */
+int voice_channel_reply_ttl_s(void);
+
 /** W4-A: return the current turn_id (12-hex-char string + null).  Set by
  *  voice_start_listening / voice_start_dictation / voice_send_text on every
  *  fresh turn.  Returns "-" before the first turn (never NULL).  Use to
