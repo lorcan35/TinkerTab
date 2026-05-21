@@ -145,6 +145,18 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
     * remote diagnostics correlate behavior with daemon version. */
    cJSON_AddStringToObject(root, "version", s_m5_version_cache);
 
+   /* TT #629 Wave C.4 — cached work_id snapshot + ms since last reset.
+    * Lets soak tests verify that R12/R12b invalidation actually clears
+    * the cached llm/tts/yolo handles after sys.reset:recovered. */
+   cJSON *work_ids = cJSON_CreateObject();
+   char llm_wid[32], tts_wid[32];
+   voice_m5_llm_get_work_ids(llm_wid, sizeof(llm_wid), tts_wid, sizeof(tts_wid));
+   cJSON_AddStringToObject(work_ids, "llm", llm_wid);
+   cJSON_AddStringToObject(work_ids, "tts", tts_wid);
+   cJSON_AddBoolToObject(work_ids, "yolo_ready", voice_yolo_is_ready());
+   cJSON_AddItemToObject(root, "work_ids", work_ids);
+   cJSON_AddNumberToObject(root, "ms_since_last_reset", (double)voice_onboard_ms_since_last_reset());
+
    char *json = cJSON_PrintUnformatted(root);
    cJSON_Delete(root);
    httpd_resp_set_type(req, "application/json");

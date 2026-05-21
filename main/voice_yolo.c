@@ -237,6 +237,20 @@ esp_err_t voice_yolo_init(void) {
 
 bool voice_yolo_is_ready(void) { return s_ready; }
 
+/* TT #629 Wave C.2 (R12b): K144 sys.reset reboots the StackFlow daemon
+ * which invalidates every cached work_id on Tab5.  Re-running
+ * yolo.inference with a stale work_id returns "invalid handle" + can
+ * confuse the daemon's slot tracking.  Called from voice_onboard.c on
+ * the m5.reset:recovered edge so the next yolo_infer reissues
+ * yolo.setup against a fresh work_id. */
+void voice_yolo_invalidate(void) {
+   if (s_ready) {
+      ESP_LOGI(TAG, "voice_yolo_invalidate: clearing work_id=%s after K144 reset", s_work_id);
+   }
+   s_work_id[0] = '\0';
+   s_ready = false;
+}
+
 /* Parse a single yolo.box.stream JSON line, append box if present.
  * Skips lines whose request_id doesn't match @p want_rid (filters out
  * ext_pcm/asr ack noise on the shared xport).  Returns 1 if a

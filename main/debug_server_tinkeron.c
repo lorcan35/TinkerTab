@@ -32,6 +32,7 @@
 #include "freertos/task.h"
 #include "settings.h"             /* TT #617 — wake_src */
 #include "task_worker.h"          /* tab5_worker_enqueue */
+#include "voice.h"                /* TT #629 — channel_reply TTL accessors */
 #include "voice_ext_pcm_stream.h" /* TT #131 stats */
 #include "voice_m5_llm.h"         /* sys_reboot, hwinfo accessor */
 #include "voice_onboard.h"        /* failover state names */
@@ -385,6 +386,21 @@ static esp_err_t handle_extpcm(httpd_req_t *req) {
    cJSON_AddNumberToObject(root, "last_tx_bytes", st.last_tx_bytes);
    cJSON_AddNumberToObject(root, "last_send_ok", st.last_send_ok);
    cJSON_AddNumberToObject(root, "last_pump_age_ms", (double)st.last_pump_age_ms);
+
+   /* TT #629 Wave C.4 — wakeword internal observability + channel_reply
+    * armed status + TTL.  These let soak/e2e tests catch the "wakeword
+    * silently wedged" and "channel_reply context never cleared" cases
+    * without needing JTAG. */
+   cJSON_AddNumberToObject(root, "wakeword_state", voice_wakeword_get_state_value());
+   cJSON_AddStringToObject(root, "wakeword_state_name", voice_wakeword_get_state_name());
+   int64_t since_busy_ms = voice_wakeword_get_ms_since_busy();
+   cJSON_AddNumberToObject(root, "wakeword_ms_since_busy", (double)since_busy_ms);
+   cJSON_AddNumberToObject(root, "dictation_final_count", (double)voice_wakeword_get_dictation_final_count());
+   int reply_age = voice_channel_reply_age_s();
+   int reply_ttl = voice_channel_reply_ttl_s();
+   cJSON_AddBoolToObject(root, "channel_reply_armed", reply_age >= 0);
+   cJSON_AddNumberToObject(root, "channel_reply_age_s", reply_age);
+   cJSON_AddNumberToObject(root, "channel_reply_ttl_remaining_s", reply_age >= 0 ? (reply_ttl - reply_age) : -1);
 
    /* Hint strings the user can scan at a glance. */
    const char *hint;

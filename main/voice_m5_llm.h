@@ -302,6 +302,16 @@ esp_err_t voice_m5_llm_set_baud(uint32_t new_baud);
  */
 uint32_t voice_m5_llm_get_baud(void);
 
+/**
+ * @brief Snapshot the cached LLM + TTS work_ids into caller buffers.
+ *
+ * TT #629 Wave C.4.  Surfaced via GET /m5 so the e2e harness + soak tests
+ * can verify the work_id cache is invalidated on sys.reset / sys.reboot.
+ * Empty string means "not currently set up".  Each buffer should be ≥32
+ * bytes.  Both args may be NULL (skip that copy).
+ */
+void voice_m5_llm_get_work_ids(char *llm_out, size_t llm_cap, char *tts_out, size_t tts_cap);
+
 /* ---------------------------------------------------------------------- */
 /*  Phase 6c — Text-to-Speech via the K144 TTS unit                       */
 /*                                                                        */

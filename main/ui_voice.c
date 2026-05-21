@@ -371,6 +371,16 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
     s_cur_state = state;
     update_mic_button_state(state);
 
+    /* TT #629 Wave C.1 (R8a): re-assert the close button above any
+     * channel now-card that may have been raised between voice state
+     * transitions.  Both surfaces live on lv_layer_top(); the most
+     * recently-created object floats highest.  Moving the X button to
+     * foreground on every state edge guarantees the cancel affordance
+     * is always reachable, regardless of incoming-message timing. */
+    if (s_visible && s_close_btn) {
+       lv_obj_move_foreground(s_close_btn);
+    }
+
     /* W7-E.4c: reply chip is meaningful only during the LISTENING phase.
      * Once the user releases the orb (→ PROCESSING/SPEAKING/READY/IDLE)
      * the reply context has either been consumed (real channel_reply
