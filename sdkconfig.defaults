@@ -249,10 +249,12 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=400
 # inside the mutex window.
 CONFIG_LV_DRAW_SW_SHADOW_CACHE_SIZE=16
 
-# LVGL parallel draw across both P4 cores.  Was 1 (single threaded);
-# 2 lets LVGL split each frame's draw tiles across the two CPU
-# cores.  Direct render-budget multiplier.
-CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# LVGL parallel draw — we run single-threaded (LV_USE_OS=0).  Any
+# value > 1 requires LV_USE_OS=1 (LVGL spawns its own draw threads)
+# which conflicts with our existing UI task model.  Was bumped to 2
+# briefly (TT #549/#550 era) but broke CI build; keep at 1 unless
+# we adopt LVGL's threading model wholesale.
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
 
 # Bigger layer simple buffer (24 KB → 64 KB) so composite effects
 # stay on the fast path instead of falling back to the slow chunked
