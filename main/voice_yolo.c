@@ -277,10 +277,22 @@ static int parse_stream_line(const char *line, const char *want_rid, voice_yolo_
          cJSON *conf = cJSON_GetObjectItem(delta, "confidence");
          if (cJSON_IsArray(bbox) && cJSON_GetArraySize(bbox) >= 4) {
             voice_yolo_box_t *b = &boxes[*count];
-            b->x = (float)atof(cJSON_GetArrayItem(bbox, 0)->valuestring ?: "0");
-            b->y = (float)atof(cJSON_GetArrayItem(bbox, 1)->valuestring ?: "0");
-            b->w = (float)atof(cJSON_GetArrayItem(bbox, 2)->valuestring ?: "0");
-            b->h = (float)atof(cJSON_GetArrayItem(bbox, 3)->valuestring ?: "0");
+            /* TT #635 (Wave 1 follow-up): K144 yolo11n daemon emits the
+             * bbox as corner format (x1, y1, x2, y2) in 320×320 input
+             * coords, NOT (x, y, w, h).  Convert to top-left + size
+             * so consumers (overlay renderer, /yolo/infer JSON) can
+             * treat the struct as the documented "pixel coords".
+             * Verified live by posting a known person image and
+             * comparing: x=80 y=102 x2=292 y2=243 → person fully
+             * contained in the 320×320 frame. */
+            float x1 = (float)atof(cJSON_GetArrayItem(bbox, 0)->valuestring ?: "0");
+            float y1 = (float)atof(cJSON_GetArrayItem(bbox, 1)->valuestring ?: "0");
+            float x2 = (float)atof(cJSON_GetArrayItem(bbox, 2)->valuestring ?: "0");
+            float y2 = (float)atof(cJSON_GetArrayItem(bbox, 3)->valuestring ?: "0");
+            b->x = x1;
+            b->y = y1;
+            b->w = (x2 > x1) ? (x2 - x1) : 0.0f;
+            b->h = (y2 > y1) ? (y2 - y1) : 0.0f;
             b->confidence = cJSON_IsString(conf) && conf->valuestring ? (float)atof(conf->valuestring) : 0.0f;
             strlcpy(b->klass, cJSON_IsString(kls) && kls->valuestring ? kls->valuestring : "?", sizeof(b->klass));
             (*count)++;

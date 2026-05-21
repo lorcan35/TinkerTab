@@ -24,15 +24,17 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h" /* #291: recording duration */
 #include "sdcard.h"
-#include "settings.h"  /* #260: cam_rot NVS key */
-#include "ui_chrome.h" /* DIP-1: ui_chrome_set_home_visible */
-#include "ui_core.h"   /* TT #328 Wave 5: ui_tap_gate */
+#include "settings.h"    /* #260: cam_rot NVS key */
+#include "task_worker.h" /* TT #635 — async yolo inference job */
+#include "ui_chrome.h"   /* DIP-1: ui_chrome_set_home_visible */
+#include "ui_core.h"     /* TT #328 Wave 5: ui_tap_gate */
 #include "ui_feedback.h"
 #include "ui_files.h"
 #include "ui_home.h"
 #include "ui_nav.h"      /* TT #623 — tab5_nav_to */
 #include "voice.h"       /* U11 follow-up: voice_upload_chat_image() */
 #include "voice_video.h" /* #291: shared HW JPEG encoder (voice_video_encode_rgb565) */
+#include "voice_yolo.h"  /* TT #635 — K144 YOLO11n overlay */
 
 static const char *TAG = "ui_camera";
 
@@ -121,6 +123,46 @@ static uint16_t   *s_rec_rot_buf  = NULL;     /* DMA-aligned rotation scratch */
 
 static uint32_t    capture_counter = 0;
 static bool        capture_counter_init = false;
+
+/* ── TT #635: K144 YOLO11n live overlay ─────────────────────────────
+ *
+ * Toggle button arms the inference loop.  At ~3 fps the preview timer
+ * snapshots the current canvas into a 320×320 RGB565 scratch buffer,
+ * hands it to the shared worker queue, which JPEG-encodes via the HW
+ * engine and sends to K144 yolo.  Boxes come back in 320×320 coords;
+ * we map them onto the viewfinder LVGL canvas + render 16 reusable
+ * border-only widgets with a class+confidence label each.
+ *
+ * Pre-allocated buffers live for the lifetime of the camera screen so
+ * we don't malloc/free in the hot loop (PSRAM allocator churn was a
+ * known voice_yolo regression — LEARNINGS TT #621). */
+#define UI_CAM_YOLO_MAX_BOXES 16
+#define UI_CAM_YOLO_PERIOD_MS 333 /* ~3 fps cap */
+#define UI_CAM_YOLO_JPEG_CAP (24 * 1024)
+#define UI_CAM_YOLO_SMALL_BYTES (VOICE_YOLO_INPUT_W * VOICE_YOLO_INPUT_H * 2) /* RGB565 */
+
+static bool s_yolo_on = false;
+static lv_obj_t *s_yolo_btn = NULL;
+static lv_obj_t *s_yolo_btn_lbl = NULL;
+static lv_obj_t *s_yolo_boxes[UI_CAM_YOLO_MAX_BOXES] = {0};
+static lv_obj_t *s_yolo_box_lbls[UI_CAM_YOLO_MAX_BOXES] = {0};
+static lv_obj_t *s_yolo_overlay_parent = NULL; /* canvas_preview */
+static volatile bool s_yolo_inflight = false;
+static voice_yolo_box_t s_yolo_boxes_pending[UI_CAM_YOLO_MAX_BOXES];
+static size_t s_yolo_n_pending = 0;
+static uint16_t *s_yolo_small_buf = NULL; /* 320×320 RGB565 in PSRAM */
+static uint8_t *s_yolo_jpeg_buf = NULL;   /* DMA-aligned JPEG out */
+static int64_t s_yolo_last_tick_us = 0;
+
+#define COL_YOLO_BORDER 0xFFC857
+#define COL_YOLO_LABEL_BG 0x1A1A24
+
+static void yolo_btn_cb(lv_event_t *e);
+static void yolo_redraw_async(void *arg);
+static void yolo_infer_job(void *arg);
+static void yolo_alloc_resources(void);
+static void yolo_free_resources(void);
+static void yolo_downsample_rgb565(const uint16_t *src, int sw, int sh, uint16_t *dst);
 
 /* Currently selected resolution (default VGA for smooth preview) */
 static tab5_cam_resolution_t current_res = TAB5_CAM_RES_HD;  /* SC202CS outputs 1280x720 */
@@ -539,6 +581,34 @@ lv_obj_t *ui_camera_create(void)
                                  canvas_w, canvas_h, LV_COLOR_FORMAT_RGB565);
             lv_obj_center(canvas_preview);
 
+            /* TT #635: pre-create 16 reusable YOLO box widgets as
+             * children of the canvas so they overlay the live image
+             * directly.  All start hidden; the redraw cb shows/
+             * positions only the ones the inference returned. */
+            s_yolo_overlay_parent = canvas_preview;
+            for (int i = 0; i < UI_CAM_YOLO_MAX_BOXES; i++) {
+               lv_obj_t *bx = lv_obj_create(canvas_preview);
+               lv_obj_remove_style_all(bx);
+               lv_obj_set_size(bx, 40, 40);
+               lv_obj_set_style_bg_opa(bx, LV_OPA_TRANSP, 0);
+               lv_obj_set_style_border_color(bx, lv_color_hex(COL_YOLO_BORDER), 0);
+               lv_obj_set_style_border_width(bx, 2, 0);
+               lv_obj_set_style_radius(bx, 4, 0);
+               lv_obj_add_flag(bx, LV_OBJ_FLAG_HIDDEN);
+               lv_obj_clear_flag(bx, LV_OBJ_FLAG_SCROLLABLE);
+               lv_obj_clear_flag(bx, LV_OBJ_FLAG_CLICKABLE);
+               s_yolo_boxes[i] = bx;
+               lv_obj_t *lbl = lv_label_create(bx);
+               lv_label_set_text(lbl, "");
+               lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+               lv_obj_set_style_text_color(lbl, lv_color_hex(COL_YOLO_BORDER), 0);
+               lv_obj_set_style_bg_color(lbl, lv_color_hex(COL_YOLO_LABEL_BG), 0);
+               lv_obj_set_style_bg_opa(lbl, LV_OPA_70, 0);
+               lv_obj_set_style_pad_hor(lbl, 4, 0);
+               lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, -18);
+               s_yolo_box_lbls[i] = lbl;
+            }
+
             /* Start the preview timer */
             preview_timer = lv_timer_create(preview_timer_cb, PREVIEW_FPS_MS,
                                             NULL);
@@ -614,6 +684,25 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_text_color(s_rec_btn_lbl, lv_color_hex(COL_WHITE), 0);
     lv_obj_set_style_text_font(s_rec_btn_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(s_rec_btn_lbl);
+
+    /* ── TT #635: DETECT button — toggles K144 YOLO11n overlay ──── */
+    s_yolo_btn = lv_button_create(bar);
+    lv_obj_remove_style_all(s_yolo_btn);
+    lv_obj_set_size(s_yolo_btn, 132, 60);
+    lv_obj_align(s_yolo_btn, LV_ALIGN_CENTER, -110, -20);
+    lv_obj_set_style_bg_color(s_yolo_btn, lv_color_hex(0x1A1A24), 0);
+    lv_obj_set_style_bg_opa(s_yolo_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_yolo_btn, lv_color_hex(COL_YOLO_BORDER), 0);
+    lv_obj_set_style_border_width(s_yolo_btn, 2, 0);
+    lv_obj_set_style_radius(s_yolo_btn, 30, 0);
+    lv_obj_clear_flag(s_yolo_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_yolo_btn, yolo_btn_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_button(s_yolo_btn);
+    s_yolo_btn_lbl = lv_label_create(s_yolo_btn);
+    lv_label_set_text(s_yolo_btn_lbl, "DETECT");
+    lv_obj_set_style_text_color(s_yolo_btn_lbl, lv_color_hex(COL_YOLO_BORDER), 0);
+    lv_obj_set_style_text_font(s_yolo_btn_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(s_yolo_btn_lbl);
 
     /* ── "No SD" label below capture button (hidden by default) ── */
     lbl_no_sd = lv_label_create(bar);
@@ -868,6 +957,151 @@ void cb_record_btn(lv_event_t *e)
 }
 
 /* ================================================================
+ * TT #635 — K144 YOLO11n live overlay helpers
+ * ================================================================ */
+
+static void yolo_alloc_resources(void) {
+   if (s_yolo_small_buf == NULL) {
+      s_yolo_small_buf = (uint16_t *)heap_caps_malloc(UI_CAM_YOLO_SMALL_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   }
+   if (s_yolo_jpeg_buf == NULL) {
+      /* HW JPEG engine needs DMA-aligned output buffer. */
+      jpeg_encode_memory_alloc_cfg_t mcfg = {.buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER};
+      size_t actual = 0;
+      s_yolo_jpeg_buf = (uint8_t *)jpeg_alloc_encoder_mem(UI_CAM_YOLO_JPEG_CAP, &mcfg, &actual);
+      if (s_yolo_jpeg_buf == NULL) {
+         ESP_LOGW(TAG, "yolo: jpeg_alloc_encoder_mem(%u) failed", (unsigned)UI_CAM_YOLO_JPEG_CAP);
+      }
+   }
+}
+
+static void yolo_free_resources(void) {
+   if (s_yolo_small_buf) {
+      heap_caps_free(s_yolo_small_buf);
+      s_yolo_small_buf = NULL;
+   }
+   if (s_yolo_jpeg_buf) {
+      heap_caps_free(s_yolo_jpeg_buf);
+      s_yolo_jpeg_buf = NULL;
+   }
+}
+
+/* Nearest-neighbour RGB565 downscale into VOICE_YOLO_INPUT_W × _H. */
+static void yolo_downsample_rgb565(const uint16_t *src, int sw, int sh, uint16_t *dst) {
+   const int dw = VOICE_YOLO_INPUT_W;
+   const int dh = VOICE_YOLO_INPUT_H;
+   for (int dy = 0; dy < dh; dy++) {
+      int sy = (dy * sh) / dh;
+      const uint16_t *srow = src + (size_t)sy * sw;
+      uint16_t *drow = dst + (size_t)dy * dw;
+      for (int dx = 0; dx < dw; dx++) {
+         int sx = (dx * sw) / dw;
+         drow[dx] = srow[sx];
+      }
+   }
+}
+
+/* LVGL-thread redraw — applies s_yolo_boxes_pending to the box widgets. */
+static void yolo_redraw_async(void *arg) {
+   (void)arg;
+   if (s_yolo_overlay_parent == NULL) return;
+
+   int parent_w = lv_obj_get_width(s_yolo_overlay_parent);
+   int parent_h = lv_obj_get_height(s_yolo_overlay_parent);
+   if (parent_w <= 0 || parent_h <= 0) {
+      parent_w = canvas_w;
+      parent_h = canvas_h;
+   }
+
+   size_t n = s_yolo_n_pending;
+   if (n > UI_CAM_YOLO_MAX_BOXES) n = UI_CAM_YOLO_MAX_BOXES;
+
+   for (size_t i = 0; i < UI_CAM_YOLO_MAX_BOXES; i++) {
+      if (s_yolo_boxes[i] == NULL) continue;
+      if (i >= n || !s_yolo_on) {
+         lv_obj_add_flag(s_yolo_boxes[i], LV_OBJ_FLAG_HIDDEN);
+         continue;
+      }
+      const voice_yolo_box_t *b = &s_yolo_boxes_pending[i];
+      /* Stretch from 320×320 yolo coords into the parent widget rect. */
+      int px = (int)(b->x * parent_w / VOICE_YOLO_INPUT_W);
+      int py = (int)(b->y * parent_h / VOICE_YOLO_INPUT_H);
+      int pw = (int)(b->w * parent_w / VOICE_YOLO_INPUT_W);
+      int ph = (int)(b->h * parent_h / VOICE_YOLO_INPUT_H);
+      if (pw < 4) pw = 4;
+      if (ph < 4) ph = 4;
+      lv_obj_set_pos(s_yolo_boxes[i], px, py);
+      lv_obj_set_size(s_yolo_boxes[i], pw, ph);
+      lv_obj_clear_flag(s_yolo_boxes[i], LV_OBJ_FLAG_HIDDEN);
+
+      if (s_yolo_box_lbls[i]) {
+         char buf[40];
+         snprintf(buf, sizeof(buf), "%s %d%%", b->klass, (int)(b->confidence * 100.0f));
+         lv_label_set_text(s_yolo_box_lbls[i], buf);
+      }
+   }
+}
+
+/* Worker-thread inference job.  Reads s_yolo_small_buf (snapshot taken
+ * on LVGL thread before enqueue), encodes via HW JPEG, calls yolo, and
+ * schedules an LVGL-thread redraw with the resulting boxes. */
+static void yolo_infer_job(void *arg) {
+   (void)arg;
+   if (s_yolo_small_buf == NULL || s_yolo_jpeg_buf == NULL) {
+      s_yolo_inflight = false;
+      return;
+   }
+   if (!voice_yolo_is_ready()) {
+      esp_err_t e = voice_yolo_init();
+      if (e != ESP_OK) {
+         ESP_LOGW(TAG, "yolo: voice_yolo_init failed (%s)", esp_err_to_name(e));
+         s_yolo_inflight = false;
+         return;
+      }
+   }
+   uint32_t jpeg_len = 0;
+   esp_err_t enc = voice_video_encode_rgb565((const uint8_t *)s_yolo_small_buf, VOICE_YOLO_INPUT_W, VOICE_YOLO_INPUT_H,
+                                             80, s_yolo_jpeg_buf, UI_CAM_YOLO_JPEG_CAP, &jpeg_len);
+   if (enc != ESP_OK || jpeg_len == 0) {
+      ESP_LOGW(TAG, "yolo: encode failed (%s) len=%u", esp_err_to_name(enc), (unsigned)jpeg_len);
+      s_yolo_inflight = false;
+      return;
+   }
+   voice_yolo_box_t local[UI_CAM_YOLO_MAX_BOXES];
+   size_t n = 0;
+   esp_err_t ie = voice_yolo_infer(s_yolo_jpeg_buf, jpeg_len, local, UI_CAM_YOLO_MAX_BOXES, &n, 1500);
+   if (ie != ESP_OK) {
+      ESP_LOGW(TAG, "yolo: infer err=%s", esp_err_to_name(ie));
+      s_yolo_inflight = false;
+      return;
+   }
+   /* Hand off to LVGL thread for redraw.  s_yolo_n_pending is a plain
+    * size_t but writes/reads happen across worker → LVGL with no race
+    * because the inflight gate guarantees one writer at a time. */
+   memcpy(s_yolo_boxes_pending, local, n * sizeof(local[0]));
+   s_yolo_n_pending = n;
+   tab5_debug_obs_event("yolo.infer", n > 0 ? "boxes" : "empty");
+   tab5_lv_async_call(yolo_redraw_async, NULL);
+   s_yolo_inflight = false;
+}
+
+static void yolo_btn_cb(lv_event_t *e) {
+   (void)e;
+   s_yolo_on = !s_yolo_on;
+   if (s_yolo_btn_lbl) {
+      lv_label_set_text(s_yolo_btn_lbl, s_yolo_on ? "DETECT ON" : "DETECT");
+   }
+   if (!s_yolo_on) {
+      /* Hide all boxes immediately. */
+      s_yolo_n_pending = 0;
+      yolo_redraw_async(NULL);
+   } else {
+      yolo_alloc_resources();
+   }
+   tab5_debug_obs_event("yolo.toggle", s_yolo_on ? "on" : "off");
+}
+
+/* ================================================================
  * Preview timer — captures frames and updates canvas
  * ================================================================ */
 static void preview_timer_cb(lv_timer_t *t)
@@ -915,6 +1149,22 @@ static void preview_timer_cb(lv_timer_t *t)
 
     /* Tell LVGL the canvas content changed */
     lv_obj_invalidate(canvas_preview);
+
+    /* TT #635: optional YOLO11n inference tick (~3 fps).  Runs on the
+     * shared task_worker so the preview keeps streaming at 30 fps.
+     * Snapshot the small 320×320 frame here on the LVGL thread; the
+     * worker reads it later. */
+    if (s_yolo_on && !s_yolo_inflight && s_yolo_small_buf && s_yolo_jpeg_buf) {
+       int64_t now_us = esp_timer_get_time();
+       if (now_us - s_yolo_last_tick_us >= UI_CAM_YOLO_PERIOD_MS * 1000LL) {
+          s_yolo_last_tick_us = now_us;
+          yolo_downsample_rgb565(dst, canvas_w, canvas_h, s_yolo_small_buf);
+          s_yolo_inflight = true;
+          if (tab5_worker_enqueue(yolo_infer_job, NULL, "yolo") != ESP_OK) {
+             s_yolo_inflight = false;
+          }
+       }
+    }
 }
 
 /* ================================================================
@@ -1189,6 +1439,13 @@ void ui_camera_destroy(void)
      * styles + its event callbacks intact.  All widget pointers
      * become dangling — explicitly NULL them so the next
      * ui_camera_create rebuild path doesn't read them. */
+    /* TT #635: stop yolo loop + null overlay pointers before
+     * lv_obj_clean — the worker may have an in-flight job; the
+     * inflight flag stays true until that job exits, so the next
+     * preview tick won't re-enqueue. */
+    s_yolo_on = false;
+    s_yolo_overlay_parent = NULL;
+
     if (scr_camera) {
        lv_obj_clean(scr_camera);
        canvas_preview = NULL;
@@ -1203,9 +1460,20 @@ void ui_camera_destroy(void)
        s_rec_btn_lbl = NULL;
        s_rec_overlay = NULL;
        s_rec_overlay_lbl = NULL;
+       s_yolo_btn = NULL;
+       s_yolo_btn_lbl = NULL;
+       for (int i = 0; i < UI_CAM_YOLO_MAX_BOXES; i++) {
+          s_yolo_boxes[i] = NULL;
+          s_yolo_box_lbls[i] = NULL;
+       }
        ESP_LOGI(TAG, "Camera screen cleaned (kept resident; canvas %u KB PSRAM reused)",
                 (unsigned)(canvas_buf_size / 1024));
     }
+
+    /* TT #635: release yolo scratch buffers (small_buf in PSRAM,
+     * jpeg_buf DMA-aligned).  The K144 work_id stays cached on the
+     * voice_yolo side — re-arming doesn't pay yolo.setup again. */
+    yolo_free_resources();
 
     /* TT #247 Wave 17 — DON'T free canvas_buf.  alloc_canvas_buffer
      * is now idempotent and will memset-zero the existing buffer on
