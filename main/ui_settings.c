@@ -1488,6 +1488,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     ESP_LOGI(TAG, "Section: Storage");
     lv_color_t acc_storage = lv_color_hex(ACC_STORAGE);
 
+    int storage_section_top = y;
     y = mk_section(s_scroll, "STORAGE", acc_storage, y);
 
     /* SD info shown directly under section header */
@@ -1497,6 +1498,8 @@ static void phase2_timer_cb(lv_timer_t *t)
     lv_obj_set_style_text_font(s_lbl_sd_info, FONT_BODY, 0);
     lv_obj_set_pos(s_lbl_sd_info, SIDE_PAD, y + (ROW_H - 18) / 2);
     y += ROW_H + 16;
+    mk_card_bg(s_scroll, storage_section_top, y);
+    y += 24;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: BATTERY (red #EF4444)
@@ -1505,6 +1508,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     ESP_LOGI(TAG, "Section: Battery");
     lv_color_t acc_battery = lv_color_hex(ACC_BATTERY);
 
+    int battery_section_top = y;
     y = mk_section(s_scroll, "BATTERY", acc_battery, y);
 
     /* Primary battery status: "XX% . Charging" or "USB Powered" */
@@ -1539,6 +1543,8 @@ static void phase2_timer_cb(lv_timer_t *t)
     lv_obj_set_style_text_font(s_lbl_bat_volt, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_bat_volt, SIDE_PAD, y);
     y += 20 + 16;
+    mk_card_bg(s_scroll, battery_section_top, y);
+    y += 24;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: ABOUT (violet #8B5CF6)
@@ -1547,6 +1553,7 @@ static void phase2_timer_cb(lv_timer_t *t)
     ESP_LOGI(TAG, "Section: About");
     lv_color_t acc_about = lv_color_hex(ACC_ABOUT);
 
+    int about_section_top = y;
     y = mk_section(s_scroll, "ABOUT", acc_about, y);
 
     /* Device info -- Line 1: product name + version (prominent) */
@@ -1615,6 +1622,8 @@ static void phase2_timer_cb(lv_timer_t *t)
     lv_obj_set_style_text_font(s_lbl_heap, FONT_SMALL, 0);
     lv_obj_set_pos(s_lbl_heap, SIDE_PAD, y + (ROW_H - 14) / 2);
     y += ROW_H;
+    mk_card_bg(s_scroll, about_section_top, y);
+    y += 24;
 
     /* ── Bottom padding ──────────────────────────────────────────────── */
     y += 40;
@@ -2257,6 +2266,7 @@ lv_obj_t *ui_settings_create(void)
     ESP_LOGI(TAG, "Phase 1 — Section: Channels");
     lv_color_t acc_channels = lv_color_hex(ACC_VOICE); /* shares amber w/ Voice */
 
+    int channels_section_top = y;
     y = mk_section(s_scroll, "CHANNELS", acc_channels, y);
 
     struct {
@@ -2274,7 +2284,9 @@ lv_obj_t *ui_settings_create(void)
        mk_switch(s_scroll, acc_channels, 660, y, ch_rows[i].getter() != 0, ch_rows[i].cb, NULL);
        y += ROW_H + 8;
     }
-    y += 20;
+    y += 12;
+    mk_card_bg(s_scroll, channels_section_top, y);
+    y += 24;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: DISPLAY (amber #F5A623)
@@ -2283,6 +2295,7 @@ lv_obj_t *ui_settings_create(void)
     ESP_LOGI(TAG, "Phase 1 — Section: Display");
     lv_color_t acc_display = lv_color_hex(ACC_DISPLAY);
 
+    int display_section_top = y;
     y = mk_section(s_scroll, "DISPLAY", acc_display, y);
 
     /* Brightness */
@@ -2359,6 +2372,8 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_add_event_cb(dd, cb_cam_rotation, LV_EVENT_VALUE_CHANGED, NULL);
     }
     y += ROW_H + 16;
+    mk_card_bg(s_scroll, display_section_top, y);
+    y += 24;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: NETWORK (cyan #00E5FF)
@@ -2367,6 +2382,7 @@ lv_obj_t *ui_settings_create(void)
     ESP_LOGI(TAG, "Phase 1 — Section: Network");
     lv_color_t acc_network = lv_color_hex(ACC_NETWORK);
 
+    int network_section_top = y;
     y = mk_section(s_scroll, "NETWORK", acc_network, y);
 
     /* WiFi status */
@@ -2456,6 +2472,8 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_add_event_cb(s_conn_dd, cb_conn_mode, LV_EVENT_VALUE_CHANGED, NULL);
     }
     y += ROW_H + 16;
+    mk_card_bg(s_scroll, network_section_top, y);
+    y += 24;
 
     /* ═══════════════════════════════════════════════════════════════════
      *  END PHASE 1 — Screen is visible now with Display + Network.

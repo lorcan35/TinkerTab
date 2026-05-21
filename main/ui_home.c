@@ -119,6 +119,9 @@ static lv_obj_t *s_sys_label       = NULL;  /* left: "ONLINE" / "OFFLINE" / etc 
 static lv_obj_t *s_tinkeron_dot    = NULL;
 static lv_obj_t *s_tinkeron_label  = NULL;
 static lv_obj_t *s_time_label      = NULL;  /* right: "Thursday · 9:42" */
+/* Cap Wave 5b (TT #646): privacy lock pill, pinned right of the time label.
+ * Visible only when tab5_settings_get_privacy_lock() is true. */
+static lv_obj_t *s_privacy_chip = NULL;
 
 /* F1/F2 full-screen OFFLINE hero (audit 2026-04-20). Shown when NO_WIFI
  * or DRAGON_DOWN persists past 8 s. Auto-dismisses on recovery. */
@@ -608,6 +611,33 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_color(s_time_label, lv_color_hex(TH_TEXT_BODY), 0);
     lv_obj_set_style_text_align(s_time_label, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_style_text_letter_space(s_time_label, 1, 0);
+
+    /* Cap Wave 5b (TT #646): privacy lock indicator.  Small amber pill
+     * with a lock glyph + "PRIVACY" caption pinned right of the time
+     * label.  Hidden by default; shown when tab5_settings_get_privacy_lock()
+     * returns true.  Refreshed by ui_home_refresh_sys_label so toggling
+     * the switch in Settings updates the indicator without a 5 s tick. */
+    s_privacy_chip = lv_obj_create(s_screen);
+    if (s_privacy_chip) {
+       lv_obj_remove_style_all(s_privacy_chip);
+       lv_obj_set_size(s_privacy_chip, 152, 36);
+       lv_obj_set_pos(s_privacy_chip, SW - SIDE_PAD - 152, 56);
+       lv_obj_set_style_bg_color(s_privacy_chip, lv_color_hex(0x1A1A24), 0);
+       lv_obj_set_style_bg_opa(s_privacy_chip, LV_OPA_COVER, 0);
+       lv_obj_set_style_radius(s_privacy_chip, 18, 0);
+       lv_obj_set_style_border_width(s_privacy_chip, 1, 0);
+       lv_obj_set_style_border_color(s_privacy_chip, lv_color_hex(0xF59E0B), 0);
+       lv_obj_set_style_border_opa(s_privacy_chip, LV_OPA_COVER, 0);
+       lv_obj_clear_flag(s_privacy_chip, LV_OBJ_FLAG_SCROLLABLE);
+       lv_obj_add_flag(s_privacy_chip, LV_OBJ_FLAG_HIDDEN);
+
+       lv_obj_t *lbl = lv_label_create(s_privacy_chip);
+       lv_label_set_text(lbl, LV_SYMBOL_EYE_CLOSE "  PRIVACY");
+       lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
+       lv_obj_set_style_text_color(lbl, lv_color_hex(0xF59E0B), 0);
+       lv_obj_set_style_text_letter_space(lbl, 2, 0);
+       lv_obj_center(lbl);
+    }
 
     /* ── Orb stage ──────────────────────────────────────────────
      * TT #511 wave-1: halos REMOVED.  The 520 px / 340 px amber discs
@@ -2557,6 +2587,7 @@ void ui_home_destroy(void)
     if (s_screen) { lv_obj_del(s_screen); s_screen = NULL; }
     ui_orb_destroy(); /* TT #511: clear ui_orb's handles + state machine. */
     s_sys_dot = s_sys_label = s_time_label = NULL;
+    s_privacy_chip = NULL;
     s_halo_outer = s_halo_inner = NULL;
     s_ring_outer = s_ring_mid = s_ring_inner = NULL;
     s_orb = NULL;
@@ -3439,6 +3470,14 @@ static void sys_label_refresh_async_cb(void *arg)
     (void)arg;
     ui_home_update_status();
     ui_home_orb_aliveness_sync();
+    /* Cap Wave 5b (TT #646): refresh privacy chip visibility. */
+    if (s_privacy_chip) {
+       if (tab5_settings_get_privacy_lock()) {
+          lv_obj_clear_flag(s_privacy_chip, LV_OBJ_FLAG_HIDDEN);
+       } else {
+          lv_obj_add_flag(s_privacy_chip, LV_OBJ_FLAG_HIDDEN);
+       }
+    }
 }
 
 void ui_home_refresh_sys_label(void)
