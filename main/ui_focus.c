@@ -14,14 +14,17 @@
  */
 
 #include "ui_focus.h"
-#include "ui_theme.h"
-#include "ui_home.h"
-#include "ui_core.h"
-#include "config.h"
-#include "tool_log.h"
-#include "esp_log.h"
+
 #include <stdio.h>
 #include <time.h>
+
+#include "config.h"
+#include "esp_log.h"
+#include "tool_log.h"
+#include "ui_core.h"
+#include "ui_home.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
+#include "ui_theme.h"
 
 static const char *TAG = "ui_focus";
 
@@ -50,6 +53,7 @@ static void back_click_cb(lv_event_t *e)
 {
     (void)e;
     ui_focus_hide();
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE); /* TT #623 */
 }
 
 static void overlay_gesture_cb(lv_event_t *e)
@@ -58,6 +62,7 @@ static void overlay_gesture_cb(lv_event_t *e)
     lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
     if (dir == LV_DIR_BOTTOM) {
         ui_focus_hide();
+        tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE); /* TT #623 */
     }
 }
 

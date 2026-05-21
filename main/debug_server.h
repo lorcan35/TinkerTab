@@ -48,6 +48,11 @@ esp_err_t tab5_debug_server_stop(void);
  */
 void tab5_debug_set_nav_target(const char *name);
 
+/* TT #623 — set the nav-target cache AND schedule async_navigate on the
+ * LVGL thread.  Used by tab5_nav_to() in ui_nav.c to actually swap
+ * screens after the voice-cancel gate runs. */
+void tab5_debug_trigger_async_navigate(const char *target_name);
+
 /**
  * Check if the debug server is injecting a touch event.
  * Call from the LVGL touch read callback. If true, use the returned

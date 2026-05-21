@@ -24,12 +24,13 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h" /* #291: recording duration */
 #include "sdcard.h"
-#include "settings.h" /* #260: cam_rot NVS key */
+#include "settings.h"  /* #260: cam_rot NVS key */
 #include "ui_chrome.h" /* DIP-1: ui_chrome_set_home_visible */
-#include "ui_core.h"  /* TT #328 Wave 5: ui_tap_gate */
+#include "ui_core.h"   /* TT #328 Wave 5: ui_tap_gate */
 #include "ui_feedback.h"
 #include "ui_files.h"
 #include "ui_home.h"
+#include "ui_nav.h"      /* TT #623 — tab5_nav_to */
 #include "voice.h"       /* U11 follow-up: voice_upload_chat_image() */
 #include "voice_video.h" /* #291: shared HW JPEG encoder (voice_video_encode_rgb565) */
 
@@ -268,13 +269,10 @@ static void cb_back_btn(lv_event_t *e)
    if (lv_event_get_code(e) == LV_EVENT_GESTURE) {
       lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
       if (dir != LV_DIR_RIGHT) return;
-   } else if (!ui_tap_gate("camera:back", 300)) {
-      return;
    }
     ui_camera_destroy();
-    lv_screen_load(ui_home_get_screen());
-    /* TT #328 Wave 10 follow-up — keep /screen in sync. */
-    tab5_debug_set_nav_target("home");
+    /* TT #623 — centralised nav handles debounce + voice cancel + obs. */
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
 }
 
 /* #286: live rotation cycle — 0→1→2→3→0.  Persists to NVS + tears

@@ -35,6 +35,7 @@
 #include "ui_core.h"
 #include "ui_home.h"
 #include "ui_keyboard.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
 #include "ui_voice.h"
 #include "voice.h"
 #include "voice_dictation.h"
@@ -1978,6 +1979,9 @@ static void cb_back(lv_event_t *e)
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
     }
+    /* TT #623 — centralised nav: voice-cancel-then-nav + obs.
+     * Notes is an overlay so we still need to leave the user on home. */
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
 }
 
 /* FreeRTOS task to switch to VOICE mode (connects to Dragon) */

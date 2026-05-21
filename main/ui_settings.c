@@ -34,6 +34,7 @@
 #include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
 #include "ui_home.h"
 #include "ui_keyboard.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
 #include "voice.h"
 #include "wifi.h"
 
@@ -509,10 +510,8 @@ static void cb_back_btn(lv_event_t *e)
      * The overlay stays allocated (hidden) and is re-shown on next open.
      * ~11KB from LVGL expand pool (PSRAM), zero internal SRAM impact. */
     ui_settings_hide();
-    ui_home_go_home();
-    /* TT #328 Wave 10 follow-up — keep /screen in sync. */
-    extern void tab5_debug_set_nav_target(const char *);
-    tab5_debug_set_nav_target("home");
+    /* TT #623 — centralised nav: voice-cancel-then-nav + debounce + obs. */
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
 }
 
 /* ── NVS debounce timer callbacks (US-HW17) ───────────────────────────

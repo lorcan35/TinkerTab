@@ -12,23 +12,24 @@
  */
 
 #include "ui_wifi.h"
-#include "ui_home.h"
-#include "ui_core.h"
-#include "ui_keyboard.h"
-#include "wifi.h"
-#include "settings.h"
-#include "config.h"
-#include "task_worker.h"
 
-#include "esp_wifi.h"
-#include "esp_netif.h"
-#include "esp_log.h"
+#include <stdio.h>
+#include <string.h>
+
+#include "config.h"
 #include "esp_event.h"
+#include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
-#include <string.h>
-#include <stdio.h>
+#include "settings.h"
+#include "task_worker.h"
+#include "ui_core.h"
+#include "ui_home.h"
+#include "ui_keyboard.h"
+#include "ui_nav.h" /* TT #623 — tab5_nav_to */
+#include "wifi.h"
 
 static const char *TAG = "ui_wifi";
 
@@ -121,7 +122,8 @@ static void cb_back_btn(lv_event_t *e)
 {
     (void)e;
     ui_wifi_destroy();
-    lv_screen_load(ui_home_get_screen());
+    /* TT #623 — centralised nav: voice cancel + debounce + obs. */
+    tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
 }
 
 static void cb_scan_btn(lv_event_t *e)
