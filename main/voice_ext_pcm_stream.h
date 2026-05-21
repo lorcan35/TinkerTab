@@ -48,6 +48,13 @@ void voice_ext_pcm_stream_disarm(void);
 bool voice_ext_pcm_stream_is_active(void);
 void voice_ext_pcm_stream_on_state_change(int new_state);
 
+/** TT #621 W6: temporarily quiet the pump so another consumer (e.g.
+ *  voice_yolo) can have the shared xport to itself.  Idempotent; safe
+ *  from any task.  When paused, the pump loop sleeps without taking
+ *  the xport lock or attempting any send. */
+void voice_ext_pcm_stream_set_paused(bool paused);
+bool voice_ext_pcm_stream_is_paused(void);
+
 /** TT #131 — diagnostic stats for /tinkeron/extpcm endpoint. */
 typedef struct {
    bool task_running;

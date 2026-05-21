@@ -197,6 +197,16 @@ static inline bool tab5_settings_wake_src_is(const char *target) {
    return strcmp(buf, target) == 0;
 }
 
+/** TT #620 — Tab5↔K144 transport.  Picks which wire StackFlow JSON
+ *  traffic + audio frames travel on:
+ *    0 = uart    M5-Bus Port C UART at 1.5 Mbps (legacy, default for safety)
+ *    1 = usb_cdc USB CDC-ACM via Tab5 USB-A → K144 top USB-C (new, robust)
+ *  If usb_cdc is requested but K144 hasn't enumerated at boot, voice_xport
+ *  falls back to uart automatically (so a missing cable doesn't brick
+ *  the chain). */
+uint8_t tab5_settings_get_xport(void);
+esp_err_t tab5_settings_set_xport(uint8_t xport);
+
 /* ── Connection mode ────────────────────────────────────────────────── */
 
 /** 0 = auto (ngrok first, LAN fallback — default)

@@ -110,6 +110,23 @@ void tab5_set_wifi_power(bool en)
     ESP_LOGI(TAG, "WiFi power: %s", en ? "ON" : "OFF");
 }
 
+/* TT #620 — USB-A 5V is on PI4IOE2 P3 (USB5V_EN).  Set high at boot in
+ * the OUT_SET = 0b00001001 line above; expose this for voice_usb_cdc to
+ * force-re-assert before bringing up the USB host stack. */
+void tab5_set_usb_5v_en(bool en)
+{
+    if (!s_pi4ioe2) return;
+    pi4io_set_bit(s_pi4ioe2, 3, en);
+    ESP_LOGI(TAG, "USB-A 5V: %s", en ? "ON" : "OFF");
+}
+
+bool tab5_get_usb_5v_en(void)
+{
+    if (!s_pi4ioe2) return false;
+    uint8_t val = pi4io_read(s_pi4ioe2, PI4IO_REG_OUT_SET);
+    return (val & (1 << 3)) != 0;
+}
+
 void tab5_set_lcd_reset(bool active)
 {
     if (!s_pi4ioe1) return;

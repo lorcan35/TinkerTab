@@ -249,10 +249,12 @@ CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=400
 # inside the mutex window.
 CONFIG_LV_DRAW_SW_SHADOW_CACHE_SIZE=16
 
-# LVGL parallel draw across both P4 cores.  Was 1 (single threaded);
-# 2 lets LVGL split each frame's draw tiles across the two CPU
-# cores.  Direct render-budget multiplier.
-CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
+# LVGL parallel draw — we run single-threaded (LV_USE_OS=0).  Any
+# value > 1 requires LV_USE_OS=1 (LVGL spawns its own draw threads)
+# which conflicts with our existing UI task model.  Was bumped to 2
+# briefly (TT #549/#550 era) but broke CI build; keep at 1 unless
+# we adopt LVGL's threading model wholesale.
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
 
 # Bigger layer simple buffer (24 KB → 64 KB) so composite effects
 # stay on the fast path instead of falling back to the slow chunked
@@ -264,3 +266,12 @@ CONFIG_LV_DRAW_LAYER_SIMPLE_BUF_SIZE=65536
 # the per-frame body raster budget at 30 Hz.  Reverted to the
 # legacy 2-stop API with REDUCED gradient contrast (edge darkened
 # 0.7× instead of 0.5×) — bands compress out of perception.
+
+# TT #620 W2 — bump USB host control transfer buffer.  K144's composite
+# gadget (ADB + 2 CDC + 3 UAC1 interfaces, see scripts/k144/usb-tinker.sh)
+# has a configuration descriptor that exceeds the default 256 byte buffer.
+# 1024 covers any realistic composite shape.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=1024
+# Allow USB host stack to allocate DMA buffers in PSRAM (control + bulk).
+# Frees internal SRAM and lets the bigger buffer fit comfortably.
+CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y

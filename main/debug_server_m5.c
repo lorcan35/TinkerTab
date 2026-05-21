@@ -23,8 +23,12 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "settings.h"      /* TT #620 W3: tab5_settings_get/set_xport */
 #include "voice_m5_llm.h"  /* TT #327 Wave 5: K144 baud accessor for /m5 */
 #include "voice_onboard.h" /* TT #327 Wave 4b: chain_active + failover_state */
+#include "voice_usb_cdc.h" /* TT #620 W2: USB transport connection state for /m5 */
+#include "voice_xport.h"   /* TT #620 W3: active transport name */
+#include "voice_yolo.h"    /* TT #621 W6: K144 yolo11n inference */
 
 static const char *TAG = "debug_m5";
 
@@ -101,6 +105,19 @@ static esp_err_t m5_status_handler(httpd_req_t *req) {
    const char *fs_names[] = {"unknown", "probing", "ready", "unavailable"};
    cJSON_AddStringToObject(root, "failover_state_name", (fs >= 0 && fs <= 3) ? fs_names[fs] : "?");
    cJSON_AddNumberToObject(root, "uart_baud", (double)voice_m5_llm_get_baud());
+
+   /* TT #620 W2 — USB CDC-ACM transport state.  Tab5's USB-A host port
+    * polls for the K144 composite gadget (vid=0x32c9 pid=0x2003 intf=1);
+    * `usb_cdc_connected` flips true the moment K144 enumerates. */
+   cJSON *usb = cJSON_CreateObject();
+   cJSON_AddBoolToObject(usb, "init", voice_usb_cdc_is_initialized());
+   cJSON_AddBoolToObject(usb, "connected", voice_usb_cdc_is_connected());
+   cJSON_AddItemToObject(root, "usb_cdc", usb);
+
+   /* TT #620 W3 — active transport (uart vs usb_cdc), driven by NVS
+    * `xport` key.  Surfaces so a remote operator can verify which wire
+    * the StackFlow JSON is travelling on without ssh + serial logs. */
+   cJSON_AddStringToObject(root, "xport", voice_xport_name());
 
    /* Wave 14 — hardware status.  `valid` is true only when the cache
     * holds a successfully-parsed sys.hwinfo response; `cache_age_ms`
@@ -259,8 +276,130 @@ static esp_err_t m5_reset_handler(httpd_req_t *req) {
    return ret;
 }
 
+/* TT #620 W3 (+ TT #621 usb_ffs) — POST /m5/xport?x=uart|usb_cdc|usb_ffs.
+ *
+ * Flips the active Tab5↔K144 transport: writes the NVS `xport` key +
+ * re-applies via voice_xport_init.  Falls back to uart if the requested
+ * USB backend hasn't enumerated K144 yet. */
+static esp_err_t m5_xport_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+
+   char query[64] = {0};
+   uint8_t want = UINT8_MAX;
+   if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+      char value[16] = {0};
+      if (httpd_query_key_value(query, "x", value, sizeof(value)) == ESP_OK) {
+         if (strcmp(value, "uart") == 0 || strcmp(value, "0") == 0)
+            want = 0;
+         else if (strcmp(value, "usb_cdc") == 0 || strcmp(value, "1") == 0)
+            want = 1;
+         else if (strcmp(value, "usb_ffs") == 0 || strcmp(value, "2") == 0)
+            want = 2;
+      }
+   }
+
+   if (want > 2) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      httpd_resp_set_type(req, "application/json");
+      return httpd_resp_sendstr(req, "{\"error\":\"x must be uart|usb_cdc|usb_ffs|0|1|2\"}");
+   }
+
+   tab5_settings_set_xport(want);
+   voice_xport_init(3000);
+
+   const char *names[] = {"uart", "usb_cdc", "usb_ffs"};
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddStringToObject(root, "xport_requested", names[want]);
+   cJSON_AddStringToObject(root, "xport_active", voice_xport_name());
+   cJSON_AddBoolToObject(root, "ready", voice_xport_is_ready());
+   char *json = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+   esp_err_t ret = httpd_resp_sendstr(req, json);
+   free(json);
+   return ret;
+}
+
+/* TT #621 W6 — POST /yolo/infer with a JPEG body.  Drives K144 yolo11n
+ * via voice_yolo + voice_xport (USB ffs.control bridge), returns the
+ * detection boxes as JSON.  Capped to 64 KB body for the first cut.
+ *
+ *   curl -H "Authorization: Bearer $TOK" --data-binary @frame_320.jpg \
+ *        http://<tab5>:8080/yolo/infer
+ */
+static esp_err_t m5_yolo_infer_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+
+   int total = req->content_len;
+   if (total <= 0 || total > 64 * 1024) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      return httpd_resp_sendstr(req, "{\"error\":\"body must be 1..65536 bytes JPEG\"}");
+   }
+
+   /* PSRAM-back the body buffer.  Default malloc would put a 30-60 KB
+    * frame into already-tight internal SRAM and starve Wi-Fi. */
+   uint8_t *jpeg = heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!jpeg) {
+      httpd_resp_set_status(req, "500 Internal Server Error");
+      return httpd_resp_sendstr(req, "{\"error\":\"alloc fail\"}");
+   }
+   int got = 0;
+   while (got < total) {
+      int n = httpd_req_recv(req, (char *)(jpeg + got), total - got);
+      if (n <= 0) {
+         heap_caps_free(jpeg);
+         return ESP_FAIL;
+      }
+      got += n;
+   }
+
+   if (!voice_yolo_is_ready()) {
+      esp_err_t ie = voice_yolo_init();
+      if (ie != ESP_OK) {
+         free(jpeg);
+         httpd_resp_set_status(req, "503 Service Unavailable");
+         char body[96];
+         snprintf(body, sizeof(body), "{\"error\":\"yolo_init: %s\"}", esp_err_to_name(ie));
+         return httpd_resp_sendstr(req, body);
+      }
+   }
+
+   voice_yolo_box_t boxes[16];
+   size_t n_boxes = 0;
+   esp_err_t err = voice_yolo_infer(jpeg, total, boxes, 16, &n_boxes, 5000);
+   heap_caps_free(jpeg);
+
+   if (err != ESP_OK) {
+      httpd_resp_set_status(req, "504 Gateway Timeout");
+      char body[96];
+      snprintf(body, sizeof(body), "{\"error\":\"infer: %s\"}", esp_err_to_name(err));
+      return httpd_resp_sendstr(req, body);
+   }
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddNumberToObject(root, "count", n_boxes);
+   cJSON *arr = cJSON_AddArrayToObject(root, "boxes");
+   for (size_t i = 0; i < n_boxes; i++) {
+      cJSON *b = cJSON_CreateObject();
+      cJSON_AddStringToObject(b, "class", boxes[i].klass);
+      cJSON_AddNumberToObject(b, "confidence", boxes[i].confidence);
+      cJSON_AddNumberToObject(b, "x", boxes[i].x);
+      cJSON_AddNumberToObject(b, "y", boxes[i].y);
+      cJSON_AddNumberToObject(b, "w", boxes[i].w);
+      cJSON_AddNumberToObject(b, "h", boxes[i].h);
+      cJSON_AddItemToArray(arr, b);
+   }
+   char *out = cJSON_PrintUnformatted(root);
+   cJSON_Delete(root);
+   httpd_resp_set_type(req, "application/json");
+   esp_err_t ret = httpd_resp_sendstr(req, out);
+   free(out);
+   return ret;
+}
+
 /* ── Public registration entry point ─────────────────────────────────
- * Called once from tab5_debug_server_start() during boot.  All four
+ * Called once from tab5_debug_server_start() during boot.  All five
  * URI structs are local to this function (matching the inline pattern
  * the rest of debug_server.c still uses for the other families). */
 void debug_server_m5_register(httpd_handle_t server) {
@@ -268,11 +407,15 @@ void debug_server_m5_register(httpd_handle_t server) {
    const httpd_uri_t uri_m5_reset = {.uri = "/m5/reset", .method = HTTP_POST, .handler = m5_reset_handler};
    const httpd_uri_t uri_m5_refresh = {.uri = "/m5/refresh", .method = HTTP_POST, .handler = m5_refresh_handler};
    const httpd_uri_t uri_m5_models = {.uri = "/m5/models", .method = HTTP_GET, .handler = m5_models_handler};
+   const httpd_uri_t uri_m5_xport = {.uri = "/m5/xport", .method = HTTP_POST, .handler = m5_xport_handler};
+   const httpd_uri_t uri_yolo_infer = {.uri = "/yolo/infer", .method = HTTP_POST, .handler = m5_yolo_infer_handler};
 
    httpd_register_uri_handler(server, &uri_m5_status);
    httpd_register_uri_handler(server, &uri_m5_reset);
+   httpd_register_uri_handler(server, &uri_m5_xport);
    httpd_register_uri_handler(server, &uri_m5_refresh);
    httpd_register_uri_handler(server, &uri_m5_models);
+   httpd_register_uri_handler(server, &uri_yolo_infer);
 
-   ESP_LOGI(TAG, "K144 endpoint family registered (4 URIs)");
+   ESP_LOGI(TAG, "K144 endpoint family registered (6 URIs)");
 }

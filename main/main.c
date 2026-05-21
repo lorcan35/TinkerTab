@@ -60,6 +60,8 @@
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
 #include "voice_solo.h"
+#include "voice_usb_cdc.h"
+#include "voice_xport.h"
 #include "wifi.h"
 
 static const char *TAG = "tab5";
@@ -683,6 +685,39 @@ void app_main(void)
      * to call here — LVGL is already up by this point in boot. */
     extern void ui_notification_init(void);
     ui_notification_init();
+
+    /* TT #620 W2: bring up the USB host stack + CDC-ACM driver.  This is
+     * the new transport for K144 control plane (replacing the fragile
+     * 1.5 Mbps M5-Bus UART).  Non-blocking — the watcher task polls for
+     * K144 enumeration on /dev/ttyACM-equivalent.  Safe when K144 isn't
+     * plugged in: the watcher just keeps polling. */
+    /* TT #621: K144 composite layout exposes two functions we own —
+     * ffs.control (subclass 0x44) for voice traffic + ffs.video
+     * (subclass 0x43) for yolo.  voice_usb_ffs claims both from a single
+     * host client (the dual-client variant blew internal SRAM — see W6
+     * audit).  Picked at boot based on the NVS xport setting; if the
+     * user is on UART, voice_usb_cdc gets the slot instead. */
+    {
+       extern uint8_t tab5_settings_get_xport(void);
+       extern esp_err_t voice_usb_ffs_init(void);
+       uint8_t want = tab5_settings_get_xport();
+       if (want == 2) {
+          esp_err_t fe = voice_usb_ffs_init();
+          if (fe != ESP_OK) {
+             ESP_LOGW("main", "voice_usb_ffs_init failed: %s — no USB transport", esp_err_to_name(fe));
+          }
+       } else {
+          esp_err_t ue = voice_usb_cdc_init();
+          if (ue != ESP_OK) {
+             ESP_LOGW("main", "voice_usb_cdc_init failed: %s — falling back to UART", esp_err_to_name(ue));
+          }
+       }
+    }
+
+    /* TT #620 W3: pick the active Tab5↔K144 transport based on NVS
+     * `xport` key (default uart).  Waits up to 3 s for USB enumeration
+     * if usb_cdc was requested.  Logs the resolved choice. */
+    (void)voice_xport_init(3000);
 
     /* TT #317 Phase 4: kick off the K144 LLM Module failover warm-up.
      * Posts ONE long-running job to the worker queue; safe to call here

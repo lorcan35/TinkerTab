@@ -69,6 +69,10 @@ else()
              "voice_wakeword.c"
              "voice_wake_stream.c"
              "voice_ext_pcm_stream.c"
+             "voice_usb_cdc.c"
+             "voice_usb_ffs.c"
+             "voice_xport.c"
+             "voice_yolo.c"
              "ima_adpcm.c"
         EMBED_TXTFILES "debug_ui.html"
         INCLUDE_DIRS "."
@@ -77,7 +81,9 @@ else()
                  json esp_driver_jpeg fatfs sdmmc esp_driver_i2s esp_driver_cam lvgl
                  esp_wifi esp_netif esp_event esp_http_client esp_http_server tcp_transport
                  espcoredump app_update esp_https_ota
-                 esp_driver_isp esp_video esp_cam_sensor mbedtls
+                 esp_driver_isp esp_video esp_cam_sensor mbedtls usb
                  espressif__esp_audio_codec
+                 usb_host_cdc_acm_v24
+                 espressif__usb_host_uac
     )
 endif()
