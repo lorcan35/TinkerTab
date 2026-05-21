@@ -17,6 +17,7 @@
 #include "battery.h"
 #include "bluetooth.h"
 #include "config.h"
+#include "debug_obs.h" /* TT #642 — eng.llm obs event */
 #include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -411,6 +412,15 @@ static const cloud_model_spec_t s_cloud_models[] = {
 static lv_obj_t *s_model_chip[CLOUD_MODEL_COUNT] = {NULL};
 static int s_active_model_idx = -1; /* -1 = current NVS value not in our curated list */
 
+/* Cap Wave 4 (TT #642) — LLM engine override chips + STT/TTS status
+ * labels.  Three chips (AUTO / K144 / OPENROUTER) directly under the
+ * Cloud LLM picker, plus two read-only status lines below.  The chip
+ * row composes with the coarse VOICE MODE picker — engine=AUTO means
+ * "follow whatever vmode dispatches"; an explicit chip wins. */
+static lv_obj_t *s_eng_chip[LLM_ENG_COUNT] = {NULL};
+static lv_obj_t *s_eng_stt_lbl = NULL;
+static lv_obj_t *s_eng_tts_lbl = NULL;
+
 /* ══════════════════════════════════════════════════════════════════════
  *  Material Dark Helper Functions
  * ══════════════════════════════════════════════════════════════════════ */
@@ -779,6 +789,124 @@ static void cb_model_pick(lv_event_t *e) {
     * connect picks it up via session_start. */
    _cloud_row_refresh_desc();
    send_voice_config();
+}
+
+/* ── Cap Wave 4 (TT #642): LLM engine chip styling + handlers ──────── */
+
+static const char *_eng_chip_label(int idx) {
+   switch (idx) {
+      case LLM_ENG_AUTO:
+         return "AUTO";
+      case LLM_ENG_K144:
+         return "K144";
+      case LLM_ENG_OPENROUTER:
+         return "OPENROUTER";
+      default:
+         return "?";
+   }
+}
+
+static const char *_eng_chip_short(int idx) {
+   switch (idx) {
+      case LLM_ENG_AUTO:
+         return "auto";
+      case LLM_ENG_K144:
+         return "k144";
+      case LLM_ENG_OPENROUTER:
+         return "openrouter";
+      default:
+         return "?";
+   }
+}
+
+/* True when the engine chip should accept taps; AUTO is always
+ * enabled; K144 needs failover_state==READY; OPENROUTER needs or_key. */
+static bool _eng_chip_enabled(int idx) {
+   if (idx == LLM_ENG_AUTO) return true;
+   if (idx == LLM_ENG_K144) return voice_onboard_failover_state() == 2 /* M5_FAIL_READY */;
+   if (idx == LLM_ENG_OPENROUTER) {
+      char or_key[96] = {0};
+      tab5_settings_get_or_key(or_key, sizeof(or_key));
+      return or_key[0] != '\0';
+   }
+   return false;
+}
+
+static void _eng_chip_style(lv_obj_t *chip, bool selected, bool enabled) {
+   if (!chip) return;
+   if (selected) {
+      lv_obj_set_style_border_width(chip, 2, 0);
+      lv_obj_set_style_border_color(chip, lv_color_hex(AMBER), 0);
+      lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_color(chip, lv_color_hex(AMBER), 0);
+      lv_obj_set_style_bg_opa(chip, 18, 0);
+   } else {
+      lv_obj_set_style_border_width(chip, 1, 0);
+      lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
+      lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
+      lv_obj_set_style_bg_opa(chip, LV_OPA_TRANSP, 0);
+   }
+   /* Grey text + reduced opacity when unreachable; reads as "disabled". */
+   lv_obj_set_style_opa(chip, enabled ? LV_OPA_COVER : LV_OPA_40, 0);
+}
+
+static void cb_engine_pick(lv_event_t *e) {
+   intptr_t idx = (intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= LLM_ENG_COUNT) return;
+   bool enabled = _eng_chip_enabled((int)idx);
+   if (!enabled) {
+      tab5_debug_obs_event("eng.llm", "tap_unavailable");
+      return;
+   }
+   uint8_t prev = tab5_settings_get_llm_engine();
+   if ((uint8_t)idx == prev) return;
+   tab5_settings_set_llm_engine((uint8_t)idx);
+   ESP_LOGI(TAG, "Wave 4: llm_engine override → %s", _eng_chip_short((int)idx));
+   tab5_debug_obs_event("eng.llm", _eng_chip_short((int)idx));
+   /* Repaint chips (deselect old, select new). */
+   for (int i = 0; i < LLM_ENG_COUNT; i++) {
+      if (s_eng_chip[i]) {
+         _eng_chip_style(s_eng_chip[i], i == (int)idx, _eng_chip_enabled(i));
+      }
+   }
+}
+
+/* Map current vmode to a human-readable STT/TTS engine string.  Called
+ * from ui_settings_update on the 2 s refresh tick so the labels stay
+ * accurate as the user toggles vmode + the override above. */
+static const char *_stt_engine_label(uint8_t vmode) {
+   switch (vmode) {
+      case 1: /* HYBRID */
+      case 2: /* CLOUD */
+         return "OpenRouter gpt-audio-mini";
+      case 4: /* LOCAL_ONBOARD */
+         return "K144 sherpa-ncnn";
+      case 5: /* SOLO_DIRECT */
+         return "OpenRouter (Solo)";
+      case 0: /* LOCAL */
+      case 3: /* TINKERCLAW */
+      default:
+         return "Moonshine (Dragon)";
+   }
+}
+
+static const char *_tts_engine_label(uint8_t vmode, uint8_t llm_eng) {
+   /* LLM engine override doesn't move TTS today (Wave 4b parking); the
+    * read-out is determined by vmode only. */
+   (void)llm_eng;
+   switch (vmode) {
+      case 1: /* HYBRID */
+      case 2: /* CLOUD */
+         return "OpenRouter gpt-audio-mini";
+      case 4: /* LOCAL_ONBOARD */
+         return "K144 single_speaker_english_fast";
+      case 5: /* SOLO_DIRECT */
+         return "OpenRouter (Solo)";
+      case 0: /* LOCAL */
+      case 3: /* TINKERCLAW */
+      default:
+         return "Piper (Dragon)";
+   }
 }
 
 /* Single click handler for all 5 radio rows. Mode index comes via user_data. */
@@ -1828,6 +1956,78 @@ lv_obj_t *ui_settings_create(void)
        y += chip_h + 16;
     }
 
+    /* ── Cap Wave 4 (TT #642): ENGINES section ─────────────────────
+     *
+     * Sits under the Cloud LLM picker — same amber accent so it reads
+     * as a continuation of VOICE MODE.  Three chips for LLM engine
+     * override (AUTO / K144 / OPENROUTER); two read-only status lines
+     * for STT + TTS so the user can see what each capability is
+     * currently doing under the active vmode.  Greyed chips = backend
+     * unreachable. */
+    {
+       lv_obj_t *cap = lv_label_create(s_scroll);
+       lv_label_set_text(cap, "ENGINES");
+       lv_obj_set_pos(cap, SIDE_PAD, y);
+       lv_obj_set_style_text_color(cap, lv_color_hex(AMBER), 0);
+       lv_obj_set_style_text_font(cap, FONT_SECONDARY, 0);
+       lv_obj_set_style_text_letter_space(cap, 4, 0);
+       y += 26;
+
+       /* "LLM ENGINE" row label + chip row (3 chips). */
+       mk_row_label(s_scroll, "LLM engine", y);
+       const int eng_chip_h = 44;
+       const int eng_chip_w = (CONTENT_W - 2 * 8) / LLM_ENG_COUNT; /* 2 gaps of 8 */
+       uint8_t cur_eng = tab5_settings_get_llm_engine();
+       for (int i = 0; i < LLM_ENG_COUNT; i++) {
+          lv_obj_t *chip = lv_obj_create(s_scroll);
+          lv_obj_remove_style_all(chip);
+          lv_obj_set_size(chip, eng_chip_w, eng_chip_h);
+          lv_obj_set_pos(chip, SIDE_PAD + i * (eng_chip_w + 8), y + ROW_H + 4);
+          lv_obj_set_style_bg_color(chip, lv_color_hex(CARD_COLOR), 0);
+          lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+          lv_obj_set_style_radius(chip, 10, 0);
+          lv_obj_set_style_border_width(chip, 1, 0);
+          lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
+          lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+          lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+          lv_obj_add_event_cb(chip, cb_engine_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+          lv_obj_t *lbl = lv_label_create(chip);
+          lv_label_set_text(lbl, _eng_chip_label(i));
+          lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+          lv_obj_set_style_text_color(lbl, lv_color_hex(TEXT_PRIMARY), 0);
+          lv_obj_center(lbl);
+
+          s_eng_chip[i] = chip;
+          _eng_chip_style(chip, i == cur_eng, _eng_chip_enabled(i));
+       }
+       y += ROW_H + 4 + eng_chip_h + 12;
+
+       /* STT engine — read-only status row.  Wave 4b: real chip
+        * picker after Dragon's config_update grows an stt_override
+        * field. */
+       mk_row_label(s_scroll, "STT engine", y);
+       s_eng_stt_lbl = lv_label_create(s_scroll);
+       if (s_eng_stt_lbl) {
+          lv_obj_set_pos(s_eng_stt_lbl, RIGHT_X, y + (ROW_H - 14) / 2);
+          lv_obj_set_style_text_color(s_eng_stt_lbl, lv_color_hex(TEXT_DIM), 0);
+          lv_obj_set_style_text_font(s_eng_stt_lbl, FONT_SECONDARY, 0);
+          lv_label_set_text(s_eng_stt_lbl, _stt_engine_label(tab5_settings_get_voice_mode()));
+       }
+       y += ROW_H + 4;
+
+       /* TTS engine — read-only status row. */
+       mk_row_label(s_scroll, "TTS engine", y);
+       s_eng_tts_lbl = lv_label_create(s_scroll);
+       if (s_eng_tts_lbl) {
+          lv_obj_set_pos(s_eng_tts_lbl, RIGHT_X, y + (ROW_H - 14) / 2);
+          lv_obj_set_style_text_color(s_eng_tts_lbl, lv_color_hex(TEXT_DIM), 0);
+          lv_obj_set_style_text_font(s_eng_tts_lbl, FONT_SECONDARY, 0);
+          lv_label_set_text(s_eng_tts_lbl, _tts_engine_label(tab5_settings_get_voice_mode(), cur_eng));
+       }
+       y += ROW_H + 16;
+    }
+
     /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
      * section visually — single amber caption, rows straight below). */
     mk_row_label(s_scroll, "Mic mute", y);
@@ -2183,6 +2383,25 @@ void ui_settings_update(void)
      * change (early-exit on s_k144_last_chip_fs match). */
     refresh_k144_chip();
 
+    /* Cap Wave 4 (TT #642) — refresh ENGINES section: chip greying
+     * (in case K144 came back / or_key was set externally) + STT/TTS
+     * status labels (in case vmode changed via /mode or modesheet). */
+    {
+       uint8_t cur_eng = tab5_settings_get_llm_engine();
+       for (int i = 0; i < LLM_ENG_COUNT; i++) {
+          if (s_eng_chip[i]) {
+             _eng_chip_style(s_eng_chip[i], i == cur_eng, _eng_chip_enabled(i));
+          }
+       }
+       uint8_t vm = tab5_settings_get_voice_mode();
+       if (s_eng_stt_lbl) {
+          lv_label_set_text(s_eng_stt_lbl, _stt_engine_label(vm));
+       }
+       if (s_eng_tts_lbl) {
+          lv_label_set_text(s_eng_tts_lbl, _tts_engine_label(vm, cur_eng));
+       }
+    }
+
     /* WiFi status */
     if (s_lbl_wifi) {
         extern bool tab5_wifi_connected(void);
@@ -2329,6 +2548,13 @@ void ui_settings_destroy(void)
 
     s_screen        = NULL;
     s_scroll        = NULL;
+    /* Cap Wave 4 (TT #642) — engine chip + status label pointers
+     * become dangling after lv_obj_clean; null them so the refresh
+     * tick + post-clean state stays safe. */
+    memset(s_eng_chip, 0, sizeof(s_eng_chip));
+    s_eng_stt_lbl = NULL;
+    s_eng_tts_lbl = NULL;
+
     s_lbl_wifi      = NULL;
     s_lbl_bat_status = NULL;
     s_lbl_bat_volt  = NULL;

@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "debug_obs.h" /* TT #642 — eng.route trace */
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "settings.h"
@@ -64,6 +65,62 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out) {
    if (!out) return;
    out->kind = VOICE_MODES_ROUTE_DRAGON_PATH;
    out->err = ESP_OK;
+
+   /* Cap Wave 4 (TT #642) — per-capability LLM engine override.  AUTO
+    * (0) falls through to the existing vmode-preset dispatch below.
+    * Explicit K144 or OPENROUTER wins over the preset when the chosen
+    * backend is reachable; silent fall-through to vmode default
+    * otherwise so the user never loses a turn to an unset preference.
+    *
+    * The override deliberately runs BEFORE the VMODE_LOCAL_ONBOARD
+    * check so a user in vmode=4 who picked OPENROUTER for LLM still
+    * gets OpenRouter (override wins).  The VMODE_LOCAL_ONBOARD branch
+    * stays untouched as the "follow preset" path for engine=AUTO. */
+   uint8_t llm_eng = tab5_settings_get_llm_engine();
+   {
+      char detail[48];
+      snprintf(detail, sizeof(detail), "vmode=%u eng=%u", tab5_settings_get_voice_mode(), llm_eng);
+      tab5_debug_obs_event("eng.route_in", detail);
+   }
+   if (llm_eng == LLM_ENG_K144) {
+      int fs = voice_onboard_failover_state();
+      if (fs == 2 /* M5_FAIL_READY */) {
+         esp_err_t fe = voice_onboard_send_text(text);
+         if (fe == ESP_OK) {
+            ESP_LOGI(TAG, "llm_eng=K144 override — routed to K144");
+            tab5_debug_obs_event("eng.route", "k144_ok");
+            out->kind = VOICE_MODES_ROUTE_K144_OK;
+            return;
+         }
+         ESP_LOGW(TAG, "llm_eng=K144 but send_text failed (%s) — falling through", esp_err_to_name(fe));
+         {
+            char detail[40];
+            snprintf(detail, sizeof(detail), "k144_send_err=%s", esp_err_to_name(fe));
+            tab5_debug_obs_event("eng.route", detail);
+         }
+      } else {
+         ESP_LOGW(TAG, "llm_eng=K144 but failover not READY (fs=%d) — falling through", fs);
+         char detail[24];
+         snprintf(detail, sizeof(detail), "k144_fs=%d", fs);
+         tab5_debug_obs_event("eng.route", detail);
+      }
+   } else if (llm_eng == LLM_ENG_OPENROUTER) {
+      char or_key[96] = {0};
+      tab5_settings_get_or_key(or_key, sizeof(or_key));
+      if (or_key[0] != '\0') {
+         esp_err_t se = voice_solo_send_text(text);
+         if (se == ESP_OK) {
+            ESP_LOGI(TAG, "llm_eng=OPENROUTER override — routed to voice_solo");
+            tab5_debug_obs_event("eng.route", "solo_ok");
+            out->kind = VOICE_MODES_ROUTE_SOLO_OK;
+            return;
+         }
+         ESP_LOGW(TAG, "llm_eng=OPENROUTER but solo_send_text failed (%s) — falling through", esp_err_to_name(se));
+      } else {
+         ESP_LOGW(TAG, "llm_eng=OPENROUTER but or_key empty — falling through");
+         tab5_debug_obs_event("eng.route", "or_no_key");
+      }
+   }
 
    /* TT #317 Phase 5: VMODE_LOCAL_ONBOARD always routes to K144 regardless
     * of Dragon WS state.  voice_onboard.c owns the actual chain transport. */
