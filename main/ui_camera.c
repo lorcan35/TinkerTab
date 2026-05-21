@@ -144,8 +144,14 @@ static bool        capture_counter_init = false;
 static bool s_yolo_on = false;
 static lv_obj_t *s_yolo_btn = NULL;
 static lv_obj_t *s_yolo_btn_lbl = NULL;
+/* TT #638 Wave 2: model picker — cycle DET → POSE → SEG. */
+static lv_obj_t *s_yolo_mode_btn = NULL;
+static lv_obj_t *s_yolo_mode_lbl = NULL;
 static lv_obj_t *s_yolo_boxes[UI_CAM_YOLO_MAX_BOXES] = {0};
 static lv_obj_t *s_yolo_box_lbls[UI_CAM_YOLO_MAX_BOXES] = {0};
+/* TT #638: 17 reusable keypoint dots per box (pose only).  Each dot is
+ * a tiny child of the box widget; coords are box-relative. */
+static lv_obj_t *s_yolo_kpts[UI_CAM_YOLO_MAX_BOXES][VOICE_YOLO_MAX_KPTS] = {{0}};
 static lv_obj_t *s_yolo_overlay_parent = NULL; /* canvas_preview */
 static volatile bool s_yolo_inflight = false;
 static voice_yolo_box_t s_yolo_boxes_pending[UI_CAM_YOLO_MAX_BOXES];
@@ -158,11 +164,13 @@ static int64_t s_yolo_last_tick_us = 0;
 #define COL_YOLO_LABEL_BG 0x1A1A24
 
 static void yolo_btn_cb(lv_event_t *e);
+static void yolo_mode_btn_cb(lv_event_t *e);
 static void yolo_redraw_async(void *arg);
 static void yolo_infer_job(void *arg);
 static void yolo_alloc_resources(void);
 static void yolo_free_resources(void);
 static void yolo_downsample_rgb565(const uint16_t *src, int sw, int sh, uint16_t *dst);
+static const char *yolo_mode_short_label(voice_yolo_model_t m);
 
 /* Currently selected resolution (default VGA for smooth preview) */
 static tab5_cam_resolution_t current_res = TAB5_CAM_RES_HD;  /* SC202CS outputs 1280x720 */
@@ -614,6 +622,21 @@ lv_obj_t *ui_camera_create(void)
                lv_obj_set_style_pad_hor(lbl, 4, 0);
                lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 0, -18);
                s_yolo_box_lbls[i] = lbl;
+
+               /* TT #638: 17 keypoint dots, hidden by default. */
+               for (int k = 0; k < VOICE_YOLO_MAX_KPTS; k++) {
+                  lv_obj_t *dot = lv_obj_create(bx);
+                  lv_obj_remove_style_all(dot);
+                  lv_obj_set_size(dot, 8, 8);
+                  lv_obj_set_style_radius(dot, 4, 0);
+                  lv_obj_set_style_bg_color(dot, lv_color_hex(0xFF6B6B), 0);
+                  lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+                  lv_obj_set_style_border_width(dot, 0, 0);
+                  lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+                  lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+                  s_yolo_kpts[i][k] = dot;
+               }
             }
 
             /* Start the preview timer */
@@ -710,6 +733,29 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_text_color(s_yolo_btn_lbl, lv_color_hex(COL_YOLO_BORDER), 0);
     lv_obj_set_style_text_font(s_yolo_btn_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(s_yolo_btn_lbl);
+
+    /* ── TT #638: MODE cycle button (DET / POSE / SEG) ──────────── */
+    s_yolo_mode_btn = lv_button_create(bar);
+    lv_obj_remove_style_all(s_yolo_mode_btn);
+    lv_obj_set_size(s_yolo_mode_btn, 100, 44);
+    /* Stack above DETECT (same x_offset -110, smaller height, y above).
+     * Bottom-bar height = CONTROL_BAR_H=320, DETECT at y_off=-20 means
+     * the DETECT center sits 20 px above the bar's vertical center.
+     * Placing MODE at y_off=-90 stacks it cleanly with ~16 px gap. */
+    lv_obj_align(s_yolo_mode_btn, LV_ALIGN_CENTER, -110, -90);
+    lv_obj_set_style_bg_color(s_yolo_mode_btn, lv_color_hex(0x1A1A24), 0);
+    lv_obj_set_style_bg_opa(s_yolo_mode_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_yolo_mode_btn, lv_color_hex(COL_YOLO_BORDER), 0);
+    lv_obj_set_style_border_width(s_yolo_mode_btn, 2, 0);
+    lv_obj_set_style_radius(s_yolo_mode_btn, 30, 0);
+    lv_obj_clear_flag(s_yolo_mode_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_yolo_mode_btn, yolo_mode_btn_cb, LV_EVENT_CLICKED, NULL);
+    ui_fb_button(s_yolo_mode_btn);
+    s_yolo_mode_lbl = lv_label_create(s_yolo_mode_btn);
+    lv_label_set_text(s_yolo_mode_lbl, yolo_mode_short_label(voice_yolo_get_model()));
+    lv_obj_set_style_text_color(s_yolo_mode_lbl, lv_color_hex(COL_YOLO_BORDER), 0);
+    lv_obj_set_style_text_font(s_yolo_mode_lbl, &lv_font_montserrat_18, 0);
+    lv_obj_center(s_yolo_mode_lbl);
 
     /* ── "No SD" label below capture button (hidden by default) ── */
     lbl_no_sd = lv_label_create(bar);
@@ -1047,6 +1093,24 @@ static void yolo_redraw_async(void *arg) {
          snprintf(buf, sizeof(buf), "%s %d%%", b->klass, (int)(b->confidence * 100.0f));
          lv_label_set_text(s_yolo_box_lbls[i], buf);
       }
+
+      /* TT #638: keypoint dots — render up to b->kpt_count keypoints
+       * in box-relative coords.  Hidden when no keypoints (DET/SEG). */
+      for (int k = 0; k < VOICE_YOLO_MAX_KPTS; k++) {
+         lv_obj_t *dot = s_yolo_kpts[i][k];
+         if (dot == NULL) continue;
+         if (k >= b->kpt_count || b->kpts[k].score < 0.3f) {
+            lv_obj_add_flag(dot, LV_OBJ_FLAG_HIDDEN);
+            continue;
+         }
+         /* Keypoint coords are in 320×320 input space — scale to canvas
+          * then subtract the box's top-left so the dot sits inside the
+          * box widget's coordinate space. */
+         int kx = (int)(b->kpts[k].x * parent_w / VOICE_YOLO_INPUT_W) - px;
+         int ky = (int)(b->kpts[k].y * parent_h / VOICE_YOLO_INPUT_H) - py;
+         lv_obj_set_pos(dot, kx - 4, ky - 4); /* 8 px dot, center on point */
+         lv_obj_clear_flag(dot, LV_OBJ_FLAG_HIDDEN);
+      }
    }
 }
 
@@ -1093,6 +1157,18 @@ static void yolo_infer_job(void *arg) {
    s_yolo_inflight = false;
 }
 
+static const char *yolo_mode_short_label(voice_yolo_model_t m) {
+   switch (m) {
+      case VOICE_YOLO_MODEL_POSE:
+         return "POSE";
+      case VOICE_YOLO_MODEL_SEG:
+         return "SEG";
+      case VOICE_YOLO_MODEL_DET:
+      default:
+         return "DET";
+   }
+}
+
 static void yolo_btn_cb(lv_event_t *e) {
    (void)e;
    s_yolo_on = !s_yolo_on;
@@ -1107,6 +1183,26 @@ static void yolo_btn_cb(lv_event_t *e) {
       yolo_alloc_resources();
    }
    tab5_debug_obs_event("yolo.toggle", s_yolo_on ? "on" : "off");
+}
+
+/* TT #638: cycle the K144 yolo model (DET → POSE → SEG → DET).  Hides
+ * all currently-shown boxes immediately so we don't leave stale
+ * keypoint dots around when switching out of POSE; next inference
+ * tick re-fills the overlay. */
+static void yolo_mode_btn_cb(lv_event_t *e) {
+   (void)e;
+   voice_yolo_model_t next = voice_yolo_get_model();
+   next = (next == VOICE_YOLO_MODEL_DET)    ? VOICE_YOLO_MODEL_POSE
+          : (next == VOICE_YOLO_MODEL_POSE) ? VOICE_YOLO_MODEL_SEG
+                                            : VOICE_YOLO_MODEL_DET;
+   voice_yolo_set_model(next);
+   if (s_yolo_mode_lbl) {
+      lv_label_set_text(s_yolo_mode_lbl, yolo_mode_short_label(next));
+   }
+   /* Hide existing overlay until the new model returns its first frame. */
+   s_yolo_n_pending = 0;
+   yolo_redraw_async(NULL);
+   tab5_debug_obs_event("yolo.model", voice_yolo_get_model_name(next));
 }
 
 /* ================================================================
@@ -1470,9 +1566,14 @@ void ui_camera_destroy(void)
        s_rec_overlay_lbl = NULL;
        s_yolo_btn = NULL;
        s_yolo_btn_lbl = NULL;
+       s_yolo_mode_btn = NULL;
+       s_yolo_mode_lbl = NULL;
        for (int i = 0; i < UI_CAM_YOLO_MAX_BOXES; i++) {
           s_yolo_boxes[i] = NULL;
           s_yolo_box_lbls[i] = NULL;
+          for (int k = 0; k < VOICE_YOLO_MAX_KPTS; k++) {
+             s_yolo_kpts[i][k] = NULL;
+          }
        }
        ESP_LOGI(TAG, "Camera screen cleaned (kept resident; canvas %u KB PSRAM reused)",
                 (unsigned)(canvas_buf_size / 1024));

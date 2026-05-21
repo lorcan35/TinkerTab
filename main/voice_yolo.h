@@ -43,11 +43,31 @@ extern "C" {
 #define VOICE_YOLO_INPUT_W 320
 #define VOICE_YOLO_INPUT_H 320
 
+/** TT #638 (Wave 2): max keypoints per detection — yolo11n-pose emits 17
+ *  COCO body keypoints per person. */
+#define VOICE_YOLO_MAX_KPTS 17
+
+/** TT #638 (Wave 2): K144 yolo model registry — selects which of the
+ *  three pre-installed yolo11 variants `voice_yolo_init` arms. */
+typedef enum {
+   VOICE_YOLO_MODEL_DET = 0, /**< yolo11n: 80 COCO classes, boxes */
+   VOICE_YOLO_MODEL_POSE,    /**< yolo11n-pose: person + 17 keypoints */
+   VOICE_YOLO_MODEL_SEG,     /**< yolo11s-seg: 80 COCO classes + masks (box-only rendering for v1) */
+} voice_yolo_model_t;
+
+/** Single keypoint for pose detections.  Coords in 320×320 input space. */
+typedef struct {
+   float x, y, score;
+} voice_yolo_kpt_t;
+
 /** Single detection box returned by yolo.inference. */
 typedef struct {
    float x, y, w, h; /**< pixel coords in the 320×320 input */
    float confidence; /**< 0..1 */
    char klass[24];   /**< COCO class name, NUL-terminated */
+   /** TT #638: keypoint count (0 when current model isn't pose). */
+   uint8_t kpt_count;
+   voice_yolo_kpt_t kpts[VOICE_YOLO_MAX_KPTS];
 } voice_yolo_box_t;
 
 /**
@@ -75,6 +95,23 @@ bool voice_yolo_is_ready(void);
  * handles don't survive a K144 daemon restart.
  */
 void voice_yolo_invalidate(void);
+
+/**
+ * @brief TT #638: pick which K144 YOLO11 model `voice_yolo_init` arms.
+ *        If a work_id is already cached against a different model the
+ *        caller-side state is invalidated (`voice_yolo_invalidate`) so
+ *        the next infer call re-runs setup against the new variant.
+ *
+ * Safe to call from any task; takes the same internal lock as init.
+ * Returns ESP_OK on selection; the actual setup happens lazily.
+ */
+esp_err_t voice_yolo_set_model(voice_yolo_model_t model);
+
+/** Current selected model (defaults to DET). */
+voice_yolo_model_t voice_yolo_get_model(void);
+
+/** Human-readable name ("yolo11n", "yolo11n-pose", "yolo11s-seg"). */
+const char *voice_yolo_get_model_name(voice_yolo_model_t model);
 
 /**
  * @brief Run YOLO11n on a 320×320 JPEG and collect detections.
