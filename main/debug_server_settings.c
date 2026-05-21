@@ -121,6 +121,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    char model[64];
    tab5_settings_get_llm_model(model, sizeof(model));
    cJSON_AddStringToObject(root, "llm_model", model);
+   /* Cap Wave 4 (TT #642): LLM engine override surfaced for harness +
+    * Settings round-trip verification. */
+   cJSON_AddNumberToObject(root, "llm_engine", tab5_settings_get_llm_engine());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -406,6 +409,25 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
    if (cJSON_IsString(lm) && lm->valuestring) {
       if (tab5_settings_set_llm_model(lm->valuestring) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("llm_model"));
+      }
+   }
+   /* Cap Wave 4 (TT #642): per-capability LLM engine override.  Accept
+    * numeric (0/1/2) or string ("auto"/"k144"/"openrouter"). */
+   cJSON *le = cJSON_GetObjectItem(req_json, "llm_engine");
+   if (le) {
+      int eng = -1;
+      if (cJSON_IsNumber(le)) {
+         eng = (int)le->valuedouble;
+      } else if (cJSON_IsString(le) && le->valuestring) {
+         if (strcmp(le->valuestring, "auto") == 0)
+            eng = LLM_ENG_AUTO;
+         else if (strcmp(le->valuestring, "k144") == 0)
+            eng = LLM_ENG_K144;
+         else if (strcmp(le->valuestring, "openrouter") == 0)
+            eng = LLM_ENG_OPENROUTER;
+      }
+      if (eng >= 0 && eng < LLM_ENG_COUNT && tab5_settings_set_llm_engine((uint8_t)eng) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("llm_engine"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");

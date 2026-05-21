@@ -182,6 +182,20 @@ esp_err_t tab5_settings_set_voice_mode(uint8_t mode);
 esp_err_t tab5_settings_get_llm_model(char *buf, size_t len);
 esp_err_t tab5_settings_set_llm_model(const char *model);
 
+/** Cap Wave 4 (TT #642) — LLM engine override.  Composes with the
+ *  coarse vmode preset: AUTO follows vmode, K144/OPENROUTER explicitly
+ *  override.  Silent fall-through to vmode default if the chosen
+ *  backend is unreachable at dispatch time. */
+typedef enum {
+   LLM_ENG_AUTO = 0,
+   LLM_ENG_K144 = 1,
+   LLM_ENG_OPENROUTER = 2,
+   LLM_ENG_COUNT, /* keep last */
+} llm_engine_t;
+
+uint8_t tab5_settings_get_llm_engine(void);
+esp_err_t tab5_settings_set_llm_engine(uint8_t eng);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future

@@ -486,6 +486,23 @@ esp_err_t tab5_settings_set_llm_model(const char *model)
     return set_str("llm_mdl", model);
 }
 
+/* ── LLM engine override (Cap Wave 4 / TT #642) ────────────────────────
+ *
+ * Per-capability routing knob composed on top of the coarse vmode preset.
+ * AUTO (0) follows whatever vmode dispatches today.  Explicit K144 (1) or
+ * OPENROUTER (2) wins over vmode when the requested backend is reachable;
+ * silent fall-through to vmode default when unreachable so the user
+ * never loses a turn to an unset preference.
+ *
+ * Lives in its own NVS slot (\`llm_eng\`, 15-char NVS key limit OK) so
+ * the coarse vmode picker UX stays untouched. */
+uint8_t tab5_settings_get_llm_engine(void) { return get_u8("llm_eng", 0); }
+
+esp_err_t tab5_settings_set_llm_engine(uint8_t eng) {
+   if (eng >= LLM_ENG_COUNT) eng = LLM_ENG_AUTO;
+   return set_u8("llm_eng", eng);
+}
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {
