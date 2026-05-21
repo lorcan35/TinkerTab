@@ -579,6 +579,13 @@ lv_obj_t *ui_camera_create(void)
             canvas_preview = lv_canvas_create(vf_area);
             lv_canvas_set_buffer(canvas_preview, canvas_buf,
                                  canvas_w, canvas_h, LV_COLOR_FORMAT_RGB565);
+            /* TT #635 follow-up: LVGL 9.2 doesn't auto-size the canvas
+             * widget to match the buffer.  Force the widget to match
+             * canvas_w × canvas_h so child overlay widgets (YOLO
+             * boxes) clip against the same pixel space as the
+             * bitmap — otherwise children get clipped to the LVGL
+             * default 100×100 widget rect. */
+            lv_obj_set_size(canvas_preview, canvas_w, canvas_h);
             lv_obj_center(canvas_preview);
 
             /* TT #635: pre-create 16 reusable YOLO box widgets as
@@ -1006,12 +1013,13 @@ static void yolo_redraw_async(void *arg) {
    (void)arg;
    if (s_yolo_overlay_parent == NULL) return;
 
-   int parent_w = lv_obj_get_width(s_yolo_overlay_parent);
-   int parent_h = lv_obj_get_height(s_yolo_overlay_parent);
-   if (parent_w <= 0 || parent_h <= 0) {
-      parent_w = canvas_w;
-      parent_h = canvas_h;
-   }
+   /* TT #635 follow-up: use canvas_w/canvas_h directly.  LVGL 9.2's
+    * lv_canvas_set_buffer does NOT auto-resize the canvas widget to
+    * match the buffer, so lv_obj_get_width returns the widget's
+    * pre-set size (LVGL default ~100×100) — scaling 320-yolo coords
+    * by 100/320 gave a tiny invisible cluster in the top-left. */
+   int parent_w = canvas_w;
+   int parent_h = canvas_h;
 
    size_t n = s_yolo_n_pending;
    if (n > UI_CAM_YOLO_MAX_BOXES) n = UI_CAM_YOLO_MAX_BOXES;
