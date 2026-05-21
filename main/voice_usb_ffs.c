@@ -26,6 +26,7 @@
 
 #include <string.h>
 
+#include "debug_obs.h" /* TT #627 Wave B.3 — xport.reswitch event */
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -33,6 +34,7 @@
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "io_expander.h"
+#include "task_worker.h" /* TT #627 Wave B.3 — schedule voice_xport_init from watcher */
 #include "usb/usb_host.h"
 
 static const char *TAG = "voice_usb_ffs";
@@ -115,6 +117,16 @@ static void usb_lib_task(void *arg) {
    }
 }
 
+/* TT #627 Wave B.3 (R9) — track whether we ever had a successful USB
+ * claim this session.  Set on first successful claim_channel(ctrl).
+ * Read in claim path to decide whether the NEXT successful claim is a
+ * RE-claim after a yank, and therefore needs voice_xport_init() to
+ * re-evaluate (the boot-time pick may have timed out and fallen back
+ * to UART before USB enumerated).  Without this, replug stays on the
+ * slower UART for the rest of the session. */
+static volatile bool s_had_prior_connect = false;
+static volatile bool s_pending_reswitch = false;
+
 static void on_client_event(const usb_host_client_event_msg_t *msg, void *arg) {
    (void)arg;
    switch (msg->event) {
@@ -123,6 +135,7 @@ static void on_client_event(const usb_host_client_event_msg_t *msg, void *arg) {
          break;
       case USB_HOST_CLIENT_EVENT_DEV_GONE:
          ESP_LOGW(TAG, "client: DEV_GONE");
+         if (s_ch_ctrl.connected) s_had_prior_connect = true;
          s_ch_ctrl.connected = false;
          s_ch_video.connected = false;
          if (s_disconnect_sem) xSemaphoreGive(s_disconnect_sem);
@@ -130,6 +143,24 @@ static void on_client_event(const usb_host_client_event_msg_t *msg, void *arg) {
       default:
          break;
    }
+}
+
+/* TT #627 Wave B.3 (R9) — worker job that re-runs voice_xport_init so
+ * the device flips back to usb_ffs after a yank/replug cycle.  Posted
+ * from the watcher after a re-claim succeeds. */
+static void xport_reswitch_job(void *arg) {
+   (void)arg;
+   extern esp_err_t voice_xport_init(uint32_t ready_wait_ms);
+   tab5_debug_obs_event("xport.reswitch", "begin");
+   esp_err_t err = voice_xport_init(2000);
+   if (err == ESP_OK) {
+      tab5_debug_obs_event("xport.reswitch", "usb_ffs");
+      ESP_LOGI(TAG, "xport re-init after USB replug: OK");
+   } else {
+      tab5_debug_obs_event("xport.reswitch", esp_err_to_name(err));
+      ESP_LOGW(TAG, "xport re-init after USB replug: %s", esp_err_to_name(err));
+   }
+   s_pending_reswitch = false;
 }
 
 static void client_task(void *arg) {
@@ -322,6 +353,20 @@ static esp_err_t open_k144(uint8_t addr) {
    if (have_video) {
       if (claim_channel(&s_ch_video) != ESP_OK) {
          ESP_LOGW(TAG, "video claim failed; continuing with control only");
+      }
+   }
+
+   /* TT #627 Wave B.3 (R9) — if this is a RE-claim after a yank, the
+    * voice_xport layer is probably still on its UART fallback (it picked
+    * at boot only).  Post a worker job to re-run voice_xport_init so we
+    * flip back to usb_ffs.  Idempotent — guarded by s_pending_reswitch
+    * so multiple claim cycles don't queue multiple jobs. */
+   if (s_had_prior_connect && !s_pending_reswitch) {
+      s_pending_reswitch = true;
+      esp_err_t we = tab5_worker_enqueue(xport_reswitch_job, NULL, "xport_resw");
+      if (we != ESP_OK) {
+         ESP_LOGW(TAG, "xport_reswitch_job enqueue failed: %s", esp_err_to_name(we));
+         s_pending_reswitch = false;
       }
    }
    return ESP_OK;

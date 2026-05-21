@@ -227,7 +227,15 @@ static void finish_dictation(const char *reason) {
  * false-fire.  500-1000 ms is enough for the ASR engine's streaming
  * context to flush + Tab5's wake_window to settle on truly-new audio. */
 static int64_t s_last_busy_us = 0;
-#define WAKE_REARM_GRACE_MS 1000
+/* TT #627 Wave B.2 (R3) — bumped 1000 → 1500 ms.  Audit found that
+ * K144's streaming-zipformer ASR can take 1.5-2 s to flush a long TTS
+ * reply context after SPEAKING→READY.  1000 ms expired before the
+ * flush completed, letting lingering "thinker" partials re-fire the
+ * matcher.  1500 ms covers the median worst case observed in live
+ * sessions.  Adaptive (wait for K144 post-SPEAKING silent finish) is
+ * the correct fix but more invasive — bump first, revisit if still
+ * firing falsely in the soak. */
+#define WAKE_REARM_GRACE_MS 1500
 
 /* TT #131 watchdog 2026-05-20: timestamp of the most-recent ASR
  * delta we received from K144.  Updated in asr_partial_cb.  The
