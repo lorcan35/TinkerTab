@@ -30,6 +30,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h" /* TT #633 — xStreamBufferCreateWithCaps */
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
@@ -489,8 +490,12 @@ esp_err_t voice_usb_ffs_init(void) {
 
    s_ch_ctrl.lock = xSemaphoreCreateRecursiveMutex();
    s_ch_video.lock = xSemaphoreCreateRecursiveMutex();
-   s_ch_ctrl.rx = xStreamBufferCreate(s_ch_ctrl.rx_ring_bytes, 1);
-   s_ch_video.rx = xStreamBufferCreate(s_ch_video.rx_ring_bytes, 1);
+   /* TT #633: stream buffers in PSRAM, not internal SRAM.  Defaults
+    * pulled 16 + 32 = 48 KB from the FreeRTOS heap (internal) → heap_wd
+    * reboot loop.  WithCaps uses the same backing as the rest of the
+    * USB DMA path (PSRAM via CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM). */
+   s_ch_ctrl.rx = xStreamBufferCreateWithCaps(s_ch_ctrl.rx_ring_bytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   s_ch_video.rx = xStreamBufferCreateWithCaps(s_ch_video.rx_ring_bytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    s_disconnect_sem = xSemaphoreCreateBinary();
    if (!s_ch_ctrl.lock || !s_ch_video.lock || !s_ch_ctrl.rx || !s_ch_video.rx || !s_disconnect_sem) {
       ESP_LOGE(TAG, "alloc fail");
