@@ -453,6 +453,34 @@ static int mk_section(lv_obj_t *parent, const char *text, lv_color_t accent, int
     return y + HDR_H;
 }
 
+/** Cap Wave 5 (TT #644) — card-background helper.  Creates a rounded
+ *  filled rect under the just-laid-out section and sends it to back
+ *  via lv_obj_move_background so it sits behind the section's content
+ *  without re-parenting.  Lets us turn the flat row-stack into airy
+ *  visually-grouped cards with one helper call per section.
+ *
+ *  Pass the y_top BEFORE the section header label and y_bottom AFTER
+ *  the last row.  The card extends 8 px above/below for breathing
+ *  room (header sits on the card top edge, content has padding). */
+static void mk_card_bg(lv_obj_t *parent, int y_top, int y_bottom) {
+   if (y_bottom <= y_top) return;
+   lv_obj_t *card = lv_obj_create(parent);
+   if (!card) return;
+   lv_obj_remove_style_all(card);
+   lv_obj_set_pos(card, SIDE_PAD - 12, y_top + HDR_H - 4);
+   lv_obj_set_size(card, CONTENT_W + 24, (y_bottom - y_top) - HDR_H + 12);
+   lv_obj_set_style_bg_color(card, lv_color_hex(0x121620), 0);
+   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(card, 16, 0);
+   lv_obj_set_style_border_width(card, 1, 0);
+   lv_obj_set_style_border_color(card, lv_color_hex(0x1E2030), 0);
+   lv_obj_set_style_border_opa(card, LV_OPA_COVER, 0);
+   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+   /* Send to back so content (labels, switches, chips) renders on top. */
+   lv_obj_move_background(card);
+}
+
 /** Row with label (single line, vertically centered in ROW_H). */
 static void mk_row_label(lv_obj_t *parent, const char *label, int y)
 {
@@ -982,6 +1010,26 @@ static void cb_quiet_on(lv_event_t *e)
     ESP_LOGI(TAG, "Quiet hours: %d", on);
     extern void ui_home_refresh_sys_label(void);
     ui_home_refresh_sys_label();
+}
+
+/* Cap Wave 5 (TT #644): Privacy lock master switch.  Flips the NVS
+ * value + refreshes the home top-bar indicator. */
+static lv_obj_t *s_lbl_privacy_status = NULL;
+
+static void cb_privacy_lock(lv_event_t *e) {
+   lv_obj_t *sw = lv_event_get_target(e);
+   bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+   tab5_settings_set_privacy_lock(on);
+   ESP_LOGI(TAG, "Privacy lock: %d", on);
+   tab5_debug_obs_event("privacy.lock", on ? "on" : "off");
+   if (s_lbl_privacy_status) {
+      lv_label_set_text(s_lbl_privacy_status, on ? "ON · On-device only" : "OFF · Cloud allowed");
+      lv_obj_set_style_text_color(s_lbl_privacy_status, lv_color_hex(on ? 0xF59E0B : TEXT_DIM), 0);
+   }
+   /* Nudge the home pill so the new state is reflected without a 5 s
+    * polling delay. */
+   extern void ui_home_refresh_sys_label(void);
+   ui_home_refresh_sys_label();
 }
 
 /* W7-E.5: per-channel notification toggles.  Each callback persists to
@@ -1731,6 +1779,10 @@ lv_obj_t *ui_settings_create(void)
     ESP_LOGI(TAG, "Phase 1 — Section: Voice Mode");
     lv_color_t acc_voice = lv_color_hex(ACC_VOICE);
 
+    /* Cap Wave 5 (TT #644): track VOICE MODE + CLOUD LLM block's top y
+     * so we can paint a single airy card behind the combined picker
+     * region (header → mode rows → cloud chips). */
+    int s_voice_section_top = y;
     y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
 
     /* v5 flat vertical radio rows. Each row = colored dot + name + desc;
@@ -1955,6 +2007,11 @@ lv_obj_t *ui_settings_create(void)
        }
        y += chip_h + 16;
     }
+    /* Card BG for the combined VOICE MODE + CLOUD LLM block (Wave 5
+     * visual reorg).  s_voice_section_top is captured below at the
+     * VOICE MODE section header. */
+    mk_card_bg(s_scroll, s_voice_section_top, y);
+    y += 24;
 
     /* ── Cap Wave 4 (TT #642): ENGINES section ─────────────────────
      *
@@ -1964,6 +2021,7 @@ lv_obj_t *ui_settings_create(void)
      * for STT + TTS so the user can see what each capability is
      * currently doing under the active vmode.  Greyed chips = backend
      * unreachable. */
+    int s_engines_section_top = y;
     {
        lv_obj_t *cap = lv_label_create(s_scroll);
        lv_label_set_text(cap, "ENGINES");
@@ -2027,14 +2085,58 @@ lv_obj_t *ui_settings_create(void)
        }
        y += ROW_H + 16;
     }
+    /* Card BG for ENGINES section (Wave 4 + Wave 5 visual reorg). */
+    mk_card_bg(s_scroll, s_engines_section_top, y);
+    y += 24; /* breathing-room gap before next section */
 
-    /* PRIVACY + QUIET HOURS rows (spec groups them under the VOICE MODE
+    /* ── Cap Wave 5 (TT #644): PRIVACY section ─────────────────────
+     *
+     * Master "on-device only" lock.  When ON, voice_modes_route_text
+     * refuses Dragon/OpenRouter dispatch and forces K144 routing for
+     * every text turn.  Composes with the LLM engine knob above. */
+    int privacy_section_top = y;
+    {
+       lv_obj_t *cap = lv_label_create(s_scroll);
+       lv_label_set_text(cap, "PRIVACY");
+       lv_obj_set_pos(cap, SIDE_PAD, y);
+       lv_obj_set_style_text_color(cap, lv_color_hex(AMBER), 0);
+       lv_obj_set_style_text_font(cap, FONT_SECONDARY, 0);
+       lv_obj_set_style_text_letter_space(cap, 4, 0);
+       y += 26;
+
+       bool priv_on = tab5_settings_get_privacy_lock();
+       mk_row_label(s_scroll, "On-device lock", y);
+       mk_switch(s_scroll, acc_voice, 660, y, priv_on, cb_privacy_lock, NULL);
+       y += ROW_H + 4;
+
+       /* Status line under the toggle row — "ON · On-device only" or
+        * "OFF · Cloud allowed" — same pattern as the K144 health chip. */
+       s_lbl_privacy_status = lv_label_create(s_scroll);
+       if (s_lbl_privacy_status) {
+          lv_obj_set_pos(s_lbl_privacy_status, SIDE_PAD, y);
+          lv_obj_set_style_text_font(s_lbl_privacy_status, FONT_SECONDARY, 0);
+          lv_obj_set_style_text_color(s_lbl_privacy_status, lv_color_hex(priv_on ? 0xF59E0B : TEXT_DIM), 0);
+          lv_label_set_text(s_lbl_privacy_status, priv_on ? "ON · On-device only" : "OFF · Cloud allowed");
+       }
+       y += 28 + 16;
+    }
+    mk_card_bg(s_scroll, privacy_section_top, y);
+    y += 24;
+
+    /* AUDIO + QUIET HOURS rows (spec groups them under the VOICE MODE
      * section visually — single amber caption, rows straight below). */
+    int audio_section_top = y;
+    y = mk_section(s_scroll, "AUDIO", acc_voice, y);
     mk_row_label(s_scroll, "Mic mute", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_mic_mute() != 0,
               cb_mic_mute, NULL);
     y += ROW_H + 16;
-    mk_row_label(s_scroll, "Quiet hours", y);
+    mk_card_bg(s_scroll, audio_section_top, y);
+    y += 24;
+
+    int quiet_section_top = y;
+    y = mk_section(s_scroll, "QUIET HOURS", acc_voice, y);
+    mk_row_label(s_scroll, "Enable", y);
     mk_switch(s_scroll, acc_voice, 660, y, tab5_settings_get_quiet_on() != 0,
               cb_quiet_on, NULL);
     y += ROW_H + 8;
@@ -2075,10 +2177,14 @@ lv_obj_t *ui_settings_create(void)
         }
     }
     y += ROW_H + 16;
+    mk_card_bg(s_scroll, quiet_section_top, y);
+    y += 24;
 
     /* v4·D Phase 4e: daily budget cap editor.  Slider range 0-50, each
      * step = 20¢, so 0 = OFF, 50 = $10.00.  Maps to NVS cap_mils field
      * consumed by the auto-downgrade path in voice.c. */
+    int budget_section_top = y;
+    y = mk_section(s_scroll, "BUDGET", acc_voice, y);
     mk_row_label(s_scroll, "Daily cap", y);
     {
         uint32_t cap_mils = tab5_budget_get_cap_mils();
@@ -2100,12 +2206,15 @@ lv_obj_t *ui_settings_create(void)
         }
     }
     y += ROW_H + 20;
+    mk_card_bg(s_scroll, budget_section_top, y);
+    y += 24;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: TINKERON (TT #586 — always-on listener controls)
      * ════════════════════════════════════════════════════════════════ */
     feed_wdt();
     ESP_LOGI(TAG, "Phase 1 — Section: TinkerON");
+    int tinkeron_section_top = y;
     y = mk_section(s_scroll, "TINKERON", acc_voice, y);
 
     /* Status row: temp + version + chain hwinfo cache (best-effort —
@@ -2138,6 +2247,8 @@ lv_obj_t *ui_settings_create(void)
     mk_pill_btn(s_scroll, "RESET", acc_voice, lv_color_hex(0xFFFFFF),
                 RIGHT_X - 130, y + 4, 130, ROW_H - 8, 18, cb_tinkeron_reset);
     y += ROW_H + 20;
+    mk_card_bg(s_scroll, tinkeron_section_top, y);
+    y += 24;
 
     /* ════════════════════════════════════════════════════════════════
      *  SECTION: CHANNELS (W7-E.5 — per-platform notification opt-in)
@@ -2554,6 +2665,8 @@ void ui_settings_destroy(void)
     memset(s_eng_chip, 0, sizeof(s_eng_chip));
     s_eng_stt_lbl = NULL;
     s_eng_tts_lbl = NULL;
+    /* Cap Wave 5 (TT #644) — privacy status label. */
+    s_lbl_privacy_status = NULL;
 
     s_lbl_wifi      = NULL;
     s_lbl_bat_status = NULL;

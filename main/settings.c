@@ -503,6 +503,18 @@ esp_err_t tab5_settings_set_llm_engine(uint8_t eng) {
    return set_u8("llm_eng", eng);
 }
 
+/* ── Privacy lock (Cap Wave 5 / TT #644) ───────────────────────────────
+ *
+ * Master "on-device only" switch.  When set, voice_modes_route_text
+ * refuses any dispatch that would hit Dragon or OpenRouter — only K144
+ * paths are allowed.  Composes with llm_eng: if user picks K144 + lock
+ * ON, every text turn routes to K144 regardless of vmode.
+ *
+ * Default OFF so existing devices upgrade transparently. */
+bool tab5_settings_get_privacy_lock(void) { return get_u8("privacy", 0) != 0; }
+
+esp_err_t tab5_settings_set_privacy_lock(bool on) { return set_u8("privacy", on ? 1 : 0); }
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {

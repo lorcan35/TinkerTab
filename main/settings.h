@@ -196,6 +196,13 @@ typedef enum {
 uint8_t tab5_settings_get_llm_engine(void);
 esp_err_t tab5_settings_set_llm_engine(uint8_t eng);
 
+/** Cap Wave 5 (TT #644) — Privacy lock master switch.  When ON,
+ *  voice_modes_route_text refuses any dispatch to Dragon or
+ *  OpenRouter; only K144 paths (vmode=4 + llm_eng=K144) are
+ *  permitted.  Composes with the LLM engine override above. */
+bool tab5_settings_get_privacy_lock(void);
+esp_err_t tab5_settings_set_privacy_lock(bool on);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future
