@@ -1785,6 +1785,13 @@ esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handl
    return ESP_OK;
 }
 
+/* TT #621 W6 — external quiet flag.  When set, the wakeword recv loop
+ * sleeps without touching the xport, so voice_yolo (which has to wait
+ * out our 5 ms hold + immediate re-take pattern) can get exclusive
+ * access without starvation. */
+static volatile bool s_wakeword_paused = false;
+void voice_m5_llm_wakeword_set_paused(bool paused) { s_wakeword_paused = paused; }
+
 esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5_wakeword_cb cb, void *user,
                                     volatile bool *stop_flag, uint32_t timeout_s) {
    if (handle == NULL) return ESP_ERR_INVALID_ARG;
@@ -1795,6 +1802,10 @@ esp_err_t voice_m5_llm_wakeword_run(voice_m5_wakeword_handle_t *handle, voice_m5
    const int64_t deadline_us = (timeout_s > 0) ? esp_timer_get_time() + (int64_t)timeout_s * 1000000 : INT64_MAX;
 
    while (!(stop_flag != NULL && *stop_flag) && esp_timer_get_time() < deadline_us) {
+      if (s_wakeword_paused) {
+         vTaskDelay(pdMS_TO_TICKS(50));
+         continue;
+      }
       /* Hold the UART lock per outer iteration so concurrent chain probes
        * can interleave between frames. */
       if (voice_xport_lock(500) != ESP_OK) continue;

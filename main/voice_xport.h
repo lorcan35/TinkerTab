@@ -28,7 +28,8 @@ extern "C" {
 
 typedef enum {
    VOICE_XPORT_UART = 0,    /**< M5-Bus UART via Port C (1.5 Mbps, fragile) */
-   VOICE_XPORT_USB_CDC = 1, /**< USB-A → K144 USB-C, CDC-ACM (USB HS, robust) */
+   VOICE_XPORT_USB_CDC = 1, /**< USB-A → K144 USB-C, CDC-ACM (USB HS) — BLOCKED by TT #621 */
+   VOICE_XPORT_USB_FFS = 2, /**< USB-A → K144 USB-C, vendor-class bulk pair (TT #621 escape) */
 } voice_xport_kind_t;
 
 /**

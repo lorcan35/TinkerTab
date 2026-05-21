@@ -43,6 +43,7 @@
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
 #include "voice_wakeword.h"
+#include "voice_xport.h" /* TT #621 W7: route audio over USB when xport=usb_ffs */
 
 #define TAG "voice_ext_pcm_stream"
 
@@ -87,6 +88,7 @@ extern void tab5_debug_obs_event(const char *kind, const char *detail);
 
 static TaskHandle_t s_task = NULL;
 static volatile bool s_armed = false;
+static volatile bool s_paused = false; /* TT #621 W6 — external quiet flag */
 static volatile bool s_baud_negotiated = false;
 static volatile bool s_handshake_done = false;
 static volatile int s_voice_state = 0;
@@ -150,7 +152,7 @@ static void ext_pcm_task(void *arg) {
    vTaskDelay(pdMS_TO_TICKS(1500)); /* boot grace */
 
    while (1) {
-      if (!s_armed || !quiescent_state(s_voice_state) || voice_mic_is_active()) {
+      if (!s_armed || s_paused || !quiescent_state(s_voice_state) || voice_mic_is_active()) {
          vTaskDelay(pdMS_TO_TICKS(100));
          continue;
       }
@@ -180,21 +182,20 @@ static void ext_pcm_task(void *arg) {
          ESP_LOGI(TAG, "direct-to-asr path active (target=%s)", asr_target);
       }
 
-      /* TT #131 — first-time-armed: negotiate UART up to 1.5 Mbps.
-       * 115200 = 11.5 KB/s but we send ~44 KB/s sustained (16k mono
-       * int16 × 1.33 base64 + JSON envelope), so the kernel UART RX
-       * was DROPPING bytes at 115200 — JSON parser saw garbage and
-       * silently rejected our inference frames.  Live-confirmed:
-       * K144 /proc/tty/driver/serial showed only 2.6 KB/s incoming
-       * vs Tab5's 44 KB/s send rate.  1.5 Mbps = 150 KB/s, ample
-       * headroom. */
-      /* Baud negotiation is now done up-front in the picker handler
-       * BEFORE wakeword arms.  Pump just observes the result. */
+      /* TT #131 — UART baud observation.  USB transports have no baud
+       * concept, so when xport=usb_ffs we just mark observed=true and
+       * skip the check.  Keep the legacy UART probe for xport=0. */
       if (!s_baud_negotiated) {
-         s_baud_negotiated = (tab5_port_c_uart_get_baud() == 1500000);
-         if (s_baud_negotiated) {
-            ESP_LOGI(TAG, "pump observes UART at 1.5 Mbps");
-            tab5_debug_obs_event("ext_pcm_stream", "baud_observed_1500000");
+         if (voice_xport_kind() != VOICE_XPORT_UART) {
+            s_baud_negotiated = true;
+            ESP_LOGI(TAG, "pump on USB transport — baud check skipped");
+            tab5_debug_obs_event("ext_pcm_stream", "xport_usb");
+         } else {
+            s_baud_negotiated = (tab5_port_c_uart_get_baud() == 1500000);
+            if (s_baud_negotiated) {
+               ESP_LOGI(TAG, "pump observes UART at 1.5 Mbps");
+               tab5_debug_obs_event("ext_pcm_stream", "baud_observed_1500000");
+            }
          }
       }
 
@@ -306,24 +307,29 @@ static void ext_pcm_task(void *arg) {
        * UART driver lock back onto the line clock.  300 ms of dropped
        * audio is imperceptible — we're listening for wake, not
        * transcribing speech. */
-      int64_t now_pre = esp_timer_get_time();
-      if (s_last_resync_us == 0) s_last_resync_us = now_pre;
-      if (now_pre - s_last_resync_us > (int64_t)UART_RESYNC_INTERVAL_MS * 1000) {
-         tab5_debug_obs_event("ext_pcm_stream", "resync");
-         vTaskDelay(pdMS_TO_TICKS(UART_RESYNC_PAUSE_MS));
-         s_last_resync_us = esp_timer_get_time();
-         continue;  /* skip this frame; next iter starts fresh */
+      /* Clock-drift resync is UART-specific (1.5 Mbps divider mismatch).
+       * USB has its own SOF clock and never drifts — skip the pause. */
+      if (voice_xport_kind() == VOICE_XPORT_UART) {
+         int64_t now_pre = esp_timer_get_time();
+         if (s_last_resync_us == 0) s_last_resync_us = now_pre;
+         if (now_pre - s_last_resync_us > (int64_t)UART_RESYNC_INTERVAL_MS * 1000) {
+            tab5_debug_obs_event("ext_pcm_stream", "resync");
+            vTaskDelay(pdMS_TO_TICKS(UART_RESYNC_PAUSE_MS));
+            s_last_resync_us = esp_timer_get_time();
+            continue;
+         }
       }
 
-      /* Per-frame UART lock.  Hold time ~= tx_len/baud → ~30 ms at
-       * 1.5 Mbps for a 4.4 KB frame.  Voice_m5_llm calls (when active)
-       * will see brief contention but won't starve. */
-      if (tab5_port_c_lock(200) != ESP_OK) {
+      /* TT #621 W7 — send via voice_xport so the same frame travels over
+       * USB ffs.control (~480 Mbps HS, microsecond hold) when xport=2,
+       * or falls back to UART at 1.5 Mbps when xport=0.  USB hold time
+       * for a 4.4 KB frame is well under 1 ms, vs ~30 ms on UART. */
+      if (voice_xport_lock(200) != ESP_OK) {
          /* contention — drop this frame, the next one will retry. */
          continue;
       }
-      int sent = tab5_port_c_send(tx_buf, (size_t)tx_len);
-      tab5_port_c_unlock();
+      int sent = voice_xport_send(tx_buf, (size_t)tx_len);
+      voice_xport_unlock();
       s_last_tx_bytes = (uint32_t)tx_len;
       s_last_send_ok = (sent == tx_len) ? 1 : 0;
       if (sent != tx_len) continue;
@@ -392,6 +398,9 @@ void voice_ext_pcm_stream_disarm(void) {
 bool voice_ext_pcm_stream_is_active(void) { return s_armed && s_task != NULL && quiescent_state(s_voice_state); }
 
 void voice_ext_pcm_stream_on_state_change(int new_state) { s_voice_state = new_state; }
+
+void voice_ext_pcm_stream_set_paused(bool paused) { s_paused = paused; }
+bool voice_ext_pcm_stream_is_paused(void) { return s_paused; }
 
 void voice_ext_pcm_stream_get_stats(voice_ext_pcm_stream_stats_t *out) {
    if (out == NULL) return;

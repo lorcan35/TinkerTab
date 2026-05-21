@@ -611,16 +611,19 @@ esp_err_t tab5_settings_set_connection_mode(uint8_t mode)
 
 /* ── Tab5↔K144 transport (TT #620) ──────────────────────────────────── */
 
-uint8_t tab5_settings_get_xport(void)
-{
-    /* 0 = uart (legacy, default), 1 = usb_cdc */
-    return get_u8("xport", 0);
+uint8_t tab5_settings_get_xport(void) {
+   /* 0 = uart (legacy, fallback), 1 = usb_cdc (TT #620, broken bulk OUT,
+    * deprecated), 2 = usb_ffs (TT #621 — vendor-class bulk pair).
+    *
+    * Default flipped to usb_ffs in W9 — voice_xport_init falls back to
+    * uart automatically if USB doesn't enumerate within the timeout,
+    * so the worst case is the historical UART path. */
+   return get_u8("xport", 2);
 }
 
-esp_err_t tab5_settings_set_xport(uint8_t xport)
-{
-    if (xport > 1) xport = 0;
-    return set_u8("xport", xport);
+esp_err_t tab5_settings_set_xport(uint8_t xport) {
+   if (xport > 2) xport = 0;
+   return set_u8("xport", xport);
 }
 
 /* ── v4·D Sovereign Halo mode dials ─────────────────────────────────── */

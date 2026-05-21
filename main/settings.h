@@ -204,7 +204,7 @@ static inline bool tab5_settings_wake_src_is(const char *target) {
  *  If usb_cdc is requested but K144 hasn't enumerated at boot, voice_xport
  *  falls back to uart automatically (so a missing cable doesn't brick
  *  the chain). */
-uint8_t   tab5_settings_get_xport(void);
+uint8_t tab5_settings_get_xport(void);
 esp_err_t tab5_settings_set_xport(uint8_t xport);
 
 /* ── Connection mode ────────────────────────────────────────────────── */

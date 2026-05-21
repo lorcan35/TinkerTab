@@ -62,18 +62,15 @@ static SemaphoreHandle_t s_disconnect_sem = NULL;
  * true so cdc_acm_host treats the data as consumed. */
 static bool handle_rx(const uint8_t *data, size_t data_len, void *arg) {
    (void)arg;
+   /* ALWAYS log entry — catches ZLPs (data_len=0) which would otherwise
+    * be invisible.  If this never fires at all, the cdc_acm_host bulk-IN
+    * transfer never completes (or never gets submitted). */
+   ESP_LOGI(TAG, "rx callback fired: data=%p len=%u", data, (unsigned)data_len);
    if (s_rx == NULL || data == NULL || data_len == 0) return true;
    size_t pushed = xStreamBufferSend(s_rx, data, data_len, 0);
-   /* TT #620 W4 diagnostic: log every RX chunk while we're debugging
-    * Tab5↔K144 USB JSON path.  ESP_LOGD-level → can be silenced via
-    * esp_log_level_set("voice_usb_cdc", ESP_LOG_INFO).  At INFO we
-    * still log a short summary so we can see the byte flow. */
    ESP_LOGI(TAG, "rx %u bytes (pushed %u): %.*s", (unsigned)data_len, (unsigned)pushed,
             (int)(data_len > 80 ? 80 : data_len), (const char *)data);
    if (pushed < data_len) {
-      /* RX overrun — drop the rest.  Worst-case this is one corrupt
-       * StackFlow frame which the JSON parser will reject; next frame
-       * lands clean.  Logged at warn level once per overrun event. */
       ESP_LOGW(TAG, "rx ring overrun: %u/%u dropped", (unsigned)(data_len - pushed), (unsigned)data_len);
    }
    return true;
@@ -148,23 +145,17 @@ static void log_any_new_device(usb_device_handle_t usb_dev) {
 
 static void connect_watcher_task(void *arg) {
    (void)arg;
-   ESP_LOGI(TAG, "connect_watcher_task running — polling for K144 (vid=0x%04X pid=0x%04X intf=%d)", VOICE_USB_CDC_K144_VID,
-            VOICE_USB_CDC_K144_PID, VOICE_USB_CDC_K144_INTERFACE);
+   ESP_LOGI(TAG, "connect_watcher_task running — polling for K144 (vid=0x%04X pid=0x%04X intf=%d)",
+            VOICE_USB_CDC_K144_VID, VOICE_USB_CDC_K144_PID, VOICE_USB_CDC_K144_INTERFACE);
 
-   /* connection_timeout_ms = 200 — fast retries; 200 ms is plenty if
-    * device is present (scan is fast), and we won't waste time waiting
-    * if it's not.
-    *
-    * in_buffer_size = 512 — match a single USB FS bulk-IN MaxPacket.
-    * StackFlow ack frames are short (~120 bytes); using a 4 KB buffer
-    * for IN means the bulk transfer waits for either 4 KB OR a short
-    * packet to complete.  Some gadget drivers don't reliably emit
-    * short packets on every write, so the smaller buffer ensures the
-    * transfer completes per-MaxPacket boundary instead. */
+   /* connection_timeout_ms = 200 — fast retries.
+    * in_buffer_size = 4096 — restored after the 512 experiment didn't
+    * help.  USB bulk transfers complete on short packets regardless of
+    * buffer size, so 4 KB is fine. */
    const cdc_acm_host_device_config_t dev_cfg = {
        .connection_timeout_ms = 200,
        .out_buffer_size = 4096,
-       .in_buffer_size = 512,
+       .in_buffer_size = 4096,
        .event_cb = handle_event,
        .data_cb = handle_rx,
        .user_arg = NULL,
@@ -187,25 +178,58 @@ static void connect_watcher_task(void *arg) {
          continue;
       }
 
+      /* TT #621 — try interface 1 first (composite ADB+CDC+UAC1 layout
+       * where ADB is intf 0, CDC Comm is intf 1).  Fallback to intf 0
+       * for CDC-only gadget layouts.  cdc_acm_host_open returns
+       * NOT_FOUND fast for wrong interface so the fallback is cheap. */
       cdc_acm_dev_hdl_t hdl = NULL;
-      esp_err_t err = cdc_acm_host_open(VOICE_USB_CDC_K144_VID, VOICE_USB_CDC_K144_PID, VOICE_USB_CDC_K144_INTERFACE,
-                                        &dev_cfg, &hdl);
+      esp_err_t err = cdc_acm_host_open(VOICE_USB_CDC_K144_VID, VOICE_USB_CDC_K144_PID,
+                                        /*interface_idx=*/VOICE_USB_CDC_K144_INTERFACE, &dev_cfg, &hdl);
+      if (err != ESP_OK) {
+         err = cdc_acm_host_open(VOICE_USB_CDC_K144_VID, VOICE_USB_CDC_K144_PID,
+                                 /*interface_idx=*/0, &dev_cfg, &hdl);
+      }
       if (err == ESP_OK) {
-         /* Assert DTR + RTS so the K144 gadget recognises the host is
-          * present and enables its TX endpoint.  Without this Linux's
-          * f_acm function doesn't wake the tty, so llm_sys's writes to
-          * /dev/ttyGS0 sit in the gadget's TX queue and never reach
-          * the host.  TT #620 W4. */
+         /* TT #621 — SET_INTERFACE on alt 0 caused first BULK IN URB
+          * to STATUS_ERROR and chasing the halt-clear didn't end up
+          * delivering data either.  Skip the explicit SET_INTERFACE.
+          * Tab5's interface_claim already implicitly activates alt 0;
+          * Linux f_acm should be happy with that.  See vendor patch
+          * for endpoint_clear-on-error if STATUS_ERROR shows up
+          * spontaneously. */
+
+         /* TT #621: force DTR transition 0→1 instead of static 1.
+          * Linux f_acm's port_open flag is set on the rising edge of
+          * DTR, not on its level.  If a previous host session left
+          * DTR=1 in the gadget's state, setting DTR=1 again is a
+          * no-op and port_open stays unset → /dev/ttyGSn doesn't get
+          * OUT data. */
+         (void)cdc_acm_host_set_control_line_state(hdl, /*dtr=*/false, /*rts=*/false);
+         vTaskDelay(pdMS_TO_TICKS(50));
          esp_err_t cls = cdc_acm_host_set_control_line_state(hdl, /*dtr=*/true, /*rts=*/true);
          if (cls != ESP_OK) {
             ESP_LOGW(TAG, "set_control_line_state(DTR=1,RTS=1): %s — continuing anyway", esp_err_to_name(cls));
+         } else {
+            ESP_LOGI(TAG, "DTR transitioned 0→1 (forced edge for f_acm port_open)");
          }
-         /* Do NOT call cdc_acm_host_line_coding_set — USB CDC line
-          * coding is virtual (baud doesn't apply to USB), and some
-          * gadget drivers apply it via termios on /dev/ttyGS0 which
-          * can fail on non-standard rates (we tried 1500000 earlier
-          * with no joy).  K144's f_acm uses whatever termios llm_sys
-          * sets — leave it alone. */
+         /* TT #621 — send SET_LINE_CODING with conventional values.
+          * Linux ttyACM driver does this on open; some f_acm gadgets
+          * require it to fully transition into "active" state and
+          * start servicing bulk IN reads.  Use 9600 8N1 (default values
+          * any tty driver accepts) instead of the experimental 1.5 Mbps
+          * we tried earlier. */
+         const cdc_acm_line_coding_t coding = {
+             .dwDTERate = 9600,
+             .bCharFormat = 0, /* 1 stop bit */
+             .bParityType = 0, /* none */
+             .bDataBits = 8,
+         };
+         esp_err_t lc = cdc_acm_host_line_coding_set(hdl, &coding);
+         if (lc != ESP_OK) {
+            ESP_LOGW(TAG, "line_coding_set 9600 8N1: %s — continuing", esp_err_to_name(lc));
+         } else {
+            ESP_LOGI(TAG, "line coding set to 9600 8N1");
+         }
 
          xSemaphoreTakeRecursive(s_lock, portMAX_DELAY);
          s_dev = hdl;
@@ -246,6 +270,11 @@ static void connect_watcher_task(void *arg) {
 
 esp_err_t voice_usb_cdc_init(void) {
    if (s_initialized) return ESP_OK;
+
+   /* TT #620 #621 debug — global LOG_MAX is INFO so DEBUG calls inside
+    * USB host driver ISR contexts get compiled out (one such path blew
+    * the interrupt watchdog).  Our own LOGI lines on handle_rx remain
+    * — those run in cdc_acm_client_task context (safe). */
 
    /* Force-assert Tab5's USB-A 5V rail before the host stack comes up.
     * io_expander.c sets PI4IOE2 P3 = high in tab5_io_expander_init, but

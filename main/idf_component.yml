@@ -27,7 +27,6 @@ dependencies:
   # gadget (ADB + CDC-ACM + UAC1, see scripts/k144/usb-tinker.sh), Tab5
   # opens /dev/ttyACM-equivalent and runs the same StackFlow JSON over
   # it at USB HS rates instead of the fragile 1.5 Mbps UART.
-  espressif/usb_host_cdc_acm: ~2.0
   # USB Host UAC driver — TT #620 W5.  Direct mic+speaker streaming
   # to/from the K144 UAC1 endpoint, replaces the base64-ADPCM-over-UART
   # ext_pcm pump.  Native 16 kHz mono PCM in both directions.

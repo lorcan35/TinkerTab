@@ -59,9 +59,9 @@
 #include "voice_dictation.h"
 #include "voice_m5_llm.h"
 #include "voice_onboard.h"
+#include "voice_solo.h"
 #include "voice_usb_cdc.h"
 #include "voice_xport.h"
-#include "voice_solo.h"
 #include "wifi.h"
 
 static const char *TAG = "tab5";
@@ -691,11 +691,27 @@ void app_main(void)
      * 1.5 Mbps M5-Bus UART).  Non-blocking — the watcher task polls for
      * K144 enumeration on /dev/ttyACM-equivalent.  Safe when K144 isn't
      * plugged in: the watcher just keeps polling. */
+    /* TT #621: K144 composite layout exposes two functions we own —
+     * ffs.control (subclass 0x44) for voice traffic + ffs.video
+     * (subclass 0x43) for yolo.  voice_usb_ffs claims both from a single
+     * host client (the dual-client variant blew internal SRAM — see W6
+     * audit).  Picked at boot based on the NVS xport setting; if the
+     * user is on UART, voice_usb_cdc gets the slot instead. */
     {
-        esp_err_t ue = voice_usb_cdc_init();
-        if (ue != ESP_OK) {
-            ESP_LOGW("main", "voice_usb_cdc_init failed: %s — falling back to UART", esp_err_to_name(ue));
-        }
+       extern uint8_t tab5_settings_get_xport(void);
+       extern esp_err_t voice_usb_ffs_init(void);
+       uint8_t want = tab5_settings_get_xport();
+       if (want == 2) {
+          esp_err_t fe = voice_usb_ffs_init();
+          if (fe != ESP_OK) {
+             ESP_LOGW("main", "voice_usb_ffs_init failed: %s — no USB transport", esp_err_to_name(fe));
+          }
+       } else {
+          esp_err_t ue = voice_usb_cdc_init();
+          if (ue != ESP_OK) {
+             ESP_LOGW("main", "voice_usb_cdc_init failed: %s — falling back to UART", esp_err_to_name(ue));
+          }
+       }
     }
 
     /* TT #620 W3: pick the active Tab5↔K144 transport based on NVS

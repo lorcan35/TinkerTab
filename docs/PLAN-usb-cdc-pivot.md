@@ -221,3 +221,118 @@ signal we're missing.
 - All USB code paths remain compiled but inactive
 - To resume USB pivot: fix Tab5 RX bug, re-install K144 sys_config.json via
   `./scripts/k144/install.sh`, set NVS `xport=1`
+
+---
+
+## TT #621 — functionfs escape hatch (W5–W9, 2026-05-21)
+
+### Why the rollback came back
+
+The Tab5 cdc_acm RX bug noted above turned out to be a **K144-side** problem,
+not Tab5's: K144's `f_acm.ko` silently drops bulk-OUT bytes when Tab5 is
+the host (TT #621).  The `acm.usb0` function never delivered Tab5's writes
+to `/dev/ttyGS0`'s tty buffer.  Dev-box probes against the same K144
+gadget worked fine.
+
+We tried every known software fix (CLEAR_FEATURE on both endpoints,
+SET_INTERFACE, DTR transition, line coding, latest cdc_acm_host v2.4,
+latest K144 firmware) before concluding the fix had to bypass `f_acm`
+entirely.
+
+### Architecture
+
+Replace the broken `f_acm` bridge with a **functionfs** function on K144
+that a userspace daemon owns end-to-end.  Same shape as ADB:
+
+```
+K144 gadget composition  (scripts/k144/usb-tinker-ffs.sh)
+   ├─ ffs.adb           subclass 0x42  (adbd, untouched)
+   ├─ ffs.control       subclass 0x44  (tinker-ffs-control → TCP 10001)
+   ├─ ffs.video         subclass 0x43  (tinker-ffs-video   → TCP 10001)
+   ├─ acm.usb0          (kept for fallback, unused by us)
+   └─ uac1.usb0         (kept for future audio routing)
+```
+
+Each Tinker function: a small C daemon (`scripts/k144/tinker-ffs-*.c`)
+mounts functionfs, writes USB descriptors to ep0, then relays bytes
+between the bulk endpoints and a TCP socket on the K144 loopback to
+StackFlow's `llm-sys` daemon (port 10001).  No tty layer, no CDC setup
+requests, no f_acm involvement.
+
+Tab5 side: a single USB host client (`main/voice_usb_ffs.{c,h}`) claims
+**both** Tinker interfaces by discovering them via their unique
+subclasses (not interface number — the kernel reshuffles those as the
+gadget composition changes).  One client + two interface claims keeps
+internal SRAM tracking flat; the dual-client variant we tried first
+exhausted the SRAM (1 KB largest free) before recovering.
+
+Per channel, on Tab5:
+- recursive mutex for serialized sends
+- PSRAM stream buffer for RX from the bulk-IN completion callback
+- **persistent OUT transfer + done semaphore** (pre-allocated at claim
+  time, reused per send) — fixes the panic_abort that happened when we
+  freed in-flight transfers on send timeout
+- zero-copy `borrow/commit` API on the video channel so `voice_yolo`
+  encodes base64 directly into the USB DMA buffer (halves PSRAM
+  bandwidth churn during YOLO bursts)
+
+Tab5 modules consuming the channels:
+- `voice_xport` (control channel — control plane: hwinfo, llm.setup,
+  asr.setup, ext_pcm ingest, TTS playback)
+- `voice_yolo` (video channel — yolo11n inference)
+- `voice_ext_pcm_stream` (control channel via `voice_xport_*` — Tab5
+  mic → K144 ASR; was UART, now USB)
+
+### Verified live 2026-05-21
+
+```
+xport=usb_ffs  failover_state=ready  hwinfo.valid=true
+ext_pcm: frames_pumped climbing ~10 fps, wakeword_active=true,
+         asr_id=asr.1001, RMS varying with audible mic
+yolo: POST /yolo/infer (cat_320.jpg) → cat (0.79) at (107,15) 227×154
+      one round-trip ~330 ms (USB HS + NPU + USB HS)
+```
+
+Cold boot picks usb_ffs automatically (default NVS `xport` value flipped
+from 0 to 2 in W9); `voice_xport_init` still falls back to UART if USB
+doesn't enumerate within the boot window, so the legacy path stays as
+recovery.
+
+### Files added / changed
+
+| File | Purpose |
+|------|---------|
+| `scripts/k144/usb-tinker-ffs.sh` | Composite gadget composer (adb+control+video+acm+uac1) |
+| `scripts/k144/tinker-ffs-control.c` | K144 bridge daemon for ffs.control ↔ TCP 10001 |
+| `scripts/k144/tinker-ffs-video.c` | K144 bridge daemon for ffs.video ↔ TCP 10001 |
+| `main/voice_usb_ffs.{c,h}` | Tab5 single-client driver, claims both ffs interfaces |
+| `main/voice_yolo.{c,h}` | yolo11n setup + inference via ffs.video |
+| `main/voice_xport.{c,h}` | Adds `VOICE_XPORT_USB_FFS = 2` |
+| `main/voice_ext_pcm_stream.c` | Pump now uses `voice_xport_*` (UART or USB) |
+| `main/voice_m5_llm.{c,h}` | Adds `_wakeword_set_paused()` so yolo can quiet the recv loop |
+| `main/debug_server_m5.c` | Adds `POST /yolo/infer`, extends `/m5/xport` to accept `usb_ffs` |
+| `main/settings.c` | Default xport flipped 0 → 2 |
+| `main/main.c` | Boot-time picker: voice_usb_ffs (xport=2) OR voice_usb_cdc (xport=1) |
+
+### Operational notes
+
+- K144 daemons SIGTERM cleanly (their `g_running` flag) but a SIGKILL
+  while UDC-bound takes the whole gadget down — use `mv` to atomic-swap
+  the binary then SIGTERM, or just `reboot` the K144 and let rc.local
+  respawn from the new binary.
+- Subclass IDs are gadget-side identifiers: ADB uses 0x42 (we can't
+  change), we picked 0x43 for video and 0x44 for control to keep them
+  unique.  Tab5 walks `bNumInterfaces` and matches by subclass.
+- Each channel's OUT transfer is sized for its workload — control 8 KB
+  (ext_pcm pump frame is 4.4 KB; sys.* < 1 KB), video 48 KB (yolo
+  base64 JPEG ~ 40 KB).  Both are PSRAM-backed via
+  `CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM=y`.
+
+### Known follow-ups
+
+- Sustained YOLO bursts (3+ calls in <1s) cause Wi-Fi DMA contention →
+  WS reconnect (Tab5 recovers, no panic).  Either rate-limit client-side
+  or task-pin yolo to Core 1 isolated from Wi-Fi.
+- `cdc_acm_host` (xport=1) variant remains compiled but is now
+  deprecated by the functionfs path.  Can be removed once a few weeks
+  of telemetry confirm no xport=1 users.

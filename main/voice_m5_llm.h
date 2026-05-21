@@ -508,6 +508,10 @@ const char *voice_m5_llm_wakeword_asr_id(const voice_m5_wakeword_handle_t *handl
 esp_err_t voice_m5_llm_kws_setup_tab5_mic(voice_m5_wakeword_handle_t **out_handle, const char *keyword,
                                           volatile bool *stop_flag);
 
+/** TT #621 W6 — pause/resume the wakeword recv loop so another consumer
+ *  (voice_yolo) can have exclusive xport access.  Idempotent. */
+void voice_m5_llm_wakeword_set_paused(bool paused);
+
 /**
  * @brief Drain asr.utf-8.stream frames, invoking cb on every partial.
  *
