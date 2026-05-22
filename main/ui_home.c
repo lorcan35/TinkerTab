@@ -118,6 +118,12 @@ static lv_obj_t *s_sys_label       = NULL;  /* left: "ONLINE" / "OFFLINE" / etc 
 /* TT #584 — TinkerON armed indicator: dot + "TINKERON [OFF]" beside ONLINE. */
 static lv_obj_t *s_tinkeron_dot    = NULL;
 static lv_obj_t *s_tinkeron_label  = NULL;
+/* Vision V2-A.4 (TT #682) — privacy indicator dot.  Visible whenever
+ * the always-on vision service has vision_on=true (camera is being
+ * sampled for inference).  Mirrors Apple iOS's green/orange dot
+ * pattern — software-honest disclosure of an active camera sample
+ * pipeline since Tab5 has no hardware kill switch. */
+static lv_obj_t *s_vision_dot = NULL;
 static lv_obj_t *s_time_label      = NULL;  /* right: "Thursday · 9:42" */
 /* Cap Wave 5b (TT #646): privacy lock pill, pinned right of the time label.
  * Visible only when tab5_settings_get_privacy_lock() is true. */
@@ -602,6 +608,21 @@ lv_obj_t *ui_home_create(void)
     lv_obj_set_style_text_font(s_tinkeron_label, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_tinkeron_label, lv_color_hex(TH_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_letter_space(s_tinkeron_label, 3, 0);
+
+    /* Vision V2-A.4 (TT #682) — privacy indicator dot.  8 px green
+     * circle to the right of the TINKERON label.  Hidden by default;
+     * the home_periodic refresh path toggles visibility from the
+     * NVS vision_on key. */
+    s_vision_dot = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_vision_dot);
+    lv_obj_set_size(s_vision_dot, 8, 8);
+    /* Position past "TINKERON OFF" label (longest case at ~+278).
+     * Clear with a small gap so the indicator reads as standalone. */
+    lv_obj_set_pos(s_vision_dot, SIDE_PAD + 320, 32);
+    lv_obj_set_style_radius(s_vision_dot, 4, 0);
+    lv_obj_set_style_bg_color(s_vision_dot, lv_color_hex(TH_STATUS_GREEN), 0);
+    lv_obj_set_style_bg_opa(s_vision_dot, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_vision_dot, LV_OBJ_FLAG_HIDDEN);
 
     s_time_label = lv_label_create(s_screen);
     lv_label_set_text(s_time_label, "");
@@ -1284,6 +1305,19 @@ void ui_home_update_status(void)
            lv_obj_set_style_bg_color(s_tinkeron_dot, lv_color_hex(armed ? TH_STATUS_GREEN : TH_AMBER), 0);
            lv_label_set_text(s_tinkeron_label, armed ? "TINKERON" : "TINKERON OFF");
         }
+    }
+
+    /* Vision V2-A.4 (TT #682) — privacy indicator dot.  Visible when
+     * vision_on NVS is set (background YOLO is actively sampling the
+     * camera).  Mirrors Apple iOS's always-visible green/orange dot
+     * pattern.  Software-honest disclosure since the SC202CS sensor
+     * has no hardware kill switch. */
+    if (s_vision_dot) {
+       if (tab5_settings_get_vision_on()) {
+          lv_obj_remove_flag(s_vision_dot, LV_OBJ_FLAG_HIDDEN);
+       } else {
+          lv_obj_add_flag(s_vision_dot, LV_OBJ_FLAG_HIDDEN);
+       }
     }
 
     /* Edge-state detection — same priority as v5. */
