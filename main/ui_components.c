@@ -488,3 +488,107 @@ void ui_overlay_fade_in(lv_obj_t *obj, uint32_t duration_ms) {
    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
    lv_anim_start(&a);
 }
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Skeleton row — static dim-gray placeholder bars
+ * ───────────────────────────────────────────────────────────────── */
+
+lv_obj_t *ui_skeleton_row(lv_obj_t *parent, int y, int w, int lines) {
+   if (lines < 1) lines = 1;
+   if (lines > 4) lines = 4;
+   /* Row container.  Card-shaped to match real list rows so the
+    * placeholder reads as "row coming" rather than "broken UI". */
+   const int line_h = 14;
+   const int line_gap = 8;
+   const int pad = 14;
+   const int h = pad * 2 + lines * line_h + (lines - 1) * line_gap;
+   lv_obj_t *box = lv_obj_create(parent);
+   if (!box) return NULL;
+   lv_obj_remove_style_all(box);
+   lv_obj_set_pos(box, 0, y);
+   lv_obj_set_size(box, w, h);
+   lv_obj_set_style_bg_color(box, lv_color_hex(TH_CARD), 0);
+   lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(box, 14, 0);
+   lv_obj_set_style_border_width(box, 1, 0);
+   lv_obj_set_style_border_color(box, lv_color_hex(0x1E2030), 0);
+   lv_obj_set_style_pad_all(box, pad, 0);
+   lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+   for (int i = 0; i < lines; i++) {
+      lv_obj_t *bar = lv_obj_create(box);
+      lv_obj_remove_style_all(bar);
+      /* First bar full width, rest taper for natural variation. */
+      int bar_w = (i == 0) ? (w - pad * 2) : ((w - pad * 2) * (75 - i * 12) / 100);
+      if (bar_w < 80) bar_w = 80;
+      lv_obj_set_size(bar, bar_w, line_h);
+      lv_obj_set_pos(bar, 0, i * (line_h + line_gap));
+      lv_obj_set_style_bg_color(bar, lv_color_hex(0x222230), 0);
+      lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(bar, 4, 0);
+      lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+   }
+   return box;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Error chip
+ * ───────────────────────────────────────────────────────────────── */
+
+lv_obj_t *ui_error_chip(lv_obj_t *parent, int x, int y, int w, const char *message, ui_topbar_cb_t retry_cb) {
+   if (!message) message = "Error";
+   lv_obj_t *chip = lv_obj_create(parent);
+   if (!chip) return NULL;
+   lv_obj_remove_style_all(chip);
+   const int chip_h = 64;
+   lv_obj_set_pos(chip, x, y);
+   lv_obj_set_size(chip, w, chip_h);
+   lv_obj_set_style_bg_color(chip, lv_color_hex(0x2A1A1A), 0);
+   lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(chip, 14, 0);
+   lv_obj_set_style_border_width(chip, 1, 0);
+   lv_obj_set_style_border_color(chip, lv_color_hex(0xEF4444), 0);
+   lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
+   lv_obj_set_style_pad_left(chip, 16, 0);
+   lv_obj_set_style_pad_right(chip, 12, 0);
+   lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_clear_flag(chip, LV_OBJ_FLAG_CLICKABLE);
+
+   /* Danger icon — single warning glyph. */
+   lv_obj_t *icon = lv_label_create(chip);
+   lv_label_set_text(icon, LV_SYMBOL_WARNING);
+   lv_obj_set_style_text_color(icon, lv_color_hex(0xEF4444), 0);
+   lv_obj_set_style_text_font(icon, FONT_HEADING, 0);
+   lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
+
+   /* Message label — body weight, primary text color (red would be
+    * shouting on red border; primary reads as info). */
+   lv_obj_t *lbl = lv_label_create(chip);
+   lv_label_set_text(lbl, message);
+   lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+   lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+   lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_set_width(lbl, w - 48 - (retry_cb ? 100 : 0));
+   lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 36, 0);
+
+   /* Optional inline retry pill — fires retry_cb on tap. */
+   if (retry_cb) {
+      lv_obj_t *retry = lv_obj_create(chip);
+      lv_obj_remove_style_all(retry);
+      lv_obj_set_size(retry, 84, 36);
+      lv_obj_align(retry, LV_ALIGN_RIGHT_MID, 0, 0);
+      lv_obj_set_style_bg_color(retry, lv_color_hex(0xEF4444), 0);
+      lv_obj_set_style_bg_opa(retry, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(retry, 18, 0);
+      lv_obj_add_flag(retry, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(retry, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_event_cb(retry, retry_cb, LV_EVENT_CLICKED, NULL);
+      ui_fb_button(retry);
+      lv_obj_t *rlbl = lv_label_create(retry);
+      lv_label_set_text(rlbl, "RETRY");
+      lv_obj_set_style_text_font(rlbl, FONT_BODY, 0);
+      lv_obj_set_style_text_color(rlbl, lv_color_hex(0xFFFFFF), 0);
+      lv_obj_center(rlbl);
+   }
+
+   return chip;
+}

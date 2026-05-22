@@ -3272,27 +3272,12 @@ static void refresh_list(void)
                 break;
           }
        }
-       lv_obj_t *empty = lv_obj_create(s_list);
-       lv_obj_remove_style_all(empty);
-       lv_obj_set_size(empty, SW, 220);
-       lv_obj_set_style_bg_opa(empty, LV_OPA_TRANSP, 0);
-       lv_obj_clear_flag(empty, LV_OBJ_FLAG_SCROLLABLE);
-       lv_obj_set_flex_flow(empty, LV_FLEX_FLOW_COLUMN);
-       lv_obj_set_flex_align(empty, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-       lv_obj_set_style_pad_top(empty, 80, 0);
-       lv_obj_set_style_pad_row(empty, 10, 0);
-
-       lv_obj_t *h = lv_label_create(empty);
-       lv_label_set_text(h, head);
-       lv_obj_set_style_text_color(h, lv_color_hex(0xC8C8D2), 0);
-       lv_obj_set_style_text_font(h, FONT_HEADING, 0);
-       lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
-
-       lv_obj_t *b = lv_label_create(empty);
-       lv_label_set_text(b, body);
-       lv_obj_set_style_text_color(b, lv_color_hex(0x6A6A72), 0);
-       lv_obj_set_style_text_font(b, FONT_BODY, 0);
-       lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
+       /* Polish P4 (TT #654): adopt shared ui_empty_state helper.
+        * Previously open-coded a flex container with two labels;
+        * now reads from the same design-system atom every other
+        * screen uses for empties.  Visual rhythm matches Sessions /
+        * Files / Memory consistently. */
+       ui_empty_state(s_list, LV_SYMBOL_EDIT, head, body);
     }
 }
 

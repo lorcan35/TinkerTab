@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "sdcard.h"
 #include "ui_audio.h"
+#include "ui_components.h" /* P4 (TT #654) — ui_empty_state */
 #include "ui_core.h"
 #include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
 #include "ui_home.h"
@@ -368,12 +369,9 @@ static void rebuild_list(void)
     read_directory();
 
     if (entry_count == 0) {
-        lv_obj_t *lbl_empty = lv_label_create(file_list);
-        lv_label_set_text(lbl_empty, "Empty folder");
-        lv_obj_set_style_text_color(lbl_empty, lv_color_hex(COL_GRAY), 0);
-        lv_obj_set_style_text_font(lbl_empty, &lv_font_montserrat_18, 0);
-        lv_obj_align(lbl_empty, LV_ALIGN_CENTER, 0, 0);
-        return;
+       /* Polish P4 (TT #654): shared empty-state atom. */
+       ui_empty_state(file_list, LV_SYMBOL_DIRECTORY, "Empty folder", "Photos and recordings will land here.");
+       return;
     }
 
     /* Create rows */

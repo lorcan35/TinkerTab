@@ -133,6 +133,25 @@ void ui_fmt_count(char *buf, size_t cap, uint64_t n);
  * unless there's a specific reason. */
 void ui_overlay_fade_in(lv_obj_t *obj, uint32_t duration_ms);
 
+/* ── Skeleton row ──────────────────────────────────────────────────
+ *
+ * Polish P4 (TT #654): placeholder rows for async fetches.  Renders
+ * @p lines (1-4) dim gray bars stacked vertically in a card-shaped
+ * container at (0, y) with width @p w.  Static — animated shimmer is
+ * P7.  Returns the container so callers can lv_obj_delete it when
+ * real content arrives. */
+lv_obj_t *ui_skeleton_row(lv_obj_t *parent, int y, int w, int lines);
+
+/* ── Error chip ────────────────────────────────────────────────────
+ *
+ * Polish P4 (TT #654): unified error-state widget.  Rounded card
+ * with danger-toned (red) border, a danger icon, a single-line
+ * message label, and an optional inline RETRY pill that fires
+ * @p retry_cb when tapped.  If retry_cb is NULL, the chip is
+ * passive (read-only error indicator).  Returns the chip handle
+ * so callers can delete it later. */
+lv_obj_t *ui_error_chip(lv_obj_t *parent, int x, int y, int w, const char *message, ui_topbar_cb_t retry_cb);
+
 #ifdef __cplusplus
 }
 #endif
