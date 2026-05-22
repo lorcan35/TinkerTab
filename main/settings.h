@@ -209,6 +209,30 @@ esp_err_t tab5_settings_set_privacy_lock(bool on);
 bool tab5_settings_get_gesture_hint_seen(void);
 esp_err_t tab5_settings_set_gesture_hint_seen(bool seen);
 
+/** Polish P10 (TT #666) — accessibility infrastructure.
+ *
+ *  font_scale: tier index into a 4-value lookup (0=0.85, 1=1.00,
+ *  2=1.15, 3=1.30).  Default 1 (1.00x).  Settings → DISPLAY exposes
+ *  a 4-chip picker; consuming the value to scale every FONT_* token
+ *  is a future per-screen sweep (out of scope for #666).
+ *
+ *  reduce_motion: when true, decorative animations (orb breath,
+ *  overlay fades) should be skipped; essential feedback (press, state
+ *  changes) stays.  Default false.  NVS key intentionally truncated
+ *  to "red_motion" — NVS keys are capped at 15 chars and the obvious
+ *  "reduce_motion" hits the limit. */
+uint8_t tab5_settings_get_font_scale(void);
+esp_err_t tab5_settings_set_font_scale(uint8_t tier);
+bool tab5_settings_get_reduce_motion(void);
+esp_err_t tab5_settings_set_reduce_motion(bool on);
+
+/** Polish P11 (TT #666) — theme picker.
+ *  0 = dark (default, current behavior), 1 = light, 2 = auto-by-time
+ *  (7am-7pm → light, else dark).  Consuming the value to swap
+ *  TH_* tokens to a light palette is a future per-screen sweep. */
+uint8_t tab5_settings_get_theme(void);
+esp_err_t tab5_settings_set_theme(uint8_t theme);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future

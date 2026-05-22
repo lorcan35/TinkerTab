@@ -130,6 +130,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
     * reset the flag via POST to re-test the hint UX without an NVS
     * erase. */
    cJSON_AddBoolToObject(root, "gesture_hint_seen", tab5_settings_get_gesture_hint_seen());
+   /* Polish P10 + P11 (TT #666): accessibility + theme infrastructure. */
+   cJSON_AddNumberToObject(root, "font_scale", tab5_settings_get_font_scale());
+   cJSON_AddBoolToObject(root, "reduce_motion", tab5_settings_get_reduce_motion());
+   cJSON_AddNumberToObject(root, "theme", tab5_settings_get_theme());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -459,6 +463,32 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
          on = gh->valuedouble != 0;
       if (tab5_settings_set_gesture_hint_seen(on) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("gesture_hint_seen"));
+      }
+   }
+   /* Polish P10 + P11 (TT #666): a11y + theme. */
+   cJSON *fs = cJSON_GetObjectItem(req_json, "font_scale");
+   if (cJSON_IsNumber(fs)) {
+      int t = (int)fs->valuedouble;
+      if (t >= 0 && t <= 3 && tab5_settings_set_font_scale((uint8_t)t) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("font_scale"));
+      }
+   }
+   cJSON *rm = cJSON_GetObjectItem(req_json, "reduce_motion");
+   if (rm) {
+      bool on = false;
+      if (cJSON_IsBool(rm))
+         on = cJSON_IsTrue(rm);
+      else if (cJSON_IsNumber(rm))
+         on = rm->valuedouble != 0;
+      if (tab5_settings_set_reduce_motion(on) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("reduce_motion"));
+      }
+   }
+   cJSON *th = cJSON_GetObjectItem(req_json, "theme");
+   if (cJSON_IsNumber(th)) {
+      int t = (int)th->valuedouble;
+      if (t >= 0 && t <= 2 && tab5_settings_set_theme((uint8_t)t) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("theme"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");
