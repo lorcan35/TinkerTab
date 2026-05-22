@@ -144,6 +144,12 @@ static bool        capture_counter_init = false;
 static bool s_yolo_on = false;
 static lv_obj_t *s_yolo_btn = NULL;
 static lv_obj_t *s_yolo_btn_lbl = NULL;
+/* Vision V1 (TT #672): confidence picker — 3 chips visible top-right
+ * of the viewfinder when DETECT is on.  Tap a chip → set threshold +
+ * repaint active state. */
+#define UI_CAM_CONF_CHIPS 3
+static const uint8_t UI_CAM_CONF_VALUES[UI_CAM_CONF_CHIPS] = {30, 50, 70};
+static lv_obj_t *s_conf_chips[UI_CAM_CONF_CHIPS] = {0};
 /* TT #638 Wave 2: model picker — cycle DET → POSE → SEG. */
 static lv_obj_t *s_yolo_mode_btn = NULL;
 static lv_obj_t *s_yolo_mode_lbl = NULL;
@@ -168,6 +174,10 @@ static void yolo_mode_btn_cb(lv_event_t *e);
 static void yolo_redraw_async(void *arg);
 static void yolo_infer_job(void *arg);
 static void yolo_alloc_resources(void);
+/* Vision V1 (TT #672) */
+static void conf_chip_cb(lv_event_t *e);
+static void conf_chips_set_visible(bool on);
+static void conf_chips_repaint_active(void);
 static void yolo_free_resources(void);
 static void yolo_downsample_rgb565(const uint16_t *src, int sw, int sh, uint16_t *dst);
 static const char *yolo_mode_short_label(voice_yolo_model_t m);
@@ -638,6 +648,36 @@ lv_obj_t *ui_camera_create(void)
                   s_yolo_kpts[i][k] = dot;
                }
             }
+
+            /* Vision V1 (TT #672): confidence picker — 3 small pills
+             * at the viewfinder top-right.  Hidden by default; shown
+             * when DETECT is toggled on so the chips don't clutter the
+             * idle camera view.  Tap → set new threshold + persist. */
+            for (int i = 0; i < UI_CAM_CONF_CHIPS; i++) {
+               lv_obj_t *chip = lv_obj_create(scr_camera);
+               lv_obj_remove_style_all(chip);
+               lv_obj_set_size(chip, 56, 32);
+               /* Stack vertically along the right edge, ~20 px from top. */
+               lv_obj_align(chip, LV_ALIGN_TOP_RIGHT, -16, 20 + i * 40);
+               lv_obj_set_style_bg_color(chip, lv_color_hex(0x1A1A24), 0);
+               lv_obj_set_style_bg_opa(chip, LV_OPA_70, 0);
+               lv_obj_set_style_border_color(chip, lv_color_hex(COL_YOLO_BORDER), 0);
+               lv_obj_set_style_border_width(chip, 1, 0);
+               lv_obj_set_style_radius(chip, 16, 0);
+               lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+               lv_obj_add_flag(chip, LV_OBJ_FLAG_HIDDEN);
+               lv_obj_add_event_cb(chip, conf_chip_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+               ui_fb_button(chip);
+               lv_obj_t *lbl = lv_label_create(chip);
+               char buf[8];
+               snprintf(buf, sizeof(buf), "%u%%", (unsigned)UI_CAM_CONF_VALUES[i]);
+               lv_label_set_text(lbl, buf);
+               lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+               lv_obj_set_style_text_color(lbl, lv_color_hex(COL_YOLO_BORDER), 0);
+               lv_obj_center(lbl);
+               s_conf_chips[i] = chip;
+            }
+            conf_chips_repaint_active();
 
             /* Start the preview timer */
             preview_timer = lv_timer_create(preview_timer_cb, PREVIEW_FPS_MS,
@@ -1176,7 +1216,47 @@ static void yolo_btn_cb(lv_event_t *e) {
    } else {
       yolo_alloc_resources();
    }
+   /* Vision V1 (TT #672): confidence chips track DETECT visibility. */
+   conf_chips_set_visible(s_yolo_on);
    tab5_debug_obs_event("yolo.toggle", s_yolo_on ? "on" : "off");
+}
+
+/* Vision V1 (TT #672): toggle the confidence chips with DETECT. */
+static void conf_chips_set_visible(bool on) {
+   for (int i = 0; i < UI_CAM_CONF_CHIPS; i++) {
+      if (!s_conf_chips[i]) continue;
+      if (on)
+         lv_obj_clear_flag(s_conf_chips[i], LV_OBJ_FLAG_HIDDEN);
+      else
+         lv_obj_add_flag(s_conf_chips[i], LV_OBJ_FLAG_HIDDEN);
+   }
+}
+
+/* Vision V1 (TT #672): paint the chip whose value matches the
+ * persisted confidence with a filled amber background; others
+ * stay transparent-bg with amber border. */
+static void conf_chips_repaint_active(void) {
+   uint8_t active_pct = (uint8_t)(voice_yolo_get_min_confidence() * 100.0f + 0.5f);
+   for (int i = 0; i < UI_CAM_CONF_CHIPS; i++) {
+      if (!s_conf_chips[i]) continue;
+      bool is_active = (UI_CAM_CONF_VALUES[i] == active_pct);
+      lv_obj_set_style_bg_color(s_conf_chips[i], lv_color_hex(is_active ? COL_YOLO_BORDER : 0x1A1A24), 0);
+      lv_obj_t *lbl = lv_obj_get_child(s_conf_chips[i], 0);
+      if (lbl) {
+         lv_obj_set_style_text_color(lbl, lv_color_hex(is_active ? 0x08080E : COL_YOLO_BORDER), 0);
+      }
+   }
+}
+
+/* Vision V1 (TT #672): tap a chip → set new threshold + persist. */
+static void conf_chip_cb(lv_event_t *e) {
+   int idx = (int)(intptr_t)lv_event_get_user_data(e);
+   if (idx < 0 || idx >= UI_CAM_CONF_CHIPS) return;
+   float threshold = (float)UI_CAM_CONF_VALUES[idx] / 100.0f;
+   voice_yolo_set_min_confidence(threshold);
+   conf_chips_repaint_active();
+   ESP_LOGI(TAG, "YOLO confidence threshold -> %u%%", (unsigned)UI_CAM_CONF_VALUES[idx]);
+   tab5_debug_obs_event("yolo.conf", "set");
 }
 
 /* TT #638: cycle the K144 yolo model (DET → POSE → SEG → DET).
@@ -1565,6 +1645,9 @@ void ui_camera_destroy(void)
        s_yolo_btn_lbl = NULL;
        s_yolo_mode_btn = NULL;
        s_yolo_mode_lbl = NULL;
+       /* Vision V1 (TT #672): confidence chips were children of
+        * scr_camera so lv_obj_clean already freed them. */
+       for (int i = 0; i < UI_CAM_CONF_CHIPS; i++) s_conf_chips[i] = NULL;
        for (int i = 0; i < UI_CAM_YOLO_MAX_BOXES; i++) {
           s_yolo_boxes[i] = NULL;
           s_yolo_box_lbls[i] = NULL;

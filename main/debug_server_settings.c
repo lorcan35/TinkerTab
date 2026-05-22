@@ -134,6 +134,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    cJSON_AddNumberToObject(root, "font_scale", tab5_settings_get_font_scale());
    cJSON_AddBoolToObject(root, "reduce_motion", tab5_settings_get_reduce_motion());
    cJSON_AddNumberToObject(root, "theme", tab5_settings_get_theme());
+   /* Vision V1 (TT #672): YOLO model + confidence persistence. */
+   cJSON_AddNumberToObject(root, "yolo_mode", tab5_settings_get_yolo_mode());
+   cJSON_AddNumberToObject(root, "yolo_conf", tab5_settings_get_yolo_conf());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -489,6 +492,21 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
       int t = (int)th->valuedouble;
       if (t >= 0 && t <= 2 && tab5_settings_set_theme((uint8_t)t) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("theme"));
+      }
+   }
+   /* Vision V1 (TT #672): YOLO mode + confidence. */
+   cJSON *ym = cJSON_GetObjectItem(req_json, "yolo_mode");
+   if (cJSON_IsNumber(ym)) {
+      int v = (int)ym->valuedouble;
+      if (v >= 0 && v <= 2 && tab5_settings_set_yolo_mode((uint8_t)v) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("yolo_mode"));
+      }
+   }
+   cJSON *yc = cJSON_GetObjectItem(req_json, "yolo_conf");
+   if (cJSON_IsNumber(yc)) {
+      int v = (int)yc->valuedouble;
+      if (v >= 0 && v <= 100 && tab5_settings_set_yolo_conf((uint8_t)v) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("yolo_conf"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");
