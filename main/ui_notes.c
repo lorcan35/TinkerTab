@@ -32,10 +32,12 @@
 #include "nvs_flash.h"
 #include "settings.h"
 #include "tab5_rtc.h"
+#include "ui_components.h" /* Polish P1 (TT #648) — design-system atoms */
 #include "ui_core.h"
 #include "ui_home.h"
 #include "ui_keyboard.h"
-#include "ui_nav.h" /* TT #623 — tab5_nav_to */
+#include "ui_nav.h"   /* TT #623 — tab5_nav_to */
+#include "ui_theme.h" /* Polish P1: TH_* tokens replace local COL_* */
 #include "ui_voice.h"
 #include "voice.h"
 #include "voice_dictation.h"
@@ -2653,14 +2655,16 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
     * the preview so the chip isn't clipped. */
    bool has_chip = (note->pending.kind != PENDING_NONE && note->pending.confidence >= PENDING_CONFIDENCE_FLOOR);
    lv_obj_set_style_max_height(card, has_chip ? 230 : 160, 0);
-   /* v5: flat row, hairline rule underneath — no rounded bubble. */
-   lv_obj_set_style_bg_color(card, lv_color_hex(0x08080E), 0); /* TH_BG */
+   /* Polish P1 (TT #648): airy rounded cards — matches Settings rhythm.
+    * Was: flat row + bottom hairline on TH_BG, blending into the screen.
+    * Now: TH_CARD bg + 14 px radius + 1 px subtle border for depth. */
+   lv_obj_set_style_bg_color(card, lv_color_hex(TH_CARD), 0);
    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-   lv_obj_set_style_radius(card, 0, 0);
+   lv_obj_set_style_radius(card, 14, 0);
    lv_obj_set_style_border_width(card, 1, 0);
-   lv_obj_set_style_border_color(card, lv_color_hex(0x1C1C28), 0); /* TH_HAIRLINE */
-   lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
-   lv_obj_set_style_pad_all(card, 12, 0);
+   lv_obj_set_style_border_color(card, lv_color_hex(0x1E2030), 0);
+   lv_obj_set_style_border_side(card, LV_BORDER_SIDE_FULL, 0);
+   lv_obj_set_style_pad_all(card, 14, 0);
    lv_obj_set_style_pad_row(card, 6, 0);
    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN); /* Stack header + preview vertically */
    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
