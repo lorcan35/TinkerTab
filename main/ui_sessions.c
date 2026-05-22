@@ -414,6 +414,18 @@ static void kick_sessions_fetch(void)
 {
     if (s_fetch_inflight) return;
     s_fetch_inflight = true;
+    /* Polish P7 (TT #660): render 3 shimmer skeleton rows into the
+     * scroll viewport while the worker fetches from Dragon.  Cleared
+     * when render_rows_cb wipes s_rows_root + repopulates with real
+     * cards (or an error chip / empty state). */
+    if (s_rows_root) {
+       lv_obj_clean(s_rows_root);
+       int y = 0;
+       for (int i = 0; i < 3; i++) {
+          ui_skeleton_row(s_rows_root, y, SW - 2 * SIDE_PAD, 2);
+          y += 80 + 12;
+       }
+    }
     if (tab5_worker_enqueue(fetch_sessions_job, NULL, "sessions") != ESP_OK) {
         ESP_LOGW(TAG, "worker queue full — dropping sessions fetch");
         s_fetch_inflight = false;

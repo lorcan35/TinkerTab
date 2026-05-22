@@ -493,6 +493,14 @@ void ui_overlay_fade_in(lv_obj_t *obj, uint32_t duration_ms) {
  *  Skeleton row — static dim-gray placeholder bars
  * ───────────────────────────────────────────────────────────────── */
 
+/* Polish P7 (TT #660): shimmer animation — opacity sweeps from
+ * faint (40 %) → full (100 %) → faint over 1500 ms.  Each bar gets
+ * a staggered start delay so the wave moves left-to-right across
+ * the row.  Lightweight: single style write per frame per bar. */
+static void skeleton_opa_anim_cb(void *obj, int32_t v) {
+   if (obj) lv_obj_set_style_bg_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
 lv_obj_t *ui_skeleton_row(lv_obj_t *parent, int y, int w, int lines) {
    if (lines < 1) lines = 1;
    if (lines > 4) lines = 4;
@@ -526,6 +534,22 @@ lv_obj_t *ui_skeleton_row(lv_obj_t *parent, int y, int w, int lines) {
       lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
       lv_obj_set_style_radius(bar, 4, 0);
       lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+      /* Polish P7: shimmer.  Each bar's anim is staggered by
+       * 150 ms × line index so the wave reads as a left-to-right
+       * sweep down the row.  PLAYBACK_TIME = REPEAT to make it
+       * a continuous ping-pong. */
+      lv_anim_t a;
+      lv_anim_init(&a);
+      lv_anim_set_var(&a, bar);
+      lv_anim_set_exec_cb(&a, skeleton_opa_anim_cb);
+      lv_anim_set_values(&a, LV_OPA_40, LV_OPA_COVER);
+      lv_anim_set_duration(&a, 750);
+      lv_anim_set_playback_duration(&a, 750);
+      lv_anim_set_delay(&a, i * 150);
+      lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+      lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+      lv_anim_start(&a);
    }
    return box;
 }
