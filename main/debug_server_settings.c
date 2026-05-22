@@ -137,6 +137,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    /* Vision V1 (TT #672): YOLO model + confidence persistence. */
    cJSON_AddNumberToObject(root, "yolo_mode", tab5_settings_get_yolo_mode());
    cJSON_AddNumberToObject(root, "yolo_conf", tab5_settings_get_yolo_conf());
+   /* Vision V2-A.1 (TT #674): always-on vision service. */
+   cJSON_AddBoolToObject(root, "vision_on", tab5_settings_get_vision_on());
+   cJSON_AddNumberToObject(root, "vision_rate", tab5_settings_get_vision_rate());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -507,6 +510,25 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
       int v = (int)yc->valuedouble;
       if (v >= 0 && v <= 100 && tab5_settings_set_yolo_conf((uint8_t)v) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("yolo_conf"));
+      }
+   }
+   /* Vision V2-A.1 (TT #674): always-on vision toggle + rate. */
+   cJSON *vo = cJSON_GetObjectItem(req_json, "vision_on");
+   if (vo) {
+      bool on = false;
+      if (cJSON_IsBool(vo))
+         on = cJSON_IsTrue(vo);
+      else if (cJSON_IsNumber(vo))
+         on = vo->valuedouble != 0;
+      if (tab5_settings_set_vision_on(on) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("vision_on"));
+      }
+   }
+   cJSON *vr = cJSON_GetObjectItem(req_json, "vision_rate");
+   if (cJSON_IsNumber(vr)) {
+      int v = (int)vr->valuedouble;
+      if (v >= 1 && v <= 3 && tab5_settings_set_vision_rate((uint8_t)v) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("vision_rate"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");

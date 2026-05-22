@@ -576,6 +576,24 @@ esp_err_t tab5_settings_set_yolo_conf(uint8_t pct) {
    return set_u8("yolo_conf", pct);
 }
 
+/* ── Vision V2-A.1 (TT #674) — always-on vision service ───────── */
+
+bool tab5_settings_get_vision_on(void) { return get_u8("vision_on", 0) != 0; }
+
+esp_err_t tab5_settings_set_vision_on(bool on) { return set_u8("vision_on", on ? 1 : 0); }
+
+uint8_t tab5_settings_get_vision_rate(void) {
+   uint8_t v = get_u8("vision_rate", 2);
+   if (v < 1) v = 1;
+   if (v > 3) v = 3;
+   return v;
+}
+
+esp_err_t tab5_settings_set_vision_rate(uint8_t hz) {
+   if (hz < 1 || hz > 3) return ESP_ERR_INVALID_ARG;
+   return set_u8("vision_rate", hz);
+}
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {
