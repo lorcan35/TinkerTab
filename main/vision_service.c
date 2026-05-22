@@ -39,7 +39,7 @@ static const char *TAG = "vision_svc";
 #define VS_TRACK_CONFIRM_HITS 3                 /* seen_count to fire ENTER */
 #define VS_TRACK_FORGET_MISSES 8                /* ~4 s @ 2 Hz to fire LEAVE */
 #define VS_WELCOME_COOLDOWN_MS (5 * 60 * 1000u) /* Nest Hub Max pattern — 5 min */
-#define VS_PET_COOLDOWN_MS (30 * 1000u)
+#define VS_ABSENCE_THRESHOLD_MS (120 * 1000u)   /* min absence before Welcome refires */
 
 typedef struct {
    bool in_use;
@@ -65,8 +65,8 @@ static uint32_t s_next_track_id = 1;
 
 /* Rule cooldown ring — last_fired_ms per built-in rule. */
 static uint64_t s_last_welcome_ms = 0;
-static uint64_t s_last_dog_ms = 0;
-static uint64_t s_last_cat_ms = 0;
+static uint64_t s_last_person_leave_ms = 0; /* set when a person track fires LEAVE */
+static bool s_user_present = false;         /* tracked across confirmed → leave */
 
 static uint64_t now_ms(void) { return (uint64_t)(esp_timer_get_time() / 1000); }
 
@@ -114,36 +114,12 @@ static esp_err_t ensure_buffers(void) {
 }
 
 static bool is_interesting_class(const char *klass) {
-   /* V2-A.1 surfaces only the 3 classes the built-in rules will care
-    * about in V2-A.2 (person / dog / cat).  Other COCO classes still
-    * count toward detections_total but don't fire obs.  Cheaper than
-    * a hash table and avoids surfacing noise. */
-   return klass && (strcmp(klass, "person") == 0 || strcmp(klass, "dog") == 0 || strcmp(klass, "cat") == 0);
-}
-
-/* V2-A.2 follow-up: per-class confidence floors.  yolo11n at 320×320
- * on indoor scenes routinely false-positives "dog"/"cat" on humans
- * with curly hair, beards, or partial occlusion.  Live test had the
- * model classify the user (on their own desk, clearly framed) as a
- * dog at 0.5 confidence.  Require animal detections at ≥ 0.65 (well
- * above the typical false-positive cluster).  Person stays at the
- * user-configured global threshold.  Suppresses ghost-pet events. */
-static float class_min_confidence(const char *klass) {
-   if (klass && (strcmp(klass, "dog") == 0 || strcmp(klass, "cat") == 0)) return 0.65f;
-   return 0.0f;
-}
-
-/* Suppress animal detections when a person is detected in the same
- * frame.  yolo11n COCO false-positive: when a human silhouette is in
- * frame, the model often double-fires both "person" and "dog"/"cat"
- * for the SAME pixels.  If both classes have boxes this frame, drop
- * the animal one.  Real-world false positives kept showing up as
- * vision.pet events even though no pet was in the scene. */
-static bool any_person_box(const voice_yolo_box_t *boxes, size_t n) {
-   for (size_t i = 0; i < n; i++) {
-      if (strcmp(boxes[i].klass, "person") == 0) return true;
-   }
-   return false;
+   /* V2-A.3: person-only.  The Pet timeline rule was dropped — yolo11n
+    * false-positives dog/cat on humans badly enough that the feature
+    * fired ghost-pet events in a single-user-at-desk scenario.  Real
+    * pet logging needs a different model (or face/animal-detection
+    * sub-program — V7 territory). */
+   return klass && strcmp(klass, "person") == 0;
 }
 
 /* ── V2-A.2 IoU tracker ──────────────────────────────────────────
@@ -166,6 +142,26 @@ static float iou(const vs_track_t *t, const voice_yolo_box_t *b) {
    return ua > 0.0f ? in / ua : 0.0f;
 }
 
+/* Restore display brightness from NVS user pref.  Called on confirmed
+ * person ENTER when away_dim was applied on a prior LEAVE. */
+static void restore_brightness(void) {
+   if (!tab5_settings_get_away_dim()) return;
+   uint8_t pct = tab5_settings_get_brightness();
+   extern esp_err_t tab5_display_set_brightness(int percent);
+   tab5_display_set_brightness((int)pct);
+   tab5_debug_obs_event("vision.presence", "wake");
+}
+
+/* Dim display to the away pref.  Called on confirmed person LEAVE.
+ * Idempotent — re-firing is harmless. */
+static void dim_brightness_for_away(void) {
+   if (!tab5_settings_get_away_dim()) return;
+   uint8_t pct = tab5_settings_get_away_dim_pct();
+   extern esp_err_t tab5_display_set_brightness(int percent);
+   tab5_display_set_brightness((int)pct);
+   tab5_debug_obs_event("vision.presence", "dim");
+}
+
 /* Rules fire on the ENTER edge (seen_count crossing CONFIRM_HITS). */
 static void fire_rules_on_enter(const vs_track_t *t) {
    uint64_t now = now_ms();
@@ -173,28 +169,40 @@ static void fire_rules_on_enter(const vs_track_t *t) {
    snprintf(detail, sizeof(detail), "%s id=%u conf=%.2f", t->klass, (unsigned)t->id, t->confidence);
    tab5_debug_obs_event("vision.enter", detail);
 
-   /* Welcome glance — person enters after 5 min cooldown.  Toast is
-    * the V2-A.2 surface; V2-A.3 promotes to ui_notification + TTS. */
+   /* Welcome glance — person enters after a REAL absence.
+    *
+    * V2-A.3 rule: gate on `s_last_person_leave_ms` so we don't fire
+    * Welcome when the user was already at their desk at boot.  First
+    * boot has no prior LEAVE recorded — don't fire.  After a real
+    * LEAVE → away_ms = now - s_last_person_leave_ms; only fire if
+    * that's at least VS_ABSENCE_THRESHOLD_MS (120 s). */
    if (strcmp(t->klass, "person") == 0) {
-      if (now - s_last_welcome_ms >= VS_WELCOME_COOLDOWN_MS) {
+      s_user_present = true;
+      restore_brightness(); /* presence-aware screen */
+
+      bool had_real_absence = (s_last_person_leave_ms != 0);
+      uint64_t away_ms = had_real_absence ? (now - s_last_person_leave_ms) : 0;
+      bool cooldown_ok = (now - s_last_welcome_ms >= VS_WELCOME_COOLDOWN_MS);
+      if (had_real_absence && away_ms >= VS_ABSENCE_THRESHOLD_MS && cooldown_ok) {
          s_last_welcome_ms = now;
          s_state.last_welcome_ms = now;
          s_state.welcome_fires_total++;
          extern void ui_home_show_toast(const char *msg);
          ui_home_show_toast("Welcome back");
-         tab5_debug_obs_event("vision.welcome", detail);
-      }
-   } else if (strcmp(t->klass, "dog") == 0) {
-      if (now - s_last_dog_ms >= VS_PET_COOLDOWN_MS) {
-         s_last_dog_ms = now;
-         tab5_debug_obs_event("vision.pet", detail);
-      }
-   } else if (strcmp(t->klass, "cat") == 0) {
-      if (now - s_last_cat_ms >= VS_PET_COOLDOWN_MS) {
-         s_last_cat_ms = now;
-         tab5_debug_obs_event("vision.pet", detail);
+         char wdetail[64];
+         snprintf(wdetail, sizeof(wdetail), "away_ms=%llu", (unsigned long long)away_ms);
+         tab5_debug_obs_event("vision.welcome", wdetail);
       }
    }
+}
+
+/* LEAVE edge — record the leave timestamp for absence gating + dim
+ * the display if presence-aware brightness is enabled. */
+static void fire_rules_on_leave(const vs_track_t *t) {
+   if (strcmp(t->klass, "person") != 0) return;
+   s_user_present = false;
+   s_last_person_leave_ms = now_ms();
+   dim_brightness_for_away();
 }
 
 static void tracker_update(const voice_yolo_box_t *boxes, size_t n) {
@@ -236,10 +244,11 @@ static void tracker_update(const voice_yolo_box_t *boxes, size_t n) {
          if (s_tracks[s].not_seen_count < 255) s_tracks[s].not_seen_count++;
          if (s_tracks[s].not_seen_count >= VS_TRACK_FORGET_MISSES) {
             if (s_tracks[s].confirmed) {
-               char detail[48];
+               char detail[64];
                snprintf(detail, sizeof(detail), "%s id=%u age_ms=%llu", s_tracks[s].klass, (unsigned)s_tracks[s].id,
                         (unsigned long long)(now - s_tracks[s].first_seen_ms));
                tab5_debug_obs_event("vision.leave", detail);
+               fire_rules_on_leave(&s_tracks[s]);
             }
             s_tracks[s].in_use = false;
          }
@@ -308,25 +317,14 @@ static void process_one_frame(void) {
       return;
    }
    s_state.detections_total += (uint32_t)n;
-   /* V2-A.2: only feed interesting classes to the tracker.  Saves
-    * tracker slots from being burned by the noisy "cell phone" /
-    * "bottle" detections that yolo11n surfaces from a desk shot.
-    *
-    * V2-A.2 follow-up — two false-positive suppressions for the
-    * desk-pointing-at-user case where yolo11n was firing "dog" on
-    * a human with curly hair + beard:
-    *  1. Per-class confidence floor (animals require 0.65+).
-    *  2. If any person box is in the frame, drop all animal boxes
-    *     from that same frame — the model double-fires both classes
-    *     on overlapping pixels; person wins. */
-   bool has_person = any_person_box(boxes, n);
+   /* V2-A.3: person-only filter.  Pet timeline was dropped after live
+    * testing showed yolo11n's animal false-positives on humans were
+    * the only thing the rule ever fired on.  All non-person boxes
+    * are silently dropped here so the tracker stays clean. */
    voice_yolo_box_t filtered[VS_MAX_BOXES];
    size_t fn = 0;
    for (size_t i = 0; i < n && fn < VS_MAX_BOXES; i++) {
       if (!is_interesting_class(boxes[i].klass)) continue;
-      if (boxes[i].confidence < class_min_confidence(boxes[i].klass)) continue;
-      bool is_animal = (strcmp(boxes[i].klass, "dog") == 0 || strcmp(boxes[i].klass, "cat") == 0);
-      if (is_animal && has_person) continue;
       filtered[fn++] = boxes[i];
       strlcpy(s_state.last_class, boxes[i].klass, sizeof(s_state.last_class));
       s_state.last_detection_ms = now_ms();
