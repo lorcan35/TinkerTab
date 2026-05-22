@@ -29,6 +29,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "mbedtls/base64.h"
+#include "settings.h"      /* Vision V1 — yolo_mode + yolo_conf NVS seeding */
 #include "voice_usb_ffs.h" /* TT #621 W6 — video channel APIs */
 
 static const char *TAG = "voice_yolo";
@@ -169,8 +170,35 @@ static int send_action(const char *action, const char *work_id_in, const char *o
 
 /* TT #638 (Wave 2): selected K144 yolo model.  Defaults to DET.  Changed
  * via voice_yolo_set_model — that path also invalidates the cached
- * work_id so the next infer call re-runs setup against the new model. */
+ * work_id so the next infer call re-runs setup against the new model.
+ *
+ * Vision V1 (TT #672): seeded from NVS `yolo_mode` on first read so
+ * the user's choice survives reboots.  `s_model_seeded` is a one-shot
+ * guard — the first call to a getter/setter populates s_model from
+ * NVS before any further mutation. */
 static voice_yolo_model_t s_model = VOICE_YOLO_MODEL_DET;
+static bool s_model_seeded = false;
+
+/* Vision V1 (TT #672): client-side confidence floor.  K144 returns
+ * detections at its own implicit threshold; we filter further before
+ * passing to the caller's box buffer.  Seeded from NVS `yolo_conf`
+ * (uint8 percent) on first access. */
+static float s_min_confidence = 0.5f;
+static bool s_min_confidence_seeded = false;
+
+static void seed_model_from_nvs(void) {
+   if (s_model_seeded) return;
+   uint8_t v = tab5_settings_get_yolo_mode();
+   s_model = (v > 2) ? VOICE_YOLO_MODEL_DET : (voice_yolo_model_t)v;
+   s_model_seeded = true;
+}
+
+static void seed_conf_from_nvs(void) {
+   if (s_min_confidence_seeded) return;
+   uint8_t pct = tab5_settings_get_yolo_conf();
+   s_min_confidence = (float)pct / 100.0f;
+   s_min_confidence_seeded = true;
+}
 
 const char *voice_yolo_get_model_name(voice_yolo_model_t model) {
    switch (model) {
@@ -184,10 +212,14 @@ const char *voice_yolo_get_model_name(voice_yolo_model_t model) {
    }
 }
 
-voice_yolo_model_t voice_yolo_get_model(void) { return s_model; }
+voice_yolo_model_t voice_yolo_get_model(void) {
+   seed_model_from_nvs();
+   return s_model;
+}
 
 esp_err_t voice_yolo_set_model(voice_yolo_model_t model) {
    if (model > VOICE_YOLO_MODEL_SEG) return ESP_ERR_INVALID_ARG;
+   seed_model_from_nvs();
    ensure_lock();
    xSemaphoreTake(s_lock, portMAX_DELAY);
    if (s_model != model) {
@@ -196,9 +228,25 @@ esp_err_t voice_yolo_set_model(voice_yolo_model_t model) {
       s_model = model;
       s_work_id[0] = '\0';
       s_ready = false;
+      /* Vision V1 (TT #672): persist user's pick so it survives reboot. */
+      tab5_settings_set_yolo_mode((uint8_t)model);
    }
    xSemaphoreGive(s_lock);
    return ESP_OK;
+}
+
+float voice_yolo_get_min_confidence(void) {
+   seed_conf_from_nvs();
+   return s_min_confidence;
+}
+
+void voice_yolo_set_min_confidence(float threshold) {
+   if (threshold < 0.0f) threshold = 0.0f;
+   if (threshold > 1.0f) threshold = 1.0f;
+   seed_conf_from_nvs();
+   s_min_confidence = threshold;
+   /* Persist as uint8 percent (0..100). */
+   tab5_settings_set_yolo_conf((uint8_t)(threshold * 100.0f + 0.5f));
 }
 
 /* On a fresh K144 the yolo task pool is empty.  Earlier dev-box probes
@@ -366,7 +414,16 @@ static int parse_stream_line(const char *line, const char *want_rid, voice_yolo_
                }
                b->kpt_count = (uint8_t)nkp;
             }
-            (*count)++;
+            /* Vision V1 (TT #672): client-side confidence floor.  Drop
+             * the detection if it lands below the user-configured
+             * threshold.  We seed the threshold lazily so the daemon
+             * settle path doesn't take the cost. */
+            seed_conf_from_nvs();
+            if (b->confidence < s_min_confidence) {
+               /* Slot stays unfilled — *count doesn't advance. */
+            } else {
+               (*count)++;
+            }
          }
       }
    }

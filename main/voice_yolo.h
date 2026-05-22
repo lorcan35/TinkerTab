@@ -113,6 +113,14 @@ voice_yolo_model_t voice_yolo_get_model(void);
 /** Human-readable name ("yolo11n", "yolo11n-pose", "yolo11s-seg"). */
 const char *voice_yolo_get_model_name(voice_yolo_model_t model);
 
+/** Vision V1 (TT #672) — client-side confidence floor.  Detections
+ *  with confidence < threshold are dropped before being passed to the
+ *  caller's box buffer.  Range 0.0..1.0; default 0.5.  Persisted via
+ *  NVS `yolo_conf` (uint8 %).  Safe to change at runtime; takes
+ *  effect on the next inference. */
+float voice_yolo_get_min_confidence(void);
+void voice_yolo_set_min_confidence(float threshold);
+
 /**
  * @brief Run YOLO11n on a 320×320 JPEG and collect detections.
  *

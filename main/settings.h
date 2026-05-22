@@ -233,6 +233,20 @@ esp_err_t tab5_settings_set_reduce_motion(bool on);
 uint8_t tab5_settings_get_theme(void);
 esp_err_t tab5_settings_set_theme(uint8_t theme);
 
+/** Vision V1 (TT #672) — YOLO model preference persistence.
+ *  0 = DET (yolo11n, default), 1 = POSE (yolo11n-pose), 2 = SEG
+ *  (yolo11s-seg).  Long-press on the camera DETECT button cycles the
+ *  active model and writes the new value; voice_yolo seeds s_model
+ *  from this key at boot so the user's choice survives reboots.
+ *
+ *  Confidence threshold persistence — float ×100 stored as uint8 so
+ *  we can reuse the existing get_u8/set_u8 helpers.  Default 50 (=
+ *  0.50); range 0..100. */
+uint8_t tab5_settings_get_yolo_mode(void);
+esp_err_t tab5_settings_set_yolo_mode(uint8_t mode);
+uint8_t tab5_settings_get_yolo_conf(void);
+esp_err_t tab5_settings_set_yolo_conf(uint8_t pct);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future

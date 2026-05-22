@@ -554,6 +554,28 @@ esp_err_t tab5_settings_set_theme(uint8_t theme) {
    return set_u8("theme", theme);
 }
 
+/* ── Vision V1 (TT #672) — YOLO mode + confidence persistence ──── */
+
+uint8_t tab5_settings_get_yolo_mode(void) {
+   uint8_t v = get_u8("yolo_mode", 0);
+   return v <= 2 ? v : 0;
+}
+
+esp_err_t tab5_settings_set_yolo_mode(uint8_t mode) {
+   if (mode > 2) return ESP_ERR_INVALID_ARG;
+   return set_u8("yolo_mode", mode);
+}
+
+uint8_t tab5_settings_get_yolo_conf(void) {
+   uint8_t v = get_u8("yolo_conf", 50);
+   return v <= 100 ? v : 50;
+}
+
+esp_err_t tab5_settings_set_yolo_conf(uint8_t pct) {
+   if (pct > 100) return ESP_ERR_INVALID_ARG;
+   return set_u8("yolo_conf", pct);
+}
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {
