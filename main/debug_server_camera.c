@@ -341,6 +341,11 @@ static esp_err_t vision_state_handler(httpd_req_t *req) {
    cJSON_AddStringToObject(root, "last_class", st.last_class);
    cJSON_AddNumberToObject(root, "last_detection_ms", (double)st.last_detection_ms);
    cJSON_AddNumberToObject(root, "last_confidence", st.last_confidence);
+   /* V2-A.2 tracker. */
+   cJSON_AddNumberToObject(root, "active_tracks", st.active_tracks);
+   cJSON_AddNumberToObject(root, "confirmed_tracks", st.confirmed_tracks);
+   cJSON_AddNumberToObject(root, "last_welcome_ms", (double)st.last_welcome_ms);
+   cJSON_AddNumberToObject(root, "welcome_fires_total", st.welcome_fires_total);
    /* Surface upstream prereqs so the harness can correlate "frames=0
     * after 6 s enabled" → either K144 USB isn't up, or yolo isn't
     * armed, or the camera failed init. */

@@ -33,26 +33,62 @@ static const char *TAG = "vision_svc";
 #define VS_INPUT_H 320
 #define VS_JPEG_CAP (24 * 1024)
 
+/* V2-A.2 tracker — see header for design notes. */
+#define VS_TRACK_SLOTS 8
+#define VS_TRACK_IOU_THRESH 0.25f               /* IoU floor for association */
+#define VS_TRACK_CONFIRM_HITS 3                 /* seen_count to fire ENTER */
+#define VS_TRACK_FORGET_MISSES 8                /* ~4 s @ 2 Hz to fire LEAVE */
+#define VS_WELCOME_COOLDOWN_MS (5 * 60 * 1000u) /* Nest Hub Max pattern — 5 min */
+#define VS_PET_COOLDOWN_MS (30 * 1000u)
+
+typedef struct {
+   bool in_use;
+   uint32_t id; /* monotonic; unique across lifetime */
+   char klass[24];
+   float x, y, w, h; /* 320×320 input coords */
+   float confidence;
+   uint8_t seen_count;
+   uint8_t not_seen_count;
+   uint64_t first_seen_ms;
+   uint64_t last_seen_ms;
+   bool confirmed; /* set once seen_count reaches CONFIRM_HITS */
+} vs_track_t;
+
 static TaskHandle_t s_task = NULL;
 static SemaphoreHandle_t s_lock = NULL;
 static vision_service_state_t s_state = {0};
 static uint64_t s_boot_ms = 0;
 static uint16_t *s_small_buf = NULL;
 static uint8_t *s_jpeg_buf = NULL;
+static vs_track_t s_tracks[VS_TRACK_SLOTS];
+static uint32_t s_next_track_id = 1;
+
+/* Rule cooldown ring — last_fired_ms per built-in rule. */
+static uint64_t s_last_welcome_ms = 0;
+static uint64_t s_last_dog_ms = 0;
+static uint64_t s_last_cat_ms = 0;
 
 static uint64_t now_ms(void) { return (uint64_t)(esp_timer_get_time() / 1000); }
 
-/* RGB565 nearest-neighbour downsample.  Mirrors ui_camera's yolo
- * downsampler but local-only so we don't need to expose it. */
+/* RGB565 center-crop + downsample to 320×320.  The SC202CS streams a
+ * landscape 1280×720 frame.  Downsampling that directly to 320×320
+ * squashes the X axis 4× vs Y at 2.25× — yolo11n trained on square
+ * aspect rejects the resulting distorted person silhouettes (0
+ * detections in live test).  Take the center square (720×720 cropped
+ * from 1280×720) then downsample preserving aspect. */
 static void downsample_rgb565(const uint16_t *src, int sw, int sh, uint16_t *dst) {
    const int dw = VS_INPUT_W;
    const int dh = VS_INPUT_H;
+   /* Take the largest centered square that fits inside (sw × sh). */
+   int crop = sw < sh ? sw : sh;
+   int x_off = (sw - crop) / 2;
+   int y_off = (sh - crop) / 2;
    for (int y = 0; y < dh; y++) {
-      int sy = (y * sh) / dh;
+      int sy = y_off + (y * crop) / dh;
       const uint16_t *srow = src + (size_t)sy * sw;
       uint16_t *drow = dst + (size_t)y * dw;
       for (int x = 0; x < dw; x++) {
-         int sx = (x * sw) / dw;
+         int sx = x_off + (x * crop) / dw;
          drow[x] = srow[sx];
       }
    }
@@ -83,6 +119,130 @@ static bool is_interesting_class(const char *klass) {
     * count toward detections_total but don't fire obs.  Cheaper than
     * a hash table and avoids surfacing noise. */
    return klass && (strcmp(klass, "person") == 0 || strcmp(klass, "dog") == 0 || strcmp(klass, "cat") == 0);
+}
+
+/* ── V2-A.2 IoU tracker ──────────────────────────────────────────
+ *
+ * Single-frame greedy IoU association.  Cheap, deterministic, good
+ * enough at 2 Hz.  Track confirmation gates on `seen_count >= 3` so
+ * a single noisy frame can't fire a Welcome event. */
+
+static float iou(const vs_track_t *t, const voice_yolo_box_t *b) {
+   float ax1 = t->x, ay1 = t->y, ax2 = t->x + t->w, ay2 = t->y + t->h;
+   float bx1 = b->x, by1 = b->y, bx2 = b->x + b->w, by2 = b->y + b->h;
+   float ix1 = ax1 > bx1 ? ax1 : bx1;
+   float iy1 = ay1 > by1 ? ay1 : by1;
+   float ix2 = ax2 < bx2 ? ax2 : bx2;
+   float iy2 = ay2 < by2 ? ay2 : by2;
+   float iw = ix2 > ix1 ? (ix2 - ix1) : 0.0f;
+   float ih = iy2 > iy1 ? (iy2 - iy1) : 0.0f;
+   float in = iw * ih;
+   float ua = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - in;
+   return ua > 0.0f ? in / ua : 0.0f;
+}
+
+/* Rules fire on the ENTER edge (seen_count crossing CONFIRM_HITS). */
+static void fire_rules_on_enter(const vs_track_t *t) {
+   uint64_t now = now_ms();
+   char detail[48];
+   snprintf(detail, sizeof(detail), "%s id=%u conf=%.2f", t->klass, (unsigned)t->id, t->confidence);
+   tab5_debug_obs_event("vision.enter", detail);
+
+   /* Welcome glance — person enters after 5 min cooldown.  Toast is
+    * the V2-A.2 surface; V2-A.3 promotes to ui_notification + TTS. */
+   if (strcmp(t->klass, "person") == 0) {
+      if (now - s_last_welcome_ms >= VS_WELCOME_COOLDOWN_MS) {
+         s_last_welcome_ms = now;
+         s_state.last_welcome_ms = now;
+         s_state.welcome_fires_total++;
+         extern void ui_home_show_toast(const char *msg);
+         ui_home_show_toast("Welcome back");
+         tab5_debug_obs_event("vision.welcome", detail);
+      }
+   } else if (strcmp(t->klass, "dog") == 0) {
+      if (now - s_last_dog_ms >= VS_PET_COOLDOWN_MS) {
+         s_last_dog_ms = now;
+         tab5_debug_obs_event("vision.pet", detail);
+      }
+   } else if (strcmp(t->klass, "cat") == 0) {
+      if (now - s_last_cat_ms >= VS_PET_COOLDOWN_MS) {
+         s_last_cat_ms = now;
+         tab5_debug_obs_event("vision.pet", detail);
+      }
+   }
+}
+
+static void tracker_update(const voice_yolo_box_t *boxes, size_t n) {
+   uint64_t now = now_ms();
+   bool used[VS_MAX_BOXES] = {false};
+
+   /* Pass 1: associate each existing track with its best-IoU
+    * unmatched detection of the same class. */
+   for (int s = 0; s < VS_TRACK_SLOTS; s++) {
+      if (!s_tracks[s].in_use) continue;
+      int best = -1;
+      float bi = VS_TRACK_IOU_THRESH;
+      for (size_t i = 0; i < n; i++) {
+         if (used[i]) continue;
+         if (strcmp(boxes[i].klass, s_tracks[s].klass) != 0) continue;
+         float v = iou(&s_tracks[s], &boxes[i]);
+         if (v > bi) {
+            bi = v;
+            best = (int)i;
+         }
+      }
+      if (best >= 0) {
+         used[best] = true;
+         s_tracks[s].x = boxes[best].x;
+         s_tracks[s].y = boxes[best].y;
+         s_tracks[s].w = boxes[best].w;
+         s_tracks[s].h = boxes[best].h;
+         s_tracks[s].confidence = boxes[best].confidence;
+         s_tracks[s].not_seen_count = 0;
+         s_tracks[s].last_seen_ms = now;
+         if (s_tracks[s].seen_count < 255) s_tracks[s].seen_count++;
+         /* ENTER edge: fire once when crossing the confirm threshold. */
+         if (!s_tracks[s].confirmed && s_tracks[s].seen_count >= VS_TRACK_CONFIRM_HITS) {
+            s_tracks[s].confirmed = true;
+            fire_rules_on_enter(&s_tracks[s]);
+         }
+      } else {
+         /* Not seen this frame. */
+         if (s_tracks[s].not_seen_count < 255) s_tracks[s].not_seen_count++;
+         if (s_tracks[s].not_seen_count >= VS_TRACK_FORGET_MISSES) {
+            if (s_tracks[s].confirmed) {
+               char detail[48];
+               snprintf(detail, sizeof(detail), "%s id=%u age_ms=%llu", s_tracks[s].klass, (unsigned)s_tracks[s].id,
+                        (unsigned long long)(now - s_tracks[s].first_seen_ms));
+               tab5_debug_obs_event("vision.leave", detail);
+            }
+            s_tracks[s].in_use = false;
+         }
+      }
+   }
+
+   /* Pass 2: spawn tracks for unmatched detections.  Slot scan is
+    * O(N) — cheap at 8 slots. */
+   for (size_t i = 0; i < n; i++) {
+      if (used[i]) continue;
+      for (int s = 0; s < VS_TRACK_SLOTS; s++) {
+         if (s_tracks[s].in_use) continue;
+         s_tracks[s].in_use = true;
+         s_tracks[s].id = s_next_track_id++;
+         strlcpy(s_tracks[s].klass, boxes[i].klass, sizeof(s_tracks[s].klass));
+         s_tracks[s].x = boxes[i].x;
+         s_tracks[s].y = boxes[i].y;
+         s_tracks[s].w = boxes[i].w;
+         s_tracks[s].h = boxes[i].h;
+         s_tracks[s].confidence = boxes[i].confidence;
+         s_tracks[s].seen_count = 1;
+         s_tracks[s].not_seen_count = 0;
+         s_tracks[s].first_seen_ms = now;
+         s_tracks[s].last_seen_ms = now;
+         s_tracks[s].confirmed = false;
+         break;
+      }
+   }
 }
 
 static void process_one_frame(void) {
@@ -123,15 +283,20 @@ static void process_one_frame(void) {
       return;
    }
    s_state.detections_total += (uint32_t)n;
-   for (size_t i = 0; i < n; i++) {
-      if (!is_interesting_class(boxes[i].klass)) continue;
-      strlcpy(s_state.last_class, boxes[i].klass, sizeof(s_state.last_class));
-      s_state.last_detection_ms = now_ms();
-      s_state.last_confidence = boxes[i].confidence;
-      char detail[48];
-      snprintf(detail, sizeof(detail), "%s %.2f", boxes[i].klass, boxes[i].confidence);
-      tab5_debug_obs_event("vision.detect", detail);
+   /* V2-A.2: only feed interesting classes to the tracker.  Saves
+    * tracker slots from being burned by the noisy "cell phone" /
+    * "bottle" detections that yolo11n surfaces from a desk shot. */
+   voice_yolo_box_t filtered[VS_MAX_BOXES];
+   size_t fn = 0;
+   for (size_t i = 0; i < n && fn < VS_MAX_BOXES; i++) {
+      if (is_interesting_class(boxes[i].klass)) {
+         filtered[fn++] = boxes[i];
+         strlcpy(s_state.last_class, boxes[i].klass, sizeof(s_state.last_class));
+         s_state.last_detection_ms = now_ms();
+         s_state.last_confidence = boxes[i].confidence;
+      }
    }
+   tracker_update(filtered, fn);
 }
 
 static void vision_service_task(void *arg) {
@@ -147,6 +312,16 @@ static void vision_service_task(void *arg) {
       s_state.enabled = enabled;
       s_state.rate_hz = rate;
       s_state.uptime_ms = now_ms() - s_boot_ms;
+      /* V2-A.2: refresh tracker counters for /vision/state. */
+      uint8_t act = 0, conf = 0;
+      for (int s = 0; s < VS_TRACK_SLOTS; s++) {
+         if (s_tracks[s].in_use) {
+            act++;
+            if (s_tracks[s].confirmed) conf++;
+         }
+      }
+      s_state.active_tracks = act;
+      s_state.confirmed_tracks = conf;
       xSemaphoreGive(s_lock);
 
       if (!enabled) {

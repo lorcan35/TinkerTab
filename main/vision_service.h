@@ -48,6 +48,11 @@ typedef struct {
    char last_class[24];        /* class name of most recent detection */
    uint64_t last_detection_ms; /* uptime_ms at last detection */
    float last_confidence;
+   /* V2-A.2 tracker metrics. */
+   uint8_t active_tracks;        /* tracks currently in flight (any seen_count) */
+   uint8_t confirmed_tracks;     /* subset that crossed CONFIRM_HITS */
+   uint64_t last_welcome_ms;     /* uptime_ms at last Welcome glance fire */
+   uint32_t welcome_fires_total; /* lifetime Welcome glance count */
 } vision_service_state_t;
 
 void vision_service_get_state(vision_service_state_t *out);
