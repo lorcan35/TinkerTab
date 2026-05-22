@@ -12,6 +12,8 @@
 #include "debug_obs.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "task_worker.h"
 
 static const char *TAG = "ui_audio_cues";
@@ -171,7 +173,23 @@ static void cue_play_job(void *arg) {
    }
    const cue_entry_t *c = &s_cues[j->id];
    tab5_audio_speaker_enable(true);
+   /* Amp ramp-up: NS4150B class-D needs ~30 ms after enable before
+    * the speaker is actually amplifying.  Without this wait, a short
+    * cue (80 ms MODE_SWITCH) plays entirely during the ramp window
+    * and is silent to the user.  tab5_audio_test_tone happens to
+    * write 10×10ms chunks which masks this — the first few chunks
+    * land while the amp is still ramping but the later chunks land
+    * after.  Cues feed a single buffer so they need the pre-wait
+    * explicitly. */
+   vTaskDelay(pdMS_TO_TICKS(40));
    esp_err_t r = tab5_audio_play_raw(c->pcm, c->samples);
+   /* DMA drain — esp_codec_dev_write may return once the buffer is
+    * queued, before the I2S DMA pushes the tail samples.  Bound the
+    * drain wait by actual cue duration plus a margin so longer cues
+    * (e.g. UI_CUE_WELCOME at 450 ms) still play fully. */
+   const uint32_t play_ms = (uint32_t)(c->samples * 1000ULL / 48000ULL);
+   const uint32_t drain_ms = play_ms + 80;
+   vTaskDelay(pdMS_TO_TICKS(drain_ms));
    /* Disable amp after playback to avoid hiss/leakage between cues. */
    tab5_audio_speaker_enable(false);
 
