@@ -131,6 +131,30 @@ esp_err_t ui_audio_cues_init(void) {
       if (r != ESP_OK) worst = r;
    }
 
+   /* V2-A.4: Vision Welcome glance — 3-tone ascending C5-E5-G5 arpeggio
+    * (523/659/784 Hz), 150 ms each tone @ 60% amplitude.  Distinctly
+    * louder + longer than the 80 ms two-tone INCOMING_HIGH bell so a
+    * "user just walked back to their desk" event reads as something
+    * meaningful rather than a quick UI tick. */
+   if (!s_cues[UI_CUE_WELCOME].pcm) {
+      const size_t each = SAMPLE_RATE / 1000 * 150;
+      const size_t total = each * 3;
+      const int amp = 32767 * 60 / 100;
+      int16_t *pcm = heap_caps_malloc(total * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      if (!pcm) {
+         ESP_LOGW(TAG, "PSRAM alloc failed for UI_CUE_WELCOME");
+         worst = ESP_ERR_NO_MEM;
+      } else {
+         gen_sine_envelope(pcm, each, 523.25f, amp);
+         gen_sine_envelope(pcm + each, each, 659.25f, amp);
+         gen_sine_envelope(pcm + 2 * each, each, 783.99f, amp);
+         s_cues[UI_CUE_WELCOME].pcm = pcm;
+         s_cues[UI_CUE_WELCOME].samples = total;
+         s_cues[UI_CUE_WELCOME].obs_tag = "welcome";
+         ESP_LOGI(TAG, "Cue WELCOME ready: %u samples C5→E5→G5 @ 60%%", (unsigned)total);
+      }
+   }
+
    return worst;
 }
 
