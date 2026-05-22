@@ -562,6 +562,11 @@ void app_main(void)
         tab5_ui_lock();
         ui_splash_destroy();
         ui_theme_init();  // must run before any screen that uses TH_* styles
+        /* P10 follow-up (TT #670): cache the scaled font pointers from the
+         * NVS font_scale tier.  Must run before any FONT_* macro expansion
+         * inside a UI create() — those macros now resolve via the cache. */
+        extern void tab5_typography_init(void);
+        tab5_typography_init();
         /* PR 2 / dictation pipeline: init the state machine + mutex BEFORE
          * any UI module that subscribes during create (ui_home_create →
          * ui_orb_create + the chip subscribe in ui_home).  Keeping init in
