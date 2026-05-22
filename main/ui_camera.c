@@ -715,7 +715,15 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_text_font(s_rec_btn_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(s_rec_btn_lbl);
 
-    /* ── TT #635: DETECT button — toggles K144 YOLO11n overlay ──── */
+    /* ── DETECT button — toggles K144 YOLO11n overlay (TT #635) ────
+     *
+     * Polish P5 (TT #656): the prior two-button stack (DETECT + a
+     * separate MODE chip above it) read as a hack and obscured the
+     * Wave 2 model picker.  Folded into one pill: tap toggles on/off,
+     * long-press cycles DET → POSE → SEG.  Label shows the active
+     * model when ON ("DET" / "POSE" / "SEG"), "DETECT" when OFF.
+     * s_yolo_mode_btn stays as a forward-declared NULL pointer so the
+     * destroy path's existing null-clear sweeps it safely. */
     s_yolo_btn = lv_button_create(bar);
     lv_obj_remove_style_all(s_yolo_btn);
     lv_obj_set_size(s_yolo_btn, 132, 60);
@@ -727,35 +735,18 @@ lv_obj_t *ui_camera_create(void)
     lv_obj_set_style_radius(s_yolo_btn, 30, 0);
     lv_obj_clear_flag(s_yolo_btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(s_yolo_btn, yolo_btn_cb, LV_EVENT_CLICKED, NULL);
+    /* Long-press = cycle model; only meaningful when DETECT is ON.
+     * The handler is the same one the prior MODE button used; we just
+     * route the gesture through the now-unified button. */
+    lv_obj_add_event_cb(s_yolo_btn, yolo_mode_btn_cb, LV_EVENT_LONG_PRESSED, NULL);
     ui_fb_button(s_yolo_btn);
     s_yolo_btn_lbl = lv_label_create(s_yolo_btn);
     lv_label_set_text(s_yolo_btn_lbl, "DETECT");
     lv_obj_set_style_text_color(s_yolo_btn_lbl, lv_color_hex(COL_YOLO_BORDER), 0);
     lv_obj_set_style_text_font(s_yolo_btn_lbl, &lv_font_montserrat_18, 0);
     lv_obj_center(s_yolo_btn_lbl);
-
-    /* ── TT #638: MODE cycle button (DET / POSE / SEG) ──────────── */
-    s_yolo_mode_btn = lv_button_create(bar);
-    lv_obj_remove_style_all(s_yolo_mode_btn);
-    lv_obj_set_size(s_yolo_mode_btn, 100, 44);
-    /* Stack above DETECT (same x_offset -110, smaller height, y above).
-     * Bottom-bar height = CONTROL_BAR_H=320, DETECT at y_off=-20 means
-     * the DETECT center sits 20 px above the bar's vertical center.
-     * Placing MODE at y_off=-90 stacks it cleanly with ~16 px gap. */
-    lv_obj_align(s_yolo_mode_btn, LV_ALIGN_CENTER, -110, -90);
-    lv_obj_set_style_bg_color(s_yolo_mode_btn, lv_color_hex(0x1A1A24), 0);
-    lv_obj_set_style_bg_opa(s_yolo_mode_btn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(s_yolo_mode_btn, lv_color_hex(COL_YOLO_BORDER), 0);
-    lv_obj_set_style_border_width(s_yolo_mode_btn, 2, 0);
-    lv_obj_set_style_radius(s_yolo_mode_btn, 30, 0);
-    lv_obj_clear_flag(s_yolo_mode_btn, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(s_yolo_mode_btn, yolo_mode_btn_cb, LV_EVENT_CLICKED, NULL);
-    ui_fb_button(s_yolo_mode_btn);
-    s_yolo_mode_lbl = lv_label_create(s_yolo_mode_btn);
-    lv_label_set_text(s_yolo_mode_lbl, yolo_mode_short_label(voice_yolo_get_model()));
-    lv_obj_set_style_text_color(s_yolo_mode_lbl, lv_color_hex(COL_YOLO_BORDER), 0);
-    lv_obj_set_style_text_font(s_yolo_mode_lbl, &lv_font_montserrat_18, 0);
-    lv_obj_center(s_yolo_mode_lbl);
+    s_yolo_mode_btn = NULL;
+    s_yolo_mode_lbl = NULL;
 
     /* ── "No SD" label below capture button (hidden by default) ── */
     lbl_no_sd = lv_label_create(bar);
@@ -1173,7 +1164,10 @@ static void yolo_btn_cb(lv_event_t *e) {
    (void)e;
    s_yolo_on = !s_yolo_on;
    if (s_yolo_btn_lbl) {
-      lv_label_set_text(s_yolo_btn_lbl, s_yolo_on ? "DETECT ON" : "DETECT");
+      /* Polish P5 (TT #656): single-button design.  Label reads
+       * "DETECT" when off, current model name ("DET" / "POSE" / "SEG")
+       * when on.  No more stacked MODE button. */
+      lv_label_set_text(s_yolo_btn_lbl, s_yolo_on ? yolo_mode_short_label(voice_yolo_get_model()) : "DETECT");
    }
    if (!s_yolo_on) {
       /* Hide all boxes immediately. */
@@ -1185,19 +1179,22 @@ static void yolo_btn_cb(lv_event_t *e) {
    tab5_debug_obs_event("yolo.toggle", s_yolo_on ? "on" : "off");
 }
 
-/* TT #638: cycle the K144 yolo model (DET → POSE → SEG → DET).  Hides
- * all currently-shown boxes immediately so we don't leave stale
- * keypoint dots around when switching out of POSE; next inference
- * tick re-fills the overlay. */
+/* TT #638: cycle the K144 yolo model (DET → POSE → SEG → DET).
+ * P5 (TT #656): now fired by long-press on the unified DETECT button
+ * instead of a separate MODE chip. */
 static void yolo_mode_btn_cb(lv_event_t *e) {
    (void)e;
+   /* Cycle is meaningful only while detection is on; otherwise silently
+    * still advance the underlying model so a subsequent toggle-on
+    * picks the user's choice. */
    voice_yolo_model_t next = voice_yolo_get_model();
    next = (next == VOICE_YOLO_MODEL_DET)    ? VOICE_YOLO_MODEL_POSE
           : (next == VOICE_YOLO_MODEL_POSE) ? VOICE_YOLO_MODEL_SEG
                                             : VOICE_YOLO_MODEL_DET;
    voice_yolo_set_model(next);
-   if (s_yolo_mode_lbl) {
-      lv_label_set_text(s_yolo_mode_lbl, yolo_mode_short_label(next));
+   if (s_yolo_on && s_yolo_btn_lbl) {
+      /* Reflect the new active model in the unified button label. */
+      lv_label_set_text(s_yolo_btn_lbl, yolo_mode_short_label(next));
    }
    /* Hide existing overlay until the new model returns its first frame. */
    s_yolo_n_pending = 0;
