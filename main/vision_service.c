@@ -20,6 +20,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "settings.h"
+#include "ui_audio_cues.h" /* V2-A.4 — UI_CUE_INCOMING_HIGH chime on Welcome */
 #include "ui_camera.h"
 #include "voice_video.h"
 #include "voice_yolo.h"
@@ -189,6 +190,10 @@ static void fire_rules_on_enter(const vs_track_t *t) {
          s_state.welcome_fires_total++;
          extern void ui_home_show_toast(const char *msg);
          ui_home_show_toast("Welcome back");
+         /* V2-A.4: pair the toast with the high-priority chime so the
+          * return is acknowledged audibly even when the user isn't
+          * looking at the home screen at the moment of detection. */
+         ui_audio_cue_play(UI_CUE_INCOMING_HIGH);
          char wdetail[64];
          snprintf(wdetail, sizeof(wdetail), "away_ms=%llu", (unsigned long long)away_ms);
          tab5_debug_obs_event("vision.welcome", wdetail);
