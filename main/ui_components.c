@@ -463,3 +463,28 @@ void ui_fmt_count(char *buf, size_t cap, uint64_t n) {
       snprintf(buf, cap, "%.1fM", (double)n / 1000000.0);
    }
 }
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Overlay fade-in
+ * ───────────────────────────────────────────────────────────────── */
+
+static void fade_anim_cb(void *obj, int32_t v) {
+   if (obj) lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)v, LV_PART_MAIN);
+}
+
+void ui_overlay_fade_in(lv_obj_t *obj, uint32_t duration_ms) {
+   if (!obj) return;
+   if (duration_ms == 0) duration_ms = 250;
+   /* Snap to opaque-zero before animating so the widget appears at 0
+    * and animates up.  Idempotent — calling on a fully-visible widget
+    * just blinks it in 250 ms. */
+   lv_obj_set_style_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, obj);
+   lv_anim_set_exec_cb(&a, fade_anim_cb);
+   lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+   lv_anim_set_duration(&a, duration_ms);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+   lv_anim_start(&a);
+}
