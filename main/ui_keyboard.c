@@ -12,11 +12,14 @@
  */
 
 #include "ui_keyboard.h"
-#include "ui_voice.h"
+
+#include <ctype.h>
+#include <string.h>
+
 #include "config.h"
 #include "esp_log.h"
-#include <string.h>
-#include <ctype.h>
+#include "ui_feedback.h" /* P8 (TT #662): ui_fb_button transition on keys */
+#include "ui_voice.h"
 
 static const char *TAG = "ui_kbd";
 
@@ -792,8 +795,12 @@ static lv_obj_t *make_key(lv_obj_t *row, const char *label, int w, int h,
     lv_obj_set_style_pad_all(key, 0, 0);
     lv_obj_clear_flag(key, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Press feedback style */
+    /* Press feedback — explicit color (amber-tinted) for instant
+     * visual recognition + Polish P8 (TT #662) bg-opa transition so
+     * the press doesn't snap on/off but eases in/out matching the
+     * rest of the UI's press-feedback rhythm. */
     lv_obj_set_style_bg_color(key, lv_color_hex(KB_KEY_PRESS), LV_STATE_PRESSED);
+    ui_fb_button(key);
 
     /* Label */
     lv_obj_t *lbl = lv_label_create(key);
