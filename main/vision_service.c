@@ -121,6 +121,31 @@ static bool is_interesting_class(const char *klass) {
    return klass && (strcmp(klass, "person") == 0 || strcmp(klass, "dog") == 0 || strcmp(klass, "cat") == 0);
 }
 
+/* V2-A.2 follow-up: per-class confidence floors.  yolo11n at 320×320
+ * on indoor scenes routinely false-positives "dog"/"cat" on humans
+ * with curly hair, beards, or partial occlusion.  Live test had the
+ * model classify the user (on their own desk, clearly framed) as a
+ * dog at 0.5 confidence.  Require animal detections at ≥ 0.65 (well
+ * above the typical false-positive cluster).  Person stays at the
+ * user-configured global threshold.  Suppresses ghost-pet events. */
+static float class_min_confidence(const char *klass) {
+   if (klass && (strcmp(klass, "dog") == 0 || strcmp(klass, "cat") == 0)) return 0.65f;
+   return 0.0f;
+}
+
+/* Suppress animal detections when a person is detected in the same
+ * frame.  yolo11n COCO false-positive: when a human silhouette is in
+ * frame, the model often double-fires both "person" and "dog"/"cat"
+ * for the SAME pixels.  If both classes have boxes this frame, drop
+ * the animal one.  Real-world false positives kept showing up as
+ * vision.pet events even though no pet was in the scene. */
+static bool any_person_box(const voice_yolo_box_t *boxes, size_t n) {
+   for (size_t i = 0; i < n; i++) {
+      if (strcmp(boxes[i].klass, "person") == 0) return true;
+   }
+   return false;
+}
+
 /* ── V2-A.2 IoU tracker ──────────────────────────────────────────
  *
  * Single-frame greedy IoU association.  Cheap, deterministic, good
@@ -285,16 +310,27 @@ static void process_one_frame(void) {
    s_state.detections_total += (uint32_t)n;
    /* V2-A.2: only feed interesting classes to the tracker.  Saves
     * tracker slots from being burned by the noisy "cell phone" /
-    * "bottle" detections that yolo11n surfaces from a desk shot. */
+    * "bottle" detections that yolo11n surfaces from a desk shot.
+    *
+    * V2-A.2 follow-up — two false-positive suppressions for the
+    * desk-pointing-at-user case where yolo11n was firing "dog" on
+    * a human with curly hair + beard:
+    *  1. Per-class confidence floor (animals require 0.65+).
+    *  2. If any person box is in the frame, drop all animal boxes
+    *     from that same frame — the model double-fires both classes
+    *     on overlapping pixels; person wins. */
+   bool has_person = any_person_box(boxes, n);
    voice_yolo_box_t filtered[VS_MAX_BOXES];
    size_t fn = 0;
    for (size_t i = 0; i < n && fn < VS_MAX_BOXES; i++) {
-      if (is_interesting_class(boxes[i].klass)) {
-         filtered[fn++] = boxes[i];
-         strlcpy(s_state.last_class, boxes[i].klass, sizeof(s_state.last_class));
-         s_state.last_detection_ms = now_ms();
-         s_state.last_confidence = boxes[i].confidence;
-      }
+      if (!is_interesting_class(boxes[i].klass)) continue;
+      if (boxes[i].confidence < class_min_confidence(boxes[i].klass)) continue;
+      bool is_animal = (strcmp(boxes[i].klass, "dog") == 0 || strcmp(boxes[i].klass, "cat") == 0);
+      if (is_animal && has_person) continue;
+      filtered[fn++] = boxes[i];
+      strlcpy(s_state.last_class, boxes[i].klass, sizeof(s_state.last_class));
+      s_state.last_detection_ms = now_ms();
+      s_state.last_confidence = boxes[i].confidence;
    }
    tracker_update(filtered, fn);
 }
