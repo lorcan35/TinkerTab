@@ -16,6 +16,7 @@
 
 #include "config.h"
 #include "lvgl.h"
+#include "settings.h" /* tab5_settings_get_reduce_motion (P10) */
 #include "ui_core.h"
 #include "ui_feedback.h"
 #include "ui_theme.h"
@@ -475,6 +476,14 @@ static void fade_anim_cb(void *obj, int32_t v) {
 void ui_overlay_fade_in(lv_obj_t *obj, uint32_t duration_ms) {
    if (!obj) return;
    if (duration_ms == 0) duration_ms = 250;
+   /* P10: reduce-motion users get an instant snap.  The decorative
+    * fade is the most-fired animation in the firmware (every screen
+    * swap runs it via tab5_nav_to), so honoring the toggle here
+    * delivers the biggest perceived motion reduction with one guard. */
+   if (tab5_settings_get_reduce_motion()) {
+      lv_obj_set_style_opa(obj, LV_OPA_COVER, LV_PART_MAIN);
+      return;
+   }
    /* Snap to opaque-zero before animating so the widget appears at 0
     * and animates up.  Idempotent — calling on a fully-visible widget
     * just blinks it in 250 ms. */
@@ -538,7 +547,16 @@ lv_obj_t *ui_skeleton_row(lv_obj_t *parent, int y, int w, int lines) {
       /* Polish P7: shimmer.  Each bar's anim is staggered by
        * 150 ms × line index so the wave reads as a left-to-right
        * sweep down the row.  PLAYBACK_TIME = REPEAT to make it
-       * a continuous ping-pong. */
+       * a continuous ping-pong.
+       *
+       * P10: reduce-motion users get static dim bars instead of
+       * the ping-pong.  The bars still communicate "loading" via
+       * their card-shaped placeholder layout — just without the
+       * decorative pulse. */
+      if (tab5_settings_get_reduce_motion()) {
+         lv_obj_set_style_bg_opa(bar, LV_OPA_60, 0);
+         continue;
+      }
       lv_anim_t a;
       lv_anim_init(&a);
       lv_anim_set_var(&a, bar);
