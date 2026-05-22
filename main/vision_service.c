@@ -13,6 +13,7 @@
 
 #include "camera.h"
 #include "debug_obs.h"
+#include "driver/jpeg_encode.h" /* jpeg_alloc_encoder_mem for DMA-aligned output */
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -63,7 +64,14 @@ static esp_err_t ensure_buffers(void) {
       if (!s_small_buf) return ESP_ERR_NO_MEM;
    }
    if (!s_jpeg_buf) {
-      s_jpeg_buf = heap_caps_malloc(VS_JPEG_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      /* HW JPEG engine needs a DMA-aligned output buffer.  Plain
+       * heap_caps_malloc on PSRAM doesn't guarantee the cache-line
+       * alignment the encoder expects — `jpeg_encoder_process` then
+       * fails with ESP_ERR_INVALID_ARG (=258) even for valid 320×320
+       * inputs.  ui_camera's yolo path does the same. */
+      jpeg_encode_memory_alloc_cfg_t mcfg = {.buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER};
+      size_t actual = 0;
+      s_jpeg_buf = (uint8_t *)jpeg_alloc_encoder_mem(VS_JPEG_CAP, &mcfg, &actual);
       if (!s_jpeg_buf) return ESP_ERR_NO_MEM;
    }
    return ESP_OK;
@@ -88,6 +96,9 @@ static void process_one_frame(void) {
    }
    if (frame.format != TAB5_CAM_FMT_RGB565) {
       ESP_LOGW(TAG, "frame format %d not RGB565 — skip", (int)frame.format);
+      char detail[24];
+      snprintf(detail, sizeof(detail), "fmt=%d", (int)frame.format);
+      tab5_debug_obs_event("vision.skip", detail);
       return;
    }
    downsample_rgb565((const uint16_t *)frame.data, frame.width, frame.height, s_small_buf);
@@ -97,6 +108,9 @@ static void process_one_frame(void) {
                                                  VS_JPEG_CAP, &jpeg_bytes);
    if (enc_err != ESP_OK || jpeg_bytes == 0) {
       ESP_LOGD(TAG, "JPEG encode failed (%d, bytes=%u)", (int)enc_err, (unsigned)jpeg_bytes);
+      char detail[32];
+      snprintf(detail, sizeof(detail), "enc=%d b=%u", (int)enc_err, (unsigned)jpeg_bytes);
+      tab5_debug_obs_event("vision.skip", detail);
       return;
    }
 
@@ -182,6 +196,12 @@ esp_err_t vision_service_init(void) {
    s_lock = xSemaphoreCreateMutex();
    if (!s_lock) return ESP_ERR_NO_MEM;
    s_boot_ms = now_ms();
+   /* voice_video_encode_rgb565 requires voice_video_init to have run
+    * for the HW JPEG encoder + mutex.  voice.c calls this at boot but
+    * we self-init here too — idempotent — to guard against init-order
+    * regressions. */
+   extern esp_err_t voice_video_init(void);
+   voice_video_init();
    /* PSRAM-backed task stack — keeps internal SRAM free for the
     * Wi-Fi + LVGL hot paths. */
    StaticTask_t *task_buf = heap_caps_malloc(sizeof(StaticTask_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
