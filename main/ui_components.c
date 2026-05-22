@@ -592,3 +592,31 @@ lv_obj_t *ui_error_chip(lv_obj_t *parent, int x, int y, int w, const char *messa
 
    return chip;
 }
+
+/* ─────────────────────────────────────────────────────────────────
+ *  Swipe-back gesture
+ * ───────────────────────────────────────────────────────────────── */
+
+typedef struct {
+   ui_topbar_cb_t dismiss_cb;
+} gesture_state_t;
+
+static void gesture_back_cb(lv_event_t *e) {
+   lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_active());
+   if (dir != LV_DIR_RIGHT && dir != LV_DIR_BOTTOM) return;
+   gesture_state_t *st = (gesture_state_t *)lv_event_get_user_data(e);
+   if (st && st->dismiss_cb) st->dismiss_cb(e);
+}
+
+void ui_gesture_register_back(lv_obj_t *obj, ui_topbar_cb_t dismiss_cb) {
+   if (!obj || !dismiss_cb) return;
+   /* Small per-screen state slab — at most ~8 screens register one
+    * gesture each, so a 16-slot static pool covers all cases without
+    * malloc churn. */
+   static gesture_state_t s_states[16];
+   static int s_n = 0;
+   if (s_n >= (int)(sizeof(s_states) / sizeof(s_states[0]))) return;
+   gesture_state_t *st = &s_states[s_n++];
+   st->dismiss_cb = dismiss_cb;
+   lv_obj_add_event_cb(obj, gesture_back_cb, LV_EVENT_GESTURE, st);
+}

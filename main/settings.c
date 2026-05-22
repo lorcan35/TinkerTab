@@ -515,6 +515,15 @@ bool tab5_settings_get_privacy_lock(void) { return get_u8("privacy", 0) != 0; }
 
 esp_err_t tab5_settings_set_privacy_lock(bool on) { return set_u8("privacy", on ? 1 : 0); }
 
+/* ── Gesture hint seen (Polish P6 / TT #658) ──────────────────────
+ *
+ * Single-shot guard for the "Tip: swipe right to go back" toast that
+ * fires on the first overlay nav after fresh install / NVS erase.
+ * Returning users (with the hint dismissed) skip the toast. */
+bool tab5_settings_get_gesture_hint_seen(void) { return get_u8("gest_hint", 0) != 0; }
+
+esp_err_t tab5_settings_set_gesture_hint_seen(bool seen) { return set_u8("gest_hint", seen ? 1 : 0); }
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {

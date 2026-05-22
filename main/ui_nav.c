@@ -20,8 +20,10 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "ui_core.h" /* ui_tap_gate */
-#include "voice.h"   /* voice_get_state, voice_cancel, voice_state_t */
+#include "settings.h" /* TT #658 — gesture-hint NVS guard */
+#include "ui_core.h"  /* ui_tap_gate */
+#include "ui_home.h"  /* TT #658 — ui_home_show_toast for the hint */
+#include "voice.h"    /* voice_get_state, voice_cancel, voice_state_t */
 
 static const char *TAG = "ui_nav";
 
@@ -88,6 +90,19 @@ esp_err_t tab5_nav_to(tab5_nav_target_t target, tab5_nav_flags_t flags) {
 
    /* Step 3: emit obs event so the e2e harness can wait on it. */
    tab5_debug_obs_event("nav.go", name);
+
+   /* Polish P6 (TT #658): single-shot gesture hint.  On first
+    * overlay nav from home, surface a toast telling the user about
+    * the swipe-right-to-go-back gesture.  Gated on NVS `gest_hint`
+    * so it never fires twice.  Skipped on nav-to-home (would be
+    * unhelpful — user is going home, not landing on a new overlay). */
+   if (target != NAV_HOME && !tab5_settings_get_gesture_hint_seen()) {
+      tab5_settings_set_gesture_hint_seen(true);
+      /* Fire the toast — ui_home_show_toast already async-routes to
+       * the LVGL thread, so calling from any context is safe. */
+      ui_home_show_toast("Tip: swipe right to go back");
+      tab5_debug_obs_event("gest.hint", "fired");
+   }
 
    /* Step 4: hand off to the LVGL-thread dispatcher.  This sets the
     * cached nav-target name (so /screen returns the new value) and

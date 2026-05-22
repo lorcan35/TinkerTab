@@ -126,6 +126,10 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    cJSON_AddNumberToObject(root, "llm_engine", tab5_settings_get_llm_engine());
    /* Cap Wave 5 (TT #644): privacy lock master switch. */
    cJSON_AddBoolToObject(root, "privacy_lock", tab5_settings_get_privacy_lock());
+   /* Polish P6 (TT #658): one-shot gesture hint guard.  Lets harness
+    * reset the flag via POST to re-test the hint UX without an NVS
+    * erase. */
+   cJSON_AddBoolToObject(root, "gesture_hint_seen", tab5_settings_get_gesture_hint_seen());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -442,6 +446,19 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
          on = pl->valuedouble != 0;
       if (tab5_settings_set_privacy_lock(on) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("privacy_lock"));
+      }
+   }
+   /* Polish P6 (TT #658): gesture-hint single-shot guard.  Accept
+    * bool or 0/1 for symmetry with the privacy lock. */
+   cJSON *gh = cJSON_GetObjectItem(req_json, "gesture_hint_seen");
+   if (gh) {
+      bool on = false;
+      if (cJSON_IsBool(gh))
+         on = cJSON_IsTrue(gh);
+      else if (cJSON_IsNumber(gh))
+         on = gh->valuedouble != 0;
+      if (tab5_settings_set_gesture_hint_seen(on) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("gesture_hint_seen"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");

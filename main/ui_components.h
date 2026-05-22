@@ -152,6 +152,17 @@ lv_obj_t *ui_skeleton_row(lv_obj_t *parent, int y, int w, int lines);
  * so callers can delete it later. */
 lv_obj_t *ui_error_chip(lv_obj_t *parent, int x, int y, int w, const char *message, ui_topbar_cb_t retry_cb);
 
+/* ── Swipe-back gesture registration ───────────────────────────────
+ *
+ * Polish P6 (TT #658): standard "swipe right or down → dismiss"
+ * gesture binding.  Registers an LV_EVENT_GESTURE callback on @p obj
+ * that fires @p dismiss_cb when the indev gesture direction is
+ * LV_DIR_RIGHT or LV_DIR_BOTTOM.  Other directions are ignored.
+ * Future screens use this instead of open-coding the gesture-cb +
+ * direction check.  The helper does not consume the gesture for
+ * other directions, so vertical scroll still works. */
+void ui_gesture_register_back(lv_obj_t *obj, ui_topbar_cb_t dismiss_cb);
+
 #ifdef __cplusplus
 }
 #endif
