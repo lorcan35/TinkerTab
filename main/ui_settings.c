@@ -657,6 +657,32 @@ static void cb_cam_rotation(lv_event_t *e)
     tab5_settings_set_cam_rotation((uint8_t)sel);
 }
 
+/* Polish P10 / P11 (TT #666): a11y + theme persistence callbacks.
+ * Infrastructure-only — applying the value across every TH_* token /
+ * FONT_* size / animation site is a future per-screen sweep. */
+static void cb_font_scale(lv_event_t *e) {
+   lv_obj_t *dd = lv_event_get_target(e);
+   uint16_t sel = lv_dropdown_get_selected(dd);
+   if (sel > 3) sel = 1;
+   ESP_LOGI(TAG, "Font scale tier -> %u", (unsigned)sel);
+   tab5_settings_set_font_scale((uint8_t)sel);
+}
+
+static void cb_reduce_motion(lv_event_t *e) {
+   lv_obj_t *sw = lv_event_get_target(e);
+   bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+   ESP_LOGI(TAG, "Reduce motion %s", on ? "enabled" : "disabled");
+   tab5_settings_set_reduce_motion(on);
+}
+
+static void cb_theme(lv_event_t *e) {
+   lv_obj_t *dd = lv_event_get_target(e);
+   uint16_t sel = lv_dropdown_get_selected(dd);
+   if (sel > 2) sel = 0;
+   ESP_LOGI(TAG, "Theme -> %u", (unsigned)sel);
+   tab5_settings_set_theme((uint8_t)sel);
+}
+
 static void cb_autorotate(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -2371,6 +2397,62 @@ lv_obj_t *ui_settings_create(void)
         lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
         lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
         lv_obj_add_event_cb(dd, cb_cam_rotation, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+    y += ROW_H + 4;
+
+    /* Polish P10 (TT #666): font-scale dropdown.  Persists tier 0..3
+     * (0.85 / 1.0 / 1.15 / 1.3).  Application of the multiplier to
+     * every FONT_* token is a future per-screen sweep. */
+    mk_row_label(s_scroll, "Text size", y);
+    {
+       lv_obj_t *dd = lv_dropdown_create(s_scroll);
+       lv_dropdown_set_options(dd, "Small\nDefault\nLarge\nExtra large");
+       uint8_t cur = tab5_settings_get_font_scale();
+       if (cur > 3) cur = 1;
+       lv_dropdown_set_selected(dd, cur);
+       lv_obj_set_pos(dd, 340, y);
+       lv_obj_set_size(dd, 340, 36);
+       lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
+       lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, 0);
+       lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
+       lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
+       lv_obj_set_style_border_width(dd, 1, 0);
+       lv_obj_set_style_border_color(dd, lv_color_hex(0x1A1A24), 0);
+       lv_obj_set_style_radius(dd, 6, 0);
+       lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
+       lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
+       lv_obj_add_event_cb(dd, cb_font_scale, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+    y += ROW_H + 4;
+
+    /* Polish P10 (TT #666): reduce-motion switch.  Persists boolean.
+     * Application to decorative animation sites is a future sweep. */
+    mk_row_label(s_scroll, "Reduce motion", y);
+    mk_switch(s_scroll, acc_display, 660, y, tab5_settings_get_reduce_motion(), cb_reduce_motion, NULL);
+    y += ROW_H + 4;
+
+    /* Polish P11 (TT #666): theme picker dropdown.  0=dark, 1=light,
+     * 2=auto-by-time (7am-7pm light, else dark).  Dispatching TH_*
+     * tokens through a light palette is a future per-screen sweep. */
+    mk_row_label(s_scroll, "Theme", y);
+    {
+       lv_obj_t *dd = lv_dropdown_create(s_scroll);
+       lv_dropdown_set_options(dd, "Dark\nLight\nAuto (time of day)");
+       uint8_t cur = tab5_settings_get_theme();
+       if (cur > 2) cur = 0;
+       lv_dropdown_set_selected(dd, cur);
+       lv_obj_set_pos(dd, 340, y);
+       lv_obj_set_size(dd, 340, 36);
+       lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
+       lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, 0);
+       lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
+       lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
+       lv_obj_set_style_border_width(dd, 1, 0);
+       lv_obj_set_style_border_color(dd, lv_color_hex(0x1A1A24), 0);
+       lv_obj_set_style_radius(dd, 6, 0);
+       lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
+       lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
+       lv_obj_add_event_cb(dd, cb_theme, LV_EVENT_VALUE_CHANGED, NULL);
     }
     y += ROW_H + 16;
     mk_card_bg(s_scroll, display_section_top, y);

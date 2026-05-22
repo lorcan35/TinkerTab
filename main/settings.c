@@ -524,6 +524,36 @@ bool tab5_settings_get_gesture_hint_seen(void) { return get_u8("gest_hint", 0) !
 
 esp_err_t tab5_settings_set_gesture_hint_seen(bool seen) { return set_u8("gest_hint", seen ? 1 : 0); }
 
+/* ── Accessibility + theme infrastructure (Polish P10 + P11 / TT #666)
+ *
+ * NVS keys + accessors only — the actual application of font_scale,
+ * reduce_motion, and a light-theme palette across every screen is a
+ * future per-screen sweep, intentionally scoped out of #666. */
+
+uint8_t tab5_settings_get_font_scale(void) {
+   uint8_t v = get_u8("font_scale", 1);
+   return v <= 3 ? v : 1;
+}
+
+esp_err_t tab5_settings_set_font_scale(uint8_t tier) {
+   if (tier > 3) return ESP_ERR_INVALID_ARG;
+   return set_u8("font_scale", tier);
+}
+
+bool tab5_settings_get_reduce_motion(void) { return get_u8("red_motion", 0) != 0; }
+
+esp_err_t tab5_settings_set_reduce_motion(bool on) { return set_u8("red_motion", on ? 1 : 0); }
+
+uint8_t tab5_settings_get_theme(void) {
+   uint8_t v = get_u8("theme", 0);
+   return v <= 2 ? v : 0;
+}
+
+esp_err_t tab5_settings_set_theme(uint8_t theme) {
+   if (theme > 2) return ESP_ERR_INVALID_ARG;
+   return set_u8("theme", theme);
+}
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {
