@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 #include "settings.h"
 #include "task_worker.h"
+#include "ui_components.h" /* P4 (TT #654) — ui_empty_state, ui_error_chip */
 #include "ui_core.h"
 #include "ui_home.h"
 #include "ui_nav.h" /* TT #623 — tab5_nav_to */
@@ -257,20 +258,17 @@ static void render_rows_cb(void *arg)
     /* Wipe previous rows. */
     lv_obj_clean(s_rows_root);
 
-    if (s_status) {
-        if (!s_fetch->ok) {
-            lv_label_set_text(s_status,
-                "Dragon unreachable. Check Settings \xe2\x80\xa2 Network.");
-            lv_obj_set_style_text_color(s_status, lv_color_hex(0xFF6464), 0);
-            lv_obj_remove_flag(s_status, LV_OBJ_FLAG_HIDDEN);
-        } else if (s_fetch->count == 0) {
-            lv_label_set_text(s_status, "No conversations yet.");
-            lv_obj_set_style_text_color(s_status,
-                lv_color_hex(TH_TEXT_DIM), 0);
-            lv_obj_remove_flag(s_status, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(s_status, LV_OBJ_FLAG_HIDDEN);
-        }
+    /* Polish P4 (TT #654): replace the plain status label with shared
+     * ui_error_chip / ui_empty_state atoms.  Both render into
+     * s_rows_root so they share the scroll viewport with the (absent)
+     * row cards.  Hide the legacy s_status label in those cases. */
+    if (s_status) lv_obj_add_flag(s_status, LV_OBJ_FLAG_HIDDEN);
+    if (!s_fetch->ok) {
+       ui_error_chip(s_rows_root, SIDE_PAD, 12, SW - 2 * SIDE_PAD, "Dragon unreachable. Check Network in Settings.",
+                     NULL);
+    } else if (s_fetch->count == 0) {
+       ui_empty_state(s_rows_root, LV_SYMBOL_DIRECTORY, "No conversations yet",
+                      "Talk to Tinker and they'll appear here.");
     }
 
     if (s_count_lbl) {
