@@ -367,6 +367,33 @@ static esp_err_t vision_test_welcome_handler(httpd_req_t *req) {
    return tab5_debug_send_json_resp(req, root);
 }
 
+/* Diagnostic — fire UI_CUE_MODE_SWITCH directly from the HTTP path
+ * so we can A/B whether the cue path works at all from non-touch
+ * contexts.  Used to debug the Welcome-cue-silent regression. */
+static esp_err_t debug_cue_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+   extern void ui_audio_cue_play(int id);
+   ui_audio_cue_play(0); /* UI_CUE_MODE_SWITCH */
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "fired", true);
+   return tab5_debug_send_json_resp(req, root);
+}
+
+/* Diagnostic — fire the raw `tab5_audio_test_tone` path that the
+ * Volume slider release in Settings uses.  This bypasses the worker
+ * queue + cue PCM cache entirely and writes a synthesized triangle
+ * wave directly to esp_codec_dev_write.  If THIS doesn't play, the
+ * speaker itself is the problem. */
+static esp_err_t debug_tone_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+   extern esp_err_t tab5_audio_test_tone(uint32_t freq_hz, uint32_t duration_ms);
+   esp_err_t r = tab5_audio_test_tone(440, 400);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "fired", true);
+   cJSON_AddNumberToObject(root, "err", r);
+   return tab5_debug_send_json_resp(req, root);
+}
+
 void debug_server_camera_register(httpd_handle_t server) {
    if (!server) return;
 
@@ -384,10 +411,16 @@ void debug_server_camera_register(httpd_handle_t server) {
     * to end without walking away for >2 min every time. */
    static const httpd_uri_t uri_vision_test_welcome = {
        .uri = "/vision/test_welcome", .method = HTTP_POST, .handler = vision_test_welcome_handler};
+   static const httpd_uri_t uri_debug_cue = {
+       .uri = "/audio/test_cue", .method = HTTP_POST, .handler = debug_cue_handler};
+   static const httpd_uri_t uri_debug_tone = {
+       .uri = "/audio/test_tone", .method = HTTP_POST, .handler = debug_tone_handler};
 
    httpd_register_uri_handler(server, &uri_screenshot);
    httpd_register_uri_handler(server, &uri_screenshot_jpg);
    httpd_register_uri_handler(server, &uri_camera);
    httpd_register_uri_handler(server, &uri_vision_state);
    httpd_register_uri_handler(server, &uri_vision_test_welcome);
+   httpd_register_uri_handler(server, &uri_debug_cue);
+   httpd_register_uri_handler(server, &uri_debug_tone);
 }

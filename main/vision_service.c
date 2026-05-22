@@ -150,6 +150,87 @@ static float iou(const vs_track_t *t, const voice_yolo_box_t *b) {
    return ua > 0.0f ? in / ua : 0.0f;
 }
 
+/* V2-A.4 (rev 4): louder ascending Welcome chime.
+ *
+ * Inline tone gen because:
+ *  - ui_audio_cue_play path is silent on this hardware (cue worker
+ *    + amp ramp interaction)
+ *  - tab5_audio_test_tone works but halves amplitude (val/2)
+ *  - we want full-amplitude triangle wave at 60% of int16 range
+ *
+ * Synthesizes a single PCM buffer for the entire chime then writes
+ * via the known-working tab5_audio_speaker_enable + chunked write
+ * pattern.  Block-and-play — caller's task pauses ~900 ms. */
+static void vision_play_chime(void) {
+   extern esp_err_t tab5_audio_play_raw(const int16_t *data, size_t samples);
+   extern esp_err_t tab5_audio_speaker_enable(bool enable);
+
+   /* 4 tones: warm-up (low) + C5 + E5 + G5 */
+   const struct {
+      float freq;
+      uint32_t ms;
+   } tones[] = {
+       {220.0f, 120},  /* warm-up — amp ramps during this */
+       {523.25f, 200}, /* C5 */
+       {659.25f, 200}, /* E5 */
+       {783.99f, 280}, /* G5 — longer tail */
+   };
+   const size_t n_tones = sizeof(tones) / sizeof(tones[0]);
+   const int rate = 48000;
+   const int amp = 32767 * 60 / 100; /* 60 % full scale */
+
+   size_t total_samples = 0;
+   for (size_t i = 0; i < n_tones; i++) total_samples += (size_t)tones[i].ms * rate / 1000;
+   int16_t *pcm = heap_caps_malloc(total_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!pcm) return;
+
+   size_t off = 0;
+   for (size_t t = 0; t < n_tones; t++) {
+      const size_t samples = (size_t)tones[t].ms * rate / 1000;
+      uint32_t phase = 0;
+      const uint32_t phase_inc = (uint32_t)((65536.0f * tones[t].freq) / (float)rate);
+      const size_t attack = rate / 200; /* 5 ms */
+      const size_t release = rate / 200;
+      for (size_t i = 0; i < samples; i++) {
+         /* Triangle wave from phase. */
+         uint16_t p = (uint16_t)(phase & 0xFFFF);
+         int32_t val;
+         if (p < 16384)
+            val = (int32_t)p;
+         else if (p < 49152)
+            val = 32768 - (int32_t)p;
+         else
+            val = (int32_t)p - 65536;
+         /* Envelope. */
+         float env = 1.0f;
+         if (i < attack)
+            env = (float)i / (float)attack;
+         else if (samples > release && i > samples - release)
+            env = (float)(samples - i) / (float)release;
+         /* Scale val (±16384) to ±amp.  Triangle val range is 16384. */
+         int32_t scaled = (int32_t)(((float)val / 16384.0f) * (float)amp * env);
+         if (scaled > 32767) scaled = 32767;
+         if (scaled < -32768) scaled = -32768;
+         pcm[off + i] = (int16_t)scaled;
+         phase += phase_inc;
+      }
+      off += samples;
+   }
+
+   tab5_audio_speaker_enable(true);
+   /* Write in 480-sample chunks (10 ms each) — same cadence as
+    * tab5_audio_test_tone's loop, which is the only path known to
+    * produce audible output on this hardware. */
+   const size_t chunk = 480;
+   for (size_t i = 0; i < total_samples; i += chunk) {
+      size_t n = (i + chunk <= total_samples) ? chunk : (total_samples - i);
+      tab5_audio_play_raw(pcm + i, n);
+   }
+   vTaskDelay(pdMS_TO_TICKS(200));
+   tab5_audio_speaker_enable(false);
+   heap_caps_free(pcm);
+}
+
 /* Restore display brightness from NVS user pref.  Called on confirmed
  * person ENTER when away_dim was applied on a prior LEAVE. */
 static void restore_brightness(void) {
@@ -197,13 +278,11 @@ static void fire_rules_on_enter(const vs_track_t *t) {
          s_state.welcome_fires_total++;
          extern void ui_home_show_toast(const char *msg);
          ui_home_show_toast("Welcome back");
-         /* V2-A.4: pair the toast with the Welcome cue so the return
-          * is acknowledged audibly even when the user isn't looking at
-          * the home screen at the moment of detection.  UI_CUE_WELCOME
-          * is louder + longer (450 ms ascending arpeggio @ 60% amp)
-          * than the brief INCOMING_HIGH bell so a "user returned"
-          * event reads as meaningful rather than a quick UI tick. */
-         ui_audio_cue_play(UI_CUE_WELCOME);
+         /* V2-A.4 (rev 4): test_tone halves the triangle-wave amplitude
+          * (val/2 in audio.c), making it too quiet.  Inline a louder
+          * tone generator at full amplitude.  Pattern: warm-up tone
+          * (amp ramp-up window) + C-E-G ascending arpeggio. */
+         vision_play_chime();
          char wdetail[64];
          snprintf(wdetail, sizeof(wdetail), "away_ms=%llu", (unsigned long long)away_ms);
          tab5_debug_obs_event("vision.welcome", wdetail);
@@ -464,7 +543,7 @@ esp_err_t vision_service_fire_welcome_test(void) {
    s_state.welcome_fires_total++;
    extern void ui_home_show_toast(const char *msg);
    ui_home_show_toast("Welcome back");
-   ui_audio_cue_play(UI_CUE_WELCOME);
+   vision_play_chime();
    tab5_debug_obs_event("vision.welcome", "test_fire");
    return ESP_OK;
 }
