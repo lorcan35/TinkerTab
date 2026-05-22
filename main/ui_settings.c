@@ -666,6 +666,11 @@ static void cb_font_scale(lv_event_t *e) {
    if (sel > 3) sel = 1;
    ESP_LOGI(TAG, "Font scale tier -> %u", (unsigned)sel);
    tab5_settings_set_font_scale((uint8_t)sel);
+   /* P10 follow-up (TT #670): apply-on-restart model — every widget
+    * already has its font baked at create-time, so a live tier change
+    * isn't visible until the next boot.  Toast prompts a restart. */
+   extern void ui_home_show_toast(const char *msg);
+   ui_home_show_toast("Text size — restart to apply");
 }
 
 static void cb_reduce_motion(lv_event_t *e) {

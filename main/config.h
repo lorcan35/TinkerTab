@@ -82,16 +82,23 @@
 // ---------------------------------------------------------------------------
 // Global Typography Scale (720x1280 display @ arm's length)
 // ---------------------------------------------------------------------------
-#define FONT_TITLE       &lv_font_montserrat_28   /* Screen titles, big numbers */
-#define FONT_HEADING     &lv_font_montserrat_24   /* Section headers, card titles */
-#define FONT_BODY        &lv_font_montserrat_20   /* Primary body text, messages, labels */
-#define FONT_SECONDARY   &lv_font_montserrat_18   /* Secondary text, descriptions */
-#define FONT_CAPTION     &lv_font_montserrat_16   /* Timestamps, badges, metadata */
-#define FONT_SMALL       &lv_font_montserrat_14   /* Hints, placeholders, debug */
-#define FONT_CLOCK       &lv_font_montserrat_48   /* Home screen clock */
-#define FONT_DATE        &lv_font_montserrat_24   /* Home screen date */
-#define FONT_KEY         &lv_font_montserrat_20   /* Keyboard keys */
-#define FONT_NAV         &lv_font_montserrat_18   /* Nav bar labels */
+// Routes through ui_typography.h so font_scale (P10, TT #666) can
+// pick scaled tiers per role.  Defaults expand to the same physical
+// fonts as before (Montserrat 28/24/20/18/16/14/48/24/20/18) when
+// the user is on tier 1.  Verified no static initializers consume
+// FONT_* — all sites are runtime LVGL style calls, so a function-
+// call expansion is type-safe.
+#include "ui_typography.h"
+#define FONT_TITLE tab5_typography_get(FONT_ROLE_TITLE)
+#define FONT_HEADING tab5_typography_get(FONT_ROLE_HEADING)
+#define FONT_BODY tab5_typography_get(FONT_ROLE_BODY)
+#define FONT_SECONDARY tab5_typography_get(FONT_ROLE_SECONDARY)
+#define FONT_CAPTION tab5_typography_get(FONT_ROLE_CAPTION)
+#define FONT_SMALL tab5_typography_get(FONT_ROLE_SMALL)
+#define FONT_CLOCK tab5_typography_get(FONT_ROLE_CLOCK)
+#define FONT_DATE tab5_typography_get(FONT_ROLE_DATE)
+#define FONT_KEY tab5_typography_get(FONT_ROLE_KEY)
+#define FONT_NAV tab5_typography_get(FONT_ROLE_NAV)
 
 // ── v4·C chat fonts (Fraunces italic + JetBrains Mono) ───────────────
 #ifdef LV_FONT_DECLARE
