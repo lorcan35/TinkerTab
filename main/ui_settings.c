@@ -30,7 +30,8 @@
 #include "sdcard.h"
 #include "settings.h"
 #include "tab5_rtc.h"
-#include "task_worker.h" /* TT #328 Wave 14 — async K144 hwinfo fetch */
+#include "task_worker.h"   /* TT #328 Wave 14 — async K144 hwinfo fetch */
+#include "ui_components.h" /* TT #652 — ui_overlay_fade_in */
 #include "ui_core.h"
 #include "ui_feedback.h" /* TT #328 Wave 10: ui_fb_* */
 #include "ui_home.h"
@@ -2496,6 +2497,9 @@ lv_obj_t *ui_settings_create(void)
     ui_keyboard_set_layout_cb(settings_keyboard_layout_cb);
 
     ESP_LOGI(TAG, "Phase 1 visible — user sees Display + Network immediately");
+    /* Polish P3 (TT #652): 250 ms fade-in for the whole Settings
+     * screen instead of a hard cut from home. */
+    ui_overlay_fade_in(s_screen, 250);
     return s_screen;
 }
 

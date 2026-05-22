@@ -124,6 +124,15 @@ void ui_fmt_time(char *buf, size_t cap, int64_t ts, ui_time_style_t style);
 void ui_fmt_bytes(char *buf, size_t cap, uint64_t n);
 void ui_fmt_count(char *buf, size_t cap, uint64_t n);
 
+/* ── Overlay fade-in ───────────────────────────────────────────────
+ *
+ * Polish P3 (TT #652): fade @p obj opacity 0 → LV_OPA_COVER over
+ * @p duration_ms.  Default behaviour: caller has already done
+ * lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN) so the widget is
+ * visible at zero opacity, then this animates it up.  Use 250 ms
+ * unless there's a specific reason. */
+void ui_overlay_fade_in(lv_obj_t *obj, uint32_t duration_ms);
+
 #ifdef __cplusplus
 }
 #endif

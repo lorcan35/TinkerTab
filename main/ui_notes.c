@@ -34,6 +34,7 @@
 #include "tab5_rtc.h"
 #include "ui_components.h" /* Polish P1 (TT #648) — design-system atoms */
 #include "ui_core.h"
+#include "ui_feedback.h" /* Polish P3 (TT #652) — ui_fb_button transition */
 #include "ui_home.h"
 #include "ui_keyboard.h"
 #include "ui_nav.h"   /* TT #623 — tab5_nav_to */
@@ -2775,6 +2776,8 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
    lv_obj_set_style_border_width(del, 0, 0);
    lv_obj_set_style_bg_color(del, lv_color_hex(COL_RED), LV_PART_MAIN | LV_STATE_PRESSED);
    lv_obj_set_style_bg_opa(del, LV_OPA_20, LV_PART_MAIN | LV_STATE_PRESSED);
+   /* Polish P3 (TT #652): smooth opacity transition on press. */
+   ui_fb_button(del);
    lv_obj_add_event_cb(del, cb_note_delete, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
    lv_obj_t *del_lbl = lv_label_create(del);
    if (!del_lbl) return;
@@ -2799,6 +2802,8 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
       lv_obj_set_style_border_opa(act, LV_OPA_50, 0);
       lv_obj_set_style_bg_color(act, lv_color_hex(is_retry ? COL_AMBER : COL_MINT), LV_PART_MAIN | LV_STATE_PRESSED);
       lv_obj_set_style_bg_opa(act, LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
+      /* Polish P3 (TT #652): smooth opacity transition on press. */
+      ui_fb_button(act);
       lv_obj_add_event_cb(act, is_retry ? cb_note_retry : cb_note_play, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
       lv_obj_t *act_lbl = lv_label_create(act);
       if (!act_lbl) return;
@@ -2880,6 +2885,8 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
       lv_obj_set_style_border_width(dismiss, 0, 0);
       lv_obj_set_style_bg_color(dismiss, lv_color_hex(0x6A6A72), LV_PART_MAIN | LV_STATE_PRESSED);
       lv_obj_set_style_bg_opa(dismiss, LV_OPA_30, LV_PART_MAIN | LV_STATE_PRESSED);
+      /* Polish P3 (TT #652): smooth opacity transition on press. */
+      ui_fb_button(dismiss);
       lv_obj_add_event_cb(dismiss, cb_chip_dismiss, LV_EVENT_CLICKED, (void *)(intptr_t)note_idx);
       lv_obj_t *dismiss_lbl = lv_label_create(dismiss);
       if (!dismiss_lbl) return;
@@ -3625,6 +3632,12 @@ lv_obj_t *ui_notes_create(void)
    }
 
    ESP_LOGI(TAG, "Notes screen created, %d notes", s_note_count);
+
+   /* Polish P3 (TT #652): fade the whole notes screen in over 250 ms
+    * instead of hard-cutting from home.  ui_overlay_fade_in handles
+    * the 0-opacity → opaque transition; the existing card render
+    * lights up smoothly. */
+   ui_overlay_fade_in(s_screen, 250);
    return s_screen;
 }
 
