@@ -3568,6 +3568,11 @@ lv_obj_t *ui_notes_create(void)
    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
    lv_obj_set_style_pad_row(s_list, 12, 0);
    lv_obj_set_style_pad_hor(s_list, 16, 0);
+   /* Polish P5 (TT #656): tail padding so the last note card clears the
+    * floating home button (lv_layer_top) + amber dictate FAB which both
+    * sit at the bottom-right corner.  Without this, the bottommost row
+    * gets visually clipped at scroll-end. */
+   lv_obj_set_style_pad_bottom(s_list, 120, 0);
    lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_ON);
 
    /* PR 3: amber dictate FAB — bottom-right above the nav bar.  Tap

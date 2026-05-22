@@ -252,18 +252,12 @@ static const char *get_file_icon(const char *name, bool is_dir)
     return LV_SYMBOL_FILE;
 }
 
-static void format_size(off_t bytes, char *buf, size_t buf_len)
-{
-    if (bytes < 1024) {
-        snprintf(buf, buf_len, "%d B", (int)bytes);
-    } else if (bytes < 1024 * 1024) {
-        snprintf(buf, buf_len, "%.1f KB", (double)bytes / 1024.0);
-    } else if (bytes < (off_t)1024 * 1024 * 1024) {
-        snprintf(buf, buf_len, "%.1f MB", (double)bytes / (1024.0 * 1024.0));
-    } else {
-        snprintf(buf, buf_len, "%.1f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
-    }
-}
+/* Polish P5 (TT #656): delegate to the shared ui_fmt_bytes atom so
+ * file sizes read identically wherever they're surfaced (Files,
+ * Sessions, Memory, Settings).  Local helper kept as a one-line
+ * pass-through so call sites at lines ~423 and ~720 don't need to
+ * change. */
+static void format_size(off_t bytes, char *buf, size_t buf_len) { ui_fmt_bytes(buf, buf_len, (uint64_t)bytes); }
 
 static int entry_cmp(const void *a, const void *b)
 {
