@@ -30,7 +30,8 @@ static const char *TAG = "ui_sessions";
 
 #define SW        720
 #define SH        1280
-#define SIDE_PAD  52
+/* Polish P2 (TT #650): unified to 20 across list-style screens. */
+#define SIDE_PAD 20
 
 static lv_obj_t *s_overlay  = NULL;
 static lv_obj_t *s_back_btn = NULL;
@@ -168,11 +169,21 @@ static int build_session_row(lv_obj_t *parent, int y, const session_row_t *r)
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, row_w, LV_SIZE_CONTENT);
     lv_obj_set_pos(c, SIDE_PAD, y);
+    /* Polish P2 (TT #650): airy card rows.  Was: flat row + bottom
+     * hairline.  Now: TH_CARD bg + 14 px radius + 1 px subtle
+     * border, matching Notes/Settings rhythm.  Keep the existing
+     * inner pad-top/bottom; just add the card visual + side padding
+     * — child positions are unchanged. */
+    lv_obj_set_style_bg_color(c, lv_color_hex(0x111119), 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(c, 14, 0);
     lv_obj_set_style_pad_top(c, 16, 0);
     lv_obj_set_style_pad_bottom(c, 18, 0);
+    lv_obj_set_style_pad_left(c, 14, 0);
+    lv_obj_set_style_pad_right(c, 14, 0);
     lv_obj_set_style_border_width(c, 1, 0);
-    lv_obj_set_style_border_color(c, lv_color_hex(0x1C1C28), 0);  /* TH_HAIRLINE */
-    lv_obj_set_style_border_side(c, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_color(c, lv_color_hex(0x1E2030), 0);
+    lv_obj_set_style_border_side(c, LV_BORDER_SIDE_FULL, 0);
     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Left column: time (stack top+bot if present) */

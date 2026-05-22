@@ -41,7 +41,8 @@ static const char *TAG = "ui_agents";
 
 #define SW        720
 #define SH        1280
-#define SIDE_PAD  52
+/* Polish P2 (TT #650): unified to 20 across list-style screens. */
+#define SIDE_PAD 20
 
 /* TT #328 Wave 6 — tools catalog cap.  Dragon currently registers 10
  * built-in tools (web_search, remember, recall, datetime, calculator,
@@ -187,86 +188,92 @@ static void build_agent_entry(lv_obj_t *parent, int y,
                               uint32_t dot_color, const char *narrative,
                               const char *tasks[], const int n_tasks)
 {
-    /* Container */
-    lv_obj_t *c = lv_obj_create(parent);
-    lv_obj_remove_style_all(c);
-    lv_obj_set_size(c, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
-    lv_obj_set_pos(c, SIDE_PAD, y);
-    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(c, 10, 0);
-    lv_obj_set_style_pad_bottom(c, 24, 0);
-    lv_obj_set_style_border_width(c, 1, 0);
-    lv_obj_set_style_border_color(c, lv_color_hex(0x1A1A24), 0);  /* hairline */
-    lv_obj_set_style_border_side(c, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+   /* Polish P2 (TT #650): airy card.  Was: flat row + bottom hairline.
+    * Now: TH_CARD bg + 14 px radius + 1 px subtle border. */
+   lv_obj_t *c = lv_obj_create(parent);
+   lv_obj_remove_style_all(c);
+   lv_obj_set_size(c, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
+   lv_obj_set_pos(c, SIDE_PAD, y);
+   lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+   lv_obj_set_style_bg_color(c, lv_color_hex(0x111119), 0);
+   lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(c, 14, 0);
+   lv_obj_set_style_pad_row(c, 10, 0);
+   lv_obj_set_style_pad_top(c, 16, 0);
+   lv_obj_set_style_pad_bottom(c, 18, 0);
+   lv_obj_set_style_pad_left(c, 14, 0);
+   lv_obj_set_style_pad_right(c, 14, 0);
+   lv_obj_set_style_margin_bottom(c, 10, 0);
+   lv_obj_set_style_border_width(c, 1, 0);
+   lv_obj_set_style_border_color(c, lv_color_hex(0x1E2030), 0);
+   lv_obj_set_style_border_side(c, LV_BORDER_SIDE_FULL, 0);
+   lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Head row: colored dot + label + timestamp */
-    lv_obj_t *head = lv_obj_create(c);
-    lv_obj_remove_style_all(head);
-    lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(head, 10, 0);
-    lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
+   /* Head row: colored dot + label + timestamp */
+   lv_obj_t *head = lv_obj_create(c);
+   lv_obj_remove_style_all(head);
+   lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
+   lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+   lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+   lv_obj_set_style_pad_column(head, 10, 0);
+   lv_obj_clear_flag(head, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *dot = lv_obj_create(head);
-    lv_obj_remove_style_all(dot);
-    lv_obj_set_size(dot, 8, 8);
-    lv_obj_set_style_radius(dot, 4, 0);
-    lv_obj_set_style_bg_color(dot, lv_color_hex(dot_color), 0);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+   lv_obj_t *dot = lv_obj_create(head);
+   lv_obj_remove_style_all(dot);
+   lv_obj_set_size(dot, 8, 8);
+   lv_obj_set_style_radius(dot, 4, 0);
+   lv_obj_set_style_bg_color(dot, lv_color_hex(dot_color), 0);
+   lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
 
-    lv_obj_t *name = lv_label_create(head);
-    lv_label_set_text(name, label);
-    lv_obj_set_style_text_font(name, FONT_CAPTION, 0);
-    lv_obj_set_style_text_color(name, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_text_letter_space(name, 3, 0);
+   lv_obj_t *name = lv_label_create(head);
+   lv_label_set_text(name, label);
+   lv_obj_set_style_text_font(name, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(name, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(name, 3, 0);
 
-    lv_obj_t *sp = lv_obj_create(head);
-    lv_obj_remove_style_all(sp);
-    lv_obj_set_flex_grow(sp, 1);
-    lv_obj_set_height(sp, 1);
+   lv_obj_t *sp = lv_obj_create(head);
+   lv_obj_remove_style_all(sp);
+   lv_obj_set_flex_grow(sp, 1);
+   lv_obj_set_height(sp, 1);
 
-    lv_obj_t *time = lv_label_create(head);
-    lv_label_set_text(time, ts);
-    lv_obj_set_style_text_font(time, FONT_CAPTION, 0);
-    lv_obj_set_style_text_color(time, lv_color_hex(0x55555D), 0);
-    lv_obj_set_style_text_letter_space(time, 2, 0);
+   lv_obj_t *time = lv_label_create(head);
+   lv_label_set_text(time, ts);
+   lv_obj_set_style_text_font(time, FONT_CAPTION, 0);
+   lv_obj_set_style_text_color(time, lv_color_hex(0x55555D), 0);
+   lv_obj_set_style_text_letter_space(time, 2, 0);
 
-    /* Narrative — the headline line */
-    lv_obj_t *line = lv_label_create(c);
-    lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(line, narrative);
-    lv_obj_set_width(line, SW - 2 * SIDE_PAD);
-    lv_obj_set_style_text_font(line, FONT_SECONDARY, 0);
-    lv_obj_set_style_text_color(line, lv_color_hex(TH_TEXT_BODY), 0);
-    lv_obj_set_style_text_line_space(line, 4, 0);
+   /* Narrative — the headline line */
+   lv_obj_t *line = lv_label_create(c);
+   lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
+   lv_label_set_text(line, narrative);
+   lv_obj_set_width(line, SW - 2 * SIDE_PAD);
+   lv_obj_set_style_text_font(line, FONT_SECONDARY, 0);
+   lv_obj_set_style_text_color(line, lv_color_hex(TH_TEXT_BODY), 0);
+   lv_obj_set_style_text_line_space(line, 4, 0);
 
-    /* Task stream — amber bullets for done, hairline for queued */
-    for (int i = 0; i < n_tasks; i++) {
-        lv_obj_t *row = lv_obj_create(c);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(row, 14, 0);
-        lv_obj_set_style_pad_left(row, 4, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+   /* Task stream — amber bullets for done, hairline for queued */
+   for (int i = 0; i < n_tasks; i++) {
+      lv_obj_t *row = lv_obj_create(c);
+      lv_obj_remove_style_all(row);
+      lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+      lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+      lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+      lv_obj_set_style_pad_column(row, 14, 0);
+      lv_obj_set_style_pad_left(row, 4, 0);
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-        lv_obj_t *tdot = lv_obj_create(row);
-        lv_obj_remove_style_all(tdot);
-        lv_obj_set_size(tdot, 6, 6);
-        lv_obj_set_style_radius(tdot, 3, 0);
-        lv_obj_set_style_bg_color(tdot, lv_color_hex(i == 0 ? TH_STATUS_GREEN
-                                                   : i == 1 ? TH_AMBER
-                                                   : 0x2D2D35), 0);
-        lv_obj_set_style_bg_opa(tdot, LV_OPA_COVER, 0);
+      lv_obj_t *tdot = lv_obj_create(row);
+      lv_obj_remove_style_all(tdot);
+      lv_obj_set_size(tdot, 6, 6);
+      lv_obj_set_style_radius(tdot, 3, 0);
+      lv_obj_set_style_bg_color(tdot, lv_color_hex(i == 0 ? TH_STATUS_GREEN : i == 1 ? TH_AMBER : 0x2D2D35), 0);
+      lv_obj_set_style_bg_opa(tdot, LV_OPA_COVER, 0);
 
-        lv_obj_t *tlbl = lv_label_create(row);
-        lv_label_set_text(tlbl, tasks[i]);
-        lv_obj_set_style_text_font(tlbl, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(tlbl, lv_color_hex(TH_TEXT_BODY), 0);
-    }
+      lv_obj_t *tlbl = lv_label_create(row);
+      lv_label_set_text(tlbl, tasks[i]);
+      lv_obj_set_style_text_font(tlbl, FONT_SMALL, 0);
+      lv_obj_set_style_text_color(tlbl, lv_color_hex(TH_TEXT_BODY), 0);
+   }
 }
 
 /* ── Wave 6: tools-catalog HTTP fetch + render ──────────────────── */

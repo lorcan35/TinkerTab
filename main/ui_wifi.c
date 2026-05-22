@@ -52,7 +52,8 @@ static const char *TAG = "ui_wifi";
 /* ── Layout constants ──────────────────────────────────────────────── */
 #define TOPBAR_H        48
 #define STATUS_CARD_H   120
-#define SIDE_PAD        16
+/* Polish P2 (TT #650): unified to 20 across list-style screens. */
+#define SIDE_PAD 20
 #define CORNER_R        8
 #define ROW_H           60
 #define MAX_SCAN_APS    20

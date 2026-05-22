@@ -37,7 +37,8 @@ static const char *TAG = "ui_skills";
 
 #define SW 720
 #define SH 1280
-#define SIDE_PAD 52
+/* Polish P2 (TT #650): unified to 20 across list-style screens. */
+#define SIDE_PAD 20
 
 /* Wave 10 — same registry cap as Wave 6's ui_agents catalog so the
  * two surfaces never disagree on what fits.  Memory bound: 16 *
@@ -400,19 +401,26 @@ static void render_payload(const skills_payload_t *p) {
       lv_obj_remove_style_all(card);
       lv_obj_set_size(card, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
       lv_obj_set_style_margin_left(card, SIDE_PAD, 0);
+      lv_obj_set_style_margin_bottom(card, 10, 0);
       lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
       lv_obj_set_style_pad_row(card, 6, 0);
-      lv_obj_set_style_pad_bottom(card, 18, 0);
-      lv_obj_set_style_pad_top(card, 8, 0);
-      lv_obj_set_style_pad_left(card, 8, 0);
-      lv_obj_set_style_pad_right(card, 8, 0);
-      lv_obj_set_style_border_side(card, LV_BORDER_SIDE_BOTTOM, 0);
+      lv_obj_set_style_pad_bottom(card, 14, 0);
+      lv_obj_set_style_pad_top(card, 14, 0);
+      lv_obj_set_style_pad_left(card, 14, 0);
+      lv_obj_set_style_pad_right(card, 14, 0);
+      /* Polish P2 (TT #650): airy card.  Was: flat row + bottom
+       * hairline.  Now: TH_CARD bg + 14 px radius + 1 px subtle
+       * border.  Starred state preserves its amber wash on top of
+       * the new TH_CARD base. */
+      lv_obj_set_style_border_side(card, LV_BORDER_SIDE_FULL, 0);
       lv_obj_set_style_border_width(card, 1, 0);
-      lv_obj_set_style_border_color(card, lv_color_hex(0x1A1A24), 0);
+      lv_obj_set_style_border_color(card, lv_color_hex(0x1E2030), 0);
+      lv_obj_set_style_radius(card, 14, 0);
+      lv_obj_set_style_bg_color(card, lv_color_hex(0x111119), 0);
+      lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
       if (starred) {
          lv_obj_set_style_bg_color(card, lv_color_hex(TH_AMBER), 0);
-         lv_obj_set_style_bg_opa(card, 14, 0); /* ~5 % wash */
-         lv_obj_set_style_radius(card, 8, 0);
+         lv_obj_set_style_bg_opa(card, 30, 0); /* ~12 % wash, more visible on dark card */
       }
       lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
       lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
