@@ -203,6 +203,12 @@ esp_err_t tab5_settings_set_llm_engine(uint8_t eng);
 bool tab5_settings_get_privacy_lock(void);
 esp_err_t tab5_settings_set_privacy_lock(bool on);
 
+/** Polish P6 (TT #658) — single-shot guard for the gesture hint
+ *  toast.  False on fresh install; tab5_nav_to surfaces "Tip: swipe
+ *  right to go back" on first overlay nav and flips this to true. */
+bool tab5_settings_get_gesture_hint_seen(void);
+esp_err_t tab5_settings_set_gesture_hint_seen(bool seen);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future
