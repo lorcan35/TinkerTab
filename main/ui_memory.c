@@ -35,7 +35,8 @@ static const char *TAG = "ui_memory";
 
 #define SW        720
 #define SH        1280
-#define SIDE_PAD  52
+/* Polish P2 (TT #650): unified to 20 across list-style screens. */
+#define SIDE_PAD 20
 #define MAX_HITS  6
 
 static lv_obj_t *s_overlay    = NULL;
@@ -123,12 +124,20 @@ static void build_hit(lv_obj_t *parent,
     lv_obj_remove_style_all(c);
     lv_obj_set_size(c, SW - 2 * SIDE_PAD, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    /* Polish P2 (TT #650): airy card.  Was: flat row + bottom hairline.
+     * Now: TH_CARD bg + 14 px radius + 1 px subtle border. */
+    lv_obj_set_style_bg_color(c, lv_color_hex(0x111119), 0);
+    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(c, 14, 0);
     lv_obj_set_style_pad_row(c, 6, 0);
-    lv_obj_set_style_pad_bottom(c, 18, 0);
-    lv_obj_set_style_pad_top(c, 12, 0);
+    lv_obj_set_style_pad_top(c, 14, 0);
+    lv_obj_set_style_pad_bottom(c, 14, 0);
+    lv_obj_set_style_pad_left(c, 14, 0);
+    lv_obj_set_style_pad_right(c, 14, 0);
+    lv_obj_set_style_margin_bottom(c, 10, 0);
     lv_obj_set_style_border_width(c, 1, 0);
-    lv_obj_set_style_border_color(c, lv_color_hex(0x1A1A24), 0);
-    lv_obj_set_style_border_side(c, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_color(c, lv_color_hex(0x1E2030), 0);
+    lv_obj_set_style_border_side(c, LV_BORDER_SIDE_FULL, 0);
     lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *row = lv_obj_create(c);

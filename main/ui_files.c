@@ -380,20 +380,22 @@ static void rebuild_list(void)
     for (int i = 0; i < entry_count; i++) {
         file_entry_t *ent = &entries[i];
 
-        /* Row container */
+        /* Polish P2 (TT #650): airy card rows.  Was: flat row + bottom
+         * hairline.  Now: TH_CARD bg + 14 px radius + 1 px subtle
+         * border, matching the Notes/Settings rhythm. */
         lv_obj_t *row = lv_obj_create(file_list);
-        lv_obj_set_size(row, SCREEN_W, ROW_H);
-        lv_obj_set_style_bg_color(row, lv_color_hex(COL_ROW_BG), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(row, lv_color_hex(COL_ROW_PRESS), LV_STATE_PRESSED);
+        lv_obj_set_size(row, SCREEN_W - 40, ROW_H);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x111119), LV_PART_MAIN);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x1A1A24), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
         lv_obj_set_style_border_width(row, 1, 0);
-        lv_obj_set_style_border_color(row, lv_color_hex(COL_DARK_GRAY), 0);
-        lv_obj_set_style_radius(row, 0, 0);
+        lv_obj_set_style_border_color(row, lv_color_hex(0x1E2030), 0);
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_FULL, 0);
+        lv_obj_set_style_radius(row, 14, 0);
         lv_obj_set_style_pad_left(row, 16, 0);
         lv_obj_set_style_pad_right(row, 16, 0);
         lv_obj_set_style_pad_ver(row, 0, 0);
+        lv_obj_set_style_margin_bottom(row, 8, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,

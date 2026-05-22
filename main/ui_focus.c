@@ -30,7 +30,8 @@ static const char *TAG = "ui_focus";
 
 #define SW        720
 #define SH        1280
-#define SIDE_PAD  52
+/* Polish P2 (TT #650): unified to 20 across list-style screens. */
+#define SIDE_PAD 20
 #define ORB_CORNER_SZ  120
 #define ORB_CORNER_X   (SW - ORB_CORNER_SZ - 56)
 #define ORB_CORNER_Y   64
