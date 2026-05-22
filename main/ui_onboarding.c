@@ -12,6 +12,7 @@
 #include "config.h"
 #include "esp_log.h"
 #include "settings.h"
+#include "ui_feedback.h" /* P9 (TT #664) — ui_fb_button on CTA */
 #include "ui_home.h"
 #include "ui_theme.h"
 #include "ui_wifi.h" /* TT #328 Wave 8 P0 #11: Wi-Fi setup from onboarding */
@@ -123,7 +124,11 @@ static void build_overlay(void)
     lv_obj_remove_style_all(s_overlay);
     lv_obj_set_size(s_overlay, CARD_W, CARD_H);
     lv_obj_set_pos(s_overlay, 0, 0);
-    lv_obj_set_style_bg_color(s_overlay, lv_color_hex(0x08080E), 0);
+    /* Polish P9 (TT #664): TH_* tokens replace local hex literals so
+     * onboarding shares the design-system palette every other screen
+     * uses post-P1.  Visual is identical — just consolidates the
+     * token source. */
+    lv_obj_set_style_bg_color(s_overlay, lv_color_hex(TH_BG), 0);
     lv_obj_set_style_bg_opa(s_overlay, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -132,11 +137,11 @@ static void build_overlay(void)
     lv_obj_remove_style_all(s_card);
     lv_obj_set_size(s_card, 640, 1140);
     lv_obj_align(s_card, LV_ALIGN_CENTER, 0, -20);
-    lv_obj_set_style_bg_color(s_card, lv_color_hex(0x13131F), 0);
+    lv_obj_set_style_bg_color(s_card, lv_color_hex(TH_CARD_ELEVATED), 0);
     lv_obj_set_style_bg_opa(s_card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_card, 32, 0);
     lv_obj_set_style_border_width(s_card, 1, 0);
-    lv_obj_set_style_border_color(s_card, lv_color_hex(0x1E1E2A), 0);
+    lv_obj_set_style_border_color(s_card, lv_color_hex(0x1E2030), 0);
     lv_obj_clear_flag(s_card, LV_OBJ_FLAG_SCROLLABLE);
 
     s_accent = lv_obj_create(s_card);
@@ -190,6 +195,8 @@ static void build_overlay(void)
     lv_obj_clear_flag(s_primary_btn, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_primary_btn, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_primary_btn, primary_cb, LV_EVENT_CLICKED, NULL);
+    /* Polish P9 (TT #664): shared press feedback. */
+    ui_fb_button(s_primary_btn);
 
     s_primary_lbl = lv_label_create(s_primary_btn);
     lv_obj_set_style_text_font(s_primary_lbl, FONT_HEADING, 0);
