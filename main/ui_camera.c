@@ -182,6 +182,11 @@ static void yolo_free_resources(void);
 static void yolo_downsample_rgb565(const uint16_t *src, int sw, int sh, uint16_t *dst);
 static const char *yolo_mode_short_label(voice_yolo_model_t m);
 
+/* Vision V2-A.1 (TT #674): expose DETECT state to the background
+ * vision_service so it can yield when the foreground camera screen
+ * is already running YOLO. */
+bool ui_camera_yolo_active(void) { return s_yolo_on && scr_camera != NULL; }
+
 /* Currently selected resolution (default VGA for smooth preview) */
 static tab5_cam_resolution_t current_res = TAB5_CAM_RES_HD;  /* SC202CS outputs 1280x720 */
 

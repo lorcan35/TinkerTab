@@ -2,6 +2,7 @@ set(UI_SRCS
     "ui_theme.c"
     "ui_typography.c"
     "ui_components.c"
+    "vision_service.c"
     "ui_splash.c" "ui_home.c" "ui_orb.c" "ui_settings.c"
     "ui_camera.c" "ui_files.c" "ui_audio.c" "ui_keyboard.c" "ui_voice.c" "ui_wifi.c"
     "ui_video_pane.c"

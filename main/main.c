@@ -574,6 +574,12 @@ void app_main(void)
          * at the 100 ms timer tick.  Init is mutex-only here; no LVGL deps. */
         extern void voice_dictation_init(void);
         voice_dictation_init();
+        /* Vision V2-A.1 (TT #674): background YOLO service.  Idle
+         * until the user toggles vision_on via Settings or the
+         * runtime API.  Safe to init unconditionally — task just
+         * polls NVS in a sleep loop while disabled. */
+        extern esp_err_t vision_service_init(void);
+        vision_service_init();
         extern void widget_store_init(void);
         widget_store_init();  // widget platform — bounded PSRAM cache
         extern void chat_store_init(void);

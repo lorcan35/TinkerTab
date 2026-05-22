@@ -39,8 +39,9 @@
 #include "freertos/atomic.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "task_worker.h" /* tab5_worker_enqueue */
-#include "ui_core.h"     /* tab5_ui_try_lock / tab5_ui_unlock */
+#include "task_worker.h"    /* tab5_worker_enqueue */
+#include "ui_core.h"        /* tab5_ui_try_lock / tab5_ui_unlock */
+#include "vision_service.h" /* V2-A.1 — /vision/state */
 
 static const char *TAG = "debug_camera";
 
@@ -325,6 +326,31 @@ static esp_err_t camera_handler(httpd_req_t *req) {
    return err;
 }
 
+/* Vision V2-A.1 (TT #674) — GET /vision/state */
+static esp_err_t vision_state_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+   vision_service_state_t st;
+   vision_service_get_state(&st);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "enabled", st.enabled);
+   cJSON_AddNumberToObject(root, "rate_hz", st.rate_hz);
+   cJSON_AddNumberToObject(root, "frames_processed", st.frames_processed);
+   cJSON_AddNumberToObject(root, "frames_yielded", st.frames_yielded);
+   cJSON_AddNumberToObject(root, "detections_total", st.detections_total);
+   cJSON_AddNumberToObject(root, "uptime_ms", (double)st.uptime_ms);
+   cJSON_AddStringToObject(root, "last_class", st.last_class);
+   cJSON_AddNumberToObject(root, "last_detection_ms", (double)st.last_detection_ms);
+   cJSON_AddNumberToObject(root, "last_confidence", st.last_confidence);
+   /* Surface upstream prereqs so the harness can correlate "frames=0
+    * after 6 s enabled" → either K144 USB isn't up, or yolo isn't
+    * armed, or the camera failed init. */
+   extern bool tab5_camera_initialized(void);
+   extern bool voice_yolo_is_ready(void);
+   cJSON_AddBoolToObject(root, "camera_ready", tab5_camera_initialized());
+   cJSON_AddBoolToObject(root, "yolo_ready", voice_yolo_is_ready());
+   return tab5_debug_send_json_resp(req, root);
+}
+
 void debug_server_camera_register(httpd_handle_t server) {
    if (!server) return;
 
@@ -335,8 +361,11 @@ void debug_server_camera_register(httpd_handle_t server) {
    static const httpd_uri_t uri_screenshot_jpg = {
        .uri = "/screenshot.jpg", .method = HTTP_GET, .handler = screenshot_handler};
    static const httpd_uri_t uri_camera = {.uri = "/camera", .method = HTTP_GET, .handler = camera_handler};
+   static const httpd_uri_t uri_vision_state = {
+       .uri = "/vision/state", .method = HTTP_GET, .handler = vision_state_handler};
 
    httpd_register_uri_handler(server, &uri_screenshot);
    httpd_register_uri_handler(server, &uri_screenshot_jpg);
    httpd_register_uri_handler(server, &uri_camera);
+   httpd_register_uri_handler(server, &uri_vision_state);
 }

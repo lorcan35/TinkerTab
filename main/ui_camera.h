@@ -20,3 +20,9 @@ void ui_camera_destroy(void);
  *  renders as a user image bubble.  Auto-clears after one capture so
  *  subsequent normal-camera captures don't accidentally upload. */
 void ui_camera_arm_chat_share(void);
+
+/** Vision V2-A.1 (TT #674): true when the camera screen is alive AND
+ *  the user has toggled DETECT on.  The background vision_service
+ *  yields when this is true so YOLO requests don't double up on the
+ *  K144 USB-FFS channel. */
+bool ui_camera_yolo_active(void);

@@ -247,6 +247,22 @@ esp_err_t tab5_settings_set_yolo_mode(uint8_t mode);
 uint8_t tab5_settings_get_yolo_conf(void);
 esp_err_t tab5_settings_set_yolo_conf(uint8_t pct);
 
+/** Vision V2-A.1 (TT #674) — always-on vision service.
+ *
+ *  vision_on: master toggle.  Default OFF for privacy posture
+ *  (matches the "Privacy lock" default and what the always-on UX
+ *  research recommended — opt-in per platform-level pattern).
+ *
+ *  vision_rate: inference rate when enabled.  Range 1..3 Hz.  Default
+ *  2 Hz — research compromise between Frigate's ≥5 fps tracking ideal
+ *  and our Wi-Fi DMA contention budget.  Stored as a Hz value
+ *  directly (no enum mapping) so future rate options don't bump the
+ *  schema. */
+bool tab5_settings_get_vision_on(void);
+esp_err_t tab5_settings_set_vision_on(bool on);
+uint8_t tab5_settings_get_vision_rate(void);
+esp_err_t tab5_settings_set_vision_rate(uint8_t hz);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future

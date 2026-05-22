@@ -688,6 +688,28 @@ static void cb_theme(lv_event_t *e) {
    tab5_settings_set_theme((uint8_t)sel);
 }
 
+/* Vision V2-A.1 (TT #674): always-on vision master toggle.  Persists
+ * to NVS via vision_service_set_enabled (which also fires the obs
+ * event for harness use). */
+static void cb_vision_on(lv_event_t *e) {
+   lv_obj_t *sw = lv_event_get_target(e);
+   bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+   ESP_LOGI(TAG, "Always-on vision %s", on ? "enabled" : "disabled");
+   extern esp_err_t vision_service_set_enabled(bool enabled);
+   vision_service_set_enabled(on);
+}
+
+/* Vision V2-A.1 (TT #674): inference rate (1 / 2 / 3 Hz). */
+static void cb_vision_rate(lv_event_t *e) {
+   lv_obj_t *dd = lv_event_get_target(e);
+   uint16_t sel = lv_dropdown_get_selected(dd);
+   uint8_t hz = (uint8_t)(sel + 1);
+   if (hz < 1) hz = 1;
+   if (hz > 3) hz = 3;
+   ESP_LOGI(TAG, "Vision rate -> %u Hz", (unsigned)hz);
+   tab5_settings_set_vision_rate(hz);
+}
+
 static void cb_autorotate(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -2458,6 +2480,37 @@ lv_obj_t *ui_settings_create(void)
        lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
        lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
        lv_obj_add_event_cb(dd, cb_theme, LV_EVENT_VALUE_CHANGED, NULL);
+    }
+    y += ROW_H + 4;
+
+    /* Vision V2-A.1 (TT #674): Always-on vision master toggle.
+     * Privacy-by-default — default OFF.  Background YOLO service
+     * captures + classifies the camera feed when this is on. */
+    mk_row_label(s_scroll, "Always-on vision", y);
+    mk_switch(s_scroll, acc_display, 660, y, tab5_settings_get_vision_on(), cb_vision_on, NULL);
+    y += ROW_H + 4;
+
+    /* Vision V2-A.1 (TT #674): inference rate (1 / 2 / 3 Hz). */
+    mk_row_label(s_scroll, "Vision rate", y);
+    {
+       lv_obj_t *dd = lv_dropdown_create(s_scroll);
+       lv_dropdown_set_options(dd, "1 Hz\n2 Hz\n3 Hz");
+       uint8_t cur = tab5_settings_get_vision_rate();
+       if (cur < 1) cur = 2;
+       if (cur > 3) cur = 3;
+       lv_dropdown_set_selected(dd, cur - 1);
+       lv_obj_set_pos(dd, 340, y);
+       lv_obj_set_size(dd, 340, 36);
+       lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), 0);
+       lv_obj_set_style_bg_opa(dd, LV_OPA_COVER, 0);
+       lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), 0);
+       lv_obj_set_style_text_font(dd, FONT_SECONDARY, 0);
+       lv_obj_set_style_border_width(dd, 1, 0);
+       lv_obj_set_style_border_color(dd, lv_color_hex(0x1A1A24), 0);
+       lv_obj_set_style_radius(dd, 6, 0);
+       lv_obj_set_style_bg_color(dd, lv_color_hex(CARD_COLOR), LV_PART_ITEMS);
+       lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
+       lv_obj_add_event_cb(dd, cb_vision_rate, LV_EVENT_VALUE_CHANGED, NULL);
     }
     y += ROW_H + 16;
     mk_card_bg(s_scroll, display_section_top, y);
