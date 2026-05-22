@@ -710,6 +710,14 @@ static void cb_vision_rate(lv_event_t *e) {
    tab5_settings_set_vision_rate(hz);
 }
 
+/* Vision V2-A.3 (TT #680): auto-dim when away. */
+static void cb_away_dim(lv_event_t *e) {
+   lv_obj_t *sw = lv_event_get_target(e);
+   bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+   ESP_LOGI(TAG, "Auto-dim when away %s", on ? "enabled" : "disabled");
+   tab5_settings_set_away_dim(on);
+}
+
 static void cb_autorotate(lv_event_t *e)
 {
     lv_obj_t *sw = lv_event_get_target(e);
@@ -2512,6 +2520,12 @@ lv_obj_t *ui_settings_create(void)
        lv_obj_set_style_text_color(dd, lv_color_hex(TEXT_PRIMARY), LV_PART_ITEMS);
        lv_obj_add_event_cb(dd, cb_vision_rate, LV_EVENT_VALUE_CHANGED, NULL);
     }
+    y += ROW_H + 4;
+
+    /* Vision V2-A.3 (TT #680): auto-dim screen when user walks away
+     * (person LEAVE confirmed) and restore on return (person ENTER). */
+    mk_row_label(s_scroll, "Auto-dim when away", y);
+    mk_switch(s_scroll, acc_display, 660, y, tab5_settings_get_away_dim(), cb_away_dim, NULL);
     y += ROW_H + 16;
     mk_card_bg(s_scroll, display_section_top, y);
     y += 24;

@@ -594,6 +594,22 @@ esp_err_t tab5_settings_set_vision_rate(uint8_t hz) {
    return set_u8("vision_rate", hz);
 }
 
+/* ── Vision V2-A.3 (TT #680) — presence-aware brightness ────────── */
+
+bool tab5_settings_get_away_dim(void) { return get_u8("away_dim", 0) != 0; }
+
+esp_err_t tab5_settings_set_away_dim(bool on) { return set_u8("away_dim", on ? 1 : 0); }
+
+uint8_t tab5_settings_get_away_dim_pct(void) {
+   uint8_t v = get_u8("away_dim_pct", 20);
+   return v <= 100 ? v : 20;
+}
+
+esp_err_t tab5_settings_set_away_dim_pct(uint8_t pct) {
+   if (pct > 100) return ESP_ERR_INVALID_ARG;
+   return set_u8("away_dim_pct", pct);
+}
+
 /* ── Wake source picker (TT #617) ───────────────────────────────────── */
 
 esp_err_t tab5_settings_get_wake_src(char *buf, size_t len) {

@@ -140,6 +140,9 @@ static esp_err_t settings_get_handler(httpd_req_t *req) {
    /* Vision V2-A.1 (TT #674): always-on vision service. */
    cJSON_AddBoolToObject(root, "vision_on", tab5_settings_get_vision_on());
    cJSON_AddNumberToObject(root, "vision_rate", tab5_settings_get_vision_rate());
+   /* Vision V2-A.3 (TT #680): presence-aware brightness. */
+   cJSON_AddBoolToObject(root, "away_dim", tab5_settings_get_away_dim());
+   cJSON_AddNumberToObject(root, "away_dim_pct", tab5_settings_get_away_dim_pct());
    cJSON_AddNumberToObject(root, "int_tier", tab5_settings_get_int_tier());
    cJSON_AddNumberToObject(root, "voi_tier", tab5_settings_get_voi_tier());
    cJSON_AddNumberToObject(root, "aut_tier", tab5_settings_get_aut_tier());
@@ -529,6 +532,25 @@ static esp_err_t settings_set_handler(httpd_req_t *req) {
       int v = (int)vr->valuedouble;
       if (v >= 1 && v <= 3 && tab5_settings_set_vision_rate((uint8_t)v) == ESP_OK) {
          cJSON_AddItemToArray(updated, cJSON_CreateString("vision_rate"));
+      }
+   }
+   /* Vision V2-A.3 (TT #680): presence-aware brightness. */
+   cJSON *ad = cJSON_GetObjectItem(req_json, "away_dim");
+   if (ad) {
+      bool on = false;
+      if (cJSON_IsBool(ad))
+         on = cJSON_IsTrue(ad);
+      else if (cJSON_IsNumber(ad))
+         on = ad->valuedouble != 0;
+      if (tab5_settings_set_away_dim(on) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("away_dim"));
+      }
+   }
+   cJSON *adp = cJSON_GetObjectItem(req_json, "away_dim_pct");
+   if (cJSON_IsNumber(adp)) {
+      int v = (int)adp->valuedouble;
+      if (v >= 0 && v <= 100 && tab5_settings_set_away_dim_pct((uint8_t)v) == ESP_OK) {
+         cJSON_AddItemToArray(updated, cJSON_CreateString("away_dim_pct"));
       }
    }
    cJSON *sid = cJSON_GetObjectItem(req_json, "session_id");

@@ -263,6 +263,19 @@ esp_err_t tab5_settings_set_vision_on(bool on);
 uint8_t tab5_settings_get_vision_rate(void);
 esp_err_t tab5_settings_set_vision_rate(uint8_t hz);
 
+/** Vision V2-A.3 (TT #680) — presence-aware brightness.
+ *
+ *  away_dim: when on, the display brightness drops to `away_dim_pct`
+ *  whenever the always-on vision service fires a person-LEAVE event,
+ *  and restores to the user's `brightness` pref on the next person-
+ *  ENTER.  Default OFF — opt-in like the master vision toggle.
+ *
+ *  away_dim_pct: target brightness while away (0..100 %).  Default 20. */
+bool tab5_settings_get_away_dim(void);
+esp_err_t tab5_settings_set_away_dim(bool on);
+uint8_t tab5_settings_get_away_dim_pct(void);
+esp_err_t tab5_settings_set_away_dim_pct(uint8_t pct);
+
 /** TT #617 — Wake source.  Picks which wakeword detection path runs.
  *  Values: "k144" (K144 onboard mic + sherpa-ncnn), "dragon" (Tab5 mic
  *  → Dragon whisper.cpp), "off" (mic-tap only via orb tap), or a future
