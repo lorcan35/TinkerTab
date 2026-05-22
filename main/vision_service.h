@@ -56,3 +56,9 @@ typedef struct {
 } vision_service_state_t;
 
 void vision_service_get_state(vision_service_state_t *out);
+
+/** Force-fire the Welcome glance rule for harness + manual testing.
+ *  Bypasses all gates (absence threshold, cooldown, person-class
+ *  requirement).  Used by `POST /vision/test_welcome`.  Returns
+ *  ESP_OK after the toast + chime + obs event are dispatched. */
+esp_err_t vision_service_fire_welcome_test(void);

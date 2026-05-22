@@ -34,11 +34,18 @@ static const char *TAG = "vision_svc";
 #define VS_INPUT_H 320
 #define VS_JPEG_CAP (24 * 1024)
 
-/* V2-A.2 tracker — see header for design notes. */
+/* V2-A.2 tracker — see header for design notes.
+ *
+ * V2-A.4 follow-up tuning: at ~0.5 effective Hz (K144 yolo round-trip
+ * dominates), the original 3-hits-in-8-frames confirm window almost
+ * never fires.  Live test: 18 detections in 513 frames over 17 min,
+ * tracks expired before crossing CONFIRM_HITS = 3.  Loosen both knobs
+ * so a desk-mounted scene with sparse-but-real detections reliably
+ * confirms a person presence. */
 #define VS_TRACK_SLOTS 8
 #define VS_TRACK_IOU_THRESH 0.25f               /* IoU floor for association */
-#define VS_TRACK_CONFIRM_HITS 3                 /* seen_count to fire ENTER */
-#define VS_TRACK_FORGET_MISSES 8                /* ~4 s @ 2 Hz to fire LEAVE */
+#define VS_TRACK_CONFIRM_HITS 2                 /* lowered 3→2 for sparse-detection scenes */
+#define VS_TRACK_FORGET_MISSES 60               /* ~30 s @ 2 Hz hold time before LEAVE */
 #define VS_WELCOME_COOLDOWN_MS (5 * 60 * 1000u) /* Nest Hub Max pattern — 5 min */
 #define VS_ABSENCE_THRESHOLD_MS (120 * 1000u)   /* min absence before Welcome refires */
 
@@ -190,10 +197,13 @@ static void fire_rules_on_enter(const vs_track_t *t) {
          s_state.welcome_fires_total++;
          extern void ui_home_show_toast(const char *msg);
          ui_home_show_toast("Welcome back");
-         /* V2-A.4: pair the toast with the high-priority chime so the
-          * return is acknowledged audibly even when the user isn't
-          * looking at the home screen at the moment of detection. */
-         ui_audio_cue_play(UI_CUE_INCOMING_HIGH);
+         /* V2-A.4: pair the toast with the Welcome cue so the return
+          * is acknowledged audibly even when the user isn't looking at
+          * the home screen at the moment of detection.  UI_CUE_WELCOME
+          * is louder + longer (450 ms ascending arpeggio @ 60% amp)
+          * than the brief INCOMING_HIGH bell so a "user returned"
+          * event reads as meaningful rather than a quick UI tick. */
+         ui_audio_cue_play(UI_CUE_WELCOME);
          char wdetail[64];
          snprintf(wdetail, sizeof(wdetail), "away_ms=%llu", (unsigned long long)away_ms);
          tab5_debug_obs_event("vision.welcome", wdetail);
@@ -445,4 +455,16 @@ void vision_service_get_state(vision_service_state_t *out) {
    *out = s_state;
    out->uptime_ms = now_ms() - s_boot_ms;
    xSemaphoreGive(s_lock);
+}
+
+esp_err_t vision_service_fire_welcome_test(void) {
+   uint64_t now = now_ms();
+   s_last_welcome_ms = now;
+   s_state.last_welcome_ms = now;
+   s_state.welcome_fires_total++;
+   extern void ui_home_show_toast(const char *msg);
+   ui_home_show_toast("Welcome back");
+   ui_audio_cue_play(UI_CUE_WELCOME);
+   tab5_debug_obs_event("vision.welcome", "test_fire");
+   return ESP_OK;
 }

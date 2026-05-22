@@ -356,6 +356,17 @@ static esp_err_t vision_state_handler(httpd_req_t *req) {
    return tab5_debug_send_json_resp(req, root);
 }
 
+/* V2-A.4 (TT #682) — POST /vision/test_welcome: force-fire Welcome
+ * glance bypassing the absence + cooldown gates.  Surface for the
+ * e2e harness + manual testing. */
+static esp_err_t vision_test_welcome_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+   vision_service_fire_welcome_test();
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "fired", true);
+   return tab5_debug_send_json_resp(req, root);
+}
+
 void debug_server_camera_register(httpd_handle_t server) {
    if (!server) return;
 
@@ -368,9 +379,15 @@ void debug_server_camera_register(httpd_handle_t server) {
    static const httpd_uri_t uri_camera = {.uri = "/camera", .method = HTTP_GET, .handler = camera_handler};
    static const httpd_uri_t uri_vision_state = {
        .uri = "/vision/state", .method = HTTP_GET, .handler = vision_state_handler};
+   /* V2-A.4: harness / manual test path — force-fire Welcome bypassing
+    * absence + cooldown gates so we can verify the chime + toast end
+    * to end without walking away for >2 min every time. */
+   static const httpd_uri_t uri_vision_test_welcome = {
+       .uri = "/vision/test_welcome", .method = HTTP_POST, .handler = vision_test_welcome_handler};
 
    httpd_register_uri_handler(server, &uri_screenshot);
    httpd_register_uri_handler(server, &uri_screenshot_jpg);
    httpd_register_uri_handler(server, &uri_camera);
    httpd_register_uri_handler(server, &uri_vision_state);
+   httpd_register_uri_handler(server, &uri_vision_test_welcome);
 }

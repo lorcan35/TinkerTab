@@ -45,6 +45,7 @@ typedef enum {
    UI_CUE_ERROR = 2,         /* 120 ms 200 Hz — longer, somber */
    UI_CUE_INCOMING_LOW = 3,  /* W7-E.0: 30 ms 1200 Hz @ 30% — toast ping */
    UI_CUE_INCOMING_HIGH = 4, /* W7-E.0: 80 ms two-tone bell (880→1320 Hz) @ 35% — now-card claim */
+   UI_CUE_WELCOME = 5,       /* V2-A.4: 450 ms ascending arpeggio @ 60% — vision Welcome glance */
    UI_CUE_COUNT,
 } ui_cue_t;
 
