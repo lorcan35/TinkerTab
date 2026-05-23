@@ -27,6 +27,7 @@
 #include "voice_m5_llm.h"  /* TT #327 Wave 5: K144 baud accessor for /m5 */
 #include "voice_onboard.h" /* TT #327 Wave 4b: chain_active + failover_state */
 #include "voice_usb_cdc.h" /* TT #620 W2: USB transport connection state for /m5 */
+#include "voice_usb_ffs.h" /* V0 — StackFlow relay endpoint */
 #include "voice_xport.h"   /* TT #620 W3: active transport name */
 #include "voice_yolo.h"    /* TT #621 W6: K144 yolo11n inference */
 
@@ -410,6 +411,133 @@ static esp_err_t m5_yolo_infer_handler(httpd_req_t *req) {
    return ret;
 }
 
+/* ── V0 (TT #686): StackFlow relay ───────────────────────────────────
+ *
+ * Take a JSON body + optional ?ch=control|video, send it to the
+ * matching K144 USB-FFS channel, drain the response for a bounded
+ * timeout, return all raw response lines.
+ *
+ * Used to probe arbitrary StackFlow verbs (e.g. internvl.setup) from
+ * the dev host without needing to physically swap the K144 USB-C
+ * cable from Tab5 to dev box for ADB access.
+ *
+ * Request body: any JSON object — relayed verbatim with a newline
+ *               appended (StackFlow's framing).
+ * Query:        ?ch=control (default) or ?ch=video
+ *               ?timeout=NNNN (default 3000 ms)
+ *
+ * Response: {"ok":true, "sent_bytes":N, "lines":["<json>", ...],
+ *            "raw_bytes":M, "channel":"control|video"} */
+#define RELAY_RESP_CAP (32 * 1024)
+
+static esp_err_t m5_relay_handler(httpd_req_t *req) {
+   if (!tab5_debug_check_auth(req)) return ESP_OK;
+
+   if (req->content_len == 0 || req->content_len > 16384) {
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body must be 1..16384 bytes");
+      return ESP_FAIL;
+   }
+   char *body = (char *)heap_caps_malloc(req->content_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   if (!body) {
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "body alloc");
+      return ESP_FAIL;
+   }
+   int got = httpd_req_recv(req, body, req->content_len);
+   if (got != (int)req->content_len) {
+      heap_caps_free(body);
+      httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "incomplete body");
+      return ESP_FAIL;
+   }
+   body[got] = '\0';
+
+   /* Parse query for channel + timeout. */
+   char query[64] = {0};
+   httpd_req_get_url_query_str(req, query, sizeof(query));
+   bool use_video = false;
+   char ch[16] = {0};
+   if (httpd_query_key_value(query, "ch", ch, sizeof(ch)) == ESP_OK) {
+      use_video = (strcmp(ch, "video") == 0);
+   }
+   uint32_t timeout_ms = 3000;
+   char tval[16] = {0};
+   if (httpd_query_key_value(query, "timeout", tval, sizeof(tval)) == ESP_OK) {
+      int t = atoi(tval);
+      if (t >= 100 && t <= 15000) timeout_ms = (uint32_t)t;
+   }
+
+   bool connected = use_video ? voice_usb_ffs_video_is_connected() : voice_usb_ffs_is_connected();
+   if (!connected) {
+      heap_caps_free(body);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "k144 ffs channel not connected");
+      return ESP_FAIL;
+   }
+
+   esp_err_t lock = use_video ? voice_usb_ffs_video_lock(2000) : voice_usb_ffs_lock(2000);
+   if (lock != ESP_OK) {
+      heap_caps_free(body);
+      httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ffs lock timeout");
+      return ESP_FAIL;
+   }
+
+   /* Flush stale input + send the request with newline framing. */
+   if (use_video)
+      voice_usb_ffs_video_flush();
+   else
+      voice_usb_ffs_flush();
+
+   int sent = use_video ? voice_usb_ffs_video_send(body, (size_t)got) : voice_usb_ffs_send(body, (size_t)got);
+   const char nl = '\n';
+   if (use_video)
+      voice_usb_ffs_video_send(&nl, 1);
+   else
+      voice_usb_ffs_send(&nl, 1);
+
+   /* Drain response into a PSRAM buffer until timeout elapses. */
+   char *resp = (char *)heap_caps_malloc(RELAY_RESP_CAP, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+   size_t resp_len = 0;
+   if (resp) {
+      int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+      for (;;) {
+         int64_t now = esp_timer_get_time();
+         if (now >= deadline) break;
+         uint32_t poll = (uint32_t)((deadline - now) / 1000);
+         if (poll > 100) poll = 100;
+         int n = use_video ? voice_usb_ffs_video_recv(resp + resp_len, RELAY_RESP_CAP - resp_len - 1, poll)
+                           : voice_usb_ffs_recv(resp + resp_len, RELAY_RESP_CAP - resp_len - 1, poll);
+         if (n > 0) {
+            resp_len += (size_t)n;
+            if (resp_len >= RELAY_RESP_CAP - 1) break;
+         }
+      }
+      resp[resp_len] = '\0';
+   }
+
+   if (use_video)
+      voice_usb_ffs_video_unlock();
+   else
+      voice_usb_ffs_unlock();
+
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddBoolToObject(root, "ok", true);
+   cJSON_AddNumberToObject(root, "sent_bytes", sent);
+   cJSON_AddNumberToObject(root, "raw_bytes", (double)resp_len);
+   cJSON_AddStringToObject(root, "channel", use_video ? "video" : "control");
+   cJSON *lines = cJSON_CreateArray();
+   if (resp) {
+      char *line = resp;
+      while (line && *line) {
+         char *next = strchr(line, '\n');
+         if (next) *next++ = '\0';
+         if (*line) cJSON_AddItemToArray(lines, cJSON_CreateString(line));
+         line = next;
+      }
+   }
+   cJSON_AddItemToObject(root, "lines", lines);
+   if (resp) heap_caps_free(resp);
+   heap_caps_free(body);
+   return tab5_debug_send_json_resp(req, root);
+}
+
 /* ── Public registration entry point ─────────────────────────────────
  * Called once from tab5_debug_server_start() during boot.  All five
  * URI structs are local to this function (matching the inline pattern
@@ -421,6 +549,7 @@ void debug_server_m5_register(httpd_handle_t server) {
    const httpd_uri_t uri_m5_models = {.uri = "/m5/models", .method = HTTP_GET, .handler = m5_models_handler};
    const httpd_uri_t uri_m5_xport = {.uri = "/m5/xport", .method = HTTP_POST, .handler = m5_xport_handler};
    const httpd_uri_t uri_yolo_infer = {.uri = "/yolo/infer", .method = HTTP_POST, .handler = m5_yolo_infer_handler};
+   const httpd_uri_t uri_m5_relay = {.uri = "/m5/relay", .method = HTTP_POST, .handler = m5_relay_handler};
 
    httpd_register_uri_handler(server, &uri_m5_status);
    httpd_register_uri_handler(server, &uri_m5_reset);
@@ -428,6 +557,7 @@ void debug_server_m5_register(httpd_handle_t server) {
    httpd_register_uri_handler(server, &uri_m5_refresh);
    httpd_register_uri_handler(server, &uri_m5_models);
    httpd_register_uri_handler(server, &uri_yolo_infer);
+   httpd_register_uri_handler(server, &uri_m5_relay);
 
    ESP_LOGI(TAG, "K144 endpoint family registered (6 URIs)");
 }
