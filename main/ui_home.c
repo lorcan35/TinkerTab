@@ -2660,6 +2660,14 @@ void ui_home_go_home(void)
      * it via ui_keyboard_set_trigger_visible(true). */
     extern void ui_keyboard_set_trigger_visible(bool);
     ui_keyboard_set_trigger_visible(false);
+    /* TT #687 follow-up: hide the floating home button.  ui_home_create
+     * hides it once at boot, but every other screen (camera, settings,
+     * notes, files, wifi) toggles it ON via ui_chrome_set_home_visible(true).
+     * Coming back to home via ui_home_go_home was leaving it stale —
+     * a ghost amber circle on bottom-right that did nothing (we're
+     * already on home). */
+    extern void ui_chrome_set_home_visible(bool visible);
+    ui_chrome_set_home_visible(false);
 }
 
 /* TT #328 Wave 7 — ui_home_get_tileview / ui_home_get_tile removed.
