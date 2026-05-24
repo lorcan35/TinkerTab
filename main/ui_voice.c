@@ -2111,9 +2111,19 @@ static void mic_long_press_cb(lv_event_t *e)
 static void close_click_cb(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "Close button tapped — cancelling");
+    ESP_LOGI(TAG, "Close button tapped — full stop");
+    /* TT #691: just calling voice_cancel() let the wakeword re-arm
+     * after ~1.5 s, and room ambient noise then re-triggered LISTENING
+     * — the user observed the X "didn't stop" and the device looped
+     * back into listening.  Hard stop now disarms the wakeword too;
+     * re-arm happens when the user explicitly taps the orb or
+     * un-mutes via the home mute button. */
     voice_cancel();
+    extern void voice_wakeword_stop(void);
+    voice_wakeword_stop();
     ui_voice_hide();
+    extern void ui_home_show_toast(const char *msg);
+    ui_home_show_toast("Voice stopped — tap orb to listen again");
 }
 
 static void send_click_cb(lv_event_t *e)
