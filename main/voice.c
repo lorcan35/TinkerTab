@@ -2164,14 +2164,24 @@ esp_err_t voice_cancel(void)
     extern void voice_wakeword_force_dictation_stop(void);
     voice_wakeword_force_dictation_stop();
 
-    /* TT #625 Wave A.1 (R2) — belt-and-braces: even with the wakeword
-     * reset above, ext_pcm pump can race for 1-2 frames before the
-     * matcher state propagates.  Pause the pump for 1.5 s so K144's
-     * streaming ASR drains the buffer that captured the TTS we just
-     * stopped, preventing self-wake from lingering "thinker" partials. */
+    /* TT #692 — install a 3 s wakeword-matcher suppression window.
+     * K144's sherpa-ncnn streaming-zipformer can keep emitting ASR
+     * partials sourced from buffered audio (TTS tail or user follow-up
+     * speech) for 1-2 s after we stop the mic.  Those partials would
+     * substring-match the wake set ("thinker", "tinker", …) and re-
+     * open the mic invisibly — the "X-button-doesn't-stop" loop.
+     * The listener task stays armed throughout; only matcher fires
+     * are dropped during the window.  Wakeword resumes automatically. */
+    extern void voice_wakeword_post_cancel_suppress_ms(uint32_t ms);
+    voice_wakeword_post_cancel_suppress_ms(3000);
+
+    /* TT #625 Wave A.1 (R2) + TT #692 — pause ext_pcm pump for the same
+     * 3 s window so K144's streaming ASR drains buffered audio entirely.
+     * Pump resumes automatically via esp_timer one-shot.  Length now
+     * matches the matcher suppression window above. */
     voice_ext_pcm_stream_set_paused(true);
     extern void voice_extpcm_pump_unpause_in(uint32_t ms);
-    voice_extpcm_pump_unpause_in(1500); /* schedule unpause */
+    voice_extpcm_pump_unpause_in(3000); /* schedule unpause */
 
     tab5_debug_obs_event("voice.cancel", "done");
     return ESP_OK;

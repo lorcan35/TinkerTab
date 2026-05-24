@@ -114,6 +114,24 @@ const char *voice_wakeword_asr_id(void);
  *         with whatever has been accumulated so far. */
 void voice_wakeword_force_dictation_stop(void);
 
+/** @brief TT #692 — install a post-cancel suppression window.
+ *
+ *  After voice_cancel runs, K144's sherpa-ncnn streaming-zipformer
+ *  may still emit ASR partials containing buffered audio fragments
+ *  from the TTS tail or the user's follow-up speech.  The matcher
+ *  would catch these as wake hits and re-open the mic — the
+ *  "X-button-doesn't-stop" loop.
+ *
+ *  Calling this with @p ms sets a deadline `now + ms`.  Any wake
+ *  events that would fire before the deadline are silently dropped
+ *  (with an obs event for visibility).  The listener task stays
+ *  alive and armed throughout — no need to stop/restart.
+ *
+ *  3000 ms is a sane default — covers the typical TTS-tail drain
+ *  window plus a margin for user follow-up speech.  voice_cancel
+ *  calls this. */
+void voice_wakeword_post_cancel_suppress_ms(uint32_t ms);
+
 /* ── Status accessors (TT #578 — TinkerON debug surface) ──────────── */
 
 /** @brief Snapshot of the listener's runtime state.  All fields are
