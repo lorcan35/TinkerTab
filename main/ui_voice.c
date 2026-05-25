@@ -138,13 +138,14 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 /* Wave-1.8: orb back to upper-third → status text now ends around
  * y=620, so the stop button at y=750 keeps a tight ~80 px pairing
  * with the text without falling to the very bottom of the screen. */
-#define SEND_BTN_Y 750               /* y-center from top */
+#define SEND_BTN_Y 1180 /* TT #711: moved to bottom (was 750, mid-thread) */
 
-/* TT #711 — persistent conversation thread, below the orb halo (~515) and
- * above the bottom controls.  Renders the shared chat_msg_store (which
- * already holds every voice + typed turn). */
-#define THREAD_Y 545
-#define THREAD_H 530
+/* TT #711 — persistent conversation thread.  Starts below the orb's status
+ * caption (~590) so "Thinking"/"Tap to speak" isn't clipped by the scrim, and
+ * runs down to just above the bottom STOP control.  Renders the shared
+ * chat_msg_store (already holds every voice + typed turn). */
+#define THREAD_Y 600
+#define THREAD_H 510
 #define SEND_ICON_SZ       24        /* inner square "stop" icon */
 
 /* Mic dot pulse animation */
@@ -1051,7 +1052,7 @@ static void build_overlay(void)
        lv_obj_set_pos(s_thread_scrim, 0, THREAD_Y);
        lv_obj_set_size(s_thread_scrim, SW, THREAD_H);
        lv_obj_set_style_bg_color(s_thread_scrim, lv_color_hex(0x070707), 0);
-       lv_obj_set_style_bg_opa(s_thread_scrim, 235, 0);
+       lv_obj_set_style_bg_opa(s_thread_scrim, LV_OPA_COVER, 0); /* fully opaque: no home-chrome bleed-through */
        lv_obj_clear_flag(s_thread_scrim, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
        lv_obj_add_flag(s_thread_scrim, LV_OBJ_FLAG_HIDDEN);
     }
