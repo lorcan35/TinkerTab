@@ -255,18 +255,26 @@ void chat_header_set_mode(chat_header_t *h, uint8_t m, const char *llm)
         char buf[32] = {0};
         if (m == 3) {
             snprintf(buf, sizeof(buf), "AGENT");
+        } else if (m == 0 || m == 1) {
+           /* UI audit: Local + Hybrid run the LLM ON-DEVICE (Dragon NPU/
+            * Ollama).  The NVS llm_model holds the Cloud picker value, which
+            * is NOT serving the turn — showing it (e.g. CLAUDE-SONNET-4.6)
+            * mislabels the mode.  Match the home pill: "ON-DEVICE". */
+           snprintf(buf, sizeof(buf), "ON-DEVICE");
+        } else if (m == 4) {
+           snprintf(buf, sizeof(buf), "K144");
         } else {
-            const char *nick = llm ? llm : "";
-            const char *slash = strchr(nick, '/');
-            if (slash) nick = slash + 1;
-            size_t n = strlen(nick);
-            if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-            memcpy(buf, nick, n);
-            char *col = strchr(buf, ':');
-            if (col) *col = 0;
-            for (char *p = buf; *p; p++) {
-                if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
-            }
+           const char *nick = llm ? llm : "";
+           const char *slash = strchr(nick, '/');
+           if (slash) nick = slash + 1;
+           size_t n = strlen(nick);
+           if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+           memcpy(buf, nick, n);
+           char *col = strchr(buf, ':');
+           if (col) *col = 0;
+           for (char *p = buf; *p; p++) {
+              if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+           }
         }
         lv_label_set_text(h->chip_sub, buf);
     }
@@ -288,7 +296,11 @@ void chat_header_set_accent_color(chat_header_t *h, uint32_t hex)
 
 void chat_header_set_spend(chat_header_t *h, uint32_t mils, uint32_t cap_mils) {
    if (!h || !h->spend_lbl) return;
-   if (mils == 0 && cap_mils == 0) {
+   /* UI audit: don't show "$0.000 / $1.000" before any spend — it's dev
+    * clutter, and in free modes (Local/Hybrid/Onboard) it's always $0.
+    * The budget badge appears only once a paid turn has actually cost
+    * something. */
+   if (mils == 0) {
       lv_label_set_text(h->spend_lbl, "");
       return;
    }

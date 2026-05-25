@@ -300,7 +300,10 @@ static void pick_circadian_palette(int hour, uint32_t *top, uint32_t *bot) {
       *bot = 0x804008; /* Dusk */
    } else {
       *top = 0x7F6535;
-      *bot = 0x2A1F0F; /* Night */
+      *bot = 0x4A3214; /* Night — UI audit: warmed from cold 0x2A1F0F (olive-
+                          dark) to a warm amber-brown so the night orb reads
+                          as a dim gold sphere, not muddy. Still night-dim
+                          (×0.7 in paint_body_for_hour). */
    }
 }
 
