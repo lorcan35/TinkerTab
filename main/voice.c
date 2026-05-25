@@ -1689,7 +1689,7 @@ esp_err_t voice_start_listening(void)
 
    if (tab5_settings_get_mic_mute()) {
       ESP_LOGW(TAG, "voice_start_listening: mic is muted, refusing");
-      ui_home_show_toast("Mic is muted -- unmute in Settings");
+      ui_home_show_toast("Mic muted -- tap the mute button (top-right) to talk");
       return ESP_ERR_INVALID_STATE;
    }
 

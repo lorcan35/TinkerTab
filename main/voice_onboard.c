@@ -192,6 +192,19 @@ static void wakeword_event_handler(voice_wakeword_event_t event, const char *tex
    (void)user;
    switch (event) {
       case VOICE_WAKEWORD_EVENT_WAKE: {
+         /* TT #708 — if the mic is muted, voice_start_listening downstream
+          * refuses with only a fleeting toast AFTER we've already chimed +
+          * shown "Tinker listening…" — the exact "I woke it and nothing
+          * happens" confusion.  Surface the muted state honestly (somber
+          * error cue + actionable prompt) and do NOT pretend to listen. */
+         if (tab5_settings_get_mic_mute()) {
+            ESP_LOGW(TAG, "wake while mic muted — surfacing muted prompt, not starting a turn");
+            tab5_debug_obs_event("wakeword.fire", "muted");
+            ui_audio_cue_play(UI_CUE_ERROR);
+            char *mm = strdup("Mic muted — tap the mute button to talk");
+            if (mm != NULL) tab5_lv_async_call(wakeword_toast_async, mm);
+            break;
+         }
          /* TT #131-opt2: audible wake chime — confirms KWS fired before
           * we start listening for the user's question. */
          ui_audio_cue_play(UI_CUE_INCOMING_HIGH);
