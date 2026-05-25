@@ -513,8 +513,19 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
     * Deferred via tab5_worker_enqueue so it runs on the worker's 16 KB
     * PSRAM stack rather than the 6 KB playback drain stack — same
     * pattern as the #133 queue drain above. */
-   if (old == VOICE_STATE_SPEAKING && new_state == VOICE_STATE_READY && s_conv_active) {
-      ESP_LOGI(TAG, "conv: SPEAKING→READY edge with conv_active, queueing relisten");
+   /* TT #714 — relisten on any normal turn-completion edge, not just
+    * SPEAKING→READY.  A turn that produced a reply but no TTS (llm_done
+    * with empty/disabled audio) reaches READY straight from PROCESSING;
+    * the old SPEAKING-only condition silently ended the conversation
+    * there, so the user had to re-tap/re-wake.  The PROCESSING edge is
+    * guarded on a non-empty reply so error / empty-STT / cancelled turns
+    * (which carry no llm text, and cancel already clears s_conv_active)
+    * don't relisten and can't loop. */
+   const char *conv_reply = voice_get_llm_text();
+   bool conv_complete_edge =
+       (old == VOICE_STATE_SPEAKING) || (old == VOICE_STATE_PROCESSING && conv_reply != NULL && conv_reply[0] != '\0');
+   if (conv_complete_edge && new_state == VOICE_STATE_READY && s_conv_active) {
+      ESP_LOGI(TAG, "conv: turn-complete edge (old=%d) with conv_active, queueing relisten", old);
       tab5_debug_obs_event("voice.conv", "relisten_enqueue");
       if (tab5_worker_enqueue(_conv_relisten_job, NULL, "voice-conv-relisten") != ESP_OK) {
          ESP_LOGW(TAG, "conv: relisten enqueue failed; conversation ending");
@@ -2749,6 +2760,10 @@ static void response_wd_recover_job(void *arg) {
    if (ws_live) {
       voice_ws_send_text("{\"type\":\"cancel\"}");
    }
+   /* TT #714 — a timeout ends the conversation; clear conv_active before
+    * the READY transition so it doesn't auto-relisten into a possible
+    * hang loop (same contract as voice_cancel). */
+   s_conv_active = false;
    voice_set_state(ws_live ? VOICE_STATE_READY : VOICE_STATE_IDLE, "watchdog_timeout");
    ui_home_show_toast("Tinker timed out -- ready again");
    s_resp_wd_recovering = false;
