@@ -234,6 +234,13 @@ static void finish_dictation(const char *reason) {
  * false-fire.  500-1000 ms is enough for the ASR engine's streaming
  * context to flush + Tab5's wake_window to settle on truly-new audio. */
 static int64_t s_last_busy_us = 0;
+
+/* TT #692 — post-cancel suppression deadline.  voice_cancel installs
+ * a 3 s window after explicit user cancels so the matcher silently
+ * drops wake events fired from K144 ASR partials that came out of
+ * buffered audio (TTS tail or user follow-up speech).  Wakeword task
+ * stays alive + armed throughout — no stop/restart cycle. */
+static int64_t s_post_cancel_until_us = 0;
 /* TT #627 Wave B.2 (R3) — bumped 1000 → 1500 ms.  Audit found that
  * K144's streaming-zipformer ASR can take 1.5-2 s to flush a long TTS
  * reply context after SPEAKING→READY.  1000 ms expired before the
@@ -279,7 +286,29 @@ static bool wakeword_suppressed_by_voice_state(void) {
       }
       s_last_busy_us = 0; /* grace expired — re-armed */
    }
+   /* TT #692: explicit post-cancel suppression window.  voice_cancel
+    * sets this when the user (or any other cancel-class caller) ends
+    * a turn.  Even if state is already READY and the busy-grace has
+    * expired, drop wake hits until the deadline. */
+   if (s_post_cancel_until_us != 0) {
+      int64_t now = esp_timer_get_time();
+      if (now < s_post_cancel_until_us) return true;
+      s_post_cancel_until_us = 0; /* window expired */
+   }
    return false;
+}
+
+void voice_wakeword_post_cancel_suppress_ms(uint32_t ms) {
+   if (ms == 0) {
+      s_post_cancel_until_us = 0;
+      return;
+   }
+   s_post_cancel_until_us = esp_timer_get_time() + (int64_t)ms * 1000;
+   /* Also reset the wake window so any partial transcript currently
+    * buffered (potentially containing TTS-tail "thinker" fragments)
+    * can't match the moment the window expires. */
+   wake_window_clear();
+   tab5_debug_obs_event("wakeword.suppress", "post_cancel_arm");
 }
 
 /* TT #578: push every ASR delta into the debug ring buffer.  Cheap —
@@ -345,44 +374,68 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
           "hick",    /* heavily-contracted rendering, real session 2026-05-20 */
           "hanker",  /* observed in "any hanker thinker" rendering */
       };
+      /* TT #692 — anchored matching.  The wake substring must appear in
+       * the FRESHLY-ARRIVED delta (not somewhere deep in an accumulated
+       * sliding window), AND its position must be within the first half
+       * of the delta (allows leading filler like "uh hey tinker" but
+       * rejects long buffered partials whose tail happens to contain
+       * "thinker" from TTS bleed or background noise).  K144's sherpa-
+       * ncnn streaming-zipformer is a rolling decoder — each partial
+       * is the cumulative recognition of the current segment, so a real
+       * wake utterance lands at the start of the delta that contains
+       * its trailing audio. */
       const char *match = NULL;
-      if (s_wake_window_len > 0) {
-         if (istrstr(s_wake_window, s_wake_phrase) != NULL) {
+      const char *match_pos = NULL;
+      if (delta && delta[0]) {
+         const char *p;
+         if ((p = istrstr(delta, s_wake_phrase)) != NULL) {
             match = s_wake_phrase;
-         } else if (s_wake_phrase_alt[0] &&
-                    istrstr(s_wake_window, s_wake_phrase_alt) != NULL) {
+            match_pos = p;
+         } else if (s_wake_phrase_alt[0] && (p = istrstr(delta, s_wake_phrase_alt)) != NULL) {
             match = s_wake_phrase_alt;
+            match_pos = p;
          } else {
             for (size_t i = 0; i < sizeof(k_alt_patterns) / sizeof(k_alt_patterns[0]); i++) {
-               if (istrstr(s_wake_window, k_alt_patterns[i]) != NULL) {
+               if ((p = istrstr(delta, k_alt_patterns[i])) != NULL) {
                   match = k_alt_patterns[i];
+                  match_pos = p;
                   break;
                }
             }
          }
+         if (match != NULL && match_pos != NULL) {
+            size_t pos = (size_t)(match_pos - delta);
+            size_t delta_len = strlen(delta);
+            /* Position floor: match must be in the first half of the
+             * delta + a 4-char slack for short leading fillers.  Rejects
+             * cases where a long partial's tail contains the wake word
+             * (the TTS-bleed / buffered-noise failure mode). */
+            size_t pos_ceiling = delta_len / 2 + 4;
+            if (pos > pos_ceiling) {
+               ESP_LOGD(TAG, "wake suppressed by anchor: pos=%u of %u in \"%s\"", (unsigned)pos, (unsigned)delta_len,
+                        delta);
+               match = NULL;
+               match_pos = NULL;
+            }
+         }
       }
       if (match != NULL) {
-         /* TT #595 — VAD pre-gate v1: require the sliding window
-          * to be ≥8 chars before a substring match is allowed to fire
-          * wake.  K144's sherpa-ncnn streaming ASR confabulates short
-          * 1-2 word fragments from background noise during silence
-          * ("kincher", "ereb", "thinker") — those would substring-
-          * match "thinker" but contain only that noise.  A real
-          * "Hey Tinker" utterance produces a window with leading
-          * context ("hi there hey tinker"), so the 8-char floor
-          * filters hallucinations without losing real wakes.
-          *
-          * The cheapest VAD we can do without K144 daemon changes:
-          * if the user really spoke the wake phrase, the partial
-          * stream carries more than just the phrase itself.
-          * Hallucinations are typically 4-6 chars of single-word
-          * garbage. */
-         if (s_wake_window_len < 8) {
-            ESP_LOGD(TAG, "wake suppressed by VAD pregate: window=\"%s\" (%u chars)", s_wake_window,
-                     (unsigned)s_wake_window_len);
+         /* TT #595 + TT #692 — VAD pre-gate: require the partial
+          * delta to be ≥8 chars before a substring match is allowed
+          * to fire wake.  K144's sherpa-ncnn streaming ASR confabulates
+          * short 1-2 word fragments from background noise during silence
+          * ("kincher", "ereb", "thinker") — those would substring-match
+          * "thinker" but contain only that noise.  A real "Hey Tinker"
+          * utterance produces a partial with leading context, so the
+          * 8-char floor filters hallucinations without losing real wakes.
+          * Now applied to the freshly-arrived delta (anchored matcher). */
+         size_t delta_len = (delta && delta[0]) ? strlen(delta) : 0;
+         if (delta_len < 8) {
+            ESP_LOGD(TAG, "wake suppressed by VAD pregate: delta=\"%s\" (%u chars)", delta ? delta : "",
+                     (unsigned)delta_len);
             s_vad_skip_count++;
          } else {
-            ESP_LOGI(TAG, "wake matched \"%s\" in \"%s\"", match, s_wake_window);
+            ESP_LOGI(TAG, "wake matched \"%s\" in delta=\"%s\"", match, delta);
             tab5_debug_obs_event("wakeword.fire", match);
             /* TT #578: bookkeeping for /tinkeron/status. */
             s_fire_count++;

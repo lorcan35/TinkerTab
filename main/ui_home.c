@@ -1932,18 +1932,11 @@ void mute_btn_click_cb(lv_event_t *e) {
    bool now_muted = !was_muted;
    tab5_settings_set_mic_mute(now_muted ? 1 : 0);
    paint_mute_btn(now_muted);
-   /* TT #691: true mute means BOTH push-to-talk + wakeword stop.
-    * Ambient noise was re-firing the wakeword and the device looped
-    * back into LISTENING even after the user pressed the X close. */
-   if (now_muted) {
-      extern void voice_wakeword_stop(void);
-      voice_wakeword_stop();
-   } else {
-      /* Re-arm wakeword on unmute — async, non-blocking; the K144
-       * warmup chain lazily picks it up. */
-      extern esp_err_t voice_onboard_arm_wakeword_async(void);
-      voice_onboard_arm_wakeword_async();
-   }
+   /* TT #692 (revert of #691): mute = mic doesn't transmit; wakeword
+    * stays armed.  Matches consumer voice assistants where "mute"
+    * means "don't pick up my voice for the active turn" not "kill
+    * the always-on listener entirely".  voice_start_listening already
+    * honors mic_mute and refuses with a toast. */
    /* Surface state — toast + obs for harness visibility. */
    ui_home_show_toast(now_muted ? "Mic muted" : "Mic unmuted");
    tab5_debug_obs_event("ui.mute", now_muted ? "on" : "off");
