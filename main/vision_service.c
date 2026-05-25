@@ -410,7 +410,6 @@ static void process_one_frame(void) {
       ESP_LOGD(TAG, "infer failed: %d", (int)i_err);
       return;
    }
-   s_state.detections_total += (uint32_t)n;
    /* V2-A.3: person-only filter.  Pet timeline was dropped after live
     * testing showed yolo11n's animal false-positives on humans were
     * the only thing the rule ever fired on.  All non-person boxes
@@ -424,6 +423,14 @@ static void process_one_frame(void) {
       s_state.last_detection_ms = now_ms();
       s_state.last_confidence = boxes[i].confidence;
    }
+   /* TT #700 — detections_total counts FILTERED detections only.  Was
+    * counting raw YOLO box output (including chairs, cups, books) which
+    * made the observability inconsistent: /vision/state showed
+    * detections_total=3 + last_class="" because the 3 boxes were all
+    * dropped by the person filter.  Match the metric to the rest of
+    * the state (last_class / last_detection_ms / last_confidence are
+    * already filtered). */
+   s_state.detections_total += (uint32_t)fn;
    tracker_update(filtered, fn);
 }
 
