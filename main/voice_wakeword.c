@@ -306,6 +306,28 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
     * K144's llm-asr is alive and dispatching to us. */
    s_last_delta_us = esp_timer_get_time();
 
+   /* TT #698 — drop consecutive identical non-finish partials.  K144's
+    * sherpa-ncnn streaming-zipformer rolling decoder re-emits the SAME
+    * partial 5-20× per audio frame (live-observed 10 deltas/sec all
+    * carrying identical 80-char text).  Without this gate every
+    * duplicate runs the matcher (7× istrstr), pushes the transcript
+    * ring (taskENTER_CRITICAL + strncpy), and pushes the wake window
+    * (memcpy + bounds checks) for zero new signal.
+    *
+    * Gate intentionally lets finish=true through (boundary marker) and
+    * empty deltas through (silence/heartbeat).  Watchdog timestamp
+    * above still fires so K144-aliveness detection isn't affected. */
+   static char s_last_delta[96] = {0};
+   if (delta != NULL && delta[0] != '\0' && !finish && strncmp(s_last_delta, delta, sizeof(s_last_delta) - 1) == 0) {
+      return;
+   }
+   if (delta != NULL && delta[0] != '\0') {
+      strncpy(s_last_delta, delta, sizeof(s_last_delta) - 1);
+      s_last_delta[sizeof(s_last_delta) - 1] = '\0';
+   } else if (finish) {
+      s_last_delta[0] = '\0'; /* segment closed — next partial is fresh */
+   }
+
    /* TT #578: every delta into the debug ring before any state branching. */
    if (delta && delta[0]) transcript_ring_push(delta, finish);
 
