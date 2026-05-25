@@ -37,6 +37,7 @@
 #include "debug_obs.h" /* W7-E.2: ui.notif.now obs events */
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h" /* TT #694: esp_restart for reboot button */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -130,6 +131,13 @@ static lv_obj_t *s_vision_dot = NULL;
  * muted; dark bg + dim glyph when not. */
 static lv_obj_t *s_mute_btn = NULL;
 static lv_obj_t *s_mute_icon = NULL;
+/* TT #694 — reboot button.  Floating circular button at top-right next
+ * to the mute toggle.  Tap-once shows a "Hold to reboot" toast (safety
+ * gate — single mistaps shouldn't reboot the device).  Long-press
+ * commits via esp_restart() after a brief "Rebooting…" toast. */
+static lv_obj_t *s_reboot_btn = NULL;
+static lv_obj_t *s_reboot_icon = NULL;
+static bool s_reboot_long_pressed = false;
 static lv_obj_t *s_time_label      = NULL;  /* right: "Thursday · 9:42" */
 /* Cap Wave 5b (TT #646): privacy lock pill, pinned right of the time label.
  * Visible only when tab5_settings_get_privacy_lock() is true. */
@@ -667,6 +675,33 @@ lv_obj_t *ui_home_create(void)
     }
     lv_obj_set_style_text_font(s_mute_icon, FONT_HEADING, 0);
     lv_obj_center(s_mute_icon);
+
+    /* TT #694 — reboot button.  Sits just LEFT of the mute toggle, same
+     * size + style.  Tap-once → "Hold to reboot" toast.  Long-press →
+     * "Rebooting…" + esp_restart() after a short delay so the toast
+     * actually paints.  Wakeword + voice teardown happens automatically
+     * via app_main's normal shutdown path. */
+    s_reboot_btn = lv_obj_create(s_screen);
+    lv_obj_remove_style_all(s_reboot_btn);
+    lv_obj_set_size(s_reboot_btn, MUTE_SZ, MUTE_SZ);
+    lv_obj_set_pos(s_reboot_btn, SW - SIDE_PAD - MUTE_SZ * 2 - 12, 72);
+    lv_obj_set_style_radius(s_reboot_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_reboot_btn, lv_color_hex(TH_CARD_ELEVATED), 0);
+    lv_obj_set_style_bg_opa(s_reboot_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_reboot_btn, 1, 0);
+    lv_obj_set_style_border_color(s_reboot_btn, lv_color_hex(0x1E1E2A), 0);
+    lv_obj_clear_flag(s_reboot_btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_reboot_btn, LV_OBJ_FLAG_CLICKABLE);
+    extern void reboot_btn_click_cb(lv_event_t * e);
+    extern void reboot_btn_long_press_cb(lv_event_t * e);
+    lv_obj_add_event_cb(s_reboot_btn, reboot_btn_click_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_reboot_btn, reboot_btn_long_press_cb, LV_EVENT_LONG_PRESSED, NULL);
+    ui_fb_card(s_reboot_btn);
+    s_reboot_icon = lv_label_create(s_reboot_btn);
+    lv_label_set_text(s_reboot_icon, LV_SYMBOL_POWER);
+    lv_obj_set_style_text_font(s_reboot_icon, FONT_HEADING, 0);
+    lv_obj_set_style_text_color(s_reboot_icon, lv_color_hex(TH_TEXT_DIM), 0);
+    lv_obj_center(s_reboot_icon);
 
     s_time_label = lv_label_create(s_screen);
     lv_label_set_text(s_time_label, "");
@@ -1940,6 +1975,44 @@ void mute_btn_click_cb(lv_event_t *e) {
    /* Surface state — toast + obs for harness visibility. */
    ui_home_show_toast(now_muted ? "Mic muted" : "Mic unmuted");
    tab5_debug_obs_event("ui.mute", now_muted ? "on" : "off");
+}
+
+/* TT #694 — reboot button.  Tap-once = safety toast; long-press = commit.
+ * Same swallow-flag pattern as orb (LV_EVENT_LONG_PRESSED still emits a
+ * trailing LV_EVENT_CLICKED on release; without the flag the click handler
+ * would also fire and overwrite the "Rebooting…" toast). */
+static void reboot_commit_cb(void *arg) {
+   (void)arg;
+   ESP_LOGW(TAG, "Reboot requested via home button");
+   tab5_debug_obs_event("ui.reboot", "user");
+   esp_restart();
+}
+
+void reboot_btn_click_cb(lv_event_t *e) {
+   (void)e;
+   if (s_reboot_long_pressed) {
+      s_reboot_long_pressed = false;
+      return; /* swallow the trailing click after a long-press */
+   }
+   ui_home_show_toast("Hold to reboot");
+}
+
+void reboot_btn_long_press_cb(lv_event_t *e) {
+   (void)e;
+   s_reboot_long_pressed = true;
+   ui_home_show_toast("Rebooting…");
+   /* 600 ms delay so the toast paints + LVGL flushes before we yank
+    * the world.  esp_timer one-shot — no blocking, no task. */
+   static esp_timer_handle_t s_reboot_timer = NULL;
+   if (!s_reboot_timer) {
+      const esp_timer_create_args_t args = {
+          .callback = reboot_commit_cb,
+          .arg = NULL,
+          .name = "reboot_btn",
+      };
+      esp_timer_create(&args, &s_reboot_timer);
+   }
+   if (s_reboot_timer) esp_timer_start_once(s_reboot_timer, 600 * 1000);
 }
 
 /* v4·D Phase 4g widget_prompt tap plumbing.
