@@ -97,6 +97,122 @@ static size_t s_trans_ring_head = 0; /* next slot to write */
 static size_t s_trans_ring_count = 0; /* entries populated (0..32) */
 static portMUX_TYPE s_trans_lock = portMUX_INITIALIZER_UNLOCKED;
 
+/* TT #602 — Levenshtein distance with row-min early-out.  Returns a
+ * value in [0, max_dist+1]; max_dist+1 means "exceeds budget".  Both
+ * strings expected to be short single tokens (≤ 24 chars).  Compared
+ * case-insensitively on ASCII. */
+static int lev_distance_capped(const char *a, const char *b, int max_dist) {
+   if (a == NULL || b == NULL) return max_dist + 1;
+   int la = (int)strlen(a);
+   int lb = (int)strlen(b);
+   if (la > 24 || lb > 24) return max_dist + 1;
+   int diff = la - lb;
+   if (diff < 0) diff = -diff;
+   if (diff > max_dist) return max_dist + 1;
+   int prev[32], curr[32];
+   for (int j = 0; j <= lb; j++) prev[j] = j;
+   for (int i = 1; i <= la; i++) {
+      curr[0] = i;
+      int row_min = i;
+      unsigned char ac = (unsigned char)a[i - 1];
+      if (ac >= 'A' && ac <= 'Z') ac = (unsigned char)(ac + 32);
+      for (int j = 1; j <= lb; j++) {
+         unsigned char bc = (unsigned char)b[j - 1];
+         if (bc >= 'A' && bc <= 'Z') bc = (unsigned char)(bc + 32);
+         int cost = (ac == bc) ? 0 : 1;
+         int del = prev[j] + 1;
+         int ins = curr[j - 1] + 1;
+         int sub = prev[j - 1] + cost;
+         int m = del < ins ? del : ins;
+         if (sub < m) m = sub;
+         curr[j] = m;
+         if (m < row_min) row_min = m;
+      }
+      if (row_min > max_dist) return max_dist + 1;
+      memcpy(prev, curr, sizeof(int) * (size_t)(lb + 1));
+   }
+   return prev[lb];
+}
+
+/* "Hey"-class ASR mishearings.  Captured live from K144 zipformer on
+ * 2026-05-18 — common confusions for the leading syllable of "hey
+ * tinker".  Update when new variants surface in /tinkeron/transcripts. */
+static const char *const k_hey_variants[] = {
+    "hey", "hay", "hi", "ay", "ai", "eight", "hello", "oi", "oh", "a", "i", "ey", "he", NULL,
+};
+
+static bool is_hey_class(const char *tok) {
+   if (tok == NULL || tok[0] == '\0') return false;
+   for (int i = 0; k_hey_variants[i] != NULL; i++) {
+      if (strcmp(tok, k_hey_variants[i]) == 0) return true;
+   }
+   return false;
+}
+
+/* "Tinker"-class: Levenshtein ≤ 2 from "tinker" OR "thinker".  Requires
+ * ≥4 chars so short noise tokens ("i", "in", "ink") can't match. */
+static bool is_tinker_class(const char *tok) {
+   if (tok == NULL || strlen(tok) < 4) return false;
+   if (lev_distance_capped(tok, "tinker", 2) <= 2) return true;
+   if (lev_distance_capped(tok, "thinker", 2) <= 2) return true;
+   return false;
+}
+
+/* Tokenize a transcript chunk into lowercase, punctuation-stripped
+ * tokens.  Writes pointers into the provided scratch buffer (caller-
+ * owned) and returns ntoks. */
+static int tokenize_chunk(const char *chunk, char *scratch, size_t scratch_cap, char **toks, int max_toks) {
+   if (chunk == NULL || scratch == NULL || scratch_cap == 0) return 0;
+   size_t wlen = strlen(chunk);
+   if (wlen >= scratch_cap) wlen = scratch_cap - 1;
+   memcpy(scratch, chunk, wlen);
+   scratch[wlen] = '\0';
+   int ntoks = 0;
+   char *save = NULL;
+   for (char *tk = strtok_r(scratch, " \t\n\r.,!?;:\"'", &save); tk != NULL && ntoks < max_toks;
+        tk = strtok_r(NULL, " \t\n\r.,!?;:\"'", &save)) {
+      size_t len = strlen(tk);
+      while (len > 0 && !isalnum((unsigned char)tk[len - 1])) tk[--len] = '\0';
+      for (size_t i = 0; i < len; i++) {
+         unsigned char c = (unsigned char)tk[i];
+         if (c >= 'A' && c <= 'Z') tk[i] = (char)(c + 32);
+      }
+      if (tk[0] != '\0') toks[ntoks++] = tk;
+   }
+   return ntoks;
+}
+
+/* Fuzzy phonetic wake match.  Walks the tokenized chunk, finds a
+ * tinker-class token preceded within 2 tokens by a hey-class token.
+ * Returns true on hit and copies the matched (lowercased) tinker token
+ * into @p out_match so the caller can locate its position in the
+ * original chunk for the anchor check.
+ *
+ * TT #602 reconciled 2026-05-25: now runs on the FRESHLY-ARRIVED ASR
+ * delta (anchored matcher, TT #692), not the old accumulated wake
+ * window.  Its job is the residual the literal k_alt_patterns miss — a
+ * Levenshtein-near tinker token ("dinker", "tinkr", "stinker") that
+ * isn't one of the exact substrings but is still preceded by a
+ * hey-class word. */
+static bool fuzzy_wake_match(const char *chunk, char *out_match, size_t out_cap) {
+   if (chunk == NULL || chunk[0] == '\0' || out_match == NULL || out_cap == 0) return false;
+   char buf[256];
+   char *toks[24];
+   int ntoks = tokenize_chunk(chunk, buf, sizeof(buf), toks, 24);
+   if (ntoks < 2) return false;
+   for (int i = 1; i < ntoks; i++) {
+      if (!is_tinker_class(toks[i])) continue;
+      for (int j = i - 1; j >= 0 && j >= i - 2; j--) {
+         if (is_hey_class(toks[j])) {
+            strncpy(out_match, toks[i], out_cap - 1);
+            out_match[out_cap - 1] = '\0';
+            return true;
+         }
+      }
+   }
+   return false;
+}
+
 /* Case-insensitive substring search.  Returns pointer into haystack on
  * hit, NULL on miss.  Both strings expected to be UTF-8 ASCII for this
  * use case — wake phrases are English and the K144 zipformer emits
@@ -408,6 +524,7 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
        * its trailing audio. */
       const char *match = NULL;
       const char *match_pos = NULL;
+      char fuzzy_match_buf[64] = {0};
       if (delta && delta[0]) {
          const char *p;
          if ((p = istrstr(delta, s_wake_phrase)) != NULL) {
@@ -423,6 +540,18 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
                   match_pos = p;
                   break;
                }
+            }
+         }
+         /* TT #602 — phonetic fallback after the literal patterns miss.
+          * Catches a Levenshtein-near tinker token ("dinker", "tinkr",
+          * "stinker") preceded by a hey-class word that the exact
+          * substrings above can't see.  fuzzy_match_buf holds the
+          * lowercased matched token; istrstr re-locates it in the delta
+          * so the same first-half anchor check below still applies. */
+         if (match == NULL && fuzzy_wake_match(delta, fuzzy_match_buf, sizeof(fuzzy_match_buf))) {
+            if ((p = istrstr(delta, fuzzy_match_buf)) != NULL) {
+               match = fuzzy_match_buf;
+               match_pos = p;
             }
          }
          if (match != NULL && match_pos != NULL) {
