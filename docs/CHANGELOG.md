@@ -14,6 +14,23 @@ that span both repos (TinkerTab + TinkerBox), see
 
 ---
 
+## 2026-05-25 — Voice loop + WS health audit (6 PRs)
+
+Live cross-stack audit of Tab5↔Dragon↔K144 piping, triggered by the user-reported "X-button-cancel re-opens listening" loop.  Six independent bugs closed:
+
+- **#693** (closes #692) — Wave A: revert PR #691's permanent wakeword-disarm; `voice_wakeword_post_cancel_suppress_ms(3000)` API installed by `voice_cancel`; ext_pcm pump pause 1500→3000 ms; wake matcher now anchors on freshly-arrived ASR delta (first-half + 4 char slack) instead of accumulated 96 B sliding window.  Fixes "X stops the turn but next ASR partial re-fires wake" loop without killing always-on listener.
+- **#699** (closes #698) — Drop consecutive identical non-finish ASR partials at front of `asr_partial_cb`.  K144 sherpa-ncnn rolling decoder re-emits same partial 10×/sec — every duplicate was running 7× istrstr matcher scans + transcript ring critical section + 2× `ESP_LOGI` for zero new signal.  Also demoted `voice_m5_llm.c` asr-frame + asr-delta `ESP_LOGI` to `ESP_LOGD` (was bring-up debug, never cleaned up).
+- **#697** (closes #696) — WS-RX transient error branch in `voice_ws_proto.c` now snaps `voice_state` to READY/IDLE.  Pre-fix a `stt_empty`/`pipeline_failed` left Tab5 stuck in PROCESSING forever; next mic tap + wake refused until reboot.  Fatal branch already did the snap-back; transient was missing parity.
+- **#695** (closes #694) — Top-right reboot button on home, just left of the mute toggle.  Tap = "Hold to reboot" safety toast, long-press = "Rebooting…" + `esp_restart()` after 600 ms esp_timer one-shot so the toast paints before LVGL gets cut.
+- **#701** (closes #700) — `vision_service::detections_total` counts FILTERED (person-class) detections only.  Was counting raw YOLO output (chairs/cups/books) while `last_class` etc. only updated for the filter, making `/vision/state` show `detections_total=3 + last_class=""`.
+- **#703** (closes #702) — `ui_notes_unprocessed_count()` drops the FAILED-with-audio branch.  Counter was counting notes that `transcription_queue_task` deliberately refuses to retry (manual-only via UI Retry button to avoid infinite loops on broken audio), making `/logs/tail` log "Transcription queue: 1 unprocessed" every 15 s forever.
+
+**Audit also confirmed clean** (no fix needed): `voice_set_state` mutex-guarded, settings NVS mutex-guarded, cJSON `Parse`/`Delete` balance in `voice_ws_proto.c` (all 4 early returns paired), playback ring buffer mutex-guarded.  `WS_CLIENT_PONG_SEC=180` deliberately long (Dragon aiohttp keepalive runs on its own loop — see voice.c:134 comment).
+
+**Live verification:** post-flash @192.168.1.90 — state=READY, wakeword armed, asr.1005 binding clean, 0 panic/abort/leak/oom log lines, internal-SRAM `largest=62 KB @ 60s` (UP from 52 KB @ 22 min pre-fix — dedup + Wave A reduced steady-state heap pressure).
+
+---
+
 ## Phase 1 — Voice Assistant + UI (April 2026)
 
 Feature-complete:
