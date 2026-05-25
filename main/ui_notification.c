@@ -130,7 +130,7 @@ static void notif_show_async_cb(void *arg) {
       /* Toast: compose "[ch] sender · preview".  Bounded with %.Ns
        * specifiers so compiler can prove no truncation. */
       char text[200];
-      snprintf(text, sizeof(text), "[%.15s] %.40s · %.120s", ch, sender, preview);
+      snprintf(text, sizeof(text), "[%.15s] %.40s • %.120s", ch, sender, preview);
       /* W7-E.6: dim variant during quiet hours — visible but not
        * attention-grabbing per PLAN §4.3. */
       ui_home_show_toast_ex(text, quiet ? UI_TOAST_INCOMING_QUIET : UI_TOAST_INCOMING);

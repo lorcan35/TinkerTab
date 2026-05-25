@@ -2904,7 +2904,7 @@ static void undo_tick_cb(lv_timer_t *t) {
    if (!s_undo_countdown) return;
    if (s_undo_secs_left > 0) s_undo_secs_left--;
    char buf[80];
-   snprintf(buf, sizeof(buf), "%s  \xc2\xb7  Undo (%ds)", s_undo_label_buf, s_undo_secs_left);
+   snprintf(buf, sizeof(buf), "%s  \xe2\x80\xa2  Undo (%ds)", s_undo_label_buf, s_undo_secs_left);
    lv_label_set_text(s_undo_countdown, buf);
 }
 
@@ -2947,7 +2947,7 @@ void ui_home_show_undo_toast(const char *label, int seconds, ui_undo_cb_t undo_c
    lv_obj_set_style_text_color(s_undo_countdown, lv_color_hex(TH_TEXT_PRIMARY), 0);
    lv_obj_set_style_text_letter_space(s_undo_countdown, 1, 0);
    char buf[80];
-   snprintf(buf, sizeof(buf), "%s  \xc2\xb7  Undo (%ds)", label, seconds);
+   snprintf(buf, sizeof(buf), "%s  \xe2\x80\xa2  Undo (%ds)", label, seconds);
    lv_label_set_text(s_undo_countdown, buf);
 
    lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);

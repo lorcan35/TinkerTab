@@ -262,8 +262,7 @@ static void render_rows(chat_session_drawer_t *d,
         for (char *p = nickbuf; *p; p++)
             if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
 
-        snprintf(info, sizeof(info), "%s \xc2\xb7 %s",
-                 s_mode_short[mode], nickbuf[0] ? nickbuf : "\xe2\x80\x93");
+        snprintf(info, sizeof(info), "%s \xe2\x80\xa2 %s", s_mode_short[mode], nickbuf[0] ? nickbuf : "\xe2\x80\x93");
         lv_label_set_text(r->info, info);
 
         lv_label_set_text(r->title, s->title[0] ? s->title : "Untitled");

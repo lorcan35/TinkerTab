@@ -258,8 +258,7 @@ static void on_mode_lp(void *ud)
     const char *nick = llm;
     const char *slash = strchr(nick, '/');
     if (slash) nick = slash + 1;
-    snprintf(toast, sizeof(toast), "Mode: %s \xc2\xb7 %s",
-             names[m], nick[0] ? nick : "default");
+    snprintf(toast, sizeof(toast), "Mode: %s \xe2\x80\xa2 %s", names[m], nick[0] ? nick : "default");
     ui_home_show_toast(toast);
 }
 
