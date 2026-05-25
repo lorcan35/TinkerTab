@@ -1648,3 +1648,34 @@ Every entry here was learned the hard way. Read this before touching the codebas
 4. **Mirror server-side resource lifetimes in client cache.**  K144's `sys.reset` invalidates every handle on its side; Tab5 had handles cached in three separate files (`voice_m5_llm`, `voice_yolo`, etc.) and only one of them was being cleared.  When an upstream service can blow away a resource, every consumer's cache needs a hook.  Centralising the "recovered" edge in `voice_onboard.c` made this a single point to wire the rest from.
 5. **Obs surface before soak.**  Wave C added 9 new debug fields before Wave D's soak even started.  Watching wakeword_state + ms_since_busy + dictation_final_count over a 30-min loop will reveal silent-stuck states that would be invisible from voice_state alone.  Don't soak-test what you can't observe.
 6. **Per-wave ship rhythm pays off.**  5 sequential PRs, each with its own build → flash → debug-HTTP test → screenshots → commit → push → CI → merge cycle, took less wall-clock than a single big PR would have.  Each wave's risk surface was tiny + isolated; nothing snowballed.  Same pattern as W5-W9 USB pivot.
+
+
+---
+
+## Voice loop + WS health audit — 6 PRs from a live cross-stack probe (2026-05-25)
+
+**Date:** 2026-05-25
+**Symptom:** User reported the X-button on the voice overlay didn't cleanly end a turn — pressing it sometimes returned the device to LISTENING state mid-conversation.  Triaged into a Wave A fix (PR #693).  A deeper live audit of the Tab5↔Dragon↔K144 piping uncovered four MORE independent bugs.
+**Root Cause:** Five separate small bugs converged into the same family of "the device looks alive but isn't reacting correctly":
+1. **Wave A — PR #691's overreach.**  A previous fix had stopped the wakeword task entirely on cancel; that broke always-on "Hey Tinker" until reboot.  The correct fix is suppression, not teardown.
+2. **WS transient-error stuck PROCESSING.**  `voice_ws_proto.c::voice_ws_proto_handle_text` reset `voice_state` to READY/IDLE on FATAL errors but NOT on TRANSIENT (`stt_empty`, `pipeline_failed`).  After any transient, Tab5 stayed in PROCESSING forever — mic + wake refused until reboot.
+3. **K144 ASR delta flood.**  Sherpa-ncnn streaming-zipformer re-emits the same rolling partial 10×/sec; every duplicate ran 7× `istrstr` substring scans, a `taskENTER_CRITICAL` for the transcript ring, a `wake_window_push` memcpy, and two `ESP_LOGI` lines.  ~70 wasted substring ops + 5 KB/s serial log churn per second for zero new signal.
+4. **`vision_service::detections_total` counted RAW YOLO boxes** (chairs/cups/books) while `last_class` / `last_detection_ms` / `last_confidence` only updated inside the person-class filter — `/vision/state` showed "detections_total=3 + last_class=''".
+5. **`ui_notes_unprocessed_count()` counted FAILED-with-audio notes**, but `transcription_queue_task` deliberately refuses to retry FAILED (manual-only via UI Retry button to avoid infinite loops on broken audio).  Result: `/logs/tail` showed "Transcription queue: 1 unprocessed" every 15 s forever.
+
+**Fix:** 6 PRs squash-merged in two waves (Wave A + ASR dedup touch the same file; the rest are independent):
+- **#693** Wave A — `voice_wakeword_post_cancel_suppress_ms(3000)` API, called by `voice_cancel`.  Listener task stays armed; matcher silently drops wake events for 3 s after cancel.  Pump pause widened 1500→3000 ms to match.  Wake matcher anchored on the freshly-arrived delta (position must be in first half + 4 char slack), not on the 96-byte accumulated window.  ui_voice + ui_home reverted PR #691's voice_wakeword_stop calls.
+- **#699** Drop consecutive identical non-finish deltas at front of `asr_partial_cb`.  Watchdog timestamp still fires above the gate so K144 liveness detection is unaffected.  Demoted `voice_m5_llm.c`'s two chatty ASR `ESP_LOGI` lines to `ESP_LOGD`.
+- **#697** WS-RX transient branch snaps voice_state back to READY/IDLE after toast.  Audio teardown unnecessary (transient never reaches TTS).
+- **#695** Top-right reboot button — tap = safety toast, long-press = esp_restart() via 600 ms esp_timer one-shot.
+- **#701** `detections_total += fn` moved INSIDE filter loop so it counts filtered detections only.
+- **#703** `unprocessed_count` drops FAILED branch — counter now matches queue retry semantics.
+
+**Prevention:**
+1. **Suppression > teardown for always-on subsystems.**  When a cancel needs to mute a continuous listener temporarily, install a TTL-gated drop in the consumer rather than tearing down the producer.  Producer state stays consistent; UX stays "always on" from the user's mental model.
+2. **Always pair UI state machines on transient AND fatal error paths.**  If FATAL clears state, TRANSIENT must too.  The asymmetry was invisible until a soak revealed Tab5 stuck after a single `stt_empty`.  Audit any error-class branch for symmetric state cleanup.
+3. **Dedup at the consumer, not the producer.**  K144's daemon emits the rolling decoder partials as the K144 designs prefer; we can't change that.  But at the Tab5 consumer we can add a single `strncmp(s_last_delta, delta)` gate that turns 10/sec into 0/sec under unchanged speech.  Cheap, isolated, and observable.
+4. **Counters must match their action set.**  If a queue refuses to retry a state, the "unprocessed" counter should not count it.  Lying counters → log spam → eyeball blindness → real signal gets missed in the noise.  Same lesson for `detections_total` vs `last_class` cohesion.
+5. **Long-running observability matters more than depth.**  This audit started from a single user complaint and surfaced 4 more bugs in 90 minutes of probing.  The harness was `curl /info /heap /voice /tinkeron/extpcm /m5 /logs/tail` — five endpoints already in the codebase.  Invest in observability surface before you invest in new features.
+6. **Wave-by-wave merge under audit.**  Six PRs landed in two waves (Wave A + dedup share `voice_wakeword.c`; rest parallel).  Sequential squash-merge with build + flash + live verify between waves caught zero regressions.  Same pattern as TT #621 W5-W9.
+
