@@ -433,6 +433,10 @@ void voice_set_state(voice_state_t new_state, const char *detail) {
    }
 
    if (old != new_state || (detail != NULL && detail[0] != '\0')) {
+      /* TT #709 — a real state transition is progress; reset the activity
+       * clock so the response-timeout watchdog measures time stuck in the
+       * NEW state, not since some earlier (possibly stale) event. */
+      if (old != new_state) s_last_activity_us = esp_timer_get_time();
       ESP_LOGI(TAG, "State: %d -> %d (%s)", old, new_state, detail ? detail : "");
       if (s_state_cb) {
          if (tab5_ui_try_lock(200)) {
@@ -2696,21 +2700,106 @@ const char *voice_get_dictation_summary(void)
 }
 
 // ---------------------------------------------------------------------------
-// Reconnect watchdog — superseded by esp_websocket_client's built-in
-// auto-reconnect. Public API preserved as no-ops for backward compat so
-// callers in main.c / debug_server.c still link. See issue #76.
+// Response-timeout watchdog (TT #709) — closes the "spins forever" class.
+// The WS-level reconnect is handled by esp_websocket_client's built-in
+// auto-reconnect; this watchdog handles the orthogonal failure where the
+// socket is fine but a turn never completes (Dragon hangs / drops the final
+// frame / LLM wedge), leaving PROCESSING or SPEAKING stuck indefinitely
+// (cf. the #697 stuck-PROCESSING bug — fixed for one branch, this is the
+// general safety net).  s_last_activity_us is reset on every state entry
+// (voice_set_state) and every Dragon WS frame (voice_ws_proto WS_DATA), so
+// it measures "time since any progress"; a genuine hang lets it go stale.
 // ---------------------------------------------------------------------------
+static esp_timer_handle_t s_resp_wd_timer = NULL;
+static volatile bool s_resp_wd_recovering = false;
+
+/* Per-mode "no Dragon activity" budget.  Generous on purpose: any streamed
+ * frame resets the clock, so these only trip on a true stall.  Cheaper to
+ * recover a rare hang slowly than to kill a legitimately slow turn. */
+static int64_t response_wd_budget_ms(void) {
+   switch (tab5_settings_get_voice_mode()) {
+      case 1: /* hybrid  */
+      case 2: /* cloud   */
+      case 5: /* solo    */
+         return 30000;
+      case 3: /* tinkerclaw agent — tool loops can pause between steps */
+         return 120000;
+      case 4: /* onboard K144 */
+         return 60000;
+      case 0: /* local   */
+      default:
+         return 45000;
+   }
+}
+
+/* Runs on the shared worker (not the esp_timer task) so voice_set_state's
+ * UI callback + the toast have a normal stack + scheduling. */
+static void response_wd_recover_job(void *arg) {
+   (void)arg;
+   voice_state_t st = voice_get_state();
+   if (st != VOICE_STATE_PROCESSING && st != VOICE_STATE_SPEAKING) {
+      s_resp_wd_recovering = false; /* unstuck on its own between tick + job */
+      return;
+   }
+   ESP_LOGW(TAG, "response watchdog: stuck in state %d — recovering to READY", st);
+   tab5_debug_obs_event("error.timeout", "resp_watchdog");
+   voice_playback_buf_reset();
+   tab5_audio_speaker_enable(false);
+   bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
+   if (ws_live) {
+      voice_ws_send_text("{\"type\":\"cancel\"}");
+   }
+   voice_set_state(ws_live ? VOICE_STATE_READY : VOICE_STATE_IDLE, "watchdog_timeout");
+   ui_home_show_toast("Tinker timed out -- ready again");
+   s_resp_wd_recovering = false;
+}
+
+/* Light periodic check (esp_timer task) — only reads state + a timestamp,
+ * then defers any real work to the worker. */
+static void response_wd_tick_cb(void *arg) {
+   (void)arg;
+   if (s_resp_wd_recovering) return;
+   voice_state_t st = voice_get_state();
+   /* Only the "waiting on Dragon" states.  LISTENING is user-paced (and
+    * capped separately); CONNECTING/RECONNECTING are the WS client's job. */
+   if (st != VOICE_STATE_PROCESSING && st != VOICE_STATE_SPEAKING) return;
+   int64_t idle_ms = (esp_timer_get_time() - s_last_activity_us) / 1000;
+   if (idle_ms > response_wd_budget_ms()) {
+      ESP_LOGW(TAG, "response watchdog: %lld ms idle in state %d (budget %lld) — recovering", (long long)idle_ms, st,
+               (long long)response_wd_budget_ms());
+      s_resp_wd_recovering = true;
+      if (tab5_worker_enqueue(response_wd_recover_job, NULL, "voice-resp-wd") != ESP_OK) {
+         s_resp_wd_recovering = false; /* worker full — retry next tick */
+      }
+   }
+}
+
 esp_err_t voice_start_reconnect_watchdog(void)
 {
     ESP_LOGI(TAG, "reconnect watchdog superseded by esp_websocket_client built-in auto-reconnect");
+    /* TT #709 — start the response-timeout watchdog (3 s cadence). */
+    if (!s_resp_wd_timer) {
+       const esp_timer_create_args_t args = {
+           .callback = response_wd_tick_cb,
+           .arg = NULL,
+           .name = "voice_resp_wd",
+       };
+       esp_timer_create(&args, &s_resp_wd_timer);
+    }
+    if (s_resp_wd_timer) {
+       esp_timer_stop(s_resp_wd_timer); /* idempotent if already running */
+       esp_timer_start_periodic(s_resp_wd_timer, 3000000 /* 3 s */);
+    }
     return ESP_OK;
 }
 
 void voice_stop_reconnect_watchdog(void)
 {
-    /* No-op — the managed client's auto-reconnect loop runs until
-     * esp_websocket_client_stop() is called, which voice_disconnect()
-     * handles on the teardown path. */
+   /* WS auto-reconnect is the managed client's job; just stop our
+    * response-timeout watchdog. */
+   if (s_resp_wd_timer) {
+      esp_timer_stop(s_resp_wd_timer);
+   }
 }
 
 void voice_force_reconnect(void)
