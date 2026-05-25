@@ -1188,9 +1188,14 @@ int ui_notes_unprocessed_count(void)
     int count = 0;
     for (int i = 0; i < MAX_NOTES; i++) {
         if (!s_notes[i].used) continue;
-        /* Count RECORDED and FAILED-with-audio (retry on transient errors) */
+        /* TT #702 — count only what the queue will actually retry.
+         * transcription_queue_task only picks up NOTE_STATE_RECORDED
+         * (FAILED is manual-retry-only via the per-row UI button to
+         * avoid infinite loops on permanently-broken audio).  Counting
+         * FAILED-with-audio here made the queue log "1 unprocessed"
+         * every 15 s forever about a note it would never process —
+         * confusing in /logs/tail. */
         if (s_notes[i].state == NOTE_STATE_RECORDED) count++;
-        if (s_notes[i].state == NOTE_STATE_FAILED && s_notes[i].audio_path[0]) count++;
     }
     return count;
 }
