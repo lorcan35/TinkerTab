@@ -112,7 +112,7 @@ static void k144_chip_tap_cb(lv_event_t *e) {
 /* TT #328 Wave 14 — K144 hardware gauge.  Small label below the chip
  * showing NPU temperature + load + StackFlow daemon version.
  * Wave 15 extends this with a model inventory line summarising the
- * sys.lsmode registry ("11 MODELS · 1 LLM · 2 ASR · 3 TTS · 2 KWS · 3 vision").
+ * sys.lsmode registry ("11 MODELS • 1 LLM • 2 ASR • 3 TTS • 2 KWS • 3 vision").
  * Populated via a worker job (UART round-trips ~150 ms each; can't
  * run on the LVGL thread).  Both labels rebuild every Settings show. */
 #include "esp_heap_caps.h" /* heap_caps_calloc for the modelist scratch */
@@ -153,30 +153,30 @@ static void k144_gauge_async_render(void *arg) {
       char buf[64];
       if (p->hw_ok && p->hw.valid) {
          double temp_c = (double)p->hw.temperature_milli_c / 1000.0;
-         /* Compact one-line gauge:  "NPU 39.4°C · load 0 · v1.3" */
+         /* Compact one-line gauge:  "NPU 39.4°C • load 0 • v1.3" */
          snprintf(buf, sizeof(buf),
                   "NPU %.1f\xc2\xb0"
-                  "C \xc2\xb7 load %d \xc2\xb7 %s",
-                  temp_c, (int)p->hw.cpu_loadavg, p->version[0] ? p->version : "—");
+                  "C \xe2\x80\xa2 load %d \xe2\x80\xa2 %s",
+                  temp_c, (int)p->hw.cpu_loadavg, p->version[0] ? p->version : "--");
       } else {
-         snprintf(buf, sizeof(buf), "—");
+         snprintf(buf, sizeof(buf), "--");
       }
       lv_label_set_text(s_k144_gauge_lbl, buf);
    }
    if (s_k144_models_lbl != NULL && p != NULL) {
       char buf[96];
       if (p->models_ok && p->n_total > 0) {
-         /* Compact inventory: "11 MODELS · 1 LLM · 2 ASR · 3 TTS · 2 KWS · 3 vision".
+         /* Compact inventory: "11 MODELS • 1 LLM • 2 ASR • 3 TTS • 2 KWS • 3 vision".
           * Categories with zero entries are elided so the line stays scannable. */
          int n = 0;
          n += snprintf(buf + n, sizeof(buf) - n, "%d MODEL%s", p->n_total, p->n_total == 1 ? "" : "S");
-         if (p->n_llm > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d LLM", p->n_llm);
-         if (p->n_asr > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d ASR", p->n_asr);
-         if (p->n_tts > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d TTS", p->n_tts);
-         if (p->n_kws > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d KWS", p->n_kws);
-         if (p->n_vision > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xc2\xb7 %d vision", p->n_vision);
+         if (p->n_llm > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d LLM", p->n_llm);
+         if (p->n_asr > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d ASR", p->n_asr);
+         if (p->n_tts > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d TTS", p->n_tts);
+         if (p->n_kws > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d KWS", p->n_kws);
+         if (p->n_vision > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d vision", p->n_vision);
       } else {
-         snprintf(buf, sizeof(buf), "—");
+         snprintf(buf, sizeof(buf), "--");
       }
       lv_label_set_text(s_k144_models_lbl, buf);
    }
@@ -203,29 +203,29 @@ static void refresh_k144_chip(void) {
    uint32_t chip_col;
    switch (fs) {
       case 2:
-         chip_glyph = "\xe2\x97\x8f"; /* ● filled */
+         chip_glyph = "\xe2\x80\xa2"; /* • (in-font; ● U+25CF is not in the Montserrat subset → tofu) */
          chip_text = " READY";
          chip_col = 0x10B981;
          break;
       case 1:
-         chip_glyph = "\xe2\x97\x8b"; /* ○ open */
+         chip_glyph = "\xe2\x80\xa2"; /* • */
          chip_text = " WARMING";
          chip_col = AMBER;
          break;
       case 3:
-         chip_glyph = "\xe2\x9c\x97"; /* ✗ */
+         chip_glyph = "\xe2\x80\xa2"; /* • (red via chip_col conveys the error state) */
          chip_text = " UNAVAILABLE";
          chip_col = 0xE5484D;
          break;
       default:
-         chip_glyph = "\xe2\x97\x8b";
+         chip_glyph = "\xe2\x80\xa2"; /* • */
          chip_text = " UNKNOWN";
          chip_col = 0x55555D;
          break;
    }
    char chip_buf[40];
    if (fs == 3 || fs == 0) {
-      snprintf(chip_buf, sizeof(chip_buf), "%s%s \xc2\xb7 TAP", chip_glyph, chip_text);
+      snprintf(chip_buf, sizeof(chip_buf), "%s%s \xe2\x80\xa2 TAP", chip_glyph, chip_text);
    } else {
       snprintf(chip_buf, sizeof(chip_buf), "%s%s", chip_glyph, chip_text);
    }
@@ -240,8 +240,8 @@ static void refresh_k144_chip(void) {
    } else {
       /* Reset gauge + inventory to placeholder when leaving READY so
        * stale numbers don't mislead the user during a recovery cycle. */
-      if (s_k144_gauge_lbl != NULL) lv_label_set_text(s_k144_gauge_lbl, "—");
-      if (s_k144_models_lbl != NULL) lv_label_set_text(s_k144_models_lbl, "—");
+      if (s_k144_gauge_lbl != NULL) lv_label_set_text(s_k144_gauge_lbl, "--");
+      if (s_k144_models_lbl != NULL) lv_label_set_text(s_k144_models_lbl, "--");
    }
 }
 
@@ -311,12 +311,12 @@ static char      s_ota_sha256[65] = {0};
 /* Sliders */
 static lv_obj_t *s_slider_bright  = NULL;
 static lv_obj_t *s_slider_volume  = NULL;
-static lv_obj_t *s_slider_cap     = NULL;  /* v4·D Phase 4e daily budget cap */
+static lv_obj_t *s_slider_cap = NULL; /* v4•D Phase 4e daily budget cap */
 
 /* Slider value labels */
 static lv_obj_t *s_lbl_bright_val = NULL;
 static lv_obj_t *s_lbl_vol_val    = NULL;
-static lv_obj_t *s_lbl_cap_val    = NULL;  /* v4·D Phase 4e cap readout ($X.XX / OFF) */
+static lv_obj_t *s_lbl_cap_val = NULL; /* v4•D Phase 4e cap readout ($X.XX / OFF) */
 static lv_timer_t *s_cap_save_timer = NULL;
 
 /* Auto-rotate switch */
@@ -574,7 +574,7 @@ static void volume_save_cb(lv_timer_t *t)
     s_vol_save_timer = NULL;
 }
 
-/* v4·D Phase 4e: daily budget cap slider.
+/* v4•D Phase 4e: daily budget cap slider.
  * Slider range 0-50, each step = 20 cents = 20,000 mils.
  *   0  -> cap=0 (OFF, no auto-downgrade)
  *   5  -> $1.00
@@ -1085,7 +1085,7 @@ static void cb_privacy_lock(lv_event_t *e) {
    ESP_LOGI(TAG, "Privacy lock: %d", on);
    tab5_debug_obs_event("privacy.lock", on ? "on" : "off");
    if (s_lbl_privacy_status) {
-      lv_label_set_text(s_lbl_privacy_status, on ? "ON · On-device only" : "OFF · Cloud allowed");
+      lv_label_set_text(s_lbl_privacy_status, on ? "ON • On-device only" : "OFF • Cloud allowed");
       lv_obj_set_style_text_color(s_lbl_privacy_status, lv_color_hex(on ? 0xF59E0B : TEXT_DIM), 0);
    }
    /* Nudge the home pill so the new state is reflected without a 5 s
@@ -1632,8 +1632,8 @@ static void phase2_timer_cb(lv_timer_t *t)
     /* Device info -- Line 2: hardware details (smaller, gray) */
     {
         char hw_str[96];
-        snprintf(hw_str, sizeof(hw_str),
-                 "M5Stack Tab5 \xc2\xb7 ESP32-P4 \xc2\xb7 %s", tab5_ota_current_partition());
+        snprintf(hw_str, sizeof(hw_str), "M5Stack Tab5 \xe2\x80\xa2 ESP32-P4 \xe2\x80\xa2 %s",
+                 tab5_ota_current_partition());
         lv_obj_t *hw_lbl = lv_label_create(s_scroll);
         lv_label_set_text(hw_lbl, hw_str);
         lv_obj_set_style_text_color(hw_lbl, lv_color_hex(TEXT_DIM), 0);
@@ -1947,7 +1947,7 @@ lv_obj_t *ui_settings_create(void)
              lv_obj_t *chip = lv_label_create(row);
              s_k144_chip_lbl = chip;
              s_k144_last_chip_fs = -1; /* force refresh_k144_chip to run */
-             lv_label_set_text(chip, "—");
+             lv_label_set_text(chip, "--");
              lv_obj_set_style_text_font(chip, FONT_SMALL, 0);
              lv_obj_set_style_text_letter_space(chip, 2, 0);
              /* Right-aligned within the row, centred vertically. */
@@ -1969,7 +1969,7 @@ lv_obj_t *ui_settings_create(void)
               * em-dash placeholder so the row layout doesn't shift
               * when the worker callback lands a few hundred ms later. */
              s_k144_gauge_lbl = lv_label_create(row);
-             lv_label_set_text(s_k144_gauge_lbl, "—");
+             lv_label_set_text(s_k144_gauge_lbl, "--");
              lv_obj_set_style_text_font(s_k144_gauge_lbl, FONT_SMALL, 0);
              lv_obj_set_style_text_color(s_k144_gauge_lbl, lv_color_hex(TEXT_DIM), 0);
              lv_obj_set_style_text_letter_space(s_k144_gauge_lbl, 1, 0);
@@ -1987,7 +1987,7 @@ lv_obj_t *ui_settings_create(void)
               * advance below.  See line where `s_k144_models_lbl`
               * gets repositioned with the final y. */
              s_k144_models_lbl = lv_label_create(s_scroll);
-             lv_label_set_text(s_k144_models_lbl, "—");
+             lv_label_set_text(s_k144_models_lbl, "--");
              lv_obj_set_style_text_font(s_k144_models_lbl, FONT_SMALL, 0);
              lv_obj_set_style_text_color(s_k144_models_lbl, lv_color_hex(TEXT_DIM), 0);
              lv_obj_set_style_text_letter_space(s_k144_models_lbl, 1, 0);
@@ -2050,14 +2050,29 @@ lv_obj_t *ui_settings_create(void)
        lv_obj_set_style_text_letter_space(cap, 4, 0);
        y += 26;
 
-       const int chip_w = (CONTENT_W - 4 * 8) / (int)CLOUD_MODEL_COUNT; /* 4 gaps of 8 px */
+       /* TT UI-audit: the chip width used to divide CONTENT_W for ~5 models
+        * (the "4 * 8" gap term), but the catalog grew to 8 — so chips got
+        * squished AND the row overflowed, hard-clipping the first/last chip
+        * at both screen edges.  Put the chips in a horizontally-scrollable
+        * flex row, each sized to its own label, so the strip reads as a
+        * clean scrollable picker instead of a clipped row. */
        const int chip_h = 56;
        const int gap = 8;
+       lv_obj_t *chip_row = lv_obj_create(s_scroll);
+       lv_obj_remove_style_all(chip_row);
+       lv_obj_set_size(chip_row, CONTENT_W, chip_h + 6);
+       lv_obj_set_pos(chip_row, SIDE_PAD, y);
+       lv_obj_set_scroll_dir(chip_row, LV_DIR_HOR);
+       lv_obj_set_scrollbar_mode(chip_row, LV_SCROLLBAR_MODE_OFF);
+       lv_obj_set_flex_flow(chip_row, LV_FLEX_FLOW_ROW);
+       lv_obj_set_flex_align(chip_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+       lv_obj_set_style_pad_column(chip_row, gap, 0);
        for (int i = 0; i < (int)CLOUD_MODEL_COUNT; i++) {
-          lv_obj_t *chip = lv_obj_create(s_scroll);
+          lv_obj_t *chip = lv_obj_create(chip_row);
           lv_obj_remove_style_all(chip);
-          lv_obj_set_size(chip, chip_w, chip_h);
-          lv_obj_set_pos(chip, SIDE_PAD + i * (chip_w + gap), y);
+          lv_obj_set_height(chip, chip_h);
+          lv_obj_set_width(chip, LV_SIZE_CONTENT);
+          lv_obj_set_style_pad_hor(chip, 18, 0);
           lv_obj_set_style_bg_color(chip, lv_color_hex(CARD_COLOR), 0);
           lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
           lv_obj_set_style_radius(chip, 12, 0);
@@ -2180,14 +2195,14 @@ lv_obj_t *ui_settings_create(void)
        mk_switch(s_scroll, acc_voice, 660, y, priv_on, cb_privacy_lock, NULL);
        y += ROW_H + 4;
 
-       /* Status line under the toggle row — "ON · On-device only" or
-        * "OFF · Cloud allowed" — same pattern as the K144 health chip. */
+       /* Status line under the toggle row — "ON • On-device only" or
+        * "OFF • Cloud allowed" — same pattern as the K144 health chip. */
        s_lbl_privacy_status = lv_label_create(s_scroll);
        if (s_lbl_privacy_status) {
           lv_obj_set_pos(s_lbl_privacy_status, SIDE_PAD, y);
           lv_obj_set_style_text_font(s_lbl_privacy_status, FONT_SECONDARY, 0);
           lv_obj_set_style_text_color(s_lbl_privacy_status, lv_color_hex(priv_on ? 0xF59E0B : TEXT_DIM), 0);
-          lv_label_set_text(s_lbl_privacy_status, priv_on ? "ON · On-device only" : "OFF · Cloud allowed");
+          lv_label_set_text(s_lbl_privacy_status, priv_on ? "ON • On-device only" : "OFF • Cloud allowed");
        }
        y += 28 + 16;
     }
@@ -2251,7 +2266,7 @@ lv_obj_t *ui_settings_create(void)
     mk_card_bg(s_scroll, quiet_section_top, y);
     y += 24;
 
-    /* v4·D Phase 4e: daily budget cap editor.  Slider range 0-50, each
+    /* v4•D Phase 4e: daily budget cap editor.  Slider range 0-50, each
      * step = 20¢, so 0 = OFF, 50 = $10.00.  Maps to NVS cap_mils field
      * consumed by the auto-downgrade path in voice.c. */
     int budget_section_top = y;
@@ -2297,9 +2312,9 @@ lv_obj_t *ui_settings_create(void)
         (void)voice_m5_llm_sys_version(ver, sizeof(ver));
         char status[80];
         if (hwok && hw.valid) {
-            snprintf(status, sizeof(status), "%s  ·  %ld.%ld°C  ·  load %ld",
-                     ver[0] ? ver : "v?", (long)(hw.temperature_milli_c / 1000),
-                     (long)((hw.temperature_milli_c / 100) % 10), (long)hw.cpu_loadavg);
+           snprintf(status, sizeof(status), "%s  •  %ld.%ld°C  •  load %ld", ver[0] ? ver : "v?",
+                    (long)(hw.temperature_milli_c / 1000), (long)((hw.temperature_milli_c / 100) % 10),
+                    (long)hw.cpu_loadavg);
         } else {
             snprintf(status, sizeof(status), "UNAVAILABLE — try Reset");
         }
@@ -2746,10 +2761,10 @@ void ui_settings_update(void)
                     lv_obj_set_style_text_color(s_lbl_bat_status,
                         lv_color_hex(TAB_LOCAL), 0);
                 } else {
-                    snprintf(sbuf, sizeof(sbuf), "%d%% \xc2\xb7 %s", bi.percent,
-                             bi.charging ? "Charging" : "Discharging");
-                    lv_obj_set_style_text_color(s_lbl_bat_status,
-                        bi.charging ? lv_color_hex(TAB_LOCAL) : lv_color_hex(TEXT_DIM), 0);
+                   snprintf(sbuf, sizeof(sbuf), "%d%% \xe2\x80\xa2 %s", bi.percent,
+                            bi.charging ? "Charging" : "Discharging");
+                   lv_obj_set_style_text_color(s_lbl_bat_status,
+                                               bi.charging ? lv_color_hex(TAB_LOCAL) : lv_color_hex(TEXT_DIM), 0);
                 }
                 lv_label_set_text(s_lbl_bat_status, sbuf);
             }

@@ -198,7 +198,10 @@ static void row_create(chat_session_drawer_t *d, drawer_row_t *r,
 
 static void format_relative(char *buf, size_t n, uint32_t updated_at)
 {
-    if (!updated_at) { snprintf(buf, n, "\xe2\x80\x93"); return; }
+   if (!updated_at) {
+      snprintf(buf, n, "-");
+      return;
+   }
     time_t now = 0; time(&now);
     long delta = (long)now - (long)updated_at;
     if (delta < 0) delta = 0;
@@ -262,8 +265,7 @@ static void render_rows(chat_session_drawer_t *d,
         for (char *p = nickbuf; *p; p++)
             if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
 
-        snprintf(info, sizeof(info), "%s \xc2\xb7 %s",
-                 s_mode_short[mode], nickbuf[0] ? nickbuf : "\xe2\x80\x93");
+        snprintf(info, sizeof(info), "%s \xe2\x80\xa2 %s", s_mode_short[mode], nickbuf[0] ? nickbuf : "-");
         lv_label_set_text(r->info, info);
 
         lv_label_set_text(r->title, s->title[0] ? s->title : "Untitled");

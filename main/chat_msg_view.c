@@ -120,7 +120,7 @@ static void fmt_timestamp(char *buf, size_t n, uint32_t ts, bool is_user)
 {
     int h = (int)((ts / 3600) % 24);
     int m = (int)((ts / 60) % 60);
-    snprintf(buf, n, "%02d:%02d \xc2\xb7 %s", h, m, is_user ? "YOU" : "TINKER");
+    snprintf(buf, n, "%02d:%02d \xe2\x80\xa2 %s", h, m, is_user ? "YOU" : "TINKER");
     for (char *p = buf; *p; p++) {
         if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
     }
@@ -324,16 +324,16 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
         char kicker[64];
         switch (msg->type) {
             case MSG_IMAGE:
-                snprintf(kicker, sizeof(kicker), "IMAGE \xc2\xb7 %.40s",
-                         msg->subtitle[0] ? msg->subtitle : "INLINE");
-                break;
+               snprintf(kicker, sizeof(kicker), "IMAGE \xe2\x80\xa2 %.40s",
+                        msg->subtitle[0] ? msg->subtitle : "INLINE");
+               break;
             case MSG_CARD:
-                snprintf(kicker, sizeof(kicker), "CARD \xc2\xb7 %.40s",
-                         msg->subtitle[0] ? msg->subtitle : "PREVIEW");
-                break;
+               snprintf(kicker, sizeof(kicker), "CARD \xe2\x80\xa2 %.40s",
+                        msg->subtitle[0] ? msg->subtitle : "PREVIEW");
+               break;
             case MSG_AUDIO_CLIP:
-                snprintf(kicker, sizeof(kicker), "AUDIO \xc2\xb7 CLIP");
-                break;
+               snprintf(kicker, sizeof(kicker), "AUDIO \xe2\x80\xa2 CLIP");
+               break;
             default:
                 kicker[0] = 0;
                 break;
@@ -498,14 +498,20 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
     lv_obj_set_style_pad_ver(slot->bubble, BUBBLE_PAD_V, 0);
 
     if (msg->is_user) {
-        lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_AMBER), 0);
-        lv_obj_set_style_border_width(slot->bubble, 0, 0);
-        /* Rounded-rect with a 6-px bottom-right tail. LVGL doesn't ship
-         * per-corner radius, so we settle for the 22 radius — the tail
-         * is approximated by a small 12×12 amber square tucked under
-         * the bubble's bottom-right edge. */
-        lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
-        lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_BG), 0);
+       /* UI audit: richer amber — a vertical gradient (amber → amber-dark)
+        * instead of a flat neon fill so the user bubble reads premium, not
+        * garish.  Static bubble (rendered once, not per-tick invalidated)
+        * so a 2-stop gradient is within the render budget. */
+       lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_AMBER), 0);
+       lv_obj_set_style_bg_grad_color(slot->bubble, lv_color_hex(TH_AMBER_DARK), 0);
+       lv_obj_set_style_bg_grad_dir(slot->bubble, LV_GRAD_DIR_VER, 0);
+       lv_obj_set_style_border_width(slot->bubble, 0, 0);
+       /* Rounded-rect with a 6-px bottom-right tail. LVGL doesn't ship
+        * per-corner radius, so we settle for the 22 radius — the tail
+        * is approximated by a small 12×12 amber square tucked under
+        * the bubble's bottom-right edge. */
+       lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
+       lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_BG), 0);
     } else {
         lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_CARD), 0);
         /* Wave 15 W15-C09: was `border_width=1 + radius=22`.  LVGL's
@@ -553,18 +559,15 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
              *   local turn  : " · MODEL · FREE"
              *   +retried    : prepend " · RETRIED" to either */
             size_t cur = strlen(ts);
-            const char *retry_tag = msg->receipt_retried ? " \xc2\xb7 RETRIED" : "";
+            const char *retry_tag = msg->receipt_retried ? " \xe2\x80\xa2 RETRIED" : "";
             if (msg->receipt_mils > 0) {
                 int dollars     = (int)(msg->receipt_mils / 100000);
                 int thousandths = (int)((msg->receipt_mils / 100) % 1000);
-                snprintf(ts + cur, sizeof(ts) - cur,
-                         " \xc2\xb7 %s \xc2\xb7 $%d.%03d%s",
-                         msg->receipt_model_short,
-                         dollars, thousandths, retry_tag);
+                snprintf(ts + cur, sizeof(ts) - cur, " \xe2\x80\xa2 %s \xe2\x80\xa2 $%d.%03d%s",
+                         msg->receipt_model_short, dollars, thousandths, retry_tag);
             } else {
-                snprintf(ts + cur, sizeof(ts) - cur,
-                         " \xc2\xb7 %s \xc2\xb7 FREE%s",
-                         msg->receipt_model_short, retry_tag);
+               snprintf(ts + cur, sizeof(ts) - cur, " \xe2\x80\xa2 %s \xe2\x80\xa2 FREE%s", msg->receipt_model_short,
+                        retry_tag);
             }
         }
         lv_label_set_text(slot->ts, ts);

@@ -300,7 +300,10 @@ static void pick_circadian_palette(int hour, uint32_t *top, uint32_t *bot) {
       *bot = 0x804008; /* Dusk */
    } else {
       *top = 0x7F6535;
-      *bot = 0x2A1F0F; /* Night */
+      *bot = 0x4A3214; /* Night — UI audit: warmed from cold 0x2A1F0F (olive-
+                          dark) to a warm amber-brown so the night orb reads
+                          as a dim gold sphere, not muddy. Still night-dim
+                          (×0.7 in paint_body_for_hour). */
    }
 }
 
@@ -857,7 +860,10 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
     * blurred shadow blew the LVGL render budget — reverted to flat
     * fill.  The 96×56 size + 140 opa peak alone gives a brighter,
     * wetter highlight than the 70×44 / 110 baseline. */
-   lv_obj_set_style_bg_opa(s_spec, 140, 0);
+   /* UI audit: 140 read as a pasted "sticker" blob on the sphere.  Drop to
+    * 90 so the highlight blends into the lit-side gradient as a soft sheen
+    * rather than stamping an opaque disc on top (the #507 ball-in-ball look). */
+   lv_obj_set_style_bg_opa(s_spec, 90, 0);
    lv_obj_clear_flag(s_spec, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
    s_tilt_dx_ema = 0.0f;
    s_tilt_dy_ema = 0.0f;
