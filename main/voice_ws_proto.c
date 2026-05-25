@@ -768,6 +768,17 @@ void voice_ws_proto_handle_text(const char *data, int len) {
          if (toast_copy) {
             voice_async_toast(toast_copy);
          }
+         /* TT #696 — snap voice_state back to READY/IDLE.  Without this
+          * a transient error fired mid-turn (stt_empty, pipeline_failed,
+          * llm_backend_unreachable, …) left the state machine stuck in
+          * PROCESSING forever — the next mic tap or "Hey Tinker" would
+          * find voice_state != READY and refuse.  The fatal branch
+          * already does this (line below); transient just needs the
+          * same snap-back.  Audio teardown is unnecessary here: a
+          * transient turn never reached TTS, so playback buf + speaker
+          * are still in their pre-turn state. */
+         bool connected = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
+         voice_set_state(connected ? VOICE_STATE_READY : VOICE_STATE_IDLE, err_buf);
       } else {
          /* FATAL → existing caption path. */
          voice_playback_buf_reset();
