@@ -157,9 +157,9 @@ static void k144_gauge_async_render(void *arg) {
          snprintf(buf, sizeof(buf),
                   "NPU %.1f\xc2\xb0"
                   "C \xe2\x80\xa2 load %d \xe2\x80\xa2 %s",
-                  temp_c, (int)p->hw.cpu_loadavg, p->version[0] ? p->version : "—");
+                  temp_c, (int)p->hw.cpu_loadavg, p->version[0] ? p->version : "--");
       } else {
-         snprintf(buf, sizeof(buf), "—");
+         snprintf(buf, sizeof(buf), "--");
       }
       lv_label_set_text(s_k144_gauge_lbl, buf);
    }
@@ -176,7 +176,7 @@ static void k144_gauge_async_render(void *arg) {
          if (p->n_kws > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d KWS", p->n_kws);
          if (p->n_vision > 0) n += snprintf(buf + n, sizeof(buf) - n, " \xe2\x80\xa2 %d vision", p->n_vision);
       } else {
-         snprintf(buf, sizeof(buf), "—");
+         snprintf(buf, sizeof(buf), "--");
       }
       lv_label_set_text(s_k144_models_lbl, buf);
    }
@@ -240,8 +240,8 @@ static void refresh_k144_chip(void) {
    } else {
       /* Reset gauge + inventory to placeholder when leaving READY so
        * stale numbers don't mislead the user during a recovery cycle. */
-      if (s_k144_gauge_lbl != NULL) lv_label_set_text(s_k144_gauge_lbl, "—");
-      if (s_k144_models_lbl != NULL) lv_label_set_text(s_k144_models_lbl, "—");
+      if (s_k144_gauge_lbl != NULL) lv_label_set_text(s_k144_gauge_lbl, "--");
+      if (s_k144_models_lbl != NULL) lv_label_set_text(s_k144_models_lbl, "--");
    }
 }
 
@@ -1947,7 +1947,7 @@ lv_obj_t *ui_settings_create(void)
              lv_obj_t *chip = lv_label_create(row);
              s_k144_chip_lbl = chip;
              s_k144_last_chip_fs = -1; /* force refresh_k144_chip to run */
-             lv_label_set_text(chip, "—");
+             lv_label_set_text(chip, "--");
              lv_obj_set_style_text_font(chip, FONT_SMALL, 0);
              lv_obj_set_style_text_letter_space(chip, 2, 0);
              /* Right-aligned within the row, centred vertically. */
@@ -1969,7 +1969,7 @@ lv_obj_t *ui_settings_create(void)
               * em-dash placeholder so the row layout doesn't shift
               * when the worker callback lands a few hundred ms later. */
              s_k144_gauge_lbl = lv_label_create(row);
-             lv_label_set_text(s_k144_gauge_lbl, "—");
+             lv_label_set_text(s_k144_gauge_lbl, "--");
              lv_obj_set_style_text_font(s_k144_gauge_lbl, FONT_SMALL, 0);
              lv_obj_set_style_text_color(s_k144_gauge_lbl, lv_color_hex(TEXT_DIM), 0);
              lv_obj_set_style_text_letter_space(s_k144_gauge_lbl, 1, 0);
@@ -1987,7 +1987,7 @@ lv_obj_t *ui_settings_create(void)
               * advance below.  See line where `s_k144_models_lbl`
               * gets repositioned with the final y. */
              s_k144_models_lbl = lv_label_create(s_scroll);
-             lv_label_set_text(s_k144_models_lbl, "—");
+             lv_label_set_text(s_k144_models_lbl, "--");
              lv_obj_set_style_text_font(s_k144_models_lbl, FONT_SMALL, 0);
              lv_obj_set_style_text_color(s_k144_models_lbl, lv_color_hex(TEXT_DIM), 0);
              lv_obj_set_style_text_letter_space(s_k144_models_lbl, 1, 0);
@@ -2050,14 +2050,29 @@ lv_obj_t *ui_settings_create(void)
        lv_obj_set_style_text_letter_space(cap, 4, 0);
        y += 26;
 
-       const int chip_w = (CONTENT_W - 4 * 8) / (int)CLOUD_MODEL_COUNT; /* 4 gaps of 8 px */
+       /* TT UI-audit: the chip width used to divide CONTENT_W for ~5 models
+        * (the "4 * 8" gap term), but the catalog grew to 8 — so chips got
+        * squished AND the row overflowed, hard-clipping the first/last chip
+        * at both screen edges.  Put the chips in a horizontally-scrollable
+        * flex row, each sized to its own label, so the strip reads as a
+        * clean scrollable picker instead of a clipped row. */
        const int chip_h = 56;
        const int gap = 8;
+       lv_obj_t *chip_row = lv_obj_create(s_scroll);
+       lv_obj_remove_style_all(chip_row);
+       lv_obj_set_size(chip_row, CONTENT_W, chip_h + 6);
+       lv_obj_set_pos(chip_row, SIDE_PAD, y);
+       lv_obj_set_scroll_dir(chip_row, LV_DIR_HOR);
+       lv_obj_set_scrollbar_mode(chip_row, LV_SCROLLBAR_MODE_OFF);
+       lv_obj_set_flex_flow(chip_row, LV_FLEX_FLOW_ROW);
+       lv_obj_set_flex_align(chip_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+       lv_obj_set_style_pad_column(chip_row, gap, 0);
        for (int i = 0; i < (int)CLOUD_MODEL_COUNT; i++) {
-          lv_obj_t *chip = lv_obj_create(s_scroll);
+          lv_obj_t *chip = lv_obj_create(chip_row);
           lv_obj_remove_style_all(chip);
-          lv_obj_set_size(chip, chip_w, chip_h);
-          lv_obj_set_pos(chip, SIDE_PAD + i * (chip_w + gap), y);
+          lv_obj_set_height(chip, chip_h);
+          lv_obj_set_width(chip, LV_SIZE_CONTENT);
+          lv_obj_set_style_pad_hor(chip, 18, 0);
           lv_obj_set_style_bg_color(chip, lv_color_hex(CARD_COLOR), 0);
           lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
           lv_obj_set_style_radius(chip, 12, 0);

@@ -498,14 +498,20 @@ static void slot_bind(chat_msg_view_t *v, msg_slot_t *slot,
     lv_obj_set_style_pad_ver(slot->bubble, BUBBLE_PAD_V, 0);
 
     if (msg->is_user) {
-        lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_AMBER), 0);
-        lv_obj_set_style_border_width(slot->bubble, 0, 0);
-        /* Rounded-rect with a 6-px bottom-right tail. LVGL doesn't ship
-         * per-corner radius, so we settle for the 22 radius — the tail
-         * is approximated by a small 12×12 amber square tucked under
-         * the bubble's bottom-right edge. */
-        lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
-        lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_BG), 0);
+       /* UI audit: richer amber — a vertical gradient (amber → amber-dark)
+        * instead of a flat neon fill so the user bubble reads premium, not
+        * garish.  Static bubble (rendered once, not per-tick invalidated)
+        * so a 2-stop gradient is within the render budget. */
+       lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_AMBER), 0);
+       lv_obj_set_style_bg_grad_color(slot->bubble, lv_color_hex(TH_AMBER_DARK), 0);
+       lv_obj_set_style_bg_grad_dir(slot->bubble, LV_GRAD_DIR_VER, 0);
+       lv_obj_set_style_border_width(slot->bubble, 0, 0);
+       /* Rounded-rect with a 6-px bottom-right tail. LVGL doesn't ship
+        * per-corner radius, so we settle for the 22 radius — the tail
+        * is approximated by a small 12×12 amber square tucked under
+        * the bubble's bottom-right edge. */
+       lv_obj_set_style_radius(slot->bubble, BUBBLE_RADIUS, 0);
+       lv_obj_set_style_text_color(slot->body, lv_color_hex(TH_BG), 0);
     } else {
         lv_obj_set_style_bg_color(slot->bubble, lv_color_hex(TH_CARD), 0);
         /* Wave 15 W15-C09: was `border_width=1 + radius=22`.  LVGL's
