@@ -39,8 +39,8 @@ typedef struct {
 
 /* Indexed by vmode (0..5). Order matches th_mode_names / VOICE_MODE_*. */
 static const mode_meta_t s_mode_meta[VOICE_MODE_COUNT] = {
-    /* 0 Local       */ {"Private brain, on the Dragon box", "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s",          "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s",        REQ_NONE,   false},
-    /* 1 Hybrid      */ {"Private brain, fast voice",        "leaves: your voice (STT) \xc2\xb7 ~5s \xc2\xb7 ~2\xc2\xa2", "Private brain \xc2\xb7 fast voice \xc2\xb7 ~2\xc2\xa2", REQ_NONE,   false},
+    /* 0 Local       */ {"Private brain, on the Dragon box", "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s",          "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s",        REQ_NONE,   true},
+    /* 1 Hybrid      */ {"Private brain, fast voice",        "leaves: your voice (STT) \xc2\xb7 ~5s \xc2\xb7 ~2\xc2\xa2", "Private brain \xc2\xb7 fast voice \xc2\xb7 ~2\xc2\xa2", REQ_NONE,   true},
     /* 2 Cloud       */ {"Smartest, everything cloud",       "leaves: voice + text \xc2\xb7 ~5s \xc2\xb7 needs key", "Voice+text \xc2\xb7 smartest \xc2\xb7 needs key",   REQ_NONE,   false},
     /* 3 TinkerAgent */ {"Tools + memory, agentic",          "leaves: voice + text + tools \xc2\xb7 via gateway",   "Tools + memory \xc2\xb7 agentic",                REQ_NONE,   true},
     /* 4 TinkerON    */ {"Works offline, on-device addon",   "Nothing leaves \xc2\xb7 works offline",               "Nothing leaves \xc2\xb7 works offline",          REQ_ADDON,  true},
@@ -269,17 +269,37 @@ Fast/Balanced/Smart row above the mode list, persisted to `int_tier`; greyed for
 
 Add a `static lv_obj_t *s_smart_seg[3] = {0};` with the other statics, and:
 
+**VALIDATED CORRECTION:** `int_tier` is read by *nothing* in the routing path
+(only the soon-retired `tab5_mode_resolve`), and `config_update` only forwards
+`llm_model` for Cloud. So setting `int_tier` alone is **cosmetic**. Smartness must
+set the **actual model** for the only two modes where Tab5 picks it — **Cloud**
+(`llm_model`) and **Solo** (`or_mdl_llm`) — and send `config_update`. Local/Hybrid
+(Dragon picks), TinkerON, TinkerAgent are fixed-brain (greyed). Default tier→model
+map (overridable via Advanced exact-pick), models taken from the existing
+`s_cloud_models[]`:
+
 ```c
+/* Fast/Balanced/Smart -> a concrete model. Setting int_tier alone changes
+ * nothing (routing keys off vmode + llm_model, never int_tier — validated). */
+static const char *const s_smart_cloud[3] = {
+    "~anthropic/claude-haiku-latest",  /* Fast     */
+    "anthropic/claude-sonnet-4.6",     /* Balanced */
+    "anthropic/claude-opus-4.7",       /* Smart    */
+};
 static void smart_click_cb(lv_event_t *e)
 {
     uint8_t tier = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
-    if (s_mode_meta[s_sel_vmode].fixed_brain) return; /* no range */
-    tab5_settings_set_int_tier(tier);
+    if (tier > 2 || s_mode_meta[s_sel_vmode].fixed_brain) return;
+    tab5_settings_set_int_tier(tier); /* persisted for the segment's on-state */
+    const char *model = s_smart_cloud[tier];
+    if (s_sel_vmode == VOICE_MODE_SOLO) tab5_settings_set_or_mdl_llm(model);
+    else                                tab5_settings_set_llm_model(model); /* Cloud */
+    voice_send_config_update((int)s_sel_vmode, (char *)model);
     for (int i = 0; i < 3; i++) {
-        if (!s_smart_seg[i]) continue;
-        bool on = (i == tier);
-        lv_obj_set_style_bg_color(s_smart_seg[i], lv_color_hex(on ? TH_AMBER : 0x15151F), 0);
+        if (s_smart_seg[i]) lv_obj_set_style_bg_color(
+            s_smart_seg[i], lv_color_hex(i == tier ? TH_AMBER : 0x15151F), 0);
     }
+    ESP_LOGI(TAG, "smartness tier=%u -> model=%s (vmode=%u)", tier, model, s_sel_vmode);
 }
 
 static void build_smartness(void)   /* called from ui_mode_sheet_show after the headline */
