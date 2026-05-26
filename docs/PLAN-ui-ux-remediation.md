@@ -63,26 +63,27 @@ contained null-guard or a deeper render/nav-task issue.
 
 ---
 
-## Wave 1 — The three visibly-broken Dragon-backed screens  `S2`
+## Wave 1 — Dragon-backed screens (Skills/Agents)  `S2` — **CORE DONE (PR #729)**
 
-**Goal:** no screen looks broken; one honest, shared "Dragon services
-unavailable" treatment. All three fail for the same root (Dragon REST /
-`dragon_tok` auth) but present it three different ways today.
+**Re-grounded before fixing — 2 of the 3 original findings were WRONG:**
+- ~~Sessions infinite skeleton~~ — **NOT broken.** Renders 12 conversations;
+  already has a 4 s timeout + `ui_empty_state`/`ui_error_chip`. The skeleton was
+  a transient (in-flight fetch / no-token moment).
+- ~~Skills "wrong key" (`dragon_api_token`→`dragon_tok`)~~ — **audit error.**
+  `dragon_api_token` IS the correct `POST /settings` field (`debug_server_settings.c:272`
+  writes the `dragon_tok` NVS key). Copy was right.
 
-- **DITL #2 — Sessions** (`ui_sessions.c`): "Loading conversations…" never
-  resolves — infinite skeleton, no timeout → error/empty fallback.
-- **DITL #3 — Skills** (`ui_skills.c`): says **"OFFLINE"** while Dragon is online;
-  dev-language "JSON parse failed"; instructs the user to "Set the Dragon API
-  token under POST /settings (**dragon_api_token**)" — a debug call no normal
-  user can do, **and the key name is wrong** (real NVS key is `dragon_tok`).
-- **DITL #4 — Agents** (`ui_agents.c`): self-contradicts — header "0 LIVE · 0
-  DONE / No tool activity yet" sits directly above "DRAGON: 42" with 5 entries;
-  those entries **dump raw truncated JSON** into the UI; "TOOLS CATALOG: JSON
-  parse failed" dev error.
+**Real bug (measured + fixed):** Skills + Agents `/api/v1/tools` returned **200**
+(valid token) but the body wouldn't parse — `/api/v1/tools` is **16,563 B** for 25
+tools, fetch buffers were a fixed **16,384 B** read-until-EOF → truncated mid-JSON
+→ "JSON parse failed". Fix: 16KB→64KB buffers at 3 sites (agent_skills 8→32KB) +
+Skills truncation guard + Skills state-aware error copy ("OFFLINE"→"UNAVAILABLE",
+no token-blame when token set). **Verified live:** Skills lists 16 tools (3 pinned);
+Agents catalog populates. `ui_skills.c` + `ui_agents.c`.
 
-**Work:** shared "can't reach Dragon services — Retry" component; remove dev
-language; correct the `dragon_tok` copy; make the empty-state honest about the
-populated bucket; format tool activity into readable rows (not raw JSON).
+**Remaining (lower-sev / partly Dragon-side, #722 left open):** Agents header
+count vs activity contradiction; raw-JSON activity preview; untitled sessions;
+tofu glyph in a Dragon-provided tool description (Wave 6 font-subset).
 
 ---
 
