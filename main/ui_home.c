@@ -623,22 +623,24 @@ lv_obj_t *ui_home_create(void)
     lv_obj_add_flag(s_sys_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_sys_label, sys_click_cb, LV_EVENT_CLICKED, NULL);
 
-    /* TT #584 — TinkerON armed indicator beside ONLINE.  Same visual
-     * idiom: 8 px dot + small-caps label.  Position: ~120 px to the
-     * right of ONLINE (font is monospace-ish at 14 px ≈ 8 px/char;
-     * "ONLINE" + letter_space=3 is ~7 chars × 11 = ~80 px, so +100 is
-     * a safe gap).  Hidden when K144 is UNAVAILABLE. */
+    /* TT #584 — TinkerON armed indicator beside the sys-label.  Same visual
+     * idiom: 8 px dot + small-caps label.
+     * TT #724: bumped +120 → +175.  Montserrat is PROPORTIONAL, so the wide
+     * sys states ("CAPPED", "NO DRAGON" = 9 ch, "ON-DEVICE") are far wider than
+     * "ONLINE" and overran the dot at +120, colliding with this pill.  +175
+     * gives the sys-label ~157 px — clears the longest state.  Hidden when
+     * K144 is UNAVAILABLE. */
     s_tinkeron_dot = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_tinkeron_dot);
     lv_obj_set_size(s_tinkeron_dot, 8, 8);
-    lv_obj_set_pos(s_tinkeron_dot, SIDE_PAD + 120, 32);
+    lv_obj_set_pos(s_tinkeron_dot, SIDE_PAD + 175, 32);
     lv_obj_set_style_radius(s_tinkeron_dot, 4, 0);
     lv_obj_set_style_bg_color(s_tinkeron_dot, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_bg_opa(s_tinkeron_dot, LV_OPA_COVER, 0);
 
     s_tinkeron_label = lv_label_create(s_screen);
     lv_label_set_text(s_tinkeron_label, "TINKERON OFF");
-    lv_obj_set_pos(s_tinkeron_label, SIDE_PAD + 138, 26);
+    lv_obj_set_pos(s_tinkeron_label, SIDE_PAD + 193, 26);
     lv_obj_set_style_text_font(s_tinkeron_label, FONT_SMALL, 0);
     lv_obj_set_style_text_color(s_tinkeron_label, lv_color_hex(TH_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_letter_space(s_tinkeron_label, 3, 0);
@@ -650,9 +652,9 @@ lv_obj_t *ui_home_create(void)
     s_vision_dot = lv_obj_create(s_screen);
     lv_obj_remove_style_all(s_vision_dot);
     lv_obj_set_size(s_vision_dot, 8, 8);
-    /* Position past "TINKERON OFF" label (longest case at ~+278).
-     * Clear with a small gap so the indicator reads as standalone. */
-    lv_obj_set_pos(s_vision_dot, SIDE_PAD + 320, 32);
+    /* Position past "TINKERON OFF" label. TT #724: the pill moved +138→+193,
+     * so its longest text ends ~+360; place the vision dot clear of that. */
+    lv_obj_set_pos(s_vision_dot, SIDE_PAD + 378, 32);
     lv_obj_set_style_radius(s_vision_dot, 4, 0);
     lv_obj_set_style_bg_color(s_vision_dot, lv_color_hex(TH_STATUS_GREEN), 0);
     lv_obj_set_style_bg_opa(s_vision_dot, LV_OPA_COVER, 0);
@@ -1537,8 +1539,12 @@ void ui_home_update_status(void)
             case ST_QUIET:       sys = "QUIET";     col = 0x7A7A82;      break;
             default:
                 if (capped) {
-                    sys = "CAPPED \xe2\x80\xa2 LOCAL TODAY";
-                    col = TH_STATUS_RED;
+                   /* TT #724: "CAPPED \xe2\x80\xa2 LOCAL TODAY" (~210 px) ran past the
+                    * TinkerON dot at x=160 and collided with its pill. Shortened
+                    * to "CAPPED" (the red colour already conveys the trust-break;
+                    * the budget detail lives in Settings \xe2\x86\x92 Budget). */
+                   sys = "CAPPED";
+                   col = TH_STATUS_RED;
                 } else if (onboard_healthy && degraded) {
                    /* Onboard mode: Dragon-side degraded reasons aren't
                     * relevant to user-facing chat — show ONBOARD. */
