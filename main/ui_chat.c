@@ -242,24 +242,13 @@ static void on_plus(void *ud)
 static void on_mode_lp(void *ud)
 {
     (void)ud;
-    uint8_t m = tab5_settings_get_voice_mode();
-    m = (m + 1) % VOICE_MODE_COUNT;
-    tab5_settings_set_voice_mode(m);
-    char llm[CHAT_LLM_MODEL_LEN] = {0};
-    tab5_settings_get_llm_model(llm, sizeof(llm));
-    voice_send_config_update((int)m, llm);
-
-    chat_store_update_session_mode(m, llm);
-    paint_header_and_view_for_mode(m);
-    if (s_sugg) chat_suggestions_set_mode(s_sugg, m);
-
-    char toast[64];
-    const char *nick = llm;
-    const char *slash = strchr(nick, '/');
-    if (slash) nick = slash + 1;
-    /* TT #723: th_mode_names (ui_theme) is the single source of truth. */
-    snprintf(toast, sizeof(toast), "Mode: %s \xc2\xb7 %s", th_mode_names[m], nick[0] ? nick : "default");
-    ui_home_show_toast(toast);
+    /* TT #724 (Wave 3.1) entry-point discipline: open the one mode picker
+     * instead of blind-cycling.  The old handler did m = (m+1) % COUNT with
+     * only a toast, so a tap/long-press could silently land you on Cloud /
+     * Solo / etc. with no menu to see or undo the choice.  The sheet shows
+     * every mode + what it does; the user picks deliberately. */
+    extern void ui_mode_sheet_show(void);
+    ui_mode_sheet_show();
 }
 
 static void on_ball_tap(void *ud)
@@ -458,6 +447,17 @@ static void poll_voice(lv_timer_t *t)
 {
     (void)t;
     if (!s_active) return;
+
+    /* TT #724 (Wave 3.1): the chip now opens the mode sheet instead of cycling
+     * inline, so the live voice_mode can change under the open chat overlay
+     * (sheet commit) without the header knowing.  Sync the header when it does
+     * — mirrors the home screen's mode-badge resync. */
+    static uint8_t s_hdr_mode = 0xFF;
+    uint8_t cur_mode = tab5_settings_get_voice_mode();
+    if (cur_mode != s_hdr_mode) {
+       s_hdr_mode = cur_mode;
+       paint_header_and_view_for_mode(cur_mode);
+    }
 
     voice_state_t st = voice_get_state();
 
