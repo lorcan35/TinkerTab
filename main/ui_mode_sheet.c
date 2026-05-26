@@ -18,31 +18,70 @@
 #include "ui_home.h"       /* W8: ui_home_show_toast */
 #include "ui_theme.h"
 #include "voice.h"
-#include "voice_onboard.h" /* TT #724 (3.5) — voice_onboard_failover_state */
+#include "voice_onboard.h"   /* TT #724 (3.5) — voice_onboard_failover_state */
+#include "widget_mode_dot.h" /* TT #724 (3.2) — mode dot on each picker row */
 
 static const char *TAG = "ui_mode_sheet";
 
+/* TT #724 (3.2): per-mode display + availability metadata. Names come from
+ * th_mode_names (single source). `requires` drives the 3.5 dim/refuse gate. */
+typedef enum { REQ_NONE = 0, REQ_ADDON, REQ_OR_KEY } mode_req_t;
+typedef struct {
+   const char *reason;  /* one-line why-you'd-pick-it (selected row) */
+   const char *leaves;  /* what leaves the device + speed + cost (selected row) */
+   const char *oneline; /* compact meta for unselected rows */
+   mode_req_t req;
+   bool fixed_brain; /* true => Smartness has no range (grey it) */
+} mode_meta_t;
+
+/* Indexed by vmode (0..5). Order matches th_mode_names / VOICE_MODE_*. */
+static const mode_meta_t s_mode_meta[VOICE_MODE_COUNT] = {
+    /* 0 Local       */ {"Private brain, on the Dragon box", "Nothing leaves \xe2\x80\xa2 free \xe2\x80\xa2 ~60s",
+                         "Nothing leaves \xe2\x80\xa2 free \xe2\x80\xa2 ~60s", REQ_NONE, true},
+    /* 1 Hybrid      */
+    {"Private brain, fast voice", "leaves: your voice (STT) \xe2\x80\xa2 ~5s \xe2\x80\xa2 ~$0.02",
+     "Private brain \xe2\x80\xa2 fast voice \xe2\x80\xa2 ~$0.02", REQ_NONE, true},
+    /* 2 Cloud       */
+    {"Smartest, everything cloud", "leaves: voice + text \xe2\x80\xa2 ~5s \xe2\x80\xa2 needs key",
+     "Voice+text \xe2\x80\xa2 smartest \xe2\x80\xa2 needs key", REQ_NONE, false},
+    /* 3 TinkerAgent */
+    {"Tools + memory, agentic", "leaves: voice + text + tools \xe2\x80\xa2 via gateway",
+     "Tools + memory \xe2\x80\xa2 agentic", REQ_NONE, true},
+    /* 4 TinkerON    */
+    {"Works offline, on-device addon", "Nothing leaves \xe2\x80\xa2 works offline",
+     "Nothing leaves \xe2\x80\xa2 works offline", REQ_ADDON, true},
+    /* 5 Solo        */
+    {"Cloud quality, no Dragon needed", "leaves: voice + text \xe2\x80\xa2 direct to OpenRouter",
+     "No Dragon \xe2\x80\xa2 voice+text leave", REQ_OR_KEY, false},
+};
+
+/* TT #724 (3.5/3.2): can this mode run right now? */
+static bool mode_is_available(uint8_t vmode) {
+   if (vmode >= VOICE_MODE_COUNT) return false;
+   switch (s_mode_meta[vmode].req) {
+      case REQ_ADDON:
+         return voice_onboard_failover_state() == 2 /* M5_FAIL_READY */;
+      case REQ_OR_KEY: {
+         char k[128] = {0};
+         tab5_settings_get_or_key(k, sizeof k);
+         return k[0] != '\0';
+      }
+      default:
+         return true;
+   }
+}
+
 /* ── Layout ──────────────────────────────────────────────────────────── */
-#define MS_W        720
-#define MS_H        1280
-#define SIDE_PAD    40
-#define SEG_H       56
-#define ROW_H       144      /* header label + segments */
-#define ROW_GAP     14
+#define MS_W 720
+#define MS_H 1280
+#define SIDE_PAD 40
 
 /* ── State ───────────────────────────────────────────────────────────── */
 static lv_obj_t *s_overlay     = NULL;  /* scrim container on layer_top */
-static lv_obj_t *s_sheet       = NULL;  /* visible sheet inside overlay */
-static lv_obj_t *s_seg_btn[3][3] = {{0}};  /* [dial][segment] for redraw */
-static lv_obj_t *s_composite_head = NULL;
-static lv_obj_t *s_composite_sub  = NULL;
-static lv_obj_t *s_composite_card = NULL;  /* container — reborder on agent */
-static lv_obj_t *s_composite_accent = NULL; /* amber/violet bar top-left */
-static lv_obj_t *s_composite_kicker = NULL; /* "RESOLVES TO" / "AGENT MODE" */
+static lv_obj_t *s_sheet = NULL;        /* visible sheet inside overlay */
 
-/* Phase 2c Agent consent modal — own scrim, shown on top of the sheet. */
+/* Agent consent modal — own scrim, shown on top of the sheet. */
 static lv_obj_t *s_consent_overlay = NULL;
-static uint8_t   s_pre_consent_aut = 0;  /* tier to revert to on Cancel */
 /* Generic callback mode (audit E3): when non-NULL, hide_agent_consent
  * invokes these instead of the tier-revert / persist logic. Used by the
  * Settings TinkerClaw row so the same UI can drive a different commit
@@ -51,23 +90,63 @@ static void (*s_consent_confirm_cb)(void *) = NULL;
 static void (*s_consent_cancel_cb)(void *)  = NULL;
 static void  *s_consent_cb_ctx              = NULL;
 
-static uint8_t s_int_tier = 0;
-static uint8_t s_voi_tier = 0;
-static uint8_t s_aut_tier = 0;
+/* TT #724 (3.2): mode-row picker state. */
+static uint8_t s_sel_vmode = 0;       /* row currently shown expanded */
+static lv_obj_t *s_rows_root = NULL;  /* container holding the 6 mode rows */
+static lv_obj_t *s_smart_root = NULL; /* Smartness segment container */
+
+/* TT #724 (3.3): Fast/Balanced/Smart -> a concrete model. Setting int_tier
+ * alone changes nothing (routing keys off vmode + llm_model, never int_tier
+ * — validated). Live for Cloud + Solo only; other modes are fixed-brain.
+ * Model IDs match s_cloud_models[] in ui_settings.c. */
+static const char *const s_smart_cloud[3] = {
+    "~anthropic/claude-haiku-latest", /* Fast     */
+    "anthropic/claude-sonnet-4.6",    /* Balanced */
+    "anthropic/claude-opus-4.7",      /* Smart    */
+};
+
+/* TT #724 (3.4): Advanced drawer state. */
+static lv_obj_t *s_adv_root = NULL; /* drawer container below the rows */
+static bool s_adv_open = false;
+
+/* Exact-model list for the Advanced drawer (relocated from ui_settings.c
+ * CLOUD LLM block; Task 5 removes the Settings copy). model_id is what we
+ * send to Dragon as llm_model. */
+typedef struct {
+   const char *label;
+   const char *model_id;
+} adv_model_t;
+static const adv_model_t s_adv_models[] = {
+    {"Opus 4.7", "anthropic/claude-opus-4.7"},
+    {"Sonnet", "anthropic/claude-sonnet-4.6"},
+    {"Haiku", "~anthropic/claude-haiku-latest"},
+    {"GPT-5.5", "openai/gpt-5.5"},
+    {"GPT-5.4m", "openai/gpt-5.4-mini"},
+    {"Gemini Pro", "~google/gemini-pro-latest"},
+    {"Gemini 3.1", "google/gemini-3.1-flash-lite"},
+    {"Grok 4.3", "x-ai/grok-4.3"},
+};
+#define ADV_MODEL_COUNT (sizeof(s_adv_models) / sizeof(s_adv_models[0]))
+
+/* Daily-cap presets in mils (1 mil = 1/1000 cent): OFF / $1 / $5 / $10. */
+static const uint32_t s_adv_caps[4] = {0, 100000, 500000, 1000000};
+static const char *const s_adv_cap_lbl[4] = {"Off", "$1", "$5", "$10"};
 
 /* ── Forward decls ───────────────────────────────────────────────────── */
-static void refresh_segments(void);
-static void refresh_composite(void);
-static void persist_and_notify_dragon(void);
-static void seg_click_cb(lv_event_t *e);
+static void commit_mode(uint8_t vmode);
+static void rebuild_rows(void);
+static void build_smartness(void);
+static void smart_click_cb(lv_event_t *e);
+static void build_advanced(void);
+static void row_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
-static void show_agent_consent(uint8_t prev_aut_tier);
-/* Wave 10 H5 Presets: forward decl — body below seg_click_cb. */
-void preset_click_cb(lv_event_t *e);
+static void show_agent_consent(void);
 static void hide_agent_consent(bool commit);
 static void consent_confirm_cb(lv_event_t *e);
 static void consent_cancel_cb(lv_event_t *e);
+static void agent_consent_confirm_cb(void *ctx);
+static void agent_consent_cancel_cb(void *ctx);
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
@@ -78,69 +157,33 @@ bool ui_mode_sheet_visible(void)
 
 void ui_mode_sheet_hide(void)
 {
-    /* If an Agent consent modal is still up when the sheet gets hidden
-     * (e.g. user backs out via nav), treat that as Cancel — do NOT commit. */
-    if (s_consent_overlay) {
-        lv_obj_del(s_consent_overlay);
-        s_consent_overlay = NULL;
-        s_aut_tier = s_pre_consent_aut;
-    }
+   /* If an Agent consent modal is still up when the sheet gets hidden
+    * (e.g. user backs out via nav), treat that as Cancel — drop the
+    * pending callbacks so nothing commits. */
+   if (s_consent_overlay) {
+      lv_obj_del(s_consent_overlay);
+      s_consent_overlay = NULL;
+      s_consent_confirm_cb = NULL;
+      s_consent_cancel_cb = NULL;
+      s_consent_cb_ctx = NULL;
+   }
     if (s_overlay) {
         lv_obj_del(s_overlay);
     }
     s_overlay = NULL;
-    s_sheet   = NULL;
-    s_composite_head = NULL;
-    s_composite_sub  = NULL;
-    s_composite_card = NULL;
-    s_composite_accent = NULL;
-    s_composite_kicker = NULL;
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) s_seg_btn[r][c] = NULL;
-    }
+    s_sheet = NULL;
+    s_rows_root = NULL;
+    s_smart_root = NULL;
+    s_adv_root = NULL;
 }
 
 void ui_mode_sheet_show(void)
 {
     if (ui_mode_sheet_visible()) return;
 
-    /* Pick up current tier values -- so the segmented buttons draw with the
-     * correct on-state for whatever the user last persisted. */
-    s_int_tier = tab5_settings_get_int_tier();
-    s_voi_tier = tab5_settings_get_voi_tier();
-    s_aut_tier = tab5_settings_get_aut_tier();
-
-    /* If voice_mode was set via a path that bypassed the dial sheet
-     * (debug /mode, settings radio rows, orb long-press cycle), the
-     * tiers can drift out of sync with the live mode.  Reverse-derive
-     * the tiers from the current voice_mode so the dials open showing
-     * what the device is actually running on. */
-    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier,
-                                         NULL, 0);
-    uint8_t live_mode = tab5_settings_get_voice_mode();
-    if (resolved != live_mode) {
-        switch (live_mode) {
-            case 3: /* TinkerClaw / Agent */
-                s_aut_tier = 1;
-                /* leave int/voi alone -- agent wins */
-                break;
-            case 2: /* Full Cloud */
-                s_int_tier = 2; s_voi_tier = 2; s_aut_tier = 0;
-                break;
-            case 1: /* Hybrid */
-                s_int_tier = 1; s_voi_tier = 2; s_aut_tier = 0;
-                break;
-            case 0: /* Local */
-            default:
-                s_int_tier = 0; s_voi_tier = 0; s_aut_tier = 0;
-                break;
-        }
-        ESP_LOGI(TAG, "Dial sheet tiers resynced to live mode %d -> int=%d voi=%d aut=%d",
-                 live_mode, s_int_tier, s_voi_tier, s_aut_tier);
-    } else {
-        ESP_LOGI(TAG, "Opening dial sheet (int=%d voi=%d aut=%d)",
-                 s_int_tier, s_voi_tier, s_aut_tier);
-    }
+    /* TT #724 (3.3): the picker no longer uses the int/voi/aut dials — routing
+     * keys off the persisted vmode, and tab5_mode_resolve stays only for the
+     * debug /mode-from-tiers path. No tier resync needed here. */
 
     /* Overlay scrim — fills the screen, dim semi-transparent, tappable
      * to dismiss.  lv_layer_top() keeps it above home + any other screen. */
@@ -182,7 +225,7 @@ void ui_mode_sheet_show(void)
 
     /* Kicker + headline */
     lv_obj_t *kicker = lv_label_create(s_sheet);
-    lv_label_set_text(kicker, "\xe2\x80\xa2 MODE DIALS");
+    lv_label_set_text(kicker, "\xe2\x80\xa2 MODE");
     lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
     lv_obj_set_style_text_color(kicker, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(kicker, 4, 0);
@@ -211,187 +254,36 @@ void ui_mode_sheet_show(void)
     lv_obj_set_style_text_color(done_lbl, lv_color_hex(TH_BG), 0);
     lv_obj_center(done_lbl);
 
-    /* Build three dial rows.
-     * Each row: kicker label (12 px above segments) + segmented control. */
-    struct {
-        const char *kicker;
-        const char *labels[3];
-        int count;
-    } rows[3] = {
-        { "\xe2\x80\xa2 INTELLIGENCE",
-          { "Fast", "Balanced", "Smart" }, 3 },
-        { "\xe2\x80\xa2 VOICE",
-          { "Local", "Neutral", "Studio" }, 3 },
-        { "\xe2\x80\xa2 AUTONOMY",
-          { "Ask", "Agent", NULL }, 2 },
-    };
+    /* TT #724 (3.2/3.3): mode-row picker body. Replaces the int/voi/aut
+     * dials + preset chips + composite card. Each row writes vmode directly
+     * via commit_mode(); the selected row expands to show why-you'd-pick-it.
+     * Routing keys off vmode, so the resolver core is untouched. */
+    s_sel_vmode = tab5_settings_get_voice_mode();
+    if (s_sel_vmode >= VOICE_MODE_COUNT) s_sel_vmode = 0;
 
-    int y = 170;
-    for (int r = 0; r < 3; r++) {
-        lv_obj_t *rk = lv_label_create(s_sheet);
-        lv_label_set_text(rk, rows[r].kicker);
-        lv_obj_set_style_text_font(rk, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(rk, lv_color_hex(TH_AMBER), 0);
-        lv_obj_set_style_text_letter_space(rk, 4, 0);
-        lv_obj_set_pos(rk, SIDE_PAD, y);
+    /* TT #724 (3.3): Smartness segment, above the mode rows. */
+    s_smart_root = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_smart_root);
+    lv_obj_set_pos(s_smart_root, 0, 116);
+    lv_obj_set_size(s_smart_root, MS_W, 56);
+    lv_obj_clear_flag(s_smart_root, LV_OBJ_FLAG_SCROLLABLE);
+    build_smartness();
 
-        /* Segment track — elevated card + padded row of buttons */
-        lv_obj_t *track = lv_obj_create(s_sheet);
-        lv_obj_remove_style_all(track);
-        lv_obj_set_pos(track, SIDE_PAD, y + 30);
-        lv_obj_set_size(track, MS_W - 2 * SIDE_PAD, SEG_H);
-        lv_obj_set_style_bg_color(track, lv_color_hex(TH_CARD_ELEVATED), 0);
-        lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(track, SEG_H / 2, 0);
-        lv_obj_set_style_border_width(track, 1, 0);
-        lv_obj_set_style_border_color(track, lv_color_hex(0x1E1E2A), 0);
-        lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
+    s_rows_root = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_rows_root);
+    lv_obj_set_pos(s_rows_root, 0, 182);
+    lv_obj_set_size(s_rows_root, MS_W, 352);
+    lv_obj_clear_flag(s_rows_root, LV_OBJ_FLAG_SCROLLABLE);
+    rebuild_rows();
 
-        const int track_pad  = 4;
-        const int seg_count  = rows[r].count;
-        const int track_w    = (MS_W - 2 * SIDE_PAD) - 2 * track_pad;
-        const int seg_w      = track_w / seg_count;
-
-        for (int c = 0; c < seg_count; c++) {
-            lv_obj_t *seg = lv_obj_create(track);
-            lv_obj_remove_style_all(seg);
-            lv_obj_set_pos(seg, track_pad + c * seg_w, track_pad);
-            lv_obj_set_size(seg, seg_w, SEG_H - 2 * track_pad);
-            lv_obj_set_style_radius(seg, (SEG_H - 2 * track_pad) / 2, 0);
-            lv_obj_clear_flag(seg, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(seg, LV_OBJ_FLAG_CLICKABLE);
-            /* user_data packs dial row (high nibble) + segment idx (low nibble) */
-            uintptr_t pack = (uintptr_t)((r << 4) | c);
-            lv_obj_add_event_cb(seg, seg_click_cb, LV_EVENT_CLICKED, (void*)pack);
-
-            lv_obj_t *lbl = lv_label_create(seg);
-            lv_label_set_text(lbl, rows[r].labels[c]);
-            lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
-            lv_obj_center(lbl);
-
-            s_seg_btn[r][c] = seg;
-        }
-        y += ROW_H + ROW_GAP;
-    }
-
-    /* Wave 10 H5: Presets row — four chips matching the legacy voice_mode
-     * values so users can one-tap a recipe instead of spinning each dial.
-     * Presets set (int/voi/aut) to the same mapping the reverse-derive
-     * uses at line ~115 above:
-     *   Local  -> (0,0,0)   Hybrid -> (1,2,0)
-     *   Cloud  -> (2,2,0)   Agent  -> keep int/voi, aut=1 (triggers consent)
-     * Tapping Agent routes through show_agent_consent just like the
-     * dial segment does at line 460 — no silent mode-3 switch. */
-    {
-        lv_obj_t *rk = lv_label_create(s_sheet);
-        lv_label_set_text(rk, "\xe2\x80\xa2 PRESETS");
-        lv_obj_set_style_text_font(rk, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(rk, lv_color_hex(TH_AMBER), 0);
-        lv_obj_set_style_text_letter_space(rk, 4, 0);
-        lv_obj_set_pos(rk, SIDE_PAD, y);
-
-        lv_obj_t *row = lv_obj_create(s_sheet);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_pos(row, SIDE_PAD, y + 30);
-        lv_obj_set_size(row, MS_W - 2 * SIDE_PAD, SEG_H);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-        /* TT #328 Wave 9 follow-up — Onboard added as a 5th preset.
-         * W8 (cross-stack audit 2026-05-11) — Solo added as a 6th preset
-         * to close the "SOLO_DIRECT not discoverable from the mode sheet"
-         * UX gap.  Both vmode=4 (K144) and vmode=5 (SOLO_DIRECT) bypass
-         * the int/voi/aut dial taxonomy because they aren't shaped by
-         * Dragon-side capability tiers — each is its own runtime.
-         * preset_click_cb's case 4 / case 5 take direct-write paths
-         * that bypass tab5_mode_resolve. */
-        const int gap = 8;
-        const int chip_count = 6;
-        const int chip_w = ((MS_W - 2 * SIDE_PAD) - gap * (chip_count - 1)) / chip_count;
-        /* TT #723: labels from th_mode_names (single source); preset c maps to
-         * vmode c (Local/Hybrid/Cloud/TinkerAgent/TinkerON/Solo). */
-        extern void preset_click_cb(lv_event_t *e);
-        for (int c = 0; c < chip_count; c++) {
-            lv_obj_t *chip = lv_obj_create(row);
-            lv_obj_remove_style_all(chip);
-            lv_obj_set_pos(chip, c * (chip_w + gap), 0);
-            lv_obj_set_size(chip, chip_w, SEG_H);
-            lv_obj_set_style_bg_color(chip, lv_color_hex(TH_CARD_ELEVATED), 0);
-            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(chip, SEG_H / 2, 0);
-            lv_obj_set_style_border_width(chip, 1, 0);
-            lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
-            lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(chip, preset_click_cb, LV_EVENT_CLICKED,
-                                (void *)(uintptr_t)c);
-            /* TT #724 (3.5) capability gating: dim a mode that can't run right
-             * now — TinkerON (4) needs the addon warm, Solo (5) needs an
-             * OpenRouter key.  Left clickable so the tap explains why (the
-             * toast in preset_click_cb cases 4/5). */
-            bool avail = true;
-            if (c == 4) {
-               avail = (voice_onboard_failover_state() == 2 /* M5_FAIL_READY */);
-            } else if (c == 5) {
-               /* Buffer must fit the whole key — NVS get_str returns empty on
-                * an undersized buffer, which falsely greyed Solo (TT #724). */
-               char k[128] = {0};
-               tab5_settings_get_or_key(k, sizeof k);
-               avail = (k[0] != '\0');
-            }
-            if (!avail) lv_obj_set_style_opa(chip, LV_OPA_40, 0);
-            lv_obj_t *lbl = lv_label_create(chip);
-            lv_label_set_text(lbl, th_mode_names[c]);
-            /* TT #723: FONT_SMALL so the longer canonical names (TinkerAgent)
-             * fit the narrow preset chip without clipping. */
-            lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
-            lv_obj_center(lbl);
-        }
-        y += ROW_H + ROW_GAP;
-    }
-
-    /* Composite preview — lives below the three dials. Border / accent /
-     * kicker / text colours all swap to violet when aut_tier == 1 to
-     * signal the TinkerClaw memory-bypass (Phase 2c informed-consent). */
-    s_composite_card = lv_obj_create(s_sheet);
-    lv_obj_remove_style_all(s_composite_card);
-    lv_obj_set_pos(s_composite_card, SIDE_PAD, y + 20);
-    lv_obj_set_size(s_composite_card, MS_W - 2 * SIDE_PAD, 140);
-    lv_obj_set_style_bg_color(s_composite_card, lv_color_hex(TH_CARD_ELEVATED), 0);
-    lv_obj_set_style_bg_opa(s_composite_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_composite_card, 20, 0);
-    lv_obj_set_style_border_width(s_composite_card, 1, 0);
-    lv_obj_set_style_border_color(s_composite_card, lv_color_hex(0x1E1E2A), 0);
-    lv_obj_clear_flag(s_composite_card, LV_OBJ_FLAG_SCROLLABLE);
-
-    s_composite_accent = lv_obj_create(s_composite_card);
-    lv_obj_remove_style_all(s_composite_accent);
-    lv_obj_set_size(s_composite_accent, 140, 3);
-    lv_obj_set_pos(s_composite_accent, 0, 0);
-    lv_obj_set_style_bg_color(s_composite_accent, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(s_composite_accent, LV_OPA_COVER, 0);
-
-    s_composite_kicker = lv_label_create(s_composite_card);
-    lv_label_set_text(s_composite_kicker, "\xe2\x80\xa2 RESOLVES TO");
-    lv_obj_set_style_text_font(s_composite_kicker, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(s_composite_kicker, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_text_letter_space(s_composite_kicker, 4, 0);
-    lv_obj_set_pos(s_composite_kicker, 24, 22);
-    lv_obj_t *comp = s_composite_card; /* alias for remaining label placement */
-
-    s_composite_head = lv_label_create(comp);
-    lv_obj_set_style_text_font(s_composite_head, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_composite_head, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_pos(s_composite_head, 24, 48);
-
-    s_composite_sub = lv_label_create(comp);
-    lv_obj_set_style_text_font(s_composite_sub, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(s_composite_sub, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_style_text_letter_space(s_composite_sub, 3, 0);
-    lv_obj_set_pos(s_composite_sub, 24, 86);
-
-    /* Initial styling + composite text */
-    refresh_segments();
-    refresh_composite();
+    /* TT #724 (3.4): Advanced drawer, collapsed by default, below the rows. */
+    s_adv_open = false;
+    s_adv_root = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_adv_root);
+    lv_obj_set_pos(s_adv_root, 0, 542);
+    lv_obj_set_size(s_adv_root, MS_W, 480);
+    lv_obj_clear_flag(s_adv_root, LV_OBJ_FLAG_SCROLLABLE);
+    build_advanced();
 
     /* Force full-screen invalidate — same pattern as ui_home create
      * (PARTIAL render needs this to paint every strip on first show). */
@@ -401,283 +293,362 @@ void ui_mode_sheet_show(void)
 
 /* ── Internals ───────────────────────────────────────────────────────── */
 
-static void refresh_segments(void)
-{
-    /* Dial 0 = int_tier, 1 = voi_tier, 2 = aut_tier */
-    uint8_t sel[3] = { s_int_tier, s_voi_tier, s_aut_tier };
-    int counts[3]  = { 3, 3, 2 };
+/* TT #724 (3.3): write the chosen mode + notify Dragon. Mirrors the proven
+ * preset-4/5 calls but for all six modes. Does NOT touch tab5_mode_resolve /
+ * the dial tiers — routing keys off the persisted vmode. */
+static void commit_mode(uint8_t vmode) {
+   if (vmode >= VOICE_MODE_COUNT) return;
 
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < counts[r]; c++) {
-            lv_obj_t *seg = s_seg_btn[r][c];
-            if (!seg) continue;
-            bool on = (sel[r] == c);
-            if (on) {
-                lv_obj_set_style_bg_color(seg, lv_color_hex(TH_AMBER), 0);
-                lv_obj_set_style_bg_opa(seg, LV_OPA_COVER, 0);
-                /* Update label colour */
-                lv_obj_t *lbl = lv_obj_get_child(seg, 0);
-                if (lbl) {
-                    lv_obj_set_style_text_color(lbl, lv_color_hex(TH_BG), 0);
-                }
-            } else {
-                lv_obj_set_style_bg_opa(seg, LV_OPA_TRANSP, 0);
-                lv_obj_t *lbl = lv_obj_get_child(seg, 0);
-                if (lbl) {
-                    lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_SECONDARY), 0);
-                }
-            }
-        }
-    }
-}
-
-static void refresh_composite(void)
-{
-    if (!s_composite_head || !s_composite_sub || !s_composite_card) return;
-
-    char model_out[64] = {0};
-    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier, model_out, sizeof(model_out));
-    if (resolved > 3) resolved = 0;
-    /* TT #723: canonical name from th_mode_names (was a divergent local copy
-     * "Full Cloud" / "Agent · TinkerClaw"). */
-    lv_label_set_text(s_composite_head, th_mode_names[resolved]);
-
-    /* Sub-label is built live so it reflects the actual LLM the user picked
-     * (gemini-3-flash-preview, gpt-4o-mini, etc) instead of hardcoding
-     * Sonnet.  Shortens vendor/model to the tail after "/" and upper-cases
-     * it to match the kicker typography. */
-    char sub_buf[96] = {0};
-    char short_model[48] = {0};
-    {
-        char lm[64] = {0};
-        tab5_settings_get_llm_model(lm, sizeof(lm));
-        if (lm[0]) {
-            const char *slash = strchr(lm, '/');
-            const char *tail  = slash ? slash + 1 : lm;
-            snprintf(short_model, sizeof(short_model), "%.47s", tail);
-            for (int i = 0; short_model[i]; i++) {
-                if (short_model[i] >= 'a' && short_model[i] <= 'z')
-                    short_model[i] -= 32;
-            }
-        }
-    }
-    /* TT #328 Wave 5 (audit Hybrid story) — captions now stamp three
-     * decisive variables per mode: latency, privacy, cost.  Pre-Wave-5
-     * the composite read "STUDIO VOICE · LOCAL BRAIN · ~$0.02" — true,
-     * but the user couldn't see WHY they'd pick Hybrid over Local
-     * (60 s vs. 4-8 s is the load-bearing reason).  Now every mode
-     * surfaces its sweet-spot in the same shape so cross-comparison
-     * is a glance, not an analysis. */
-    switch (resolved) {
-        case 0:
-           snprintf(sub_buf, sizeof(sub_buf), "~60S \xe2\x80\xa2 100%% PRIVATE \xe2\x80\xa2 FREE");
-           break;
-        case 1:
-           snprintf(sub_buf, sizeof(sub_buf), "4-8S \xe2\x80\xa2 PRIVATE BRAIN \xe2\x80\xa2 ~$0.02");
-           break;
-        case 2:
-           snprintf(sub_buf, sizeof(sub_buf), "3-6S \xe2\x80\xa2 %s \xe2\x80\xa2 ~$0.04",
-                    short_model[0] ? short_model : "CLOUD");
-           break;
-        case 3:
-           snprintf(sub_buf, sizeof(sub_buf), "AGENT TOOLS \xe2\x80\xa2 MEMORY BYPASSED");
-           break;
-    }
-    lv_label_set_text(s_composite_sub, sub_buf);
-
-    /* v4·D Sovereign Halo Phase 2c: when aut_tier == 1 (Agent),
-     * recolor the composite card to violet to flag the memory-bypass
-     * boundary.  The user has already tapped Agent, so this isn't a
-     * revert-confirm modal -- just a tonally distinct "this mode runs
-     * differently" signal matching the Sovereign system-d-modes.html M5
-     * warning sheet concept. */
-    const bool agent = (s_aut_tier >= 1);
-    uint32_t accent_col = agent ? 0xA78BFA : TH_AMBER;
-    uint32_t border_col = agent ? 0xA78BFA : 0x1E1E2A;
-    const char *kicker  = agent ? "\xe2\x80\xa2 AGENT MODE" : "\xe2\x80\xa2 RESOLVES TO";
-
-    lv_obj_set_style_bg_color(s_composite_accent, lv_color_hex(accent_col), 0);
-    lv_obj_set_style_border_color(s_composite_card, lv_color_hex(border_col), 0);
-    lv_obj_set_style_border_opa(s_composite_card, agent ? 255 : 255, 0);
-    if (s_composite_kicker) {
-        lv_label_set_text(s_composite_kicker, kicker);
-        lv_obj_set_style_text_color(s_composite_kicker, lv_color_hex(accent_col), 0);
-    }
-}
-
-static void persist_and_notify_dragon(void)
-{
-   /* W8: confirmatory chirp.  Fired from EVERY user-driven mode-sheet
-    * commit (dial segment tap → persist_and_notify_dragon, plus every
-    * preset chip case 0..3 below).  Audit found the device mute on
-    * UI interactions; the cue closes that gap.  Worker-dispatched so
-    * the LVGL caller doesn't block. */
-   ui_audio_cue_play(UI_CUE_MODE_SWITCH);
-
-   /* TT #625 Wave A.2 (R6) — vmode change mid-turn used to orphan the
-    * in-flight Dragon STT/LLM/TTS.  Now: if voice is mid-turn, cancel
-    * it cleanly first (voice_cancel also resets wakeword + pauses pump
-    * via Wave A.1), then let the config_update fire so the NEXT turn
-    * uses the new mode.  Toast tells the user what happened. */
-   voice_state_t vs_at_switch = voice_get_state();
-   if (vs_at_switch != VOICE_STATE_IDLE && vs_at_switch != VOICE_STATE_READY) {
-      ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs_at_switch);
+   /* TT #625 Wave A.2 (R6) — a vmode change mid-turn used to orphan the
+    * in-flight Dragon turn. Cancel cleanly first; the config_update then
+    * applies to the NEXT turn. */
+   voice_state_t vs = voice_get_state();
+   if (vs != VOICE_STATE_IDLE && vs != VOICE_STATE_READY) {
+      ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs);
       tab5_debug_obs_event("mode.cancel_for_switch", "");
       voice_cancel();
-      extern void ui_home_show_toast(const char *);
       ui_home_show_toast("Switched mode — current turn stopped");
    }
 
-   /* Persist the three tiers + the derived voice_mode + (optional) llm_model. */
-   tab5_settings_set_int_tier(s_int_tier);
-   tab5_settings_set_voi_tier(s_voi_tier);
-   tab5_settings_set_aut_tier(s_aut_tier);
+   tab5_settings_set_voice_mode(vmode);
+   char model[64] = {0};
+   tab5_settings_get_llm_model(model, sizeof(model));
+   voice_send_config_update((int)vmode, model);
+   ui_audio_cue_play(UI_CUE_MODE_SWITCH);
+   extern void ui_agents_on_mode_change(void);
+   ui_agents_on_mode_change();
+   ESP_LOGI(TAG, "picker: mode -> %u (%s)", vmode, th_mode_names[vmode]);
+}
 
-   char model_out[64] = {0};
-   uint8_t new_mode = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier, model_out, sizeof(model_out));
-   tab5_settings_set_voice_mode(new_mode);
-   if (model_out[0]) {
-      tab5_settings_set_llm_model(model_out);
+/* TT #724 (3.2/3.3): rebuild the six mode rows. The selected row expands to
+ * show reason + what-leaves; the rest show a single dim meta line. Unavailable
+ * modes dim and refuse selection (3.5). */
+static void rebuild_rows(void) {
+   if (!s_rows_root) return;
+   lv_obj_clean(s_rows_root);
+   int y = 0;
+   for (uint8_t m = 0; m < VOICE_MODE_COUNT; m++) {
+      bool avail = mode_is_available(m);
+      bool sel = (m == s_sel_vmode);
+      int rh = sel ? 74 : 46;
+
+      lv_obj_t *row = lv_obj_create(s_rows_root);
+      lv_obj_remove_style_all(row);
+      lv_obj_set_pos(row, SIDE_PAD, y);
+      lv_obj_set_size(row, MS_W - 2 * SIDE_PAD, rh);
+      lv_obj_set_style_bg_color(row, lv_color_hex(sel ? 0x1A1509 : 0x13131C), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(row, 12, 0);
+      lv_obj_set_style_border_width(row, 1, 0);
+      lv_obj_set_style_border_color(row, lv_color_hex(sel ? TH_AMBER : 0x20202C), 0);
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)m);
+      if (!avail) lv_obj_set_style_opa(row, LV_OPA_40, 0);
+
+      /* mode dot (shared widget, colored by mode) */
+      lv_obj_t *dot = widget_mode_dot_create(row, 8, m);
+      if (dot) lv_obj_set_pos(dot, 12, sel ? 14 : 18);
+
+      lv_obj_t *nm = lv_label_create(row);
+      lv_label_set_text(nm, th_mode_names[m]);
+      lv_obj_set_style_text_font(nm, FONT_BODY, 0);
+      lv_obj_set_style_text_color(nm, lv_color_hex(TH_TEXT_PRIMARY), 0);
+      lv_obj_set_pos(nm, 30, sel ? 10 : 13);
+
+      if (m == 1) { /* Hybrid "recommended" tag */
+         lv_obj_t *rec = lv_label_create(row);
+         lv_label_set_text(rec, "RECOMMENDED");
+         lv_obj_set_style_text_font(rec, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(rec, lv_color_hex(0x7A7A88), 0);
+         lv_obj_align(rec, LV_ALIGN_TOP_RIGHT, -14, sel ? 14 : 16);
+      }
+      if (m == 4 && !avail) { /* TinkerON addon hint */
+         lv_obj_t *w = lv_label_create(row);
+         lv_label_set_text(w, "attach addon");
+         lv_obj_set_style_text_font(w, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(w, lv_color_hex(TH_AMBER), 0);
+         lv_obj_align(w, LV_ALIGN_TOP_RIGHT, -14, sel ? 14 : 16);
+      }
+
+      if (sel) {
+         lv_obj_t *reason = lv_label_create(row);
+         lv_label_set_text(reason, s_mode_meta[m].reason);
+         lv_obj_set_style_text_font(reason, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(reason, lv_color_hex(0xC2C2CC), 0);
+         lv_obj_set_pos(reason, 30, 34);
+         lv_obj_t *meta = lv_label_create(row);
+         lv_label_set_text(meta, s_mode_meta[m].leaves);
+         lv_obj_set_style_text_font(meta, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(meta, lv_color_hex(0x6A6A78), 0);
+         lv_obj_set_pos(meta, 30, 53);
+      } else if (!(m == 1 || (m == 4 && !avail))) {
+         /* one-line meta; skipped for rows that already carry a right-side
+          * annotation (Hybrid RECOMMENDED / TinkerON attach-addon) so they
+          * don't collide on the narrow unselected row. */
+         lv_obj_t *one = lv_label_create(row);
+         lv_label_set_text(one, s_mode_meta[m].oneline);
+         lv_obj_set_style_text_font(one, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(one, lv_color_hex(0x6A6A78), 0);
+         lv_obj_align(one, LV_ALIGN_RIGHT_MID, -14, 0);
+      }
+      y += rh + 8;
    }
-
-    /* Fire config_update to Dragon so it swaps backends on the next turn.
-     * Re-read llm_model from NVS to send what's actually stored (either
-     * the newly-written cloud model or the pre-existing one). */
-    char model_to_send[64] = {0};
-    tab5_settings_get_llm_model(model_to_send, sizeof(model_to_send));
-    voice_send_config_update(new_mode, model_to_send);
-
-    ESP_LOGI(TAG, "Tier change resolved -> voice_mode=%d model=%s",
-             new_mode, model_to_send);
-    /* W7-B follow-up (TT #467): refresh agent_skills catalog if Agents
-     * overlay is visible — its vmode=3 gate needs to update live when
-     * the user dials in/out of TinkerClaw. */
-    extern void ui_agents_on_mode_change(void);
-    ui_agents_on_mode_change();
 }
 
-/* Wave 10 H5 Presets: one-tap recipes that set all three dials to the
- * tier combination matching the legacy voice_mode (0=Local, 1=Hybrid,
- * 2=Cloud, 3=Agent). Agent preset routes through the same consent modal
- * that the AUTONOMY dial does so there's no silent bypass path. */
-void preset_click_cb(lv_event_t *e)
-{
-    int preset = (int)(uintptr_t)lv_event_get_user_data(e);
-    uint8_t prev_aut = s_aut_tier;
-    switch (preset) {
-        case 0: /* Local   */ s_int_tier = 0; s_voi_tier = 0; s_aut_tier = 0; break;
-        case 1: /* Hybrid  */ s_int_tier = 1; s_voi_tier = 2; s_aut_tier = 0; break;
-        case 2: /* Cloud   */ s_int_tier = 2; s_voi_tier = 2; s_aut_tier = 0; break;
-        case 3: /* Agent   */
-            /* Keep intelligence + voice tiers as-is — agent mode is only
-             * about autonomy/memory-bypass. If already on Agent, no-op.
-             * Otherwise gate behind the consent modal. */
-            if (s_aut_tier == 1) return;
-            s_aut_tier = 1;
-            refresh_segments();
-            refresh_composite();
-            show_agent_consent(prev_aut);
-            return;  /* do NOT persist yet — modal commits or reverts */
-        case 4:      /* Onboard — TT #328 Wave 9 follow-up.  Direct vmode=4
-                      * write that bypasses tab5_mode_resolve (which only
-                      * maps to 0..3).  K144 is its own runtime — the dial
-                      * taxonomy doesn't apply, so the dials' visual state
-                      * stays at whatever the user last picked.  Closes the
-                      * "K144 unreachable from sheet" half of audit P0 #10. */
-           /* TT #724 (3.5): don't switch to TinkerON when the addon isn't
-            * ready — that lands the user on a non-functional mode.  Mirror
-            * the Solo (case 5) no-key guard. */
-           if (voice_onboard_failover_state() != 2 /* M5_FAIL_READY */) {
-              if (tab5_ui_try_lock(150)) {
-                 ui_home_show_toast("TinkerON not ready — check the module");
-                 tab5_ui_unlock();
-              }
-              return;
-           }
-           tab5_settings_set_voice_mode(VOICE_MODE_ONBOARD);
-           ui_audio_cue_play(UI_CUE_MODE_SWITCH); /* W8: chirp on Onboard preset */
-           char model[64] = {0};
-           tab5_settings_get_llm_model(model, sizeof(model));
-           voice_send_config_update(VOICE_MODE_ONBOARD, model);
-           ESP_LOGI(TAG, "Onboard preset -> voice_mode=%d (K144)", VOICE_MODE_ONBOARD);
-           {
-              extern void ui_agents_on_mode_change(void);
-              ui_agents_on_mode_change();
-           }
-           ui_mode_sheet_hide();
-           return;
-        case 5: /* Solo — W8 (cross-stack audit 2026-05-11): closes the
-                 * "SOLO_DIRECT only reachable via /mode debug or chip
-                 * cycling" discoverability gap.  Direct vmode=5 write;
-                 * Dragon sees it as a real mode after W3-A/B but
-                 * idle-pipelines because Tab5 goes direct to OpenRouter
-                 * for the audio path.  If the OpenRouter key isn't
-                 * provisioned, surface a hint instead of silently
-                 * switching to a non-functional mode. */
-        {
-           char or_key[96] = {0};
-           tab5_settings_get_or_key(or_key, sizeof or_key);
-           if (or_key[0] == '\0') {
-              if (tab5_ui_try_lock(150)) {
-                 ui_home_show_toast("Scan QR to set OpenRouter key first");
-                 tab5_ui_unlock();
-              }
-              return;
-           }
-           tab5_settings_set_voice_mode(VOICE_MODE_SOLO);
-           char model2[64] = {0};
-           tab5_settings_get_llm_model(model2, sizeof(model2));
-           voice_send_config_update(VOICE_MODE_SOLO, model2);
-           ESP_LOGI(TAG, "Solo preset -> voice_mode=%d (OpenRouter direct)", VOICE_MODE_SOLO);
-           {
-              extern void ui_agents_on_mode_change(void);
-              ui_agents_on_mode_change();
-           }
-        }
-           ui_mode_sheet_hide();
-           return;
-        default: return;
-    }
-    refresh_segments();
-    refresh_composite();
-    persist_and_notify_dragon();
-    /* TT #328 Wave 10 follow-up — dismiss the sheet on every preset tap
-     * so the user immediately sees the change reflected on home + their
-     * next navigation isn't shadowed by a sheet that's still up.  Pre-
-     * fix only the Onboard preset (case 4) auto-dismissed; the other
-     * four required a manual "Done" tap. */
-    ui_mode_sheet_hide();
+static void row_click_cb(lv_event_t *e) {
+   uint8_t vmode = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (vmode >= VOICE_MODE_COUNT) return;
+   if (!mode_is_available(vmode)) {
+      if (tab5_ui_try_lock(150)) {
+         ui_home_show_toast(s_mode_meta[vmode].req == REQ_ADDON ? "TinkerON not ready \xe2\x80\x94 check the module"
+                                                                : "Add an OpenRouter key in Settings first");
+         tab5_ui_unlock();
+      }
+      return;
+   }
+   /* TinkerAgent (3) bypasses on-device memory — preserve the consent modal
+    * when switching INTO agent from another mode (memory-bypass boundary). */
+   if (vmode == VOICE_MODE_TINKERCLAW && tab5_settings_get_voice_mode() != VOICE_MODE_TINKERCLAW) {
+      ui_agent_consent_show(agent_consent_confirm_cb, agent_consent_cancel_cb, NULL);
+      return;
+   }
+   s_sel_vmode = vmode;
+   rebuild_rows();    /* expand the newly-selected row */
+   build_smartness(); /* fixed-brain modes grey the knob; Cloud/Solo enable it */
+   commit_mode(vmode);
 }
 
-static void seg_click_cb(lv_event_t *e)
-{
-    uintptr_t pack = (uintptr_t)lv_event_get_user_data(e);
-    int row = (int)((pack >> 4) & 0x0F);
-    int col = (int)(pack & 0x0F);
+/* In-sheet TinkerAgent consent decisions (routed via ui_agent_consent_show). */
+static void agent_consent_confirm_cb(void *ctx) {
+   (void)ctx;
+   s_sel_vmode = VOICE_MODE_TINKERCLAW;
+   rebuild_rows();
+   build_smartness(); /* TinkerAgent is fixed-brain -> grey the knob */
+   commit_mode(VOICE_MODE_TINKERCLAW);
+}
 
-    /* Phase 2c gate: tapping AUTONOMY→Agent while not already on Agent
-     * must trigger the consent modal before we commit the mode switch.
-     * Memory bypass is the most sensitive boundary in the system and
-     * deserves an explicit acknowledge+back path, not a silent recolor. */
-    if (row == 2 && col == 1 && s_aut_tier != 1) {
-        uint8_t prev = s_aut_tier;
-        s_aut_tier = 1;
-        refresh_segments();
-        refresh_composite();
-        show_agent_consent(prev);
-        return;  /* do NOT persist yet — modal commits or reverts */
-    }
+static void agent_consent_cancel_cb(void *ctx) {
+   (void)ctx;
+   /* Keep the prior selection; nothing was committed. */
+}
 
-    switch (row) {
-        case 0: s_int_tier = (uint8_t)col; break;
-        case 1: s_voi_tier = (uint8_t)col; break;
-        case 2: s_aut_tier = (uint8_t)col; break;
-        default: return;
-    }
+/* TT #724 (3.3): Smartness tap — sets the *real* model for the only two modes
+ * where Tab5 picks it (Cloud -> llm_model, Solo -> or_mdl_llm), persists the
+ * tier for the segment's on-state, and notifies Dragon. No-op for fixed-brain
+ * modes (the segment is greyed + non-clickable there). */
+static void smart_click_cb(lv_event_t *e) {
+   uint8_t tier = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (tier > 2 || s_mode_meta[s_sel_vmode].fixed_brain) return;
+   tab5_settings_set_int_tier(tier);
+   const char *model = s_smart_cloud[tier];
+   if (s_sel_vmode == VOICE_MODE_SOLO)
+      tab5_settings_set_or_mdl_llm(model);
+   else
+      tab5_settings_set_llm_model(model); /* Cloud */
+   voice_send_config_update((int)s_sel_vmode, (char *)model);
+   build_smartness(); /* re-render the on-state */
+   ESP_LOGI(TAG, "smartness tier=%u -> model=%s (vmode=%u)", tier, model, s_sel_vmode);
+}
 
-    refresh_segments();
-    refresh_composite();
-    persist_and_notify_dragon();
+/* TT #724 (3.3): (re)build the Smartness segment for the current selection.
+ * Greyed + non-clickable for fixed-brain modes; the on-state reflects the
+ * persisted int_tier. Lives in its own container so it can be rebuilt cheaply
+ * when the selected mode changes. */
+static void build_smartness(void) {
+   if (!s_smart_root) return;
+   lv_obj_clean(s_smart_root);
+
+   lv_obj_t *lab = lv_label_create(s_smart_root);
+   lv_label_set_text(lab, "SMARTNESS");
+   lv_obj_set_style_text_font(lab, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(lab, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(lab, 2, 0);
+   lv_obj_set_pos(lab, SIDE_PAD, 0);
+
+   bool fixed = s_mode_meta[s_sel_vmode].fixed_brain;
+   uint8_t tier = tab5_settings_get_int_tier();
+   if (tier > 2) tier = 0;
+   const char *names[3] = {"Fast", "Balanced", "Smart"};
+   int seg_w = (MS_W - 2 * SIDE_PAD - 2 * 6) / 3;
+   for (int i = 0; i < 3; i++) {
+      bool on = (i == tier && !fixed);
+      lv_obj_t *s = lv_obj_create(s_smart_root);
+      lv_obj_remove_style_all(s);
+      lv_obj_set_pos(s, SIDE_PAD + i * (seg_w + 6), 22);
+      lv_obj_set_size(s, seg_w, 30);
+      lv_obj_set_style_radius(s, 10, 0);
+      lv_obj_set_style_bg_color(s, lv_color_hex(on ? TH_AMBER : 0x15151F), 0);
+      lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
+      lv_obj_clear_flag(s, LV_OBJ_FLAG_SCROLLABLE);
+      if (!fixed) {
+         lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);
+         lv_obj_add_event_cb(s, smart_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+      } else {
+         lv_obj_set_style_opa(s, LV_OPA_40, 0);
+      }
+      lv_obj_t *t = lv_label_create(s);
+      lv_label_set_text(t, names[i]);
+      lv_obj_set_style_text_font(t, FONT_SMALL, 0);
+      lv_obj_set_style_text_color(t, lv_color_hex(on ? TH_BG : TH_TEXT_PRIMARY), 0);
+      lv_obj_center(t);
+   }
+}
+
+/* ── Advanced drawer (3.4) ───────────────────────────────────────────── */
+
+/* Pill chip used by every drawer control. */
+static lv_obj_t *adv_chip(lv_obj_t *parent, int x, int y, int w, int h, const char *text, bool sel, lv_event_cb_t cb,
+                          void *ud) {
+   lv_obj_t *c = lv_obj_create(parent);
+   lv_obj_remove_style_all(c);
+   lv_obj_set_pos(c, x, y);
+   lv_obj_set_size(c, w, h);
+   lv_obj_set_style_radius(c, h / 2, 0);
+   lv_obj_set_style_bg_color(c, lv_color_hex(sel ? TH_AMBER : 0x15151F), 0);
+   lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+   lv_obj_set_style_border_width(c, 1, 0);
+   lv_obj_set_style_border_color(c, lv_color_hex(sel ? TH_AMBER : 0x20202C), 0);
+   lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+   if (cb) lv_obj_add_event_cb(c, cb, LV_EVENT_CLICKED, ud);
+   lv_obj_t *l = lv_label_create(c);
+   lv_label_set_text(l, text);
+   lv_obj_set_style_text_font(l, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(l, lv_color_hex(sel ? TH_BG : TH_TEXT_PRIMARY), 0);
+   lv_obj_center(l);
+   return c;
+}
+
+static void adv_section_label(lv_obj_t *parent, int y, const char *text) {
+   lv_obj_t *l = lv_label_create(parent);
+   lv_label_set_text(l, text);
+   lv_obj_set_style_text_font(l, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(l, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(l, 2, 0);
+   lv_obj_set_pos(l, SIDE_PAD, y);
+}
+
+static void adv_toggle_cb(lv_event_t *e) {
+   (void)e;
+   s_adv_open = !s_adv_open;
+   build_advanced();
+}
+
+static void adv_engine_cb(lv_event_t *e) {
+   uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (idx >= LLM_ENG_COUNT) return;
+   tab5_settings_set_llm_engine(idx);
+   tab5_debug_obs_event("eng.llm", "picker");
+   build_advanced();
+}
+
+static void adv_model_cb(lv_event_t *e) {
+   uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (idx >= ADV_MODEL_COUNT) return;
+   tab5_settings_set_llm_model(s_adv_models[idx].model_id);
+   voice_send_config_update((int)s_sel_vmode, (char *)s_adv_models[idx].model_id);
+   build_advanced();
+}
+
+static void adv_privacy_cb(lv_event_t *e) {
+   (void)e;
+   tab5_settings_set_privacy_lock(!tab5_settings_get_privacy_lock());
+   build_advanced();
+}
+
+static void adv_cap_cb(lv_event_t *e) {
+   uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (idx >= 4) return;
+   tab5_budget_set_cap_mils(s_adv_caps[idx]);
+   build_advanced();
+}
+
+/* (re)build the Advanced drawer. Collapsed = a single toggle row; expanded =
+ * engine pins + exact-model row + privacy lock + daily cap, relocated from
+ * Settings. K144 as a hardware label is acceptable on this advanced surface. */
+static void build_advanced(void) {
+   if (!s_adv_root) return;
+   lv_obj_clean(s_adv_root);
+
+   lv_obj_t *tog = lv_obj_create(s_adv_root);
+   lv_obj_remove_style_all(tog);
+   lv_obj_set_pos(tog, SIDE_PAD, 0);
+   lv_obj_set_size(tog, MS_W - 2 * SIDE_PAD, 38);
+   lv_obj_clear_flag(tog, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(tog, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(tog, adv_toggle_cb, LV_EVENT_CLICKED, NULL);
+   lv_obj_t *tl = lv_label_create(tog);
+   lv_label_set_text(tl, s_adv_open ? "Advanced  -"
+                                    : "Advanced  +   model \xe2\x80\xa2 engine \xe2\x80\xa2 privacy \xe2\x80\xa2 cap");
+   lv_obj_set_style_text_font(tl, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(tl, lv_color_hex(0x8A8A98), 0);
+   lv_obj_set_pos(tl, 0, 8);
+   if (!s_adv_open) return;
+
+   int y = 50;
+   const int avail_w = MS_W - 2 * SIDE_PAD;
+
+   /* Engine pins (AUTO follows vmode; K144 / OpenRouter explicitly override). */
+   adv_section_label(s_adv_root, y, "ENGINE");
+   y += 22;
+   {
+      uint8_t cur = tab5_settings_get_llm_engine();
+      int gap = 6;
+      int w = (avail_w - 2 * gap) / 3;
+      const char *names[3] = {"Auto", "K144", "OpenRouter"};
+      for (int i = 0; i < 3; i++)
+         adv_chip(s_adv_root, SIDE_PAD + i * (w + gap), y, w, 34, names[i], cur == i, adv_engine_cb,
+                  (void *)(uintptr_t)i);
+   }
+   y += 46;
+
+   /* Exact model — overrides the Smartness default. Horizontally scrollable. */
+   adv_section_label(s_adv_root, y, "EXACT MODEL");
+   y += 22;
+   {
+      lv_obj_t *scroll = lv_obj_create(s_adv_root);
+      lv_obj_remove_style_all(scroll);
+      lv_obj_set_pos(scroll, SIDE_PAD, y);
+      lv_obj_set_size(scroll, avail_w, 40);
+      lv_obj_set_scroll_dir(scroll, LV_DIR_HOR);
+      lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_OFF);
+      char cur_model[64] = {0};
+      tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+      int cx = 0;
+      for (uint32_t i = 0; i < ADV_MODEL_COUNT; i++) {
+         bool sel = (strcmp(cur_model, s_adv_models[i].model_id) == 0);
+         adv_chip(scroll, cx, 0, 116, 34, s_adv_models[i].label, sel, adv_model_cb, (void *)(uintptr_t)i);
+         cx += 116 + 8;
+      }
+   }
+   y += 50;
+
+   /* Privacy lock (on-device only). */
+   adv_section_label(s_adv_root, y, "ON-DEVICE LOCK");
+   y += 22;
+   {
+      bool on = tab5_settings_get_privacy_lock();
+      adv_chip(s_adv_root, SIDE_PAD, y, 220, 34, on ? "Locked: on-device" : "Off: cloud allowed", on, adv_privacy_cb,
+               NULL);
+   }
+   y += 46;
+
+   /* Daily spend cap. */
+   adv_section_label(s_adv_root, y, "DAILY CAP");
+   y += 22;
+   {
+      uint32_t cur = tab5_budget_get_cap_mils();
+      int gap = 6;
+      int w = (avail_w - 3 * gap) / 4;
+      for (int i = 0; i < 4; i++)
+         adv_chip(s_adv_root, SIDE_PAD + i * (w + gap), y, w, 34, s_adv_cap_lbl[i], cur == s_adv_caps[i], adv_cap_cb,
+                  (void *)(uintptr_t)i);
+   }
+}
+
+bool ui_mode_sheet_is_modified(void) {
+   return tab5_settings_get_llm_engine() != LLM_ENG_AUTO || tab5_settings_get_privacy_lock();
 }
 
 /* ── Agent consent modal ─────────────────────────────────────────────── */
@@ -708,26 +679,15 @@ static void hide_agent_consent(bool commit)
         lv_obj_del(s_consent_overlay);
         s_consent_overlay = NULL;
     }
-    /* Generic callback mode (E3) — invoke caller's decision handler and
-     * reset the callback slots. Does NOT touch s_aut_tier / persist. */
-    if (s_consent_confirm_cb || s_consent_cancel_cb) {
-        void (*cb)(void *) = commit ? s_consent_confirm_cb : s_consent_cancel_cb;
-        void  *ctx         = s_consent_cb_ctx;
-        s_consent_confirm_cb = NULL;
-        s_consent_cancel_cb  = NULL;
-        s_consent_cb_ctx     = NULL;
-        if (cb) cb(ctx);
-        return;
-    }
-    /* Legacy mode-sheet flow: commit persists tiers, cancel reverts. */
-    if (commit) {
-        persist_and_notify_dragon();
-    } else {
-        /* Revert to the pre-modal autonomy tier + rebuild segment UI. */
-        s_aut_tier = s_pre_consent_aut;
-        refresh_segments();
-        refresh_composite();
-    }
+    /* Invoke the caller's decision handler and reset the callback slots.
+     * Both the in-sheet TinkerAgent flow (TT #724) and the Settings
+     * TinkerClaw row (audit E3) route through this generic path. */
+    void (*cb)(void *) = commit ? s_consent_confirm_cb : s_consent_cancel_cb;
+    void *ctx = s_consent_cb_ctx;
+    s_consent_confirm_cb = NULL;
+    s_consent_cancel_cb = NULL;
+    s_consent_cb_ctx = NULL;
+    if (cb) cb(ctx);
 }
 
 void ui_agent_consent_show(void (*on_confirm)(void *ctx),
@@ -742,133 +702,129 @@ void ui_agent_consent_show(void (*on_confirm)(void *ctx),
     s_consent_confirm_cb = on_confirm;
     s_consent_cancel_cb  = on_cancel;
     s_consent_cb_ctx     = ctx;
-    s_pre_consent_aut    = s_aut_tier;  /* irrelevant in cb-mode, but safe */
-    show_agent_consent(s_aut_tier);
+    show_agent_consent();
 }
 
-static void show_agent_consent(uint8_t prev_aut_tier)
-{
-    s_pre_consent_aut = prev_aut_tier;
+static void show_agent_consent(void) {
+   /* Scrim over the whole screen (on top layer so it covers the sheet
+    * plus any transient chrome). */
+   s_consent_overlay = lv_obj_create(lv_layer_top());
+   lv_obj_remove_style_all(s_consent_overlay);
+   lv_obj_set_size(s_consent_overlay, MS_W, MS_H);
+   lv_obj_set_pos(s_consent_overlay, 0, 0);
+   lv_obj_set_style_bg_color(s_consent_overlay, lv_color_hex(0x000000), 0);
+   lv_obj_set_style_bg_opa(s_consent_overlay, 200, 0);
+   lv_obj_clear_flag(s_consent_overlay, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_consent_overlay, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(s_consent_overlay, consent_scrim_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Scrim over the whole screen (on top layer so it covers the sheet
-     * plus any transient chrome). */
-    s_consent_overlay = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(s_consent_overlay);
-    lv_obj_set_size(s_consent_overlay, MS_W, MS_H);
-    lv_obj_set_pos(s_consent_overlay, 0, 0);
-    lv_obj_set_style_bg_color(s_consent_overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(s_consent_overlay, 200, 0);
-    lv_obj_clear_flag(s_consent_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_consent_overlay, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_consent_overlay, consent_scrim_cb, LV_EVENT_CLICKED, NULL);
+   /* Card — centered, tall enough for 4 bullets + 2 buttons. */
+   lv_obj_t *card = lv_obj_create(s_consent_overlay);
+   lv_obj_remove_style_all(card);
+   lv_obj_set_size(card, 640, 780);
+   lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+   lv_obj_set_style_bg_color(card, lv_color_hex(0x13131F), 0);
+   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(card, 24, 0);
+   lv_obj_set_style_border_width(card, 2, 0);
+   lv_obj_set_style_border_color(card, lv_color_hex(0xA78BFA), 0);
+   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Card — centered, tall enough for 4 bullets + 2 buttons. */
-    lv_obj_t *card = lv_obj_create(s_consent_overlay);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_size(card, 640, 780);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x13131F), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 24, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0xA78BFA), 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+   /* Violet accent bar top. */
+   lv_obj_t *bar = lv_obj_create(card);
+   lv_obj_remove_style_all(bar);
+   lv_obj_set_size(bar, 140, 4);
+   lv_obj_set_pos(bar, 36, 32);
+   lv_obj_set_style_bg_color(bar, lv_color_hex(0xA78BFA), 0);
+   lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(bar, 2, 0);
 
-    /* Violet accent bar top. */
-    lv_obj_t *bar = lv_obj_create(card);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 140, 4);
-    lv_obj_set_pos(bar, 36, 32);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0xA78BFA), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bar, 2, 0);
+   /* Kicker */
+   lv_obj_t *kicker = lv_label_create(card);
+   lv_label_set_text(kicker, "\xe2\x80\xa2 AGENT MODE");
+   lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(kicker, lv_color_hex(0xA78BFA), 0);
+   lv_obj_set_style_text_letter_space(kicker, 4, 0);
+   lv_obj_set_pos(kicker, 36, 52);
 
-    /* Kicker */
-    lv_obj_t *kicker = lv_label_create(card);
-    lv_label_set_text(kicker, "\xe2\x80\xa2 AGENT MODE");
-    lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(kicker, lv_color_hex(0xA78BFA), 0);
-    lv_obj_set_style_text_letter_space(kicker, 4, 0);
-    lv_obj_set_pos(kicker, 36, 52);
+   /* Title */
+   lv_obj_t *title = lv_label_create(card);
+   lv_label_set_text(title, "Switch to Agent?");
+   lv_obj_set_style_text_font(title, FONT_TITLE, 0);
+   lv_obj_set_style_text_color(title, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_set_pos(title, 36, 80);
 
-    /* Title */
-    lv_obj_t *title = lv_label_create(card);
-    lv_label_set_text(title, "Switch to Agent?");
-    lv_obj_set_style_text_font(title, FONT_TITLE, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_pos(title, 36, 80);
+   /* Subtitle */
+   lv_obj_t *sub = lv_label_create(card);
+   lv_label_set_text(sub, "This changes how she thinks about you.");
+   lv_obj_set_style_text_font(sub, FONT_BODY, 0);
+   lv_obj_set_style_text_color(sub, lv_color_hex(TH_TEXT_DIM), 0);
+   lv_obj_set_pos(sub, 36, 128);
 
-    /* Subtitle */
-    lv_obj_t *sub = lv_label_create(card);
-    lv_label_set_text(sub, "This changes how she thinks about you.");
-    lv_obj_set_style_text_font(sub, FONT_BODY, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_pos(sub, 36, 128);
+   /* Bullets — 4 items, each a row with a violet dot + text label. */
+   const char *bullets[4] = {
+       "Your on-device memory is NOT injected.\nAgent runs from the gateway's own context.",
+       "Tools drive the turn - search, calendar,\ninbox, etc. - not your recall of facts.",
+       "All routed through the TinkerClaw gateway.\nLatency is higher; responses can run 30-60s.",
+       "Billing flows through the gateway tier,\nnot your daily cap here.",
+   };
+   int y = 180;
+   for (int i = 0; i < 4; i++) {
+      lv_obj_t *dot = lv_obj_create(card);
+      lv_obj_remove_style_all(dot);
+      lv_obj_set_size(dot, 8, 8);
+      lv_obj_set_pos(dot, 36, y + 8);
+      lv_obj_set_style_bg_color(dot, lv_color_hex(0xA78BFA), 0);
+      lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(dot, 4, 0);
 
-    /* Bullets — 4 items, each a row with a violet dot + text label. */
-    const char *bullets[4] = {
-        "Your on-device memory is NOT injected.\nAgent runs from the gateway's own context.",
-        "Tools drive the turn - search, calendar,\ninbox, etc. - not your recall of facts.",
-        "All routed through the TinkerClaw gateway.\nLatency is higher; responses can run 30-60s.",
-        "Billing flows through the gateway tier,\nnot your daily cap here.",
-    };
-    int y = 180;
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *dot = lv_obj_create(card);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 8, 8);
-        lv_obj_set_pos(dot, 36, y + 8);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(0xA78BFA), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(dot, 4, 0);
+      lv_obj_t *txt = lv_label_create(card);
+      lv_label_set_text(txt, bullets[i]);
+      lv_obj_set_style_text_font(txt, FONT_BODY, 0);
+      lv_obj_set_style_text_color(txt, lv_color_hex(TH_TEXT_PRIMARY), 0);
+      lv_obj_set_style_text_line_space(txt, 4, 0);
+      lv_obj_set_width(txt, 540);
+      lv_obj_set_pos(txt, 60, y);
+      y += 100;
+   }
 
-        lv_obj_t *txt = lv_label_create(card);
-        lv_label_set_text(txt, bullets[i]);
-        lv_obj_set_style_text_font(txt, FONT_BODY, 0);
-        lv_obj_set_style_text_color(txt, lv_color_hex(TH_TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_line_space(txt, 4, 0);
-        lv_obj_set_width(txt, 540);
-        lv_obj_set_pos(txt, 60, y);
-        y += 100;
-    }
+   /* Primary button: Switch to Agent (violet fill). */
+   lv_obj_t *confirm = lv_obj_create(card);
+   lv_obj_remove_style_all(confirm);
+   lv_obj_set_size(confirm, 568, 64);
+   lv_obj_set_pos(confirm, 36, 620);
+   lv_obj_set_style_bg_color(confirm, lv_color_hex(0xA78BFA), 0);
+   lv_obj_set_style_bg_opa(confirm, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(confirm, 32, 0);
+   lv_obj_set_style_border_width(confirm, 0, 0);
+   lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(confirm, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(confirm, consent_confirm_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Primary button: Switch to Agent (violet fill). */
-    lv_obj_t *confirm = lv_obj_create(card);
-    lv_obj_remove_style_all(confirm);
-    lv_obj_set_size(confirm, 568, 64);
-    lv_obj_set_pos(confirm, 36, 620);
-    lv_obj_set_style_bg_color(confirm, lv_color_hex(0xA78BFA), 0);
-    lv_obj_set_style_bg_opa(confirm, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(confirm, 32, 0);
-    lv_obj_set_style_border_width(confirm, 0, 0);
-    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(confirm, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(confirm, consent_confirm_cb, LV_EVENT_CLICKED, NULL);
+   lv_obj_t *confirm_lbl = lv_label_create(confirm);
+   lv_label_set_text(confirm_lbl, "Switch to Agent");
+   lv_obj_set_style_text_font(confirm_lbl, FONT_HEADING, 0);
+   lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x08080E), 0);
+   lv_obj_center(confirm_lbl);
 
-    lv_obj_t *confirm_lbl = lv_label_create(confirm);
-    lv_label_set_text(confirm_lbl, "Switch to Agent");
-    lv_obj_set_style_text_font(confirm_lbl, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x08080E), 0);
-    lv_obj_center(confirm_lbl);
+   /* Secondary button: Keep Ask mode (ghost / outlined). */
+   lv_obj_t *cancel = lv_obj_create(card);
+   lv_obj_remove_style_all(cancel);
+   lv_obj_set_size(cancel, 568, 64);
+   lv_obj_set_pos(cancel, 36, 694);
+   lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
+   lv_obj_set_style_border_width(cancel, 1, 0);
+   lv_obj_set_style_border_color(cancel, lv_color_hex(0x2A2A3A), 0);
+   lv_obj_set_style_radius(cancel, 32, 0);
+   lv_obj_clear_flag(cancel, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(cancel, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Secondary button: Keep Ask mode (ghost / outlined). */
-    lv_obj_t *cancel = lv_obj_create(card);
-    lv_obj_remove_style_all(cancel);
-    lv_obj_set_size(cancel, 568, 64);
-    lv_obj_set_pos(cancel, 36, 694);
-    lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(cancel, 1, 0);
-    lv_obj_set_style_border_color(cancel, lv_color_hex(0x2A2A3A), 0);
-    lv_obj_set_style_radius(cancel, 32, 0);
-    lv_obj_clear_flag(cancel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(cancel, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *cancel_lbl = lv_label_create(cancel);
-    lv_label_set_text(cancel_lbl, "Keep Ask mode");
-    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
-    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_center(cancel_lbl);
+   lv_obj_t *cancel_lbl = lv_label_create(cancel);
+   lv_label_set_text(cancel_lbl, "Keep Ask mode");
+   lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
+   lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
+   lv_obj_center(cancel_lbl);
 }
 
 static void done_click_cb(lv_event_t *e)

@@ -27,6 +27,11 @@ void ui_mode_sheet_hide(void);
 /* Returns true if the sheet is currently visible. */
 bool ui_mode_sheet_visible(void);
 
+/* TT #724 (3.4): true when an Advanced-drawer override is active (engine pin
+ * other than AUTO, or privacy lock on) — i.e. the effective route may differ
+ * from the plain mode default. Drives the " · modified" mode-chip suffix. */
+bool ui_mode_sheet_is_modified(void);
+
 /* Show the Agent-mode consent modal standalone — for callers outside the
  * mode sheet (e.g. the Settings TinkerClaw row). On Switch: on_confirm is
  * invoked. On Keep Ask / scrim-dismiss: on_cancel is invoked (may be NULL

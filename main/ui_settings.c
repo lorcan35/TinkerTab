@@ -96,24 +96,6 @@ static inline void feed_wdt(void) {
 #define TAB_TINKERCLAW 0xF43F5E
 #define TAB_ONBOARD 0x8E5BFF /* P5b: violet — distinct from existing four */
 
-/* TT #328 Wave 13 — tap callback for the K144 health chip on the Onboard
- * voice-mode row.  Triggers voice_onboard_reset_failover() which sends
- * sys.reset to the K144 daemon + re-runs the warmup probe.  Pre-Wave-13
- * the chip was display-only; the user had no software path to escape an
- * UNAVAILABLE state without rebooting Tab5. */
-static void k144_chip_tap_cb(lv_event_t *e) {
-   (void)e;
-   extern esp_err_t voice_onboard_reset_failover(void);
-   extern void ui_home_show_toast(const char *msg);
-   esp_err_t qe = voice_onboard_reset_failover();
-   if (qe == ESP_OK) {
-      ui_home_show_toast("Re-probing K144…");
-   } else {
-      /* Already in flight — be honest. */
-      ui_home_show_toast("K144 probe already running — try again in a few sec");
-   }
-}
-
 /* TT #328 Wave 14 — K144 hardware gauge.  Small label below the chip
  * showing NPU temperature + load + StackFlow daemon version.
  * Wave 15 extends this with a model inventory line summarising the
@@ -354,8 +336,6 @@ static lv_timer_t *s_vol_save_timer    = NULL;
 /* Voice tab system */
 /* v5: five flat radio rows (no tabs).  Indexed by voice_mode.
  * Row 4 = Onboard (K144 stacked LLM via Mate carrier) — added in TT #317 P5b. */
-static lv_obj_t *s_mode_row[5] = {NULL, NULL, NULL, NULL, NULL};
-static lv_obj_t *s_mode_row_dot[5] = {NULL, NULL, NULL, NULL, NULL};
 /* Back-compat pointers kept = NULL so legacy references compile. */
 static lv_obj_t *s_tab_local      = NULL;
 static lv_obj_t *s_tab_hybrid     = NULL;
@@ -369,54 +349,6 @@ static lv_obj_t *s_hybrid_content[4] = {NULL};
 static lv_obj_t *s_cloud_content[4]  = {NULL};
 static lv_obj_t *s_tinkerclaw_card   = NULL;
 static lv_obj_t *s_tinkerclaw_content[4] = {NULL};
-static uint8_t   s_active_tab     = 0;
-
-/* TT #328 Wave 4 — Cloud LLM picker.
- *
- * Pre-Wave-4 the Cloud row's description showed the live llm_model
- * NVS value as a read-only suffix; Settings had no UI to actually
- * choose between cloud models.  Users had to SSH Dragon and edit
- * config.yaml to switch between Haiku / Sonnet / GPT-4o / etc.
- *
- * Wave 4 adds a curated 5-chip picker rendered just below the mode
- * rows.  Tap a chip → write NVS llm_mdl + send config_update so
- * Dragon hot-swaps the backend.  Always visible (not gated on Cloud
- * being the active tab) so users can pre-select a model before
- * flipping to Cloud.  Selected chip gets the same amber-wash style
- * the active mode row uses for visual continuity.
- *
- * Selection of which models to expose: refreshed 2026-05-10 against
- * the live OpenRouter catalog (367 models).  Provider diversity +
- * tier coverage; rolling-alias `~` IDs let OpenRouter auto-pick the
- * latest dated revision so the picker doesn't rot.
- *   - Opus 4.7   : Anthropic flagship reasoning, Jan-2026 cutoff
- *   - Sonnet 4.6 : quality vision, mid-cost (workhorse)
- *   - Haiku      : rolling-latest cheap text+vision+tools
- *   - GPT-5.5    : OpenAI flagship
- *   - GPT-5.4 m  : OpenAI budget tier
- *   - Gemini Pro : rolling-latest Google flagship (1M ctx)
- *   - Gemini 3.1 : fastest cheap multimodal
- *   - Grok 4.3   : xAI latest
- *
- * Adding more models later = grow the array; UI re-flows automatically. */
-typedef struct {
-   const char *short_label; /* fits in chip ~120 px wide */
-   const char *full_label;  /* shown as description under chip */
-   const char *model_id;    /* what we send to Dragon as llm_model */
-} cloud_model_spec_t;
-static const cloud_model_spec_t s_cloud_models[] = {
-    {"Opus 4.7", "claude-opus-4.7", "anthropic/claude-opus-4.7"},
-    {"Sonnet", "claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"},
-    {"Haiku", "claude-haiku-latest", "~anthropic/claude-haiku-latest"},
-    {"GPT-5.5", "gpt-5.5", "openai/gpt-5.5"},
-    {"GPT-5.4 m", "gpt-5.4-mini", "openai/gpt-5.4-mini"},
-    {"Gemini Pro", "gemini-pro-latest", "~google/gemini-pro-latest"},
-    {"Gemini 3.1", "gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"},
-    {"Grok 4.3", "grok-4.3", "x-ai/grok-4.3"},
-};
-#define CLOUD_MODEL_COUNT (sizeof(s_cloud_models) / sizeof(s_cloud_models[0]))
-static lv_obj_t *s_model_chip[CLOUD_MODEL_COUNT] = {NULL};
-static int s_active_model_idx = -1; /* -1 = current NVS value not in our curated list */
 
 /* Cap Wave 4 (TT #642) — LLM engine override chips + STT/TTS status
  * labels.  Three chips (AUTO / K144 / OPENROUTER) directly under the
@@ -747,172 +679,7 @@ static void cb_autorotate(lv_event_t *e)
     }
 }
 
-/* ── Voice mode logic ───────────────────────────────────────────────── */
-
-static void send_voice_config(void)
-{
-    uint8_t mode = tab5_settings_get_voice_mode();
-    char model[64] = {0};
-    tab5_settings_get_llm_model(model, sizeof(model));
-    ESP_LOGI(TAG, "Sending voice config: mode=%d model=%s", mode, model);
-
-    if (!voice_is_connected()) {
-        ESP_LOGW(TAG, "Voice not connected — config will apply on reconnect");
-        return;
-    }
-
-    esp_err_t err = voice_send_config_update((int)mode, model);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send voice config: %s", esp_err_to_name(err));
-    }
-}
-
-static void _mode_row_style(lv_obj_t *row, bool selected)
-{
-    if (!row) return;
-    if (selected) {
-        /* Amber left bar + faint amber wash. Spec shot-09. */
-        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_LEFT, 0);
-        lv_obj_set_style_border_width(row, 3, 0);
-        lv_obj_set_style_border_color(row, lv_color_hex(AMBER), 0);
-        lv_obj_set_style_border_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(AMBER), 0);
-        lv_obj_set_style_bg_opa(row, 10, 0);  /* ~4 % amber wash */
-    } else {
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    }
-}
-
-static void voice_tab_switch(uint8_t new_tab)
-{
-    if (new_tab == s_active_tab) return;
-    if (new_tab > 4) return;
-    _mode_row_style(s_mode_row[s_active_tab], false);
-    _mode_row_style(s_mode_row[new_tab], true);
-    s_active_tab = new_tab;
-    tab5_settings_set_voice_mode(new_tab);
-    ESP_LOGI(TAG, "Voice mode: %d (%s)", new_tab,
-             new_tab == 0   ? "local"
-             : new_tab == 1 ? "hybrid"
-             : new_tab == 2 ? "cloud"
-             : new_tab == 3 ? "tinkerclaw"
-                            : "onboard");
-    /* W3-B (cross-stack cohesion audit 2026-05-11): pre-W3-A this
-     * branched mode 4 (ONBOARD) into a clamp-to-0 path because Dragon
-     * would error-revert on unknown vmode=4.  After W3-A (TinkerBox
-     * PR #274) Dragon recognises ONBOARD + SOLO cleanly via
-     * select_backends_for_mode; the clamp is no longer needed. */
-    send_voice_config();
-}
-
-/* Audit E3 (2026-04-20): tapping TinkerClaw from Settings used to hot-switch
- * into voice_mode=3 with zero guardrails — the easiest path to the memory-
- * bypass boundary had the weakest consent.  The mode sheet has always shown
- * a modal before the same switch; Settings now reuses it via
- * ui_agent_consent_show(). Consent-mode switch deferred until confirm. */
-static void consent_confirm_tc_cb(void *ctx)
-{
-    (void)ctx;
-    voice_tab_switch(3);
-}
-
-static void consent_cancel_tc_cb(void *ctx)
-{
-    (void)ctx;
-    /* No-op — voice_tab_switch never ran, so nothing to revert. */
-}
-
-/* TT #328 Wave 4 — model-chip styling.  Mirrors _mode_row_style so
- * the picker reads as part of the same composition. */
-static void _model_chip_style(lv_obj_t *chip, bool selected) {
-   if (!chip) return;
-   if (selected) {
-      lv_obj_set_style_border_width(chip, 2, 0);
-      lv_obj_set_style_border_color(chip, lv_color_hex(AMBER), 0);
-      lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
-      lv_obj_set_style_bg_color(chip, lv_color_hex(AMBER), 0);
-      lv_obj_set_style_bg_opa(chip, 18, 0); /* ~7 % wash */
-   } else {
-      lv_obj_set_style_border_width(chip, 1, 0);
-      lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
-      lv_obj_set_style_border_opa(chip, LV_OPA_COVER, 0);
-      lv_obj_set_style_bg_opa(chip, LV_OPA_TRANSP, 0);
-   }
-}
-
-/* TT #328 Wave 4 — repaint the Cloud-row description so it reflects
- * the freshly-picked model.  s_mode_row[2] is the Cloud row; child
- * label index 2 is the description (idx 0 = dot, idx 1 = name). */
-static void _cloud_row_refresh_desc(void) {
-   if (s_active_model_idx < 0 || s_active_model_idx >= (int)CLOUD_MODEL_COUNT) return;
-   if (!s_mode_row[2]) return;
-   /* The description is the second LABEL child of the row.  Linear
-    * scan because rows host the dot + 2 labels and we don't store
-    * the label pointer directly. */
-   int label_seen = 0;
-   int n = lv_obj_get_child_count(s_mode_row[2]);
-   for (int i = 0; i < n; i++) {
-      lv_obj_t *c = lv_obj_get_child(s_mode_row[2], i);
-      if (!lv_obj_check_type(c, &lv_label_class)) continue;
-      if (label_seen == 1) {
-         lv_label_set_text(c, s_cloud_models[s_active_model_idx].full_label);
-         return;
-      }
-      label_seen++;
-   }
-}
-
-/* TT #328 Wave 4 — model-chip tap handler. */
-static void cb_model_pick(lv_event_t *e) {
-   intptr_t idx = (intptr_t)lv_event_get_user_data(e);
-   if (idx < 0 || idx >= (int)CLOUD_MODEL_COUNT) return;
-   if (idx == s_active_model_idx) return; /* no-op tap */
-
-   /* Persist + send to Dragon. */
-   tab5_settings_set_llm_model(s_cloud_models[idx].model_id);
-   ESP_LOGI(TAG, "Wave 4: picked cloud model %s (%s)", s_cloud_models[idx].short_label, s_cloud_models[idx].model_id);
-
-   /* Repaint chips (deselect old, select new) */
-   if (s_active_model_idx >= 0) _model_chip_style(s_model_chip[s_active_model_idx], false);
-   s_active_model_idx = (int)idx;
-   _model_chip_style(s_model_chip[idx], true);
-
-   /* Cloud-row description refresh + send config_update.  The
-    * config_update is a no-op when Dragon WS is down (logged + skipped
-    * in send_voice_config); the NVS value still persists so the next
-    * connect picks it up via session_start. */
-   _cloud_row_refresh_desc();
-   send_voice_config();
-}
-
 /* ── Cap Wave 4 (TT #642): LLM engine chip styling + handlers ──────── */
-
-static const char *_eng_chip_label(int idx) {
-   switch (idx) {
-      case LLM_ENG_AUTO:
-         return "AUTO";
-      case LLM_ENG_K144:
-         return "K144";
-      case LLM_ENG_OPENROUTER:
-         return "OPENROUTER";
-      default:
-         return "?";
-   }
-}
-
-static const char *_eng_chip_short(int idx) {
-   switch (idx) {
-      case LLM_ENG_AUTO:
-         return "auto";
-      case LLM_ENG_K144:
-         return "k144";
-      case LLM_ENG_OPENROUTER:
-         return "openrouter";
-      default:
-         return "?";
-   }
-}
 
 /* True when the engine chip should accept taps; AUTO is always
  * enabled; K144 needs failover_state==READY; OPENROUTER needs or_key. */
@@ -943,27 +710,6 @@ static void _eng_chip_style(lv_obj_t *chip, bool selected, bool enabled) {
    }
    /* Grey text + reduced opacity when unreachable; reads as "disabled". */
    lv_obj_set_style_opa(chip, enabled ? LV_OPA_COVER : LV_OPA_40, 0);
-}
-
-static void cb_engine_pick(lv_event_t *e) {
-   intptr_t idx = (intptr_t)lv_event_get_user_data(e);
-   if (idx < 0 || idx >= LLM_ENG_COUNT) return;
-   bool enabled = _eng_chip_enabled((int)idx);
-   if (!enabled) {
-      tab5_debug_obs_event("eng.llm", "tap_unavailable");
-      return;
-   }
-   uint8_t prev = tab5_settings_get_llm_engine();
-   if ((uint8_t)idx == prev) return;
-   tab5_settings_set_llm_engine((uint8_t)idx);
-   ESP_LOGI(TAG, "Wave 4: llm_engine override → %s", _eng_chip_short((int)idx));
-   tab5_debug_obs_event("eng.llm", _eng_chip_short((int)idx));
-   /* Repaint chips (deselect old, select new). */
-   for (int i = 0; i < LLM_ENG_COUNT; i++) {
-      if (s_eng_chip[i]) {
-         _eng_chip_style(s_eng_chip[i], i == (int)idx, _eng_chip_enabled(i));
-      }
-   }
 }
 
 /* Map current vmode to a human-readable STT/TTS engine string.  Called
@@ -1004,20 +750,12 @@ static const char *_tts_engine_label(uint8_t vmode, uint8_t llm_eng) {
    }
 }
 
-/* Single click handler for all 5 radio rows. Mode index comes via user_data. */
-static void cb_tab_local(lv_event_t *e)
-{
-    intptr_t idx = (intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= 5) return;
-    if ((uint8_t)idx == 3 && s_active_tab != 3) {
-        /* Going from any mode -> Agent: gate the switch behind the consent
-         * modal.  If already on Agent the tap is a no-op and no modal is
-         * needed (no tier change). */
-        extern void ui_agent_consent_show(void (*)(void *), void (*)(void *), void *);
-        ui_agent_consent_show(consent_confirm_tc_cb, consent_cancel_tc_cb, NULL);
-        return;
-    }
-    voice_tab_switch((uint8_t)idx);
+/* TT #724 (3.2): the read-only mode row opens the picker — the single mode
+ * authority. Settings no longer hosts a second radio. */
+static void cb_open_mode_picker(lv_event_t *e) {
+   (void)e;
+   extern void ui_mode_sheet_show(void);
+   ui_mode_sheet_show();
 }
 
 static void cb_mic_mute(lv_event_t *e)
@@ -1861,308 +1599,54 @@ lv_obj_t *ui_settings_create(void)
     int s_voice_section_top = y;
     y = mk_section(s_scroll, "VOICE MODE", acc_voice, y);
 
-    /* v5 flat vertical radio rows. Each row = colored dot + name + desc;
-     * selected row gets an amber left bar + faint amber wash. */
-    s_active_tab = tab5_settings_get_voice_mode();
-    if (s_active_tab > 4) s_active_tab = 0;
+    /* TT #724 (3.2/3.5): the picker is the single mode authority now. Settings
+     * shows a read-only current-mode row that opens it; the old radio plus the
+     * ENGINES + CLOUD LLM pickers moved into the picker (Advanced drawer). */
     {
-       /* TT #723: names from th_mode_names (single source). Solo (vmode 5) is
-        * intentionally still omitted from this radio — it's added properly in
-        * the Wave 3 picker redesign. */
-       /* Cloud description reflects the LIVE llm_model from NVS so the
-        * row doesn't lie when the user has picked, say, gemini or gpt-4o
-        * instead of the original Claude default.  Condensed to the short
-        * form ("gemini-3-flash-preview" -> "gemini-3-flash-preview"
-        * truncated to fit the row). */
-       char cloud_desc[48] = "Cloud LLM";
-       {
-          char lm[64] = {0};
-          tab5_settings_get_llm_model(lm, sizeof(lm));
-          if (lm[0]) {
-             const char *slash = strchr(lm, '/');
-             const char *tail = slash ? slash + 1 : lm;
-             snprintf(cloud_desc, sizeof(cloud_desc), "%.47s", tail);
-          }
-       }
-       const char *mode_descs[5] = {
-           "Moonshine \xe2\x80\xa2 NPU",           "Cloud STT/TTS", cloud_desc, "Agents \xe2\x80\xa2 Memory",
-           "On-device LLM \xe2\x80\xa2 No Dragon", /* TT #723: was "K144" (brand leak) */
-       };
-       static const uint32_t mode_dot_col[5] = {
-           TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW, TAB_ONBOARD,
-       };
-       const int row_h = 64;
-       const int row_w = CONTENT_W;
-       for (int i = 0; i < 5; i++) {
-          lv_obj_t *row = lv_obj_create(s_scroll);
-          lv_obj_remove_style_all(row);
-          lv_obj_set_pos(row, SIDE_PAD, y + i * (row_h + 2));
-          lv_obj_set_size(row, row_w, row_h);
-          lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-          lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-          lv_obj_add_event_cb(row, cb_tab_local, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-          if (i < 4) {
-             lv_obj_set_style_border_color(row, lv_color_hex(HAIR_COLOR), 0);
-          }
-          lv_obj_t *dot = lv_obj_create(row);
-          lv_obj_remove_style_all(dot);
-          lv_obj_set_size(dot, 10, 10);
-          lv_obj_set_pos(dot, 18, (row_h - 10) / 2);
-          lv_obj_set_style_bg_color(dot, lv_color_hex(mode_dot_col[i]), 0);
-          lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-          lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-          lv_obj_t *nm = lv_label_create(row);
-          lv_label_set_text(nm, th_mode_names[i]);
-          lv_obj_set_style_text_font(nm, FONT_BODY, 0);
-          lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
-          lv_obj_set_pos(nm, 44, 12);
-          lv_obj_t *dc = lv_label_create(row);
-          lv_label_set_text(dc, mode_descs[i]);
-          lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
-          lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
-          lv_obj_set_style_text_letter_space(dc, 2, 0);
-          lv_obj_set_pos(dc, 44, 38);
-          s_mode_row[i] = row;
-          s_mode_row_dot[i] = dot;
+       extern const uint32_t th_mode_colors[];
+       uint8_t vm = tab5_settings_get_voice_mode();
+       if (vm >= VOICE_MODE_COUNT) vm = 0;
 
-          /* TT #328 Wave 7 — health chip for the Onboard row.  Pre-Wave-7
-           * the user could tap the Onboard radio with no idea whether
-           * K144 was actually warm; the row would silently switch and
-           * the user would discover failure mid-turn.  Render the
-           * voice_onboard_failover_state() as a small right-aligned
-           * pill on row index 4 only (other modes don't have a
-           * comparable health gate that benefits from this surface).
-           *
-           * TT #328 Wave 13 — the chip is now tappable + triggers a
-           * software reset of the K144 daemon (sys.reset + re-warmup).
-           * Pre-Wave-13 there was no way to escape an UNAVAILABLE
-           * state without rebooting Tab5 itself. */
-          if (i == 4) {
-             /* Wave 16 — track the chip widget at file scope so
-              * `ui_settings_update()` can re-render its label/color
-              * when the failover state transitions during a Settings-
-              * hidden interval.  refresh_k144_chip() handles ALL
-              * label/color logic + the worker-fetch trigger; we just
-              * place + style the widget here.  Pre-Wave-16 the chip
-              * was a local var captured at first build and never
-              * updated, so a Tab5 navigated away during UNAVAILABLE
-              * and back after recovery showed the stale red chip
-              * until a full Tab5 reboot. */
-             lv_obj_t *chip = lv_label_create(row);
-             s_k144_chip_lbl = chip;
-             s_k144_last_chip_fs = -1; /* force refresh_k144_chip to run */
-             lv_label_set_text(chip, "—");
-             lv_obj_set_style_text_font(chip, FONT_SMALL, 0);
-             lv_obj_set_style_text_letter_space(chip, 2, 0);
-             /* Right-aligned within the row, centred vertically. */
-             lv_obj_set_pos(chip, row_w - 200, (row_h - 14) / 2);
-             /* Wave 13 — make the chip tappable.  Internal padding
-              * gives ~30 px tall × 200 px wide hit area, generous
-              * enough for fat-fingered users.  Default LVGL 9
-              * doesn't bubble events from a CLICKABLE child to the
-              * parent row, so the tap doesn't also flip the radio
-              * to Onboard mode (which would be confusing). */
-             lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-             lv_obj_set_style_pad_all(chip, 8, 0);
-             lv_obj_add_event_cb(chip, k144_chip_tap_cb, LV_EVENT_CLICKED, NULL);
+       lv_obj_t *row = lv_obj_create(s_scroll);
+       lv_obj_remove_style_all(row);
+       lv_obj_set_pos(row, SIDE_PAD, y);
+       lv_obj_set_size(row, CONTENT_W, 64);
+       lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+       lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+       lv_obj_add_event_cb(row, cb_open_mode_picker, LV_EVENT_CLICKED, NULL);
 
-             /* TT #328 Wave 14 — K144 hardware gauge.  Sits below the
-              * chip showing live NPU temp + load + daemon version.
-              * Populated async via tab5_worker job (UART round-trip
-              * is ~150 ms; can't run on LVGL thread).  Pre-fill with
-              * em-dash placeholder so the row layout doesn't shift
-              * when the worker callback lands a few hundred ms later. */
-             s_k144_gauge_lbl = lv_label_create(row);
-             lv_label_set_text(s_k144_gauge_lbl, "—");
-             lv_obj_set_style_text_font(s_k144_gauge_lbl, FONT_SMALL, 0);
-             lv_obj_set_style_text_color(s_k144_gauge_lbl, lv_color_hex(TEXT_DIM), 0);
-             lv_obj_set_style_text_letter_space(s_k144_gauge_lbl, 1, 0);
-             /* Position below the chip (chip is at y=(row_h-14)/2 ≈ 38;
-              * gauge sits ~24 px below — fits inside the 90 px row
-              * without overflowing into the next radio row). */
-             lv_obj_set_pos(s_k144_gauge_lbl, row_w - 240, (row_h - 14) / 2 + 22);
+       lv_obj_t *dot = lv_obj_create(row);
+       lv_obj_remove_style_all(dot);
+       lv_obj_set_size(dot, 10, 10);
+       lv_obj_set_pos(dot, 18, (64 - 10) / 2);
+       lv_obj_set_style_bg_color(dot, lv_color_hex(th_mode_colors[vm]), 0);
+       lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+       lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
 
-             /* TT #328 Wave 15 — model inventory line.  Lives in the
-              * parent scroll container (NOT the row) because row_h=64
-              * is too tight to fit chip + gauge + inventory without
-              * clipping past the row bottom.  Positioned with x=SIDE_PAD
-              * (left-aligned full-width) just below the rows section
-              * by deferring `lv_obj_set_pos` until after the layout
-              * advance below.  See line where `s_k144_models_lbl`
-              * gets repositioned with the final y. */
-             s_k144_models_lbl = lv_label_create(s_scroll);
-             lv_label_set_text(s_k144_models_lbl, "—");
-             lv_obj_set_style_text_font(s_k144_models_lbl, FONT_SMALL, 0);
-             lv_obj_set_style_text_color(s_k144_models_lbl, lv_color_hex(TEXT_DIM), 0);
-             lv_obj_set_style_text_letter_space(s_k144_models_lbl, 1, 0);
-             /* Provisional position; overwritten right below the
-              * VOICE MODE rows are laid out (we know `y` advances
-              * by 5 * (row_h + 2) + 12 there). */
-             lv_obj_set_pos(s_k144_models_lbl, SIDE_PAD, y + 5 * (row_h + 2) - 4);
+       lv_obj_t *nm = lv_label_create(row);
+       lv_label_set_text(nm, th_mode_names[vm]);
+       lv_obj_set_style_text_font(nm, FONT_BODY, 0);
+       lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
+       lv_obj_set_pos(nm, 44, 12);
 
-             /* Wave 16 — initial chip render + (when READY) kick off
-              * the worker fetch.  Both responsibilities now live in
-              * refresh_k144_chip so they stay synchronized with the
-              * post-build update path. */
-             refresh_k144_chip();
-          }
+       lv_obj_t *dc = lv_label_create(row);
+       lv_label_set_text(dc, "Tap to choose mode \xe2\x80\xa2 smartness \xe2\x80\xa2 advanced");
+       lv_obj_set_style_text_font(dc, FONT_SMALL, 0);
+       lv_obj_set_style_text_color(dc, lv_color_hex(TEXT_DIM), 0);
+       lv_obj_set_style_text_letter_space(dc, 2, 0);
+       lv_obj_set_pos(dc, 44, 38);
 
-          if (i == s_active_tab) _mode_row_style(row, true);
-          feed_wdt();
-       }
-       y += 5 * (row_h + 2) + 12;
-       /* TT #328 Wave 15 — re-position the inventory label here, where
-        * `y` finally points at the post-rows region.  Advance `y` by
-        * one FONT_SMALL line + 6 px gap so subsequent sections
-        * (CLOUD LLM caption) don't collide with it. */
-       if (s_k144_models_lbl != NULL) {
-          lv_obj_set_pos(s_k144_models_lbl, SIDE_PAD, y - 6);
-          y += 18;
-       }
+       lv_obj_t *chev = lv_label_create(row);
+       lv_label_set_text(chev, ">");
+       lv_obj_set_style_text_font(chev, FONT_BODY, 0);
+       lv_obj_set_style_text_color(chev, lv_color_hex(TEXT_DIM), 0);
+       lv_obj_align(chev, LV_ALIGN_RIGHT_MID, -18, 0);
+
+       y += 64 + 12;
     }
     s_local_card = s_hybrid_card = s_cloud_card = s_tinkerclaw_card = NULL;
-
-    /* TT #328 Wave 4 — Cloud LLM picker chips.
-     * Five horizontal chips below the mode rows.  Always rendered
-     * (not gated on Cloud being active) so users can pre-select a
-     * model before flipping to Cloud.  Selection persists to NVS
-     * llm_mdl + sends config_update to Dragon — Dragon hot-swaps
-     * the OpenRouter backend without a session restart. */
-    {
-       /* Resolve current llm_model NVS value to an index in our
-        * curated list.  -1 means the saved value is something we
-        * don't surface in this picker (legacy / power-user / off-
-        * catalog).  In that case the chip row renders all
-        * unselected, with a small "(custom)" caption above. */
-       char cur_model[64] = {0};
-       tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
-       s_active_model_idx = -1;
-       for (int i = 0; i < (int)CLOUD_MODEL_COUNT; i++) {
-          if (strcmp(cur_model, s_cloud_models[i].model_id) == 0) {
-             s_active_model_idx = i;
-             break;
-          }
-       }
-
-       /* Section caption — reuses the amber accent from the parent
-        * VOICE MODE section, so it reads as a continuation. */
-       lv_obj_t *cap = lv_label_create(s_scroll);
-       lv_label_set_text(cap, s_active_model_idx >= 0 ? "CLOUD LLM" : "CLOUD LLM (custom — tap to override)");
-       lv_obj_set_pos(cap, SIDE_PAD, y);
-       lv_obj_set_style_text_color(cap, lv_color_hex(AMBER), 0);
-       lv_obj_set_style_text_font(cap, FONT_SECONDARY, 0);
-       lv_obj_set_style_text_letter_space(cap, 4, 0);
-       y += 26;
-
-       const int chip_w = (CONTENT_W - 4 * 8) / (int)CLOUD_MODEL_COUNT; /* 4 gaps of 8 px */
-       const int chip_h = 56;
-       const int gap = 8;
-       for (int i = 0; i < (int)CLOUD_MODEL_COUNT; i++) {
-          lv_obj_t *chip = lv_obj_create(s_scroll);
-          lv_obj_remove_style_all(chip);
-          lv_obj_set_size(chip, chip_w, chip_h);
-          lv_obj_set_pos(chip, SIDE_PAD + i * (chip_w + gap), y);
-          lv_obj_set_style_bg_color(chip, lv_color_hex(CARD_COLOR), 0);
-          lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-          lv_obj_set_style_radius(chip, 12, 0);
-          lv_obj_set_style_border_width(chip, 1, 0);
-          lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
-          lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
-          lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-          lv_obj_add_event_cb(chip, cb_model_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-          lv_obj_t *lbl = lv_label_create(chip);
-          lv_label_set_text(lbl, s_cloud_models[i].short_label);
-          lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
-          lv_obj_set_style_text_color(lbl, lv_color_hex(TEXT_PRIMARY), 0);
-          lv_obj_center(lbl);
-
-          s_model_chip[i] = chip;
-          if (i == s_active_model_idx) _model_chip_style(chip, true);
-       }
-       y += chip_h + 16;
-    }
-    /* Card BG for the combined VOICE MODE + CLOUD LLM block (Wave 5
-     * visual reorg).  s_voice_section_top is captured below at the
-     * VOICE MODE section header. */
     mk_card_bg(s_scroll, s_voice_section_top, y);
     y += 24;
-
-    /* ── Cap Wave 4 (TT #642): ENGINES section ─────────────────────
-     *
-     * Sits under the Cloud LLM picker — same amber accent so it reads
-     * as a continuation of VOICE MODE.  Three chips for LLM engine
-     * override (AUTO / K144 / OPENROUTER); two read-only status lines
-     * for STT + TTS so the user can see what each capability is
-     * currently doing under the active vmode.  Greyed chips = backend
-     * unreachable. */
-    int s_engines_section_top = y;
-    {
-       lv_obj_t *cap = lv_label_create(s_scroll);
-       lv_label_set_text(cap, "ENGINES");
-       lv_obj_set_pos(cap, SIDE_PAD, y);
-       lv_obj_set_style_text_color(cap, lv_color_hex(AMBER), 0);
-       lv_obj_set_style_text_font(cap, FONT_SECONDARY, 0);
-       lv_obj_set_style_text_letter_space(cap, 4, 0);
-       y += 26;
-
-       /* "LLM ENGINE" row label + chip row (3 chips). */
-       mk_row_label(s_scroll, "LLM engine", y);
-       const int eng_chip_h = 44;
-       const int eng_chip_w = (CONTENT_W - 2 * 8) / LLM_ENG_COUNT; /* 2 gaps of 8 */
-       uint8_t cur_eng = tab5_settings_get_llm_engine();
-       for (int i = 0; i < LLM_ENG_COUNT; i++) {
-          lv_obj_t *chip = lv_obj_create(s_scroll);
-          lv_obj_remove_style_all(chip);
-          lv_obj_set_size(chip, eng_chip_w, eng_chip_h);
-          lv_obj_set_pos(chip, SIDE_PAD + i * (eng_chip_w + 8), y + ROW_H + 4);
-          lv_obj_set_style_bg_color(chip, lv_color_hex(CARD_COLOR), 0);
-          lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-          lv_obj_set_style_radius(chip, 10, 0);
-          lv_obj_set_style_border_width(chip, 1, 0);
-          lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
-          lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
-          lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-          lv_obj_add_event_cb(chip, cb_engine_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-          lv_obj_t *lbl = lv_label_create(chip);
-          lv_label_set_text(lbl, _eng_chip_label(i));
-          lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
-          lv_obj_set_style_text_color(lbl, lv_color_hex(TEXT_PRIMARY), 0);
-          lv_obj_center(lbl);
-
-          s_eng_chip[i] = chip;
-          _eng_chip_style(chip, i == cur_eng, _eng_chip_enabled(i));
-       }
-       y += ROW_H + 4 + eng_chip_h + 12;
-
-       /* STT engine — read-only status row.  Wave 4b: real chip
-        * picker after Dragon's config_update grows an stt_override
-        * field. */
-       mk_row_label(s_scroll, "STT engine", y);
-       s_eng_stt_lbl = lv_label_create(s_scroll);
-       if (s_eng_stt_lbl) {
-          lv_obj_set_pos(s_eng_stt_lbl, RIGHT_X, y + (ROW_H - 14) / 2);
-          lv_obj_set_style_text_color(s_eng_stt_lbl, lv_color_hex(TEXT_DIM), 0);
-          lv_obj_set_style_text_font(s_eng_stt_lbl, FONT_SECONDARY, 0);
-          lv_label_set_text(s_eng_stt_lbl, _stt_engine_label(tab5_settings_get_voice_mode()));
-       }
-       y += ROW_H + 4;
-
-       /* TTS engine — read-only status row. */
-       mk_row_label(s_scroll, "TTS engine", y);
-       s_eng_tts_lbl = lv_label_create(s_scroll);
-       if (s_eng_tts_lbl) {
-          lv_obj_set_pos(s_eng_tts_lbl, RIGHT_X, y + (ROW_H - 14) / 2);
-          lv_obj_set_style_text_color(s_eng_tts_lbl, lv_color_hex(TEXT_DIM), 0);
-          lv_obj_set_style_text_font(s_eng_tts_lbl, FONT_SECONDARY, 0);
-          lv_label_set_text(s_eng_tts_lbl, _tts_engine_label(tab5_settings_get_voice_mode(), cur_eng));
-       }
-       y += ROW_H + 16;
-    }
-    /* Card BG for ENGINES section (Wave 4 + Wave 5 visual reorg). */
-    mk_card_bg(s_scroll, s_engines_section_top, y);
-    y += 24; /* breathing-room gap before next section */
 
     /* ── Cap Wave 5 (TT #644): PRIVACY section ─────────────────────
      *
