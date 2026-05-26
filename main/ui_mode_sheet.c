@@ -72,20 +72,16 @@ static bool mode_is_available(uint8_t vmode) {
 }
 
 /* ── Layout ──────────────────────────────────────────────────────────── */
-#define MS_W        720
-#define MS_H        1280
-#define SIDE_PAD    40
-#define SEG_H       56
-#define ROW_H       144      /* header label + segments */
-#define ROW_GAP     14
+#define MS_W 720
+#define MS_H 1280
+#define SIDE_PAD 40
 
 /* ── State ───────────────────────────────────────────────────────────── */
 static lv_obj_t *s_overlay     = NULL;  /* scrim container on layer_top */
 static lv_obj_t *s_sheet = NULL;        /* visible sheet inside overlay */
 
-/* Phase 2c Agent consent modal — own scrim, shown on top of the sheet. */
+/* Agent consent modal — own scrim, shown on top of the sheet. */
 static lv_obj_t *s_consent_overlay = NULL;
-static uint8_t   s_pre_consent_aut = 0;  /* tier to revert to on Cancel */
 /* Generic callback mode (audit E3): when non-NULL, hide_agent_consent
  * invokes these instead of the tier-revert / persist logic. Used by the
  * Settings TinkerClaw row so the same UI can drive a different commit
@@ -93,10 +89,6 @@ static uint8_t   s_pre_consent_aut = 0;  /* tier to revert to on Cancel */
 static void (*s_consent_confirm_cb)(void *) = NULL;
 static void (*s_consent_cancel_cb)(void *)  = NULL;
 static void  *s_consent_cb_ctx              = NULL;
-
-static uint8_t s_int_tier = 0;
-static uint8_t s_voi_tier = 0;
-static uint8_t s_aut_tier = 0;
 
 /* TT #724 (3.2): mode-row picker state. */
 static uint8_t s_sel_vmode = 0;       /* row currently shown expanded */
@@ -149,7 +141,7 @@ static void build_advanced(void);
 static void row_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
-static void show_agent_consent(uint8_t prev_aut_tier);
+static void show_agent_consent(void);
 static void hide_agent_consent(bool commit);
 static void consent_confirm_cb(lv_event_t *e);
 static void consent_cancel_cb(lv_event_t *e);
@@ -189,43 +181,9 @@ void ui_mode_sheet_show(void)
 {
     if (ui_mode_sheet_visible()) return;
 
-    /* Pick up current tier values -- so the segmented buttons draw with the
-     * correct on-state for whatever the user last persisted. */
-    s_int_tier = tab5_settings_get_int_tier();
-    s_voi_tier = tab5_settings_get_voi_tier();
-    s_aut_tier = tab5_settings_get_aut_tier();
-
-    /* If voice_mode was set via a path that bypassed the dial sheet
-     * (debug /mode, settings radio rows, orb long-press cycle), the
-     * tiers can drift out of sync with the live mode.  Reverse-derive
-     * the tiers from the current voice_mode so the dials open showing
-     * what the device is actually running on. */
-    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier,
-                                         NULL, 0);
-    uint8_t live_mode = tab5_settings_get_voice_mode();
-    if (resolved != live_mode) {
-        switch (live_mode) {
-            case 3: /* TinkerClaw / Agent */
-                s_aut_tier = 1;
-                /* leave int/voi alone -- agent wins */
-                break;
-            case 2: /* Full Cloud */
-                s_int_tier = 2; s_voi_tier = 2; s_aut_tier = 0;
-                break;
-            case 1: /* Hybrid */
-                s_int_tier = 1; s_voi_tier = 2; s_aut_tier = 0;
-                break;
-            case 0: /* Local */
-            default:
-                s_int_tier = 0; s_voi_tier = 0; s_aut_tier = 0;
-                break;
-        }
-        ESP_LOGI(TAG, "Dial sheet tiers resynced to live mode %d -> int=%d voi=%d aut=%d",
-                 live_mode, s_int_tier, s_voi_tier, s_aut_tier);
-    } else {
-        ESP_LOGI(TAG, "Opening dial sheet (int=%d voi=%d aut=%d)",
-                 s_int_tier, s_voi_tier, s_aut_tier);
-    }
+    /* TT #724 (3.3): the picker no longer uses the int/voi/aut dials — routing
+     * keys off the persisted vmode, and tab5_mode_resolve stays only for the
+     * debug /mode-from-tiers path. No tier resync needed here. */
 
     /* Overlay scrim — fills the screen, dim semi-transparent, tappable
      * to dismiss.  lv_layer_top() keeps it above home + any other screen. */
@@ -744,133 +702,129 @@ void ui_agent_consent_show(void (*on_confirm)(void *ctx),
     s_consent_confirm_cb = on_confirm;
     s_consent_cancel_cb  = on_cancel;
     s_consent_cb_ctx     = ctx;
-    s_pre_consent_aut    = s_aut_tier;  /* irrelevant in cb-mode, but safe */
-    show_agent_consent(s_aut_tier);
+    show_agent_consent();
 }
 
-static void show_agent_consent(uint8_t prev_aut_tier)
-{
-    s_pre_consent_aut = prev_aut_tier;
+static void show_agent_consent(void) {
+   /* Scrim over the whole screen (on top layer so it covers the sheet
+    * plus any transient chrome). */
+   s_consent_overlay = lv_obj_create(lv_layer_top());
+   lv_obj_remove_style_all(s_consent_overlay);
+   lv_obj_set_size(s_consent_overlay, MS_W, MS_H);
+   lv_obj_set_pos(s_consent_overlay, 0, 0);
+   lv_obj_set_style_bg_color(s_consent_overlay, lv_color_hex(0x000000), 0);
+   lv_obj_set_style_bg_opa(s_consent_overlay, 200, 0);
+   lv_obj_clear_flag(s_consent_overlay, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(s_consent_overlay, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(s_consent_overlay, consent_scrim_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Scrim over the whole screen (on top layer so it covers the sheet
-     * plus any transient chrome). */
-    s_consent_overlay = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(s_consent_overlay);
-    lv_obj_set_size(s_consent_overlay, MS_W, MS_H);
-    lv_obj_set_pos(s_consent_overlay, 0, 0);
-    lv_obj_set_style_bg_color(s_consent_overlay, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_bg_opa(s_consent_overlay, 200, 0);
-    lv_obj_clear_flag(s_consent_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_consent_overlay, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_consent_overlay, consent_scrim_cb, LV_EVENT_CLICKED, NULL);
+   /* Card — centered, tall enough for 4 bullets + 2 buttons. */
+   lv_obj_t *card = lv_obj_create(s_consent_overlay);
+   lv_obj_remove_style_all(card);
+   lv_obj_set_size(card, 640, 780);
+   lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+   lv_obj_set_style_bg_color(card, lv_color_hex(0x13131F), 0);
+   lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(card, 24, 0);
+   lv_obj_set_style_border_width(card, 2, 0);
+   lv_obj_set_style_border_color(card, lv_color_hex(0xA78BFA), 0);
+   lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Card — centered, tall enough for 4 bullets + 2 buttons. */
-    lv_obj_t *card = lv_obj_create(s_consent_overlay);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_size(card, 640, 780);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x13131F), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card, 24, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(0xA78BFA), 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+   /* Violet accent bar top. */
+   lv_obj_t *bar = lv_obj_create(card);
+   lv_obj_remove_style_all(bar);
+   lv_obj_set_size(bar, 140, 4);
+   lv_obj_set_pos(bar, 36, 32);
+   lv_obj_set_style_bg_color(bar, lv_color_hex(0xA78BFA), 0);
+   lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(bar, 2, 0);
 
-    /* Violet accent bar top. */
-    lv_obj_t *bar = lv_obj_create(card);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, 140, 4);
-    lv_obj_set_pos(bar, 36, 32);
-    lv_obj_set_style_bg_color(bar, lv_color_hex(0xA78BFA), 0);
-    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(bar, 2, 0);
+   /* Kicker */
+   lv_obj_t *kicker = lv_label_create(card);
+   lv_label_set_text(kicker, "\xe2\x80\xa2 AGENT MODE");
+   lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(kicker, lv_color_hex(0xA78BFA), 0);
+   lv_obj_set_style_text_letter_space(kicker, 4, 0);
+   lv_obj_set_pos(kicker, 36, 52);
 
-    /* Kicker */
-    lv_obj_t *kicker = lv_label_create(card);
-    lv_label_set_text(kicker, "\xe2\x80\xa2 AGENT MODE");
-    lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(kicker, lv_color_hex(0xA78BFA), 0);
-    lv_obj_set_style_text_letter_space(kicker, 4, 0);
-    lv_obj_set_pos(kicker, 36, 52);
+   /* Title */
+   lv_obj_t *title = lv_label_create(card);
+   lv_label_set_text(title, "Switch to Agent?");
+   lv_obj_set_style_text_font(title, FONT_TITLE, 0);
+   lv_obj_set_style_text_color(title, lv_color_hex(TH_TEXT_PRIMARY), 0);
+   lv_obj_set_pos(title, 36, 80);
 
-    /* Title */
-    lv_obj_t *title = lv_label_create(card);
-    lv_label_set_text(title, "Switch to Agent?");
-    lv_obj_set_style_text_font(title, FONT_TITLE, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_pos(title, 36, 80);
+   /* Subtitle */
+   lv_obj_t *sub = lv_label_create(card);
+   lv_label_set_text(sub, "This changes how she thinks about you.");
+   lv_obj_set_style_text_font(sub, FONT_BODY, 0);
+   lv_obj_set_style_text_color(sub, lv_color_hex(TH_TEXT_DIM), 0);
+   lv_obj_set_pos(sub, 36, 128);
 
-    /* Subtitle */
-    lv_obj_t *sub = lv_label_create(card);
-    lv_label_set_text(sub, "This changes how she thinks about you.");
-    lv_obj_set_style_text_font(sub, FONT_BODY, 0);
-    lv_obj_set_style_text_color(sub, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_pos(sub, 36, 128);
+   /* Bullets — 4 items, each a row with a violet dot + text label. */
+   const char *bullets[4] = {
+       "Your on-device memory is NOT injected.\nAgent runs from the gateway's own context.",
+       "Tools drive the turn - search, calendar,\ninbox, etc. - not your recall of facts.",
+       "All routed through the TinkerClaw gateway.\nLatency is higher; responses can run 30-60s.",
+       "Billing flows through the gateway tier,\nnot your daily cap here.",
+   };
+   int y = 180;
+   for (int i = 0; i < 4; i++) {
+      lv_obj_t *dot = lv_obj_create(card);
+      lv_obj_remove_style_all(dot);
+      lv_obj_set_size(dot, 8, 8);
+      lv_obj_set_pos(dot, 36, y + 8);
+      lv_obj_set_style_bg_color(dot, lv_color_hex(0xA78BFA), 0);
+      lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(dot, 4, 0);
 
-    /* Bullets — 4 items, each a row with a violet dot + text label. */
-    const char *bullets[4] = {
-        "Your on-device memory is NOT injected.\nAgent runs from the gateway's own context.",
-        "Tools drive the turn - search, calendar,\ninbox, etc. - not your recall of facts.",
-        "All routed through the TinkerClaw gateway.\nLatency is higher; responses can run 30-60s.",
-        "Billing flows through the gateway tier,\nnot your daily cap here.",
-    };
-    int y = 180;
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *dot = lv_obj_create(card);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 8, 8);
-        lv_obj_set_pos(dot, 36, y + 8);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(0xA78BFA), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(dot, 4, 0);
+      lv_obj_t *txt = lv_label_create(card);
+      lv_label_set_text(txt, bullets[i]);
+      lv_obj_set_style_text_font(txt, FONT_BODY, 0);
+      lv_obj_set_style_text_color(txt, lv_color_hex(TH_TEXT_PRIMARY), 0);
+      lv_obj_set_style_text_line_space(txt, 4, 0);
+      lv_obj_set_width(txt, 540);
+      lv_obj_set_pos(txt, 60, y);
+      y += 100;
+   }
 
-        lv_obj_t *txt = lv_label_create(card);
-        lv_label_set_text(txt, bullets[i]);
-        lv_obj_set_style_text_font(txt, FONT_BODY, 0);
-        lv_obj_set_style_text_color(txt, lv_color_hex(TH_TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_line_space(txt, 4, 0);
-        lv_obj_set_width(txt, 540);
-        lv_obj_set_pos(txt, 60, y);
-        y += 100;
-    }
+   /* Primary button: Switch to Agent (violet fill). */
+   lv_obj_t *confirm = lv_obj_create(card);
+   lv_obj_remove_style_all(confirm);
+   lv_obj_set_size(confirm, 568, 64);
+   lv_obj_set_pos(confirm, 36, 620);
+   lv_obj_set_style_bg_color(confirm, lv_color_hex(0xA78BFA), 0);
+   lv_obj_set_style_bg_opa(confirm, LV_OPA_COVER, 0);
+   lv_obj_set_style_radius(confirm, 32, 0);
+   lv_obj_set_style_border_width(confirm, 0, 0);
+   lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(confirm, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(confirm, consent_confirm_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Primary button: Switch to Agent (violet fill). */
-    lv_obj_t *confirm = lv_obj_create(card);
-    lv_obj_remove_style_all(confirm);
-    lv_obj_set_size(confirm, 568, 64);
-    lv_obj_set_pos(confirm, 36, 620);
-    lv_obj_set_style_bg_color(confirm, lv_color_hex(0xA78BFA), 0);
-    lv_obj_set_style_bg_opa(confirm, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(confirm, 32, 0);
-    lv_obj_set_style_border_width(confirm, 0, 0);
-    lv_obj_clear_flag(confirm, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(confirm, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(confirm, consent_confirm_cb, LV_EVENT_CLICKED, NULL);
+   lv_obj_t *confirm_lbl = lv_label_create(confirm);
+   lv_label_set_text(confirm_lbl, "Switch to Agent");
+   lv_obj_set_style_text_font(confirm_lbl, FONT_HEADING, 0);
+   lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x08080E), 0);
+   lv_obj_center(confirm_lbl);
 
-    lv_obj_t *confirm_lbl = lv_label_create(confirm);
-    lv_label_set_text(confirm_lbl, "Switch to Agent");
-    lv_obj_set_style_text_font(confirm_lbl, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(confirm_lbl, lv_color_hex(0x08080E), 0);
-    lv_obj_center(confirm_lbl);
+   /* Secondary button: Keep Ask mode (ghost / outlined). */
+   lv_obj_t *cancel = lv_obj_create(card);
+   lv_obj_remove_style_all(cancel);
+   lv_obj_set_size(cancel, 568, 64);
+   lv_obj_set_pos(cancel, 36, 694);
+   lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
+   lv_obj_set_style_border_width(cancel, 1, 0);
+   lv_obj_set_style_border_color(cancel, lv_color_hex(0x2A2A3A), 0);
+   lv_obj_set_style_radius(cancel, 32, 0);
+   lv_obj_clear_flag(cancel, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(cancel, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
 
-    /* Secondary button: Keep Ask mode (ghost / outlined). */
-    lv_obj_t *cancel = lv_obj_create(card);
-    lv_obj_remove_style_all(cancel);
-    lv_obj_set_size(cancel, 568, 64);
-    lv_obj_set_pos(cancel, 36, 694);
-    lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(cancel, 1, 0);
-    lv_obj_set_style_border_color(cancel, lv_color_hex(0x2A2A3A), 0);
-    lv_obj_set_style_radius(cancel, 32, 0);
-    lv_obj_clear_flag(cancel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(cancel, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *cancel_lbl = lv_label_create(cancel);
-    lv_label_set_text(cancel_lbl, "Keep Ask mode");
-    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
-    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_center(cancel_lbl);
+   lv_obj_t *cancel_lbl = lv_label_create(cancel);
+   lv_label_set_text(cancel_lbl, "Keep Ask mode");
+   lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
+   lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
+   lv_obj_center(cancel_lbl);
 }
 
 static void done_click_cb(lv_event_t *e)
