@@ -1653,6 +1653,18 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port, boo
 
 esp_err_t voice_start_listening(void)
 {
+   /* TT #724 (#7): don't start a voice turn while the mode picker is open. A
+    * spurious wakeword (or stray tap) would otherwise render the listening UI
+    * on top of the picker — they coexisted before. The picker is a deliberate
+    * interaction; let it win until the user closes it. */
+   {
+      extern bool ui_mode_sheet_visible(void);
+      if (ui_mode_sheet_visible()) {
+         ESP_LOGI(TAG, "voice_start_listening refused — mode picker open");
+         return ESP_ERR_INVALID_STATE;
+      }
+   }
+
    /* TT #317 Phase 6b: in Onboard mode the K144's own mic + chain handles
     * the whole turn — no Tab5 mic, no Dragon WS.  Short-circuit BEFORE the
     * mic_mute / ws_live checks since those are about Tab5's mic + Dragon
