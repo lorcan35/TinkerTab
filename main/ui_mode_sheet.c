@@ -185,6 +185,20 @@ void ui_mode_sheet_show(void)
      * keys off the persisted vmode, and tab5_mode_resolve stays only for the
      * debug /mode-from-tiers path. No tier resync needed here. */
 
+    /* TT #724 (#7): don't layer the picker over an active voice session. If a
+     * turn is mid-flight (in-place listening / processing / speaking), cancel
+     * it so the picker is the sole foreground surface — opening the picker is a
+     * deliberate context switch (matches the mid-turn cancel on commit). */
+    voice_state_t vs = voice_get_state();
+    if (vs != VOICE_STATE_IDLE && vs != VOICE_STATE_READY) {
+       voice_cancel();
+    }
+    {
+       extern bool ui_voice_is_visible(void);
+       extern void ui_voice_hide(void);
+       if (ui_voice_is_visible()) ui_voice_hide();
+    }
+
     /* Overlay scrim — fills the screen, dim semi-transparent, tappable
      * to dismiss.  lv_layer_top() keeps it above home + any other screen. */
     s_overlay = lv_obj_create(lv_layer_top());
