@@ -235,6 +235,10 @@ void ui_notification_init(void) {
    ESP_LOGI(TAG, "snooze walker armed (tick=%u ms, delay=%u ms)", (unsigned)SNOOZE_TICK_MS, (unsigned)SNOOZE_DELAY_MS);
 }
 
+/* TT #724 (orb ambient accent): deferred/pending message count = snooze ring
+ * depth. Read on the LVGL thread (same thread the snooze walker mutates on). */
+int ui_notification_active_count(void) { return s_snooze_count; }
+
 void ui_notification_reply_current(const char *text) {
    if (!s_last_now_msg_valid) {
       ESP_LOGW(TAG, "reply requested but no now-card message in cache");

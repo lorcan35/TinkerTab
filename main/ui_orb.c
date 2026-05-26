@@ -25,10 +25,13 @@
 #include "esp_timer.h" /* esp_timer_get_time for RECORDING caption timer (PR 2) */
 #include "imu.h"       /* tab5_imu_read for tilt-driven specular drift */
 #include "lvgl.h"
+#include "settings.h"             /* TT #724 accent: voice_mode + budget accessors */
 #include "ui_core.h"              /* tab5_lv_async_call for cross-thread repaints */
+#include "ui_notification.h"      /* TT #724 accent: ui_notification_active_count */
 #include "voice.h"                /* voice_get_current_rms for the LISTENING bloom */
 #include "voice_dictation.h"      /* pipeline-state types (PR 2) */
 #include "voice_dictation_lvgl.h" /* LVGL-marshalled subscriber (PR 2) */
+#include "voice_onboard.h"        /* TT #724 accent: voice_onboard_failover_state */
 #include "widget.h"               /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
@@ -1400,6 +1403,69 @@ bool ui_orb_get_motion_state(ui_orb_motion_state_t *out) {
    out->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
    return true;
 }
+
+/* ── TT #724 Phase C: ambient accent ────────────────────────────────────
+ * One prioritized glanceable signal surfaced on the s_rimlight ring at rest.
+ * Behaves like presence-dim: a slow global channel, not a per-state motion.
+ * Only ONE signal shows at a time; suppressed unless the orb is the calm
+ * resting surface (IDLE + AWAKE). */
+static uint8_t accent_resolve(void) {
+   if (s_state != ORB_STATE_IDLE) return 0;
+   if (s_sleep_phase != SLEEP_AWAKE) return 0;
+   if (ui_notification_active_count() > 0) return 1; /* pri 1: pending messages */
+   /* pri 2: degraded health — mode-aware (Solo + warm-TinkerON need no Dragon). */
+   uint8_t vm = tab5_settings_get_voice_mode();
+   bool needs_dragon =
+       (vm == VOICE_MODE_LOCAL || vm == VOICE_MODE_HYBRID || vm == VOICE_MODE_CLOUD || vm == VOICE_MODE_TINKERCLAW);
+   if (needs_dragon && !voice_is_connected()) return 2;
+   if (vm == VOICE_MODE_ONBOARD && voice_onboard_failover_state() != 2 /* M5_FAIL_READY */) return 2;
+   /* pri 3: near the daily spend cap (≥80%). */
+   uint32_t cap = tab5_budget_get_cap_mils();
+   if (cap > 0 && tab5_budget_get_today_mils() >= (cap * 8) / 10) return 3;
+   return 0;
+}
+
+static void ui_orb_apply_accent(void) {
+   if (!s_rimlight) return;
+   uint8_t sig = s_fx.ambient_accent ? accent_resolve() : 0;
+   s_accent_signal = sig;
+   if (sig == 0) {
+      /* No accent → restore the A1 base cool counter-light (or off). */
+      s_accent_opa = 0;
+      lv_obj_set_style_border_color(s_rimlight, lv_color_hex(0x6E8CB0), 0);
+      lv_obj_set_style_border_opa(s_rimlight, s_fx.rim_light ? 46 : 0, 0);
+      return;
+   }
+   uint32_t col;
+   uint8_t opa;
+   switch (sig) {
+      case 1: /* pending messages — amber ember */
+         col = 0xFFB000;
+         opa = 84;
+         break;
+      case 2: /* degraded health — calm cool, not alarming */
+         col = 0x5C7FB0;
+         opa = 60;
+         break;
+      default: { /* 3: near cap — warm rim, intensifies 80→100% of cap */
+         uint32_t cap = tab5_budget_get_cap_mils();
+         uint32_t today = tab5_budget_get_today_mils();
+         float frac = cap ? (float)today / (float)cap : 0.0f;
+         if (frac > 1.0f) frac = 1.0f;
+         float t = (frac - 0.8f) / 0.2f;
+         if (t < 0.0f) t = 0.0f;
+         if (t > 1.0f) t = 1.0f;
+         opa = (uint8_t)(50.0f + t * 40.0f);
+         col = 0xE8A33C;
+      } break;
+   }
+   s_accent_opa = opa;
+   lv_obj_set_style_border_color(s_rimlight, lv_color_hex(col), 0);
+   lv_obj_set_style_border_opa(s_rimlight, opa, 0);
+}
+
+/* Public: pumped from ui_home's ~2 s refresh tick. */
+void ui_orb_ambient_tick(void) { ui_orb_apply_accent(); }
 
 /* ── TT #555 FX playground ──────────────────────────────────────────── */
 

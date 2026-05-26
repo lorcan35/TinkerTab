@@ -147,6 +147,11 @@ int ui_orb_get_effective_hour(void);
  *  day. */
 void ui_orb_repaint_if_hour_changed(void);
 
+/** TT #724 (Phase C): re-resolve + paint the ambient accent (one prioritized
+ *  glanceable signal: pending messages / degraded health / near daily cap).
+ *  Called from ui_home's ~2 s refresh tick. Cheap; LVGL-thread only. */
+void ui_orb_ambient_tick(void);
+
 /** Voice-mode aware orb paint.  Called by ui_home on mode cycle.
  *  Currently ignores `mode` (all modes paint with the circadian palette)
  *  but the hook stays for future mode-tinted variants. */
