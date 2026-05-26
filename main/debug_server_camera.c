@@ -31,6 +31,7 @@
 #include "driver/jpeg_encode.h"
 #include "esp_cache.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h" /* TT #721 — low-memory back-pressure */
 #include "esp_http_server.h"
 #include "esp_lcd_mipi_dsi.h" /* esp_lcd_dpi_panel_get_frame_buffer */
 #include "esp_lcd_panel_ops.h"
@@ -118,6 +119,18 @@ static void screenshot_async_task(void *arg) {
 
 static esp_err_t screenshot_handler(httpd_req_t *req) {
    if (!check_auth(req)) return ESP_OK;
+   /* TT #721: low-memory back-pressure.  The HW JPEG encode is a heavy
+    * DMA-capable-SRAM consumer; running it when internal/DMA SRAM is
+    * critically low starves the SDIO WiFi driver (network-death) and can
+    * NULL-crash the encoder under exhaustion.  Refuse with 503 so the caller
+    * (e.g. the e2e harness) retries instead of driving the device toward a
+    * crash loop.  Debug-only path — never hit in normal use. */
+   if (heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL) < (24 * 1024)) {
+      httpd_resp_set_status(req, "503 Service Unavailable");
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"error\":\"low_memory\",\"hint\":\"internal SRAM low — retry shortly\"}");
+      return ESP_OK;
+   }
    if (Atomic_CompareAndSwap_u32(&s_screenshot_busy, 1, 0) != ATOMIC_COMPARE_AND_SWAP_SUCCESS) {
       httpd_resp_set_status(req, "429 Too Many Requests");
       httpd_resp_set_type(req, "application/json");
