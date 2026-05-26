@@ -38,10 +38,12 @@ Static or palette-driven visual richness. Renders in every state.
   edge *opposite* the warm specular highlight. Gives the sphere true two-light volume
   instead of a single top-lit gradient. Implemented as a thin edge element (arc or a
   clipped ring/border), repainted only on circadian palette changes — never per tick.
-- **A2 Contact-glow.** A soft, low-opacity ellipse beneath the orb to ground it and
-  suggest float/depth. **Pre-baked as a solid-color ellipse** with radial-ish opacity
-  via a static asset or a single low-opa rounded object — **not** a live `shadow_width`
-  blur (that busts the budget on a ≥200 px object). Static; repaints with palette only.
+- **A2 Contact-glow.** ~~A soft, low-opacity ellipse beneath the orb to ground it.~~
+  **DROPPED during implementation after on-device evaluation:** the home screen is deep
+  black and the orb reads as floating in space, so a grounding glow/shadow has no surface
+  to fall on — every hard-edged variant (dark or warm) read as a distinct "bar" beneath
+  the orb, and a soft blurred glow busts the render budget (TT #547). A1 (rim-light)
+  carries the premium-depth goal on its own. The `fx.contact_glow` flag was removed.
 - **A3 Specular polish.** Soften the existing `s_spec` highlight's opacity falloff so it
   reads like light on a glossy surface rather than a flat blob. This refines the *target*
   of the existing tilt+lissajous drift; it does not add a motion channel.
