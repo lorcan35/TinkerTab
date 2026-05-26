@@ -467,8 +467,21 @@ static void build_smartness(void) {
    lv_obj_set_pos(lab, SIDE_PAD, 0);
 
    bool fixed = s_mode_meta[s_sel_vmode].fixed_brain;
-   uint8_t tier = tab5_settings_get_int_tier();
-   if (tier > 2) tier = 0;
+   /* TT #724: reflect the ACTUAL model, not int_tier (which drifts). Map the
+    * mode's model field to a tier; -1 (custom / off-catalog) highlights none. */
+   int tier = -1;
+   {
+      char m[64] = {0};
+      if (s_sel_vmode == VOICE_MODE_SOLO)
+         tab5_settings_get_or_mdl_llm(m, sizeof(m));
+      else
+         tab5_settings_get_llm_model(m, sizeof(m));
+      for (int i = 0; i < 3; i++)
+         if (strcmp(m, s_smart_cloud[i]) == 0) {
+            tier = i;
+            break;
+         }
+   }
    const char *names[3] = {"Fast", "Balanced", "Smart"};
    int seg_w = (MS_W - 2 * SIDE_PAD - 2 * 6) / 3;
    for (int i = 0; i < 3; i++) {
@@ -657,7 +670,24 @@ static void build_advanced(void) {
 }
 
 bool ui_mode_sheet_is_modified(void) {
-   return tab5_settings_get_llm_engine() != LLM_ENG_AUTO || tab5_settings_get_privacy_lock();
+   if (tab5_settings_get_llm_engine() != LLM_ENG_AUTO) return true;
+   if (tab5_settings_get_privacy_lock()) return true;
+   /* TT #724 (#4): a custom (off-tier) model on a model-picking mode is also a
+    * deviation from the plain Smartness default. */
+   uint8_t vm = tab5_settings_get_voice_mode();
+   if (vm == VOICE_MODE_CLOUD || vm == VOICE_MODE_SOLO) {
+      char m[64] = {0};
+      if (vm == VOICE_MODE_SOLO)
+         tab5_settings_get_or_mdl_llm(m, sizeof(m));
+      else
+         tab5_settings_get_llm_model(m, sizeof(m));
+      if (m[0]) {
+         for (int i = 0; i < 3; i++)
+            if (strcmp(m, s_smart_cloud[i]) == 0) return false;
+         return true; /* model set but not a tier default => custom */
+      }
+   }
+   return false;
 }
 
 /* ── Agent consent modal ─────────────────────────────────────────────── */
