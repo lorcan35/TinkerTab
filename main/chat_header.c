@@ -190,6 +190,11 @@ chat_header_t *chat_header_create(lv_obj_t *parent, const char *title)
     lv_obj_clear_flag(h->chip, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(h->chip, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(h->chip, 6);
+    /* TT #724 (Wave 3.1) entry-point discipline: open the mode picker on a
+     * plain TAP, not only long-press — a tappable-looking chip that ignored
+     * taps was a discoverability dead end.  Both routes call the same cb;
+     * ui_mode_sheet_show() is idempotent (no-ops if already visible). */
+    lv_obj_add_event_cb(h->chip, ev_chip_lp, LV_EVENT_CLICKED, h);
     lv_obj_add_event_cb(h->chip, ev_chip_lp, LV_EVENT_LONG_PRESSED, h);
 
     /* TT #328 Wave 6 — shared mode-dot widget. */

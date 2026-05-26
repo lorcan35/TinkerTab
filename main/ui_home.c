@@ -2252,15 +2252,10 @@ static void mode_chip_long_press_cb(lv_event_t *e)
 static void mode_chip_click_cb(lv_event_t *e) {
    (void)e;
    if (any_overlay_visible()) return;
-   uint8_t cur = tab5_settings_get_voice_mode();
-   if (cur == VMODE_LOCAL_ONBOARD || cur == VMODE_SOLO_DIRECT) {
-      uint8_t next = (cur == VMODE_LOCAL_ONBOARD) ? VMODE_SOLO_DIRECT : VMODE_LOCAL_ONBOARD;
-      tab5_settings_set_voice_mode(next);
-      update_mode_ui(next);
-      ESP_LOGI(TAG, "mode pill: cycled %u -> %u", cur, next);
-      return;
-   }
-   /* Default: open the 3-dial mode-sheet (was the long-press UX). */
+   /* TT #724 (Wave 3.1) entry-point discipline: a tap on the mode chip always
+    * opens the one mode picker.  Removed the silent TinkerON<->Solo cycle that
+    * fired when the current mode was one of those two — switching modes by
+    * tapping (with no menu) was a trap; you pick the mode in the sheet now. */
    tab5_settings_set_mode_hint_seen(true);
    extern void ui_mode_sheet_show(void);
    ui_mode_sheet_show();
