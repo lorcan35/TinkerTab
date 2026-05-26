@@ -99,12 +99,25 @@ static uint8_t s_voi_tier = 0;
 static uint8_t s_aut_tier = 0;
 
 /* TT #724 (3.2): mode-row picker state. */
-static uint8_t s_sel_vmode = 0;      /* row currently shown expanded */
-static lv_obj_t *s_rows_root = NULL; /* container holding the 6 mode rows */
+static uint8_t s_sel_vmode = 0;       /* row currently shown expanded */
+static lv_obj_t *s_rows_root = NULL;  /* container holding the 6 mode rows */
+static lv_obj_t *s_smart_root = NULL; /* Smartness segment container */
+
+/* TT #724 (3.3): Fast/Balanced/Smart -> a concrete model. Setting int_tier
+ * alone changes nothing (routing keys off vmode + llm_model, never int_tier
+ * — validated). Live for Cloud + Solo only; other modes are fixed-brain.
+ * Model IDs match s_cloud_models[] in ui_settings.c. */
+static const char *const s_smart_cloud[3] = {
+    "~anthropic/claude-haiku-latest", /* Fast     */
+    "anthropic/claude-sonnet-4.6",    /* Balanced */
+    "anthropic/claude-opus-4.7",      /* Smart    */
+};
 
 /* ── Forward decls ───────────────────────────────────────────────────── */
 static void commit_mode(uint8_t vmode);
 static void rebuild_rows(void);
+static void build_smartness(void);
+static void smart_click_cb(lv_event_t *e);
 static void row_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
@@ -140,6 +153,7 @@ void ui_mode_sheet_hide(void)
     s_overlay = NULL;
     s_sheet = NULL;
     s_rows_root = NULL;
+    s_smart_root = NULL;
 }
 
 void ui_mode_sheet_show(void)
@@ -259,9 +273,18 @@ void ui_mode_sheet_show(void)
      * Routing keys off vmode, so the resolver core is untouched. */
     s_sel_vmode = tab5_settings_get_voice_mode();
     if (s_sel_vmode >= VOICE_MODE_COUNT) s_sel_vmode = 0;
+
+    /* TT #724 (3.3): Smartness segment, above the mode rows. */
+    s_smart_root = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_smart_root);
+    lv_obj_set_pos(s_smart_root, 0, 116);
+    lv_obj_set_size(s_smart_root, MS_W, 56);
+    lv_obj_clear_flag(s_smart_root, LV_OBJ_FLAG_SCROLLABLE);
+    build_smartness();
+
     s_rows_root = lv_obj_create(s_sheet);
     lv_obj_remove_style_all(s_rows_root);
-    lv_obj_set_pos(s_rows_root, 0, 150);
+    lv_obj_set_pos(s_rows_root, 0, 182);
     lv_obj_set_size(s_rows_root, MS_W, 470);
     lv_obj_clear_flag(s_rows_root, LV_OBJ_FLAG_SCROLLABLE);
     rebuild_rows();
@@ -395,7 +418,8 @@ static void row_click_cb(lv_event_t *e) {
       return;
    }
    s_sel_vmode = vmode;
-   rebuild_rows(); /* expand the newly-selected row */
+   rebuild_rows();    /* expand the newly-selected row */
+   build_smartness(); /* fixed-brain modes grey the knob; Cloud/Solo enable it */
    commit_mode(vmode);
 }
 
@@ -404,12 +428,75 @@ static void agent_consent_confirm_cb(void *ctx) {
    (void)ctx;
    s_sel_vmode = VOICE_MODE_TINKERCLAW;
    rebuild_rows();
+   build_smartness(); /* TinkerAgent is fixed-brain -> grey the knob */
    commit_mode(VOICE_MODE_TINKERCLAW);
 }
 
 static void agent_consent_cancel_cb(void *ctx) {
    (void)ctx;
    /* Keep the prior selection; nothing was committed. */
+}
+
+/* TT #724 (3.3): Smartness tap — sets the *real* model for the only two modes
+ * where Tab5 picks it (Cloud -> llm_model, Solo -> or_mdl_llm), persists the
+ * tier for the segment's on-state, and notifies Dragon. No-op for fixed-brain
+ * modes (the segment is greyed + non-clickable there). */
+static void smart_click_cb(lv_event_t *e) {
+   uint8_t tier = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (tier > 2 || s_mode_meta[s_sel_vmode].fixed_brain) return;
+   tab5_settings_set_int_tier(tier);
+   const char *model = s_smart_cloud[tier];
+   if (s_sel_vmode == VOICE_MODE_SOLO)
+      tab5_settings_set_or_mdl_llm(model);
+   else
+      tab5_settings_set_llm_model(model); /* Cloud */
+   voice_send_config_update((int)s_sel_vmode, (char *)model);
+   build_smartness(); /* re-render the on-state */
+   ESP_LOGI(TAG, "smartness tier=%u -> model=%s (vmode=%u)", tier, model, s_sel_vmode);
+}
+
+/* TT #724 (3.3): (re)build the Smartness segment for the current selection.
+ * Greyed + non-clickable for fixed-brain modes; the on-state reflects the
+ * persisted int_tier. Lives in its own container so it can be rebuilt cheaply
+ * when the selected mode changes. */
+static void build_smartness(void) {
+   if (!s_smart_root) return;
+   lv_obj_clean(s_smart_root);
+
+   lv_obj_t *lab = lv_label_create(s_smart_root);
+   lv_label_set_text(lab, "SMARTNESS");
+   lv_obj_set_style_text_font(lab, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(lab, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(lab, 2, 0);
+   lv_obj_set_pos(lab, SIDE_PAD, 0);
+
+   bool fixed = s_mode_meta[s_sel_vmode].fixed_brain;
+   uint8_t tier = tab5_settings_get_int_tier();
+   if (tier > 2) tier = 0;
+   const char *names[3] = {"Fast", "Balanced", "Smart"};
+   int seg_w = (MS_W - 2 * SIDE_PAD - 2 * 6) / 3;
+   for (int i = 0; i < 3; i++) {
+      bool on = (i == tier && !fixed);
+      lv_obj_t *s = lv_obj_create(s_smart_root);
+      lv_obj_remove_style_all(s);
+      lv_obj_set_pos(s, SIDE_PAD + i * (seg_w + 6), 22);
+      lv_obj_set_size(s, seg_w, 30);
+      lv_obj_set_style_radius(s, 10, 0);
+      lv_obj_set_style_bg_color(s, lv_color_hex(on ? TH_AMBER : 0x15151F), 0);
+      lv_obj_set_style_bg_opa(s, LV_OPA_COVER, 0);
+      lv_obj_clear_flag(s, LV_OBJ_FLAG_SCROLLABLE);
+      if (!fixed) {
+         lv_obj_add_flag(s, LV_OBJ_FLAG_CLICKABLE);
+         lv_obj_add_event_cb(s, smart_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+      } else {
+         lv_obj_set_style_opa(s, LV_OPA_40, 0);
+      }
+      lv_obj_t *t = lv_label_create(s);
+      lv_label_set_text(t, names[i]);
+      lv_obj_set_style_text_font(t, FONT_SMALL, 0);
+      lv_obj_set_style_text_color(t, lv_color_hex(on ? TH_BG : TH_TEXT_PRIMARY), 0);
+      lv_obj_center(t);
+   }
 }
 
 /* ── Agent consent modal ─────────────────────────────────────────────── */
