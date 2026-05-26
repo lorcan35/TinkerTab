@@ -22,6 +22,54 @@
 
 static const char *TAG = "ui_mode_sheet";
 
+/* TT #724 (3.2): per-mode display + availability metadata. Names come from
+ * th_mode_names (single source). `requires` drives the 3.5 dim/refuse gate. */
+typedef enum { REQ_NONE = 0, REQ_ADDON, REQ_OR_KEY } mode_req_t;
+typedef struct {
+   const char *reason;  /* one-line why-you'd-pick-it (selected row) */
+   const char *leaves;  /* what leaves the device + speed + cost (selected row) */
+   const char *oneline; /* compact meta for unselected rows */
+   mode_req_t req;
+   bool fixed_brain; /* true => Smartness has no range (grey it) */
+} mode_meta_t;
+
+/* Indexed by vmode (0..5). Order matches th_mode_names / VOICE_MODE_*. */
+static const mode_meta_t s_mode_meta[VOICE_MODE_COUNT] = {
+    /* 0 Local       */ {"Private brain, on the Dragon box", "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s",
+                         "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s", REQ_NONE, true},
+    /* 1 Hybrid      */
+    {"Private brain, fast voice", "leaves: your voice (STT) \xc2\xb7 ~5s \xc2\xb7 ~2\xc2\xa2",
+     "Private brain \xc2\xb7 fast voice \xc2\xb7 ~2\xc2\xa2", REQ_NONE, true},
+    /* 2 Cloud       */
+    {"Smartest, everything cloud", "leaves: voice + text \xc2\xb7 ~5s \xc2\xb7 needs key",
+     "Voice+text \xc2\xb7 smartest \xc2\xb7 needs key", REQ_NONE, false},
+    /* 3 TinkerAgent */
+    {"Tools + memory, agentic", "leaves: voice + text + tools \xc2\xb7 via gateway", "Tools + memory \xc2\xb7 agentic",
+     REQ_NONE, true},
+    /* 4 TinkerON    */
+    {"Works offline, on-device addon", "Nothing leaves \xc2\xb7 works offline", "Nothing leaves \xc2\xb7 works offline",
+     REQ_ADDON, true},
+    /* 5 Solo        */
+    {"Cloud quality, no Dragon needed", "leaves: voice + text \xc2\xb7 direct to OpenRouter",
+     "No Dragon \xc2\xb7 voice+text leave", REQ_OR_KEY, false},
+};
+
+/* TT #724 (3.5/3.2): can this mode run right now? */
+static bool mode_is_available(uint8_t vmode) {
+   if (vmode >= VOICE_MODE_COUNT) return false;
+   switch (s_mode_meta[vmode].req) {
+      case REQ_ADDON:
+         return voice_onboard_failover_state() == 2 /* M5_FAIL_READY */;
+      case REQ_OR_KEY: {
+         char k[128] = {0};
+         tab5_settings_get_or_key(k, sizeof k);
+         return k[0] != '\0';
+      }
+      default:
+         return true;
+   }
+}
+
 /* ── Layout ──────────────────────────────────────────────────────────── */
 #define MS_W        720
 #define MS_H        1280
