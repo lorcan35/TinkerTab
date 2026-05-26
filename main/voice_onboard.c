@@ -562,7 +562,12 @@ static void onboard_failover_text_job(void *arg) {
       }
    } else {
       if (tab5_ui_try_lock(150)) {
-         ui_home_show_toast("Onboard LLM unavailable");
+         /* TT #724: when privacy lock is ON the K144 dispatch was FORCED (the
+          * lock refuses Dragon/OpenRouter), so a failure here means the chosen
+          * mode silently couldn't run. Say so explicitly — matches the
+          * dispatch-time toast in voice.c so the async path isn't a dead end. */
+         ui_home_show_toast(tab5_settings_get_privacy_lock() ? "Privacy lock on - on-device LLM failed"
+                                                             : "Onboard LLM unavailable");
          tab5_ui_unlock();
       }
       ESP_LOGW(TAG, "K144 failover failed (%s) for prompt '%s'", esp_err_to_name(ie), prompt);
@@ -1240,7 +1245,7 @@ static void onboard_chain_drain_task(void *arg) {
    s_chain_handle = h;
    voice_set_state(VOICE_STATE_LISTENING, "K144");
    if (tab5_ui_try_lock(150)) {
-      ui_home_show_toast("Onboard chat — speak at the K144");
+      ui_home_show_toast("Onboard chat - speak at the K144");
       tab5_ui_unlock();
    }
    ESP_LOGI(TAG, "chain ready — entering drain loop");

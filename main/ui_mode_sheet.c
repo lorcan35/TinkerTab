@@ -307,7 +307,7 @@ static void commit_mode(uint8_t vmode) {
       ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs);
       tab5_debug_obs_event("mode.cancel_for_switch", "");
       voice_cancel();
-      ui_home_show_toast("Switched mode — current turn stopped");
+      ui_home_show_toast("Switched mode - current turn stopped");
    }
 
    tab5_settings_set_voice_mode(vmode);
