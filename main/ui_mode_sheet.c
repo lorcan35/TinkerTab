@@ -18,7 +18,8 @@
 #include "ui_home.h"       /* W8: ui_home_show_toast */
 #include "ui_theme.h"
 #include "voice.h"
-#include "voice_onboard.h" /* TT #724 (3.5) — voice_onboard_failover_state */
+#include "voice_onboard.h"   /* TT #724 (3.5) — voice_onboard_failover_state */
+#include "widget_mode_dot.h" /* TT #724 (3.2) — mode dot on each picker row */
 
 static const char *TAG = "ui_mode_sheet";
 
@@ -35,23 +36,23 @@ typedef struct {
 
 /* Indexed by vmode (0..5). Order matches th_mode_names / VOICE_MODE_*. */
 static const mode_meta_t s_mode_meta[VOICE_MODE_COUNT] = {
-    /* 0 Local       */ {"Private brain, on the Dragon box", "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s",
-                         "Nothing leaves \xc2\xb7 free \xc2\xb7 ~60s", REQ_NONE, true},
+    /* 0 Local       */ {"Private brain, on the Dragon box", "Nothing leaves \xe2\x80\xa2 free \xe2\x80\xa2 ~60s",
+                         "Nothing leaves \xe2\x80\xa2 free \xe2\x80\xa2 ~60s", REQ_NONE, true},
     /* 1 Hybrid      */
-    {"Private brain, fast voice", "leaves: your voice (STT) \xc2\xb7 ~5s \xc2\xb7 ~2\xc2\xa2",
-     "Private brain \xc2\xb7 fast voice \xc2\xb7 ~2\xc2\xa2", REQ_NONE, true},
+    {"Private brain, fast voice", "leaves: your voice (STT) \xe2\x80\xa2 ~5s \xe2\x80\xa2 ~$0.02",
+     "Private brain \xe2\x80\xa2 fast voice \xe2\x80\xa2 ~$0.02", REQ_NONE, true},
     /* 2 Cloud       */
-    {"Smartest, everything cloud", "leaves: voice + text \xc2\xb7 ~5s \xc2\xb7 needs key",
-     "Voice+text \xc2\xb7 smartest \xc2\xb7 needs key", REQ_NONE, false},
+    {"Smartest, everything cloud", "leaves: voice + text \xe2\x80\xa2 ~5s \xe2\x80\xa2 needs key",
+     "Voice+text \xe2\x80\xa2 smartest \xe2\x80\xa2 needs key", REQ_NONE, false},
     /* 3 TinkerAgent */
-    {"Tools + memory, agentic", "leaves: voice + text + tools \xc2\xb7 via gateway", "Tools + memory \xc2\xb7 agentic",
-     REQ_NONE, true},
+    {"Tools + memory, agentic", "leaves: voice + text + tools \xe2\x80\xa2 via gateway",
+     "Tools + memory \xe2\x80\xa2 agentic", REQ_NONE, true},
     /* 4 TinkerON    */
-    {"Works offline, on-device addon", "Nothing leaves \xc2\xb7 works offline", "Nothing leaves \xc2\xb7 works offline",
-     REQ_ADDON, true},
+    {"Works offline, on-device addon", "Nothing leaves \xe2\x80\xa2 works offline",
+     "Nothing leaves \xe2\x80\xa2 works offline", REQ_ADDON, true},
     /* 5 Solo        */
-    {"Cloud quality, no Dragon needed", "leaves: voice + text \xc2\xb7 direct to OpenRouter",
-     "No Dragon \xc2\xb7 voice+text leave", REQ_OR_KEY, false},
+    {"Cloud quality, no Dragon needed", "leaves: voice + text \xe2\x80\xa2 direct to OpenRouter",
+     "No Dragon \xe2\x80\xa2 voice+text leave", REQ_OR_KEY, false},
 };
 
 /* TT #724 (3.5/3.2): can this mode run right now? */
@@ -80,13 +81,7 @@ static bool mode_is_available(uint8_t vmode) {
 
 /* ── State ───────────────────────────────────────────────────────────── */
 static lv_obj_t *s_overlay     = NULL;  /* scrim container on layer_top */
-static lv_obj_t *s_sheet       = NULL;  /* visible sheet inside overlay */
-static lv_obj_t *s_seg_btn[3][3] = {{0}};  /* [dial][segment] for redraw */
-static lv_obj_t *s_composite_head = NULL;
-static lv_obj_t *s_composite_sub  = NULL;
-static lv_obj_t *s_composite_card = NULL;  /* container — reborder on agent */
-static lv_obj_t *s_composite_accent = NULL; /* amber/violet bar top-left */
-static lv_obj_t *s_composite_kicker = NULL; /* "RESOLVES TO" / "AGENT MODE" */
+static lv_obj_t *s_sheet = NULL;        /* visible sheet inside overlay */
 
 /* Phase 2c Agent consent modal — own scrim, shown on top of the sheet. */
 static lv_obj_t *s_consent_overlay = NULL;
@@ -103,19 +98,22 @@ static uint8_t s_int_tier = 0;
 static uint8_t s_voi_tier = 0;
 static uint8_t s_aut_tier = 0;
 
+/* TT #724 (3.2): mode-row picker state. */
+static uint8_t s_sel_vmode = 0;      /* row currently shown expanded */
+static lv_obj_t *s_rows_root = NULL; /* container holding the 6 mode rows */
+
 /* ── Forward decls ───────────────────────────────────────────────────── */
-static void refresh_segments(void);
-static void refresh_composite(void);
-static void persist_and_notify_dragon(void);
-static void seg_click_cb(lv_event_t *e);
+static void commit_mode(uint8_t vmode);
+static void rebuild_rows(void);
+static void row_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
 static void show_agent_consent(uint8_t prev_aut_tier);
-/* Wave 10 H5 Presets: forward decl — body below seg_click_cb. */
-void preset_click_cb(lv_event_t *e);
 static void hide_agent_consent(bool commit);
 static void consent_confirm_cb(lv_event_t *e);
 static void consent_cancel_cb(lv_event_t *e);
+static void agent_consent_confirm_cb(void *ctx);
+static void agent_consent_cancel_cb(void *ctx);
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
@@ -126,26 +124,22 @@ bool ui_mode_sheet_visible(void)
 
 void ui_mode_sheet_hide(void)
 {
-    /* If an Agent consent modal is still up when the sheet gets hidden
-     * (e.g. user backs out via nav), treat that as Cancel — do NOT commit. */
-    if (s_consent_overlay) {
-        lv_obj_del(s_consent_overlay);
-        s_consent_overlay = NULL;
-        s_aut_tier = s_pre_consent_aut;
-    }
+   /* If an Agent consent modal is still up when the sheet gets hidden
+    * (e.g. user backs out via nav), treat that as Cancel — drop the
+    * pending callbacks so nothing commits. */
+   if (s_consent_overlay) {
+      lv_obj_del(s_consent_overlay);
+      s_consent_overlay = NULL;
+      s_consent_confirm_cb = NULL;
+      s_consent_cancel_cb = NULL;
+      s_consent_cb_ctx = NULL;
+   }
     if (s_overlay) {
         lv_obj_del(s_overlay);
     }
     s_overlay = NULL;
-    s_sheet   = NULL;
-    s_composite_head = NULL;
-    s_composite_sub  = NULL;
-    s_composite_card = NULL;
-    s_composite_accent = NULL;
-    s_composite_kicker = NULL;
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < 3; c++) s_seg_btn[r][c] = NULL;
-    }
+    s_sheet = NULL;
+    s_rows_root = NULL;
 }
 
 void ui_mode_sheet_show(void)
@@ -230,7 +224,7 @@ void ui_mode_sheet_show(void)
 
     /* Kicker + headline */
     lv_obj_t *kicker = lv_label_create(s_sheet);
-    lv_label_set_text(kicker, "\xe2\x80\xa2 MODE DIALS");
+    lv_label_set_text(kicker, "\xe2\x80\xa2 MODE");
     lv_obj_set_style_text_font(kicker, FONT_SMALL, 0);
     lv_obj_set_style_text_color(kicker, lv_color_hex(TH_AMBER), 0);
     lv_obj_set_style_text_letter_space(kicker, 4, 0);
@@ -259,187 +253,18 @@ void ui_mode_sheet_show(void)
     lv_obj_set_style_text_color(done_lbl, lv_color_hex(TH_BG), 0);
     lv_obj_center(done_lbl);
 
-    /* Build three dial rows.
-     * Each row: kicker label (12 px above segments) + segmented control. */
-    struct {
-        const char *kicker;
-        const char *labels[3];
-        int count;
-    } rows[3] = {
-        { "\xe2\x80\xa2 INTELLIGENCE",
-          { "Fast", "Balanced", "Smart" }, 3 },
-        { "\xe2\x80\xa2 VOICE",
-          { "Local", "Neutral", "Studio" }, 3 },
-        { "\xe2\x80\xa2 AUTONOMY",
-          { "Ask", "Agent", NULL }, 2 },
-    };
-
-    int y = 170;
-    for (int r = 0; r < 3; r++) {
-        lv_obj_t *rk = lv_label_create(s_sheet);
-        lv_label_set_text(rk, rows[r].kicker);
-        lv_obj_set_style_text_font(rk, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(rk, lv_color_hex(TH_AMBER), 0);
-        lv_obj_set_style_text_letter_space(rk, 4, 0);
-        lv_obj_set_pos(rk, SIDE_PAD, y);
-
-        /* Segment track — elevated card + padded row of buttons */
-        lv_obj_t *track = lv_obj_create(s_sheet);
-        lv_obj_remove_style_all(track);
-        lv_obj_set_pos(track, SIDE_PAD, y + 30);
-        lv_obj_set_size(track, MS_W - 2 * SIDE_PAD, SEG_H);
-        lv_obj_set_style_bg_color(track, lv_color_hex(TH_CARD_ELEVATED), 0);
-        lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(track, SEG_H / 2, 0);
-        lv_obj_set_style_border_width(track, 1, 0);
-        lv_obj_set_style_border_color(track, lv_color_hex(0x1E1E2A), 0);
-        lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
-
-        const int track_pad  = 4;
-        const int seg_count  = rows[r].count;
-        const int track_w    = (MS_W - 2 * SIDE_PAD) - 2 * track_pad;
-        const int seg_w      = track_w / seg_count;
-
-        for (int c = 0; c < seg_count; c++) {
-            lv_obj_t *seg = lv_obj_create(track);
-            lv_obj_remove_style_all(seg);
-            lv_obj_set_pos(seg, track_pad + c * seg_w, track_pad);
-            lv_obj_set_size(seg, seg_w, SEG_H - 2 * track_pad);
-            lv_obj_set_style_radius(seg, (SEG_H - 2 * track_pad) / 2, 0);
-            lv_obj_clear_flag(seg, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(seg, LV_OBJ_FLAG_CLICKABLE);
-            /* user_data packs dial row (high nibble) + segment idx (low nibble) */
-            uintptr_t pack = (uintptr_t)((r << 4) | c);
-            lv_obj_add_event_cb(seg, seg_click_cb, LV_EVENT_CLICKED, (void*)pack);
-
-            lv_obj_t *lbl = lv_label_create(seg);
-            lv_label_set_text(lbl, rows[r].labels[c]);
-            lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
-            lv_obj_center(lbl);
-
-            s_seg_btn[r][c] = seg;
-        }
-        y += ROW_H + ROW_GAP;
-    }
-
-    /* Wave 10 H5: Presets row — four chips matching the legacy voice_mode
-     * values so users can one-tap a recipe instead of spinning each dial.
-     * Presets set (int/voi/aut) to the same mapping the reverse-derive
-     * uses at line ~115 above:
-     *   Local  -> (0,0,0)   Hybrid -> (1,2,0)
-     *   Cloud  -> (2,2,0)   Agent  -> keep int/voi, aut=1 (triggers consent)
-     * Tapping Agent routes through show_agent_consent just like the
-     * dial segment does at line 460 — no silent mode-3 switch. */
-    {
-        lv_obj_t *rk = lv_label_create(s_sheet);
-        lv_label_set_text(rk, "\xe2\x80\xa2 PRESETS");
-        lv_obj_set_style_text_font(rk, FONT_SMALL, 0);
-        lv_obj_set_style_text_color(rk, lv_color_hex(TH_AMBER), 0);
-        lv_obj_set_style_text_letter_space(rk, 4, 0);
-        lv_obj_set_pos(rk, SIDE_PAD, y);
-
-        lv_obj_t *row = lv_obj_create(s_sheet);
-        lv_obj_remove_style_all(row);
-        lv_obj_set_pos(row, SIDE_PAD, y + 30);
-        lv_obj_set_size(row, MS_W - 2 * SIDE_PAD, SEG_H);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-
-        /* TT #328 Wave 9 follow-up — Onboard added as a 5th preset.
-         * W8 (cross-stack audit 2026-05-11) — Solo added as a 6th preset
-         * to close the "SOLO_DIRECT not discoverable from the mode sheet"
-         * UX gap.  Both vmode=4 (K144) and vmode=5 (SOLO_DIRECT) bypass
-         * the int/voi/aut dial taxonomy because they aren't shaped by
-         * Dragon-side capability tiers — each is its own runtime.
-         * preset_click_cb's case 4 / case 5 take direct-write paths
-         * that bypass tab5_mode_resolve. */
-        const int gap = 8;
-        const int chip_count = 6;
-        const int chip_w = ((MS_W - 2 * SIDE_PAD) - gap * (chip_count - 1)) / chip_count;
-        /* TT #723: labels from th_mode_names (single source); preset c maps to
-         * vmode c (Local/Hybrid/Cloud/TinkerAgent/TinkerON/Solo). */
-        extern void preset_click_cb(lv_event_t *e);
-        for (int c = 0; c < chip_count; c++) {
-            lv_obj_t *chip = lv_obj_create(row);
-            lv_obj_remove_style_all(chip);
-            lv_obj_set_pos(chip, c * (chip_w + gap), 0);
-            lv_obj_set_size(chip, chip_w, SEG_H);
-            lv_obj_set_style_bg_color(chip, lv_color_hex(TH_CARD_ELEVATED), 0);
-            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-            lv_obj_set_style_radius(chip, SEG_H / 2, 0);
-            lv_obj_set_style_border_width(chip, 1, 0);
-            lv_obj_set_style_border_color(chip, lv_color_hex(0x1E1E2A), 0);
-            lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(chip, preset_click_cb, LV_EVENT_CLICKED,
-                                (void *)(uintptr_t)c);
-            /* TT #724 (3.5) capability gating: dim a mode that can't run right
-             * now — TinkerON (4) needs the addon warm, Solo (5) needs an
-             * OpenRouter key.  Left clickable so the tap explains why (the
-             * toast in preset_click_cb cases 4/5). */
-            bool avail = true;
-            if (c == 4) {
-               avail = (voice_onboard_failover_state() == 2 /* M5_FAIL_READY */);
-            } else if (c == 5) {
-               /* Buffer must fit the whole key — NVS get_str returns empty on
-                * an undersized buffer, which falsely greyed Solo (TT #724). */
-               char k[128] = {0};
-               tab5_settings_get_or_key(k, sizeof k);
-               avail = (k[0] != '\0');
-            }
-            if (!avail) lv_obj_set_style_opa(chip, LV_OPA_40, 0);
-            lv_obj_t *lbl = lv_label_create(chip);
-            lv_label_set_text(lbl, th_mode_names[c]);
-            /* TT #723: FONT_SMALL so the longer canonical names (TinkerAgent)
-             * fit the narrow preset chip without clipping. */
-            lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
-            lv_obj_center(lbl);
-        }
-        y += ROW_H + ROW_GAP;
-    }
-
-    /* Composite preview — lives below the three dials. Border / accent /
-     * kicker / text colours all swap to violet when aut_tier == 1 to
-     * signal the TinkerClaw memory-bypass (Phase 2c informed-consent). */
-    s_composite_card = lv_obj_create(s_sheet);
-    lv_obj_remove_style_all(s_composite_card);
-    lv_obj_set_pos(s_composite_card, SIDE_PAD, y + 20);
-    lv_obj_set_size(s_composite_card, MS_W - 2 * SIDE_PAD, 140);
-    lv_obj_set_style_bg_color(s_composite_card, lv_color_hex(TH_CARD_ELEVATED), 0);
-    lv_obj_set_style_bg_opa(s_composite_card, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_composite_card, 20, 0);
-    lv_obj_set_style_border_width(s_composite_card, 1, 0);
-    lv_obj_set_style_border_color(s_composite_card, lv_color_hex(0x1E1E2A), 0);
-    lv_obj_clear_flag(s_composite_card, LV_OBJ_FLAG_SCROLLABLE);
-
-    s_composite_accent = lv_obj_create(s_composite_card);
-    lv_obj_remove_style_all(s_composite_accent);
-    lv_obj_set_size(s_composite_accent, 140, 3);
-    lv_obj_set_pos(s_composite_accent, 0, 0);
-    lv_obj_set_style_bg_color(s_composite_accent, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_bg_opa(s_composite_accent, LV_OPA_COVER, 0);
-
-    s_composite_kicker = lv_label_create(s_composite_card);
-    lv_label_set_text(s_composite_kicker, "\xe2\x80\xa2 RESOLVES TO");
-    lv_obj_set_style_text_font(s_composite_kicker, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(s_composite_kicker, lv_color_hex(TH_AMBER), 0);
-    lv_obj_set_style_text_letter_space(s_composite_kicker, 4, 0);
-    lv_obj_set_pos(s_composite_kicker, 24, 22);
-    lv_obj_t *comp = s_composite_card; /* alias for remaining label placement */
-
-    s_composite_head = lv_label_create(comp);
-    lv_obj_set_style_text_font(s_composite_head, FONT_HEADING, 0);
-    lv_obj_set_style_text_color(s_composite_head, lv_color_hex(TH_TEXT_PRIMARY), 0);
-    lv_obj_set_pos(s_composite_head, 24, 48);
-
-    s_composite_sub = lv_label_create(comp);
-    lv_obj_set_style_text_font(s_composite_sub, FONT_SMALL, 0);
-    lv_obj_set_style_text_color(s_composite_sub, lv_color_hex(TH_TEXT_DIM), 0);
-    lv_obj_set_style_text_letter_space(s_composite_sub, 3, 0);
-    lv_obj_set_pos(s_composite_sub, 24, 86);
-
-    /* Initial styling + composite text */
-    refresh_segments();
-    refresh_composite();
+    /* TT #724 (3.2/3.3): mode-row picker body. Replaces the int/voi/aut
+     * dials + preset chips + composite card. Each row writes vmode directly
+     * via commit_mode(); the selected row expands to show why-you'd-pick-it.
+     * Routing keys off vmode, so the resolver core is untouched. */
+    s_sel_vmode = tab5_settings_get_voice_mode();
+    if (s_sel_vmode >= VOICE_MODE_COUNT) s_sel_vmode = 0;
+    s_rows_root = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_rows_root);
+    lv_obj_set_pos(s_rows_root, 0, 150);
+    lv_obj_set_size(s_rows_root, MS_W, 470);
+    lv_obj_clear_flag(s_rows_root, LV_OBJ_FLAG_SCROLLABLE);
+    rebuild_rows();
 
     /* Force full-screen invalidate — same pattern as ui_home create
      * (PARTIAL render needs this to paint every strip on first show). */
@@ -449,283 +274,142 @@ void ui_mode_sheet_show(void)
 
 /* ── Internals ───────────────────────────────────────────────────────── */
 
-static void refresh_segments(void)
-{
-    /* Dial 0 = int_tier, 1 = voi_tier, 2 = aut_tier */
-    uint8_t sel[3] = { s_int_tier, s_voi_tier, s_aut_tier };
-    int counts[3]  = { 3, 3, 2 };
+/* TT #724 (3.3): write the chosen mode + notify Dragon. Mirrors the proven
+ * preset-4/5 calls but for all six modes. Does NOT touch tab5_mode_resolve /
+ * the dial tiers — routing keys off the persisted vmode. */
+static void commit_mode(uint8_t vmode) {
+   if (vmode >= VOICE_MODE_COUNT) return;
 
-    for (int r = 0; r < 3; r++) {
-        for (int c = 0; c < counts[r]; c++) {
-            lv_obj_t *seg = s_seg_btn[r][c];
-            if (!seg) continue;
-            bool on = (sel[r] == c);
-            if (on) {
-                lv_obj_set_style_bg_color(seg, lv_color_hex(TH_AMBER), 0);
-                lv_obj_set_style_bg_opa(seg, LV_OPA_COVER, 0);
-                /* Update label colour */
-                lv_obj_t *lbl = lv_obj_get_child(seg, 0);
-                if (lbl) {
-                    lv_obj_set_style_text_color(lbl, lv_color_hex(TH_BG), 0);
-                }
-            } else {
-                lv_obj_set_style_bg_opa(seg, LV_OPA_TRANSP, 0);
-                lv_obj_t *lbl = lv_obj_get_child(seg, 0);
-                if (lbl) {
-                    lv_obj_set_style_text_color(lbl, lv_color_hex(TH_TEXT_SECONDARY), 0);
-                }
-            }
-        }
-    }
-}
-
-static void refresh_composite(void)
-{
-    if (!s_composite_head || !s_composite_sub || !s_composite_card) return;
-
-    char model_out[64] = {0};
-    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier, model_out, sizeof(model_out));
-    if (resolved > 3) resolved = 0;
-    /* TT #723: canonical name from th_mode_names (was a divergent local copy
-     * "Full Cloud" / "Agent · TinkerClaw"). */
-    lv_label_set_text(s_composite_head, th_mode_names[resolved]);
-
-    /* Sub-label is built live so it reflects the actual LLM the user picked
-     * (gemini-3-flash-preview, gpt-4o-mini, etc) instead of hardcoding
-     * Sonnet.  Shortens vendor/model to the tail after "/" and upper-cases
-     * it to match the kicker typography. */
-    char sub_buf[96] = {0};
-    char short_model[48] = {0};
-    {
-        char lm[64] = {0};
-        tab5_settings_get_llm_model(lm, sizeof(lm));
-        if (lm[0]) {
-            const char *slash = strchr(lm, '/');
-            const char *tail  = slash ? slash + 1 : lm;
-            snprintf(short_model, sizeof(short_model), "%.47s", tail);
-            for (int i = 0; short_model[i]; i++) {
-                if (short_model[i] >= 'a' && short_model[i] <= 'z')
-                    short_model[i] -= 32;
-            }
-        }
-    }
-    /* TT #328 Wave 5 (audit Hybrid story) — captions now stamp three
-     * decisive variables per mode: latency, privacy, cost.  Pre-Wave-5
-     * the composite read "STUDIO VOICE · LOCAL BRAIN · ~$0.02" — true,
-     * but the user couldn't see WHY they'd pick Hybrid over Local
-     * (60 s vs. 4-8 s is the load-bearing reason).  Now every mode
-     * surfaces its sweet-spot in the same shape so cross-comparison
-     * is a glance, not an analysis. */
-    switch (resolved) {
-        case 0:
-           snprintf(sub_buf, sizeof(sub_buf), "~60S \xe2\x80\xa2 100%% PRIVATE \xe2\x80\xa2 FREE");
-           break;
-        case 1:
-           snprintf(sub_buf, sizeof(sub_buf), "4-8S \xe2\x80\xa2 PRIVATE BRAIN \xe2\x80\xa2 ~$0.02");
-           break;
-        case 2:
-           snprintf(sub_buf, sizeof(sub_buf), "3-6S \xe2\x80\xa2 %s \xe2\x80\xa2 ~$0.04",
-                    short_model[0] ? short_model : "CLOUD");
-           break;
-        case 3:
-           snprintf(sub_buf, sizeof(sub_buf), "AGENT TOOLS \xe2\x80\xa2 MEMORY BYPASSED");
-           break;
-    }
-    lv_label_set_text(s_composite_sub, sub_buf);
-
-    /* v4·D Sovereign Halo Phase 2c: when aut_tier == 1 (Agent),
-     * recolor the composite card to violet to flag the memory-bypass
-     * boundary.  The user has already tapped Agent, so this isn't a
-     * revert-confirm modal -- just a tonally distinct "this mode runs
-     * differently" signal matching the Sovereign system-d-modes.html M5
-     * warning sheet concept. */
-    const bool agent = (s_aut_tier >= 1);
-    uint32_t accent_col = agent ? 0xA78BFA : TH_AMBER;
-    uint32_t border_col = agent ? 0xA78BFA : 0x1E1E2A;
-    const char *kicker  = agent ? "\xe2\x80\xa2 AGENT MODE" : "\xe2\x80\xa2 RESOLVES TO";
-
-    lv_obj_set_style_bg_color(s_composite_accent, lv_color_hex(accent_col), 0);
-    lv_obj_set_style_border_color(s_composite_card, lv_color_hex(border_col), 0);
-    lv_obj_set_style_border_opa(s_composite_card, agent ? 255 : 255, 0);
-    if (s_composite_kicker) {
-        lv_label_set_text(s_composite_kicker, kicker);
-        lv_obj_set_style_text_color(s_composite_kicker, lv_color_hex(accent_col), 0);
-    }
-}
-
-static void persist_and_notify_dragon(void)
-{
-   /* W8: confirmatory chirp.  Fired from EVERY user-driven mode-sheet
-    * commit (dial segment tap → persist_and_notify_dragon, plus every
-    * preset chip case 0..3 below).  Audit found the device mute on
-    * UI interactions; the cue closes that gap.  Worker-dispatched so
-    * the LVGL caller doesn't block. */
-   ui_audio_cue_play(UI_CUE_MODE_SWITCH);
-
-   /* TT #625 Wave A.2 (R6) — vmode change mid-turn used to orphan the
-    * in-flight Dragon STT/LLM/TTS.  Now: if voice is mid-turn, cancel
-    * it cleanly first (voice_cancel also resets wakeword + pauses pump
-    * via Wave A.1), then let the config_update fire so the NEXT turn
-    * uses the new mode.  Toast tells the user what happened. */
-   voice_state_t vs_at_switch = voice_get_state();
-   if (vs_at_switch != VOICE_STATE_IDLE && vs_at_switch != VOICE_STATE_READY) {
-      ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs_at_switch);
+   /* TT #625 Wave A.2 (R6) — a vmode change mid-turn used to orphan the
+    * in-flight Dragon turn. Cancel cleanly first; the config_update then
+    * applies to the NEXT turn. */
+   voice_state_t vs = voice_get_state();
+   if (vs != VOICE_STATE_IDLE && vs != VOICE_STATE_READY) {
+      ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs);
       tab5_debug_obs_event("mode.cancel_for_switch", "");
       voice_cancel();
-      extern void ui_home_show_toast(const char *);
       ui_home_show_toast("Switched mode — current turn stopped");
    }
 
-   /* Persist the three tiers + the derived voice_mode + (optional) llm_model. */
-   tab5_settings_set_int_tier(s_int_tier);
-   tab5_settings_set_voi_tier(s_voi_tier);
-   tab5_settings_set_aut_tier(s_aut_tier);
+   tab5_settings_set_voice_mode(vmode);
+   char model[64] = {0};
+   tab5_settings_get_llm_model(model, sizeof(model));
+   voice_send_config_update((int)vmode, model);
+   ui_audio_cue_play(UI_CUE_MODE_SWITCH);
+   extern void ui_agents_on_mode_change(void);
+   ui_agents_on_mode_change();
+   ESP_LOGI(TAG, "picker: mode -> %u (%s)", vmode, th_mode_names[vmode]);
+}
 
-   char model_out[64] = {0};
-   uint8_t new_mode = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier, model_out, sizeof(model_out));
-   tab5_settings_set_voice_mode(new_mode);
-   if (model_out[0]) {
-      tab5_settings_set_llm_model(model_out);
+/* TT #724 (3.2/3.3): rebuild the six mode rows. The selected row expands to
+ * show reason + what-leaves; the rest show a single dim meta line. Unavailable
+ * modes dim and refuse selection (3.5). */
+static void rebuild_rows(void) {
+   if (!s_rows_root) return;
+   lv_obj_clean(s_rows_root);
+   int y = 0;
+   for (uint8_t m = 0; m < VOICE_MODE_COUNT; m++) {
+      bool avail = mode_is_available(m);
+      bool sel = (m == s_sel_vmode);
+      int rh = sel ? 74 : 46;
+
+      lv_obj_t *row = lv_obj_create(s_rows_root);
+      lv_obj_remove_style_all(row);
+      lv_obj_set_pos(row, SIDE_PAD, y);
+      lv_obj_set_size(row, MS_W - 2 * SIDE_PAD, rh);
+      lv_obj_set_style_bg_color(row, lv_color_hex(sel ? 0x1A1509 : 0x13131C), 0);
+      lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+      lv_obj_set_style_radius(row, 12, 0);
+      lv_obj_set_style_border_width(row, 1, 0);
+      lv_obj_set_style_border_color(row, lv_color_hex(sel ? TH_AMBER : 0x20202C), 0);
+      lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)m);
+      if (!avail) lv_obj_set_style_opa(row, LV_OPA_40, 0);
+
+      /* mode dot (shared widget, colored by mode) */
+      lv_obj_t *dot = widget_mode_dot_create(row, 8, m);
+      if (dot) lv_obj_set_pos(dot, 12, sel ? 14 : 18);
+
+      lv_obj_t *nm = lv_label_create(row);
+      lv_label_set_text(nm, th_mode_names[m]);
+      lv_obj_set_style_text_font(nm, FONT_BODY, 0);
+      lv_obj_set_style_text_color(nm, lv_color_hex(TH_TEXT_PRIMARY), 0);
+      lv_obj_set_pos(nm, 30, sel ? 10 : 13);
+
+      if (m == 1) { /* Hybrid "recommended" tag */
+         lv_obj_t *rec = lv_label_create(row);
+         lv_label_set_text(rec, "RECOMMENDED");
+         lv_obj_set_style_text_font(rec, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(rec, lv_color_hex(0x7A7A88), 0);
+         lv_obj_align(rec, LV_ALIGN_TOP_RIGHT, -14, sel ? 14 : 16);
+      }
+      if (m == 4 && !avail) { /* TinkerON addon hint */
+         lv_obj_t *w = lv_label_create(row);
+         lv_label_set_text(w, "attach addon");
+         lv_obj_set_style_text_font(w, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(w, lv_color_hex(TH_AMBER), 0);
+         lv_obj_align(w, LV_ALIGN_TOP_RIGHT, -14, sel ? 14 : 16);
+      }
+
+      if (sel) {
+         lv_obj_t *reason = lv_label_create(row);
+         lv_label_set_text(reason, s_mode_meta[m].reason);
+         lv_obj_set_style_text_font(reason, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(reason, lv_color_hex(0xC2C2CC), 0);
+         lv_obj_set_pos(reason, 30, 34);
+         lv_obj_t *meta = lv_label_create(row);
+         lv_label_set_text(meta, s_mode_meta[m].leaves);
+         lv_obj_set_style_text_font(meta, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(meta, lv_color_hex(0x6A6A78), 0);
+         lv_obj_set_pos(meta, 30, 53);
+      } else if (!(m == 1 || (m == 4 && !avail))) {
+         /* one-line meta; skipped for rows that already carry a right-side
+          * annotation (Hybrid RECOMMENDED / TinkerON attach-addon) so they
+          * don't collide on the narrow unselected row. */
+         lv_obj_t *one = lv_label_create(row);
+         lv_label_set_text(one, s_mode_meta[m].oneline);
+         lv_obj_set_style_text_font(one, FONT_SMALL, 0);
+         lv_obj_set_style_text_color(one, lv_color_hex(0x6A6A78), 0);
+         lv_obj_align(one, LV_ALIGN_RIGHT_MID, -14, 0);
+      }
+      y += rh + 8;
    }
-
-    /* Fire config_update to Dragon so it swaps backends on the next turn.
-     * Re-read llm_model from NVS to send what's actually stored (either
-     * the newly-written cloud model or the pre-existing one). */
-    char model_to_send[64] = {0};
-    tab5_settings_get_llm_model(model_to_send, sizeof(model_to_send));
-    voice_send_config_update(new_mode, model_to_send);
-
-    ESP_LOGI(TAG, "Tier change resolved -> voice_mode=%d model=%s",
-             new_mode, model_to_send);
-    /* W7-B follow-up (TT #467): refresh agent_skills catalog if Agents
-     * overlay is visible — its vmode=3 gate needs to update live when
-     * the user dials in/out of TinkerClaw. */
-    extern void ui_agents_on_mode_change(void);
-    ui_agents_on_mode_change();
 }
 
-/* Wave 10 H5 Presets: one-tap recipes that set all three dials to the
- * tier combination matching the legacy voice_mode (0=Local, 1=Hybrid,
- * 2=Cloud, 3=Agent). Agent preset routes through the same consent modal
- * that the AUTONOMY dial does so there's no silent bypass path. */
-void preset_click_cb(lv_event_t *e)
-{
-    int preset = (int)(uintptr_t)lv_event_get_user_data(e);
-    uint8_t prev_aut = s_aut_tier;
-    switch (preset) {
-        case 0: /* Local   */ s_int_tier = 0; s_voi_tier = 0; s_aut_tier = 0; break;
-        case 1: /* Hybrid  */ s_int_tier = 1; s_voi_tier = 2; s_aut_tier = 0; break;
-        case 2: /* Cloud   */ s_int_tier = 2; s_voi_tier = 2; s_aut_tier = 0; break;
-        case 3: /* Agent   */
-            /* Keep intelligence + voice tiers as-is — agent mode is only
-             * about autonomy/memory-bypass. If already on Agent, no-op.
-             * Otherwise gate behind the consent modal. */
-            if (s_aut_tier == 1) return;
-            s_aut_tier = 1;
-            refresh_segments();
-            refresh_composite();
-            show_agent_consent(prev_aut);
-            return;  /* do NOT persist yet — modal commits or reverts */
-        case 4:      /* Onboard — TT #328 Wave 9 follow-up.  Direct vmode=4
-                      * write that bypasses tab5_mode_resolve (which only
-                      * maps to 0..3).  K144 is its own runtime — the dial
-                      * taxonomy doesn't apply, so the dials' visual state
-                      * stays at whatever the user last picked.  Closes the
-                      * "K144 unreachable from sheet" half of audit P0 #10. */
-           /* TT #724 (3.5): don't switch to TinkerON when the addon isn't
-            * ready — that lands the user on a non-functional mode.  Mirror
-            * the Solo (case 5) no-key guard. */
-           if (voice_onboard_failover_state() != 2 /* M5_FAIL_READY */) {
-              if (tab5_ui_try_lock(150)) {
-                 ui_home_show_toast("TinkerON not ready — check the module");
-                 tab5_ui_unlock();
-              }
-              return;
-           }
-           tab5_settings_set_voice_mode(VOICE_MODE_ONBOARD);
-           ui_audio_cue_play(UI_CUE_MODE_SWITCH); /* W8: chirp on Onboard preset */
-           char model[64] = {0};
-           tab5_settings_get_llm_model(model, sizeof(model));
-           voice_send_config_update(VOICE_MODE_ONBOARD, model);
-           ESP_LOGI(TAG, "Onboard preset -> voice_mode=%d (K144)", VOICE_MODE_ONBOARD);
-           {
-              extern void ui_agents_on_mode_change(void);
-              ui_agents_on_mode_change();
-           }
-           ui_mode_sheet_hide();
-           return;
-        case 5: /* Solo — W8 (cross-stack audit 2026-05-11): closes the
-                 * "SOLO_DIRECT only reachable via /mode debug or chip
-                 * cycling" discoverability gap.  Direct vmode=5 write;
-                 * Dragon sees it as a real mode after W3-A/B but
-                 * idle-pipelines because Tab5 goes direct to OpenRouter
-                 * for the audio path.  If the OpenRouter key isn't
-                 * provisioned, surface a hint instead of silently
-                 * switching to a non-functional mode. */
-        {
-           char or_key[96] = {0};
-           tab5_settings_get_or_key(or_key, sizeof or_key);
-           if (or_key[0] == '\0') {
-              if (tab5_ui_try_lock(150)) {
-                 ui_home_show_toast("Scan QR to set OpenRouter key first");
-                 tab5_ui_unlock();
-              }
-              return;
-           }
-           tab5_settings_set_voice_mode(VOICE_MODE_SOLO);
-           char model2[64] = {0};
-           tab5_settings_get_llm_model(model2, sizeof(model2));
-           voice_send_config_update(VOICE_MODE_SOLO, model2);
-           ESP_LOGI(TAG, "Solo preset -> voice_mode=%d (OpenRouter direct)", VOICE_MODE_SOLO);
-           {
-              extern void ui_agents_on_mode_change(void);
-              ui_agents_on_mode_change();
-           }
-        }
-           ui_mode_sheet_hide();
-           return;
-        default: return;
-    }
-    refresh_segments();
-    refresh_composite();
-    persist_and_notify_dragon();
-    /* TT #328 Wave 10 follow-up — dismiss the sheet on every preset tap
-     * so the user immediately sees the change reflected on home + their
-     * next navigation isn't shadowed by a sheet that's still up.  Pre-
-     * fix only the Onboard preset (case 4) auto-dismissed; the other
-     * four required a manual "Done" tap. */
-    ui_mode_sheet_hide();
+static void row_click_cb(lv_event_t *e) {
+   uint8_t vmode = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (vmode >= VOICE_MODE_COUNT) return;
+   if (!mode_is_available(vmode)) {
+      if (tab5_ui_try_lock(150)) {
+         ui_home_show_toast(s_mode_meta[vmode].req == REQ_ADDON ? "TinkerON not ready \xe2\x80\x94 check the module"
+                                                                : "Add an OpenRouter key in Settings first");
+         tab5_ui_unlock();
+      }
+      return;
+   }
+   /* TinkerAgent (3) bypasses on-device memory — preserve the consent modal
+    * when switching INTO agent from another mode (memory-bypass boundary). */
+   if (vmode == VOICE_MODE_TINKERCLAW && tab5_settings_get_voice_mode() != VOICE_MODE_TINKERCLAW) {
+      ui_agent_consent_show(agent_consent_confirm_cb, agent_consent_cancel_cb, NULL);
+      return;
+   }
+   s_sel_vmode = vmode;
+   rebuild_rows(); /* expand the newly-selected row */
+   commit_mode(vmode);
 }
 
-static void seg_click_cb(lv_event_t *e)
-{
-    uintptr_t pack = (uintptr_t)lv_event_get_user_data(e);
-    int row = (int)((pack >> 4) & 0x0F);
-    int col = (int)(pack & 0x0F);
+/* In-sheet TinkerAgent consent decisions (routed via ui_agent_consent_show). */
+static void agent_consent_confirm_cb(void *ctx) {
+   (void)ctx;
+   s_sel_vmode = VOICE_MODE_TINKERCLAW;
+   rebuild_rows();
+   commit_mode(VOICE_MODE_TINKERCLAW);
+}
 
-    /* Phase 2c gate: tapping AUTONOMY→Agent while not already on Agent
-     * must trigger the consent modal before we commit the mode switch.
-     * Memory bypass is the most sensitive boundary in the system and
-     * deserves an explicit acknowledge+back path, not a silent recolor. */
-    if (row == 2 && col == 1 && s_aut_tier != 1) {
-        uint8_t prev = s_aut_tier;
-        s_aut_tier = 1;
-        refresh_segments();
-        refresh_composite();
-        show_agent_consent(prev);
-        return;  /* do NOT persist yet — modal commits or reverts */
-    }
-
-    switch (row) {
-        case 0: s_int_tier = (uint8_t)col; break;
-        case 1: s_voi_tier = (uint8_t)col; break;
-        case 2: s_aut_tier = (uint8_t)col; break;
-        default: return;
-    }
-
-    refresh_segments();
-    refresh_composite();
-    persist_and_notify_dragon();
+static void agent_consent_cancel_cb(void *ctx) {
+   (void)ctx;
+   /* Keep the prior selection; nothing was committed. */
 }
 
 /* ── Agent consent modal ─────────────────────────────────────────────── */
@@ -756,26 +440,15 @@ static void hide_agent_consent(bool commit)
         lv_obj_del(s_consent_overlay);
         s_consent_overlay = NULL;
     }
-    /* Generic callback mode (E3) — invoke caller's decision handler and
-     * reset the callback slots. Does NOT touch s_aut_tier / persist. */
-    if (s_consent_confirm_cb || s_consent_cancel_cb) {
-        void (*cb)(void *) = commit ? s_consent_confirm_cb : s_consent_cancel_cb;
-        void  *ctx         = s_consent_cb_ctx;
-        s_consent_confirm_cb = NULL;
-        s_consent_cancel_cb  = NULL;
-        s_consent_cb_ctx     = NULL;
-        if (cb) cb(ctx);
-        return;
-    }
-    /* Legacy mode-sheet flow: commit persists tiers, cancel reverts. */
-    if (commit) {
-        persist_and_notify_dragon();
-    } else {
-        /* Revert to the pre-modal autonomy tier + rebuild segment UI. */
-        s_aut_tier = s_pre_consent_aut;
-        refresh_segments();
-        refresh_composite();
-    }
+    /* Invoke the caller's decision handler and reset the callback slots.
+     * Both the in-sheet TinkerAgent flow (TT #724) and the Settings
+     * TinkerClaw row (audit E3) route through this generic path. */
+    void (*cb)(void *) = commit ? s_consent_confirm_cb : s_consent_cancel_cb;
+    void *ctx = s_consent_cb_ctx;
+    s_consent_confirm_cb = NULL;
+    s_consent_cancel_cb = NULL;
+    s_consent_cb_ctx = NULL;
+    if (cb) cb(ctx);
 }
 
 void ui_agent_consent_show(void (*on_confirm)(void *ctx),
