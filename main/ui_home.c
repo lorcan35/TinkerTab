@@ -242,14 +242,13 @@ static lv_obj_t *s_say_label_sub   = NULL;
 static lv_obj_t   *s_toast         = NULL;
 static lv_timer_t *s_refresh_timer = NULL;
 
-/* TT #328 Wave 6: s_mode_tint removed — widget_mode_dot owns color
- * resolution against the canonical th_mode_colors[] in ui_theme.c.
- * Kept s_mode_short here because the home pill uses different short
- * labels ("Local") than the canonical ui_theme th_mode_names[]
- * ("Local") — actually identical, future cleanup TODO. */
-static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard", "Solo"};
+/* TT #723: mode NAMES now come from the canonical th_mode_names[] (ui_theme.c)
+ * — single source of truth (drops the old divergent "Claw"/"Onboard" copy).
+ * Only the home-pill TAGLINE stays local.  Fixes: Local's old "ON-DEVICE"
+ * tagline was wrong (Local = Dragon on the LAN) and collided with TinkerON
+ * (the actual on-device addon); and the "K144" brand leak is gone. */
 static const char *s_mode_tagline[VOICE_MODE_COUNT] = {
-    "ON-DEVICE", "LOCAL + CLOUD", "CLOUD ONLY", "TINKERCLAW", "K144 ONBOARD", "OPENROUTER DIRECT",
+    "DRAGON", "LOCAL + CLOUD", "CLOUD ONLY", "TOOLS + MEMORY", "ON-DEVICE", "OPENROUTER DIRECT",
 };
 
 static uint8_t s_badge_mode = 0;
@@ -517,8 +516,14 @@ static void update_mode_ui(uint8_t mode)
     * still mutates size/radius directly for the pulse animation; that
     * stays open-coded since it's not shared. */
    if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
-   if (s_mode_name) lv_label_set_text(s_mode_name, s_mode_short[mode]);
+   if (s_mode_name) lv_label_set_text(s_mode_name, th_mode_names[mode]);
    if (s_mode_sub) lv_label_set_text(s_mode_sub, s_mode_tagline[mode]);
+   /* TT #723: place the tagline after the (variable-length) canonical name so
+    * longer names like "TinkerAgent" don't overlap the fixed sub position. */
+   if (s_mode_name && s_mode_sub) {
+      lv_obj_update_layout(s_mode_name);
+      lv_obj_set_x(s_mode_sub, 44 + lv_obj_get_width(s_mode_name) + 14);
+   }
    ui_orb_paint_for_mode(mode);
 
    /* Phase 4 (#42): pulse the dot only on actual mode changes (not the
@@ -888,7 +893,7 @@ lv_obj_t *ui_home_create(void)
     if (s_mode_dot) lv_obj_set_pos(s_mode_dot, 24, 21);
 
     s_mode_name = lv_label_create(s_mode_chip);
-    lv_label_set_text(s_mode_name, s_mode_short[s_badge_mode]);
+    lv_label_set_text(s_mode_name, th_mode_names[s_badge_mode]);
     lv_obj_set_pos(s_mode_name, 44, 15);
     lv_obj_set_style_text_font(s_mode_name, FONT_HEADING, 0);
     lv_obj_set_style_text_color(s_mode_name, lv_color_hex(TH_TEXT_PRIMARY), 0);

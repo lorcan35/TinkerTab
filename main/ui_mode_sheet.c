@@ -306,7 +306,8 @@ void ui_mode_sheet_show(void)
         const int gap = 8;
         const int chip_count = 6;
         const int chip_w = ((MS_W - 2 * SIDE_PAD) - gap * (chip_count - 1)) / chip_count;
-        const char *labels[6] = {"Local", "Hybrid", "Cloud", "Agent", "Onboard", "Solo"};
+        /* TT #723: labels from th_mode_names (single source); preset c maps to
+         * vmode c (Local/Hybrid/Cloud/TinkerAgent/TinkerON/Solo). */
         extern void preset_click_cb(lv_event_t *e);
         for (int c = 0; c < chip_count; c++) {
             lv_obj_t *chip = lv_obj_create(row);
@@ -323,8 +324,10 @@ void ui_mode_sheet_show(void)
             lv_obj_add_event_cb(chip, preset_click_cb, LV_EVENT_CLICKED,
                                 (void *)(uintptr_t)c);
             lv_obj_t *lbl = lv_label_create(chip);
-            lv_label_set_text(lbl, labels[c]);
-            lv_obj_set_style_text_font(lbl, FONT_BODY, 0);
+            lv_label_set_text(lbl, th_mode_names[c]);
+            /* TT #723: FONT_SMALL so the longer canonical names (TinkerAgent)
+             * fit the narrow preset chip without clipping. */
+            lv_obj_set_style_text_font(lbl, FONT_SMALL, 0);
             lv_obj_center(lbl);
         }
         y += ROW_H + ROW_GAP;
