@@ -42,6 +42,11 @@
 
 static const char *TAG = "ui_settings";
 
+/* TT #723: canonical mode names live in ui_theme.c. ui_settings.c mirrors the
+ * TH_* color tokens locally rather than including ui_theme.h, so declare just
+ * the one symbol we need here. */
+extern const char *th_mode_names[];
+
 static inline void feed_wdt(void) {
     esp_task_wdt_reset();
     /* Yield to let LWIP TCP/IP task process packets on Core 0.
@@ -1861,7 +1866,9 @@ lv_obj_t *ui_settings_create(void)
     s_active_tab = tab5_settings_get_voice_mode();
     if (s_active_tab > 4) s_active_tab = 0;
     {
-       static const char *mode_names[5] = {"Local", "Hybrid", "Cloud", "TinkerClaw", "Onboard"};
+       /* TT #723: names from th_mode_names (single source). Solo (vmode 5) is
+        * intentionally still omitted from this radio — it's added properly in
+        * the Wave 3 picker redesign. */
        /* Cloud description reflects the LIVE llm_model from NVS so the
         * row doesn't lie when the user has picked, say, gemini or gpt-4o
         * instead of the original Claude default.  Condensed to the short
@@ -1878,11 +1885,8 @@ lv_obj_t *ui_settings_create(void)
           }
        }
        const char *mode_descs[5] = {
-           "Moonshine \xe2\x80\xa2 NPU",
-           "Cloud STT/TTS",
-           cloud_desc,
-           "Agents \xe2\x80\xa2 Memory",
-           "K144 stacked LLM \xe2\x80\xa2 No Dragon",
+           "Moonshine \xe2\x80\xa2 NPU",           "Cloud STT/TTS", cloud_desc, "Agents \xe2\x80\xa2 Memory",
+           "On-device LLM \xe2\x80\xa2 No Dragon", /* TT #723: was "K144" (brand leak) */
        };
        static const uint32_t mode_dot_col[5] = {
            TAB_LOCAL, TAB_HYBRID, TAB_CLOUD, TAB_TINKERCLAW, TAB_ONBOARD,
@@ -1908,7 +1912,7 @@ lv_obj_t *ui_settings_create(void)
           lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
           lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
           lv_obj_t *nm = lv_label_create(row);
-          lv_label_set_text(nm, mode_names[i]);
+          lv_label_set_text(nm, th_mode_names[i]);
           lv_obj_set_style_text_font(nm, FONT_BODY, 0);
           lv_obj_set_style_text_color(nm, lv_color_hex(TEXT_PRIMARY), 0);
           lv_obj_set_pos(nm, 44, 12);

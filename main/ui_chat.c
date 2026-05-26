@@ -253,13 +253,12 @@ static void on_mode_lp(void *ud)
     paint_header_and_view_for_mode(m);
     if (s_sugg) chat_suggestions_set_mode(s_sugg, m);
 
-    static const char *names[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard", "Solo"};
     char toast[64];
     const char *nick = llm;
     const char *slash = strchr(nick, '/');
     if (slash) nick = slash + 1;
-    snprintf(toast, sizeof(toast), "Mode: %s \xc2\xb7 %s",
-             names[m], nick[0] ? nick : "default");
+    /* TT #723: th_mode_names (ui_theme) is the single source of truth. */
+    snprintf(toast, sizeof(toast), "Mode: %s \xc2\xb7 %s", th_mode_names[m], nick[0] ? nick : "default");
     ui_home_show_toast(toast);
 }
 

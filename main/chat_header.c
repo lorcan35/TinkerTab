@@ -34,7 +34,8 @@ static const char *TAG = "chat_hdr";
 static const uint32_t s_mode_tint[VOICE_MODE_COUNT] = {
     TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
 };
-static const char *s_mode_short[VOICE_MODE_COUNT] = {"Local", "Hybrid", "Cloud", "Claw", "Onboard", "Solo"};
+/* TT #723: mode names come from th_mode_names (ui_theme.c) — the single
+ * source of truth.  Dropped the local s_mode_short copy that diverged ("Claw"). */
 
 struct chat_header {
     lv_obj_t *root;       /* 96-h bar */
@@ -244,7 +245,7 @@ void chat_header_set_mode(chat_header_t *h, uint8_t m, const char *llm)
     /* TT #328 Wave 6 — recolor through the shared widget so any future
      * change to mode-dot rendering (opacity, gradient) flows everywhere. */
     if (h->chip_dot) widget_mode_dot_set_mode(h->chip_dot, m);
-    if (h->chip_name) lv_label_set_text(h->chip_name, s_mode_short[m]);
+    if (h->chip_name) lv_label_set_text(h->chip_name, th_mode_names[m]);
     if (h->chip_sub) {
         /* v4·D connectivity polish: TinkerClaw mode talks to the openclaw
          * gateway via Dragon, so the NVS llm_model (which still holds the

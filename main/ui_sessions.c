@@ -104,20 +104,18 @@ static void mode_to_tag(uint8_t vm, char *out, size_t n, uint32_t *color_out)
     * vmode=4 (Onboard) sessions rendered as grey before the mode arrays
     * grew to VOICE_MODE_COUNT.  Now read straight from the canonical
     * th_mode_names + th_mode_colors. */
-   static const char *s_tags[VOICE_MODE_COUNT] = {
-       "LOCAL", "HYBRID", "CLOUD", "CLAW", "ONBOARD", "SOLO",
-   };
-   const char *tag;
-   uint32_t col;
+   /* TT #723: uppercase the canonical th_mode_names (single source) rather
+    * than a local copy that diverged ("CLAW"). */
    if (vm < VOICE_MODE_COUNT) {
-      tag = s_tags[vm];
-      col = th_mode_colors[vm];
+      snprintf(out, n, "%s", th_mode_names[vm]);
+      for (char *p = out; *p; p++) {
+         if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 32);
+      }
+      if (color_out) *color_out = th_mode_colors[vm];
    } else {
-      tag = "?";
-      col = 0x5C5C68;
+      snprintf(out, n, "?");
+      if (color_out) *color_out = 0x5C5C68;
    }
-    snprintf(out, n, "%s", tag);
-    if (color_out) *color_out = col;
 }
 
 /* U1 (#206): unix-epoch updated_at → time_top + optional time_bot.

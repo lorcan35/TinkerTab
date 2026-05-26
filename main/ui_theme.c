@@ -14,8 +14,13 @@ static const char *TAG = "ui_theme";
 /* TT #328 Wave 1: bumped from [4] → [VOICE_MODE_COUNT].  Pre-Wave-1 the
  * vmode=4 (Onboard) row in Sessions/Drawer rendered as grey "?" because
  * callers indexed [4] arrays with vm=4. */
+/* TT #723: canonical mode names — the single source of truth. vmode 3 is
+ * TinkerAgent (the *mode*; TinkerClaw stays the platform/ecosystem name);
+ * vmode 4 is TinkerON (the on-device addon). chat_header / ui_chat /
+ * ui_sessions / ui_mode_sheet / ui_settings all read this array now instead
+ * of keeping their own divergent {Claw/TinkerClaw/Agent, Onboard/K144} copies. */
 const char *th_mode_names[VOICE_MODE_COUNT] = {
-    "Local", "Hybrid", "Cloud", "TinkerClaw", "Onboard", "Solo",
+    "Local", "Hybrid", "Cloud", "TinkerAgent", "TinkerON", "Solo",
 };
 const uint32_t th_mode_colors[VOICE_MODE_COUNT] = {
     TH_MODE_LOCAL, TH_MODE_HYBRID, TH_MODE_CLOUD, TH_MODE_CLAW, TH_MODE_ONBOARD, TH_MODE_SOLO,
