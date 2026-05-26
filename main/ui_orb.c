@@ -198,6 +198,14 @@ static lv_timer_t *s_idle_breath_timer = NULL; /* TT #543: idle-only slow breath
 static uint32_t s_idle_breath_period_ms = IDLE_BREATH_AWAKE_MS;
 static uint32_t s_last_interaction_ms = 0;
 
+/* TT #724 Phase B1 — organic breath: a phase accumulator + per-cycle ±15%
+ * jitter on period + amplitude so the breath isn't a metronome. Only used
+ * when s_fx.organic; otherwise the original fixed-period path runs. */
+static float s_breath_phase = 0.0f;        /* 0..1 within the current cycle */
+static uint32_t s_breath_cycle_period = 0; /* jittered period for this cycle (0 = reroll) */
+static int s_breath_cycle_amp = 0;         /* jittered amplitude for this cycle */
+static uint32_t s_breath_last_ms = 0;      /* last tick time for dt integration */
+
 /* Forward declarations — body_pulse + idle_breath helpers are defined
  * alongside the paint helpers near the bottom of the file but the state
  * machine in ui_orb_set_state needs them earlier. */
@@ -532,9 +540,22 @@ static void tilt_tick_cb(lv_timer_t *t) {
    float wobble_x = wobble_amp * sinf(wx * two_pi);
    float wobble_y = wobble_amp * sinf(wy * two_pi + 1.2f);
 
-   lv_obj_set_pos(s_spec,
-                  s_spec_rest_x_eff + (int)(dx + drift_x + wobble_x),
-                  s_spec_rest_y_eff + (int)(dy + drift_y + wobble_y));
+   /* TT #724 B2 — organic wander: a much SLOWER, slightly larger sine pair
+    * (23 s / 37 s) that migrates the lissajous figure-eight's home base
+    * around over tens of seconds, so the highlight never settles into an
+    * obviously-repeating path even when the device is dead still and the
+    * room is silent. Same s_spec position channel — not a new motion. */
+   float wander_x = 0.0f, wander_y = 0.0f;
+   if (s_fx.organic) {
+      float ax = (float)(t_ms % 23000) / 23000.0f;
+      float ay = (float)(t_ms % 37000) / 37000.0f;
+      const float wander_amp = 5.0f;
+      wander_x = wander_amp * sinf(ax * two_pi);
+      wander_y = wander_amp * sinf(ay * two_pi + 2.1f);
+   }
+
+   lv_obj_set_pos(s_spec, s_spec_rest_x_eff + (int)(dx + drift_x + wobble_x + wander_x),
+                  s_spec_rest_y_eff + (int)(dy + drift_y + wobble_y + wander_y));
 }
 
 static void tilt_start(void) {
@@ -2215,12 +2236,41 @@ static void idle_breath_tick_cb(lv_timer_t *t) {
    if (s_state != ORB_STATE_IDLE) return;
    uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
    uint32_t period = s_idle_breath_period_ms ? s_idle_breath_period_ms : IDLE_BREATH_AWAKE_MS;
-   float phase = (float)(t_ms % period) / (float)period;
+   float phase;
+   int amp = IDLE_BREATH_AMPLITUDE;
+   if (s_fx.organic) {
+      /* TT #724 B1: integrate a phase accumulator so we can vary the period
+       * per cycle (the old `t_ms % period` jumps phase if period changes).
+       * At each cycle boundary, reroll period + amplitude ±15% via a tiny
+       * LCG → the breath reads like a living thing, not a metronome. */
+      uint32_t dt = s_breath_last_ms ? (t_ms - s_breath_last_ms) : 200;
+      s_breath_last_ms = t_ms;
+      if (s_breath_cycle_period == 0) {
+         s_breath_cycle_period = period;
+         s_breath_cycle_amp = IDLE_BREATH_AMPLITUDE;
+      }
+      s_breath_phase += (float)dt / (float)s_breath_cycle_period;
+      if (s_breath_phase >= 1.0f) {
+         s_breath_phase -= 1.0f;
+         static uint32_t lcg = 0x9E3779B9u;
+         lcg = lcg * 1664525u + 1013904223u;
+         float jp = 0.85f + (float)((lcg >> 8) & 0xFF) / 255.0f * 0.30f;  /* 0.85..1.15 */
+         float ja = 0.85f + (float)((lcg >> 16) & 0xFF) / 255.0f * 0.30f; /* 0.85..1.15 */
+         s_breath_cycle_period = (uint32_t)((float)period * jp);
+         s_breath_cycle_amp = (int)((float)IDLE_BREATH_AMPLITUDE * ja);
+         s_breath_jitter_pct = (uint8_t)(jp >= 1.0f ? (jp - 1.0f) * 100.0f : (1.0f - jp) * 100.0f);
+      }
+      phase = s_breath_phase;
+      amp = s_breath_cycle_amp;
+   } else {
+      phase = (float)(t_ms % period) / (float)period;
+      s_breath_jitter_pct = 0;
+   }
    /* sin(2π·phase) → half-rectified so the halo only adds (never goes
     * negative); ramps 0 → A → 0 over the cycle. */
    float s = sinf(phase * 6.28318530718f);
    if (s < 0.0f) s = 0.0f;
-   int opa = (int)(s * (float)IDLE_BREATH_AMPLITUDE);
+   int opa = (int)(s * (float)amp);
    if (opa == s_idle_breath_last_opa) return;
    s_idle_breath_last_opa = opa;
    lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);
