@@ -185,6 +185,20 @@ void ui_mode_sheet_show(void)
      * keys off the persisted vmode, and tab5_mode_resolve stays only for the
      * debug /mode-from-tiers path. No tier resync needed here. */
 
+    /* TT #724 (#7): don't layer the picker over an active voice session. If a
+     * turn is mid-flight (in-place listening / processing / speaking), cancel
+     * it so the picker is the sole foreground surface — opening the picker is a
+     * deliberate context switch (matches the mid-turn cancel on commit). */
+    voice_state_t vs = voice_get_state();
+    if (vs != VOICE_STATE_IDLE && vs != VOICE_STATE_READY) {
+       voice_cancel();
+    }
+    {
+       extern bool ui_voice_is_visible(void);
+       extern void ui_voice_hide(void);
+       if (ui_voice_is_visible()) ui_voice_hide();
+    }
+
     /* Overlay scrim — fills the screen, dim semi-transparent, tappable
      * to dismiss.  lv_layer_top() keeps it above home + any other screen. */
     s_overlay = lv_obj_create(lv_layer_top());
@@ -307,7 +321,7 @@ static void commit_mode(uint8_t vmode) {
       ESP_LOGI(TAG, "vmode change while voice in state %d — cancelling first", (int)vs);
       tab5_debug_obs_event("mode.cancel_for_switch", "");
       voice_cancel();
-      ui_home_show_toast("Switched mode — current turn stopped");
+      ui_home_show_toast("Switched mode - current turn stopped");
    }
 
    tab5_settings_set_voice_mode(vmode);
@@ -467,8 +481,21 @@ static void build_smartness(void) {
    lv_obj_set_pos(lab, SIDE_PAD, 0);
 
    bool fixed = s_mode_meta[s_sel_vmode].fixed_brain;
-   uint8_t tier = tab5_settings_get_int_tier();
-   if (tier > 2) tier = 0;
+   /* TT #724: reflect the ACTUAL model, not int_tier (which drifts). Map the
+    * mode's model field to a tier; -1 (custom / off-catalog) highlights none. */
+   int tier = -1;
+   {
+      char m[64] = {0};
+      if (s_sel_vmode == VOICE_MODE_SOLO)
+         tab5_settings_get_or_mdl_llm(m, sizeof(m));
+      else
+         tab5_settings_get_llm_model(m, sizeof(m));
+      for (int i = 0; i < 3; i++)
+         if (strcmp(m, s_smart_cloud[i]) == 0) {
+            tier = i;
+            break;
+         }
+   }
    const char *names[3] = {"Fast", "Balanced", "Smart"};
    int seg_w = (MS_W - 2 * SIDE_PAD - 2 * 6) / 3;
    for (int i = 0; i < 3; i++) {
@@ -546,8 +573,14 @@ static void adv_engine_cb(lv_event_t *e) {
 static void adv_model_cb(lv_event_t *e) {
    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
    if (idx >= ADV_MODEL_COUNT) return;
-   tab5_settings_set_llm_model(s_adv_models[idx].model_id);
-   voice_send_config_update((int)s_sel_vmode, (char *)s_adv_models[idx].model_id);
+   const char *model = s_adv_models[idx].model_id;
+   /* Solo reads or_mdl_llm; every other cloud mode reads llm_model. Mirror
+    * smart_click_cb so an exact-model override actually takes effect (TT #724). */
+   if (s_sel_vmode == VOICE_MODE_SOLO)
+      tab5_settings_set_or_mdl_llm(model);
+   else
+      tab5_settings_set_llm_model(model);
+   voice_send_config_update((int)s_sel_vmode, (char *)model);
    build_advanced();
 }
 
@@ -614,7 +647,10 @@ static void build_advanced(void) {
       lv_obj_set_scroll_dir(scroll, LV_DIR_HOR);
       lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_OFF);
       char cur_model[64] = {0};
-      tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+      if (s_sel_vmode == VOICE_MODE_SOLO)
+         tab5_settings_get_or_mdl_llm(cur_model, sizeof(cur_model));
+      else
+         tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
       int cx = 0;
       for (uint32_t i = 0; i < ADV_MODEL_COUNT; i++) {
          bool sel = (strcmp(cur_model, s_adv_models[i].model_id) == 0);
@@ -648,7 +684,24 @@ static void build_advanced(void) {
 }
 
 bool ui_mode_sheet_is_modified(void) {
-   return tab5_settings_get_llm_engine() != LLM_ENG_AUTO || tab5_settings_get_privacy_lock();
+   if (tab5_settings_get_llm_engine() != LLM_ENG_AUTO) return true;
+   if (tab5_settings_get_privacy_lock()) return true;
+   /* TT #724 (#4): a custom (off-tier) model on a model-picking mode is also a
+    * deviation from the plain Smartness default. */
+   uint8_t vm = tab5_settings_get_voice_mode();
+   if (vm == VOICE_MODE_CLOUD || vm == VOICE_MODE_SOLO) {
+      char m[64] = {0};
+      if (vm == VOICE_MODE_SOLO)
+         tab5_settings_get_or_mdl_llm(m, sizeof(m));
+      else
+         tab5_settings_get_llm_model(m, sizeof(m));
+      if (m[0]) {
+         for (int i = 0; i < 3; i++)
+            if (strcmp(m, s_smart_cloud[i]) == 0) return false;
+         return true; /* model set but not a tier default => custom */
+      }
+   }
+   return false;
 }
 
 /* ── Agent consent modal ─────────────────────────────────────────────── */
@@ -821,7 +874,7 @@ static void show_agent_consent(void) {
    lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
 
    lv_obj_t *cancel_lbl = lv_label_create(cancel);
-   lv_label_set_text(cancel_lbl, "Keep Ask mode");
+   lv_label_set_text(cancel_lbl, "Keep current mode");
    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
    lv_obj_center(cancel_lbl);

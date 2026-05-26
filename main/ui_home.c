@@ -519,16 +519,18 @@ static void update_mode_ui(uint8_t mode)
    if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
    if (s_mode_name) lv_label_set_text(s_mode_name, th_mode_names[mode]);
    if (s_mode_sub) {
-      /* TT #724 (3.4): an Advanced-drawer override (engine pin / privacy lock)
-       * makes the effective route differ from the plain mode — flag it. */
+      /* TT #724 (3.4): an Advanced-drawer override (engine pin / privacy lock /
+       * custom model) makes the effective route differ from the plain mode.
+       * Show a short amber "MODIFIED" instead of appending to the tagline so it
+       * stays salient and never overruns the dropdown chevron at the right edge. */
       extern bool ui_mode_sheet_is_modified(void);
       s_badge_modified = ui_mode_sheet_is_modified();
       if (s_badge_modified) {
-         char buf[64];
-         snprintf(buf, sizeof(buf), "%s \xe2\x80\xa2 modified", s_mode_tagline[mode]);
-         lv_label_set_text(s_mode_sub, buf);
+         lv_label_set_text(s_mode_sub, "MODIFIED");
+         lv_obj_set_style_text_color(s_mode_sub, lv_color_hex(TH_AMBER), 0);
       } else {
          lv_label_set_text(s_mode_sub, s_mode_tagline[mode]);
+         lv_obj_set_style_text_color(s_mode_sub, lv_color_hex(TH_TEXT_DIM), 0);
       }
    }
    /* TT #723: place the tagline after the (variable-length) canonical name so
@@ -1524,7 +1526,7 @@ void ui_home_update_status(void)
             case ST_NO_WIFI:     sys = "OFFLINE";   col = TH_STATUS_RED; break;
             case ST_DRAGON_DOWN:
                if (onboard_healthy) {
-                  sys = "ONBOARD";
+                  sys = "ON-DEVICE";
                   col = TH_MODE_ONBOARD;
                } else {
                   sys = "NO DRAGON";
@@ -1540,14 +1542,14 @@ void ui_home_update_status(void)
                 } else if (onboard_healthy && degraded) {
                    /* Onboard mode: Dragon-side degraded reasons aren't
                     * relevant to user-facing chat — show ONBOARD. */
-                   sys = "ONBOARD";
+                   sys = "ON-DEVICE";
                    col = TH_MODE_ONBOARD;
                 } else if (degraded) {
                    /* Reconnecting / Remote / Dragon-unreachable, etc. */
                    sys = degraded;
                    col = 0xFBBF24; /* amber-hot -- attention, not error */
                 } else if (onboard_healthy) {
-                   sys = "ONBOARD";
+                   sys = "ON-DEVICE";
                    col = TH_MODE_ONBOARD;
                 } else {
                    sys = "ONLINE";

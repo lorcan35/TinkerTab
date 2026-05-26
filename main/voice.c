@@ -1653,6 +1653,18 @@ esp_err_t voice_connect_async(const char *dragon_host, uint16_t dragon_port, boo
 
 esp_err_t voice_start_listening(void)
 {
+   /* TT #724 (#7): don't start a voice turn while the mode picker is open. A
+    * spurious wakeword (or stray tap) would otherwise render the listening UI
+    * on top of the picker — they coexisted before. The picker is a deliberate
+    * interaction; let it win until the user closes it. */
+   {
+      extern bool ui_mode_sheet_visible(void);
+      if (ui_mode_sheet_visible()) {
+         ESP_LOGI(TAG, "voice_start_listening refused — mode picker open");
+         return ESP_ERR_INVALID_STATE;
+      }
+   }
+
    /* TT #317 Phase 6b: in Onboard mode the K144's own mic + chain handles
     * the whole turn — no Tab5 mic, no Dragon WS.  Short-circuit BEFORE the
     * mic_mute / ws_live checks since those are about Tab5's mic + Dragon
@@ -1834,7 +1846,7 @@ esp_err_t voice_start_dictation(void)
           return ESP_ERR_NO_MEM;
        }
        ESP_LOGI(TAG, "Offline dictation recording -> %s", path);
-       ui_home_show_toast("Dragon offline — recording to SD; will transcribe when back");
+       ui_home_show_toast("Dragon offline - recording to SD; will transcribe when back");
     } else {
        /* W4-A: fresh turn_id for the dictation turn. */
        gen_turn_id();
@@ -2016,7 +2028,7 @@ esp_err_t voice_stop_listening(void)
       /* Finalise the SD WAV → Note state RECORDED.  The transcription
        * queue picks it up automatically when Dragon's back. */
       ui_notes_stop_recording(NULL);
-      ui_home_show_toast("Saved offline — will sync to Notes when Dragon's back");
+      ui_home_show_toast("Saved offline - will sync to Notes when Dragon's back");
       voice_reset_activity_timestamp();
       voice_set_state(VOICE_STATE_READY, "offline_saved");
       /* PR 1: pipeline transition — offline path queues an upload-when-
@@ -2375,7 +2387,7 @@ esp_err_t voice_send_text(const char *text)
               * couldn't land — surface that distinctly so the user
               * knows to either turn the lock off OR bring K144 up. */
              if (tab5_settings_get_privacy_lock()) {
-                ui_home_show_toast("Privacy lock on — K144 not ready");
+                ui_home_show_toast("Privacy lock on - K144 not ready");
              } else {
                 ui_home_show_toast("Onboard LLM not ready");
              }
