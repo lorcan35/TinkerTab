@@ -228,8 +228,20 @@ static int s_ambient_body_stop_last;
  * ambient_apply when audio rises (lit-from-within effect). */
 static uint32_t s_body_bot_base;
 
-/* TT #555 FX state — all default off (current behaviour preserved). */
-static ui_orb_fx_t s_fx = {0};
+/* TT #555 FX state — legacy effects default off (current behaviour preserved).
+ * TT #724 ambient upgrades default ON so the "Living + Glanceable" orb is the
+ * out-of-box experience; still individually togglable via /orb/fx. */
+static ui_orb_fx_t s_fx = {
+    .rim_light = true,
+    .organic = true,
+    .ambient_accent = true,
+    .event_pulse = true,
+};
+/* TT #724 telemetry mirrors (read by ui_orb_get_motion_state). */
+static uint8_t s_accent_signal = 0;
+static uint8_t s_accent_opa = 0;
+static uint8_t s_breath_jitter_pct = 0;
+static lv_obj_t *s_rimlight = NULL;        /* A1 cool counter-light + C ambient-accent override */
 static lv_obj_t *s_glass_ring = NULL;      /* top-inside highlight when fx.glass */
 static lv_timer_t *s_spin_timer = NULL;    /* drives transform_rotation when fx.spin */
 static lv_timer_t *s_rainbow_timer = NULL; /* slow hue cycle when fx.rainbow */
@@ -808,6 +820,13 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_clear_flag(s_saved_burst, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
    lv_obj_add_flag(s_saved_burst, LV_OBJ_FLAG_HIDDEN);
 
+   /* TT #724 Phase A2 (contact-glow) intentionally dropped after on-device
+    * evaluation: the home screen is deep black and the orb reads as floating
+    * in space, so a grounding glow/shadow has no surface to fall on — every
+    * hard-edged variant (dark or warm) read as a distinct "bar" beneath the
+    * orb, and a soft blurred glow busts the render budget (TT #547). The
+    * rim-light (A1) carries the premium-depth goal on its own. */
+
    /* Halo FIRST so it sits BEHIND s_body in z-order (LVGL draws siblings
     * in creation order).  s_body's opa-cover gradient masks the part of
     * the halo overlapping the orb; only the outer "bloom" ring shows. */
@@ -889,6 +908,25 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       lv_obj_set_style_border_opa(s_rim, 0, 0);
       lv_obj_remove_flag(s_rim, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_clear_flag(s_rim, LV_OBJ_FLAG_SCROLLABLE);
+   }
+
+   /* TT #724 Phase A1 — rim-light: a thin COOL counter-light ring on the
+    * sphere silhouette, opposite the warm specular, for two-light volume.
+    * Border-only (cheap — no fill raster, no blur).  Held at a low base opa
+    * when fx.rim_light; Phase C re-colours/opacifies this same ring to carry
+    * the ambient accent (it takes precedence over the cool base). */
+   s_rimlight = lv_obj_create(parent);
+   if (s_rimlight) {
+      lv_obj_remove_style_all(s_rimlight);
+      lv_obj_set_size(s_rimlight, ORB_SIZE, ORB_SIZE);
+      lv_obj_set_pos(s_rimlight, cx - ORB_SIZE / 2, cy - ORB_SIZE / 2);
+      lv_obj_set_style_radius(s_rimlight, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_opa(s_rimlight, 0, 0);
+      lv_obj_set_style_border_width(s_rimlight, 2, 0);
+      lv_obj_set_style_border_color(s_rimlight, lv_color_hex(0x6E8CB0), 0); /* cool counter-light */
+      lv_obj_set_style_border_opa(s_rimlight, s_fx.rim_light ? 46 : 0, 0);
+      lv_obj_remove_flag(s_rimlight, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(s_rimlight, LV_OBJ_FLAG_SCROLLABLE);
    }
 
    /* Skill-rim comet — sibling AFTER s_body so it draws on top.
@@ -1046,6 +1084,7 @@ void ui_orb_destroy(void) {
    s_spec = NULL;
    s_halo = NULL;
    s_rim = NULL;
+   s_rimlight = NULL;
    s_comet = NULL;
    s_inner_core = NULL;
    /* Keep s_body_canvas_buf allocated — it's PSRAM, reused across
@@ -1334,6 +1373,9 @@ bool ui_orb_get_motion_state(ui_orb_motion_state_t *out) {
    out->idle_breath_opa = (uint8_t)s_idle_breath_last_opa;
    out->state = (uint8_t)s_state;
    out->sleep_phase = (uint8_t)s_sleep_phase;
+   out->accent_signal = s_accent_signal;
+   out->accent_opa = s_accent_opa;
+   out->breath_jitter_pct = s_breath_jitter_pct;
    out->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
    return true;
 }
@@ -1542,6 +1584,8 @@ void ui_orb_set_fx(const ui_orb_fx_t *fx) {
       fx_shake_stop();
    if (fx->glass != old.glass) fx_glass_apply(fx->glass);
    if (!fx->expand && old.expand) fx_apply_scale(); /* snap back to 1.0× */
+   /* TT #724 Phase A — apply depth-layer toggles live. */
+   if (s_rimlight && fx->rim_light != old.rim_light) lv_obj_set_style_border_opa(s_rimlight, fx->rim_light ? 46 : 0, 0);
 }
 
 void ui_orb_get_fx(ui_orb_fx_t *out) {

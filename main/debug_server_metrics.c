@@ -272,6 +272,9 @@ static esp_err_t orb_motion_handler(httpd_req_t *req) {
       cJSON_AddNumberToObject(root, "idle_breath_opa", st.idle_breath_opa);
       cJSON_AddNumberToObject(root, "state", st.state);
       cJSON_AddNumberToObject(root, "sleep_phase", st.sleep_phase);
+      cJSON_AddNumberToObject(root, "accent_signal", st.accent_signal);
+      cJSON_AddNumberToObject(root, "accent_opa", st.accent_opa);
+      cJSON_AddNumberToObject(root, "breath_jitter_pct", st.breath_jitter_pct);
       cJSON_AddNumberToObject(root, "uptime_ms", st.uptime_ms);
    }
    return send_json_resp(req, root);
@@ -295,6 +298,11 @@ static esp_err_t orb_fx_handler(httpd_req_t *req) {
       if (httpd_query_key_value(q, "glass", v, sizeof(v)) == ESP_OK) fx.glass = (atoi(v) != 0);
       if (httpd_query_key_value(q, "rainbow", v, sizeof(v)) == ESP_OK) fx.rainbow = (atoi(v) != 0);
       if (httpd_query_key_value(q, "shake", v, sizeof(v)) == ESP_OK) fx.shake = (atoi(v) != 0);
+      /* TT #724 ambient upgrade toggles. */
+      if (httpd_query_key_value(q, "rim_light", v, sizeof(v)) == ESP_OK) fx.rim_light = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "organic", v, sizeof(v)) == ESP_OK) fx.organic = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "ambient_accent", v, sizeof(v)) == ESP_OK) fx.ambient_accent = (atoi(v) != 0);
+      if (httpd_query_key_value(q, "event_pulse", v, sizeof(v)) == ESP_OK) fx.event_pulse = (atoi(v) != 0);
       ui_orb_set_fx(&fx);
    }
    cJSON *root = cJSON_CreateObject();
@@ -303,6 +311,10 @@ static esp_err_t orb_fx_handler(httpd_req_t *req) {
    cJSON_AddBoolToObject(root, "glass", fx.glass);
    cJSON_AddBoolToObject(root, "rainbow", fx.rainbow);
    cJSON_AddBoolToObject(root, "shake", fx.shake);
+   cJSON_AddBoolToObject(root, "rim_light", fx.rim_light);
+   cJSON_AddBoolToObject(root, "organic", fx.organic);
+   cJSON_AddBoolToObject(root, "ambient_accent", fx.ambient_accent);
+   cJSON_AddBoolToObject(root, "event_pulse", fx.event_pulse);
    return send_json_resp(req, root);
 }
 

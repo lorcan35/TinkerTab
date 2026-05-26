@@ -96,6 +96,9 @@ typedef struct {
    uint8_t idle_breath_opa;  /* base breath opa contribution to halo */
    uint8_t state;            /* ui_orb_state_t (IDLE/LISTENING/PROCESSING/SPEAKING) */
    uint8_t sleep_phase;      /* 0=AWAKE, 1=DROWSY, 2=ASLEEP */
+   uint8_t accent_signal;    /* TT #724 (Phase C): 0 none, 1 unread, 2 health, 3 cap */
+   uint8_t accent_opa;       /* current ambient-accent rim opa */
+   uint8_t breath_jitter_pct; /* TT #724 (Phase B): current breath period jitter % (0..30) */
    uint32_t uptime_ms;
 } ui_orb_motion_state_t;
 
@@ -116,6 +119,11 @@ typedef struct {
    bool glass;   /* glassmorphism: translucent body + top highlight ring */
    bool rainbow; /* slow palette hue cycle, replaces circadian while active */
    bool shake;   /* IMU shake detection → brief startle response (organism reaction) */
+   /* TT #724 ambient upgrades ("Living + Glanceable") — default ON. */
+   bool rim_light;      /* A1: secondary cool counter-light for volume */
+   bool organic;        /* B1+B2: irregular breath + non-repeating drift */
+   bool ambient_accent; /* C: one prioritized glanceable rim (unread/health/cap) */
+   bool event_pulse;    /* D: "noticed" double-pulse on events */
 } ui_orb_fx_t;
 
 void ui_orb_set_fx(const ui_orb_fx_t *fx);
