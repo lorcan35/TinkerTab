@@ -182,7 +182,11 @@ static void fetch_skills_job(void *arg) {
    char url[160];
    snprintf(url, sizeof(url), "http://%s:%d/api/v1/tools", dragon_host, TAB5_VOICE_PORT);
 
-   const size_t resp_cap = 16 * 1024;
+   /* TT #722: 64 KB (was 16 KB). The /api/v1/tools registry with full JSON
+    * schemas is ~16.5 KB for 25 tools and grows — the old 16 KB cap truncated
+    * it mid-JSON → cJSON_Parse failed → the bogus "JSON parse failed" error.
+    * PSRAM-backed, so the headroom is cheap. */
+   const size_t resp_cap = 64 * 1024;
    char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!resp_buf) {
       snprintf(p->err_msg, sizeof(p->err_msg), "PSRAM alloc failed");
@@ -249,6 +253,16 @@ static void fetch_skills_job(void *arg) {
    resp_buf[total] = '\0';
    esp_http_client_close(client);
    esp_http_client_cleanup(client);
+
+   /* TT #722: if we filled the buffer, the response was truncated — report it
+    * honestly instead of letting cJSON fail with a misleading "parse" error. */
+   if (total >= (int)resp_cap - 1) {
+      snprintf(p->err_msg, sizeof(p->err_msg), "tool list too large (>%dKB)", (int)(resp_cap / 1024));
+      p->fetch_ok = false;
+      heap_caps_free(resp_buf);
+      tab5_lv_async_call(async_render_cb, p);
+      return;
+   }
 
    cJSON *root = cJSON_Parse(resp_buf);
    heap_caps_free(resp_buf);
@@ -327,19 +341,30 @@ static void render_payload(const skills_payload_t *p) {
    if (!p->fetch_ok) {
       lv_obj_t *e = lv_label_create(s_list_root);
       lv_label_set_long_mode(e, LV_LABEL_LONG_WRAP);
+      /* TT #722: honest, state-aware copy. Old text always blamed a missing
+       * token in dev language ("POST /settings"), even when the token was set
+       * and Dragon was online. Branch on whether the token is actually set. */
+      char tok[8] = {0};
+      tab5_settings_get_dragon_api_token(tok, sizeof(tok));
       char buf[256];
-      snprintf(buf, sizeof(buf),
-               "Couldn't reach Dragon's tool registry (%s).\n\n"
-               "Set the Dragon API token under POST /settings "
-               "(dragon_api_token) and re-open this screen.",
-               p->err_msg[0] ? p->err_msg : "no detail");
+      if (tok[0] == '\0') {
+         snprintf(buf, sizeof(buf),
+                  "Tool registry unavailable.\n\n"
+                  "Add your Dragon API token in Settings, then reopen this screen.");
+      } else {
+         snprintf(buf, sizeof(buf),
+                  "Couldn't load the tool registry.\n\n"
+                  "Dragon is connected, but the tool list didn't come through. "
+                  "Reopen to retry. (%s)",
+                  p->err_msg[0] ? p->err_msg : "no detail");
+      }
       lv_label_set_text(e, buf);
       lv_obj_set_width(e, SW - 2 * SIDE_PAD);
       lv_obj_set_style_pad_left(e, SIDE_PAD, 0);
       lv_obj_set_style_text_font(e, FONT_BODY, 0);
       lv_obj_set_style_text_color(e, lv_color_hex(TH_TEXT_DIM), 0);
       lv_obj_set_style_text_line_space(e, 4, 0);
-      if (s_count_lbl) lv_label_set_text(s_count_lbl, "OFFLINE");
+      if (s_count_lbl) lv_label_set_text(s_count_lbl, "UNAVAILABLE");
       return;
    }
 
