@@ -18,6 +18,7 @@
 #include "ui_home.h"       /* W8: ui_home_show_toast */
 #include "ui_theme.h"
 #include "voice.h"
+#include "voice_onboard.h" /* TT #724 (3.5) — voice_onboard_failover_state */
 
 static const char *TAG = "ui_mode_sheet";
 
@@ -323,6 +324,21 @@ void ui_mode_sheet_show(void)
             lv_obj_add_flag(chip, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_add_event_cb(chip, preset_click_cb, LV_EVENT_CLICKED,
                                 (void *)(uintptr_t)c);
+            /* TT #724 (3.5) capability gating: dim a mode that can't run right
+             * now — TinkerON (4) needs the addon warm, Solo (5) needs an
+             * OpenRouter key.  Left clickable so the tap explains why (the
+             * toast in preset_click_cb cases 4/5). */
+            bool avail = true;
+            if (c == 4) {
+               avail = (voice_onboard_failover_state() == 2 /* M5_FAIL_READY */);
+            } else if (c == 5) {
+               /* Buffer must fit the whole key — NVS get_str returns empty on
+                * an undersized buffer, which falsely greyed Solo (TT #724). */
+               char k[128] = {0};
+               tab5_settings_get_or_key(k, sizeof k);
+               avail = (k[0] != '\0');
+            }
+            if (!avail) lv_obj_set_style_opa(chip, LV_OPA_40, 0);
             lv_obj_t *lbl = lv_label_create(chip);
             lv_label_set_text(lbl, th_mode_names[c]);
             /* TT #723: FONT_SMALL so the longer canonical names (TinkerAgent)
@@ -568,6 +584,16 @@ void preset_click_cb(lv_event_t *e)
                       * taxonomy doesn't apply, so the dials' visual state
                       * stays at whatever the user last picked.  Closes the
                       * "K144 unreachable from sheet" half of audit P0 #10. */
+           /* TT #724 (3.5): don't switch to TinkerON when the addon isn't
+            * ready — that lands the user on a non-functional mode.  Mirror
+            * the Solo (case 5) no-key guard. */
+           if (voice_onboard_failover_state() != 2 /* M5_FAIL_READY */) {
+              if (tab5_ui_try_lock(150)) {
+                 ui_home_show_toast("TinkerON not ready — check the module");
+                 tab5_ui_unlock();
+              }
+              return;
+           }
            tab5_settings_set_voice_mode(VOICE_MODE_ONBOARD);
            ui_audio_cue_play(UI_CUE_MODE_SWITCH); /* W8: chirp on Onboard preset */
            char model[64] = {0};
