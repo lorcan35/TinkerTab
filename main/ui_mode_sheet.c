@@ -546,8 +546,14 @@ static void adv_engine_cb(lv_event_t *e) {
 static void adv_model_cb(lv_event_t *e) {
    uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
    if (idx >= ADV_MODEL_COUNT) return;
-   tab5_settings_set_llm_model(s_adv_models[idx].model_id);
-   voice_send_config_update((int)s_sel_vmode, (char *)s_adv_models[idx].model_id);
+   const char *model = s_adv_models[idx].model_id;
+   /* Solo reads or_mdl_llm; every other cloud mode reads llm_model. Mirror
+    * smart_click_cb so an exact-model override actually takes effect (TT #724). */
+   if (s_sel_vmode == VOICE_MODE_SOLO)
+      tab5_settings_set_or_mdl_llm(model);
+   else
+      tab5_settings_set_llm_model(model);
+   voice_send_config_update((int)s_sel_vmode, (char *)model);
    build_advanced();
 }
 
@@ -614,7 +620,10 @@ static void build_advanced(void) {
       lv_obj_set_scroll_dir(scroll, LV_DIR_HOR);
       lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_OFF);
       char cur_model[64] = {0};
-      tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+      if (s_sel_vmode == VOICE_MODE_SOLO)
+         tab5_settings_get_or_mdl_llm(cur_model, sizeof(cur_model));
+      else
+         tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
       int cx = 0;
       for (uint32_t i = 0; i < ADV_MODEL_COUNT; i++) {
          bool sel = (strcmp(cur_model, s_adv_models[i].model_id) == 0);
