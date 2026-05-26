@@ -1381,6 +1381,10 @@ void ui_home_update_status(void)
      * check is microsecond-scale on the no-op path. */
     ui_orb_repaint_if_hour_changed();
 
+    /* TT #724 (Phase C): refresh the orb's ambient accent (pending messages /
+     * degraded health / near cap) on the same ~2 s cadence. */
+    ui_orb_ambient_tick();
+
     /* TT #328 Wave 11 P0 #16 — keep the orb status pip in sync with the
      * branching state so the user sees what tap will do at a glance. */
     paint_orb_pip_for_context();

@@ -25,10 +25,13 @@
 #include "esp_timer.h" /* esp_timer_get_time for RECORDING caption timer (PR 2) */
 #include "imu.h"       /* tab5_imu_read for tilt-driven specular drift */
 #include "lvgl.h"
+#include "settings.h"             /* TT #724 accent: voice_mode + budget accessors */
 #include "ui_core.h"              /* tab5_lv_async_call for cross-thread repaints */
+#include "ui_notification.h"      /* TT #724 accent: ui_notification_active_count */
 #include "voice.h"                /* voice_get_current_rms for the LISTENING bloom */
 #include "voice_dictation.h"      /* pipeline-state types (PR 2) */
 #include "voice_dictation_lvgl.h" /* LVGL-marshalled subscriber (PR 2) */
+#include "voice_onboard.h"        /* TT #724 accent: voice_onboard_failover_state */
 #include "widget.h"               /* widget_tone_t for paint_for_tone */
 
 static const char *TAG = "ui_orb";
@@ -198,6 +201,18 @@ static lv_timer_t *s_idle_breath_timer = NULL; /* TT #543: idle-only slow breath
 static uint32_t s_idle_breath_period_ms = IDLE_BREATH_AWAKE_MS;
 static uint32_t s_last_interaction_ms = 0;
 
+/* TT #724 Phase B1 — organic breath: a phase accumulator + per-cycle ±15%
+ * jitter on period + amplitude so the breath isn't a metronome. Only used
+ * when s_fx.organic; otherwise the original fixed-period path runs. */
+static float s_breath_phase = 0.0f;        /* 0..1 within the current cycle */
+static uint32_t s_breath_cycle_period = 0; /* jittered period for this cycle (0 = reroll) */
+static int s_breath_cycle_amp = 0;         /* jittered amplitude for this cycle */
+static uint32_t s_breath_last_ms = 0;      /* last tick time for dt integration */
+
+/* TT #724 Phase D — event micro-pulse: while set, the idle breath yields the
+ * halo so the "noticed" double-pulse owns it cleanly. */
+static uint32_t s_event_pulse_until_ms = 0;
+
 /* Forward declarations — body_pulse + idle_breath helpers are defined
  * alongside the paint helpers near the bottom of the file but the state
  * machine in ui_orb_set_state needs them earlier. */
@@ -228,8 +243,20 @@ static int s_ambient_body_stop_last;
  * ambient_apply when audio rises (lit-from-within effect). */
 static uint32_t s_body_bot_base;
 
-/* TT #555 FX state — all default off (current behaviour preserved). */
-static ui_orb_fx_t s_fx = {0};
+/* TT #555 FX state — legacy effects default off (current behaviour preserved).
+ * TT #724 ambient upgrades default ON so the "Living + Glanceable" orb is the
+ * out-of-box experience; still individually togglable via /orb/fx. */
+static ui_orb_fx_t s_fx = {
+    .rim_light = true,
+    .organic = true,
+    .ambient_accent = true,
+    .event_pulse = true,
+};
+/* TT #724 telemetry mirrors (read by ui_orb_get_motion_state). */
+static uint8_t s_accent_signal = 0;
+static uint8_t s_accent_opa = 0;
+static uint8_t s_breath_jitter_pct = 0;
+static lv_obj_t *s_rimlight = NULL;        /* A1 cool counter-light + C ambient-accent override */
 static lv_obj_t *s_glass_ring = NULL;      /* top-inside highlight when fx.glass */
 static lv_timer_t *s_spin_timer = NULL;    /* drives transform_rotation when fx.spin */
 static lv_timer_t *s_rainbow_timer = NULL; /* slow hue cycle when fx.rainbow */
@@ -415,6 +442,7 @@ static void paint_body_for_hour(int hour) {
 }
 
 void ui_orb_paint_for_mode(uint8_t mode) {
+   bool mode_changed = (mode != s_last_painted_mode);
    s_last_painted_mode = mode;
    if (!s_body) return;
    /* PR 2: pipeline-state paint takes precedence — don't shadow the
@@ -424,6 +452,7 @@ void ui_orb_paint_for_mode(uint8_t mode) {
     * correctly when the pipeline returns. */
    if (ui_orb_pipeline_active()) return;
    paint_body_for_hour(orb_effective_hour());
+   if (mode_changed) ui_orb_event_pulse(); /* TT #724 D: "noticed" on mode change */
 }
 
 void ui_orb_paint_for_tone(widget_tone_t tone) {
@@ -520,9 +549,22 @@ static void tilt_tick_cb(lv_timer_t *t) {
    float wobble_x = wobble_amp * sinf(wx * two_pi);
    float wobble_y = wobble_amp * sinf(wy * two_pi + 1.2f);
 
-   lv_obj_set_pos(s_spec,
-                  s_spec_rest_x_eff + (int)(dx + drift_x + wobble_x),
-                  s_spec_rest_y_eff + (int)(dy + drift_y + wobble_y));
+   /* TT #724 B2 — organic wander: a much SLOWER, slightly larger sine pair
+    * (23 s / 37 s) that migrates the lissajous figure-eight's home base
+    * around over tens of seconds, so the highlight never settles into an
+    * obviously-repeating path even when the device is dead still and the
+    * room is silent. Same s_spec position channel — not a new motion. */
+   float wander_x = 0.0f, wander_y = 0.0f;
+   if (s_fx.organic) {
+      float ax = (float)(t_ms % 23000) / 23000.0f;
+      float ay = (float)(t_ms % 37000) / 37000.0f;
+      const float wander_amp = 5.0f;
+      wander_x = wander_amp * sinf(ax * two_pi);
+      wander_y = wander_amp * sinf(ay * two_pi + 2.1f);
+   }
+
+   lv_obj_set_pos(s_spec, s_spec_rest_x_eff + (int)(dx + drift_x + wobble_x + wander_x),
+                  s_spec_rest_y_eff + (int)(dy + drift_y + wobble_y + wander_y));
 }
 
 static void tilt_start(void) {
@@ -659,6 +701,34 @@ static void halo_anim_to(int target_opa) {
    int cur = lv_obj_get_style_bg_opa(s_halo, LV_PART_MAIN);
    lv_anim_set_values(&a, cur, target_opa);
    lv_anim_set_time(&a, ORB_SPEAKING_FADE_MS);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+}
+
+/* TT #724 Phase D — event micro-pulse: a gentle two-bump halo glow so the orb
+ * visibly "notices" a notable event (incoming channel message / mode change).
+ * One-shot transient (auto-reverse ×2), not a sustained motion. Suppressed
+ * while PROCESSING (the comet owns motion) and while the orb is drowsy/asleep
+ * (don't startle a resting orb). */
+void ui_orb_event_pulse(void) {
+   if (!s_fx.event_pulse || !s_halo) return;
+   if (s_state == ORB_STATE_PROCESSING) return;
+   /* Don't startle a drowsy/asleep orb. AWAKE ⟺ breath period at the AWAKE
+    * value (sleep phases lengthen it); s_sleep_phase is declared further down,
+    * so use this earlier-visible proxy. */
+   if (s_idle_breath_period_ms != IDLE_BREATH_AWAKE_MS) return;
+   uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+   s_event_pulse_until_ms = now + 820; /* ~2×(180 up + 180 down) + slack */
+   int base = lv_obj_get_style_bg_opa(s_halo, LV_PART_MAIN);
+   lv_anim_delete(s_halo, halo_opa_anim_cb);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_halo);
+   lv_anim_set_exec_cb(&a, halo_opa_anim_cb);
+   lv_anim_set_values(&a, base, base + 50 > 255 ? 255 : base + 50);
+   lv_anim_set_time(&a, 180);          /* rise */
+   lv_anim_set_playback_time(&a, 180); /* fall back to base */
+   lv_anim_set_repeat_count(&a, 2);    /* two "noticed" pulses */
    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
    lv_anim_start(&a);
 }
@@ -808,6 +878,13 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
    lv_obj_clear_flag(s_saved_burst, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
    lv_obj_add_flag(s_saved_burst, LV_OBJ_FLAG_HIDDEN);
 
+   /* TT #724 Phase A2 (contact-glow) intentionally dropped after on-device
+    * evaluation: the home screen is deep black and the orb reads as floating
+    * in space, so a grounding glow/shadow has no surface to fall on — every
+    * hard-edged variant (dark or warm) read as a distinct "bar" beneath the
+    * orb, and a soft blurred glow busts the render budget (TT #547). The
+    * rim-light (A1) carries the premium-depth goal on its own. */
+
    /* Halo FIRST so it sits BEHIND s_body in z-order (LVGL draws siblings
     * in creation order).  s_body's opa-cover gradient masks the part of
     * the halo overlapping the orb; only the outer "bloom" ring shows. */
@@ -889,6 +966,25 @@ void ui_orb_create(lv_obj_t *parent, int cx, int cy) {
       lv_obj_set_style_border_opa(s_rim, 0, 0);
       lv_obj_remove_flag(s_rim, LV_OBJ_FLAG_CLICKABLE);
       lv_obj_clear_flag(s_rim, LV_OBJ_FLAG_SCROLLABLE);
+   }
+
+   /* TT #724 Phase A1 — rim-light: a thin COOL counter-light ring on the
+    * sphere silhouette, opposite the warm specular, for two-light volume.
+    * Border-only (cheap — no fill raster, no blur).  Held at a low base opa
+    * when fx.rim_light; Phase C re-colours/opacifies this same ring to carry
+    * the ambient accent (it takes precedence over the cool base). */
+   s_rimlight = lv_obj_create(parent);
+   if (s_rimlight) {
+      lv_obj_remove_style_all(s_rimlight);
+      lv_obj_set_size(s_rimlight, ORB_SIZE, ORB_SIZE);
+      lv_obj_set_pos(s_rimlight, cx - ORB_SIZE / 2, cy - ORB_SIZE / 2);
+      lv_obj_set_style_radius(s_rimlight, LV_RADIUS_CIRCLE, 0);
+      lv_obj_set_style_bg_opa(s_rimlight, 0, 0);
+      lv_obj_set_style_border_width(s_rimlight, 2, 0);
+      lv_obj_set_style_border_color(s_rimlight, lv_color_hex(0x6E8CB0), 0); /* cool counter-light */
+      lv_obj_set_style_border_opa(s_rimlight, s_fx.rim_light ? 46 : 0, 0);
+      lv_obj_remove_flag(s_rimlight, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_clear_flag(s_rimlight, LV_OBJ_FLAG_SCROLLABLE);
    }
 
    /* Skill-rim comet — sibling AFTER s_body so it draws on top.
@@ -1046,6 +1142,7 @@ void ui_orb_destroy(void) {
    s_spec = NULL;
    s_halo = NULL;
    s_rim = NULL;
+   s_rimlight = NULL;
    s_comet = NULL;
    s_inner_core = NULL;
    /* Keep s_body_canvas_buf allocated — it's PSRAM, reused across
@@ -1334,9 +1431,75 @@ bool ui_orb_get_motion_state(ui_orb_motion_state_t *out) {
    out->idle_breath_opa = (uint8_t)s_idle_breath_last_opa;
    out->state = (uint8_t)s_state;
    out->sleep_phase = (uint8_t)s_sleep_phase;
+   out->accent_signal = s_accent_signal;
+   out->accent_opa = s_accent_opa;
+   out->breath_jitter_pct = s_breath_jitter_pct;
    out->uptime_ms = (uint32_t)(esp_timer_get_time() / 1000);
    return true;
 }
+
+/* ── TT #724 Phase C: ambient accent ────────────────────────────────────
+ * One prioritized glanceable signal surfaced on the s_rimlight ring at rest.
+ * Behaves like presence-dim: a slow global channel, not a per-state motion.
+ * Only ONE signal shows at a time; suppressed unless the orb is the calm
+ * resting surface (IDLE + AWAKE). */
+static uint8_t accent_resolve(void) {
+   if (s_state != ORB_STATE_IDLE) return 0;
+   if (s_sleep_phase != SLEEP_AWAKE) return 0;
+   if (ui_notification_active_count() > 0) return 1; /* pri 1: pending messages */
+   /* pri 2: degraded health — mode-aware (Solo + warm-TinkerON need no Dragon). */
+   uint8_t vm = tab5_settings_get_voice_mode();
+   bool needs_dragon =
+       (vm == VOICE_MODE_LOCAL || vm == VOICE_MODE_HYBRID || vm == VOICE_MODE_CLOUD || vm == VOICE_MODE_TINKERCLAW);
+   if (needs_dragon && !voice_is_connected()) return 2;
+   if (vm == VOICE_MODE_ONBOARD && voice_onboard_failover_state() != 2 /* M5_FAIL_READY */) return 2;
+   /* pri 3: near the daily spend cap (≥80%). */
+   uint32_t cap = tab5_budget_get_cap_mils();
+   if (cap > 0 && tab5_budget_get_today_mils() >= (cap * 8) / 10) return 3;
+   return 0;
+}
+
+static void ui_orb_apply_accent(void) {
+   if (!s_rimlight) return;
+   uint8_t sig = s_fx.ambient_accent ? accent_resolve() : 0;
+   s_accent_signal = sig;
+   if (sig == 0) {
+      /* No accent → restore the A1 base cool counter-light (or off). */
+      s_accent_opa = 0;
+      lv_obj_set_style_border_color(s_rimlight, lv_color_hex(0x6E8CB0), 0);
+      lv_obj_set_style_border_opa(s_rimlight, s_fx.rim_light ? 46 : 0, 0);
+      return;
+   }
+   uint32_t col;
+   uint8_t opa;
+   switch (sig) {
+      case 1: /* pending messages — amber ember */
+         col = 0xFFB000;
+         opa = 84;
+         break;
+      case 2: /* degraded health — calm cool, not alarming */
+         col = 0x5C7FB0;
+         opa = 60;
+         break;
+      default: { /* 3: near cap — warm rim, intensifies 80→100% of cap */
+         uint32_t cap = tab5_budget_get_cap_mils();
+         uint32_t today = tab5_budget_get_today_mils();
+         float frac = cap ? (float)today / (float)cap : 0.0f;
+         if (frac > 1.0f) frac = 1.0f;
+         float t = (frac - 0.8f) / 0.2f;
+         if (t < 0.0f) t = 0.0f;
+         if (t > 1.0f) t = 1.0f;
+         opa = (uint8_t)(50.0f + t * 40.0f);
+         col = 0xE8A33C;
+      } break;
+   }
+   s_accent_opa = opa;
+   lv_obj_set_style_border_color(s_rimlight, lv_color_hex(col), 0);
+   lv_obj_set_style_border_opa(s_rimlight, opa, 0);
+}
+
+/* Public: pumped from ui_home's ~2 s refresh tick. */
+void ui_orb_ambient_tick(void) { ui_orb_apply_accent(); }
 
 /* ── TT #555 FX playground ──────────────────────────────────────────── */
 
@@ -1542,6 +1705,8 @@ void ui_orb_set_fx(const ui_orb_fx_t *fx) {
       fx_shake_stop();
    if (fx->glass != old.glass) fx_glass_apply(fx->glass);
    if (!fx->expand && old.expand) fx_apply_scale(); /* snap back to 1.0× */
+   /* TT #724 Phase A — apply depth-layer toggles live. */
+   if (s_rimlight && fx->rim_light != old.rim_light) lv_obj_set_style_border_opa(s_rimlight, fx->rim_light ? 46 : 0, 0);
 }
 
 void ui_orb_get_fx(ui_orb_fx_t *out) {
@@ -2170,13 +2335,44 @@ static void idle_breath_tick_cb(lv_timer_t *t) {
    if (ui_orb_pipeline_active()) return;
    if (s_state != ORB_STATE_IDLE) return;
    uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   /* TT #724 D: yield the halo while a "noticed" pulse owns it. */
+   if (t_ms < s_event_pulse_until_ms) return;
    uint32_t period = s_idle_breath_period_ms ? s_idle_breath_period_ms : IDLE_BREATH_AWAKE_MS;
-   float phase = (float)(t_ms % period) / (float)period;
+   float phase;
+   int amp = IDLE_BREATH_AMPLITUDE;
+   if (s_fx.organic) {
+      /* TT #724 B1: integrate a phase accumulator so we can vary the period
+       * per cycle (the old `t_ms % period` jumps phase if period changes).
+       * At each cycle boundary, reroll period + amplitude ±15% via a tiny
+       * LCG → the breath reads like a living thing, not a metronome. */
+      uint32_t dt = s_breath_last_ms ? (t_ms - s_breath_last_ms) : 200;
+      s_breath_last_ms = t_ms;
+      if (s_breath_cycle_period == 0) {
+         s_breath_cycle_period = period;
+         s_breath_cycle_amp = IDLE_BREATH_AMPLITUDE;
+      }
+      s_breath_phase += (float)dt / (float)s_breath_cycle_period;
+      if (s_breath_phase >= 1.0f) {
+         s_breath_phase -= 1.0f;
+         static uint32_t lcg = 0x9E3779B9u;
+         lcg = lcg * 1664525u + 1013904223u;
+         float jp = 0.85f + (float)((lcg >> 8) & 0xFF) / 255.0f * 0.30f;  /* 0.85..1.15 */
+         float ja = 0.85f + (float)((lcg >> 16) & 0xFF) / 255.0f * 0.30f; /* 0.85..1.15 */
+         s_breath_cycle_period = (uint32_t)((float)period * jp);
+         s_breath_cycle_amp = (int)((float)IDLE_BREATH_AMPLITUDE * ja);
+         s_breath_jitter_pct = (uint8_t)(jp >= 1.0f ? (jp - 1.0f) * 100.0f : (1.0f - jp) * 100.0f);
+      }
+      phase = s_breath_phase;
+      amp = s_breath_cycle_amp;
+   } else {
+      phase = (float)(t_ms % period) / (float)period;
+      s_breath_jitter_pct = 0;
+   }
    /* sin(2π·phase) → half-rectified so the halo only adds (never goes
     * negative); ramps 0 → A → 0 over the cycle. */
    float s = sinf(phase * 6.28318530718f);
    if (s < 0.0f) s = 0.0f;
-   int opa = (int)(s * (float)IDLE_BREATH_AMPLITUDE);
+   int opa = (int)(s * (float)amp);
    if (opa == s_idle_breath_last_opa) return;
    s_idle_breath_last_opa = opa;
    lv_obj_set_style_bg_opa(s_halo, (lv_opa_t)opa, LV_PART_MAIN);

@@ -111,6 +111,11 @@ static void notif_show_async_cb(void *arg) {
       return;
    }
 
+   /* TT #724 (orb Phase D): a fresh (non-duplicate) message → the orb gives a
+    * gentle "noticed" double-pulse. No-op if the orb isn't resting/awake. */
+   extern void ui_orb_event_pulse(void);
+   ui_orb_event_pulse();
+
    const char *ch = msg->channel[0] ? msg->channel : "?";
    const char *sender = msg->sender[0] ? msg->sender : "Someone";
    const char *preview = msg->preview[0] ? msg->preview : "(no preview)";
@@ -234,6 +239,10 @@ void ui_notification_init(void) {
    s_snooze_timer = lv_timer_create(snooze_walk_cb, SNOOZE_TICK_MS, NULL);
    ESP_LOGI(TAG, "snooze walker armed (tick=%u ms, delay=%u ms)", (unsigned)SNOOZE_TICK_MS, (unsigned)SNOOZE_DELAY_MS);
 }
+
+/* TT #724 (orb ambient accent): deferred/pending message count = snooze ring
+ * depth. Read on the LVGL thread (same thread the snooze walker mutates on). */
+int ui_notification_active_count(void) { return s_snooze_count; }
 
 void ui_notification_reply_current(const char *text) {
    if (!s_last_now_msg_valid) {

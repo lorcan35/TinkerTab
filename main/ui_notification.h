@@ -55,6 +55,11 @@ void ui_notification_show(const channel_message_t *msg);
  */
 void ui_notification_init(void);
 
+/* TT #724 (orb ambient accent): count of deferred/pending channel messages
+ * the user hasn't dealt with yet (the snooze ring). 0 = inbox quiet. Cheap;
+ * call on the LVGL thread (the snooze walker mutates on that thread too). */
+int ui_notification_active_count(void);
+
 /* W7-E.3: enqueue the most recently shown now-card message into the
  * snooze ring with `fire_at = now + 15 min`.  Overflow (>8) drops the
  * oldest entry.  Wired to the SNOOZE button in ui_home.  No-op if no

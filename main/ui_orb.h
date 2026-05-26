@@ -96,6 +96,9 @@ typedef struct {
    uint8_t idle_breath_opa;  /* base breath opa contribution to halo */
    uint8_t state;            /* ui_orb_state_t (IDLE/LISTENING/PROCESSING/SPEAKING) */
    uint8_t sleep_phase;      /* 0=AWAKE, 1=DROWSY, 2=ASLEEP */
+   uint8_t accent_signal;    /* TT #724 (Phase C): 0 none, 1 unread, 2 health, 3 cap */
+   uint8_t accent_opa;       /* current ambient-accent rim opa */
+   uint8_t breath_jitter_pct; /* TT #724 (Phase B): current breath period jitter % (0..30) */
    uint32_t uptime_ms;
 } ui_orb_motion_state_t;
 
@@ -116,6 +119,11 @@ typedef struct {
    bool glass;   /* glassmorphism: translucent body + top highlight ring */
    bool rainbow; /* slow palette hue cycle, replaces circadian while active */
    bool shake;   /* IMU shake detection → brief startle response (organism reaction) */
+   /* TT #724 ambient upgrades ("Living + Glanceable") — default ON. */
+   bool rim_light;      /* A1: secondary cool counter-light for volume */
+   bool organic;        /* B1+B2: irregular breath + non-repeating drift */
+   bool ambient_accent; /* C: one prioritized glanceable rim (unread/health/cap) */
+   bool event_pulse;    /* D: "noticed" double-pulse on events */
 } ui_orb_fx_t;
 
 void ui_orb_set_fx(const ui_orb_fx_t *fx);
@@ -139,10 +147,20 @@ int ui_orb_get_effective_hour(void);
  *  day. */
 void ui_orb_repaint_if_hour_changed(void);
 
+/** TT #724 (Phase C): re-resolve + paint the ambient accent (one prioritized
+ *  glanceable signal: pending messages / degraded health / near daily cap).
+ *  Called from ui_home's ~2 s refresh tick. Cheap; LVGL-thread only. */
+void ui_orb_ambient_tick(void);
+
 /** Voice-mode aware orb paint.  Called by ui_home on mode cycle.
  *  Currently ignores `mode` (all modes paint with the circadian palette)
  *  but the hook stays for future mode-tinted variants. */
 void ui_orb_paint_for_mode(uint8_t mode);
+
+/** TT #724 (Phase D): one-shot "noticed" double-pulse on a notable event
+ *  (incoming channel message / mode change). No-op when fx.event_pulse off,
+ *  while PROCESSING, or while the orb is drowsy/asleep. LVGL-thread only. */
+void ui_orb_event_pulse(void);
 
 /** Widget-tone orb override — claimed when a live widget takes the slot.
  *  Bypasses the circadian palette for the tone's color pair. */
