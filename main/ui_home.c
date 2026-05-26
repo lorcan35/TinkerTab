@@ -252,6 +252,7 @@ static const char *s_mode_tagline[VOICE_MODE_COUNT] = {
 };
 
 static uint8_t s_badge_mode = 0;
+static bool s_badge_modified = false; /* TT #724 (3.4): Advanced override active */
 
 /* v4·D Phase 4g widget_prompt tap → widget_action plumbing.
  * When a PROMPT widget claims the live slot, we cache its card_id +
@@ -517,7 +518,19 @@ static void update_mode_ui(uint8_t mode)
     * stays open-coded since it's not shared. */
    if (s_mode_dot) widget_mode_dot_set_mode(s_mode_dot, mode);
    if (s_mode_name) lv_label_set_text(s_mode_name, th_mode_names[mode]);
-   if (s_mode_sub) lv_label_set_text(s_mode_sub, s_mode_tagline[mode]);
+   if (s_mode_sub) {
+      /* TT #724 (3.4): an Advanced-drawer override (engine pin / privacy lock)
+       * makes the effective route differ from the plain mode — flag it. */
+      extern bool ui_mode_sheet_is_modified(void);
+      s_badge_modified = ui_mode_sheet_is_modified();
+      if (s_badge_modified) {
+         char buf[64];
+         snprintf(buf, sizeof(buf), "%s \xe2\x80\xa2 modified", s_mode_tagline[mode]);
+         lv_label_set_text(s_mode_sub, buf);
+      } else {
+         lv_label_set_text(s_mode_sub, s_mode_tagline[mode]);
+      }
+   }
    /* TT #723: place the tagline after the (variable-length) canonical name so
     * longer names like "TinkerAgent" don't overlap the fixed sub position. */
    if (s_mode_name && s_mode_sub) {
@@ -1835,7 +1848,8 @@ void ui_home_update_status(void)
 
     /* Mode chip (re-read from NVS) */
     uint8_t current_mode = tab5_settings_get_voice_mode();
-    if (current_mode != s_badge_mode) update_mode_ui(current_mode);
+    extern bool ui_mode_sheet_is_modified(void);
+    if (current_mode != s_badge_mode || ui_mode_sheet_is_modified() != s_badge_modified) update_mode_ui(current_mode);
 }
 
 static void refresh_timer_cb(lv_timer_t *t)

@@ -113,11 +113,39 @@ static const char *const s_smart_cloud[3] = {
     "anthropic/claude-opus-4.7",      /* Smart    */
 };
 
+/* TT #724 (3.4): Advanced drawer state. */
+static lv_obj_t *s_adv_root = NULL; /* drawer container below the rows */
+static bool s_adv_open = false;
+
+/* Exact-model list for the Advanced drawer (relocated from ui_settings.c
+ * CLOUD LLM block; Task 5 removes the Settings copy). model_id is what we
+ * send to Dragon as llm_model. */
+typedef struct {
+   const char *label;
+   const char *model_id;
+} adv_model_t;
+static const adv_model_t s_adv_models[] = {
+    {"Opus 4.7", "anthropic/claude-opus-4.7"},
+    {"Sonnet", "anthropic/claude-sonnet-4.6"},
+    {"Haiku", "~anthropic/claude-haiku-latest"},
+    {"GPT-5.5", "openai/gpt-5.5"},
+    {"GPT-5.4m", "openai/gpt-5.4-mini"},
+    {"Gemini Pro", "~google/gemini-pro-latest"},
+    {"Gemini 3.1", "google/gemini-3.1-flash-lite"},
+    {"Grok 4.3", "x-ai/grok-4.3"},
+};
+#define ADV_MODEL_COUNT (sizeof(s_adv_models) / sizeof(s_adv_models[0]))
+
+/* Daily-cap presets in mils (1 mil = 1/1000 cent): OFF / $1 / $5 / $10. */
+static const uint32_t s_adv_caps[4] = {0, 100000, 500000, 1000000};
+static const char *const s_adv_cap_lbl[4] = {"Off", "$1", "$5", "$10"};
+
 /* ── Forward decls ───────────────────────────────────────────────────── */
 static void commit_mode(uint8_t vmode);
 static void rebuild_rows(void);
 static void build_smartness(void);
 static void smart_click_cb(lv_event_t *e);
+static void build_advanced(void);
 static void row_click_cb(lv_event_t *e);
 static void done_click_cb(lv_event_t *e);
 static void scrim_click_cb(lv_event_t *e);
@@ -154,6 +182,7 @@ void ui_mode_sheet_hide(void)
     s_sheet = NULL;
     s_rows_root = NULL;
     s_smart_root = NULL;
+    s_adv_root = NULL;
 }
 
 void ui_mode_sheet_show(void)
@@ -285,9 +314,18 @@ void ui_mode_sheet_show(void)
     s_rows_root = lv_obj_create(s_sheet);
     lv_obj_remove_style_all(s_rows_root);
     lv_obj_set_pos(s_rows_root, 0, 182);
-    lv_obj_set_size(s_rows_root, MS_W, 470);
+    lv_obj_set_size(s_rows_root, MS_W, 352);
     lv_obj_clear_flag(s_rows_root, LV_OBJ_FLAG_SCROLLABLE);
     rebuild_rows();
+
+    /* TT #724 (3.4): Advanced drawer, collapsed by default, below the rows. */
+    s_adv_open = false;
+    s_adv_root = lv_obj_create(s_sheet);
+    lv_obj_remove_style_all(s_adv_root);
+    lv_obj_set_pos(s_adv_root, 0, 542);
+    lv_obj_set_size(s_adv_root, MS_W, 480);
+    lv_obj_clear_flag(s_adv_root, LV_OBJ_FLAG_SCROLLABLE);
+    build_advanced();
 
     /* Force full-screen invalidate — same pattern as ui_home create
      * (PARTIAL render needs this to paint every strip on first show). */
@@ -497,6 +535,162 @@ static void build_smartness(void) {
       lv_obj_set_style_text_color(t, lv_color_hex(on ? TH_BG : TH_TEXT_PRIMARY), 0);
       lv_obj_center(t);
    }
+}
+
+/* ── Advanced drawer (3.4) ───────────────────────────────────────────── */
+
+/* Pill chip used by every drawer control. */
+static lv_obj_t *adv_chip(lv_obj_t *parent, int x, int y, int w, int h, const char *text, bool sel, lv_event_cb_t cb,
+                          void *ud) {
+   lv_obj_t *c = lv_obj_create(parent);
+   lv_obj_remove_style_all(c);
+   lv_obj_set_pos(c, x, y);
+   lv_obj_set_size(c, w, h);
+   lv_obj_set_style_radius(c, h / 2, 0);
+   lv_obj_set_style_bg_color(c, lv_color_hex(sel ? TH_AMBER : 0x15151F), 0);
+   lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+   lv_obj_set_style_border_width(c, 1, 0);
+   lv_obj_set_style_border_color(c, lv_color_hex(sel ? TH_AMBER : 0x20202C), 0);
+   lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+   if (cb) lv_obj_add_event_cb(c, cb, LV_EVENT_CLICKED, ud);
+   lv_obj_t *l = lv_label_create(c);
+   lv_label_set_text(l, text);
+   lv_obj_set_style_text_font(l, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(l, lv_color_hex(sel ? TH_BG : TH_TEXT_PRIMARY), 0);
+   lv_obj_center(l);
+   return c;
+}
+
+static void adv_section_label(lv_obj_t *parent, int y, const char *text) {
+   lv_obj_t *l = lv_label_create(parent);
+   lv_label_set_text(l, text);
+   lv_obj_set_style_text_font(l, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(l, lv_color_hex(TH_AMBER), 0);
+   lv_obj_set_style_text_letter_space(l, 2, 0);
+   lv_obj_set_pos(l, SIDE_PAD, y);
+}
+
+static void adv_toggle_cb(lv_event_t *e) {
+   (void)e;
+   s_adv_open = !s_adv_open;
+   build_advanced();
+}
+
+static void adv_engine_cb(lv_event_t *e) {
+   uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (idx >= LLM_ENG_COUNT) return;
+   tab5_settings_set_llm_engine(idx);
+   tab5_debug_obs_event("eng.llm", "picker");
+   build_advanced();
+}
+
+static void adv_model_cb(lv_event_t *e) {
+   uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (idx >= ADV_MODEL_COUNT) return;
+   tab5_settings_set_llm_model(s_adv_models[idx].model_id);
+   voice_send_config_update((int)s_sel_vmode, (char *)s_adv_models[idx].model_id);
+   build_advanced();
+}
+
+static void adv_privacy_cb(lv_event_t *e) {
+   (void)e;
+   tab5_settings_set_privacy_lock(!tab5_settings_get_privacy_lock());
+   build_advanced();
+}
+
+static void adv_cap_cb(lv_event_t *e) {
+   uint8_t idx = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+   if (idx >= 4) return;
+   tab5_budget_set_cap_mils(s_adv_caps[idx]);
+   build_advanced();
+}
+
+/* (re)build the Advanced drawer. Collapsed = a single toggle row; expanded =
+ * engine pins + exact-model row + privacy lock + daily cap, relocated from
+ * Settings. K144 as a hardware label is acceptable on this advanced surface. */
+static void build_advanced(void) {
+   if (!s_adv_root) return;
+   lv_obj_clean(s_adv_root);
+
+   lv_obj_t *tog = lv_obj_create(s_adv_root);
+   lv_obj_remove_style_all(tog);
+   lv_obj_set_pos(tog, SIDE_PAD, 0);
+   lv_obj_set_size(tog, MS_W - 2 * SIDE_PAD, 38);
+   lv_obj_clear_flag(tog, LV_OBJ_FLAG_SCROLLABLE);
+   lv_obj_add_flag(tog, LV_OBJ_FLAG_CLICKABLE);
+   lv_obj_add_event_cb(tog, adv_toggle_cb, LV_EVENT_CLICKED, NULL);
+   lv_obj_t *tl = lv_label_create(tog);
+   lv_label_set_text(tl, s_adv_open ? "Advanced  -"
+                                    : "Advanced  +   model \xe2\x80\xa2 engine \xe2\x80\xa2 privacy \xe2\x80\xa2 cap");
+   lv_obj_set_style_text_font(tl, FONT_SMALL, 0);
+   lv_obj_set_style_text_color(tl, lv_color_hex(0x8A8A98), 0);
+   lv_obj_set_pos(tl, 0, 8);
+   if (!s_adv_open) return;
+
+   int y = 50;
+   const int avail_w = MS_W - 2 * SIDE_PAD;
+
+   /* Engine pins (AUTO follows vmode; K144 / OpenRouter explicitly override). */
+   adv_section_label(s_adv_root, y, "ENGINE");
+   y += 22;
+   {
+      uint8_t cur = tab5_settings_get_llm_engine();
+      int gap = 6;
+      int w = (avail_w - 2 * gap) / 3;
+      const char *names[3] = {"Auto", "K144", "OpenRouter"};
+      for (int i = 0; i < 3; i++)
+         adv_chip(s_adv_root, SIDE_PAD + i * (w + gap), y, w, 34, names[i], cur == i, adv_engine_cb,
+                  (void *)(uintptr_t)i);
+   }
+   y += 46;
+
+   /* Exact model — overrides the Smartness default. Horizontally scrollable. */
+   adv_section_label(s_adv_root, y, "EXACT MODEL");
+   y += 22;
+   {
+      lv_obj_t *scroll = lv_obj_create(s_adv_root);
+      lv_obj_remove_style_all(scroll);
+      lv_obj_set_pos(scroll, SIDE_PAD, y);
+      lv_obj_set_size(scroll, avail_w, 40);
+      lv_obj_set_scroll_dir(scroll, LV_DIR_HOR);
+      lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_OFF);
+      char cur_model[64] = {0};
+      tab5_settings_get_llm_model(cur_model, sizeof(cur_model));
+      int cx = 0;
+      for (uint32_t i = 0; i < ADV_MODEL_COUNT; i++) {
+         bool sel = (strcmp(cur_model, s_adv_models[i].model_id) == 0);
+         adv_chip(scroll, cx, 0, 116, 34, s_adv_models[i].label, sel, adv_model_cb, (void *)(uintptr_t)i);
+         cx += 116 + 8;
+      }
+   }
+   y += 50;
+
+   /* Privacy lock (on-device only). */
+   adv_section_label(s_adv_root, y, "ON-DEVICE LOCK");
+   y += 22;
+   {
+      bool on = tab5_settings_get_privacy_lock();
+      adv_chip(s_adv_root, SIDE_PAD, y, 220, 34, on ? "Locked: on-device" : "Off: cloud allowed", on, adv_privacy_cb,
+               NULL);
+   }
+   y += 46;
+
+   /* Daily spend cap. */
+   adv_section_label(s_adv_root, y, "DAILY CAP");
+   y += 22;
+   {
+      uint32_t cur = tab5_budget_get_cap_mils();
+      int gap = 6;
+      int w = (avail_w - 3 * gap) / 4;
+      for (int i = 0; i < 4; i++)
+         adv_chip(s_adv_root, SIDE_PAD + i * (w + gap), y, w, 34, s_adv_cap_lbl[i], cur == s_adv_caps[i], adv_cap_cb,
+                  (void *)(uintptr_t)i);
+   }
+}
+
+bool ui_mode_sheet_is_modified(void) {
+   return tab5_settings_get_llm_engine() != LLM_ENG_AUTO || tab5_settings_get_privacy_lock();
 }
 
 /* ── Agent consent modal ─────────────────────────────────────────────── */
