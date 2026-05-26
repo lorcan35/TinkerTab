@@ -17,6 +17,7 @@
 
 #include "debug_obs.h"
 #include "debug_server.h" /* tab5_debug_set_nav_target */
+#include "esp_heap_caps.h" /* TT #721 — nav back-pressure on low internal SRAM */
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,6 +27,17 @@
 #include "voice.h"    /* voice_get_state, voice_cancel, voice_state_t */
 
 static const char *TAG = "ui_nav";
+
+/* TT #721 — nav back-pressure floor.  Under sustained load internal SRAM can
+ * drift toward the heap_wd `sram_exhausted` abort line (20 KB).  Building a
+ * heavy screen there makes LVGL/UI allocations return NULL (LV_USE_ASSERT_*
+ * are deliberately off) which then get dereferenced → Store/Load access-fault
+ * crash loop (root-caused via serial repro on #721).  Refuse new heavy-screen
+ * creation below this floor and tell the user.  28 KB sits well under the
+ * ~38 KB normal-use floor (so it never blocks real navigation) yet leaves
+ * headroom above the 20 KB crash zone for the screen we *are* on.  Home is
+ * never gated — it is the lightweight recovery target. */
+#define NAV_MIN_INTERNAL_LARGEST (28 * 1024)
 
 /* Forward decl — implemented in debug_server_nav.c.  Sets the cached
  * nav-target name (so /screen returns it) and schedules `async_navigate`
@@ -69,6 +81,22 @@ esp_err_t tab5_nav_to(tab5_nav_target_t target, tab5_nav_flags_t flags) {
       if (!ui_tap_gate(gate_key, 300)) {
          ESP_LOGD(TAG, "%s: debounced", name);
          return ESP_ERR_INVALID_STATE;
+      }
+   }
+
+   /* Step 1b (TT #721): low-memory back-pressure.  Refuse to build a new
+    * heavy screen when internal SRAM is critically low — allocating into
+    * exhaustion is what produced the NULL-deref crash loop.  Home is exempt
+    * (lightweight + the recovery target).  Deferring here also keeps /screen
+    * honest: a refused nav never updates the cached nav-target. */
+   if (target != NAV_HOME) {
+      size_t int_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      if (int_largest < NAV_MIN_INTERNAL_LARGEST) {
+         ESP_LOGW(TAG, "%s: deferred — internal SRAM low (largest=%uKB < %uKB floor)", name,
+                  (unsigned)(int_largest / 1024), (unsigned)(NAV_MIN_INTERNAL_LARGEST / 1024));
+         tab5_debug_obs_event("nav.backpressure", name);
+         ui_home_show_toast("Low memory — one sec");
+         return ESP_ERR_NO_MEM;
       }
    }
 
