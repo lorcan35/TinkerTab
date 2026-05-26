@@ -860,7 +860,7 @@ static void show_agent_consent(void) {
    lv_obj_add_event_cb(cancel, consent_cancel_cb, LV_EVENT_CLICKED, NULL);
 
    lv_obj_t *cancel_lbl = lv_label_create(cancel);
-   lv_label_set_text(cancel_lbl, "Keep Ask mode");
+   lv_label_set_text(cancel_lbl, "Keep current mode");
    lv_obj_set_style_text_font(cancel_lbl, FONT_BODY, 0);
    lv_obj_set_style_text_color(cancel_lbl, lv_color_hex(TH_TEXT_DIM), 0);
    lv_obj_center(cancel_lbl);

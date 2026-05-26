@@ -1522,7 +1522,7 @@ void ui_home_update_status(void)
             case ST_NO_WIFI:     sys = "OFFLINE";   col = TH_STATUS_RED; break;
             case ST_DRAGON_DOWN:
                if (onboard_healthy) {
-                  sys = "ONBOARD";
+                  sys = "ON-DEVICE";
                   col = TH_MODE_ONBOARD;
                } else {
                   sys = "NO DRAGON";
@@ -1538,14 +1538,14 @@ void ui_home_update_status(void)
                 } else if (onboard_healthy && degraded) {
                    /* Onboard mode: Dragon-side degraded reasons aren't
                     * relevant to user-facing chat — show ONBOARD. */
-                   sys = "ONBOARD";
+                   sys = "ON-DEVICE";
                    col = TH_MODE_ONBOARD;
                 } else if (degraded) {
                    /* Reconnecting / Remote / Dragon-unreachable, etc. */
                    sys = degraded;
                    col = 0xFBBF24; /* amber-hot -- attention, not error */
                 } else if (onboard_healthy) {
-                   sys = "ONBOARD";
+                   sys = "ON-DEVICE";
                    col = TH_MODE_ONBOARD;
                 } else {
                    sys = "ONLINE";
