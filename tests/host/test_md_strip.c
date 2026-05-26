@@ -114,21 +114,41 @@ static int test_inline_in_place_safe(void) {
    return 0;
 }
 
+/* TT #724: smart quotes/dashes fold to ASCII (font lacks them → tofu). */
+static int test_inline_asciifies_smart_typography(void) {
+   char out[64];
+   md_strip_inline("I\xE2\x80\x99m here \xE2\x80\x94 what\xE2\x80\x99s up", out, sizeof out);
+   CHECK_EQ_STR(out, "I'm here - what's up");
+   md_strip_inline("\xE2\x80\x9Chi\xE2\x80\x9D", out, sizeof out);
+   CHECK_EQ_STR(out, "\"hi\"");
+   return 0;
+}
+
+/* TT #724: bullet (•) + ellipsis (…) stay — they ARE in the font subset. */
+static int test_inline_keeps_bullet_and_ellipsis(void) {
+   char out[64];
+   md_strip_inline("a \xE2\x80\xA2 b \xE2\x80\xA6", out, sizeof out);
+   CHECK_EQ_STR(out, "a \xE2\x80\xA2 b \xE2\x80\xA6");
+   return 0;
+}
+
 int main(void) {
    struct {
       const char *name;
       int (*fn)(void);
    } tests[] = {
-      {"inline_bold_pair", test_inline_bold_pair},
-      {"inline_italic_pair", test_inline_italic_pair},
-      {"inline_heading_stripped_at_line_start", test_inline_heading_stripped_at_line_start},
-      {"inline_bullet_becomes_unicode", test_inline_bullet_becomes_unicode},
-      {"inline_null_input_safe", test_inline_null_input_safe},
-      {"inline_truncation_terminates", test_inline_truncation_terminates},
-      {"ellipsis_appended_on_truncation", test_ellipsis_appended_on_truncation},
-      {"tool_markers_stripped", test_tool_markers_stripped},
-      {"tool_markers_case_insensitive", test_tool_markers_case_insensitive},
-      {"inline_in_place_safe", test_inline_in_place_safe},
+       {"inline_bold_pair", test_inline_bold_pair},
+       {"inline_italic_pair", test_inline_italic_pair},
+       {"inline_heading_stripped_at_line_start", test_inline_heading_stripped_at_line_start},
+       {"inline_bullet_becomes_unicode", test_inline_bullet_becomes_unicode},
+       {"inline_null_input_safe", test_inline_null_input_safe},
+       {"inline_truncation_terminates", test_inline_truncation_terminates},
+       {"ellipsis_appended_on_truncation", test_ellipsis_appended_on_truncation},
+       {"tool_markers_stripped", test_tool_markers_stripped},
+       {"tool_markers_case_insensitive", test_tool_markers_case_insensitive},
+       {"inline_in_place_safe", test_inline_in_place_safe},
+       {"inline_asciifies_smart_typography", test_inline_asciifies_smart_typography},
+       {"inline_keeps_bullet_and_ellipsis", test_inline_keeps_bullet_and_ellipsis},
    };
    size_t n = sizeof(tests) / sizeof(tests[0]);
    for (size_t i = 0; i < n; i++) {

@@ -57,6 +57,28 @@ void md_strip_inline(const char *in, char *out, size_t out_cap)
             continue;
         }
 
+        /* TT #724: ASCII-fold the "smart" typography LLMs love to emit but
+         * the Montserrat UI subset lacks (they render as tofu boxes):
+         *   U+2018/2019 ' '  → '   U+201C/201D " " → "   U+2013/2014 – — → -
+         * All are 3-byte UTF-8 starting E2 80 xx.  Bullet (E2 80 A2) and
+         * ellipsis (E2 80 A6) ARE in the subset (this stripper emits them),
+         * so they pass through untouched. */
+        if (c == (char)0xE2 && i + 2 < n && in[i + 1] == (char)0x80) {
+           unsigned char b3 = (unsigned char)in[i + 2];
+           char repl = 0;
+           if (b3 == 0x98 || b3 == 0x99)
+              repl = '\'';
+           else if (b3 == 0x9C || b3 == 0x9D)
+              repl = '"';
+           else if (b3 == 0x93 || b3 == 0x94)
+              repl = '-';
+           if (repl) {
+              out[oi++] = repl;
+              i += 3;
+              continue;
+           }
+        }
+
         out[oi++] = c;
         i++;
     }
