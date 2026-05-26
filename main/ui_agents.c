@@ -304,10 +304,10 @@ static void fetch_tools_job(void *arg) {
    char url[160];
    snprintf(url, sizeof(url), "http://%s:%d/api/v1/tools", dragon_host, TAB5_VOICE_PORT);
 
-   /* PSRAM-backed response buffer.  Dragon's tools endpoint returns
-    * ~2-5 KB JSON; 16 KB is plenty headroom for the registry growing
-    * past current 10-12 tools. */
-   const size_t resp_cap = 16 * 1024;
+   /* PSRAM-backed response buffer.  The registry with full JSON schemas is
+    * ~16.5 KB for 25 tools and grows; the old 16 KB cap truncated it mid-JSON
+    * → bogus "JSON parse failed" (TT #722).  64 KB. */
+   const size_t resp_cap = 64 * 1024;
    char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!resp_buf) {
       snprintf(p->err_msg, sizeof(p->err_msg), "PSRAM alloc failed");
@@ -471,7 +471,9 @@ static void fetch_agent_log_job(void *arg) {
    char url[160];
    snprintf(url, sizeof(url), "http://%s:%d/api/v1/agent_log?limit=%d", dragon_host, TAB5_VOICE_PORT, AGENT_LOG_MAX);
 
-   const size_t resp_cap = 16 * 1024;
+   /* TT #722: 64 KB — agent_log entries embed raw tool results and can be
+    * large; 16 KB risked truncating into a "JSON parse failed". */
+   const size_t resp_cap = 64 * 1024;
    char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!resp_buf) {
       snprintf(p->err_msg, sizeof(p->err_msg), "PSRAM alloc failed");
@@ -679,7 +681,7 @@ static void fetch_agent_skills_job(void *arg) {
    char url[160];
    snprintf(url, sizeof(url), "http://%s:%d/api/v1/agent_skills", dragon_host, TAB5_VOICE_PORT);
 
-   const size_t resp_cap = 8 * 1024;
+   const size_t resp_cap = 32 * 1024; /* TT #722: headroom for the skills union */
    char *resp_buf = heap_caps_malloc(resp_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!resp_buf) {
       tab5_debug_obs_event("agent_skills", "psram_alloc_fail");
