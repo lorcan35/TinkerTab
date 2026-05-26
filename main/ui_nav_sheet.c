@@ -74,12 +74,21 @@ static void go_skills(void) {
    extern void ui_skills_show(void);
    ui_skills_show();
 }
-/* #270 Phase 3D: opens an in-call pane (remote video full-screen +
- * local-camera PIP + End Call button) and starts outbound JPEG
- * streaming at 5 fps.  Pairs with the Dragon-side broadcast relay
- * (TinkerBox #180) so any other connected client (Tab5 or web) sees
- * the local feed and vice versa. */
-static void go_call(void)     { voice_video_start_call(5); }
+/* Video calling is disabled — TinkerTab is voice-first (CLAUDE.md:
+ * "Voice-first, not a remote display").  Calling was a heavy
+ * camera+JPEG surface and an extra crash vector; the product front
+ * door is the orb, not a video pane.  The voice_video.c module and
+ * the call/video debug endpoints remain for the e2e harness
+ * (story_full) and any Dragon-initiated path — only the user-facing
+ * Call tile is removed here.  Re-enable by flipping #if 0 to #if 1
+ * and restoring the {"Call", ...} entry in s_tiles below.
+ *
+ * #270 Phase 3D (original): opened an in-call pane (remote video
+ * full-screen + local-camera PIP + End Call button) + 5 fps outbound
+ * JPEG stream, paired with the Dragon broadcast relay (TinkerBox #180). */
+#if 0
+static void go_call(void) { voice_video_start_call(5); }
+#endif
 
 /* TT #328 Wave 7 P0 #4 — pre-Wave-7 the nav sheet had 10 tiles in a
  * 3×3 grid; the 10th ("Focus") sat at row 3 / y=770 → bottom=954, but
@@ -93,7 +102,7 @@ static void go_call(void)     { voice_video_start_call(5); }
 static const nav_tile_t s_tiles[] = {
     {"Chat", "Threads \xE2\x80\xA2 history", go_chat},
     {"Notes", "Voice & text", go_notes},
-    {"Call", "Live video", go_call},
+    /* {"Call", "Live video", go_call},  -- video calling disabled (voice-first); see go_call note above */
     {"Settings", "Mode \xE2\x80\xA2 cap \xE2\x80\xA2 WiFi", go_settings},
     {"Camera", "Viewfinder", go_camera},
     {"Files", "SD card", go_files},
