@@ -157,6 +157,11 @@ void ui_orb_ambient_tick(void);
  *  but the hook stays for future mode-tinted variants. */
 void ui_orb_paint_for_mode(uint8_t mode);
 
+/** TT #724 (Phase D): one-shot "noticed" double-pulse on a notable event
+ *  (incoming channel message / mode change). No-op when fx.event_pulse off,
+ *  while PROCESSING, or while the orb is drowsy/asleep. LVGL-thread only. */
+void ui_orb_event_pulse(void);
+
 /** Widget-tone orb override — claimed when a live widget takes the slot.
  *  Bypasses the circadian palette for the tone's color pair. */
 void ui_orb_paint_for_tone(widget_tone_t tone);

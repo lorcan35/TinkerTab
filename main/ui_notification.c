@@ -111,6 +111,11 @@ static void notif_show_async_cb(void *arg) {
       return;
    }
 
+   /* TT #724 (orb Phase D): a fresh (non-duplicate) message → the orb gives a
+    * gentle "noticed" double-pulse. No-op if the orb isn't resting/awake. */
+   extern void ui_orb_event_pulse(void);
+   ui_orb_event_pulse();
+
    const char *ch = msg->channel[0] ? msg->channel : "?";
    const char *sender = msg->sender[0] ? msg->sender : "Someone";
    const char *preview = msg->preview[0] ? msg->preview : "(no preview)";

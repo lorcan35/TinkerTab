@@ -209,6 +209,10 @@ static uint32_t s_breath_cycle_period = 0; /* jittered period for this cycle (0 
 static int s_breath_cycle_amp = 0;         /* jittered amplitude for this cycle */
 static uint32_t s_breath_last_ms = 0;      /* last tick time for dt integration */
 
+/* TT #724 Phase D — event micro-pulse: while set, the idle breath yields the
+ * halo so the "noticed" double-pulse owns it cleanly. */
+static uint32_t s_event_pulse_until_ms = 0;
+
 /* Forward declarations — body_pulse + idle_breath helpers are defined
  * alongside the paint helpers near the bottom of the file but the state
  * machine in ui_orb_set_state needs them earlier. */
@@ -438,6 +442,7 @@ static void paint_body_for_hour(int hour) {
 }
 
 void ui_orb_paint_for_mode(uint8_t mode) {
+   bool mode_changed = (mode != s_last_painted_mode);
    s_last_painted_mode = mode;
    if (!s_body) return;
    /* PR 2: pipeline-state paint takes precedence — don't shadow the
@@ -447,6 +452,7 @@ void ui_orb_paint_for_mode(uint8_t mode) {
     * correctly when the pipeline returns. */
    if (ui_orb_pipeline_active()) return;
    paint_body_for_hour(orb_effective_hour());
+   if (mode_changed) ui_orb_event_pulse(); /* TT #724 D: "noticed" on mode change */
 }
 
 void ui_orb_paint_for_tone(widget_tone_t tone) {
@@ -695,6 +701,34 @@ static void halo_anim_to(int target_opa) {
    int cur = lv_obj_get_style_bg_opa(s_halo, LV_PART_MAIN);
    lv_anim_set_values(&a, cur, target_opa);
    lv_anim_set_time(&a, ORB_SPEAKING_FADE_MS);
+   lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+   lv_anim_start(&a);
+}
+
+/* TT #724 Phase D — event micro-pulse: a gentle two-bump halo glow so the orb
+ * visibly "notices" a notable event (incoming channel message / mode change).
+ * One-shot transient (auto-reverse ×2), not a sustained motion. Suppressed
+ * while PROCESSING (the comet owns motion) and while the orb is drowsy/asleep
+ * (don't startle a resting orb). */
+void ui_orb_event_pulse(void) {
+   if (!s_fx.event_pulse || !s_halo) return;
+   if (s_state == ORB_STATE_PROCESSING) return;
+   /* Don't startle a drowsy/asleep orb. AWAKE ⟺ breath period at the AWAKE
+    * value (sleep phases lengthen it); s_sleep_phase is declared further down,
+    * so use this earlier-visible proxy. */
+   if (s_idle_breath_period_ms != IDLE_BREATH_AWAKE_MS) return;
+   uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+   s_event_pulse_until_ms = now + 820; /* ~2×(180 up + 180 down) + slack */
+   int base = lv_obj_get_style_bg_opa(s_halo, LV_PART_MAIN);
+   lv_anim_delete(s_halo, halo_opa_anim_cb);
+   lv_anim_t a;
+   lv_anim_init(&a);
+   lv_anim_set_var(&a, s_halo);
+   lv_anim_set_exec_cb(&a, halo_opa_anim_cb);
+   lv_anim_set_values(&a, base, base + 50 > 255 ? 255 : base + 50);
+   lv_anim_set_time(&a, 180);          /* rise */
+   lv_anim_set_playback_time(&a, 180); /* fall back to base */
+   lv_anim_set_repeat_count(&a, 2);    /* two "noticed" pulses */
    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
    lv_anim_start(&a);
 }
@@ -2301,6 +2335,8 @@ static void idle_breath_tick_cb(lv_timer_t *t) {
    if (ui_orb_pipeline_active()) return;
    if (s_state != ORB_STATE_IDLE) return;
    uint32_t t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+   /* TT #724 D: yield the halo while a "noticed" pulse owns it. */
+   if (t_ms < s_event_pulse_until_ms) return;
    uint32_t period = s_idle_breath_period_ms ? s_idle_breath_period_ms : IDLE_BREATH_AWAKE_MS;
    float phase;
    int amp = IDLE_BREATH_AMPLITUDE;
