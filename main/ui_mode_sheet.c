@@ -420,11 +420,11 @@ static void refresh_composite(void)
     if (!s_composite_head || !s_composite_sub || !s_composite_card) return;
 
     char model_out[64] = {0};
-    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier,
-                                          model_out, sizeof(model_out));
-    const char *mode_name[] = { "Local", "Hybrid", "Full Cloud", "Agent \xe2\x80\xa2 TinkerClaw" };
+    uint8_t resolved = tab5_mode_resolve(s_int_tier, s_voi_tier, s_aut_tier, model_out, sizeof(model_out));
     if (resolved > 3) resolved = 0;
-    lv_label_set_text(s_composite_head, mode_name[resolved]);
+    /* TT #723: canonical name from th_mode_names (was a divergent local copy
+     * "Full Cloud" / "Agent · TinkerClaw"). */
+    lv_label_set_text(s_composite_head, th_mode_names[resolved]);
 
     /* Sub-label is built live so it reflects the actual LLM the user picked
      * (gemini-3-flash-preview, gpt-4o-mini, etc) instead of hardcoding
