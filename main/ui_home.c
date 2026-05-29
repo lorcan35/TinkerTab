@@ -2443,6 +2443,15 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
          lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
          lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
          break;
+
+      case DICT_CANCELLED:
+         /* W1 (S2-7): neutral — an intentional cancel, no retry CTA. */
+         lv_label_set_text(s_dictate_chip_label, "Cancelled");
+         lv_label_set_text(s_dictate_chip_hint, "");
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_CLOSE);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x6B7280), 0);
+         lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0x6B7280), 0);
+         break;
    }
 }
 

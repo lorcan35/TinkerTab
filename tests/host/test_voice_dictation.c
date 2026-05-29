@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_timer.h"   /* host fake-clock helpers (host_clock_*, host_test_reset) */
+#include "task_worker.h" /* host worker stub (tab5_worker_pump, _set_full) */
 #include "voice_dictation.h"
 
 static int g_pass = 0;
@@ -297,12 +299,12 @@ static int test_subscriber_can_reenter_get(void) {
    return 0;
 }
 
-static int test_saved_to_recording_allowed(void) {
-   /* After a successful dictation, the next user-driven dictation must
-    * be able to start without needing the caller to first explicitly
-    * transition through IDLE.  PR 1 doesn't ship the UI's 2 s SAVED→IDLE
-    * fade yet, so SAVED→RECORDING must be a legal direct edge. */
+static int test_saved_to_recording_now_refused(void) {
+   /* W1 (S3-5): SAVED→RECORDING was removed.  Self-decay reaches IDLE first,
+    * and a fast re-dictate goes through voice_dictation_begin (which snaps
+    * the terminal to IDLE).  A RAW set_state(RECORDING) from SAVED is refused. */
    voice_dictation_init();
+   host_test_reset();
    mock_sub_t m = {0};
    voice_dictation_subscribe(mock_cb, &m);
 
@@ -311,12 +313,71 @@ static int test_saved_to_recording_allowed(void) {
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
    voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 2400);
 
-   /* User immediately taps Dictate again. */
-   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 5000);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 5000); /* refused */
 
    dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_SAVED); /* unchanged */
+   return 0;
+}
+
+static int test_cancelled_is_terminal_not_failed(void) {
+   /* W1 (S2-7): cancel is the DICT_CANCELLED *state* with reason NONE —
+    * not FAILED/CANCELLED.  Renders neutral, no "TAP TO RETRY". */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, 1500);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_CANCELLED);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);
+   return 0;
+}
+
+static int test_begin_ws_mints_turn_id(void) {
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   CHECK(tid[0] != '\0');
+   dict_event_t e = voice_dictation_get();
    CHECK_EQ(e.state, DICT_RECORDING);
-   CHECK_EQ((int)e.started_ms, 5000); /* fresh start timestamp */
+   CHECK_EQ(e.origin, DICT_ORIGIN_WS);
+   CHECK(strlen(e.turn_id) > 0);
+   CHECK(strcmp(e.turn_id, tid) == 0);
+   return 0;
+}
+
+static int test_begin_refused_during_offline_upload(void) {
+   /* Reverse race: a WS dictation starting mid-offline-upload must be
+    * refused (the offline POST runs for seconds outside the lock). */
+   voice_dictation_init();
+   host_test_reset();
+   bool ok = voice_dictation_try_begin_offline("offlineid", 3, 1000);
+   CHECK(ok);
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_UPLOADING);
+   CHECK_EQ(e.origin, DICT_ORIGIN_OFFLINE);
+
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1100);
+   CHECK(tid == NULL); /* refused */
+   e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_UPLOADING); /* unchanged */
+   CHECK_EQ(e.origin, DICT_ORIGIN_OFFLINE);
+   return 0;
+}
+
+static int test_try_begin_offline_refused_when_live(void) {
+   /* Forward race: the offline queue cannot claim while a WS turn is live. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   bool ok = voice_dictation_try_begin_offline("x", 1, 1100);
+   CHECK(!ok);
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_RECORDING);
+   CHECK_EQ(e.origin, DICT_ORIGIN_WS);
    return 0;
 }
 
@@ -340,7 +401,11 @@ int main(void) {
    if (test_set_note_slot_accepted_in_uploading()) return 1;
    if (test_set_note_slot_rejected_after_saved()) return 1;
    if (test_subscriber_can_reenter_get()) return 1;
-   if (test_saved_to_recording_allowed()) return 1;
+   if (test_saved_to_recording_now_refused()) return 1;
+   if (test_cancelled_is_terminal_not_failed()) return 1;
+   if (test_begin_ws_mints_turn_id()) return 1;
+   if (test_begin_refused_during_offline_upload()) return 1;
+   if (test_try_begin_offline_refused_when_live()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }

@@ -2616,6 +2616,18 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
          set_caption_text(buf);
          break;
+
+      case DICT_CANCELLED:
+         /* W1 (S2-7): an intentional cancel, NOT a failure — render neutral
+          * slate with no "TAP TO RETRY" affordance.  Self-decays to IDLE. */
+         ripple_stop();
+         body_pulse_stop();
+         thinking_arc_stop();
+         paint_pipeline_body(0x6B7280);
+         paint_pipeline_halo(0x9AA3AF);
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xD7DBE0), 0);
+         set_caption_text("Cancelled");
+         break;
    }
 }
 

@@ -44,6 +44,9 @@ typedef enum {
    DICT_TRANSCRIBING,
    DICT_SAVED,
    DICT_FAILED,
+   DICT_CANCELLED, /* W1: first-class terminal — an intentional cancel, NOT a
+                    * failure.  Renders neutral (no "TAP TO RETRY").  Self-decays
+                    * to IDLE like the other terminals. */
 } dict_state_t;
 
 typedef enum {
@@ -59,8 +62,27 @@ typedef enum {
                          * SAVED instead of failing, so this reason is
                          * reserved — kept for the reason taxonomy + the
                          * /dictation_pipeline debug contract + orb render. */
-   DICT_FAIL_CANCELLED, /* user tapped cancel */
+   DICT_FAIL_CANCELLED, /* DEPRECATED (W1): cancel is now the DICT_CANCELLED
+                         * *state* with reason DICT_FAIL_NONE.  Retained for ABI
+                         * + existing tests through W4; removed in W5. */
 } dict_fail_t;
+
+/* Which producer owns the in-flight dictation turn.  One global FSM is
+ * shared by the live WS path and the offline REST queue; origin tags
+ * ownership so they can refuse each other (S1-3) instead of clobbering one
+ * note_slot field. */
+typedef enum {
+   DICT_ORIGIN_NONE = 0,
+   DICT_ORIGIN_WS,      /* live dictation over the voice WebSocket */
+   DICT_ORIGIN_OFFLINE, /* Core-1 transcription_queue_task re-upload (REST) */
+} dict_origin_t;
+
+/* turn_id is 12 hex chars + NUL.  MUST equal voice.c's TURN_ID_LEN — a
+ * _Static_assert in voice.c guards the two stay equal. */
+#define DICT_TURN_ID_LEN 13
+/* Dragon note id once known (W4).  Provisional bound, re-pinned against the
+ * longest real note id when W4 lands. */
+#define DICT_NOTE_ID_LEN 40
 
 typedef struct {
    dict_state_t state;
@@ -69,6 +91,13 @@ typedef struct {
    uint32_t stopped_ms;     /* time of RECORDING→next (0 while still recording) */
    uint32_t last_change_ms; /* time of most recent transition */
    int note_slot;           /* -1 until SD WAV slot allocated; >=0 after */
+   /* --- W1: session identity + self-liveness --- */
+   dict_origin_t origin;           /* producer that owns this turn */
+   char turn_id[DICT_TURN_ID_LEN]; /* "" until a turn begins */
+   bool resolution_pending;        /* a resolution is in flight on this turn's
+                                    * transport; gates terminal self-decay so a
+                                    * 60-90s-late summary can still correct it */
+   char note_id[DICT_NOTE_ID_LEN]; /* Dragon note id once known; "" otherwise (W4) */
 } dict_event_t;
 
 typedef void (*dict_subscriber_t)(const dict_event_t *event, void *user_data);
@@ -110,6 +139,36 @@ dict_event_t voice_dictation_get(void);
  * and live verification.  Static strings; do not free. */
 const char *voice_dictation_state_name(dict_state_t s);
 const char *voice_dictation_fail_name(dict_fail_t f);
+
+/* User-facing caption for a fail reason (the single source replacing the
+ * divergent per-surface strings — S2-11).  Pure; static strings.  The
+ * state-specific suffix ("TAP TO RETRY" etc.) is appended by the renderer,
+ * not baked in here. */
+const char *voice_dictation_fail_caption(dict_fail_t f);
+
+/* The ONE monotonic-ms clock for the FSM.  On target = esp_timer_get_time()/
+ * 1000; under host tests the esp_timer shim returns the fake clock, so the
+ * same body serves both.  Used by self-decay, resolve callers, and (W5) the
+ * inlined timestamp sites. */
+uint32_t voice_dictation_now_ms(void);
+
+/* Write a fresh 12-hex-char + NUL turn id into `out` (>= DICT_TURN_ID_LEN).
+ * Pure (no globals); voice.c's gen_turn_id delegates here so there is ONE
+ * generator and one id per turn. */
+void voice_turn_id_gen(char out[DICT_TURN_ID_LEN]);
+
+/* Begin a WS dictation turn: mint identity + transition IDLE→RECORDING in one
+ * locked op.  `adopt_turn_id` NULL = mint a fresh id; non-NULL = adopt it.
+ * Returns a pointer to the FSM's turn_id (valid until the next IDLE), or NULL
+ * if a turn of a DIFFERENT origin is already live (caller should toast busy). */
+const char *voice_dictation_begin(dict_origin_t origin, const char *adopt_turn_id, uint32_t now_ms);
+
+/* Atomic claim for the offline REST queue: if (and only if) the FSM is IDLE
+ * or in a terminal state, adopt `turn_id`, set origin=OFFLINE + note_slot,
+ * mark resolution_pending, and transition to UPLOADING — all under one lock
+ * take.  Returns false (no state change) if a turn is live.  Closes the
+ * queue↔decay and WS↔offline races (S1-3). */
+bool voice_dictation_try_begin_offline(const char *adopt_turn_id, int note_slot, uint32_t now_ms);
 
 #ifdef __cplusplus
 }
