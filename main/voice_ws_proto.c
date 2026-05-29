@@ -563,6 +563,15 @@ void voice_ws_proto_handle_text(const char *data, int len) {
 
    const char *type_str = type->valuestring;
 
+   /* TT #709 — count this frame as turn "progress" for the response-timeout
+    * watchdog, EXCEPT keepalive ping/pong.  Tab5 sends {"type":"ping"} every
+    * 15 s during PROCESSING and Dragon answers "pong"; treating those as
+    * progress would keep s_last_activity_us fresh forever, so a genuinely
+    * hung-but-pinging Dragon would never trip the watchdog. */
+   if (strcmp(type_str, "pong") != 0 && strcmp(type_str, "ping") != 0) {
+      s_last_activity_us = esp_timer_get_time();
+   }
+
    if (strcmp(type_str, "stt_partial") == 0) {
       cJSON *text = cJSON_GetObjectItem(root, "text");
       /* U12 (#206): regardless of dictation mode, surface the partial
@@ -1805,12 +1814,17 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
 
       case WEBSOCKET_EVENT_DATA:
          if (!data) break;
-         s_last_activity_us = esp_timer_get_time();
          if (data->op_code == WS_TRANSPORT_OPCODES_TEXT && data->data_len > 0) {
             ESP_LOGI(TAG, "WS recv text (%d bytes): %.*s", data->data_len, data->data_len > 200 ? 200 : data->data_len,
                      data->data_ptr);
+            /* TT #709 — the response-timeout progress clock is reset inside
+             * handle_text, gated to skip keepalive ping/pong (which arrive
+             * as TEXT frames every ~15 s and would otherwise keep the clock
+             * fresh forever, defeating the hang watchdog). */
             voice_ws_proto_handle_text(data->data_ptr, data->data_len);
          } else if (data->op_code == WS_TRANSPORT_OPCODES_BINARY && data->data_len > 0) {
+            /* TT #709 — TTS audio counts as turn progress. */
+            s_last_activity_us = esp_timer_get_time();
             /* #268: large binary frames (e.g. Phase 3B video JPEGs >32 KB)
              * arrive in fragments — esp_websocket_client splits them at
              * WS_CLIENT_BUFFER_SIZE.  Reassemble using payload_len +
