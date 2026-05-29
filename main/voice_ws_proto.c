@@ -909,8 +909,9 @@ void voice_ws_proto_handle_text(const char *data, int len) {
        * few ms later anyway, no UI flicker visible. */
       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
       voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
-      /* PR 1: pipeline transition for the cancelled path. */
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* W1 (S2-7): cancel is the CANCELLED terminal (neutral, self-decays),
+       * not a FAILED/CANCELLED fail-reason that renders the rose retry orb. */
+      voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
       /* #537: discard the pipeline-armed WAV — no transcript is coming. */
       tab5_lv_async_call((lv_async_cb_t)ui_notes_pipeline_cancel_recording, NULL);
    } else if (strcmp(type_str, "dictation_summary") == 0) {

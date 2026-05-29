@@ -179,14 +179,20 @@ static int test_retry_from_failed(void) {
 }
 
 static int test_cancel_from_recording(void) {
+   /* W1 (S2-7): cancel drives the neutral CANCELLED terminal (reason NONE),
+    * which then self-decays to IDLE — NOT the deprecated FAILED+CANCELLED. */
    voice_dictation_init();
+   host_test_reset();
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, 1500);
-   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, 1600);
+   voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, 1500);
 
    dict_event_t e = voice_dictation_get();
-   CHECK_EQ(e.state, DICT_IDLE);
+   CHECK_EQ(e.state, DICT_CANCELLED);
    CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);
+
+   host_clock_advance_ms(2000); /* > DICT_DECAY_CANCELLED_MS (1.5 s) */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
    return 0;
 }
 

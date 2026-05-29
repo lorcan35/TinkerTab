@@ -123,16 +123,23 @@ static void dict_dispatch_locked(void) {
 }
 
 /* Worker-context job: decay a still-terminal, non-pending state to IDLE.
- * Re-checks state under the FSM lock (voice_dictation_get/set_state both
- * lock) so a turn that was claimed/resolved between the timer firing and the
- * worker running is left alone — this is what makes the enqueue→apply
- * interleave safe against a new turn starting in the gap (S1-3). */
+ *
+ * The re-check and the IDLE write happen under a SINGLE lock hold (review F1):
+ * the worker runs on Core-1 while voice_dictation_begin runs on the UI/WS
+ * task, so a get()-then-separate-set_state() split is a genuine multicore
+ * TOCTOU — begin() could snap a terminal→IDLE→RECORDING (a fresh live turn)
+ * in the gap, and the stale IDLE write would then wipe it (RECORDING→IDLE is
+ * a legal edge).  One lock hold makes the job's view atomic w.r.t. begin:
+ * begin() blocks on the same lock, so it runs strictly before or after this
+ * job, never between its check and its write.  set_state re-enters the
+ * recursive mutex — safe. */
 static void dict_decay_apply_job(void *arg) {
    (void)arg;
-   dict_event_t e = voice_dictation_get();
-   if (DICT_IS_TERMINAL(e.state) && !e.resolution_pending) {
+   dict_lock();
+   if (DICT_IS_TERMINAL(s_event.state) && !s_event.resolution_pending) {
       voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
+   dict_unlock();
 }
 
 /* esp_timer-task callback.  Does NOT touch the dispatch path — it only hands

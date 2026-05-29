@@ -2296,7 +2296,9 @@ static void mode_chip_click_cb(lv_event_t *e) {
 static void dictate_chip_tap_cb(lv_event_t *e) {
    (void)e;
    dict_event_t dp = voice_dictation_get();
-   if (dp.state == DICT_IDLE || dp.state == DICT_FAILED) {
+   /* W1: also start from a self-decaying terminal (SAVED/CANCELLED) so a fast
+    * re-tap inside the ~2s/1.5s decay window isn't dropped — begin() snaps it. */
+   if (dp.state == DICT_IDLE || dp.state == DICT_FAILED || dp.state == DICT_SAVED || dp.state == DICT_CANCELLED) {
       /* #537: arm a SD WAV before starting the pipeline so the mic
        * capture task's ui_notes_write_audio() hook actually has a
        * file to write to.  On dictation_summary the slot is finalised

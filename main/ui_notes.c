@@ -3115,6 +3115,12 @@ static void proc_paint_state(const dict_event_t *e) {
          edge_hex = 0xFF5C50;
          txt = "FAILED  TAP TO RETRY";
          break;
+      case DICT_CANCELLED:
+         /* W1 (S2-7): neutral — an intentional cancel, not a failure. */
+         body_hex = 0x6B7280;
+         edge_hex = 0x9AA3AF;
+         txt = "Cancelled";
+         break;
       default:
          break;
    }
@@ -3138,7 +3144,8 @@ static void cb_proc_close_tap(lv_event_t *e) {
    dict_event_t cur = voice_dictation_get();
    if (cur.state == DICT_RECORDING) {
       voice_cancel();
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* W1 (S2-7): cancel is the CANCELLED terminal (neutral), not FAILED. */
+      voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, voice_dictation_now_ms());
    } else if (cur.state != DICT_IDLE) {
       /* For non-RECORDING non-IDLE (UPLOADING/TRANSCRIBING/SAVED/FAILED),
        * just dismiss the row by snapping back to IDLE.  The dictation
@@ -3655,11 +3662,12 @@ void cb_notes_fab_tap(lv_event_t *e) {
    if (cur.state == DICT_RECORDING) {
       /* Already recording — second tap cancels (matches home chip semantics). */
       voice_cancel();
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* W1 (S2-7): cancel is the CANCELLED terminal (neutral), not FAILED. */
+      voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, voice_dictation_now_ms());
       return;
    }
-   if (cur.state == DICT_FAILED || cur.state == DICT_SAVED) {
-      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   if (cur.state == DICT_FAILED || cur.state == DICT_SAVED || cur.state == DICT_CANCELLED) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
    esp_err_t err = voice_start_dictation();
    if (err != ESP_OK) {
