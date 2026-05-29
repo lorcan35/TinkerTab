@@ -1931,13 +1931,15 @@ esp_err_t ui_home_start_voice_turn(const char *source) {
       return ESP_ERR_INVALID_STATE;
    }
 
-   /* PR 2 polish: starting a fresh Ask turn should always start clean.
-    * If a previous dictation left the pipeline in a transient terminal
-    * state (FAILED/SAVED), reset it to IDLE so the orb's Ask visuals
-    * aren't shadowed by stale "CANCELLED · TAP TO RETRY" text. */
+   /* Starting a fresh Ask turn should always start clean.  If a previous
+    * dictation left the pipeline in a terminal state (FAILED/SAVED/CANCELLED)
+    * that has not yet self-decayed (fast tap), snap it to IDLE so the orb's
+    * Ask visuals aren't shadowed by stale dictation text.  This is the ASK
+    * path's concern (Ask never goes through voice_dictation_begin); terminal
+    * LIVENESS itself is now owned by the FSM's self-decay (W1). */
    dict_event_t pe = voice_dictation_get();
-   if (pe.state == DICT_FAILED || pe.state == DICT_SAVED) {
-      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   if (pe.state == DICT_FAILED || pe.state == DICT_SAVED || pe.state == DICT_CANCELLED) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
 
    ui_voice_show();

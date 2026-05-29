@@ -1652,12 +1652,22 @@ static void transcription_queue_task(void *arg)
 
         note_entry_t *n = &s_notes[slot];
         ESP_LOGI(TAG, "Transcribing note [%d]: %s", slot, n->audio_path);
+
+        /* W1: atomically claim the dictation FSM for this offline upload —
+         * mints a turn_id, sets origin=OFFLINE + note_slot, transitions to
+         * UPLOADING, but ONLY if no turn (e.g. a live WS dictation that began
+         * in the gap since the voice_get_state() check above) is in flight.
+         * If refused, leave the note RECORDED and retry next tick — this is
+         * the atomic compare-and-begin that closes the WS↔offline clobber
+         * (S1-3), replacing the old manual set_note_slot + set_state. */
+        char off_turn[DICT_TURN_ID_LEN];
+        voice_turn_id_gen(off_turn);
+        if (!voice_dictation_try_begin_offline(off_turn, slot, voice_dictation_now_ms())) {
+           ESP_LOGI(TAG, "Transcription queue: dictation FSM busy — deferring note [%d]", slot);
+           continue; /* note stays RECORDED; retry next 15 s tick */
+        }
         n->state = NOTE_STATE_TRANSCRIBING;
         notes_save();
-
-        /* PR 1: pipeline UPLOADING — REST POST about to begin. */
-        voice_dictation_set_note_slot(slot);
-        voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
 
         /* Read WAV file from SD */
         FILE *f = fopen(n->audio_path, "rb");

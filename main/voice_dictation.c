@@ -266,9 +266,14 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, 
       s_event.note_id[0] = '\0';
    } else if (new_state == DICT_SAVED || new_state == DICT_CANCELLED) {
       /* A definitive resolution landed — clear pending so the terminal can
-       * self-decay.  (FAILED deliberately KEEPS pending: it may be premature
-       * — e.g. a timeout/grace FAILED — and a late summary can still correct
-       * it via FAILED→SAVED before it decays.) */
+       * self-decay. */
+      s_event.resolution_pending = false;
+   } else if (new_state == DICT_FAILED && s_event.origin != DICT_ORIGIN_WS) {
+      /* Non-WS (offline REST) FAILED is definitive — the REST response IS the
+       * resolution, so clear pending and let it decay.  A WS FAILED instead
+       * KEEPS pending: it may be premature (a timeout/grace FAILED) and a
+       * 60-90s-late summary can still correct it via FAILED→SAVED before it
+       * would otherwise decay.  (W3's stuck-watchdog bounds the WS case.) */
       s_event.resolution_pending = false;
    }
 
@@ -310,9 +315,11 @@ void voice_turn_id_gen(char out[DICT_TURN_ID_LEN]) {
    static unsigned s_seq = 0;
    snprintf(out, DICT_TURN_ID_LEN, "%012x", ++s_seq);
 #else
-   uint32_t hi = esp_random();
-   uint32_t lo = esp_random();
-   snprintf(out, DICT_TURN_ID_LEN, "%06lx%06lx", (unsigned long)(hi & 0xFFFFFFu), (unsigned long)(lo & 0xFFFFFFu));
+   /* Same shape voice.c used before W1 (12 hex / 48 bits): 8 hex from one
+    * esp_random + 4 from another.  The wire format is unchanged. */
+   uint32_t a = esp_random();
+   uint32_t b = esp_random();
+   snprintf(out, DICT_TURN_ID_LEN, "%08lx%04lx", (unsigned long)a, (unsigned long)(b & 0xFFFFu));
 #endif
 }
 

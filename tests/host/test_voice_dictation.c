@@ -547,6 +547,21 @@ static int test_failed_to_saved_late_correction_ws_only(void) {
    return 0;
 }
 
+static int test_offline_failed_decays_to_idle(void) {
+   /* An offline (REST) FAILED is definitive — the REST response IS the
+    * resolution — so it clears pending and decays, unlike a WS FAILED which
+    * keeps pending for a possible late correction. */
+   voice_dictation_init();
+   host_test_reset();
+   CHECK(voice_dictation_try_begin_offline("offid", 2, 0)); /* UPLOADING, OFFLINE, pending */
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1000);
+   CHECK(!voice_dictation_get().resolution_pending); /* cleared (offline) */
+   host_clock_advance_ms(6000);
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
 static int test_failed_to_saved_refused_when_not_pending(void) {
    /* No WS resolution pending → a stray SAVED must NOT resurrect a FAILED. */
    voice_dictation_init();
@@ -593,6 +608,7 @@ int main(void) {
    if (test_resolve_if_current_drops_stale()) return 1;
    if (test_missing_turn_id_treated_as_match()) return 1;
    if (test_failed_to_saved_late_correction_ws_only()) return 1;
+   if (test_offline_failed_decays_to_idle()) return 1;
    if (test_failed_to_saved_refused_when_not_pending()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;

@@ -299,7 +299,6 @@ static dict_event_t s_pipeline = {
     .note_slot = -1,
 };
 static lv_obj_t *s_orb_caption = NULL;        /* Label below the orb body */
-static lv_timer_t *s_saved_fade_timer = NULL; /* SAVED → IDLE 2s timer */
 static lv_timer_t *s_rec_timer_label = NULL;  /* updates RECORDING caption every 200 ms */
 
 /* ── Circadian palette ───────────────────────────────────────────────── */
@@ -1125,10 +1124,6 @@ void ui_orb_destroy(void) {
    if (s_orb_caption) {
       lv_obj_del(s_orb_caption);
       s_orb_caption = NULL;
-   }
-   if (s_saved_fade_timer) {
-      lv_timer_del(s_saved_fade_timer);
-      s_saved_fade_timer = NULL;
    }
    if (s_rec_timer_label) {
       lv_timer_del(s_rec_timer_label);
@@ -2455,12 +2450,8 @@ static void hide_caption(void) {
    if (s_orb_caption) lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* Timer cb for SAVED → IDLE auto-fade. */
-static void saved_fade_to_idle_cb(lv_timer_t *t) {
-   (void)t;
-   s_saved_fade_timer = NULL;
-   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-}
+/* SAVED→IDLE auto-fade is gone (W1): the dictation FSM now owns terminal
+ * self-decay (voice_dictation.c), so this surface is a pure renderer. */
 
 /* Update the RECORDING caption with live elapsed time.  Stops itself
  * if the pipeline has left RECORDING (defensive — set_pipeline_state
@@ -2510,12 +2501,6 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
       alive_stop();
    } else {
       if (s_state == ORB_STATE_IDLE) alive_start();
-   }
-
-   /* Tear down the SAVED auto-fade timer when leaving SAVED. */
-   if (event->state != DICT_SAVED && s_saved_fade_timer) {
-      lv_timer_del(s_saved_fade_timer);
-      s_saved_fade_timer = NULL;
    }
 
    /* Stop the live elapsed-time timer when leaving RECORDING. */
@@ -2595,12 +2580,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          paint_pipeline_halo(0x4ADE80); /* mint glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);
          set_caption_text("SAVED");
-         /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
-          * one already exists (rapid SAVED re-entry), don't stack. */
-         if (!s_saved_fade_timer) {
-            s_saved_fade_timer = lv_timer_create(saved_fade_to_idle_cb, 2000, NULL);
-            if (s_saved_fade_timer) lv_timer_set_repeat_count(s_saved_fade_timer, 1);
-         }
+         /* W1: no UI fade timer — the FSM self-decays SAVED→IDLE (~2 s). */
          break;
 
       case DICT_FAILED:
