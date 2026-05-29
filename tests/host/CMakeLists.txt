@@ -44,11 +44,15 @@ target_compile_options(test_spring_anim PRIVATE -Wno-unused-variable -Wno-unused
 target_link_libraries(test_spring_anim PRIVATE m)
 add_test(NAME spring_anim COMMAND test_spring_anim)
 
-# voice_dictation — pipeline state machine (PR 1).  Picks up the
-# tests/host/shim/freertos/ no-op recursive-mutex shim from SHIM_DIR.
+# voice_dictation — pipeline state machine.  Picks up the
+# tests/host/shim/freertos/ no-op recursive-mutex shim, plus (W1) the
+# fake-clock esp_timer + synchronous task_worker FIFO from host_stubs.c,
+# all under SHIM_DIR.  DICT_HOST_TEST selects the host clock body.
 add_executable(test_voice_dictation
     test_voice_dictation.c
     ${MAIN_DIR}/voice_dictation.c
+    ${SHIM_DIR}/host_stubs.c
 )
 target_include_directories(test_voice_dictation PRIVATE ${SHIM_DIR} ${MAIN_DIR})
+target_compile_definitions(test_voice_dictation PRIVATE DICT_HOST_TEST=1)
 add_test(NAME voice_dictation COMMAND test_voice_dictation)
