@@ -166,11 +166,12 @@ Once Wave 0 lands the templates + structure, content waves **fan out hard** (one
 
 ## 13. Risks & mitigations
 
-- **Moving `docs/` files breaks links + memory/CLAUDE.md citations.** Many memory entries and `CLAUDE.md` cite `docs/PLAN-*.md` / `docs/AUDIT-*.md`. Mitigation: `git mv` (preserve history), update the high-traffic references in the same wave, run a link-check, and leave a one-line `docs/internal/README.md` mapping old→new. **Decision point for review:** move internal docs to `docs/internal/` (cleaner, some churn) vs leave them flat and only *add* the Diátaxis dirs (less disruptive, messier). Spec currently assumes **move**.
+- **Moving `docs/` files breaks links + memory/CLAUDE.md citations.** Many memory entries and `CLAUDE.md` cite `docs/PLAN-*.md` / `docs/AUDIT-*.md`. Mitigation: `git mv` (preserve history), update the high-traffic references in the same wave, run a link-check, and leave a one-line `docs/internal/README.md` mapping old→new. **DECISION (2026-05-29, owner): MOVE** internal docs to `docs/internal/` — the plan must include the reference-update + link-check steps.
 - **Four repos × identical structure = duplication** (STYLE.md, GLOSSARY core, templates copied 4×). Accepted cost of "each repo stands alone." Mitigation: keep these files byte-identical; a future tiny sync script can diff them.
 - **PingOS/TinkerClaw are moving targets** (PingOS active; TinkerClaw mid merge/rebrand). Mitigation: Wave 0 only lands structure/standards there; defer deep content (Waves 3/4) until those efforts settle.
 - **Scope creep** — "world class" invites endless polish. Mitigation: the Diátaxis taxonomy + acceptance criteria are the definition of done per wave.
 
-## 14. Open question for reviewer
+## 14. Resolved decisions
 
-The **§13 decision** — move internal `PLAN-*/AUDIT-*/RETRO-*` into `docs/internal/` (recommended, cleaner) vs leave them flat and only add the new Diátaxis dirs (less link churn). Confirm before Wave 0 implementation.
+- **2026-05-29 (owner):** Internal `PLAN-*/AUDIT-*/RETRO-*` docs **move to `docs/internal/`** (via `git mv`); the Wave 0 plan includes updating `CLAUDE.md` + auto-memory references and a link-check.
+- **2026-05-29 (owner):** Spec **approved** → proceed to the Wave 0 implementation plan.
