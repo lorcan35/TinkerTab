@@ -52,7 +52,13 @@ typedef enum {
    DICT_FAIL_NETWORK,   /* Other HTTP error / WS disconnect / open failed */
    DICT_FAIL_EMPTY,     /* Dragon returned 200 with empty STT text */
    DICT_FAIL_NO_AUDIO,  /* WAV missing or unreadable / Dragon got no PCM */
-   DICT_FAIL_TOO_LONG,  /* hit 5-min hard cap during recording */
+   DICT_FAIL_TOO_LONG,  /* recording exceeded the hard cap.  The 4-hr
+                         * dictation cap (voice.c MAX_RECORD_FRAMES_DICT,
+                         * = 720000 frames; was wrongly documented as
+                         * "5-min" pre-2026-05-29) now clean-stops to
+                         * SAVED instead of failing, so this reason is
+                         * reserved — kept for the reason taxonomy + the
+                         * /dictation_pipeline debug contract + orb render. */
    DICT_FAIL_CANCELLED, /* user tapped cancel */
 } dict_fail_t;
 

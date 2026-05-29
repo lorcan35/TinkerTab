@@ -888,13 +888,36 @@ static void mic_capture_task(void *arg)
               break;
            }
 
-           /* PR 1: parallel 5-min hard cap on dictation.  Mirrors the ASK
-            * cap above — log, drive the pipeline state machine into
-            * FAILED with reason TOO_LONG, and break out of the mic loop
-            * using the same pattern that's proven safe in ASK mode. */
+           /* Parallel 4-hr hard cap on dictation (MAX_RECORD_FRAMES_DICT).
+            *
+            * Dictation audit 2026-05-29 (S1-4): this cap fires from INSIDE
+            * the mic loop — a SELF-initiated stop — unlike the user-stop
+            * path, which is driven externally by voice_stop_listening()
+            * (that function sends the WS stop frame + sets state, then the
+            * loop notices !s_mic_running and exits).  The old cap code only
+            * drove the local FSM to FAILED/TOO_LONG and broke: it never
+            * sent Dragon `{"type":"stop"}` (so Dragon was left mid-session
+            * and the WS turn wedged) and never reset voice_state (stuck at
+            * LISTENING).  A 4-hour dictation is VALID content, so the right
+            * move is a clean stop: send the stop frame so Dragon finishes,
+            * transcribes what it has, and saves the (truncated) note —
+            * exactly the dictate branch of voice_stop_listening.  We inline
+            * it here rather than calling voice_stop_listening() because we
+            * ARE the mic task (that function drains on s_mic_running, which
+            * only clears after this loop exits → would self-deadlock). */
            if (voice_get_mode() == VOICE_MODE_DICTATE && frames_sent >= MAX_RECORD_FRAMES_DICT) {
-              ESP_LOGW(TAG, "Dictation hit 4-hr safety cap — auto-stopping");
-              voice_dictation_set_state(DICT_FAILED, DICT_FAIL_TOO_LONG, (uint32_t)(esp_timer_get_time() / 1000));
+              ESP_LOGW(TAG, "Dictation hit 4-hr safety cap — auto-stopping (clean stop)");
+              esp_err_t cap_stop_err = voice_ws_send_text("{\"type\":\"stop\"}");
+              if (cap_stop_err == ESP_OK) {
+                 voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+                 voice_set_state(VOICE_STATE_PROCESSING, "dictation_cap");
+              } else {
+                 /* WS gone — mirror voice_stop_listening's connection-lost
+                  * branch: surface NETWORK + drop to IDLE so we don't wedge. */
+                 ESP_LOGW(TAG, "Cap stop frame failed — connection lost");
+                 voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+                 voice_set_state(VOICE_STATE_IDLE, "dictation_cap_no_ws");
+              }
               break;
            }
 
@@ -968,10 +991,12 @@ static void mic_capture_task(void *arg)
         /* TT #572 follow-up: dictation no longer auto-stops on
          * silence — user taps Stop manually.  The post-loop send-stop
          * here used to fire when the silence-counter break above
-         * triggered.  Now the loop only exits via user-initiated stop
-         * or the 4-hr cap; the stop frame is already sent by those
-         * code paths, so this block is a dead branch.  Left as a
-         * no-op for clarity. */
+         * triggered.  The loop now exits only via user-initiated stop
+         * (voice_stop_listening sends the WS stop frame externally) or
+         * the 4-hr cap (which sends its own stop frame inline — see the
+         * cap branch above, fixed in the 2026-05-29 dictation audit).
+         * Both paths send the stop frame, so this block is genuinely a
+         * no-op — left here only to document where the old send lived. */
 
         ESP_LOGI(TAG, "Mic session end (frames=%d) — back to idle", frames_sent);
         /* #284: drop back to outer while(1) and wait for the next

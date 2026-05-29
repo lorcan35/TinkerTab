@@ -856,19 +856,43 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       ESP_LOGI(TAG, "Dictation post-process started");
       voice_set_state(VOICE_STATE_PROCESSING, "Generating summary...");
    } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
-      /* TinkerBox#94 H4: LLM failed or wasn't available.  Note already
-       * saved (the transcript landed via the prior `stt` event); user
-       * just doesn't get an auto-generated title/summary.  Clear the
-       * "Generating summary..." caption and toast the friendly
-       * message. */
+      /* TinkerBox#94 H4: Dragon's STT + auto-note-create completed but
+       * the LLM summary step failed (no_llm_available, generation
+       * error, etc.).  The transcript IS captured — the note already
+       * exists on Dragon and the `stt` event already landed the text —
+       * so the user's intent was saved; only the auto title/summary is
+       * missing.  Clear the "Generating summary..." caption, toast the
+       * friendly message, drive the dictation pipeline to SAVED (NOT
+       * left stuck at TRANSCRIBING), and surface a local Tab5 note from
+       * the transcript.
+       *
+       * Dictation audit 2026-05-29 (S1-2): a SECOND
+       * `dictation_postprocessing_error` branch used to live later in
+       * this if/else chain and owned the FSM→SAVED + local-note work,
+       * but it was unreachable (this branch matched first), so every
+       * Local dictation that hit the summary-error path — the COMMON
+       * path on the llama-server Local backend — left the pipeline
+       * wedged at TRANSCRIBING with no note.  Merged here; the dead
+       * branch was deleted. */
       cJSON *msg = cJSON_GetObjectItem(root, "message");
       const char *m = cJSON_IsString(msg) ? msg->valuestring : "Note saved — summary unavailable";
-      ESP_LOGW(TAG, "Dictation post-process error: %s", m);
+      cJSON *err = cJSON_GetObjectItem(root, "error");
+      const char *err_str = (cJSON_IsString(err) && err->valuestring) ? err->valuestring : "unknown";
+      ESP_LOGW(TAG, "Dictation post-process error: %s (%s) — pipeline → SAVED (note already exists)", m, err_str);
       char buf[160];
       strncpy(buf, m, sizeof(buf) - 1);
       buf[sizeof(buf) - 1] = '\0';
       voice_async_toast(strdup(buf));
-      voice_set_state(VOICE_STATE_READY, "dictation_done");
+      voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
+      voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+      /* Surface the dictation as a local Tab5 note (Path B: FAB / home
+       * Dictate chip — Path A's local "+ NEW VOICE NOTE" slot already
+       * owns its own row; ui_notes_add_dictated_async no-ops if a local
+       * slot is already active so we don't duplicate). */
+      const char *transcript = voice_get_dictation_text();
+      if (transcript && transcript[0]) {
+         ui_notes_add_dictated_async(transcript);
+      }
    } else if (strcmp(type_str, "dictation_postprocessing_cancelled") == 0) {
       /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
        * post-process.  The new dictation will emit its own
@@ -968,30 +992,6 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       cJSON *ntitle = cJSON_GetObjectItem(root, "title");
       ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"", cJSON_IsString(nid) ? nid->valuestring : "?",
                cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
-   } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
-      /* PR 2 polish: Dragon's STT + auto-note-create completed but the
-       * LLM summary step failed (no_llm_available, generation error,
-       * etc.).  The note IS saved on Dragon (it was created from the
-       * STT transcript before the LLM step), so transition the pipeline
-       * to SAVED rather than leaving it stuck at TRANSCRIBING.  We use
-       * SAVED here even though there's no title/summary because the
-       * user's intent was captured — the note exists, just without an
-       * auto-generated heading.  Tab5's Notes screen will pick it up
-       * on next sync with a fallback title from the transcript. */
-      cJSON *err = cJSON_GetObjectItem(root, "error");
-      const char *err_str = (cJSON_IsString(err) && err->valuestring) ? err->valuestring : "unknown";
-      ESP_LOGW(TAG, "Dictation post-processing failed: %s — pipeline → SAVED (note already exists)", err_str);
-      voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
-      voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-      /* PR 3 follow-up: same local-note creation path as
-       * dictation_summary above.  Dragon auto-created its own note
-       * before the LLM step failed, so the transcript is the user's
-       * captured content even though we don't have a title/summary.
-       * Surface it on Tab5's Notes timeline. */
-      const char *transcript = voice_get_dictation_text();
-      if (transcript && transcript[0]) {
-         ui_notes_add_dictated_async(transcript);
-      }
    } else if (strcmp(type_str, "llm_done") == 0) {
       cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
       ESP_LOGI(TAG, "LLM done (%.0fms) | heap_dma_free=%u largest=%u", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,
