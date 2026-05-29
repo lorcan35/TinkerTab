@@ -326,7 +326,7 @@ Cross-check with the masked serial output (`05ee****b9f2` → token starts `05ee
 - **Wire a new obs event:** call `tab5_debug_obs_event(kind, detail)` at your site, update the events table in CLAUDE.md
 - **Add a NVS setting:** [`main/settings.{c,h}`](../main/settings.h) + the NVS Settings table in CLAUDE.md
 - **Add a hardware peripheral:** [`bsp/tab5/bsp_config.h`](../bsp/tab5/bsp_config.h) + [`docs/HARDWARE.md`](HARDWARE.md)
-- **Write a skill that emits widgets:** [`docs/WIDGETS.md`](WIDGETS.md) + [`docs/PLAN-widget-platform.md`](PLAN-widget-platform.md)
+- **Write a skill that emits widgets:** [`docs/WIDGETS.md`](WIDGETS.md) + [`docs/internal/PLAN-widget-platform.md`](internal/PLAN-widget-platform.md)
 - **Read the war stories:** [`../LEARNINGS.md`](../LEARNINGS.md)
 
 Welcome aboard. 🐉

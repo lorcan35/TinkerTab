@@ -186,7 +186,7 @@ Three options, in order of effort:
 1. **Quick & dirty:** put a label on the home screen, update it
    from your task.
 2. **Proper widget:** build a `widget_live` emission via the surface
-   manager (see [`docs/PLAN-widget-platform.md`](PLAN-widget-platform.md)).
+   manager (see [`docs/internal/PLAN-widget-platform.md`](internal/PLAN-widget-platform.md)).
 3. **Voice-accessible:** make Dragon aware via a `weather_local`
    tool that returns the latest reading.  The LLM can then answer
    "what's the temperature in here?"

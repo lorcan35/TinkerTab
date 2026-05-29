@@ -141,7 +141,7 @@ System I2C, addresses 0x43 + 0x44.
 
 ## M5-Bus rear connector
 
-30-pin pinheader on the back of the Tab5, hidden behind the battery cover.  Used for stacked M5Stack modules (K144 LLM Module Kit, etc.) — see [`docs/PLAN-m5-llm-module.md`](PLAN-m5-llm-module.md) and [`docs/PLAN-grove.md`](PLAN-grove.md) for the active integration plans.  Authoritative source: the official M5Stack [Tab5 schematic PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1132/Tab5_Schematics_PDF.pdf).
+30-pin pinheader on the back of the Tab5, hidden behind the battery cover.  Used for stacked M5Stack modules (K144 LLM Module Kit, etc.) — see [`docs/internal/PLAN-m5-llm-module.md`](internal/PLAN-m5-llm-module.md) and [`docs/internal/PLAN-grove.md`](internal/PLAN-grove.md) for the active integration plans.  Authoritative source: the official M5Stack [Tab5 schematic PDF](https://m5stack-doc.oss-cn-shenzhen.aliyuncs.com/1132/Tab5_Schematics_PDF.pdf).
 
 | M5-Bus pin | Tab5 signal | ESP32-P4 GPIO | Notes |
 |---|---|---|---|

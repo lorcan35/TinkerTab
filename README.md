@@ -92,7 +92,7 @@ OpenRouter).
   drives a streaming Zipformer ASR; Tab5 listens for a configurable wake phrase
   ("tinker" by default) and then captures up to 4 hours of dictation in a PSRAM
   buffer. Open-vocabulary phrase matching means no model retraining to change the
-  wake or end phrase. See [`docs/PLAN-wakeword.md`](./docs/PLAN-wakeword.md).
+  wake or end phrase. See [`docs/internal/PLAN-wakeword.md`](./docs/internal/PLAN-wakeword.md).
 - **Solo Direct mode (vmode=5)** -- Tab5 talks straight to OpenRouter for STT,
   LLM, and TTS with no Dragon dependency. Per-model NVS keys + on-device RAG
   against `/sdcard/rag.bin`. See `or_*` NVS keys in
