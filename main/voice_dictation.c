@@ -22,11 +22,24 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "task_worker.h"
 #ifndef DICT_HOST_TEST
 #include "esp_random.h"
 #endif
 
 #define DICT_MAX_SUBSCRIBERS 4
+
+/* W1 self-liveness: terminal states decay back to IDLE on their own so a
+ * dictation no longer depends on whichever UI surface happens to be mounted
+ * to make progress (S2-1).  The decay job runs on task_worker — NEVER from
+ * the esp_timer task — because the dispatch path marshals to LVGL, and the
+ * timer task is not a safe context for that (the crash class PR #259 closed). */
+#define DICT_DECAY_SAVED_MS 2000
+#define DICT_DECAY_FAILED_MS 5000
+#define DICT_DECAY_CANCELLED_MS 1500
+#define DICT_DECAY_RETRY_MS 250 /* re-arm delay when the worker queue is full */
+
+#define DICT_IS_TERMINAL(s) ((s) == DICT_SAVED || (s) == DICT_FAILED || (s) == DICT_CANCELLED)
 
 typedef struct {
    dict_subscriber_t cb;
@@ -37,6 +50,7 @@ typedef struct {
 static dict_event_t s_event;
 static dict_sub_t s_subs[DICT_MAX_SUBSCRIBERS];
 static SemaphoreHandle_t s_lock = NULL;
+static esp_timer_handle_t s_dict_decay_timer = NULL; /* one-shot, lazily created */
 
 /* Lock / unlock the module-wide recursive mutex.  On host these collapse
  * to no-ops via the semphr.h shim, so the test suite exercises the same
@@ -106,6 +120,55 @@ static void dict_dispatch_locked(void) {
          s_subs[i].cb(&s_event, s_subs[i].user_data);
       }
    }
+}
+
+/* Worker-context job: decay a still-terminal, non-pending state to IDLE.
+ * Re-checks state under the FSM lock (voice_dictation_get/set_state both
+ * lock) so a turn that was claimed/resolved between the timer firing and the
+ * worker running is left alone — this is what makes the enqueue→apply
+ * interleave safe against a new turn starting in the gap (S1-3). */
+static void dict_decay_apply_job(void *arg) {
+   (void)arg;
+   dict_event_t e = voice_dictation_get();
+   if (DICT_IS_TERMINAL(e.state) && !e.resolution_pending) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
+   }
+}
+
+/* esp_timer-task callback.  Does NOT touch the dispatch path — it only hands
+ * the decay off to the shared worker (the same context existing producers
+ * use).  On a full worker queue it re-arms a short retry so the terminal
+ * still decays rather than wedging (no headless block). */
+static void dict_decay_timer_cb(void *arg) {
+   (void)arg;
+   if (tab5_worker_enqueue(dict_decay_apply_job, NULL, "dict_decay") != ESP_OK) {
+      if (s_dict_decay_timer) {
+         esp_timer_start_once(s_dict_decay_timer, (uint64_t)DICT_DECAY_RETRY_MS * 1000);
+      }
+   }
+}
+
+/* MUST hold dict_lock().  Arm the one-shot for the current terminal state's
+ * decay delay, unless a resolution is still pending (then leave disarmed so
+ * the terminal persists until the real resolution lands).  Disarms for
+ * non-terminal states. */
+static void dict_arm_decay_locked(void) {
+   if (!s_dict_decay_timer) {
+      const esp_timer_create_args_t args = {
+          .callback = dict_decay_timer_cb,
+          .name = "dict_decay",
+      };
+      if (esp_timer_create(&args, &s_dict_decay_timer) != ESP_OK) return;
+   }
+   esp_timer_stop(s_dict_decay_timer); /* re-arm cleanly */
+   if (!DICT_IS_TERMINAL(s_event.state) || s_event.resolution_pending) return;
+   uint32_t ms = DICT_DECAY_SAVED_MS;
+   if (s_event.state == DICT_FAILED) {
+      ms = DICT_DECAY_FAILED_MS;
+   } else if (s_event.state == DICT_CANCELLED) {
+      ms = DICT_DECAY_CANCELLED_MS;
+   }
+   esp_timer_start_once(s_dict_decay_timer, (uint64_t)ms * 1000);
 }
 
 /* Return true if going from `cur` to `next` is a valid transition.
@@ -206,6 +269,10 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, 
    s_event.state = new_state;
    s_event.fail_reason = (new_state == DICT_FAILED) ? fail_reason : DICT_FAIL_NONE;
    s_event.last_change_ms = now_ms;
+
+   /* Self-liveness: arm a one-shot to decay this terminal back to IDLE (unless
+    * a resolution is still pending); disarm for non-terminal states. */
+   dict_arm_decay_locked();
 
    dict_dispatch_locked();
    dict_unlock();
