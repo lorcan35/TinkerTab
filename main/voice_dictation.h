@@ -170,6 +170,13 @@ const char *voice_dictation_begin(dict_origin_t origin, const char *adopt_turn_i
  * queue↔decay and WS↔offline races (S1-3). */
 bool voice_dictation_try_begin_offline(const char *adopt_turn_id, int note_slot, uint32_t now_ms);
 
+/* Apply a terminal/resolution transition ONLY if `turn_id` matches the live
+ * turn.  A missing/empty `turn_id` is treated as a MATCH (forward-compat with
+ * an old Dragon that does not echo turn_id yet — W1; W2 makes the echo
+ * authoritative and closes the late-summary-for-the-wrong-turn class, S2-9).
+ * Returns true iff the transition was applied. */
+bool voice_dictation_resolve_if_current(const char *turn_id, dict_state_t st, dict_fail_t reason, uint32_t now_ms);
+
 #ifdef __cplusplus
 }
 #endif

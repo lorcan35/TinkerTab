@@ -484,6 +484,81 @@ static int test_try_begin_offline_atomic_vs_decay(void) {
    return 0;
 }
 
+/* ── W1 resolution semantics (turn_id gating + late correction) ── */
+
+static int test_resolve_if_current_drops_stale(void) {
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   char idA[DICT_TURN_ID_LEN];
+   strncpy(idA, tid, sizeof(idA));
+   idA[sizeof(idA) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+
+   /* A summary for a DIFFERENT turn must be dropped. */
+   bool applied = voice_dictation_resolve_if_current("ffffffffffff", DICT_SAVED, DICT_FAIL_NONE, 3000);
+   CHECK(!applied);
+   CHECK_EQ(voice_dictation_get().state, DICT_TRANSCRIBING);
+
+   /* The summary for the live turn applies. */
+   applied = voice_dictation_resolve_if_current(idA, DICT_SAVED, DICT_FAIL_NONE, 3100);
+   CHECK(applied);
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+   return 0;
+}
+
+static int test_missing_turn_id_treated_as_match(void) {
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+   CHECK(voice_dictation_resolve_if_current("", DICT_SAVED, DICT_FAIL_NONE, 3000)); /* "" matches */
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 4000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 4100);
+   CHECK(voice_dictation_resolve_if_current(NULL, DICT_SAVED, DICT_FAIL_NONE, 4200)); /* NULL matches */
+   return 0;
+}
+
+static int test_failed_to_saved_late_correction_ws_only(void) {
+   /* WS turn: a timeout drives FAILED while Dragon's slow summary is still
+    * coming; the late summary corrects FAILED→SAVED, which then self-decays. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   char idA[DICT_TURN_ID_LEN];
+   strncpy(idA, tid, sizeof(idA));
+   idA[sizeof(idA) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* pending=true (WS) */
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 3000);    /* timeout; pending kept */
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED);
+   CHECK(voice_dictation_get().resolution_pending);
+
+   CHECK(voice_dictation_resolve_if_current(idA, DICT_SAVED, DICT_FAIL_NONE, 90000));
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_SAVED);
+   CHECK(!e.resolution_pending); /* cleared on SAVED → now decays */
+
+   host_clock_advance_ms(3000);
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_failed_to_saved_refused_when_not_pending(void) {
+   /* No WS resolution pending → a stray SAVED must NOT resurrect a FAILED. */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1100); /* origin NONE, not pending */
+   bool applied = voice_dictation_resolve_if_current("", DICT_SAVED, DICT_FAIL_NONE, 2000);
+   CHECK(!applied); /* guard refuses */
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED);
+   return 0;
+}
+
 int main(void) {
    if (test_init_state_is_idle()) return 1;
    if (test_idle_to_recording_fires_subscriber()) return 1;
@@ -515,6 +590,10 @@ int main(void) {
    if (test_decay_suppressed_while_resolution_pending()) return 1;
    if (test_decay_requeues_on_full_worker()) return 1;
    if (test_try_begin_offline_atomic_vs_decay()) return 1;
+   if (test_resolve_if_current_drops_stale()) return 1;
+   if (test_missing_turn_id_treated_as_match()) return 1;
+   if (test_failed_to_saved_late_correction_ws_only()) return 1;
+   if (test_failed_to_saved_refused_when_not_pending()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }

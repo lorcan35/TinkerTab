@@ -264,6 +264,12 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, 
       s_event.turn_id[0] = '\0';
       s_event.resolution_pending = false;
       s_event.note_id[0] = '\0';
+   } else if (new_state == DICT_SAVED || new_state == DICT_CANCELLED) {
+      /* A definitive resolution landed — clear pending so the terminal can
+       * self-decay.  (FAILED deliberately KEEPS pending: it may be premature
+       * — e.g. a timeout/grace FAILED — and a late summary can still correct
+       * it via FAILED→SAVED before it decays.) */
+      s_event.resolution_pending = false;
    }
 
    s_event.state = new_state;
@@ -371,6 +377,24 @@ bool voice_dictation_try_begin_offline(const char *adopt_turn_id, int note_slot,
    s_event.resolution_pending = true;
    dict_unlock();
    return true;
+}
+
+bool voice_dictation_resolve_if_current(const char *turn_id, dict_state_t st, dict_fail_t reason, uint32_t now_ms) {
+   dict_lock();
+   /* Missing/empty incoming id = match (old Dragon, no echo yet — W1).
+    * Otherwise it must equal the live turn's id. */
+   bool match =
+       (!turn_id || turn_id[0] == '\0' || (s_event.turn_id[0] != '\0' && strcmp(turn_id, s_event.turn_id) == 0));
+   if (!match) {
+      dict_unlock();
+      return false;
+   }
+   /* set_state owns the per-terminal pending bookkeeping (SAVED/CANCELLED
+    * clear it; FAILED keeps it) and the FAILED→SAVED late-correction guard. */
+   voice_dictation_set_state(st, reason, now_ms);
+   bool applied = (s_event.state == st);
+   dict_unlock();
+   return applied;
 }
 
 dict_event_t voice_dictation_get(void) {
