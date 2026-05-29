@@ -15,9 +15,39 @@ browse by type.
 ## I want to…
 
 - **Use it** → [Get started](tutorials/getting-started.md)
-- **Build / modify it** → [Flash the firmware](how-to/flash-firmware.md)
-- **Integrate with it** → [Debug server reference](reference/debug-server.md)
+- **Build / modify it** → [Set up a dev environment](how-to/dev-setup.md)
+- **Integrate with it** → [Reference index](reference/README.md)
+- **Run it in production** → [Run a Tab5 in production](how-to/deploy.md)
 - **Understand it** → [How the stack fits together](explanation/how-the-stack-fits-together.md)
+
+## By audience
+
+- **Tinkerer / end-user** → [Get started](tutorials/getting-started.md),
+  [Your first voice conversation](tutorials/your-first-voice-conversation.md),
+  then [Switch voice modes](how-to/switch-voice-modes.md),
+  [Use the camera](how-to/use-the-camera.md),
+  [Dictate and take notes](how-to/dictate-and-take-notes.md),
+  [Enable the TinkerON wakeword](how-to/enable-tinkeron-wakeword.md).
+- **Developer / contributor** →
+  [Set up a dev environment](how-to/dev-setup.md),
+  [Flash the firmware](how-to/flash-firmware.md),
+  [Run the e2e test harness](how-to/run-the-e2e-test-harness.md);
+  [TinkerTab architecture](explanation/architecture.md),
+  [The voice pipeline](explanation/the-voice-pipeline.md),
+  [LVGL on ESP32-P4](explanation/lvgl-on-esp32p4.md);
+  [Firmware file map](reference/firmware-file-map.md).
+- **API / protocol integrator** →
+  [WebSocket protocol](reference/websocket-protocol.md),
+  [Debug server](reference/debug-server.md),
+  [Voice modes](reference/voice-modes.md),
+  [NVS settings](reference/nvs-settings.md),
+  [Observability events](reference/observability-events.md),
+  [Hardware](reference/hardware.md).
+- **Operator** →
+  [Connect a Tab5 to a Dragon](how-to/connect-to-dragon.md),
+  [Run a Tab5 in production](how-to/deploy.md),
+  [Recover a stuck device](how-to/recover-a-stuck-device.md);
+  [The TinkerON / K144 chain](explanation/the-tinkeron-k144-chain.md).
 
 ## By Diátaxis type
 
@@ -26,30 +56,45 @@ browse by type.
 | Page | What you get |
 |---|---|
 | [Get started](tutorials/getting-started.md) | Unbox → flash → first boot → "Hey Tinker" → first voice turn. |
+| [Your first voice conversation](tutorials/your-first-voice-conversation.md) | Hold a real multi-turn conversation: ask, follow up, cancel, type, dictate. |
 
-### How-to guides — task-oriented (audience: developer / operator / integrator)
+### How-to guides — task-oriented (audience: tinkerer / developer / operator)
 
-| Page | When to use it |
-|---|---|
-| [Flash the firmware](how-to/flash-firmware.md) | Build and load the firmware onto a Tab5, with recovery + troubleshooting. |
-| _dev-setup_ (planned, Wave 1) | Stand up a full development environment. |
-| _deploy_ (planned, Wave 1) | Run it in production / fleet operation. |
+| Page | When to use it | Audience |
+|---|---|---|
+| [Switch voice modes](how-to/switch-voice-modes.md) | Change the privacy/speed/cost trade-off across the six tiers. | tinkerer |
+| [Use the camera](how-to/use-the-camera.md) | Take a photo, record video, send an image into chat. | tinkerer |
+| [Dictate and take notes](how-to/dictate-and-take-notes.md) | Capture a longer thought hands-free → title + summary in Notes. | tinkerer |
+| [Enable the TinkerON wakeword](how-to/enable-tinkeron-wakeword.md) | Go fully hands-free with "Hey Tinker" on the K144 module. | tinkerer |
+| [Set up a dev environment](how-to/dev-setup.md) | Stand up the ESP-IDF toolchain to build and modify the firmware. | developer |
+| [Flash the firmware](how-to/flash-firmware.md) | Build and load the firmware, with recovery + troubleshooting. | developer |
+| [Run the e2e test harness](how-to/run-the-e2e-test-harness.md) | Drive a Tab5 through long user-story flows for regression testing. | developer |
+| [Connect a Tab5 to a Dragon](how-to/connect-to-dragon.md) | Point a device at a Dragon — first-time, new network, or repair. | operator |
+| [Run a Tab5 in production](how-to/deploy.md) | Operate one or more devices day-to-day (OTA, monitoring). | operator |
+| [Recover a stuck device](how-to/recover-a-stuck-device.md) | The cheapest-first recovery ladder for a misbehaving device. | operator |
 
 ### Reference — look up facts (audience: integrator / developer)
 
 | Page | Covers |
 |---|---|
+| [Reference index](reference/README.md) | The reference section's own map. |
+| [WebSocket protocol](reference/websocket-protocol.md) | The Tab5 client side of the Dragon WebSocket — every frame and magic tag. |
 | [Debug server](reference/debug-server.md) | The `:8080` HTTP control API — endpoints, bearer-token auth, the post-Wave-23b handler module map. |
+| [Voice modes](reference/voice-modes.md) | The six tiers, on-the-wire behavior, routing codes, failover guards. |
+| [NVS settings](reference/nvs-settings.md) | Every persistent settings key in the `"settings"` namespace. |
+| [Observability events](reference/observability-events.md) | The `/events` ring — every event kind and detail format. |
+| [Hardware](reference/hardware.md) | The Tab5 SoC, peripherals, audio pipeline, M5-Bus, and memory rules. |
+| [Firmware file map](reference/firmware-file-map.md) | Where everything lives under `main/` — find the right home for a change. |
 
 ### Explanation — understand why (audience: developer)
 
 | Page | Helps you understand |
 |---|---|
 | [How the stack fits together](explanation/how-the-stack-fits-together.md) | What the Tab5, Dragon, and K144/TinkerON each do, and the six voice modes. |
-
-> **Wave 1** fills out the four-audience content: hardware build/mods, voice/UI
-> usage, troubleshooting, and architecture. The pages above are the validated
-> seed pages — one per Diátaxis type — that prove the templates end-to-end.
+| [TinkerTab architecture](explanation/architecture.md) | How the firmware is layered internally and why the boundaries fall where they do. |
+| [The voice pipeline](explanation/the-voice-pipeline.md) | How a turn becomes an answer — STT → LLM → TTS, the state machine, and the audio path. |
+| [LVGL on ESP32-P4](explanation/lvgl-on-esp32p4.md) | Why the UI is hide/show, why `lv_async_call` is banned, and the render-budget footguns. |
+| [The TinkerON / K144 chain](explanation/the-tinkeron-k144-chain.md) | How the on-device chain works, talks StackFlow, and self-heals. |
 
 ## Standards + shared assets
 
@@ -67,7 +112,7 @@ browse by type.
 
 ## Other in-repo docs (to be slotted into Diátaxis in later waves)
 
-These predate the Diátaxis restructure and remain in `docs/` for now:
+These predate or supplement the Diátaxis pages and remain in `docs/` for now:
 
 - [`HARDWARE.md`](HARDWARE.md) · [`hardware-mods.md`](hardware-mods.md) ·
   [`VOICE_PIPELINE.md`](VOICE_PIPELINE.md) · [`WIDGETS.md`](WIDGETS.md) ·
