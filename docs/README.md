@@ -55,6 +55,7 @@ browse by type.
 
 | Page | What you get |
 |---|---|
+| [From unboxing to a working voice assistant](tutorials/unbox-to-working-assistant.md) | **Start here.** The full end-to-end journey across both halves of the stack: flash the Tab5, bring up the Dragon, link them, and hold your first conversation. |
 | [Get started](tutorials/getting-started.md) | Unbox → flash → first boot → "Hey Tinker" → first voice turn. |
 | [Your first voice conversation](tutorials/your-first-voice-conversation.md) | Hold a real multi-turn conversation: ask, follow up, cancel, type, dictate. |
 
@@ -62,6 +63,7 @@ browse by type.
 
 | Page | When to use it | Audience |
 |---|---|---|
+| [Choose your voice mode](how-to/choose-your-voice-mode.md) | Decide *which* of the six tiers fits — privacy vs latency vs cost vs offline. | tinkerer |
 | [Switch voice modes](how-to/switch-voice-modes.md) | Change the privacy/speed/cost trade-off across the six tiers. | tinkerer |
 | [Use the camera](how-to/use-the-camera.md) | Take a photo, record video, send an image into chat. | tinkerer |
 | [Dictate and take notes](how-to/dictate-and-take-notes.md) | Capture a longer thought hands-free → title + summary in Notes. | tinkerer |
@@ -90,6 +92,7 @@ browse by type.
 
 | Page | Helps you understand |
 |---|---|
+| [The Tinker stack](explanation/the-tinker-stack.md) | The contributor's whole-system map: the four repos, who owns what, how data flows, and where each repo's docs live. |
 | [How the stack fits together](explanation/how-the-stack-fits-together.md) | What the Tab5, Dragon, and K144/TinkerON each do, and the six voice modes. |
 | [TinkerTab architecture](explanation/architecture.md) | How the firmware is layered internally and why the boundaries fall where they do. |
 | [The voice pipeline](explanation/the-voice-pipeline.md) | How a turn becomes an answer — STT → LLM → TTS, the state machine, and the audio path. |
