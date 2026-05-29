@@ -24,7 +24,7 @@ est-time: <e.g. 15 min>   # tutorials/how-to only
 > **Part of the Tinker stack** — four repos, each documented on its own:
 > [**TinkerTab**](https://github.com/lorcan35/TinkerTab) (Tab5 device firmware) ·
 > [**TinkerBox**](https://github.com/lorcan35/TinkerBox) (Dragon inference server — "the brain") ·
-> [**PingOS**](https://github.com/lorcan35/PingOS) (portable Tab5 OS) ·
+> [**PingOS**](https://github.com/lorcan35/PingOS) (website-to-API automation gateway) ·
 > [**TinkerClaw**](https://github.com/lorcan35/TinkerClaw) (agent sidecar).
 > New here? Each repo's README is its own front door.
 ```
