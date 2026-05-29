@@ -10,7 +10,7 @@ see the "Active Investigations" section at the top of `CLAUDE.md`.
 For ESP-IDF + LVGL gotchas + non-obvious root causes, see
 [`LEARNINGS.md`](../LEARNINGS.md).  For audit-driven wave programs
 that span both repos (TinkerTab + TinkerBox), see
-[`docs/AUDIT-state-of-stack-2026-05-11.md`](AUDIT-state-of-stack-2026-05-11.md).
+[`docs/internal/AUDIT-state-of-stack-2026-05-11.md`](internal/AUDIT-state-of-stack-2026-05-11.md).
 
 ---
 
@@ -74,7 +74,7 @@ test the TDM slots to resolve the original blocker.
 
 - **Wave 11** (`bcf05d9`) — Skill starring/pinning in `ui_skills.c`.  New NVS key `star_skills` (comma-separated tool names); tap-to-toggle on each catalog card; starred tools sort to the top with amber tint + "PINNED" caption.  PSRAM-allocated kept_payload (NOT BSS — see LEARNINGS "BSS-static caches >3 KB push Tab5 over a boot SRAM threshold").  24/24 e2e steps pass.
 - **Wave 12** (`67b9989` Tab5 + `d9a18e4` Dragon) — Cross-session agent activity feed.  Dragon side: new `/api/v1/agent_log` REST endpoint backed by a 64-slot ring populated at the `ToolRegistry.execute` chokepoint (captures WS conversations + REST + dashboard tools uniformly).  Tab5 side: `ui_agents` fetches the feed on every overlay show and renders it below the local empty-state when `tool_log_count() == 0`.  17/17 e2e + 13/13 pytest pass.
-- **Wave 13** (`4352e9e`) — K144 is recoverable.  Closes audit gap "UNAVAILABLE state is sticky" — pre-Wave-13 a single failed warmup probe required Tab5 reboot to escape.  Implementation: `voice_m5_llm_sys_reset()` + `voice_onboard_reset_failover()` + `POST /m5/reset` debug endpoint + `esp_timer` 60s auto-retry (capped at 3 attempts/boot, NOT FreeRTOS xTimer per the LEARNINGS entry on that class of failure) + tap-to-recover on the K144 health chip in Settings.  Live timing: 9.6 s reset round-trip on hardware.  17/17 e2e pass.  See `docs/PLAN-k144-recovery.md`.
+- **Wave 13** (`4352e9e`) — K144 is recoverable.  Closes audit gap "UNAVAILABLE state is sticky" — pre-Wave-13 a single failed warmup probe required Tab5 reboot to escape.  Implementation: `voice_m5_llm_sys_reset()` + `voice_onboard_reset_failover()` + `POST /m5/reset` debug endpoint + `esp_timer` 60s auto-retry (capped at 3 attempts/boot, NOT FreeRTOS xTimer per the LEARNINGS entry on that class of failure) + tap-to-recover on the K144 health chip in Settings.  Live timing: 9.6 s reset round-trip on hardware.  17/17 e2e pass.  See `docs/internal/PLAN-k144-recovery.md`.
 - **Wave 14** (`fcb5d1e`) — K144 is observable.  `voice_m5_llm_sys_hwinfo()` + `voice_m5_llm_sys_version()` typed wrappers; `GET /m5` enriched with `hwinfo` block (temp_celsius, cpu_loadavg, mem, cache_age_ms) + top-level `version` field; new `POST /m5/refresh` forces fresh fetch outside the 30 s TTL.  Settings UI gauge below the K144 chip shows live `NPU 38.4°C · load 0 · v1.3`.  Two-tier caching (30 s success TTL + 5 s attempt rate-limit) avoids UART hammering under poll spam.  12/12 e2e pass.
 - **Wave 15** (`bb2b284`) — K144 model registry surfaced.  `voice_m5_llm_sys_lsmode()` + `GET /m5/models` (PSRAM-cached 5 min; `?force=1` bypasses).  Settings UI inventory line below the gauge: "11 MODELS · 1 LLM · 2 ASR · 3 TTS · 2 KWS · 3 vision" — compact bucket summary with zero-categories elided.  Picker UI deferred (only 1 LLM today; data path ready for when M5 ships a 2nd).  12/12 e2e pass.
 - **Wave 16** (`7bacf5c`) — K144 polish.  Closes two paper cuts: (a) Settings stale-state — chip + gauge + inventory now re-render live on every state transition via `refresh_k144_chip()` hooked into `ui_settings_update()`; (b) auto-retry banner now clears on recovery via new `mark_k144_recovered()` helper that resets the retry budget, cancels the pending esp_timer, and calls `ui_home_clear_error_banner()`.  Both wired into the boot warmup + Wave 13 reset paths.  13/13 e2e pass.
@@ -88,13 +88,13 @@ test the TDM slots to resolve the original blocker.
 - **PR [#573](https://github.com/lorcan35/TinkerTab/pull/573)** (`02bd802`, 2026-05-15) — Dictation cap bumped 5 min → 4 h for meeting-length recording.  `MAX_RECORD_FRAMES_DICT` in `voice.c` goes from 15 000 to 720 000 frames; PSRAM scratch buffer + WS drain handle the new ceiling without I/O changes.  Aligns with the wakeword dictation cap (PR #576).
 - **PR [#574](https://github.com/lorcan35/TinkerTab/pull/574)** (`e3aaba9`, 2026-05-16) — Four mic-driven sphere additions to IDLE orb: rim halo (RMS), lit-from-within (LPF energy), specular wobble (transients), and frequency-band hue tint (3-band FFT).  Each toggle-able in the orb config struct; adds orthogonal information dimensions to the existing ambient sphere from PRs #547–#562.
 - **TT [#575](https://github.com/lorcan35/TinkerTab/issues/575)** (2026-05-17) — Tracking issue: "Always-on ASR wakeword + on-device dictation via K144."  Frames the problem (TT #162 retired wake-word due to TDM-AEC blocker; K144 now provides a working streaming Zipformer ASR + KWS dead-end documented) + the design.
-- **PR [#576](https://github.com/lorcan35/TinkerTab/pull/576)** (`83f82e3` + `e5426cc`, 2026-05-17) — Always-on K144 ASR wakeword + on-device dictation.  New `main/voice_wakeword.{c,h}` (state machine + 32 KB PSRAM dictation buffer + force-stop API) + `voice_m5_llm_wakeword_setup/_run/_teardown` chain helpers + lifecycle hooks in `voice_onboard.c` (warmup READY + Wave 13 reset).  UI bridge in commit `e5426cc` adds toast + orb ripple via `tab5_lv_async_call` on WAKE / DICTATION_FINAL.  Live-verified on Tab5 192.168.1.90 (wake fired on "tinker"); UI bridge needs hardware retest.  See [`docs/PLAN-wakeword.md`](PLAN-wakeword.md).
+- **PR [#576](https://github.com/lorcan35/TinkerTab/pull/576)** (`83f82e3` + `e5426cc`, 2026-05-17) — Always-on K144 ASR wakeword + on-device dictation.  New `main/voice_wakeword.{c,h}` (state machine + 32 KB PSRAM dictation buffer + force-stop API) + `voice_m5_llm_wakeword_setup/_run/_teardown` chain helpers + lifecycle hooks in `voice_onboard.c` (warmup READY + Wave 13 reset).  UI bridge in commit `e5426cc` adds toast + orb ripple via `tab5_lv_async_call` on WAKE / DICTATION_FINAL.  Live-verified on Tab5 192.168.1.90 (wake fired on "tinker"); UI bridge needs hardware retest.  See [`docs/internal/PLAN-wakeword.md`](internal/PLAN-wakeword.md).
 
 ## Cross-stack waves (May 2026) — see audit doc
 
 For waves W1–W9 of the 2026-05-11 cross-stack audit (SOLO mode, turn_id,
 cost guard, mode-3 sub-program, UX polish, test infra),
-see [`AUDIT-state-of-stack-2026-05-11.md`](AUDIT-state-of-stack-2026-05-11.md).
+see [`AUDIT-state-of-stack-2026-05-11.md`](internal/AUDIT-state-of-stack-2026-05-11.md).
 
 ## Queued sprints
 
@@ -104,8 +104,8 @@ see [`AUDIT-state-of-stack-2026-05-11.md`](AUDIT-state-of-stack-2026-05-11.md).
 
 ### External-hardware push parked
 
-- Grove sensor support (TT #316 / `docs/PLAN-grove.md`)
-- M5 LLM Module integration (TT #317 / `docs/PLAN-m5-llm-module.md`) — Phase 0 done; phases 1–4 ready
+- Grove sensor support (TT #316 / `docs/internal/PLAN-grove.md`)
+- M5 LLM Module integration (TT #317 / `docs/internal/PLAN-m5-llm-module.md`) — Phase 0 done; phases 1–4 ready
 
 ---
 
