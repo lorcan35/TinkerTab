@@ -2173,6 +2173,10 @@ esp_err_t voice_stop_listening(void)
      * dictation pipeline at all). */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
        voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+       /* W4 (D-UX1): capture is done the instant we send `stop`.  Quiet toast;
+        * the orb has already released (RECORDING-only) and enrichment continues
+        * in the Notes badge.  The optimistic note-row seed is wired in W4 Task 5. */
+       ui_home_show_toast("Saved — summarizing…");
     }
 
     voice_set_state(VOICE_STATE_PROCESSING, NULL);
