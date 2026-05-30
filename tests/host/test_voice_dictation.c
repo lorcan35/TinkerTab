@@ -234,16 +234,21 @@ static int test_unsubscribe_stops_callbacks(void) {
    return 0;
 }
 
-static int test_subscriber_table_full_returns_minus_one(void) {
+static int test_subscriber_table_grows(void) {
+   /* W5 (S3-9): the subscriber table grows on demand — there is no fixed
+    * ceiling and no silent overflow.  Subscribe 5 (past the initial cap of 4),
+    * confirm each gets a valid handle, and that a state change fires ALL 5. */
    voice_dictation_init();
-   mock_sub_t dummy[8] = {0};
-   int handles[8] = {0};
-   int got_full = 0;
-   for (int i = 0; i < 8; i++) {
-      handles[i] = voice_dictation_subscribe(mock_cb, &dummy[i]);
-      if (handles[i] == -1) got_full = 1;
+   mock_sub_t subs[5] = {0};
+   for (int i = 0; i < 5; i++) {
+      int h = voice_dictation_subscribe(mock_cb, &subs[i]);
+      CHECK(h >= 0); /* never -1 — the table grew */
    }
-   CHECK_EQ(got_full, 1); /* DICT_MAX_SUBSCRIBERS is 4 */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   for (int i = 0; i < 5; i++) {
+      CHECK_EQ(subs[i].call_count, 1); /* every subscriber fired, incl. the 5th */
+      CHECK_EQ(subs[i].last.state, DICT_RECORDING);
+   }
    return 0;
 }
 
@@ -712,7 +717,7 @@ int main(void) {
    if (test_failed_clears_reason_on_idle()) return 1;
    if (test_multiple_subscribers_all_fire()) return 1;
    if (test_unsubscribe_stops_callbacks()) return 1;
-   if (test_subscriber_table_full_returns_minus_one()) return 1;
+   if (test_subscriber_table_grows()) return 1;
    if (test_set_note_slot_rejected_in_idle()) return 1;
    if (test_set_note_slot_accepted_in_recording()) return 1;
    if (test_set_note_slot_accepted_in_uploading()) return 1;

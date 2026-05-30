@@ -17,6 +17,7 @@
 #include "voice_dictation.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_timer.h"
@@ -27,7 +28,10 @@
 #include "esp_random.h"
 #endif
 
-#define DICT_MAX_SUBSCRIBERS 4
+/* W5 (S3-9): the subscriber table grows on demand — no fixed ceiling and no
+ * silent overflow.  This is just the initial capacity; voice_dictation_subscribe
+ * doubles it (realloc) when full and logs on a genuine alloc failure. */
+#define DICT_SUBS_INIT_CAP 4
 
 /* W1 self-liveness: terminal states decay back to IDLE on their own so a
  * dictation no longer depends on whichever UI surface happens to be mounted
@@ -57,7 +61,8 @@ typedef struct {
 } dict_sub_t;
 
 static dict_event_t s_event;
-static dict_sub_t s_subs[DICT_MAX_SUBSCRIBERS];
+static dict_sub_t *s_subs = NULL; /* W5: grow-on-demand subscriber table */
+static int s_subs_cap = 0;
 static SemaphoreHandle_t s_lock = NULL;
 
 /* Lock-free fast snapshot of JUST the FSM state enum.  Written by the sole
@@ -101,7 +106,12 @@ void voice_dictation_init(void) {
    s_state_fast = DICT_IDLE;
    s_event.fail_reason = DICT_FAIL_NONE;
    s_event.note_slot = -1;
-   memset(s_subs, 0, sizeof(s_subs));
+   if (!s_subs) {
+      s_subs = calloc(DICT_SUBS_INIT_CAP, sizeof(*s_subs));
+      if (s_subs) s_subs_cap = DICT_SUBS_INIT_CAP;
+   } else {
+      memset(s_subs, 0, (size_t)s_subs_cap * sizeof(*s_subs));
+   }
    dict_unlock();
 }
 
@@ -109,21 +119,35 @@ int voice_dictation_subscribe(dict_subscriber_t cb, void *user_data) {
    if (!cb) return -1;
    dict_lock();
    int handle = -1;
-   for (int i = 0; i < DICT_MAX_SUBSCRIBERS; i++) {
+   for (int i = 0; i < s_subs_cap; i++) {
       if (!s_subs[i].in_use) {
-         s_subs[i].cb = cb;
-         s_subs[i].user_data = user_data;
-         s_subs[i].in_use = true;
          handle = i;
          break;
       }
    }
+   if (handle < 0) {
+      /* W5 (S3-9): table full — grow on demand rather than silently refuse. */
+      int newcap = s_subs_cap ? s_subs_cap * 2 : DICT_SUBS_INIT_CAP;
+      dict_sub_t *grown = realloc(s_subs, (size_t)newcap * sizeof(*s_subs));
+      if (!grown) {
+         fprintf(stderr, "voice_dictation: subscriber table grow failed (cap=%d)\n", s_subs_cap);
+         dict_unlock();
+         return -1;
+      }
+      memset(&grown[s_subs_cap], 0, (size_t)(newcap - s_subs_cap) * sizeof(*grown));
+      handle = s_subs_cap;
+      s_subs = grown;
+      s_subs_cap = newcap;
+   }
+   s_subs[handle].cb = cb;
+   s_subs[handle].user_data = user_data;
+   s_subs[handle].in_use = true;
    dict_unlock();
    return handle;
 }
 
 void voice_dictation_unsubscribe(int handle) {
-   if (handle < 0 || handle >= DICT_MAX_SUBSCRIBERS) return;
+   if (handle < 0 || handle >= s_subs_cap) return;
    dict_lock();
    s_subs[handle].in_use = false;
    s_subs[handle].cb = NULL;
@@ -136,7 +160,7 @@ void voice_dictation_unsubscribe(int handle) {
  * remains held during dispatch — subscribers may re-enter (it's a
  * recursive mutex) but they may not mutate the subscriber table. */
 static void dict_dispatch_locked(void) {
-   for (int i = 0; i < DICT_MAX_SUBSCRIBERS; i++) {
+   for (int i = 0; i < s_subs_cap; i++) {
       if (s_subs[i].in_use && s_subs[i].cb) {
          s_subs[i].cb(&s_event, s_subs[i].user_data);
       }
