@@ -2329,11 +2329,17 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
 
 /* PR 2 polish: timer cb that refreshes the chip's M:SS hint every 200 ms
  * while RECORDING is active.  Self-stopping when pipeline leaves RECORDING. */
+/* started_ms is set once at RECORDING entry and never changes during the turn,
+ * so the subscriber caches it at arm time and the 200ms ticker reads the FSM
+ * state LOCK-FREE.  This runs on ui_task every 200ms; voice_dictation_get() took
+ * the FSM mutex each tick, adding ui_task to the dictation-lock contenders right
+ * as the stop transition fires — the contention class behind the TASK_WDT. */
+static uint32_t s_dictate_rec_started_ms = 0;
+
 static void dictate_chip_rec_tick_cb(lv_timer_t *t) {
    (void)t;
    if (!s_dictate_chip_hint) return;
-   dict_event_t e = voice_dictation_get();
-   if (e.state != DICT_RECORDING) {
+   if (voice_dictation_state() != DICT_RECORDING) {
       if (s_dictate_chip_rec_t) {
          lv_timer_del(s_dictate_chip_rec_t);
          s_dictate_chip_rec_t = NULL;
@@ -2341,7 +2347,8 @@ static void dictate_chip_rec_tick_cb(lv_timer_t *t) {
       return;
    }
    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-   uint32_t dur_ms = (e.started_ms && now_ms >= e.started_ms) ? (now_ms - e.started_ms) : 0;
+   uint32_t started = s_dictate_rec_started_ms;
+   uint32_t dur_ms = (started && now_ms >= started) ? (now_ms - started) : 0;
    uint32_t s = dur_ms / 1000;
    char buf[24];
    snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
@@ -2411,6 +2418,7 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
           * fires on state transitions, so the duration would otherwise
           * stay frozen at the value computed on RECORDING entry. */
          if (!s_dictate_chip_rec_t) {
+            s_dictate_rec_started_ms = event->started_ms; /* cache once — ticker reads it lock-free */
             s_dictate_chip_rec_t = lv_timer_create(dictate_chip_rec_tick_cb, 200, NULL);
          }
          break;
@@ -2886,8 +2894,43 @@ void ui_home_refresh_mode_badge(void)
     update_mode_ui(m);
 }
 
-void ui_home_show_toast(const char *text) { show_toast_internal(text); }
-void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) { show_toast_internal_tone(text, tone); }
+/* Toasts can be requested from ANY task (voice/mic/websocket/httpd), but
+ * show_toast_internal_tone does raw lv_obj_create / lv_obj_del / lv_timer_create
+ * with no LVGL lock — it is only safe on ui_task.  Calling it directly from
+ * another task raced ui_task's allocator and corrupted the LVGL heap (2026-05-30
+ * stress coredump: httpd in toast_ctx_destroy <- ui_home_show_toast <- offline
+ * dictation finalise "Saved offline ..." at voice.c:2102).  Marshal the request
+ * onto ui_task via tab5_lv_async_call so every cross-task caller is safe; the
+ * in-file callers below already run on ui_task and use show_toast_internal directly. */
+typedef struct {
+   char *text;
+   ui_toast_tone_t tone;
+} toast_req_t;
+
+static void toast_async_cb(void *arg) {
+   toast_req_t *r = (toast_req_t *)arg;
+   if (!r) return;
+   if (r->text) {
+      show_toast_internal_tone(r->text, r->tone);
+      free(r->text);
+   }
+   free(r);
+}
+
+void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) {
+   if (!text) return;
+   toast_req_t *r = (toast_req_t *)calloc(1, sizeof(*r));
+   if (!r) return;
+   r->text = strdup(text);
+   r->tone = tone;
+   if (!r->text) {
+      free(r);
+      return;
+   }
+   tab5_lv_async_call(toast_async_cb, r);
+}
+
+void ui_home_show_toast(const char *text) { ui_home_show_toast_ex(text, UI_TOAST_INFO); }
 
 /* ── TT #328 Wave 9 — first-launch mode-chip hint ─────────────── */
 

@@ -3032,12 +3032,14 @@ void ui_notes_paint_filter_pills(void) {
 /* ── PR 3: processing row that subscribes to the dictation pipeline ── */
 
 static lv_timer_t *s_proc_rec_ticker = NULL;
+/* Cached at arm time; the 200ms ui_task ticker reads the FSM state lock-free
+ * (was voice_dictation_get() per tick — a ui_task dictation-mutex contender). */
+static uint32_t s_proc_rec_started_ms = 0;
 
 static void proc_rec_tick_cb(lv_timer_t *t) {
    (void)t;
    if (!s_proc_label) return;
-   dict_event_t e = voice_dictation_get();
-   if (e.state != DICT_RECORDING) {
+   if (voice_dictation_state() != DICT_RECORDING) {
       if (s_proc_rec_ticker) {
          lv_timer_del(s_proc_rec_ticker);
          s_proc_rec_ticker = NULL;
@@ -3045,7 +3047,8 @@ static void proc_rec_tick_cb(lv_timer_t *t) {
       return;
    }
    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-   uint32_t dur_ms = (e.started_ms && now_ms >= e.started_ms) ? (now_ms - e.started_ms) : 0;
+   uint32_t started = s_proc_rec_started_ms;
+   uint32_t dur_ms = (started && now_ms >= started) ? (now_ms - started) : 0;
    uint32_t s = dur_ms / 1000;
    char buf[40];
    snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
@@ -3092,7 +3095,10 @@ static void proc_paint_state(const dict_event_t *e) {
          uint32_t s = dur_ms / 1000;
          snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
          txt = buf;
-         if (!s_proc_rec_ticker) s_proc_rec_ticker = lv_timer_create(proc_rec_tick_cb, 200, NULL);
+         if (!s_proc_rec_ticker) {
+            s_proc_rec_started_ms = e->started_ms; /* cache once — ticker reads it lock-free */
+            s_proc_rec_ticker = lv_timer_create(proc_rec_tick_cb, 200, NULL);
+         }
          break;
       }
       case DICT_UPLOADING:

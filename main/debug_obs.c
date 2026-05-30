@@ -12,18 +12,19 @@
  */
 
 #include "debug_obs.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+
 #include "esp_heap_caps.h"
-#include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
-
 #include "lvgl.h"
-
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
+#include "ui_core.h" /* tab5_ui_try_lock — lv_mem_monitor must hold the LVGL lock */
 
 static const char *TAG = "debug_obs";
 
@@ -122,8 +123,23 @@ static void heap_sample_cb(void *arg)
     size_t ps_free  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
     size_t ps_lrg   = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
 
+    /* lv_mem_monitor walks LVGL's TLSF free-list (lv_mem_walker -> block_size),
+     * which is NOT thread-safe.  This callback runs on the esp_timer task while
+     * ui_task allocates/frees LVGL objects; walking the list unlocked raced the
+     * allocator and dereferenced a stale block pointer -> Load access fault
+     * (2026-05-30 stress coredump: block_size <- lv_mem_walker <- heap_sample_cb).
+     * Take the same LVGL lock ui_task holds (as the screenshot handler does).
+     * Use try-lock so this timer callback never blocks; on a contention miss,
+     * reuse the last good LVGL stats rather than walk an unlocked heap. */
+    static lv_mem_monitor_t s_last_lv;
     lv_mem_monitor_t lvgl;
-    lv_mem_monitor(&lvgl);
+    if (tab5_ui_try_lock(100)) {
+       lv_mem_monitor(&lvgl);
+       tab5_ui_unlock();
+       s_last_lv = lvgl;
+    } else {
+       lvgl = s_last_lv;
+    }
 
     obs_heap_t s = {
         .ms               = now_ms(),
