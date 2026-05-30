@@ -98,6 +98,10 @@ static void gen_turn_id(void) {
 
 const char *voice_current_turn_id(void) { return s_current_turn_id[0] ? s_current_turn_id : "-"; }
 
+/* W2: dictation-terminal resolver (defined near voice_cancel; forward-declared
+ * here because voice_start_dictation's start-failure path uses it earlier). */
+static void voice_dictation_finalize(dict_state_t terminal, dict_fail_t reason, const char *turn_id);
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -912,7 +916,10 @@ static void mic_capture_task(void *arg)
             * only clears after this loop exits → would self-deadlock). */
            if (voice_get_mode() == VOICE_MODE_DICTATE && frames_sent >= MAX_RECORD_FRAMES_DICT) {
               ESP_LOGW(TAG, "Dictation hit 4-hr safety cap — auto-stopping (clean stop)");
-              esp_err_t cap_stop_err = voice_ws_send_text("{\"type\":\"stop\"}");
+              char cap_stop_frame[64];
+              snprintf(cap_stop_frame, sizeof cap_stop_frame, "{\"type\":\"stop\",\"turn_id\":\"%s\"}",
+                       s_current_turn_id);
+              esp_err_t cap_stop_err = voice_ws_send_text(cap_stop_frame);
               if (cap_stop_err == ESP_OK) {
                  voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
                  voice_set_state(VOICE_STATE_PROCESSING, "dictation_cap");
@@ -979,7 +986,10 @@ static void mic_capture_task(void *arg)
               } else {
                  if (had_speech && silence_frames >= DICTATION_SILENCE_FRAMES) {
                     ESP_LOGI(TAG, "Dictation: pause (%dms), sending segment", silence_frames * TAB5_VOICE_CHUNK_MS);
-                    voice_ws_send_text("{\"type\":\"segment\"}");
+                    char seg_frame[64];
+                    snprintf(seg_frame, sizeof seg_frame, "{\"type\":\"segment\",\"turn_id\":\"%s\"}",
+                             s_current_turn_id);
+                    voice_ws_send_text(seg_frame);
                  }
                  silence_frames = 0;
                  had_speech = true;
@@ -1876,6 +1886,10 @@ esp_err_t voice_start_dictation(void)
           return ESP_ERR_NO_MEM;
        }
        ESP_LOGI(TAG, "Offline dictation recording -> %s", path);
+       /* W2 F6: claim the FSM with OFFLINE origin so the collision guard sees
+        * an offline recording in flight — a WS re-tap mid-record is refused
+        * (pre-fix the offline RECORDING ran with origin=NONE and bypassed it). */
+       voice_dictation_begin(DICT_ORIGIN_OFFLINE, NULL, voice_dictation_now_ms());
        ui_home_show_toast("Dragon offline - recording to SD; will transcribe when back");
     } else {
        /* W1: begin the WS turn THROUGH the FSM — mints the turn_id and
@@ -1897,6 +1911,10 @@ esp_err_t voice_start_dictation(void)
        esp_err_t err = voice_ws_send_text(frame);
        if (err != ESP_OK) {
           ESP_LOGE(TAG, "Failed to send dictation start");
+          /* W2 (S2-10): start-side WS-send failure is symmetric with the
+           * stop-side — finalize the just-begun turn to FAILED/NETWORK instead
+           * of leaving the FSM stuck at RECORDING. */
+          voice_dictation_finalize(DICT_FAILED, DICT_FAIL_NETWORK, s_current_turn_id);
           return err;
        }
     }
@@ -2121,18 +2139,20 @@ esp_err_t voice_stop_listening(void)
       return e;
    }
 
-    esp_err_t err = voice_ws_send_text("{\"type\":\"stop\"}");
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Stop signal failed — connection lost");
-        /* PR 1: WS send failed mid-dictation — fail the pipeline now so
-         * the in-flight dictation surfaces NETWORK instead of getting
-         * silently stuck in DICT_RECORDING.  Sprint D's disconnect hook
-         * in voice_ws_proto.c may not fire before this return path. */
-        if (voice_get_mode() == VOICE_MODE_DICTATE) {
-           voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
-        }
-        voice_set_state(VOICE_STATE_IDLE, "Connection lost");
-        return ESP_FAIL;
+   char stop_frame[64];
+   snprintf(stop_frame, sizeof stop_frame, "{\"type\":\"stop\",\"turn_id\":\"%s\"}", s_current_turn_id);
+   esp_err_t err = voice_ws_send_text(stop_frame);
+   if (err != ESP_OK) {
+      ESP_LOGW(TAG, "Stop signal failed — connection lost");
+      /* PR 1: WS send failed mid-dictation — fail the pipeline now so
+       * the in-flight dictation surfaces NETWORK instead of getting
+       * silently stuck in DICT_RECORDING.  Sprint D's disconnect hook
+       * in voice_ws_proto.c may not fire before this return path. */
+      if (voice_get_mode() == VOICE_MODE_DICTATE) {
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+      }
+      voice_set_state(VOICE_STATE_IDLE, "Connection lost");
+      return ESP_FAIL;
     }
 
     voice_reset_activity_timestamp();
@@ -2146,6 +2166,19 @@ esp_err_t voice_stop_listening(void)
 
     voice_set_state(VOICE_STATE_PROCESSING, NULL);
     return ESP_OK;
+}
+
+/* W2 (S1-5/S2-10): single resolver for a dictation terminal driven from a
+ * voice.c path (cancel, start-failure).  Drives the dictation FSM terminal
+ * (turn_id-gated via resolve_if_current — a no-op when there is no matching
+ * live turn, e.g. an ask-mode cancel where the FSM is IDLE) AND snaps
+ * voice_state coherently, so a call site can't resolve one machine and forget
+ * the other.  Mic teardown stays the caller's responsibility (the i2s rx
+ * enable/disable handshake differs per path). */
+static void voice_dictation_finalize(dict_state_t terminal, dict_fail_t reason, const char *turn_id) {
+   voice_dictation_resolve_if_current(turn_id, terminal, reason, voice_dictation_now_ms());
+   bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
+   voice_set_state(ws_live ? VOICE_STATE_READY : VOICE_STATE_IDLE, "dictation_finalize");
 }
 
 esp_err_t voice_cancel(void)
@@ -2199,14 +2232,16 @@ esp_err_t voice_cancel(void)
 
     bool ws_live = g_voice_ws && esp_websocket_client_is_connected(g_voice_ws);
     if (ws_live) {
-        voice_ws_send_text("{\"type\":\"cancel\"}");
+       char cancel_frame[64];
+       snprintf(cancel_frame, sizeof cancel_frame, "{\"type\":\"cancel\",\"turn_id\":\"%s\"}", s_current_turn_id);
+       voice_ws_send_text(cancel_frame);
     }
 
-    if (ws_live) {
-        voice_set_state(VOICE_STATE_READY, "cancelled");
-    } else {
-        voice_set_state(VOICE_STATE_IDLE, "cancelled");
-    }
+    /* W2 (S1-5): one chokepoint resolves the dictation FSM to CANCELLED (a
+     * no-op for a non-dictation/ask cancel where the FSM is IDLE) AND snaps
+     * voice_state — closes the "X-button doesn't resolve the pipeline" gap
+     * where cancel left voice_state coherent but the dictation FSM stuck. */
+    voice_dictation_finalize(DICT_CANCELLED, DICT_FAIL_NONE, voice_dictation_get().turn_id);
 
     /* TT #625 Wave A.1 (R2) — fix the "can't stop the conversation" loop.
      * The wakeword module runs its own state machine that drains K144 ASR
