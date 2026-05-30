@@ -21,6 +21,7 @@
 
 #include "audio.h"
 #include "config.h"
+#include "dictation_notes.h" /* W5: extracted Dragon REST sync engine */
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -37,8 +38,9 @@
 #include "ui_feedback.h" /* Polish P3 (TT #652) — ui_fb_button transition */
 #include "ui_home.h"
 #include "ui_keyboard.h"
-#include "ui_nav.h"   /* TT #623 — tab5_nav_to */
-#include "ui_theme.h" /* Polish P1: TH_* tokens replace local COL_* */
+#include "ui_nav.h"            /* TT #623 — tab5_nav_to */
+#include "ui_notes_internal.h" /* W5: shared note-store types + extern store/helpers */
+#include "ui_theme.h"          /* Polish P1: TH_* tokens replace local COL_* */
 #include "ui_voice.h"
 #include "voice.h"
 #include "voice_dictation.h"
@@ -78,58 +80,10 @@ static const char *TAG = "ui_notes";
 #define CARD_RAD       24      /* was 16 */
 #define BTN_ROW_H      80      /* Voice/Type button row height (was 160) */
 #define ACTION_BTN_H   56      /* Voice/Type button height (was 120) */
-#define MAX_NOTES      30
-/* TT #572 follow-up: bumped from 512 → 32768 so meeting-length
- * dictations actually fit.  Every code path that copied a transcript
- * into note_t.text used strncpy(.., MAX_NOTE_LEN - 1) which silently
- * truncated 10-min dictations to ~1 paragraph (Dragon held the full
- * 9269-char transcript, Tab5 was discarding 95% of it on store).
- *
- * Memory budget: 30 notes × 32 KB = 960 KB of PSRAM in the note_t
- * array.  Tab5 has 32 MB PSRAM, currently ~15 MB free at idle —
- * comfortable.  When the array gets persisted to /sdcard/notes.bin
- * the on-disk size grows proportionally; SD is 121 GB. */
-#define MAX_NOTE_LEN   32768
+/* MAX_NOTES / MAX_NOTE_LEN moved to ui_notes_internal.h (W5). */
 
-/* ── Note states ────────────────────────────────────────── */
-typedef enum {
-    NOTE_STATE_TEXT,         /* text-only note (typed) */
-    NOTE_STATE_RECORDED,    /* has audio file, not yet transcribed */
-    NOTE_STATE_TRANSCRIBING,/* transcription in progress */
-    NOTE_STATE_TRANSCRIBED, /* has audio file + transcript */
-    NOTE_STATE_FAILED,      /* transcription failed — can retry */
-} note_state_t;
-
-/* W4: per-note enrichment lifecycle, independent of the orb/FSM.  Surfaced as a
- * small badge on the row until ENRICH_DONE.  Mirrors what Dragon reports:
- *   transcribing…  →  summarizing…  →  done  (badge clears)
- *                  ↘  pending (Dragon away)  ↗  (auto-finishes on reconnect) */
-typedef enum {
-   ENRICH_NONE = 0,     /* not an in-flight dictation row (plain note) */
-   ENRICH_TRANSCRIBING, /* audio captured, transcript not final */
-   ENRICH_SUMMARIZING,  /* transcript final, title/summary pending */
-   ENRICH_PENDING,      /* Dragon unreachable; auto-finishes on reconnect */
-   ENRICH_DONE,         /* title + summary present — badge clears */
-} enrich_state_t;
-
-/* Reason a note ended up in NOTE_STATE_FAILED — surfaced as a chip on
- * the list row instead of the old generic "FAIL".  Persist+restore as the
- * "fr" JSON key. */
-typedef enum {
-   NOTE_FAIL_NONE = 0,
-   NOTE_FAIL_AUTH,     /* Dragon returned 401 (no bearer or wrong token) */
-   NOTE_FAIL_NETWORK,  /* HTTP open / write / non-200 (not auth) */
-   NOTE_FAIL_EMPTY,    /* Dragon returned 200 + empty STT text */
-   NOTE_FAIL_NO_AUDIO, /* WAV missing on disk / too small / unreadable */
-   NOTE_FAIL_TOO_LONG, /* hit MAX_NOTE_REC_SECS cap during recording */
-} note_fail_t;
-
-#define MAX_AUDIO_PATH 64
-/* TT #572: bumped from 300 (5 min) to 14400 (4 hr) so the SD recording
- * keeps up with the WS-streaming cap in voice.c.  Safety guard against
- * zombie tasks survives — 4 hr is still bounded.  WAV at 16 kHz mono
- * int16 = 32 KB/s = ~115 MB/hr → ~460 MB for the full 4 hr cap. */
-#define MAX_NOTE_REC_SECS 14400
+/* W5: note_state_t / enrich_state_t / note_fail_t / MAX_AUDIO_PATH /
+ * MAX_NOTE_REC_SECS moved to ui_notes_internal.h. */
 
 /* PR 3 cleanup pass: layout constants hoisted to file scope so the
  * dynamic-relayout helper (notes_relayout_list) can use them outside
@@ -143,79 +97,18 @@ typedef enum {
 #define PROC_H 56
 #define FAB_SZ 64
 
-/* PR 3: classification of the note's content.  Informs the timeline filter
- * pills (All / Voice / Text / Pending) and feeds PR 4's action chips.
- * NOTE_TYPE_AUTO is the legacy compatibility value — when loaded from JSON
- * we leave it as AUTO and the render path falls back to `is_voice` so the
- * timeline behaves identically until a new dictation lands with a concrete
- * type from Dragon.  PR 4 introduces NOTE_TYPE_LIST + NOTE_TYPE_REMINDER. */
-typedef enum {
-   NOTE_TYPE_AUTO = 0,
-   NOTE_TYPE_TEXT,
-   NOTE_TYPE_VOICE,
-   NOTE_TYPE_LIST,
-   NOTE_TYPE_REMINDER,
-} note_type_t;
+/* W5: note_type_t / pending_kind_t / PENDING_* / pending_chip_t / note_entry_t
+ * moved to ui_notes_internal.h (shared with dictation_notes.c). */
 
-/* PR 4: action-chip pending state.  Dragon's classifier proposes a
- * conversion (reminder or list) after dictation_summary; the chip
- * renders below the row body when kind != PENDING_NONE and confidence
- * is at or above PENDING_CONFIDENCE_FLOOR.  Tap ✓ confirms (schedules
- * notification / flips type); tap ✕ clears.  Persisted as JSON object
- * under key "pc". */
-typedef enum {
-   PENDING_NONE = 0,
-   PENDING_REMINDER = 1,
-   PENDING_LIST = 2,
-} pending_kind_t;
+/* Wave 20 (closes #330): s_notes is PSRAM-lazy (ensure_notes_buf on first use).
+ * W5: de-static'd — DEFINED here, declared extern in ui_notes_internal.h so the
+ * dictation engine (dictation_notes.c) reaches the same store. */
+note_entry_t *s_notes = NULL;
+int s_note_count = 0;
+int s_next_slot = 0;
+bool s_loaded = false; /* NVS loaded at least once */
 
-#define PENDING_CONFIDENCE_FLOOR 75 /* 0-100; chip hidden below this */
-#define PENDING_PAYLOAD_LEN 128
-
-typedef struct {
-   uint8_t kind;       /* pending_kind_t */
-   uint8_t confidence; /* 0-100 */
-   char payload[PENDING_PAYLOAD_LEN];
-   /* Reminder payload format: ISO-8601 datetime, e.g. "2026-05-19T18:00".
-    * List payload format: a single comma + delimiter signal like
-    * "delim=comma" — Tab5 splits the transcript itself on confirm. */
-} pending_chip_t;
-
-/* ── Note storage ───────────────────────────────────────── */
-typedef struct {
-    char text[MAX_NOTE_LEN];
-    char audio_path[MAX_AUDIO_PATH]; /* e.g. "/sdcard/rec/0042.wav" or "" */
-    note_state_t state;
-    note_fail_t fail_reason;
-    note_type_t type;       /* PR 3 */
-    pending_chip_t pending; /* PR 3 (reserved for PR 4) */
-    bool is_voice;
-    uint8_t hour;
-    uint8_t minute;
-    uint8_t day;
-    uint8_t month;
-    uint8_t year;     /* year offset from 2000 */
-    bool used;
-    bool needs_sync;  /* S6: true if not yet synced to Dragon */
-    /* ── W4 optimistic-save + reconcile-by-turn_id ── */
-    enrich_state_t enrich;          /* ENRICH_NONE for non-dictation rows */
-    char turn_id[DICT_TURN_ID_LEN]; /* "" unless this is a dictation row */
-    char note_id[DICT_NOTE_ID_LEN]; /* Dragon's authoritative id once adopted */
-} note_entry_t;
-
-/* Wave 20 (closes #330): s_notes was a BSS-static array (~17.7 KB) that
- * eats internal SRAM at boot — same failure class as the recurring
- * vApplicationGetTimerTaskMemory assert hit in Waves 11 / 13 / 15.
- * PSRAM-lazy: allocate on first use via ensure_notes_buf().  Every public
- * entry point (notes_load + the few callers that bypass it) calls the
- * helper before touching the buffer, so the rest of the file's index
- * arithmetic stays unchanged. */
-static note_entry_t *s_notes = NULL;
-static int s_note_count = 0;
-static int s_next_slot = 0;
-static bool s_loaded = false; /* NVS loaded at least once */
-
-static bool ensure_notes_buf(void) {
+bool ensure_notes_buf(void) {
    if (s_notes) return true;
    s_notes = heap_caps_calloc(MAX_NOTES, sizeof(*s_notes), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!s_notes) {
@@ -246,86 +139,25 @@ static uint32_t s_next_rec_id = 1;  /* monotonic recording counter */
 #include "cJSON.h"
 
 /* Forward declarations for persistence (defined below) */
-static void notes_load(void);
-static void notes_save(void);
+void notes_load(void);
+void notes_save(void);
 
 /* ── Sync single note to Dragon REST API (fire-and-forget task) ─── */
 
-typedef struct {
-    char title[128];
-    char text[MAX_NOTE_LEN];
-    int  note_idx;  /* S6: index in s_notes for clearing needs_sync */
-} sync_note_args_t;
-
-static void sync_note_to_dragon_task(void *arg)
-{
-    sync_note_args_t *a = (sync_note_args_t *)arg;
-
-    /* Build Dragon URL from settings */
-    char dhost[64];
-    tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-    char url[160];
-    snprintf(url, sizeof(url), "http://%s:%d/api/notes", dhost, 3502);
-
-    /* Build JSON body */
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "title", a->title);
-    cJSON_AddStringToObject(body, "text", a->text);
-    char *json = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-
-    if (!json) { free(a); vTaskSuspend(NULL); return; }
-
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 10000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    /* Dragon W13 C2: /api/notes is bearer-gated.  Read dragon_tok from NVS
-     * and add the header; without it every sync silently 401s. */
-    char dtok[80];
-    if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
-       char auth_hdr[96];
-       snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
-       esp_http_client_set_header(client, "Authorization", auth_hdr);
-    }
-    esp_http_client_set_post_field(client, json, strlen(json));
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-
-    if (err == ESP_OK && (status == 200 || status == 201)) {
-        ESP_LOGI(TAG, "Note synced to Dragon (status=%d, idx=%d)", status, a->note_idx);
-        /* S6: Clear needs_sync flag on success */
-        if (a->note_idx >= 0 && a->note_idx < MAX_NOTES) {
-            s_notes[a->note_idx].needs_sync = false;
-        }
-    } else {
-        ESP_LOGW(TAG, "Note sync failed: err=%s status=%d",
-                 esp_err_to_name(err), status);
-    }
-
-    esp_http_client_cleanup(client);
-    free(json);
-    free(a);
-    vTaskSuspend(NULL);
-}
+/* W5: sync_note_args_t + sync_note_to_dragon_task moved to dictation_notes.c. */
 
 /* S6: Find note index by text content (for needs_sync tracking) */
-static int find_note_idx_by_text(const char *text)
-{
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && strncmp(s_notes[i].text, text, 64) == 0) return i;
-    }
-    return -1;
+int find_note_idx_by_text(const char *text) {
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && strncmp(s_notes[i].text, text, 64) == 0) return i;
+   }
+   return -1;
 }
 
 /* W4: find the note row for a turn_id, or -1.  The reconcile join (note_created
  * / dictation_summary) keys on turn_id — the W1/W2 identity already echoed both
  * ways — so a late update for turn A only ever touches A's row, never B's. */
-static int find_note_idx_by_turn_id(const char *turn_id) {
+int find_note_idx_by_turn_id(const char *turn_id) {
    if (!turn_id || !turn_id[0]) return -1;
    for (int i = 0; i < MAX_NOTES; i++) {
       if (s_notes[i].used && s_notes[i].turn_id[0] && strcmp(s_notes[i].turn_id, turn_id) == 0) return i;
@@ -333,46 +165,8 @@ static int find_note_idx_by_turn_id(const char *turn_id) {
    return -1;
 }
 
-static void sync_note_to_dragon(const char *title, const char *text)
-{
-    if (!text || !text[0]) return;
-    int idx = find_note_idx_by_text(text);
-
-    if (!tab5_wifi_connected()) {
-        ESP_LOGW(TAG, "Note sync skipped — WiFi not connected");
-        /* S6: Mark for later sync */
-        if (idx >= 0) s_notes[idx].needs_sync = true;
-        return;
-    }
-
-    sync_note_args_t *args = calloc(1, sizeof(sync_note_args_t));
-    if (!args) return;
-    strncpy(args->title, title ? title : "", sizeof(args->title) - 1);
-    strncpy(args->text, text, sizeof(args->text) - 1);
-    args->note_idx = idx;
-
-    ESP_LOGI(TAG, "Syncing note to Dragon (%zu chars, idx=%d)", strlen(text), idx);
-    xTaskCreatePinnedToCore(sync_note_to_dragon_task, "note_sync", 4096,
-                            args, 3, NULL, 0);
-}
-
-/* S6: Sync all pending notes to Dragon (called on reconnect) */
-void ui_notes_sync_pending(void)
-{
-    notes_load();
-    int synced = 0;
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && s_notes[i].needs_sync && s_notes[i].text[0]) {
-            ESP_LOGI(TAG, "Catch-up sync: note %d", i);
-            sync_note_to_dragon("", s_notes[i].text);
-            synced++;
-            vTaskDelay(pdMS_TO_TICKS(500));  /* stagger to avoid flooding */
-        }
-    }
-    if (synced > 0) {
-        ESP_LOGI(TAG, "Catch-up sync: %d notes queued", synced);
-    }
-}
+/* W5: sync_note_to_dragon + ui_notes_sync_pending moved to dictation_notes.c
+ * (declared in dictation_notes.h, included above). */
 
 /* Forward decls for the fetch path below — the actual statics live
  * further down with the rest of the edit-overlay state. */
@@ -538,294 +332,291 @@ static void fetch_full_transcript_from_dragon(int slot) {
                            5120, a, 3, NULL, 0);
 }
 
-static void notes_save(void)
-{
-    cJSON *arr = cJSON_CreateArray();
-    if (!arr) return;
+void notes_save(void) {
+   cJSON *arr = cJSON_CreateArray();
+   if (!arr) return;
 
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (!s_notes[i].used) continue;
-        const note_entry_t *n = &s_notes[i];
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "t", n->text);
-        cJSON_AddNumberToObject(obj, "v", n->is_voice ? 1 : 0);
-        cJSON_AddNumberToObject(obj, "s", (int)n->state);
-        if (n->audio_path[0]) {
-            cJSON_AddStringToObject(obj, "a", n->audio_path);
-        }
-        cJSON_AddNumberToObject(obj, "h", n->hour);
-        cJSON_AddNumberToObject(obj, "m", n->minute);
-        cJSON_AddNumberToObject(obj, "d", n->day);
-        cJSON_AddNumberToObject(obj, "mo", n->month);
-        cJSON_AddNumberToObject(obj, "y", n->year);
-        cJSON_AddNumberToObject(obj, "i", i);
-        if (n->needs_sync) cJSON_AddNumberToObject(obj, "ns", 1);
-        if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
-           cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
-        }
-        if (n->type != NOTE_TYPE_AUTO) {
-           cJSON_AddNumberToObject(obj, "ty", (int)n->type);
-        }
-        /* PR 4: persist pending_chip when populated. */
-        if (n->pending.kind != PENDING_NONE) {
-           cJSON *pc = cJSON_CreateObject();
-           cJSON_AddNumberToObject(pc, "k", n->pending.kind);
-           cJSON_AddNumberToObject(pc, "c", n->pending.confidence);
-           cJSON_AddStringToObject(pc, "p", n->pending.payload);
-           cJSON_AddItemToObject(obj, "pc", pc);
-        }
-        /* W4: persist enrichment state + identity so a reboot mid-enrichment
-         * keeps the badge + can still reconcile a late note_created by turn_id. */
-        if (n->enrich != ENRICH_NONE) cJSON_AddNumberToObject(obj, "en", (int)n->enrich);
-        if (n->turn_id[0]) cJSON_AddStringToObject(obj, "tid", n->turn_id);
-        if (n->note_id[0]) cJSON_AddStringToObject(obj, "nid", n->note_id);
-        cJSON_AddItemToArray(arr, obj);
-    }
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (!s_notes[i].used) continue;
+      const note_entry_t *n = &s_notes[i];
+      cJSON *obj = cJSON_CreateObject();
+      cJSON_AddStringToObject(obj, "t", n->text);
+      cJSON_AddNumberToObject(obj, "v", n->is_voice ? 1 : 0);
+      cJSON_AddNumberToObject(obj, "s", (int)n->state);
+      if (n->audio_path[0]) {
+         cJSON_AddStringToObject(obj, "a", n->audio_path);
+      }
+      cJSON_AddNumberToObject(obj, "h", n->hour);
+      cJSON_AddNumberToObject(obj, "m", n->minute);
+      cJSON_AddNumberToObject(obj, "d", n->day);
+      cJSON_AddNumberToObject(obj, "mo", n->month);
+      cJSON_AddNumberToObject(obj, "y", n->year);
+      cJSON_AddNumberToObject(obj, "i", i);
+      if (n->needs_sync) cJSON_AddNumberToObject(obj, "ns", 1);
+      if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
+         cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
+      }
+      if (n->type != NOTE_TYPE_AUTO) {
+         cJSON_AddNumberToObject(obj, "ty", (int)n->type);
+      }
+      /* PR 4: persist pending_chip when populated. */
+      if (n->pending.kind != PENDING_NONE) {
+         cJSON *pc = cJSON_CreateObject();
+         cJSON_AddNumberToObject(pc, "k", n->pending.kind);
+         cJSON_AddNumberToObject(pc, "c", n->pending.confidence);
+         cJSON_AddStringToObject(pc, "p", n->pending.payload);
+         cJSON_AddItemToObject(obj, "pc", pc);
+      }
+      /* W4: persist enrichment state + identity so a reboot mid-enrichment
+       * keeps the badge + can still reconcile a late note_created by turn_id. */
+      if (n->enrich != ENRICH_NONE) cJSON_AddNumberToObject(obj, "en", (int)n->enrich);
+      if (n->turn_id[0]) cJSON_AddStringToObject(obj, "tid", n->turn_id);
+      if (n->note_id[0]) cJSON_AddStringToObject(obj, "nid", n->note_id);
+      cJSON_AddItemToArray(arr, obj);
+   }
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "count", s_note_count);
-    cJSON_AddNumberToObject(root, "next", s_next_slot);
-    cJSON_AddNumberToObject(root, "recid", (double)s_next_rec_id);
-    cJSON_AddItemToObject(root, "notes", arr);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddNumberToObject(root, "count", s_note_count);
+   cJSON_AddNumberToObject(root, "next", s_next_slot);
+   cJSON_AddNumberToObject(root, "recid", (double)s_next_rec_id);
+   cJSON_AddItemToObject(root, "notes", arr);
 
-    char *json = cJSON_Print(root);
-    cJSON_Delete(root);
-    if (!json) return;
+   char *json = cJSON_Print(root);
+   cJSON_Delete(root);
+   if (!json) return;
 
-    /* Atomic write: .tmp → rename. Prevents corruption on power loss.
-     *
-     * Wave 13 H8: fflush() only pushes libc's buffer into the kernel; the
-     * ESP-IDF FATFS driver still holds dirty sectors in its own cache until
-     * an f_sync() lands. A yank during that window left NOTES_TMP_PATH
-     * readable but with stale content, which rename() then promoted to
-     * NOTES_SD_PATH — a silent data corruption.  Use fsync(fd) on the raw
-     * descriptor, which the ESP-IDF VFS routes to FATFS f_sync(). */
-    if (tab5_sdcard_mounted()) {
-        FILE *f = fopen(NOTES_TMP_PATH, "w");
-        if (f) {
-            int written = fputs(json, f);
-            fflush(f);
-            int fd = fileno(f);
-            if (fd >= 0) {
-                if (fsync(fd) != 0) {
-                    ESP_LOGW(TAG, "fsync of notes.json.tmp failed (errno=%d)", errno);
-                }
+   /* Atomic write: .tmp → rename. Prevents corruption on power loss.
+    *
+    * Wave 13 H8: fflush() only pushes libc's buffer into the kernel; the
+    * ESP-IDF FATFS driver still holds dirty sectors in its own cache until
+    * an f_sync() lands. A yank during that window left NOTES_TMP_PATH
+    * readable but with stale content, which rename() then promoted to
+    * NOTES_SD_PATH — a silent data corruption.  Use fsync(fd) on the raw
+    * descriptor, which the ESP-IDF VFS routes to FATFS f_sync(). */
+   if (tab5_sdcard_mounted()) {
+      FILE *f = fopen(NOTES_TMP_PATH, "w");
+      if (f) {
+         int written = fputs(json, f);
+         fflush(f);
+         int fd = fileno(f);
+         if (fd >= 0) {
+            if (fsync(fd) != 0) {
+               ESP_LOGW(TAG, "fsync of notes.json.tmp failed (errno=%d)", errno);
             }
-            fclose(f);
-            if (written >= 0) {
-                /* Atomic rename — old file replaced only after new is complete */
-                remove(NOTES_SD_PATH);
-                if (rename(NOTES_TMP_PATH, NOTES_SD_PATH) == 0) {
-                    ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
-                    free(json);
-                    return;
-                }
+         }
+         fclose(f);
+         if (written >= 0) {
+            /* Atomic rename — old file replaced only after new is complete */
+            remove(NOTES_SD_PATH);
+            if (rename(NOTES_TMP_PATH, NOTES_SD_PATH) == 0) {
+               ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
+               free(json);
+               return;
             }
-        }
-        ESP_LOGW(TAG, "SD write failed (errno=%d), falling back to NVS", errno);
-    }
+         }
+      }
+      ESP_LOGW(TAG, "SD write failed (errno=%d), falling back to NVS", errno);
+   }
 
-    /* Fallback: NVS */
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_blob(h, NVS_KEY_DATA, json, strlen(json) + 1);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "Notes saved to NVS fallback (%d notes)", s_note_count);
-    }
-    free(json);
+   /* Fallback: NVS */
+   nvs_handle_t h;
+   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_blob(h, NVS_KEY_DATA, json, strlen(json) + 1);
+      nvs_commit(h);
+      nvs_close(h);
+      ESP_LOGI(TAG, "Notes saved to NVS fallback (%d notes)", s_note_count);
+   }
+   free(json);
 
-    /* Persist recording counter in NVS */
-    nvs_handle_t h2;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h2) == ESP_OK) {
-        nvs_set_u32(h2, NVS_KEY_RECID, s_next_rec_id);
-        nvs_commit(h2);
-        nvs_close(h2);
-    }
+   /* Persist recording counter in NVS */
+   nvs_handle_t h2;
+   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h2) == ESP_OK) {
+      nvs_set_u32(h2, NVS_KEY_RECID, s_next_rec_id);
+      nvs_commit(h2);
+      nvs_close(h2);
+   }
 }
 
-static void notes_load(void)
-{
-    if (s_loaded) return;
-    /* Wave 20: ensure the PSRAM buffer exists before any read/write below.
-     * If the alloc fails we still flip s_loaded so we don't loop, but
-     * every subsequent operation will short-circuit via the same guard. */
-    if (!ensure_notes_buf()) {
-       s_loaded = true;
-       return;
-    }
-    s_loaded = true;
+void notes_load(void) {
+   if (s_loaded) return;
+   /* Wave 20: ensure the PSRAM buffer exists before any read/write below.
+    * If the alloc fails we still flip s_loaded so we don't loop, but
+    * every subsequent operation will short-circuit via the same guard. */
+   if (!ensure_notes_buf()) {
+      s_loaded = true;
+      return;
+   }
+   s_loaded = true;
 
-    char *json = NULL;
+   char *json = NULL;
 
-    /* Try SD card first */
-    if (tab5_sdcard_mounted()) {
-        FILE *f = fopen(NOTES_SD_PATH, "r");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (sz > 0 && sz < 64 * 1024) {
-                json = malloc(sz + 1);
-                if (json) {
-                    fread(json, 1, sz, f);
-                    json[sz] = '\0';
-                }
-            }
-            fclose(f);
+   /* Try SD card first */
+   if (tab5_sdcard_mounted()) {
+      FILE *f = fopen(NOTES_SD_PATH, "r");
+      if (f) {
+         fseek(f, 0, SEEK_END);
+         long sz = ftell(f);
+         fseek(f, 0, SEEK_SET);
+         if (sz > 0 && sz < 64 * 1024) {
+            json = malloc(sz + 1);
             if (json) {
-                ESP_LOGI(TAG, "Reading notes from SD (%ld bytes)", sz);
+               fread(json, 1, sz, f);
+               json[sz] = '\0';
             }
-        }
-    }
+         }
+         fclose(f);
+         if (json) {
+            ESP_LOGI(TAG, "Reading notes from SD (%ld bytes)", sz);
+         }
+      }
+   }
 
-    /* Fallback: NVS */
-    if (!json) {
-        nvs_handle_t h;
-        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-            size_t blob_size = 0;
-            if (nvs_get_blob(h, NVS_KEY_DATA, NULL, &blob_size) == ESP_OK && blob_size > 2) {
-                json = malloc(blob_size);
-                if (json) {
-                    nvs_get_blob(h, NVS_KEY_DATA, json, &blob_size);
-                    ESP_LOGI(TAG, "Reading notes from NVS fallback (%u bytes)",
-                             (unsigned)blob_size);
-                }
+   /* Fallback: NVS */
+   if (!json) {
+      nvs_handle_t h;
+      if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+         size_t blob_size = 0;
+         if (nvs_get_blob(h, NVS_KEY_DATA, NULL, &blob_size) == ESP_OK && blob_size > 2) {
+            json = malloc(blob_size);
+            if (json) {
+               nvs_get_blob(h, NVS_KEY_DATA, json, &blob_size);
+               ESP_LOGI(TAG, "Reading notes from NVS fallback (%u bytes)", (unsigned)blob_size);
             }
-            nvs_close(h);
-        }
-    }
+         }
+         nvs_close(h);
+      }
+   }
 
-    if (!json) {
-        ESP_LOGI(TAG, "No saved notes found");
-        return;
-    }
+   if (!json) {
+      ESP_LOGI(TAG, "No saved notes found");
+      return;
+   }
 
-    /* Parse JSON */
-    cJSON *root = cJSON_Parse(json);
-    free(json);
-    if (!root) {
-        ESP_LOGW(TAG, "Notes JSON parse failed");
-        return;
-    }
+   /* Parse JSON */
+   cJSON *root = cJSON_Parse(json);
+   free(json);
+   if (!root) {
+      ESP_LOGW(TAG, "Notes JSON parse failed");
+      return;
+   }
 
-    memset(s_notes, 0, MAX_NOTES * sizeof(*s_notes)); /* Wave 20: pointer */
-    s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
-    s_next_slot  = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
+   memset(s_notes, 0, MAX_NOTES * sizeof(*s_notes)); /* Wave 20: pointer */
+   s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
+   s_next_slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
 
-    cJSON *jrecid = cJSON_GetObjectItem(root, "recid");
-    if (cJSON_IsNumber(jrecid)) {
-        s_next_rec_id = (uint32_t)jrecid->valuedouble;
-    }
+   cJSON *jrecid = cJSON_GetObjectItem(root, "recid");
+   if (cJSON_IsNumber(jrecid)) {
+      s_next_rec_id = (uint32_t)jrecid->valuedouble;
+   }
 
-    cJSON *arr = cJSON_GetObjectItem(root, "notes");
-    int loaded = 0;
-    cJSON *item;
-    cJSON_ArrayForEach(item, arr) {
-        int slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "i"));
-        if (slot < 0 || slot >= MAX_NOTES) continue;
+   cJSON *arr = cJSON_GetObjectItem(root, "notes");
+   int loaded = 0;
+   cJSON *item;
+   cJSON_ArrayForEach(item, arr) {
+      int slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "i"));
+      if (slot < 0 || slot >= MAX_NOTES) continue;
 
-        note_entry_t *n = &s_notes[slot];
-        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(item, "t"));
-        if (text) {
-            strncpy(n->text, text, MAX_NOTE_LEN - 1);
-            n->text[MAX_NOTE_LEN - 1] = '\0';
-        }
-        const char *apath = cJSON_GetStringValue(cJSON_GetObjectItem(item, "a"));
-        if (apath) {
-            strncpy(n->audio_path, apath, MAX_AUDIO_PATH - 1);
-            n->audio_path[MAX_AUDIO_PATH - 1] = '\0';
-        }
-        cJSON *jstate = cJSON_GetObjectItem(item, "s");
-        if (cJSON_IsNumber(jstate)) {
-            n->state = (note_state_t)(int)jstate->valuedouble;
-        } else {
-            /* Legacy notes without state field — infer from content */
-            n->state = NOTE_STATE_TEXT;
-        }
-        /* Fix up: voice notes with placeholder text → RECORDED.
-         * Covers notes saved before schema change or crashed recordings. */
-        if (n->is_voice && strncmp(n->text, "(Recording", 10) == 0) {
-            n->state = NOTE_STATE_RECORDED;
-        }
-        n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
-        n->hour     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
-        n->minute   = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
-        n->day      = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "d"));
-        n->month    = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "mo"));
-        n->year     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
-        cJSON *jns = cJSON_GetObjectItem(item, "ns");
-        n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
-        cJSON *jfr = cJSON_GetObjectItem(item, "fr");
-        n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
-        cJSON *jty = cJSON_GetObjectItem(item, "ty");
-        n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
-        /* PR 4: load pending_chip; missing keys default to PENDING_NONE. */
-        cJSON *jpc = cJSON_GetObjectItem(item, "pc");
-        memset(&n->pending, 0, sizeof(n->pending));
-        if (cJSON_IsObject(jpc)) {
-           cJSON *jk = cJSON_GetObjectItem(jpc, "k");
-           cJSON *jc = cJSON_GetObjectItem(jpc, "c");
-           cJSON *jp = cJSON_GetObjectItem(jpc, "p");
-           if (cJSON_IsNumber(jk)) n->pending.kind = (uint8_t)jk->valuedouble;
-           if (cJSON_IsNumber(jc)) n->pending.confidence = (uint8_t)jc->valuedouble;
-           if (cJSON_IsString(jp) && jp->valuestring) {
-              strncpy(n->pending.payload, jp->valuestring, PENDING_PAYLOAD_LEN - 1);
-              n->pending.payload[PENDING_PAYLOAD_LEN - 1] = '\0';
-           }
-        }
-        /* W4: restore enrichment state + identity. */
-        cJSON *jen = cJSON_GetObjectItem(item, "en");
-        n->enrich = cJSON_IsNumber(jen) ? (enrich_state_t)(int)jen->valuedouble : ENRICH_NONE;
-        const char *jtid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "tid"));
-        if (jtid) {
-           strncpy(n->turn_id, jtid, DICT_TURN_ID_LEN - 1);
-           n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
-        }
-        const char *jnid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "nid"));
-        if (jnid) {
-           strncpy(n->note_id, jnid, DICT_NOTE_ID_LEN - 1);
-           n->note_id[DICT_NOTE_ID_LEN - 1] = '\0';
-        }
-        n->used = true;
-        loaded++;
-    }
+      note_entry_t *n = &s_notes[slot];
+      const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(item, "t"));
+      if (text) {
+         strncpy(n->text, text, MAX_NOTE_LEN - 1);
+         n->text[MAX_NOTE_LEN - 1] = '\0';
+      }
+      const char *apath = cJSON_GetStringValue(cJSON_GetObjectItem(item, "a"));
+      if (apath) {
+         strncpy(n->audio_path, apath, MAX_AUDIO_PATH - 1);
+         n->audio_path[MAX_AUDIO_PATH - 1] = '\0';
+      }
+      cJSON *jstate = cJSON_GetObjectItem(item, "s");
+      if (cJSON_IsNumber(jstate)) {
+         n->state = (note_state_t)(int)jstate->valuedouble;
+      } else {
+         /* Legacy notes without state field — infer from content */
+         n->state = NOTE_STATE_TEXT;
+      }
+      /* Fix up: voice notes with placeholder text → RECORDED.
+       * Covers notes saved before schema change or crashed recordings. */
+      if (n->is_voice && strncmp(n->text, "(Recording", 10) == 0) {
+         n->state = NOTE_STATE_RECORDED;
+      }
+      n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
+      n->hour = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
+      n->minute = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
+      n->day = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "d"));
+      n->month = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "mo"));
+      n->year = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
+      cJSON *jns = cJSON_GetObjectItem(item, "ns");
+      n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
+      cJSON *jfr = cJSON_GetObjectItem(item, "fr");
+      n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
+      cJSON *jty = cJSON_GetObjectItem(item, "ty");
+      n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
+      /* PR 4: load pending_chip; missing keys default to PENDING_NONE. */
+      cJSON *jpc = cJSON_GetObjectItem(item, "pc");
+      memset(&n->pending, 0, sizeof(n->pending));
+      if (cJSON_IsObject(jpc)) {
+         cJSON *jk = cJSON_GetObjectItem(jpc, "k");
+         cJSON *jc = cJSON_GetObjectItem(jpc, "c");
+         cJSON *jp = cJSON_GetObjectItem(jpc, "p");
+         if (cJSON_IsNumber(jk)) n->pending.kind = (uint8_t)jk->valuedouble;
+         if (cJSON_IsNumber(jc)) n->pending.confidence = (uint8_t)jc->valuedouble;
+         if (cJSON_IsString(jp) && jp->valuestring) {
+            strncpy(n->pending.payload, jp->valuestring, PENDING_PAYLOAD_LEN - 1);
+            n->pending.payload[PENDING_PAYLOAD_LEN - 1] = '\0';
+         }
+      }
+      /* W4: restore enrichment state + identity. */
+      cJSON *jen = cJSON_GetObjectItem(item, "en");
+      n->enrich = cJSON_IsNumber(jen) ? (enrich_state_t)(int)jen->valuedouble : ENRICH_NONE;
+      const char *jtid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "tid"));
+      if (jtid) {
+         strncpy(n->turn_id, jtid, DICT_TURN_ID_LEN - 1);
+         n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+      }
+      const char *jnid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "nid"));
+      if (jnid) {
+         strncpy(n->note_id, jnid, DICT_NOTE_ID_LEN - 1);
+         n->note_id[DICT_NOTE_ID_LEN - 1] = '\0';
+      }
+      n->used = true;
+      loaded++;
+   }
 
-    cJSON_Delete(root);
+   cJSON_Delete(root);
 
-    /* Load recording counter from NVS (survives SD card removal) */
-    nvs_handle_t nh;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nh) == ESP_OK) {
-        uint32_t rid = 0;
-        if (nvs_get_u32(nh, NVS_KEY_RECID, &rid) == ESP_OK && rid > s_next_rec_id) {
-            s_next_rec_id = rid;
-        }
-        nvs_close(nh);
-    }
+   /* Load recording counter from NVS (survives SD card removal) */
+   nvs_handle_t nh;
+   if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nh) == ESP_OK) {
+      uint32_t rid = 0;
+      if (nvs_get_u32(nh, NVS_KEY_RECID, &rid) == ESP_OK && rid > s_next_rec_id) {
+         s_next_rec_id = rid;
+      }
+      nvs_close(nh);
+   }
 
-    /* Reset stuck TRANSCRIBING notes back to RECORDED for retry.
-     * This happens when the device reboots mid-transcription. */
-    int reset_count = 0;
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && s_notes[i].state == NOTE_STATE_TRANSCRIBING) {
-            s_notes[i].state = NOTE_STATE_RECORDED;
-            reset_count++;
-        }
-    }
-    if (reset_count > 0) {
-        ESP_LOGI(TAG, "Reset %d stuck TRANSCRIBING notes to RECORDED", reset_count);
-    }
+   /* Reset stuck TRANSCRIBING notes back to RECORDED for retry.
+    * This happens when the device reboots mid-transcription. */
+   int reset_count = 0;
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && s_notes[i].state == NOTE_STATE_TRANSCRIBING) {
+         s_notes[i].state = NOTE_STATE_RECORDED;
+         reset_count++;
+      }
+   }
+   if (reset_count > 0) {
+      ESP_LOGI(TAG, "Reset %d stuck TRANSCRIBING notes to RECORDED", reset_count);
+   }
 
-    /* Ensure recordings directory exists */
-    if (tab5_sdcard_mounted()) {
-        struct stat st;
-        if (stat(REC_DIR, &st) != 0) {
-            mkdir(REC_DIR, 0755);
-            ESP_LOGI(TAG, "Created recordings directory: %s", REC_DIR);
-        }
-    }
+   /* Ensure recordings directory exists */
+   if (tab5_sdcard_mounted()) {
+      struct stat st;
+      if (stat(REC_DIR, &st) != 0) {
+         mkdir(REC_DIR, 0755);
+         ESP_LOGI(TAG, "Created recordings directory: %s", REC_DIR);
+      }
+   }
 
-    ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
+   ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
 }
 
 /* ── PR 3: filter pills + day-section state ─────────────── */
@@ -899,7 +690,7 @@ static void cb_note_play(lv_event_t *e);
 static void cb_note_retry(lv_event_t *e);
 static void cb_clear_failed(lv_event_t *e);
 static void cb_search_changed(lv_event_t *e);
-static void refresh_list(void);
+void refresh_list(void);
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx);
 static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, int note_idx, day_section_t sec);
 static lv_obj_t *make_topbar(lv_obj_t *parent);
@@ -1047,8 +838,8 @@ static void __attribute__((unused)) voice_state_cb(voice_state_t state, const ch
 static int s_rec_note_slot;
 static bool s_pipeline_armed_slot;
 static FILE *s_rec_file;
-static int find_most_recent_used_slot(void);
-static void pending_chip_apply_inline(int idx);
+int find_most_recent_used_slot(void);
+void pending_chip_apply_inline(int idx);
 
 /* PR 3 follow-up: deferred WS-thread → LVGL-thread dictated-note add.
  * The dictation_summary handler in voice_ws_proto.c calls
@@ -1617,7 +1408,7 @@ typedef struct {
    char payload[PENDING_PAYLOAD_LEN];
 } pending_chip_msg_t;
 
-static int find_most_recent_used_slot(void) {
+int find_most_recent_used_slot(void) {
    /* Walk back from s_next_slot through the ring, return the most-recent
     * used slot index, or -1 if none. */
    for (int i = 0; i < MAX_NOTES; i++) {
@@ -1640,7 +1431,7 @@ static pending_chip_msg_t s_pending_chip_handoff = {0};
 static bool s_pending_chip_pending = false;
 static SemaphoreHandle_t s_pending_chip_mutex = NULL;
 
-static void pending_chip_apply_inline(int idx) {
+void pending_chip_apply_inline(int idx) {
    if (idx < 0 || idx >= MAX_NOTES) return;
    if (!s_pending_chip_mutex) return;
    xSemaphoreTake(s_pending_chip_mutex, portMAX_DELAY);
@@ -3453,110 +3244,108 @@ void cb_filter_pill_tap(lv_event_t *e) {
 }
 
 /* ── Refresh list ───────────────────────────────────────── */
-static void refresh_list(void)
-{
-    /* #170: hard bail if the screen was destroyed between the call being
-     * scheduled (often via lv_async_call from the background transcription
-     * task) and execution.  All s_* pointers below may be dangling. */
-    if (s_destroying || !s_screen) return;
-    /* Count failed entries up-front so we can update both the topbar
-     * meta and the conditional CLEAR FAILED button in one pass. */
-    int failed_count = 0;
-    for (int i = 0; i < MAX_NOTES; i++) {
-       if (s_notes[i].used && s_notes[i].state == NOTE_STATE_FAILED) failed_count++;
-    }
-    /* v5 topbar meta — always shows "N NOTES" in muted gray; the FAIL
-     * count is surfaced by the conditional CLEAR FAILED button so we
-     * don't duplicate the same number twice on the same row. */
-    if (s_topbar_meta) {
-        char buf[40];
-        snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s",
-                 s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
-        lv_label_set_text(s_topbar_meta, buf);
-        lv_obj_set_style_text_color(s_topbar_meta, lv_color_hex(0x6A6A72), 0);
-    }
-    if (s_topbar_clear) {
-       if (failed_count > 0) {
-          /* Reflect the live count on the button label so the user
-           * sees "CLEAR 11 FAILED" instead of a static caption. */
-          lv_obj_t *lbl = lv_obj_get_child(s_topbar_clear, 0);
-          if (lbl) {
-             char b[24];
-             /* Compact badge: warning + count.  Red bg + border on the
-              * chip telegraphs "failed"; the leading exclamation mark
-              * adds urgency without depending on a unicode dot glyph
-              * that the caption font may not carry. */
-             snprintf(b, sizeof(b), "! %d", failed_count);
-             lv_label_set_text(lbl, b);
-          }
-          lv_obj_clear_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
-       } else {
-          lv_obj_add_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
-       }
-    }
-    if (!s_list) return;
-    lv_obj_clean(s_list);
+void refresh_list(void) {
+   /* #170: hard bail if the screen was destroyed between the call being
+    * scheduled (often via lv_async_call from the background transcription
+    * task) and execution.  All s_* pointers below may be dangling. */
+   if (s_destroying || !s_screen) return;
+   /* Count failed entries up-front so we can update both the topbar
+    * meta and the conditional CLEAR FAILED button in one pass. */
+   int failed_count = 0;
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && s_notes[i].state == NOTE_STATE_FAILED) failed_count++;
+   }
+   /* v5 topbar meta — always shows "N NOTES" in muted gray; the FAIL
+    * count is surfaced by the conditional CLEAR FAILED button so we
+    * don't duplicate the same number twice on the same row. */
+   if (s_topbar_meta) {
+      char buf[40];
+      snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s", s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
+      lv_label_set_text(s_topbar_meta, buf);
+      lv_obj_set_style_text_color(s_topbar_meta, lv_color_hex(0x6A6A72), 0);
+   }
+   if (s_topbar_clear) {
+      if (failed_count > 0) {
+         /* Reflect the live count on the button label so the user
+          * sees "CLEAR 11 FAILED" instead of a static caption. */
+         lv_obj_t *lbl = lv_obj_get_child(s_topbar_clear, 0);
+         if (lbl) {
+            char b[24];
+            /* Compact badge: warning + count.  Red bg + border on the
+             * chip telegraphs "failed"; the leading exclamation mark
+             * adds urgency without depending on a unicode dot glyph
+             * that the caption font may not carry. */
+            snprintf(b, sizeof(b), "! %d", failed_count);
+            lv_label_set_text(lbl, b);
+         }
+         lv_obj_clear_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
+      } else {
+         lv_obj_add_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
+      }
+   }
+   if (!s_list) return;
+   lv_obj_clean(s_list);
 
-    int shown = 0;
-    /* PR 3: emit day-section headers as we walk the (already-reverse-
-     * chronological) notes ring.  A header is emitted the first time
-     * we see a row whose classify_note_day() bucket differs from the
-     * previous header.  Tracks the last emitted bucket via cur_section
-     * with -1 as the sentinel for "no header emitted yet". */
-    int cur_section = -1;
-    for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
-        int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
-        if (!s_notes[idx].used) continue;
-        /* M2: Search filter — skip notes that don't match search text */
-        if (s_search_text[0]) {
-            /* N1: Case-insensitive search */
-            if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
-        }
-        /* PR 3: filter pill predicate */
-        if (!note_matches_filter(&s_notes[idx])) continue;
-        /* PR 3: emit a day-section header when entering a new bucket. */
-        day_section_t sec = classify_note_day(&s_notes[idx]);
-        if ((int)sec != cur_section) {
-           add_day_section_header(s_list, sec);
-           cur_section = (int)sec;
-        }
-        add_note_card_sectioned(s_list, &s_notes[idx], idx, sec);
-        shown++;
-    }
-    if (shown == 0) {
-       const char *head = NULL;
-       const char *body = NULL;
-       if (s_search_text[0]) {
-          head = "No matches";
-          body = "Try a different word.";
-       } else {
-          switch (s_filter) {
-             case NOTE_FILTER_VOICE:
-                head = "No voice notes yet";
-                body = "Tap the amber mic to dictate one.";
-                break;
-             case NOTE_FILTER_TEXT:
-                head = "No typed notes yet";
-                body = "Tap the pencil to write one.";
-                break;
-             case NOTE_FILTER_PENDING:
-                head = "Nothing pending";
-                body = "Reminders + lists will gather here.";
-                break;
-             case NOTE_FILTER_ALL:
-             default:
-                head = "No notes yet";
-                body = "Tap the amber mic to dictate,\nor the pencil to type.";
-                break;
-          }
-       }
-       /* Polish P4 (TT #654): adopt shared ui_empty_state helper.
-        * Previously open-coded a flex container with two labels;
-        * now reads from the same design-system atom every other
-        * screen uses for empties.  Visual rhythm matches Sessions /
-        * Files / Memory consistently. */
-       ui_empty_state(s_list, LV_SYMBOL_EDIT, head, body);
-    }
+   int shown = 0;
+   /* PR 3: emit day-section headers as we walk the (already-reverse-
+    * chronological) notes ring.  A header is emitted the first time
+    * we see a row whose classify_note_day() bucket differs from the
+    * previous header.  Tracks the last emitted bucket via cur_section
+    * with -1 as the sentinel for "no header emitted yet". */
+   int cur_section = -1;
+   for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
+      int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
+      if (!s_notes[idx].used) continue;
+      /* M2: Search filter — skip notes that don't match search text */
+      if (s_search_text[0]) {
+         /* N1: Case-insensitive search */
+         if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
+      }
+      /* PR 3: filter pill predicate */
+      if (!note_matches_filter(&s_notes[idx])) continue;
+      /* PR 3: emit a day-section header when entering a new bucket. */
+      day_section_t sec = classify_note_day(&s_notes[idx]);
+      if ((int)sec != cur_section) {
+         add_day_section_header(s_list, sec);
+         cur_section = (int)sec;
+      }
+      add_note_card_sectioned(s_list, &s_notes[idx], idx, sec);
+      shown++;
+   }
+   if (shown == 0) {
+      const char *head = NULL;
+      const char *body = NULL;
+      if (s_search_text[0]) {
+         head = "No matches";
+         body = "Try a different word.";
+      } else {
+         switch (s_filter) {
+            case NOTE_FILTER_VOICE:
+               head = "No voice notes yet";
+               body = "Tap the amber mic to dictate one.";
+               break;
+            case NOTE_FILTER_TEXT:
+               head = "No typed notes yet";
+               body = "Tap the pencil to write one.";
+               break;
+            case NOTE_FILTER_PENDING:
+               head = "Nothing pending";
+               body = "Reminders + lists will gather here.";
+               break;
+            case NOTE_FILTER_ALL:
+            default:
+               head = "No notes yet";
+               body = "Tap the amber mic to dictate,\nor the pencil to type.";
+               break;
+         }
+      }
+      /* Polish P4 (TT #654): adopt shared ui_empty_state helper.
+       * Previously open-coded a flex container with two labels;
+       * now reads from the same design-system atom every other
+       * screen uses for empties.  Visual rhythm matches Sessions /
+       * Files / Memory consistently. */
+      ui_empty_state(s_list, LV_SYMBOL_EDIT, head, body);
+   }
 }
 
 /* ── Top bar (v5: typography-forward, amber title, 'HOME' caption back) ─ */
