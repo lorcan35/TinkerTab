@@ -503,6 +503,10 @@ dict_event_t voice_dictation_get(void) {
  * never blocks, and is exactly what the .state != DICT_IDLE checks need. */
 dict_state_t voice_dictation_state(void) { return s_state_fast; }
 
+/* W4: orb follows CAPTURE only — RECORDING holds the orb; every other state
+ * (incl. the at-stop TRANSCRIBING/UPLOADING/SAVED) releases it. */
+bool voice_dictation_orb_active(dict_state_t s) { return s == DICT_RECORDING; }
+
 /* Pure-function name lookups — no shared state touched, no lock needed.
  * Skipping the lock here is the deliberate choice: callers from log/
  * diagnostic paths shouldn't pay a mutex-take just to map an enum to

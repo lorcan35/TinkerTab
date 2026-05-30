@@ -144,6 +144,13 @@ dict_event_t voice_dictation_get(void);
  * tripped the task-WDT (2026-05-30 coredump). */
 dict_state_t voice_dictation_state(void);
 
+/* W4: pure predicate — does this FSM state mean "capture is actively running
+ * and should hold the orb"?  RECORDING only.  At stop the FSM moves to
+ * TRANSCRIBING/SAVED/etc. (background note states), so the orb releases and
+ * snaps back to idle while enrichment continues in the Notes badge.
+ * Lock-free + pure; safe from the orb paint hot-path. */
+bool voice_dictation_orb_active(dict_state_t s);
+
 /* Human-readable state/reason names — useful for logs, debug endpoint,
  * and live verification.  Static strings; do not free. */
 const char *voice_dictation_state_name(dict_state_t s);

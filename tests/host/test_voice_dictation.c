@@ -436,7 +436,7 @@ static int test_decay_suppressed_while_resolution_pending(void) {
     * decay, so a 60-90s-late summary can still correct it (FAILED→SAVED). */
    voice_dictation_init();
    host_test_reset();
-   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);                /* RECORDING, origin WS */
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);                  /* RECORDING, origin WS */
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* sets resolution_pending */
    CHECK(voice_dictation_get().resolution_pending);
 
@@ -456,8 +456,8 @@ static int test_decay_requeues_on_full_worker(void) {
    voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1100); /* arms FAILED decay */
 
    tab5_worker_stub_set_full(true);
-   host_clock_advance_ms(6000); /* timer fires → enqueue fails → re-arm @ +250ms */
-   tab5_worker_pump();          /* nothing queued */
+   host_clock_advance_ms(6000);                        /* timer fires → enqueue fails → re-arm @ +250ms */
+   tab5_worker_pump();                                 /* nothing queued */
    CHECK_EQ(voice_dictation_get().state, DICT_FAILED); /* not decayed yet */
 
    tab5_worker_stub_set_full(false);
@@ -565,7 +565,7 @@ static int test_begin_same_origin_keeps_turn_id(void) {
    id1[sizeof(id1) - 1] = '\0';
    const char *t2 = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1100); /* re-entrant */
    CHECK(t2 != NULL);
-   CHECK(strcmp(id1, t2) == 0);                        /* same id, not re-minted */
+   CHECK(strcmp(id1, t2) == 0); /* same id, not re-minted */
    CHECK_EQ(voice_dictation_get().state, DICT_RECORDING);
    CHECK(strcmp(id1, voice_dictation_get().turn_id) == 0);
    return 0;
@@ -664,6 +664,40 @@ static int test_failed_to_saved_refused_when_not_pending(void) {
    return 0;
 }
 
+static int test_orb_active_recording_only(void) {
+   /* W4: the orb follows capture ONLY.  RECORDING holds the orb; every other
+    * state (incl. the at-stop TRANSCRIBING/UPLOADING/SAVED) releases it so the
+    * orb snaps back to idle the instant recording stops. */
+   CHECK(voice_dictation_orb_active(DICT_RECORDING));
+   CHECK(!voice_dictation_orb_active(DICT_IDLE));
+   CHECK(!voice_dictation_orb_active(DICT_UPLOADING));
+   CHECK(!voice_dictation_orb_active(DICT_TRANSCRIBING));
+   CHECK(!voice_dictation_orb_active(DICT_SAVED));
+   CHECK(!voice_dictation_orb_active(DICT_FAILED));
+   CHECK(!voice_dictation_orb_active(DICT_CANCELLED));
+   return 0;
+}
+
+static int test_orb_releases_at_stop(void) {
+   /* End-to-end: begin a WS turn (orb active), then drive the at-stop
+    * TRANSCRIBING — orb_active must be false even though the FSM is still
+    * resolving the turn (resolution_pending, turn_id intact). */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   char id[DICT_TURN_ID_LEN];
+   strncpy(id, tid, sizeof(id));
+   id[sizeof(id) - 1] = '\0';
+   CHECK(voice_dictation_orb_active(voice_dictation_state())); /* RECORDING */
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+   CHECK(!voice_dictation_orb_active(voice_dictation_state())); /* released */
+   dict_event_t e = voice_dictation_get();
+   CHECK(e.resolution_pending);       /* FSM still resolving */
+   CHECK(strcmp(e.turn_id, id) == 0); /* turn_id stable across handoff */
+   return 0;
+}
+
 int main(void) {
    if (test_init_state_is_idle()) return 1;
    if (test_idle_to_recording_fires_subscriber()) return 1;
@@ -704,6 +738,8 @@ int main(void) {
    if (test_stuck_watchdog_resolves_pending_ws()) return 1;
    if (test_stuck_watchdog_disarmed_on_resolution()) return 1;
    if (test_failed_to_saved_refused_when_not_pending()) return 1;
+   if (test_orb_active_recording_only()) return 1;
+   if (test_orb_releases_at_stop()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }
