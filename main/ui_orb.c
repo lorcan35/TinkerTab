@@ -2624,6 +2624,11 @@ bool ui_orb_pipeline_active(void) {
     * voice_dictation_get() here took the dictation mutex (portMAX_DELAY)
     * on every frame and wedged ui_task on the lock during the dictation-
     * stop contention burst (task-WDT, 2026-05-30 coredump).  We only need
-    * the state enum, so use the lock-free voice_dictation_state(). */
-   return voice_dictation_state() != DICT_IDLE;
+    * the state enum, so use the lock-free voice_dictation_state().
+    *
+    * W4: the orb follows CAPTURE only — RECORDING holds the orb; at stop the
+    * FSM moves to background note states (TRANSCRIBING/SAVED/…) and the orb
+    * snaps back to idle instantly while enrichment continues in the Notes
+    * badge.  (Was `!= DICT_IDLE`, which pinned the orb through the summary wait.) */
+   return voice_dictation_orb_active(voice_dictation_state());
 }
