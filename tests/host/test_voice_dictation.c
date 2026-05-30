@@ -553,6 +553,42 @@ static int test_failed_to_saved_late_correction_ws_only(void) {
    return 0;
 }
 
+static int test_begin_same_origin_keeps_turn_id(void) {
+   /* W2 F5: a same-origin re-entrant begin returns the SAME id (no re-mint),
+    * so a Dragon summary echoing that id still resolves the live turn. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *t1 = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(t1 != NULL);
+   char id1[DICT_TURN_ID_LEN];
+   strncpy(id1, t1, sizeof(id1));
+   id1[sizeof(id1) - 1] = '\0';
+   const char *t2 = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1100); /* re-entrant */
+   CHECK(t2 != NULL);
+   CHECK(strcmp(id1, t2) == 0);                        /* same id, not re-minted */
+   CHECK_EQ(voice_dictation_get().state, DICT_RECORDING);
+   CHECK(strcmp(id1, voice_dictation_get().turn_id) == 0);
+   return 0;
+}
+
+static int test_failed_to_saved_cross_turn_dropped(void) {
+   /* W2: even with a pending WS resolution, a SAVED echoing the WRONG turn_id
+    * is dropped by resolve_if_current — turn_id match is the authority now. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   char idA[DICT_TURN_ID_LEN];
+   strncpy(idA, tid, sizeof(idA));
+   idA[sizeof(idA) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* pending */
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 3000);
+   CHECK(!voice_dictation_resolve_if_current("0000deadbeef", DICT_SAVED, DICT_FAIL_NONE, 4000));
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED); /* wrong-turn SAVED dropped */
+   CHECK(voice_dictation_resolve_if_current(idA, DICT_SAVED, DICT_FAIL_NONE, 4100));
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED); /* matching turn corrects it */
+   return 0;
+}
+
 static int test_offline_failed_decays_to_idle(void) {
    /* An offline (REST) FAILED is definitive — the REST response IS the
     * resolution — so it clears pending and decays, unlike a WS FAILED which
@@ -614,6 +650,8 @@ int main(void) {
    if (test_resolve_if_current_drops_stale()) return 1;
    if (test_missing_turn_id_treated_as_match()) return 1;
    if (test_failed_to_saved_late_correction_ws_only()) return 1;
+   if (test_begin_same_origin_keeps_turn_id()) return 1;
+   if (test_failed_to_saved_cross_turn_dropped()) return 1;
    if (test_offline_failed_decays_to_idle()) return 1;
    if (test_failed_to_saved_refused_when_not_pending()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);

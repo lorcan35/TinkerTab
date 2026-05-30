@@ -237,13 +237,13 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, 
       return;
    }
 
-   /* W1 late-correction guard: FAILED→SAVED corrects a false-FAIL (a late
-    * dictation_summary after a timeout-driven FAILED), but ONLY while a WS
-    * resolution is still pending — otherwise a stale summary could resurrect
-    * an unrelated FAILED.  (No turn_id echo from Dragon yet in W1; W2's
-    * turn_id match in resolve_if_current supersedes this.) */
-   if (s_event.state == DICT_FAILED && new_state == DICT_SAVED &&
-       !(s_event.resolution_pending && s_event.origin == DICT_ORIGIN_WS)) {
+   /* Late-correction guard: FAILED→SAVED corrects a false-FAIL (a late
+    * dictation_summary after a timeout-driven FAILED), but only while a
+    * resolution is still pending — a SAVED with no pending resolution is a
+    * stray.  W2: the cross-turn safety is now the turn_id match in
+    * voice_dictation_resolve_if_current (the only caller that should drive
+    * FAILED→SAVED), so the W1 origin==WS qualifier is dropped. */
+   if (s_event.state == DICT_FAILED && new_state == DICT_SAVED && !s_event.resolution_pending) {
       dict_unlock();
       return;
    }
@@ -332,14 +332,18 @@ void voice_turn_id_gen(char out[DICT_TURN_ID_LEN]) {
 
 const char *voice_dictation_begin(dict_origin_t origin, const char *adopt_turn_id, uint32_t now_ms) {
    dict_lock();
-   /* Refuse if a turn of a DIFFERENT origin is actively in flight (the WS↔
-    * offline collision, S1-3).  A settled terminal of the other origin is
-    * not "live" — we snap past it below. */
+   /* A turn already in flight (RECORDING/UPLOADING/TRANSCRIBING).  A settled
+    * terminal is NOT live — we snap past it below. */
    bool live =
        (s_event.state == DICT_RECORDING || s_event.state == DICT_UPLOADING || s_event.state == DICT_TRANSCRIBING);
-   if (live && s_event.origin != DICT_ORIGIN_NONE && s_event.origin != origin) {
+   if (live && s_event.origin != DICT_ORIGIN_NONE) {
+      /* DIFFERENT origin → refuse (the WS↔offline collision, S1-3).  SAME
+       * origin → re-entrant begin, not a new turn: return the EXISTING turn_id
+       * WITHOUT re-minting (review F5 — re-minting would orphan the id that
+       * W2's resolve-by-id authority depends on). */
+      const char *ret = (s_event.origin == origin) ? s_event.turn_id : NULL;
       dict_unlock();
-      return NULL;
+      return ret;
    }
    /* Fast re-tap before a terminal has self-decayed: snap to IDLE first so
     * the fresh turn starts clean (SAVED→RECORDING was removed in W1). */
