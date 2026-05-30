@@ -880,7 +880,14 @@ static void mic_capture_task(void *arg)
                     if (!s_dictate_drop_announced && voice_get_mode() != VOICE_MODE_ASK) {
                        s_dictate_drop_announced = true;
                        tab5_debug_obs_event("error.dragon", "dictate_drop");
-                       char *t = strdup("Dragon dropped — saving to SD; will sync when back");
+                       /* Accurate per path (review 2026-05-30): only the OFFLINE
+                        * path writes an SD WAV, so only it can promise "saving to
+                        * SD".  An ONLINE dictation has no SD fallback — a dropped
+                        * chunk is a small gap in the transcript, recording
+                        * continues.  Use the FSM origin to pick the honest copy. */
+                       bool sd_backed = (voice_dictation_get().origin == DICT_ORIGIN_OFFLINE);
+                       char *t = strdup(sd_backed ? "Dragon offline — saving to SD; will sync when back"
+                                                  : "Dragon dropped some audio — transcript may have a small gap");
                        if (t) voice_async_toast(t);
                     }
                     if (voice_get_mode() == VOICE_MODE_ASK) break;

@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "ui_audio_cues.h" /* V2-A.4 — UI_CUE_INCOMING_HIGH chime on Welcome */
 #include "ui_camera.h"
+#include "voice_dictation.h" /* pause ambient YOLO while a dictation is in flight */
 #include "voice_video.h"
 #include "voice_yolo.h"
 
@@ -467,6 +468,23 @@ static void vision_service_task(void *arg) {
       /* Yield to foreground YOLO loop on camera screen — avoids
        * USB-FFS contention which Wi-Fi DMA can't tolerate. */
       if (ui_camera_yolo_active()) {
+         s_state.frames_yielded++;
+         vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+         continue;
+      }
+
+      /* 2026-05-30: pause ambient YOLO during the ACTIVE phase of a dictation
+       * (RECORDING/UPLOADING/TRANSCRIBING).  The always-on 2 Hz inference
+       * competed with the voice WS stream + the stop-resolution; on a 10-min
+       * dictation the resulting kernel-lock contention starved ui_task past the
+       * task-WDT (TASK_WDT reboot, root-caused from the coredump).  We resume on
+       * any TERMINAL (SAVED/FAILED/CANCELLED) — those are UI-display-only and
+       * low-CPU — rather than on IDLE, because a WS-FAILED keeps pending and
+       * does NOT self-decay (so gating on !=IDLE would strand vision off until
+       * the W3 stuck-watchdog; gating on the active states resumes immediately
+       * at the terminal). */
+      dict_state_t ds = voice_dictation_get().state;
+      if (ds == DICT_RECORDING || ds == DICT_UPLOADING || ds == DICT_TRANSCRIBING) {
          s_state.frames_yielded++;
          vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
          continue;
