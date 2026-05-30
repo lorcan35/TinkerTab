@@ -2494,23 +2494,31 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
    if (!event) return;
    s_pipeline = *event;
 
+   /* W4: the orb follows CAPTURE only.  Once recording stops, the FSM moves to
+    * the background enrichment states (UPLOADING/TRANSCRIBING/SAVED/FAILED/
+    * CANCELLED) which are now surfaced on the Notes badge — NOT the orb.  Paint
+    * those as IDLE so the orb snaps back to ready the instant recording ends;
+    * only DICT_RECORDING holds the orb.  s_pipeline keeps the true state for
+    * other readers (rec_timer_label_cb). */
+   dict_state_t ps = voice_dictation_orb_active(event->state) ? DICT_RECORDING : DICT_IDLE;
+
    /* TT #549: pause always-alive motion while the pipeline owns the
     * body's paint — gradient-stop pan + spec opa breath compete with
-    * paint_pipeline_body's tint.  Resume on DICT_IDLE. */
-   if (event->state != DICT_IDLE) {
+    * paint_pipeline_body's tint.  Resume on idle. */
+   if (ps != DICT_IDLE) {
       alive_stop();
    } else {
       if (s_state == ORB_STATE_IDLE) alive_start();
    }
 
    /* Stop the live elapsed-time timer when leaving RECORDING. */
-   if (event->state != DICT_RECORDING && s_rec_timer_label) {
+   if (ps != DICT_RECORDING && s_rec_timer_label) {
       lv_timer_del(s_rec_timer_label);
       s_rec_timer_label = NULL;
    }
 
    char buf[64];
-   switch (event->state) {
+   switch (ps) {
       case DICT_IDLE:
          hide_caption();
          reset_pipeline_halo();

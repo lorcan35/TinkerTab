@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/test_openrouter_sse.dir/test_openrouter_sse.c.o CMakeFiles/test_openrouter_sse.dir/home/rebelforce/projects/TinkerTab/main/openrouter_sse.c.o -o test_openrouter_sse 

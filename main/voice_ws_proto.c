@@ -849,12 +849,13 @@ void voice_ws_proto_handle_text(const char *data, int len) {
          }
       }
    } else if (strcmp(type_str, "dictation_postprocessing") == 0) {
-      /* TinkerBox#94 H4: Dragon spawned the title+summary LLM call after
-       * `stt`.  Pre-fix the user stared at the bare transcript for
-       * 10-20 s with no signal that more was coming.  Show a status
-       * caption so the wait feels intentional. */
+      /* Dragon spawned the title+summary LLM call after `stt`. */
       ESP_LOGI(TAG, "Dictation post-process started");
-      voice_set_state(VOICE_STATE_PROCESSING, "Generating summary...");
+      /* W4: summary generation is BACKGROUND.  The orb already returned to idle
+       * at capture/stop; the "summarizing" status now lives on the Notes badge,
+       * not the orb.  Do NOT pull voice_state into PROCESSING here — that
+       * re-pinned the orb to the amber spinner for the whole 10-90 s LLM wait,
+       * which is exactly the "stuck on Generating summary…" feel W4 removes. */
    } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
       /* TinkerBox#94 H4: Dragon's STT + auto-note-create completed but
        * the LLM summary step failed (no_llm_available, generation

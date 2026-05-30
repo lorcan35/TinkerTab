@@ -1,0 +1,1 @@
+/usr/bin/cc CMakeFiles/test_voice_dictation.dir/test_voice_dictation.c.o CMakeFiles/test_voice_dictation.dir/home/rebelforce/projects/TinkerTab/main/voice_dictation.c.o CMakeFiles/test_voice_dictation.dir/shim/host_stubs.c.o -o test_voice_dictation 

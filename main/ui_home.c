@@ -2366,8 +2366,14 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
       return;
    }
 
+   /* W4: the Dictate chip follows CAPTURE only, like the orb.  Once recording
+    * stops, the FSM's background enrichment states (UPLOADING/TRANSCRIBING/…)
+    * are surfaced on the Notes badge, not the home chip — so the chip returns to
+    * its idle "Dictate · TAP TO START" so the user can immediately start another. */
+   dict_state_t ps = voice_dictation_orb_active(event->state) ? DICT_RECORDING : DICT_IDLE;
+
    /* Tear down the chip M:SS ticker if we're leaving RECORDING. */
-   if (event->state != DICT_RECORDING && s_dictate_chip_rec_t) {
+   if (ps != DICT_RECORDING && s_dictate_chip_rec_t) {
       lv_timer_del(s_dictate_chip_rec_t);
       s_dictate_chip_rec_t = NULL;
    }
@@ -2375,7 +2381,7 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
    /* PR 2 polish: pipeline non-IDLE → force chip fully visible even if
     * the chrome fade dimmed it during voice-active.  IDLE → let normal
     * fade rules apply. */
-   if (event->state != DICT_IDLE) {
+   if (ps != DICT_IDLE) {
       lv_anim_delete(s_dictate_chip, chrome_fade_anim_cb);
       lv_obj_set_style_opa(s_dictate_chip, CHROME_FULL_OPA, LV_PART_MAIN);
    } else {
@@ -2395,7 +2401,7 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
    lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xE74C3C), 0);
 
    char buf[40];
-   switch (event->state) {
+   switch (ps) {
       case DICT_IDLE:
          lv_label_set_text(s_dictate_chip_label, "Dictate");
          lv_label_set_text(s_dictate_chip_hint, "TAP TO START");

@@ -1,0 +1,99 @@
+Start testing: May 30 03:02 +04
+----------------------------------------------------------
+1/4 Testing: md_strip
+1/4 Test: md_strip
+Command: "/home/rebelforce/projects/TinkerTab/tests/host/build_review/test_md_strip"
+Directory: /home/rebelforce/projects/TinkerTab/tests/host/build_review
+"md_strip" start time: May 30 03:02 +04
+Output:
+----------------------------------------------------------
+test_md_strip: inline_bold_pair OK
+test_md_strip: inline_italic_pair OK
+test_md_strip: inline_heading_stripped_at_line_start OK
+test_md_strip: inline_bullet_becomes_unicode OK
+test_md_strip: inline_null_input_safe OK
+test_md_strip: inline_truncation_terminates OK
+test_md_strip: ellipsis_appended_on_truncation OK
+test_md_strip: tool_markers_stripped OK
+test_md_strip: tool_markers_case_insensitive OK
+test_md_strip: inline_in_place_safe OK
+test_md_strip: inline_asciifies_smart_typography OK
+test_md_strip: inline_keeps_bullet_and_ellipsis OK
+test_md_strip: 13 assertions, 12 tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"md_strip" end time: May 30 03:02 +04
+"md_strip" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/4 Testing: openrouter_sse
+2/4 Test: openrouter_sse
+Command: "/home/rebelforce/projects/TinkerTab/tests/host/build_review/test_openrouter_sse"
+Directory: /home/rebelforce/projects/TinkerTab/tests/host/build_review
+"openrouter_sse" start time: May 30 03:02 +04
+Output:
+----------------------------------------------------------
+test_openrouter_sse: single_event OK
+test_openrouter_sse: multi_event_single_feed OK
+test_openrouter_sse: split_across_feeds OK
+test_openrouter_sse: done_sentinel OK
+test_openrouter_sse: crlf_lines OK
+test_openrouter_sse: comment_lines_dropped OK
+test_openrouter_sse: overflow_drops_then_resumes OK
+test_openrouter_sse: large_50kb_line_fits OK
+test_openrouter_sse: optional_space_after_colon OK
+test_openrouter_sse: 21 assertions, 9 tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"openrouter_sse" end time: May 30 03:02 +04
+"openrouter_sse" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/4 Testing: spring_anim
+3/4 Test: spring_anim
+Command: "/home/rebelforce/projects/TinkerTab/tests/host/build_review/test_spring_anim"
+Directory: /home/rebelforce/projects/TinkerTab/tests/host/build_review
+"spring_anim" start time: May 30 03:02 +04
+Output:
+----------------------------------------------------------
+test_spring_anim: init_state_is_done OK
+test_spring_anim: retarget_zero_distance_short_circuits OK
+test_spring_anim: snappy_converges_under_500ms OK
+test_spring_anim: bouncy_overshoots OK
+test_spring_anim: smooth_no_overshoot OK
+test_spring_anim: max_elapsed_bailout OK
+test_spring_anim: done_is_idempotent OK
+test_spring_anim: zero_mass_clamped_no_crash OK
+test_spring_anim: smoke_runner_all_presets_converge OK
+test_spring_anim: 18 assertions, 9 tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"spring_anim" end time: May 30 03:02 +04
+"spring_anim" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/4 Testing: voice_dictation
+4/4 Test: voice_dictation
+Command: "/home/rebelforce/projects/TinkerTab/tests/host/build_review/test_voice_dictation"
+Directory: /home/rebelforce/projects/TinkerTab/tests/host/build_review
+"voice_dictation" start time: May 30 03:02 +04
+Output:
+----------------------------------------------------------
+voice_dictation: refused TRANSCRIBING -> RECORDING
+voice_dictation: refused SAVED -> RECORDING
+ok  87 checks passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"voice_dictation" end time: May 30 03:02 +04
+"voice_dictation" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: May 30 03:02 +04

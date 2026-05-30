@@ -1,0 +1,7 @@
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/test_md_strip.dir
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/test_openrouter_sse.dir
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/test_spring_anim.dir
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/test_voice_dictation.dir
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/test.dir
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/edit_cache.dir
+/home/rebelforce/projects/TinkerTab/tests/host/build_review/CMakeFiles/rebuild_cache.dir
