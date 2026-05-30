@@ -135,6 +135,15 @@ void voice_dictation_set_note_slot(int slot);
 /* Snapshot current state.  Thread-safe (returns a copy under lock). */
 dict_event_t voice_dictation_get(void);
 
+/* Lock-free read of JUST the FSM state enum — no mutex, never blocks.
+ * MUST be used (instead of voice_dictation_get().state) by any caller in a
+ * render-hot-path or high-frequency poll loop: the orb paint (every LVGL
+ * frame), the vision task loop, the wake-stream pump.  voice_dictation_get()
+ * acquires the recursive mutex with portMAX_DELAY; taking it every frame wedged
+ * ui_task on the dictation lock during the dictation-stop contention burst and
+ * tripped the task-WDT (2026-05-30 coredump). */
+dict_state_t voice_dictation_state(void);
+
 /* Human-readable state/reason names — useful for logs, debug endpoint,
  * and live verification.  Static strings; do not free. */
 const char *voice_dictation_state_name(dict_state_t s);

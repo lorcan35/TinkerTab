@@ -2616,9 +2616,14 @@ bool ui_orb_pipeline_active(void) {
     * cached s_pipeline.  s_pipeline is updated by the LVGL-async
     * subscriber, which runs AFTER any synchronous caller that resets
     * the pipeline state (e.g., orb_click_cb's pipeline-clear-before-Ask
-    * path).  Reading voice_dictation_get() avoids a window where
+    * path).  Reading the authoritative FSM avoids a window where
     * is-pipeline-active returns stale true and suppresses the Ask
-    * overlay's chrome. */
-   dict_event_t e = voice_dictation_get();
-   return e.state != DICT_IDLE;
+    * overlay's chrome.
+    *
+    * Lock-free read: this runs every LVGL frame (orb paint).  Calling
+    * voice_dictation_get() here took the dictation mutex (portMAX_DELAY)
+    * on every frame and wedged ui_task on the lock during the dictation-
+    * stop contention burst (task-WDT, 2026-05-30 coredump).  We only need
+    * the state enum, so use the lock-free voice_dictation_state(). */
+   return voice_dictation_state() != DICT_IDLE;
 }

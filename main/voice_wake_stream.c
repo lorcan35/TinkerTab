@@ -115,7 +115,7 @@ static void wake_stream_task(void *arg) {
        * with the transcript; resuming the pump there spammed failing WS sends +
        * scheduler thrash that starved ui_task past the task-WDT (2026-05-30
        * coredump).  Bounded by the FSM stuck-watchdog (FSM back to IDLE <=60s). */
-      bool can_pump = s_armed && ws_live && quiescent_state(s_voice_state) && voice_dictation_get().state == DICT_IDLE;
+      bool can_pump = s_armed && ws_live && quiescent_state(s_voice_state) && voice_dictation_state() == DICT_IDLE;
 
       /* CRITICAL — never touch I2S while mic_task is using it.  The
        * I2S RX driver is not reentrant; two readers crash the kernel
@@ -157,7 +157,7 @@ static void wake_stream_task(void *arg) {
        * — mic_task is now the owner.  Also re-check voice_mic_is_active
        * to catch the race where mic_task spun up between our pre-check
        * and the actual read. */
-      if (!quiescent_state(s_voice_state) || voice_mic_is_active() || voice_dictation_get().state != DICT_IDLE) {
+      if (!quiescent_state(s_voice_state) || voice_mic_is_active() || voice_dictation_state() != DICT_IDLE) {
          /* Never bare-continue — a tight no-delay loop here (state flapping at
           * a turn boundary) thrashes the scheduler.  Back off a tick. */
          vTaskDelay(pdMS_TO_TICKS(20));

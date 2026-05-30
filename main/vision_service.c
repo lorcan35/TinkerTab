@@ -483,7 +483,7 @@ static void vision_service_task(void *arg) {
        * does NOT self-decay (so gating on !=IDLE would strand vision off until
        * the W3 stuck-watchdog; gating on the active states resumes immediately
        * at the terminal). */
-      dict_state_t ds = voice_dictation_get().state;
+      dict_state_t ds = voice_dictation_state(); /* lock-free — never block the vision loop on the FSM mutex */
       if (ds == DICT_RECORDING || ds == DICT_UPLOADING || ds == DICT_TRANSCRIBING) {
          s_state.frames_yielded++;
          vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));

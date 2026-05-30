@@ -59,6 +59,16 @@ typedef struct {
 static dict_event_t s_event;
 static dict_sub_t s_subs[DICT_MAX_SUBSCRIBERS];
 static SemaphoreHandle_t s_lock = NULL;
+
+/* Lock-free fast snapshot of JUST the FSM state enum.  Written by the sole
+ * writer (voice_dictation_set_state) under the lock; read WITHOUT the lock by
+ * the render-hot-path (orb paint, every LVGL frame) and high-frequency pollers
+ * (vision, wake-stream).  A dict_state_t is a single naturally-aligned word, so
+ * the store/load is atomic on the P4 (RISC-V) — `volatile` just stops the
+ * compiler caching/reordering it.  This severs the blocking dependency that
+ * wedged ui_task in dict_lock(portMAX_DELAY) during the stop-resolution
+ * contention burst and tripped the task-WDT (2026-05-30 coredump). */
+static volatile dict_state_t s_state_fast = DICT_IDLE;
 static esp_timer_handle_t s_dict_decay_timer = NULL; /* one-shot, lazily created */
 static esp_timer_handle_t s_dict_stuck_timer = NULL; /* W3 stuck-watchdog one-shot */
 
@@ -88,6 +98,7 @@ void voice_dictation_init(void) {
    dict_lock();
    memset(&s_event, 0, sizeof(s_event));
    s_event.state = DICT_IDLE;
+   s_state_fast = DICT_IDLE;
    s_event.fail_reason = DICT_FAIL_NONE;
    s_event.note_slot = -1;
    memset(s_subs, 0, sizeof(s_subs));
@@ -341,6 +352,7 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, 
    }
 
    s_event.state = new_state;
+   s_state_fast = new_state; /* publish to the lock-free fast readers */
    s_event.fail_reason = (new_state == DICT_FAILED) ? fail_reason : DICT_FAIL_NONE;
    s_event.last_change_ms = now_ms;
 
@@ -481,6 +493,15 @@ dict_event_t voice_dictation_get(void) {
    dict_unlock();
    return snapshot;
 }
+
+/* Lock-free read of just the current FSM state.  Use this — NOT
+ * voice_dictation_get().state — from any render-hot-path or high-frequency
+ * poller (orb paint, vision loop, wake-stream pump).  voice_dictation_get()
+ * takes the recursive mutex with portMAX_DELAY; calling it every LVGL frame
+ * makes ui_task block on the dictation lock under the stop-resolution
+ * contention burst (task-WDT, 2026-05-30).  This is a single atomic word read,
+ * never blocks, and is exactly what the .state != DICT_IDLE checks need. */
+dict_state_t voice_dictation_state(void) { return s_state_fast; }
 
 /* Pure-function name lookups — no shared state touched, no lock needed.
  * Skipping the lock here is the deliberate choice: callers from log/
