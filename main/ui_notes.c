@@ -100,6 +100,18 @@ typedef enum {
     NOTE_STATE_FAILED,      /* transcription failed — can retry */
 } note_state_t;
 
+/* W4: per-note enrichment lifecycle, independent of the orb/FSM.  Surfaced as a
+ * small badge on the row until ENRICH_DONE.  Mirrors what Dragon reports:
+ *   transcribing…  →  summarizing…  →  done  (badge clears)
+ *                  ↘  pending (Dragon away)  ↗  (auto-finishes on reconnect) */
+typedef enum {
+   ENRICH_NONE = 0,     /* not an in-flight dictation row (plain note) */
+   ENRICH_TRANSCRIBING, /* audio captured, transcript not final */
+   ENRICH_SUMMARIZING,  /* transcript final, title/summary pending */
+   ENRICH_PENDING,      /* Dragon unreachable; auto-finishes on reconnect */
+   ENRICH_DONE,         /* title + summary present — badge clears */
+} enrich_state_t;
+
 /* Reason a note ended up in NOTE_STATE_FAILED — surfaced as a chip on
  * the list row instead of the old generic "FAIL".  Persist+restore as the
  * "fr" JSON key. */
@@ -185,6 +197,10 @@ typedef struct {
     uint8_t year;     /* year offset from 2000 */
     bool used;
     bool needs_sync;  /* S6: true if not yet synced to Dragon */
+    /* ── W4 optimistic-save + reconcile-by-turn_id ── */
+    enrich_state_t enrich;          /* ENRICH_NONE for non-dictation rows */
+    char turn_id[DICT_TURN_ID_LEN]; /* "" unless this is a dictation row */
+    char note_id[DICT_NOTE_ID_LEN]; /* Dragon's authoritative id once adopted */
 } note_entry_t;
 
 /* Wave 20 (closes #330): s_notes was a BSS-static array (~17.7 KB) that
@@ -547,6 +563,11 @@ static void notes_save(void)
            cJSON_AddStringToObject(pc, "p", n->pending.payload);
            cJSON_AddItemToObject(obj, "pc", pc);
         }
+        /* W4: persist enrichment state + identity so a reboot mid-enrichment
+         * keeps the badge + can still reconcile a late note_created by turn_id. */
+        if (n->enrich != ENRICH_NONE) cJSON_AddNumberToObject(obj, "en", (int)n->enrich);
+        if (n->turn_id[0]) cJSON_AddStringToObject(obj, "tid", n->turn_id);
+        if (n->note_id[0]) cJSON_AddStringToObject(obj, "nid", n->note_id);
         cJSON_AddItemToArray(arr, obj);
     }
 
@@ -741,6 +762,19 @@ static void notes_load(void)
               strncpy(n->pending.payload, jp->valuestring, PENDING_PAYLOAD_LEN - 1);
               n->pending.payload[PENDING_PAYLOAD_LEN - 1] = '\0';
            }
+        }
+        /* W4: restore enrichment state + identity. */
+        cJSON *jen = cJSON_GetObjectItem(item, "en");
+        n->enrich = cJSON_IsNumber(jen) ? (enrich_state_t)(int)jen->valuedouble : ENRICH_NONE;
+        const char *jtid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "tid"));
+        if (jtid) {
+           strncpy(n->turn_id, jtid, DICT_TURN_ID_LEN - 1);
+           n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+        }
+        const char *jnid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "nid"));
+        if (jnid) {
+           strncpy(n->note_id, jnid, DICT_NOTE_ID_LEN - 1);
+           n->note_id[DICT_NOTE_ID_LEN - 1] = '\0';
         }
         n->used = true;
         loaded++;
