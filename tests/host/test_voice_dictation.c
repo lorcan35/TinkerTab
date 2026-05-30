@@ -604,6 +604,54 @@ static int test_offline_failed_decays_to_idle(void) {
    return 0;
 }
 
+static int test_stuck_watchdog_resolves_pending_ws(void) {
+   /* W3: a WS turn Dragon never resolves (pending forever) is bounded — after
+    * DICT_STUCK_MS the watchdog clears pending + drives a decaying FAILED, so
+    * the FSM always returns to IDLE (the WS-FAILED-pending-forever observed
+    * live 2026-05-30). */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* pending=true, arms stuck */
+   CHECK(voice_dictation_get().resolution_pending);
+
+   host_clock_advance_ms(30000); /* < 60 s — not yet */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_TRANSCRIBING);
+
+   host_clock_advance_ms(31000); /* total 61 s > DICT_STUCK_MS */
+   tab5_worker_pump();
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_FAILED);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NETWORK);
+   CHECK(!e.resolution_pending); /* cleared → now eligible to decay */
+
+   host_clock_advance_ms(6000); /* > DICT_DECAY_FAILED_MS */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_stuck_watchdog_disarmed_on_resolution(void) {
+   /* If Dragon DOES resolve in time, the watchdog must not later fire a
+    * spurious FAILED. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   char id[DICT_TURN_ID_LEN];
+   strncpy(id, tid, sizeof(id));
+   id[sizeof(id) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+   CHECK(voice_dictation_resolve_if_current(id, DICT_SAVED, DICT_FAIL_NONE, 3000)); /* resolves, disarms stuck */
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+
+   host_clock_advance_ms(70000); /* well past DICT_STUCK_MS */
+   tab5_worker_pump();
+   /* SAVED self-decayed to IDLE; the watchdog did NOT fire a spurious FAILED. */
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
 static int test_failed_to_saved_refused_when_not_pending(void) {
    /* No WS resolution pending → a stray SAVED must NOT resurrect a FAILED. */
    voice_dictation_init();
@@ -653,6 +701,8 @@ int main(void) {
    if (test_begin_same_origin_keeps_turn_id()) return 1;
    if (test_failed_to_saved_cross_turn_dropped()) return 1;
    if (test_offline_failed_decays_to_idle()) return 1;
+   if (test_stuck_watchdog_resolves_pending_ws()) return 1;
+   if (test_stuck_watchdog_disarmed_on_resolution()) return 1;
    if (test_failed_to_saved_refused_when_not_pending()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;

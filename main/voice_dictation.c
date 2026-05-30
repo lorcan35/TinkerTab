@@ -39,6 +39,15 @@
 #define DICT_DECAY_CANCELLED_MS 1500
 #define DICT_DECAY_RETRY_MS 250 /* re-arm delay when the worker queue is full */
 
+/* W3 stuck-watchdog: a WS turn awaiting a Dragon terminal (resolution_pending)
+ * is deliberately held against self-decay so a 60-90s-late summary can still
+ * correct it.  But if Dragon NEVER responds (crash / dropped WS), that hold
+ * would be permanent (the WS-FAILED-pending-forever observed live 2026-05-30).
+ * This bounds it: DICT_STUCK_MS after pending is set, give up — clear pending
+ * and drive a decaying FAILED — so every WS turn resolves and returns to IDLE.
+ * Replaces the voice_ws_proto 45s grace timer's responsibility (FSM-owned). */
+#define DICT_STUCK_MS 60000
+
 #define DICT_IS_TERMINAL(s) ((s) == DICT_SAVED || (s) == DICT_FAILED || (s) == DICT_CANCELLED)
 
 typedef struct {
@@ -51,6 +60,7 @@ static dict_event_t s_event;
 static dict_sub_t s_subs[DICT_MAX_SUBSCRIBERS];
 static SemaphoreHandle_t s_lock = NULL;
 static esp_timer_handle_t s_dict_decay_timer = NULL; /* one-shot, lazily created */
+static esp_timer_handle_t s_dict_stuck_timer = NULL; /* W3 stuck-watchdog one-shot */
 
 /* Lock / unlock the module-wide recursive mutex.  On host these collapse
  * to no-ops via the semphr.h shim, so the test suite exercises the same
@@ -178,6 +188,52 @@ static void dict_arm_decay_locked(void) {
    esp_timer_start_once(s_dict_decay_timer, (uint64_t)ms * 1000);
 }
 
+/* W3 stuck-watchdog worker job: Dragon never resolved a pending WS turn within
+ * DICT_STUCK_MS — give up.  Clears pending (so the FSM can decay) and drives a
+ * decaying FAILED/NETWORK if not already terminal; if already terminal (e.g. a
+ * timeout-FAILED held by pending), re-arms its now-eligible decay.  Single lock
+ * hold (same TOCTOU discipline as decay). */
+static void dict_stuck_apply_job(void *arg) {
+   (void)arg;
+   dict_lock();
+   if (s_event.resolution_pending) {
+      s_event.resolution_pending = false;
+      if (!DICT_IS_TERMINAL(s_event.state)) {
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
+      } else {
+         dict_arm_decay_locked();
+      }
+   }
+   dict_unlock();
+}
+
+static void dict_stuck_timer_cb(void *arg) {
+   (void)arg;
+   /* Same hand-off discipline as decay: never touch the dispatch path from the
+    * esp_timer task; enqueue onto the worker, re-arm on a full queue. */
+   if (tab5_worker_enqueue(dict_stuck_apply_job, NULL, "dict_stuck") != ESP_OK) {
+      if (s_dict_stuck_timer) {
+         esp_timer_start_once(s_dict_stuck_timer, (uint64_t)DICT_DECAY_RETRY_MS * 1000);
+      }
+   }
+}
+
+/* MUST hold dict_lock().  Arm the stuck-watchdog while a resolution is pending;
+ * disarm otherwise. */
+static void dict_arm_stuck_locked(void) {
+   if (!s_dict_stuck_timer) {
+      const esp_timer_create_args_t args = {
+          .callback = dict_stuck_timer_cb,
+          .name = "dict_stuck",
+      };
+      if (esp_timer_create(&args, &s_dict_stuck_timer) != ESP_OK) return;
+   }
+   esp_timer_stop(s_dict_stuck_timer);
+   if (s_event.resolution_pending) {
+      esp_timer_start_once(s_dict_stuck_timer, (uint64_t)DICT_STUCK_MS * 1000);
+   }
+}
+
 /* Return true if going from `cur` to `next` is a valid transition.
  * Forward through the pipeline + any → FAILED + SAVED/FAILED/IDLE → IDLE.
  * Bounces (e.g. RECORDING → RECORDING) are filtered by the dup check
@@ -291,6 +347,10 @@ void voice_dictation_set_state(dict_state_t new_state, dict_fail_t fail_reason, 
    /* Self-liveness: arm a one-shot to decay this terminal back to IDLE (unless
     * a resolution is still pending); disarm for non-terminal states. */
    dict_arm_decay_locked();
+   /* W3: arm/disarm the stuck-watchdog from the (now-updated) resolution_pending
+    * flag so a pending WS turn Dragon never answers still resolves in
+    * DICT_STUCK_MS. */
+   dict_arm_stuck_locked();
 
    dict_dispatch_locked();
    dict_unlock();
