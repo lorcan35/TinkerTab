@@ -420,7 +420,7 @@ static void transcription_queue_task(void *arg) {
          if (!s_notes[i].audio_path[0]) {
             s_notes[i].state = NOTE_STATE_FAILED;
             s_notes[i].fail_reason = NOTE_FAIL_NO_AUDIO;
-            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, (uint32_t)(esp_timer_get_time() / 1000));
+            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, voice_dictation_now_ms());
             snprintf(s_notes[i].text, MAX_NOTE_LEN, "(No audio file)");
             notes_save();
             continue;
@@ -456,7 +456,7 @@ static void transcription_queue_task(void *arg) {
          ESP_LOGW(TAG, "Cannot open WAV: %s", n->audio_path);
          n->state = NOTE_STATE_FAILED;
          n->fail_reason = NOTE_FAIL_NO_AUDIO;
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, voice_dictation_now_ms());
          notes_save();
          continue;
       }
@@ -470,7 +470,7 @@ static void transcription_queue_task(void *arg) {
          fclose(f);
          n->state = NOTE_STATE_FAILED;
          n->fail_reason = NOTE_FAIL_NO_AUDIO;
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, voice_dictation_now_ms());
          snprintf(n->text, MAX_NOTE_LEN, "(Empty recording)");
          notes_save();
          continue;
@@ -523,7 +523,7 @@ static void transcription_queue_task(void *arg) {
          fclose(f);
          n->state = NOTE_STATE_FAILED;
          n->fail_reason = NOTE_FAIL_NETWORK;
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
          notes_save();
          continue;
       }
@@ -546,7 +546,7 @@ static void transcription_queue_task(void *arg) {
          fclose(f);
          n->state = NOTE_STATE_FAILED;
          n->fail_reason = NOTE_FAIL_NETWORK;
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
          notes_save();
          continue;
       }
@@ -572,7 +572,7 @@ static void transcription_queue_task(void *arg) {
       int status = esp_http_client_get_status_code(client);
 
       /* PR 1: TRANSCRIBING — request fully sent, Dragon now running STT. */
-      voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, voice_dictation_now_ms());
 
       if (status == 200 && content_len > 0 && content_len < 8192) {
          char *resp = malloc(content_len + 1);
@@ -590,13 +590,13 @@ static void transcription_queue_task(void *arg) {
                   n->state = NOTE_STATE_TRANSCRIBED;
                   n->fail_reason = NOTE_FAIL_NONE;
                   if (n->enrich != ENRICH_NONE) n->enrich = ENRICH_DONE; /* W4: offline auto-finish — badge clears */
-                  voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+                  voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, voice_dictation_now_ms());
                   ESP_LOGI(TAG, "Transcription done [%d]: %.60s", slot, text);
                } else {
                   snprintf(n->text, MAX_NOTE_LEN, "(Empty transcription)");
                   n->state = NOTE_STATE_FAILED;
                   n->fail_reason = NOTE_FAIL_EMPTY;
-                  voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, (uint32_t)(esp_timer_get_time() / 1000));
+                  voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, voice_dictation_now_ms());
                }
                cJSON_Delete(root);
             }

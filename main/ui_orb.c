@@ -2425,8 +2425,6 @@ static const char *fail_reason_caption(dict_fail_t r) {
          return "NO AUDIO";
       case DICT_FAIL_TOO_LONG:
          return "TOO LONG (5 min cap)";
-      case DICT_FAIL_CANCELLED:
-         return "CANCELLED";
       default:
          return "FAIL";
    }

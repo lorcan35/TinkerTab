@@ -928,13 +928,13 @@ static void mic_capture_task(void *arg)
                        s_current_turn_id);
               esp_err_t cap_stop_err = voice_ws_send_text(cap_stop_frame);
               if (cap_stop_err == ESP_OK) {
-                 voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+                 voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, voice_dictation_now_ms());
                  voice_set_state(VOICE_STATE_PROCESSING, "dictation_cap");
               } else {
                  /* WS gone — mirror voice_stop_listening's connection-lost
                   * branch: surface NETWORK + drop to IDLE so we don't wedge. */
                  ESP_LOGW(TAG, "Cap stop frame failed — connection lost");
-                 voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+                 voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
                  voice_set_state(VOICE_STATE_IDLE, "dictation_cap_no_ws");
               }
               break;
@@ -1941,7 +1941,7 @@ esp_err_t voice_start_dictation(void)
     /* PR 1: drive the dictation pipeline state machine.  The pipeline
      * is a separate higher-level state; the existing voice_state_t
      * (LISTENING/PROCESSING/READY) is unchanged. */
-    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, voice_dictation_now_ms());
 
     voice_set_state(VOICE_STATE_LISTENING, offline ? "offline" : NULL);
     return ESP_OK;
@@ -2164,7 +2164,7 @@ esp_err_t voice_stop_listening(void)
        * silently stuck in DICT_RECORDING.  Sprint D's disconnect hook
        * in voice_ws_proto.c may not fire before this return path. */
       if (voice_get_mode() == VOICE_MODE_DICTATE) {
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
       }
       voice_set_state(VOICE_STATE_IDLE, "Connection lost");
       return ESP_FAIL;
@@ -2176,7 +2176,7 @@ esp_err_t voice_stop_listening(void)
      * a dictation stop (e.g. voice-ask path, which doesn't touch the
      * dictation pipeline at all). */
     if (voice_get_mode() == VOICE_MODE_DICTATE) {
-       voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+       voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, voice_dictation_now_ms());
        /* W4 (D-UX1): capture is done the instant we send `stop`.  Quiet toast,
         * and the device returns to READY — NOT PROCESSING — so the orb snaps back
         * to idle and the user is free immediately; transcription + summary run in

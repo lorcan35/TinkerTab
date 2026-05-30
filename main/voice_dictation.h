@@ -51,20 +51,19 @@ typedef enum {
 
 typedef enum {
    DICT_FAIL_NONE = 0,
-   DICT_FAIL_AUTH,      /* Dragon returned 401 / 403 */
-   DICT_FAIL_NETWORK,   /* Other HTTP error / WS disconnect / open failed */
-   DICT_FAIL_EMPTY,     /* Dragon returned 200 with empty STT text */
-   DICT_FAIL_NO_AUDIO,  /* WAV missing or unreadable / Dragon got no PCM */
-   DICT_FAIL_TOO_LONG,  /* recording exceeded the hard cap.  The 4-hr
-                         * dictation cap (voice.c MAX_RECORD_FRAMES_DICT,
-                         * = 720000 frames; was wrongly documented as
-                         * "5-min" pre-2026-05-29) now clean-stops to
-                         * SAVED instead of failing, so this reason is
-                         * reserved — kept for the reason taxonomy + the
-                         * /dictation_pipeline debug contract + orb render. */
-   DICT_FAIL_CANCELLED, /* DEPRECATED (W1): cancel is now the DICT_CANCELLED
-                         * *state* with reason DICT_FAIL_NONE.  Retained for ABI
-                         * + existing tests through W4; removed in W5. */
+   DICT_FAIL_AUTH,     /* Dragon returned 401 / 403 */
+   DICT_FAIL_NETWORK,  /* Other HTTP error / WS disconnect / open failed */
+   DICT_FAIL_EMPTY,    /* Dragon returned 200 with empty STT text */
+   DICT_FAIL_NO_AUDIO, /* WAV missing or unreadable / Dragon got no PCM */
+   DICT_FAIL_TOO_LONG, /* recording exceeded the hard cap.  The 4-hr
+                        * dictation cap (voice.c MAX_RECORD_FRAMES_DICT,
+                        * = 720000 frames; was wrongly documented as
+                        * "5-min" pre-2026-05-29) now clean-stops to
+                        * SAVED instead of failing, so this reason is
+                        * reserved — kept for the reason taxonomy + the
+                        * /dictation_pipeline debug contract + orb render. */
+   /* W5: DICT_FAIL_CANCELLED removed — cancel is the DICT_CANCELLED *state*
+    * (reason DICT_FAIL_NONE) since W1; the reason value had no producers. */
 } dict_fail_t;
 
 /* Which producer owns the in-flight dictation turn.  One global FSM is

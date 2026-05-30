@@ -63,7 +63,7 @@ static void tx_grace_timer_fired(void *arg) {
    dict_event_t e = voice_dictation_get();
    if (e.state == DICT_TRANSCRIBING) {
       ESP_LOGW(TAG, "TRANSCRIBING grace window expired — flipping pipeline to FAILED/NETWORK");
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
    } else {
       ESP_LOGI(TAG, "TRANSCRIBING grace timer fired but pipeline already resolved (state=%s) — no-op",
                voice_dictation_state_name(e.state));
@@ -80,7 +80,7 @@ void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms) {
       };
       if (esp_timer_create(&args, &s_tx_grace_timer) != ESP_OK) {
          ESP_LOGE(TAG, "Failed to create TRANSCRIBING grace timer; falling back to immediate FAIL");
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
          return;
       }
    }
@@ -1702,7 +1702,7 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
              * transport is the /api/v1/transcribe POST, unaffected by a voice-WS
              * drop — failing it here would wrongly mark it FAILED. */
             if ((cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING) && cur_de.origin == DICT_ORIGIN_WS) {
-               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
             } else if (cur_dict == DICT_TRANSCRIBING) {
                extern void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms);
                voice_ws_arm_transcribe_grace_timer(45000);

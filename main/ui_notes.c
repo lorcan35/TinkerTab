@@ -2627,7 +2627,7 @@ static void cb_proc_close_tap(lv_event_t *e) {
        * just dismiss the row by snapping back to IDLE.  The dictation
        * itself can't really be cancelled mid-transcribe, but the row
        * shouldn't be sticky in the user's face. */
-      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
 }
 

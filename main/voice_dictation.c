@@ -569,8 +569,6 @@ const char *voice_dictation_fail_name(dict_fail_t f) {
          return "NO_AUDIO";
       case DICT_FAIL_TOO_LONG:
          return "TOO_LONG";
-      case DICT_FAIL_CANCELLED:
-         return "CANCELLED";
    }
    return "UNKNOWN";
 }
@@ -592,8 +590,6 @@ const char *voice_dictation_fail_caption(dict_fail_t f) {
          return "No audio captured";
       case DICT_FAIL_TOO_LONG:
          return "Recording too long";
-      case DICT_FAIL_CANCELLED:
-         return "Cancelled";
    }
    return "Failed";
 }
