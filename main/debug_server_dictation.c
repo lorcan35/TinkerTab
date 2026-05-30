@@ -82,6 +82,14 @@ static esp_err_t pipeline_handler(httpd_req_t *req) {
    cJSON_AddNumberToObject(root, "stopped_ms", (double)e.stopped_ms);
    cJSON_AddNumberToObject(root, "last_change_ms", (double)e.last_change_ms);
    cJSON_AddNumberToObject(root, "note_slot", (double)e.note_slot);
+   /* W1/W2: session identity + liveness (additive — existing keys unchanged). */
+   cJSON_AddStringToObject(root, "turn_id", e.turn_id);
+   const char *origin_str = (e.origin == DICT_ORIGIN_WS)        ? "ws"
+                            : (e.origin == DICT_ORIGIN_OFFLINE) ? "offline"
+                                                                : "none";
+   cJSON_AddStringToObject(root, "origin", origin_str);
+   cJSON_AddBoolToObject(root, "resolution_pending", e.resolution_pending);
+   cJSON_AddStringToObject(root, "note_id", e.note_id);
    cJSON_AddNumberToObject(root, "now_ms", (double)(esp_timer_get_time() / 1000));
 
    char *json = cJSON_PrintUnformatted(root);
