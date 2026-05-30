@@ -913,12 +913,18 @@ void voice_ws_proto_handle_text(const char *data, int len) {
        * follow-up _postprocessing fires it'll re-set the caption a
        * few ms later anyway, no UI flicker visible. */
       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
-      voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
-      /* W1 (S2-7): cancel is the CANCELLED terminal (neutral, self-decays),
-       * not a FAILED/CANCELLED fail-reason that renders the rose retry orb. */
-      voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-      /* #537: discard the pipeline-armed WAV — no transcript is coming. */
-      tab5_lv_async_call((lv_async_cb_t)ui_notes_pipeline_cancel_recording, NULL);
+      /* W2 (review F2): turn_id-gate like every other dictation terminal.
+       * On a rapid stop+restart Dragon cancels the PRIOR turn's post-process
+       * and stamps this frame with the ABANDONED turn's id — it must NOT drive
+       * the live successor turn to CANCELLED or discard its WAV.  Drop the WAV
+       * only when the cancellation actually applies to the current turn. */
+      const char *ppc_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
+      if (voice_dictation_resolve_if_current(ppc_turn, DICT_CANCELLED, DICT_FAIL_NONE,
+                                             (uint32_t)(esp_timer_get_time() / 1000))) {
+         voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
+         /* #537: discard the pipeline-armed WAV — no transcript is coming. */
+         tab5_lv_async_call((lv_async_cb_t)ui_notes_pipeline_cancel_recording, NULL);
+      }
    } else if (strcmp(type_str, "dictation_summary") == 0) {
       cJSON *title = cJSON_GetObjectItem(root, "title");
       cJSON *summary = cJSON_GetObjectItem(root, "summary");

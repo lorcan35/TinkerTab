@@ -1915,6 +1915,10 @@ esp_err_t voice_start_dictation(void)
            * stop-side — finalize the just-begun turn to FAILED/NETWORK instead
            * of leaving the FSM stuck at RECORDING. */
           voice_dictation_finalize(DICT_FAILED, DICT_FAIL_NETWORK, s_current_turn_id);
+          /* review F5: revert the mode (set at the top of voice_start_dictation)
+           * like the busy-refuse path, else the device looks READY but is still
+           * in VOICE_MODE_DICTATE and the next mic tap routes as dictation. */
+          voice_modes_set_internal(VOICE_MODE_ASK);
           return err;
        }
     }
@@ -2153,7 +2157,7 @@ esp_err_t voice_stop_listening(void)
       }
       voice_set_state(VOICE_STATE_IDLE, "Connection lost");
       return ESP_FAIL;
-    }
+   }
 
     voice_reset_activity_timestamp();
 
@@ -2237,11 +2241,18 @@ esp_err_t voice_cancel(void)
        voice_ws_send_text(cancel_frame);
     }
 
-    /* W2 (S1-5): one chokepoint resolves the dictation FSM to CANCELLED (a
-     * no-op for a non-dictation/ask cancel where the FSM is IDLE) AND snaps
-     * voice_state — closes the "X-button doesn't resolve the pipeline" gap
-     * where cancel left voice_state coherent but the dictation FSM stuck. */
-    voice_dictation_finalize(DICT_CANCELLED, DICT_FAIL_NONE, voice_dictation_get().turn_id);
+    /* W2 (S1-5): finalize the dictation FSM to CANCELLED, but ONLY when a
+     * dictation turn is actually live (review F6: an ask-mode / already-terminal
+     * cancel would otherwise fire a spurious "refused IDLE->CANCELLED").  For a
+     * live dictation, de.turn_id is in lockstep with s_current_turn_id, so
+     * finalize resolves the live turn (closes the "X-button doesn't resolve the
+     * pipeline" gap); otherwise just snap voice_state. */
+    dict_event_t de = voice_dictation_get();
+    if (de.state == DICT_RECORDING || de.state == DICT_UPLOADING || de.state == DICT_TRANSCRIBING) {
+       voice_dictation_finalize(DICT_CANCELLED, DICT_FAIL_NONE, de.turn_id);
+    } else {
+       voice_set_state(ws_live ? VOICE_STATE_READY : VOICE_STATE_IDLE, "cancelled");
+    }
 
     /* TT #625 Wave A.1 (R2) — fix the "can't stop the conversation" loop.
      * The wakeword module runs its own state machine that drains K144 ASR
