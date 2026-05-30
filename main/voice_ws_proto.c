@@ -883,15 +883,20 @@ void voice_ws_proto_handle_text(const char *data, int len) {
       strncpy(buf, m, sizeof(buf) - 1);
       buf[sizeof(buf) - 1] = '\0';
       voice_async_toast(strdup(buf));
-      voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
-      voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-      /* Surface the dictation as a local Tab5 note (Path B: FAB / home
-       * Dictate chip — Path A's local "+ NEW VOICE NOTE" slot already
-       * owns its own row; ui_notes_add_dictated_async no-ops if a local
-       * slot is already active so we don't duplicate). */
-      const char *transcript = voice_get_dictation_text();
-      if (transcript && transcript[0]) {
-         ui_notes_add_dictated_async(transcript);
+      /* W2 (S2-9): turn_id-gate — a stale postprocessing_error for a superseded
+       * turn must not flip voice_state or create a note for the wrong turn. */
+      const char *ppe_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
+      if (voice_dictation_resolve_if_current(ppe_turn, DICT_SAVED, DICT_FAIL_NONE,
+                                             (uint32_t)(esp_timer_get_time() / 1000))) {
+         voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
+         /* Surface the dictation as a local Tab5 note (Path B: FAB / home
+          * Dictate chip — Path A's local "+ NEW VOICE NOTE" slot already
+          * owns its own row; ui_notes_add_dictated_async no-ops if a local
+          * slot is already active so we don't duplicate). */
+         const char *transcript = voice_get_dictation_text();
+         if (transcript && transcript[0]) {
+            ui_notes_add_dictated_async(transcript);
+         }
       }
    } else if (strcmp(type_str, "dictation_postprocessing_cancelled") == 0) {
       /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
@@ -926,13 +931,21 @@ void voice_ws_proto_handle_text(const char *data, int len) {
          s_dictation_summary[sizeof(s_dictation_summary) - 1] = '\0';
       }
       ESP_LOGI(TAG, "Dictation summary: \"%s\"", s_dictation_title);
-      voice_set_state(VOICE_STATE_READY, "dictation_summary");
-
-      /* PR 1: pipeline transition.  Non-empty summary → SAVED; empty
-       * both → FAILED(EMPTY). */
+      const char *summ_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
       const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-      if (s_dictation_title[0] || s_dictation_summary[0]) {
-         voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, now);
+      bool summ_non_empty = (s_dictation_title[0] || s_dictation_summary[0]);
+      /* W2 (S2-8/S2-9): turn_id-gate the resolution.  A late summary for a
+       * superseded turn (back-to-back dictation) is DROPPED — it can't flip
+       * voice_state or create a note for the wrong turn.  Non-empty → SAVED;
+       * empty both → FAILED(EMPTY). */
+      bool summ_applied = voice_dictation_resolve_if_current(summ_turn, summ_non_empty ? DICT_SAVED : DICT_FAILED,
+                                                             summ_non_empty ? DICT_FAIL_NONE : DICT_FAIL_EMPTY, now);
+      if (!summ_applied) {
+         ESP_LOGW(TAG, "Dropped stale dictation_summary (turn_id=%s)", summ_turn ? summ_turn : "-");
+      } else {
+         voice_set_state(VOICE_STATE_READY, "dictation_summary");
+      }
+      if (summ_applied && summ_non_empty) {
          /* PR 3 follow-up: surface the dictation as a local Tab5 note
           * so it appears on the Notes timeline.  Path A (local
           * "+ NEW VOICE NOTE" → ui_notes_start_recording) already owns
@@ -985,8 +998,6 @@ void voice_ws_proto_handle_text(const char *data, int len) {
                ui_notes_attach_pending_chip_async(kind, confidence, payload_buf);
             }
          }
-      } else {
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, now);
       }
    } else if (strcmp(type_str, "note_created") == 0) {
       cJSON *nid = cJSON_GetObjectItem(root, "note_id");
@@ -1666,8 +1677,13 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
           * and the timer's pipeline-state check will skip the FAIL.
           * If the window expires with no resolution, then FAIL. */
          {
-            dict_state_t cur_dict = voice_dictation_get().state;
-            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING) {
+            dict_event_t cur_de = voice_dictation_get();
+            dict_state_t cur_dict = cur_de.state;
+            /* W2 F3: only fail a WS-origin dictation on a voice-WS disconnect.
+             * An in-flight OFFLINE REST upload is ALSO DICT_UPLOADING but its
+             * transport is the /api/v1/transcribe POST, unaffected by a voice-WS
+             * drop — failing it here would wrongly mark it FAILED. */
+            if ((cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING) && cur_de.origin == DICT_ORIGIN_WS) {
                voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
             } else if (cur_dict == DICT_TRANSCRIBING) {
                extern void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms);
