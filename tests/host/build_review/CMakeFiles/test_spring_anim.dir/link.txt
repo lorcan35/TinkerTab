@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/test_spring_anim.dir/test_spring_anim.c.o CMakeFiles/test_spring_anim.dir/home/rebelforce/projects/TinkerTab/main/spring_anim.c.o -o test_spring_anim  -lm 

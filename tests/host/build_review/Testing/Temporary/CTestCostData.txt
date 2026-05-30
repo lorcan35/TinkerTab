@@ -1,5 +1,0 @@
-md_strip 1 0.00132236
-openrouter_sse 1 0.00159301
-spring_anim 1 0.00170496
-voice_dictation 1 0.00120528
----

@@ -1,1 +1,0 @@
-/usr/bin/cc CMakeFiles/test_md_strip.dir/test_md_strip.c.o CMakeFiles/test_md_strip.dir/home/rebelforce/projects/TinkerTab/main/md_strip.c.o -o test_md_strip 
