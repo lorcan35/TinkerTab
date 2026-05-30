@@ -26,11 +26,6 @@ void sync_note_to_dragon(const char *title, const char *text);
  * unchanged; their DEFINITIONS live in dictation_notes.c.  This module includes
  * ui_notes.h so it sees those prototypes. */
 
-/* Start the standalone SD-only recording task (mic → WAV, no Dragon).  Sets
- * s_sd_rec_running = true and spawns sd_record_task.  Called from the UI's
- * cb_new_voice offline branch. */
-void dictation_sd_record_start(void);
-
 /* ── UI → engine read accessors (engine owns these statics; UI reads them
  * from the W4 optimistic-save callbacks + the dictated-async finalise path) ── */
 

@@ -4,7 +4,6 @@
  *   - Dragon REST sync (POST /api/notes)               [first increment]
  *   - SD WAV recording engine (start/stop/write, mutex) [this increment]
  *   - background transcription queue (POST /api/v1/transcribe)
- *   - standalone SD-only mic record task
  *
  * Shares the note store with ui_notes.c via ui_notes_internal.h.  The PUBLIC
  * record/transcribe entry points keep their prototypes in ui_notes.h (so
@@ -18,7 +17,6 @@
 #include <string.h>
 #include <sys/stat.h> /* mkdir / stat for the recordings dir */
 
-#include "audio.h" /* tab5_mic_read (bsp/tab5/audio.h) */
 #include "cJSON.h"
 #include "config.h" /* TAB5_VOICE_SAMPLE_RATE / TAB5_VOICE_PORT */
 #include "esp_err.h"
@@ -145,8 +143,8 @@ void ui_notes_sync_pending(void) {
 
 /* ── WAV recording engine ──────────────────────────────────────────────────
  * Records raw PCM 16 kHz mono to a WAV file on the SD card.  The mic capture
- * task (voice.c) and the standalone sd_record_task below call
- * ui_notes_write_audio() for each chunk.  Thread-safe via s_rec_mutex.
+ * task (voice.c) calls ui_notes_write_audio() for each chunk.  Thread-safe via
+ * s_rec_mutex.
  *
  * These statics stay file-static (engine-private); the UI reaches them only
  * through the dictation_* accessors declared in dictation_notes.h. */
@@ -396,7 +394,7 @@ static void transcription_queue_task(void *arg) {
 
       /* Don't process while recording or voice is active — concurrent
        * HTTP upload + WS connection exhausts DMA memory */
-      if (s_rec_file || s_sd_rec_running || s_voice_recording) continue;
+      if (s_rec_file) continue;
       voice_state_t vst = voice_get_state();
       if (vst != VOICE_STATE_IDLE && vst != VOICE_STATE_READY) continue;
 
@@ -631,86 +629,4 @@ void ui_notes_start_transcription_queue(void) {
    } else {
       ESP_LOGE(TAG, "Failed to create transcription queue task");
    }
-}
-
-/* Standalone SD-only recording task — reads mic, writes WAV, no Dragon needed */
-static TaskHandle_t s_sd_rec_task = NULL;
-
-static void sd_record_task(void *arg) {
-   ESP_LOGI(TAG, "SD recording task started (core %d)", xPortGetCoreID());
-
-   /* Allocate buffers in PSRAM */
-   const int tdm_samples = 960 * 4; /* 20ms @ 48kHz, 4 TDM channels */
-   const int mono_samples = 320;    /* 20ms @ 16kHz */
-   int16_t *tdm_buf = heap_caps_malloc(tdm_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   int16_t *mono_buf = heap_caps_malloc(mono_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-   if (!tdm_buf || !mono_buf) {
-      ESP_LOGE(TAG, "SD rec: buffer alloc failed");
-      heap_caps_free(tdm_buf);
-      heap_caps_free(mono_buf);
-      s_sd_rec_running = false;
-      s_sd_rec_task = NULL;
-      vTaskSuspend(NULL);
-      return;
-   }
-
-   int frames = 0;
-   /* 4-hr hard cap (TT #572).  Mic chunks are 20 ms (50 frames/s) so
-    * 14400 s = 720000 frames.  Original 5-min cap was a zombie-task
-    * guard (477 s zombie in audit 2026-05-14); bumped to 4 hr so
-    * meetings / podcasts / lectures fit while still preventing
-    * unbounded recording when the user forgets to stop. */
-   const int max_frames = MAX_NOTE_REC_SECS * 50;
-   while (s_sd_rec_running) {
-      esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
-      if (err != ESP_OK) {
-         if (frames == 0) {
-            ESP_LOGE(TAG, "SD rec: mic_read failed: %s", esp_err_to_name(err));
-         }
-         vTaskDelay(pdMS_TO_TICKS(5));
-         continue;
-      }
-
-      /* Downsample 48kHz TDM slot 0 → 16kHz mono */
-      int out_idx = 0;
-      for (int i = 0; i + 2 < 960 && out_idx < mono_samples; i += 3) {
-         int32_t sum = tdm_buf[i * 4] + tdm_buf[(i + 1) * 4] + tdm_buf[(i + 2) * 4];
-         mono_buf[out_idx++] = (int16_t)(sum / 3);
-      }
-
-      ui_notes_write_audio(mono_buf, out_idx);
-      frames++;
-      if (frames == 1) {
-         ESP_LOGI(TAG, "SD rec: first audio chunk written (%d samples)", out_idx);
-      }
-      if (frames % 250 == 0) { /* every 5 seconds */
-         ESP_LOGI(TAG, "SD rec: %d frames (%.1fs)", frames, frames * 0.02f);
-      }
-      if (frames >= max_frames) {
-         ESP_LOGW(TAG, "SD rec: hit %ds cap — auto-stopping", MAX_NOTE_REC_SECS);
-         s_sd_rec_running = false;
-         /* Marshal the stop onto the LVGL thread same as the manual
-          * stop path in cb_new_voice so we don't race the recording
-          * indicator or s_rec_file teardown. */
-         tab5_lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
-         break;
-      }
-   }
-
-   heap_caps_free(tdm_buf);
-   heap_caps_free(mono_buf);
-   ESP_LOGI(TAG, "SD recording task exiting");
-   s_sd_rec_task = NULL;
-   vTaskSuspend(NULL);
-}
-
-void dictation_sd_record_start(void) {
-   /* Wave 14 W14-H07: stack bumped from 4 KB to 8 KB. The task calls
-    * tab5_mic_read (I2S DMA path) then funnels through FATFS/VFS (~2-4 KB of
-    * FATFS sector buffers + libc FILE state) plus ESP_LOGI with formatted
-    * args. 4 KB trapped stack_chk_fail on long offline recordings (>20 s).
-    * 8 KB matches the voice mic task and gives comfortable headroom in
-    * PSRAM. */
-   s_sd_rec_running = true;
-   xTaskCreatePinnedToCore(sd_record_task, "sd_rec", 8192, NULL, 5, &s_sd_rec_task, 1);
 }

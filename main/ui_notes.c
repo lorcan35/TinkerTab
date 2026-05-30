@@ -658,15 +658,7 @@ static lv_obj_t *s_input_area  = NULL;
 static lv_obj_t *s_input_btn   = NULL;
 static lv_obj_t *s_search_ta   = NULL;  /* M2: search bar */
 static char      s_search_text[64] = {0};  /* current search filter */
-static bool s_input_visible    = false;
-/* W5: de-static'd — UI-owned (written here in the voice-turn flow) but read by
- * the engine's transcription_queue_task; declared extern in ui_notes_internal.h. */
-bool s_voice_recording = false;
-static bool s_pending_dictation = false;  /* waiting for READY to start dictation */
-/* W5: de-static'd — both the UI (cb_new_voice start/stop) and the engine
- * (sd_record_task) read/write this; declared extern in ui_notes_internal.h. */
-volatile bool s_sd_rec_running = false; /* standalone SD recording active */
-
+static bool s_input_visible = false;
 /* ── Recording indicator ──────────────────────────────── */
 static lv_obj_t *s_rec_indicator = NULL;  /* container for the recording bar */
 static lv_obj_t *s_rec_dot = NULL;        /* red pulsing dot */
@@ -689,7 +681,6 @@ static int       s_edit_idx    = -1;
 
 /* ── Forward decls ─────────────────────────────────────── */
 static void cb_back(lv_event_t *e);
-static void cb_new_voice(lv_event_t *e);
 static void cb_new_text(lv_event_t *e);
 static void cb_input_send(lv_event_t *e);
 static void cb_note_tap(lv_event_t *e);
@@ -704,8 +695,10 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
 static lv_obj_t *make_topbar(lv_obj_t *parent);
 static void show_input_area(void);
 static void hide_input_area(void);
-static void voice_session_done(void);
-static void show_recording_indicator(void);
+/* The only show-path caller (the retired "+ NEW VOICE NOTE" cb_new_voice) was
+ * deleted; the indicator + its 1 s timer are preserved for the dictation
+ * pipeline but currently have no live show-site, hence the unused attribute. */
+static void __attribute__((unused)) show_recording_indicator(void);
 static void hide_recording_indicator(void);
 
 /* ── Recording indicator timer callback ────────────────── */
@@ -809,33 +802,6 @@ static void hide_recording_indicator(void)
     }
 
     ESP_LOGI(TAG, "Recording indicator hidden");
-}
-
-/* ── Voice state callback (used by dictation connect flow) ── */
-static void __attribute__((unused)) voice_state_cb(voice_state_t state, const char *detail)
-{
-    /* Auto-start dictation once Dragon connection is READY */
-    if (state == VOICE_STATE_READY && s_pending_dictation) {
-        s_pending_dictation = false;
-        s_voice_recording = true;
-        voice_start_dictation();
-        ESP_LOGI(TAG, "Auto-starting dictation after connect");
-        return;
-    }
-    /* Dictation ends with READY + "dictation_done" detail */
-    if (s_voice_recording && state == VOICE_STATE_READY
-        && voice_get_mode() == VOICE_MODE_DICTATE
-        && detail && strcmp(detail, "dictation_done") == 0) {
-        s_voice_recording = false;
-        hide_recording_indicator();
-        voice_session_done();
-    }
-    /* Ask mode ends with IDLE */
-    if (state == VOICE_STATE_IDLE && s_voice_recording) {
-        s_voice_recording = false;
-        hide_recording_indicator();
-        voice_session_done();
-    }
 }
 
 /* W5: the recording-flow statics (s_rec_note_slot / s_pipeline_armed_slot /
@@ -1391,21 +1357,6 @@ static void scheduler_post(const char *when_iso, const char *label) {
 
 /* W5: the background transcription queue (transcription_queue_task +
  * ui_notes_start_transcription_queue) moved to dictation_notes.c. */
-/* ── Voice session complete — save transcript ─────────────── */
-static void voice_session_done(void)
-{
-    const char *text = NULL;
-    if (voice_get_mode() == VOICE_MODE_DICTATE) {
-        text = voice_get_dictation_text();
-    } else {
-        text = voice_get_stt_text();
-    }
-
-    /* Stop SD recording and attach transcript (if we have one) */
-    ui_notes_stop_recording((text && text[0]) ? text : NULL);
-    ESP_LOGI(TAG, "Voice session done: %s",
-             (text && text[0]) ? "transcribed" : "recorded (needs transcription)");
-}
 
 /* ── Keyboard layout callback — move input area / edit TA above keyboard ── */
 static void notes_keyboard_layout_cb(bool visible, int kb_height)
@@ -1526,117 +1477,6 @@ static void cb_back(lv_event_t *e)
     /* TT #623 — centralised nav: voice-cancel-then-nav + obs.
      * Notes is an overlay so we still need to leave the user on home. */
     tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
-}
-
-/* FreeRTOS task to switch to VOICE mode (connects to Dragon) */
-static void dictation_connect_task(void *arg)
-{
-    tab5_mode_switch(MODE_VOICE);
-    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
-}
-
-/* LVGL timer: poll for READY state after Dragon connect, then start dictation */
-static void __attribute__((unused)) pending_dictation_poll_cb(lv_timer_t *t)
-{
-    int *ticks = (int *)lv_timer_get_user_data(t);
-    (*ticks)++;
-
-    if (voice_get_state() == VOICE_STATE_READY && s_pending_dictation) {
-        s_pending_dictation = false;
-        lv_timer_delete(t);
-        free(ticks);
-        s_voice_recording = true;
-        voice_start_dictation();
-        ESP_LOGI(TAG, "Dictation auto-started after Dragon connect");
-        return;
-    }
-    /* Timeout after 15s */
-    if (*ticks > 150) {
-        s_pending_dictation = false;
-        lv_timer_delete(t);
-        free(ticks);
-        ESP_LOGW(TAG, "Dictation connect timeout");
-    }
-}
-
-/* W5: the standalone SD-only recording task (sd_record_task) + its
- * s_sd_rec_task handle moved to dictation_notes.c.  The UI starts it via
- * dictation_sd_record_start() (engine API). */
-
-/* Safe toast deletion — timer user_data is the toast lv_obj_t* */
-static void toast_delete_cb(lv_timer_t *t)
-{
-    lv_obj_t *obj = lv_timer_get_user_data(t);
-    if (obj && lv_obj_is_valid(obj)) {
-        lv_obj_delete(obj);
-    }
-}
-
-static void cb_new_voice(lv_event_t *e)
-{
-    (void)e;
-    if (s_sd_rec_running || s_voice_recording) {
-        /* Stop current recording */
-        hide_recording_indicator();
-        s_sd_rec_running = false;  /* signal task to exit */
-        if (voice_get_state() == VOICE_STATE_LISTENING) {
-            voice_stop_listening();
-        }
-        s_voice_recording = false;
-        /* Give mic task time to exit before finalizing WAV.
-         * Use lv_async_call to run on next LVGL cycle. */
-        tab5_lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
-        ESP_LOGI(TAG, "Recording stopping...");
-        return;
-    }
-
-    voice_state_t st = voice_get_state();
-
-    /* Always start SD recording first */
-    const char *wav = ui_notes_start_recording();
-    if (!wav) {
-        ESP_LOGE(TAG, "Failed to start recording — SD card not mounted?");
-        /* Show toast on the layer_top so it's visible from any screen */
-        lv_obj_t *toast = lv_obj_create(lv_layer_top());
-        lv_obj_set_size(toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_align(toast, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_set_style_bg_color(toast, lv_color_hex(0xFF453A), 0);
-        lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
-        lv_obj_set_style_radius(toast, 16, 0);
-        lv_obj_set_style_pad_all(toast, 20, 0);
-        lv_obj_set_style_border_width(toast, 0, 0);
-        lv_obj_t *lbl = lv_label_create(toast);
-        lv_label_set_text(lbl, "SD card not ready");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xE8E8EF), 0);
-        lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
-        lv_timer_t *tmr = lv_timer_create(toast_delete_cb, 2000, toast);
-        lv_timer_set_repeat_count(tmr, 1);
-        return;
-    }
-
-    s_voice_recording = true;
-    show_recording_indicator();
-
-    if (st == VOICE_STATE_READY) {
-        /* Dragon online — dual-write: SD + live dictation via voice module */
-        esp_err_t err = voice_start_dictation();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Dictation start failed, continuing SD-only");
-        } else {
-            ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
-        }
-    } else {
-       /* Offline or busy — SD-only recording with the standalone mic task.
-        * W5: the task + its handle live in dictation_notes.c now; start it
-        * via the engine API (sets s_sd_rec_running + spawns sd_record_task). */
-       dictation_sd_record_start();
-       ESP_LOGI(TAG, "Recording to SD only: %s", wav);
-
-       /* Try to connect Dragon in background for later transcription */
-       if (st == VOICE_STATE_IDLE) {
-          xTaskCreatePinnedToCore(dictation_connect_task, "dict_conn", 8192, NULL, 3, NULL, 1);
-       }
-    }
 }
 
 static void cb_new_text(lv_event_t *e)
@@ -3183,7 +3023,6 @@ void ui_notes_destroy(void)
     s_input_area = NULL;
     s_input_btn = NULL;
     s_input_visible = false;
-    s_voice_recording = false;
 }
 
 void ui_notes_hide(void)
@@ -3196,10 +3035,6 @@ void ui_notes_hide(void)
     if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; s_edit_ta = NULL; }
     ui_keyboard_hide();
     hide_input_area();
-    /* Clear recording state — prevents transcription queue blockage if user
-     * navigates away mid-recording. Without this, s_voice_recording stays
-     * true forever since ui_notes_destroy() is never called. */
-    s_voice_recording = false;
     if (s_screen) {
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);
