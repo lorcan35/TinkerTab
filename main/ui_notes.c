@@ -322,6 +322,17 @@ static int find_note_idx_by_text(const char *text)
     return -1;
 }
 
+/* W4: find the note row for a turn_id, or -1.  The reconcile join (note_created
+ * / dictation_summary) keys on turn_id — the W1/W2 identity already echoed both
+ * ways — so a late update for turn A only ever touches A's row, never B's. */
+static int find_note_idx_by_turn_id(const char *turn_id) {
+   if (!turn_id || !turn_id[0]) return -1;
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && s_notes[i].turn_id[0] && strcmp(s_notes[i].turn_id, turn_id) == 0) return i;
+   }
+   return -1;
+}
+
 static void sync_note_to_dragon(const char *title, const char *text)
 {
     if (!text || !text[0]) return;
@@ -1112,6 +1123,187 @@ void ui_notes_add_dictated_async(const char *transcript) {
    tab5_lv_async_call(notes_add_dictated_async_cb, copy);
 }
 
+/* ── W4: optimistic save — seed / reconcile / apply, all keyed by turn_id ── */
+
+/* Seed (or tag) an optimistic note row for a live dictation turn at stop time.
+ * Runs on the LVGL thread.  enrich=SUMMARIZING (capture done; only title/summary
+ * pending).  Idempotent per turn_id; if a recording slot is already open for this
+ * turn (home Dictate pipeline-armed slot, or the local FAB slot) we tag THAT slot
+ * rather than minting a second row. */
+static void notes_seed_optimistic_cb(void *arg) {
+   char *turn_id = (char *)arg;
+   if (!turn_id) return;
+   notes_load();
+   if (find_note_idx_by_turn_id(turn_id) >= 0) {
+      free(turn_id);
+      return;
+   } /* already seeded */
+
+   int slot = (s_rec_note_slot >= 0) ? s_rec_note_slot : -1;
+   if (slot >= 0 && slot < MAX_NOTES && !s_notes[slot].used) {
+      s_notes[slot].used = true;
+      if (s_note_count < MAX_NOTES) s_note_count++;
+   }
+
+   if (slot < 0) {
+      /* Fresh placeholder row. */
+      tab5_rtc_time_t rtc = {0};
+      tab5_rtc_get_time(&rtc);
+      slot = s_next_slot;
+      note_entry_t *n = &s_notes[slot];
+      memset(n, 0, sizeof(*n));
+      snprintf(n->text, MAX_NOTE_LEN, "Saved - summarizing...");
+      n->state = NOTE_STATE_TRANSCRIBED; /* online: transcript streamed live */
+      n->hour = rtc.hour;
+      n->minute = rtc.minute;
+      n->day = rtc.day;
+      n->month = rtc.month;
+      n->year = rtc.year;
+      n->used = true;
+      s_next_slot = (s_next_slot + 1) % MAX_NOTES;
+      if (s_note_count < MAX_NOTES) s_note_count++;
+   }
+
+   note_entry_t *n = &s_notes[slot];
+   n->type = NOTE_TYPE_VOICE;
+   n->is_voice = true;
+   n->enrich = ENRICH_SUMMARIZING;
+   strncpy(n->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+   n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+   ESP_LOGI(TAG, "Optimistic row seeded: slot %d turn_id=%s", slot, turn_id);
+   notes_save();
+   refresh_list();
+   free(turn_id);
+}
+
+void ui_notes_seed_optimistic(const char *turn_id) {
+   if (!turn_id || !turn_id[0] || strcmp(turn_id, "-") == 0) return;
+   size_t n = strnlen(turn_id, DICT_TURN_ID_LEN - 1);
+   char *copy = (char *)malloc(n + 1);
+   if (!copy) return;
+   memcpy(copy, turn_id, n);
+   copy[n] = '\0';
+   tab5_lv_async_call(notes_seed_optimistic_cb, copy);
+}
+
+/* Reconcile Dragon's authoritative note_created by turn_id: adopt note_id into the
+ * optimistic row (no dup), or create the row if note_created raced ahead of the
+ * seed.  Preserves D-D1 — Dragon stays the sole authoritative owner. */
+typedef struct {
+   char turn_id[DICT_TURN_ID_LEN];
+   char note_id[DICT_NOTE_ID_LEN];
+   char title[128];
+} reconcile_arg_t;
+
+static void notes_reconcile_note_created_cb(void *arg) {
+   reconcile_arg_t *a = (reconcile_arg_t *)arg;
+   if (!a) return;
+   notes_load();
+   int slot = find_note_idx_by_turn_id(a->turn_id);
+   if (slot < 0) {
+      tab5_rtc_time_t rtc = {0};
+      tab5_rtc_get_time(&rtc);
+      slot = s_next_slot;
+      note_entry_t *n = &s_notes[slot];
+      memset(n, 0, sizeof(*n));
+      n->state = NOTE_STATE_TRANSCRIBED;
+      n->is_voice = true;
+      n->type = NOTE_TYPE_VOICE;
+      n->enrich = ENRICH_SUMMARIZING;
+      n->hour = rtc.hour;
+      n->minute = rtc.minute;
+      n->day = rtc.day;
+      n->month = rtc.month;
+      n->year = rtc.year;
+      n->used = true;
+      snprintf(n->turn_id, sizeof(n->turn_id), "%s", a->turn_id);
+      snprintf(n->text, MAX_NOTE_LEN, "%s", a->title[0] ? a->title : "Saved - summarizing...");
+      s_next_slot = (s_next_slot + 1) % MAX_NOTES;
+      if (s_note_count < MAX_NOTES) s_note_count++;
+      ESP_LOGI(TAG, "note_created -> fresh row slot %d (no placeholder), turn_id=%s", slot, a->turn_id);
+   } else {
+      ESP_LOGI(TAG, "note_created -> adopt into slot %d, turn_id=%s", slot, a->turn_id);
+   }
+   note_entry_t *n = &s_notes[slot];
+   snprintf(n->note_id, sizeof(n->note_id), "%s", a->note_id);
+   if (n->enrich == ENRICH_NONE || n->enrich == ENRICH_PENDING || n->enrich == ENRICH_TRANSCRIBING) {
+      n->enrich = ENRICH_SUMMARIZING;
+   }
+   n->needs_sync = false; /* Dragon already owns it */
+   notes_save();
+   refresh_list();
+   free(a);
+}
+
+void ui_notes_reconcile_note_created(const char *turn_id, const char *note_id, const char *title) {
+   if (!note_id || !note_id[0]) return;
+   reconcile_arg_t *a = (reconcile_arg_t *)calloc(1, sizeof(*a));
+   if (!a) return;
+   if (turn_id && strcmp(turn_id, "-") != 0) strncpy(a->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+   strncpy(a->note_id, note_id, DICT_NOTE_ID_LEN - 1);
+   if (title) strncpy(a->title, title, sizeof(a->title) - 1);
+   tab5_lv_async_call(notes_reconcile_note_created_cb, a);
+}
+
+/* Apply dictation_summary as an in-place update of the turn's row (body text),
+ * then flip enrich to DONE so the badge clears.  Falls back to a fresh add if no
+ * row matches turn_id — a dictation is never lost. */
+typedef struct {
+   char turn_id[DICT_TURN_ID_LEN];
+   char title[128];
+   char body[MAX_NOTE_LEN];
+} summary_arg_t;
+
+static void notes_apply_summary_cb(void *arg) {
+   summary_arg_t *a = (summary_arg_t *)arg;
+   if (!a) return;
+   notes_load();
+   int slot = find_note_idx_by_turn_id(a->turn_id);
+   if (slot < 0) {
+      ESP_LOGW(TAG, "apply_summary: no row for turn_id=%s - legacy add", a->turn_id[0] ? a->turn_id : "-");
+      if (a->body[0]) ui_notes_add(a->body, true);
+      free(a);
+      return;
+   }
+   note_entry_t *n = &s_notes[slot];
+   if (a->body[0]) {
+      strncpy(n->text, a->body, MAX_NOTE_LEN - 1);
+      n->text[MAX_NOTE_LEN - 1] = '\0';
+   }
+   n->state = NOTE_STATE_TRANSCRIBED;
+   n->enrich = ENRICH_DONE; /* title+summary present -> badge clears */
+   ESP_LOGI(TAG, "apply_summary -> slot %d DONE, turn_id=%s", slot, a->turn_id);
+   pending_chip_apply_inline(slot);
+   notes_save();
+   refresh_list();
+   free(a);
+}
+
+void ui_notes_apply_summary(const char *turn_id, const char *title, const char *summary) {
+   summary_arg_t *a = (summary_arg_t *)calloc(1, sizeof(*a));
+   if (!a) return;
+   if (turn_id && strcmp(turn_id, "-") != 0) strncpy(a->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+   if (title) strncpy(a->title, title, sizeof(a->title) - 1);
+   if (summary) strncpy(a->body, summary, MAX_NOTE_LEN - 1);
+   tab5_lv_async_call(notes_apply_summary_cb, a);
+}
+
+/* W4: tag the just-finalized SD recording as offline-pending so the badge shows
+ * "Pending" and the transcription queue auto-finishes it on reconnect (reconciled
+ * by turn_id when Dragon's note_created lands). */
+void ui_notes_mark_offline_pending(const char *turn_id) {
+   int idx = find_most_recent_used_slot();
+   if (idx < 0) return;
+   note_entry_t *n = &s_notes[idx];
+   n->enrich = ENRICH_PENDING;
+   if (turn_id && turn_id[0] && strcmp(turn_id, "-") != 0) {
+      strncpy(n->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+      n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+   }
+   notes_save();
+   refresh_list();
+}
+
 /* ── Note storage API ──────────────────────────────────── */
 int ui_notes_add(const char *text, bool is_voice)
 {
@@ -1701,6 +1893,7 @@ static void transcription_queue_task(void *arg)
            continue; /* note stays RECORDED; retry next 15 s tick */
         }
         n->state = NOTE_STATE_TRANSCRIBING;
+        if (n->enrich == ENRICH_PENDING) n->enrich = ENRICH_TRANSCRIBING; /* W4: badge advances */
         notes_save();
 
         /* Read WAV file from SD */
@@ -1853,6 +2046,8 @@ static void transcription_queue_task(void *arg)
                         n->text[MAX_NOTE_LEN - 1] = '\0';
                         n->state = NOTE_STATE_TRANSCRIBED;
                         n->fail_reason = NOTE_FAIL_NONE;
+                        if (n->enrich != ENRICH_NONE)
+                           n->enrich = ENRICH_DONE; /* W4: offline auto-finish — badge clears */
                         voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
                         ESP_LOGI(TAG, "Transcription done [%d]: %.60s", slot, text);
                     } else {
@@ -2805,6 +3000,27 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
          badge_text = n->is_voice ? "Voice" : "Text";
          badge_color = 0x8E8E98;
          break;
+   }
+   /* W4: the enrichment badge takes precedence while a dictation row is still
+    * filling in (independent of the orb/FSM).  Always shown until ENRICH_DONE.
+    * ASCII glyphs only — FONT_CAPTION has no U+2026. */
+   switch (n->enrich) {
+      case ENRICH_TRANSCRIBING:
+         badge_text = "Transcribing...";
+         badge_color = 0xFCD34D; /* amber */
+         break;
+      case ENRICH_SUMMARIZING:
+         badge_text = "Summarizing...";
+         badge_color = 0xFCD34D; /* amber */
+         break;
+      case ENRICH_PENDING:
+         badge_text = "Pending";
+         badge_color = 0x8E8E98; /* neutral — auto-finishes, not a failure */
+         break;
+      case ENRICH_NONE:
+      case ENRICH_DONE:
+      default:
+         break; /* leave the state-derived badge above untouched */
    }
    lv_label_set_text(badge, badge_text);
    lv_obj_set_style_text_color(badge, lv_color_hex(badge_color), 0);

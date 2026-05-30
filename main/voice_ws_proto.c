@@ -960,14 +960,17 @@ void voice_ws_proto_handle_text(const char *data, int len) {
           * Dictate chip via voice_start_dictation with no local slot).
           * The async helper marshals to LVGL thread + no-ops if a
           * local slot is already active so we don't duplicate. */
+         /* W4: apply as an IN-PLACE update of the turn's row (set by the
+          * optimistic seed / note_created reconcile), then clear the badge —
+          * instead of the old add path that gated the dictation's end on this
+          * frame.  Body = streamed transcript when present, else summary/title.
+          * apply_summary falls back to a fresh add if no row matches turn_id, so
+          * a dictation is never lost. */
          const char *transcript = voice_get_dictation_text();
-         if (transcript && transcript[0]) {
-            ui_notes_add_dictated_async(transcript);
-         } else if (s_dictation_summary[0]) {
-            ui_notes_add_dictated_async(s_dictation_summary);
-         } else {
-            ui_notes_add_dictated_async(s_dictation_title);
-         }
+         const char *body = (transcript && transcript[0]) ? transcript
+                            : s_dictation_summary[0]      ? s_dictation_summary
+                                                          : s_dictation_title;
+         ui_notes_apply_summary(summ_turn, s_dictation_title, body);
          /* PR 4: parse Dragon's optional `proposed_action` classifier
           * output + attach it as a pending_chip on the freshly-added
           * slot.  Forward-compat: missing field → no chip rendered.
@@ -1009,8 +1012,16 @@ void voice_ws_proto_handle_text(const char *data, int len) {
    } else if (strcmp(type_str, "note_created") == 0) {
       cJSON *nid = cJSON_GetObjectItem(root, "note_id");
       cJSON *ntitle = cJSON_GetObjectItem(root, "title");
-      ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"", cJSON_IsString(nid) ? nid->valuestring : "?",
-               cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
+      const char *nc_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
+      ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\" turn_id=%s",
+               cJSON_IsString(nid) ? nid->valuestring : "?", cJSON_IsString(ntitle) ? ntitle->valuestring : "?",
+               nc_turn ? nc_turn : "-");
+      /* W4: reconcile by turn_id — adopt note_id into the optimistic row (no dup
+       * row), or create the row if note_created raced ahead of the seed. */
+      if (cJSON_IsString(nid) && nid->valuestring && nid->valuestring[0]) {
+         ui_notes_reconcile_note_created(nc_turn, nid->valuestring,
+                                         cJSON_IsString(ntitle) ? ntitle->valuestring : NULL);
+      }
    } else if (strcmp(type_str, "llm_done") == 0) {
       cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
       ESP_LOGI(TAG, "LLM done (%.0fms) | heap_dma_free=%u largest=%u", cJSON_IsNumber(ms) ? ms->valuedouble : 0.0,

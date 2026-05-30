@@ -70,6 +70,28 @@ void ui_notes_sync_pending(void);
  *  ui_notes_start_recording).  Caller owns the string; we copy. */
 void ui_notes_add_dictated_async(const char *transcript);
 
+/* ── W4 optimistic save (all marshal to the LVGL thread; reconcile by turn_id) ── */
+
+/** W4: seed (or tag) an optimistic note row for a live dictation turn_id at stop
+ *  time.  Idempotent per turn_id; tags an existing recording slot instead of
+ *  duplicating.  Reconciled later by the two functions below (same turn_id). */
+void ui_notes_seed_optimistic(const char *turn_id);
+
+/** W4: reconcile Dragon's authoritative note_created by turn_id — adopt note_id
+ *  in place (no dup row), or create the row if note_created raced the seed.
+ *  turn_id may be "-"/NULL (absent) → treated as a fresh note (backward compat). */
+void ui_notes_reconcile_note_created(const char *turn_id, const char *note_id, const char *title);
+
+/** W4: apply dictation_summary as an in-place note update keyed by turn_id — sets
+ *  the body text + flips enrich to DONE so the badge clears.  Falls back to a
+ *  fresh add if no row matches turn_id, so a dictation is never lost. */
+void ui_notes_apply_summary(const char *turn_id, const char *title, const char *summary);
+
+/** W4: mark the just-finalized SD recording as offline-pending (badge "Pending")
+ *  and stamp turn_id so a reconnect note_created reconciles it in place.  Called
+ *  from voice.c's offline dictation stop branch. */
+void ui_notes_mark_offline_pending(const char *turn_id);
+
 /** #537: arm a SD WAV recording for an incoming pipeline-path dictation
  *  (Home Dictate chip / chat overlay mic).  Opens a new WAV file +
  *  reserves a note slot in NOTE_STATE_RECORDED state — the existing

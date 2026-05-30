@@ -2099,6 +2099,10 @@ esp_err_t voice_stop_listening(void)
       /* Finalise the SD WAV → Note state RECORDED.  The transcription
        * queue picks it up automatically when Dragon's back. */
       ui_notes_stop_recording(NULL);
+      /* W4: badge the just-saved SD note "Pending" + stamp the turn_id so the
+       * transcription queue auto-finishes it on reconnect and a late note_created
+       * reconciles this exact row in place. */
+      ui_notes_mark_offline_pending(s_current_turn_id);
       ui_home_show_toast("Saved offline - will sync to Notes when Dragon's back");
       voice_reset_activity_timestamp();
       voice_set_state(VOICE_STATE_READY, "offline_saved");
@@ -2179,6 +2183,10 @@ esp_err_t voice_stop_listening(void)
         * the background and surface on the Notes badge.  (ASCII glyphs only —
         * FONT_SECONDARY has no U+2014/U+2026.)  Note-row seed wired in W4 Task 5. */
        ui_home_show_toast("Saved - summarizing...");
+       /* W4: seed the optimistic note row keyed by this turn so it appears in
+        * Notes immediately; Dragon's note_created + dictation_summary reconcile
+        * it by turn_id (no dup row). */
+       ui_notes_seed_optimistic(s_current_turn_id);
        voice_set_state(VOICE_STATE_READY, NULL);
        return ESP_OK;
     }
