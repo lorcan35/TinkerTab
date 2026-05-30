@@ -21,6 +21,11 @@
 #define PENDING_CONFIDENCE_FLOOR 75
 #define PENDING_PAYLOAD_LEN 128
 
+/* W5: recordings directory — shared because notes_load() (UI, ensures the dir
+ * exists on boot) and ui_notes_start_recording() (engine, writes the WAV here)
+ * both need it. */
+#define REC_DIR "/sdcard/rec"
+
 /* ── Note lifecycle / classification enums ── */
 typedef enum {
    NOTE_STATE_TEXT,         /* text-only note (typed) */
@@ -95,6 +100,24 @@ extern note_entry_t *s_notes;
 extern int s_note_count;
 extern int s_next_slot;
 extern bool s_loaded;
+
+/* ── W5 recording engine ⟷ UI shared state (all DEFINED in ui_notes.c) ──
+ * These stay UI-owned (the UI orchestrates record start/stop via cb_new_voice
+ * + voice_state_cb) but the engine (dictation_notes.c) reads/writes them:
+ *   - s_voice_recording   : UI writes (voice_state_cb / cb_new_voice / destroy);
+ *                           engine reads in transcription_queue_task to skip
+ *                           transcribing while a live voice turn is in flight.
+ *   - s_sd_rec_running    : both sides write — UI starts/stops the standalone SD
+ *                           recording in cb_new_voice; the engine's sd_record_task
+ *                           clears it on exit / cap-hit and reads it as the loop
+ *                           condition.  Defined UI-side because the UI owns the
+ *                           start path; the engine flips it via the shared symbol.
+ *   - s_next_rec_id       : monotonic recording counter — persisted by notes_save
+ *                           / notes_load (UI), bumped by ui_notes_start_recording
+ *                           (engine) on each new WAV. */
+extern bool s_voice_recording;
+extern volatile bool s_sd_rec_running;
+extern uint32_t s_next_rec_id;
 
 /* ── Shared helpers — DEFINED in ui_notes.c (de-static'd for the engine) ──
  * Original names kept (no call-site churn); they become module-global symbols
