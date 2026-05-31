@@ -1806,6 +1806,15 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
       case WEBSOCKET_EVENT_DATA:
          if (!data) break;
          s_last_activity_us = esp_timer_get_time();
+         /* TT #317 Phase 4 fix (2026-05-31): refresh the K144-failover liveness
+          * stamp on EVERY Dragon RX.  It was previously set only on
+          * WEBSOCKET_EVENT_CONNECTED and never refreshed, so after
+          * M5_FAILOVER_GRACE_MS (30 s) of a perfectly healthy connection
+          * down_ms stayed >= grace and EVERY Local-mode typed turn wrongly
+          * failed over to the (task-full) K144 and never reached Dragon —
+          * voice turns escaped because they bypass voice_modes_route_text.
+          * Stamping here makes down_ms measure real Dragon silence. */
+         s_ws_last_alive_us = esp_timer_get_time();
          if (data->op_code == WS_TRANSPORT_OPCODES_TEXT && data->data_len > 0) {
             ESP_LOGI(TAG, "WS recv text (%d bytes): %.*s", data->data_len, data->data_len > 200 ? 200 : data->data_len,
                      data->data_ptr);
