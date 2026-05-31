@@ -29,6 +29,17 @@ static const char *TAG = "vision_svc";
 
 #define POLL_INTERVAL_MS 500u /* config re-read cadence when disabled */
 #define MIN_TICK_MS 333u      /* hard floor matches K144 USB-FFS budget */
+/* 2026-05-31: ambient-inference throttle.  The always-on vision loop is the
+ * dominant internal-SRAM consumer (camera DQBUF + the HW-JPEG encoder's
+ * transient DMA descriptors every cycle), which drives the largest free
+ * internal block down toward the SDIO ~14 KB floor and was the root cause of
+ * the heap_wd "sram_exhausted" + voice.c WS-starvation reboots.  process_one_
+ * frame() already costs ~1.5 s on the K144 round-trip; this floor spaces
+ * cycles to ~once per period so those transient internal allocations happen
+ * far less often.  Presence detection at ~0.25-0.3 Hz is ample — the Welcome
+ * rule uses a 5-min cooldown anyway (VS_WELCOME_COOLDOWN_MS).  Throttle, not
+ * disable, per owner decision 2026-05-31. */
+#define VS_AMBIENT_MIN_PERIOD_MS 2000u
 #define VS_MAX_BOXES 8
 #define VS_INPUT_W 320
 #define VS_INPUT_H 320
@@ -497,6 +508,7 @@ static void vision_service_task(void *arg) {
 
       uint32_t period_ms = 1000u / rate;
       if (period_ms < MIN_TICK_MS) period_ms = MIN_TICK_MS;
+      if (period_ms < VS_AMBIENT_MIN_PERIOD_MS) period_ms = VS_AMBIENT_MIN_PERIOD_MS;
       vTaskDelay(pdMS_TO_TICKS(period_ms));
    }
 }

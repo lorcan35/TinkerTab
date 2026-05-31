@@ -81,14 +81,28 @@ static const char *TAG = "heap_wd";
  * drops RX packets, WS starves, and we get the voice.c:1528 hard-kick
  * reboot (reset_reason=SW, no coredump).
  *
- * This detector fires when `internal_largest < 20 KB` sustained for
- * 2 consecutive checks (2 min).  20 KB gives ~6 KB of margin above the
- * observed 14 KB SDIO demand.  2-min sustained avoids false positives
- * from transient dips during a single screen transition.  The abort
- * path saves a coredump so future regressions are diagnosable; the
- * current silent cascade just leaves the user with a reboot. */
-#define HEAP_WD_INT_EXHAUST_BLOCK_MIN    (20 * 1024)  /* 20KB largest block */
-#define HEAP_WD_INT_EXHAUST_REBOOT_COUNT 2             /* 2 consecutive = 2 min */
+ * This detector WARNS when `internal_largest < 20 KB` (early observability)
+ * but the REBOOT is DISABLED (REBOOT_COUNT = INT_MAX), matching the sibling
+ * DMA-pool detector below.
+ *
+ * Rationale (2026-05-31, from a serial-coredump root-cause of a reboot
+ * crash-loop — Panic reason "heap_wd: sram_exhausted", heap_watchdog.c:237):
+ * the 20 KB trip sits ~6 KB ABOVE the ~14 KB SDIO peak demand, so at
+ * 14-20 KB largest the SDIO driver still allocates and WiFi/voice/UI all
+ * keep working — yet heap_wd was aborting a FUNCTIONAL device every few
+ * minutes under sustained camera/voice load.  This is the exact "rebooting
+ * because an internal pool is low when everything the user sees is fine"
+ * pattern the DMA detector below was already disabled for, on what is
+ * essentially the same pool (DMA-capable internal == internal SRAM on the
+ * ESP32-P4: /heap reports identical free/largest for both).
+ *
+ * We keep the per-check ESP_LOGE warning + the 60 s heap breakdown for
+ * observability, and leave genuine WS/SDIO starvation recovery to the
+ * WiFi/reconnect watchdogs.  Only re-enable (small positive count) paired
+ * with a real fix that addresses the underlying internal-SRAM consumer
+ * (likely camera/YOLO DMA buffers — the proper follow-up). */
+#define HEAP_WD_INT_EXHAUST_BLOCK_MIN (20 * 1024) /* 20KB — WARN threshold only */
+#define HEAP_WD_INT_EXHAUST_REBOOT_COUNT INT_MAX  /* reboot DISABLED — see above */
 
 /* DMA pool exhaustion thresholds (audit #80):
  * WiFi driver + TLS need DMA-capable buffers for RX/TX descriptors. When
