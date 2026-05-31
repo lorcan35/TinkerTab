@@ -2871,10 +2871,18 @@ static void upload_chat_image_job(void *arg)
         return;
     }
 
-    /* Tell Dragon to broadcast the signed-URL media event back. */
+    /* Tell Dragon to broadcast the signed-URL media event back AND run a
+     * vision turn on the photo.  2026-05-31 (Wave 2): the type was
+     * "user_image", which Dragon's WS dispatcher has NO branch for — it only
+     * handles "user_media" (server.py:800) — so every captured photo was
+     * silently dropped and photo->ask was impossible.  Dragon's
+     * handle_vision_turn resolves the media_id, capability-gates the vision
+     * check, persists the multimodal message for cross-modal continuity, and
+     * defaults a caption prompt when no `text` is sent — so this one-word
+     * rename lights up the whole (already-built) Dragon vision path. */
     cJSON *frame = cJSON_CreateObject();
     if (!frame) return;
-    cJSON_AddStringToObject(frame, "type", "user_image");
+    cJSON_AddStringToObject(frame, "type", "user_media");
     cJSON_AddStringToObject(frame, "media_id", media_id);
     char *txt = cJSON_PrintUnformatted(frame);
     cJSON_Delete(frame);
