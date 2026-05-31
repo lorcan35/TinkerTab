@@ -1679,3 +1679,28 @@ Every entry here was learned the hard way. Read this before touching the codebas
 5. **Long-running observability matters more than depth.**  This audit started from a single user complaint and surfaced 4 more bugs in 90 minutes of probing.  The harness was `curl /info /heap /voice /tinkeron/extpcm /m5 /logs/tail` — five endpoints already in the codebase.  Invest in observability surface before you invest in new features.
 6. **Wave-by-wave merge under audit.**  Six PRs landed in two waves (Wave A + dedup share `voice_wakeword.c`; rest parallel).  Sequential squash-merge with build + flash + live verify between waves caught zero regressions.  Same pattern as TT #621 W5-W9.
 
+
+---
+
+## 2026-05-31 — Wave program: reboot + typed-turn + vision-frame fixes
+
+### heap_wd sram_exhausted rebooted a fully-functional device (false positive)
+- **Date:** 2026-05-31
+- **Symptom:** Tab5 "chills for a while then crashes." reset_reason=PANIC, exc_task=heap_wd. Serial coredump: `Panic reason: heap_wd: sram_exhausted` at `heap_watchdog.c:237`.
+- **Root Cause:** The #182 SRAM-exhaustion detector aborts (for a coredump) when the largest free internal block sits below 20KB for 2 min. But the real failure point is the SDIO driver's ~14KB demand (documented in-file) — so at 14-20KB the device is fully functional yet heap_wd reboots it. The dominant consumer driving SRAM down is the always-on YOLO/vision pipeline (2Hz, 24KB internal HW-JPEG buffer). Same "reboot a working device because a pool is low" pattern the sibling DMA detector was already disabled for (same pool: DMA-capable internal == internal on P4).
+- **Fix:** disable the sram_exhausted REBOOT (`HEAP_WD_INT_EXHAUST_REBOOT_COUNT → INT_MAX`, keep WARN logs), matching the DMA detector; throttle the YOLO ambient loop (`VS_AMBIENT_MIN_PERIOD_MS=2000` → 0.5→0.28Hz). Verified: stressed SRAM to exactly 14KB, abort never fired, 0 reboots. NOTE: the 24KB JPEG buffer can't go to PSRAM (HW JPEG engine rejects it on cache-alignment). (PR #748)
+- **Prevention:** Don't reboot on a precautionary margin above the real failure threshold — a watchdog that fires while everything the user sees still works is worse than the failure it guards. Set the trip point AT the genuine failure point, not 6KB above it.
+
+### Typed turns silently failed over to a busy K144 and never reached Dragon
+- **Date:** 2026-05-31
+- **Symptom:** In Local mode, chat/typed turns got NO reply (voice turns worked). `/chat` reported `sent:true` but Dragon never received the text.
+- **Root Cause:** `voice_modes_route_text`'s Local-mode K144 failover fires when `down_ms >= M5_FAILOVER_GRACE_MS` (30s), `down_ms = now - s_ws_last_alive_us`. But `s_ws_last_alive_us` was stamped ONLY on `WEBSOCKET_EVENT_CONNECTED` and never refreshed — so despite its name it measured "time since connect", and after 30s of a healthy connection it exceeded grace permanently, hijacking every typed turn to the K144 (which is `task full` running the wakeword ASR). Voice turns escaped because they stream PCM directly and bypass `voice_modes_route_text`.
+- **Fix:** refresh `s_ws_last_alive_us` on every Dragon RX (`WEBSOCKET_EVENT_DATA`, beside the dead `s_last_activity_us` stamp) so `down_ms` measures real silence; AND gate the failover on `!voice_is_connected()`. Verified across all modes. (PR #749)
+- **Prevention:** A "last alive" timestamp must be refreshed on activity, not just set on connect. Failover gates that depend on a timer should also consult the real connection state, not a timer alone.
+
+### Tab5 sent "user_image"; Dragon only handles "user_media" — photos silently dropped
+- **Date:** 2026-05-31
+- **Symptom:** photo→ask was impossible — captured photos never reached the LLM despite Dragon's full vision stack being built.
+- **Root Cause:** Tab5's chat-photo upload announced the WS frame as type `"user_image"`, but Dragon's dispatcher only has a `"user_media"` branch (`server.py:800`) — the frame fell through and was dropped. Dragon's own docs falsely claimed PR #186 unified the names; the code never did.
+- **Fix:** Tab5 emits `"user_media"`. One word lights up `handle_vision_turn` (media-id resolve, capability-gated vision check, multimodal persistence, default caption prompt). Verified: shutter → upload → vision turn accurately described the photo. (PR #750)
+- **Prevention:** WS message-type names are a contract — grep BOTH sides before trusting a "unified" claim in docs.
