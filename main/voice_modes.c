@@ -177,7 +177,12 @@ void voice_modes_route_text(const char *text, voice_modes_route_result_t *out) {
    if (s_ws_last_alive_us) {
       down_ms = (uint32_t)((esp_timer_get_time() - s_ws_last_alive_us) / 1000);
    }
-   if (down_ms >= M5_FAILOVER_GRACE_MS && tab5_settings_get_voice_mode() == VMODE_LOCAL) {
+   /* 2026-05-31: also require the WS to be genuinely disconnected.  The
+    * down_ms timer alone mis-fired this failover for every typed turn on a
+    * live connection (the s_ws_last_alive_us stamp was only set on connect —
+    * see voice_ws_proto.c RX-stamp fix); gating on the real connection state
+    * guarantees a healthy Dragon link always wins the turn. */
+   if (down_ms >= M5_FAILOVER_GRACE_MS && tab5_settings_get_voice_mode() == VMODE_LOCAL && !voice_is_connected()) {
       esp_err_t fe = voice_onboard_send_text(text);
       if (fe == ESP_OK) {
          ESP_LOGI(TAG, "Local-mode failover engaged — routed to K144 (down=%ums)", (unsigned)down_ms);
