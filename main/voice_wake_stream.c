@@ -40,6 +40,7 @@
 #include "freertos/task.h"
 #include "voice.h"
 #include "voice_codec.h"
+#include "voice_dictation.h" /* don't pump the wakeword stream during a dictation */
 
 /* Mirror constants from voice.c.  Kept local; the canonical defs live
  * with mic_task and aren't header-exposed.  If they drift, both sites
@@ -108,7 +109,13 @@ static void wake_stream_task(void *arg) {
    uint32_t frames_sent = 0;
    while (1) {
       bool ws_live = (g_voice_ws != NULL) && esp_websocket_client_is_connected(g_voice_ws);
-      bool can_pump = s_armed && ws_live && quiescent_state(s_voice_state);
+      /* Don't stream Tab5 mic -> Dragon for the wakeword while a dictation is in
+       * flight.  At the stop-resolution voice_state briefly flips to READY while
+       * the dictation FSM is still TRANSCRIBING/decaying and the WS is congested
+       * with the transcript; resuming the pump there spammed failing WS sends +
+       * scheduler thrash that starved ui_task past the task-WDT (2026-05-30
+       * coredump).  Bounded by the FSM stuck-watchdog (FSM back to IDLE <=60s). */
+      bool can_pump = s_armed && ws_live && quiescent_state(s_voice_state) && voice_dictation_state() == DICT_IDLE;
 
       /* CRITICAL — never touch I2S while mic_task is using it.  The
        * I2S RX driver is not reentrant; two readers crash the kernel
@@ -150,7 +157,10 @@ static void wake_stream_task(void *arg) {
        * — mic_task is now the owner.  Also re-check voice_mic_is_active
        * to catch the race where mic_task spun up between our pre-check
        * and the actual read. */
-      if (!quiescent_state(s_voice_state) || voice_mic_is_active()) {
+      if (!quiescent_state(s_voice_state) || voice_mic_is_active() || voice_dictation_state() != DICT_IDLE) {
+         /* Never bare-continue — a tight no-delay loop here (state flapping at
+          * a turn boundary) thrashes the scheduler.  Back off a tick. */
+         vTaskDelay(pdMS_TO_TICKS(20));
          continue;
       }
 

@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_timer.h"   /* host fake-clock helpers (host_clock_*, host_test_reset) */
+#include "task_worker.h" /* host worker stub (tab5_worker_pump, _set_full) */
 #include "voice_dictation.h"
 
 static int g_pass = 0;
@@ -177,14 +179,20 @@ static int test_retry_from_failed(void) {
 }
 
 static int test_cancel_from_recording(void) {
+   /* W1 (S2-7): cancel drives the neutral CANCELLED terminal (reason NONE),
+    * which then self-decays to IDLE — NOT the deprecated FAILED+CANCELLED. */
    voice_dictation_init();
+   host_test_reset();
    voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
-   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, 1500);
-   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, 1600);
+   voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, 1500);
 
    dict_event_t e = voice_dictation_get();
-   CHECK_EQ(e.state, DICT_IDLE);
+   CHECK_EQ(e.state, DICT_CANCELLED);
    CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);
+
+   host_clock_advance_ms(2000); /* > DICT_DECAY_CANCELLED_MS (1.5 s) */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
    return 0;
 }
 
@@ -226,16 +234,21 @@ static int test_unsubscribe_stops_callbacks(void) {
    return 0;
 }
 
-static int test_subscriber_table_full_returns_minus_one(void) {
+static int test_subscriber_table_grows(void) {
+   /* W5 (S3-9): the subscriber table grows on demand — there is no fixed
+    * ceiling and no silent overflow.  Subscribe 5 (past the initial cap of 4),
+    * confirm each gets a valid handle, and that a state change fires ALL 5. */
    voice_dictation_init();
-   mock_sub_t dummy[8] = {0};
-   int handles[8] = {0};
-   int got_full = 0;
-   for (int i = 0; i < 8; i++) {
-      handles[i] = voice_dictation_subscribe(mock_cb, &dummy[i]);
-      if (handles[i] == -1) got_full = 1;
+   mock_sub_t subs[5] = {0};
+   for (int i = 0; i < 5; i++) {
+      int h = voice_dictation_subscribe(mock_cb, &subs[i]);
+      CHECK(h >= 0); /* never -1 — the table grew */
    }
-   CHECK_EQ(got_full, 1); /* DICT_MAX_SUBSCRIBERS is 4 */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   for (int i = 0; i < 5; i++) {
+      CHECK_EQ(subs[i].call_count, 1); /* every subscriber fired, incl. the 5th */
+      CHECK_EQ(subs[i].last.state, DICT_RECORDING);
+   }
    return 0;
 }
 
@@ -297,12 +310,12 @@ static int test_subscriber_can_reenter_get(void) {
    return 0;
 }
 
-static int test_saved_to_recording_allowed(void) {
-   /* After a successful dictation, the next user-driven dictation must
-    * be able to start without needing the caller to first explicitly
-    * transition through IDLE.  PR 1 doesn't ship the UI's 2 s SAVED→IDLE
-    * fade yet, so SAVED→RECORDING must be a legal direct edge. */
+static int test_saved_to_recording_now_refused(void) {
+   /* W1 (S3-5): SAVED→RECORDING was removed.  Self-decay reaches IDLE first,
+    * and a fast re-dictate goes through voice_dictation_begin (which snaps
+    * the terminal to IDLE).  A RAW set_state(RECORDING) from SAVED is refused. */
    voice_dictation_init();
+   host_test_reset();
    mock_sub_t m = {0};
    voice_dictation_subscribe(mock_cb, &m);
 
@@ -311,12 +324,382 @@ static int test_saved_to_recording_allowed(void) {
    voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2100);
    voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 2400);
 
-   /* User immediately taps Dictate again. */
-   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 5000);
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 5000); /* refused */
 
    dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_SAVED); /* unchanged */
+   return 0;
+}
+
+static int test_cancelled_is_terminal_not_failed(void) {
+   /* W1 (S2-7): cancel is the DICT_CANCELLED *state* with reason NONE —
+    * not FAILED/CANCELLED.  Renders neutral, no "TAP TO RETRY". */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, 1500);
+
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_CANCELLED);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NONE);
+   return 0;
+}
+
+static int test_begin_ws_mints_turn_id(void) {
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   CHECK(tid[0] != '\0');
+   dict_event_t e = voice_dictation_get();
    CHECK_EQ(e.state, DICT_RECORDING);
-   CHECK_EQ((int)e.started_ms, 5000); /* fresh start timestamp */
+   CHECK_EQ(e.origin, DICT_ORIGIN_WS);
+   CHECK(strlen(e.turn_id) > 0);
+   CHECK(strcmp(e.turn_id, tid) == 0);
+   return 0;
+}
+
+static int test_begin_refused_during_offline_upload(void) {
+   /* Reverse race: a WS dictation starting mid-offline-upload must be
+    * refused (the offline POST runs for seconds outside the lock). */
+   voice_dictation_init();
+   host_test_reset();
+   bool ok = voice_dictation_try_begin_offline("offlineid", 3, 1000);
+   CHECK(ok);
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_UPLOADING);
+   CHECK_EQ(e.origin, DICT_ORIGIN_OFFLINE);
+
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1100);
+   CHECK(tid == NULL); /* refused */
+   e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_UPLOADING); /* unchanged */
+   CHECK_EQ(e.origin, DICT_ORIGIN_OFFLINE);
+   return 0;
+}
+
+static int test_try_begin_offline_refused_when_live(void) {
+   /* Forward race: the offline queue cannot claim while a WS turn is live. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   bool ok = voice_dictation_try_begin_offline("x", 1, 1100);
+   CHECK(!ok);
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_RECORDING);
+   CHECK_EQ(e.origin, DICT_ORIGIN_WS);
+   return 0;
+}
+
+/* ── W1 self-liveness (decay via the worker) ── */
+
+static int test_saved_decays_to_idle(void) {
+   voice_dictation_init();
+   host_test_reset();
+   /* origin NONE here, so resolution_pending stays false → SAVED arms decay. */
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 1500);
+   voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 1600); /* arms SAVED decay */
+
+   host_clock_advance_ms(1000); /* < 2 s — not yet due */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+
+   host_clock_advance_ms(2000); /* total 3 s > DICT_DECAY_SAVED_MS */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_failed_decays_to_idle(void) {
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1100); /* arms FAILED decay */
+
+   host_clock_advance_ms(6000); /* > DICT_DECAY_FAILED_MS (5 s) */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_cancelled_decays_to_idle(void) {
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, 1100);
+
+   host_clock_advance_ms(2000); /* > DICT_DECAY_CANCELLED_MS (1.5 s) */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_decay_suppressed_while_resolution_pending(void) {
+   /* A WS turn awaiting Dragon's terminal: a timeout-driven FAILED must NOT
+    * decay, so a 60-90s-late summary can still correct it (FAILED→SAVED). */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);                  /* RECORDING, origin WS */
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* sets resolution_pending */
+   CHECK(voice_dictation_get().resolution_pending);
+
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 3000); /* timeout; pending still true */
+   host_clock_advance_ms(6000);
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED); /* NOT decayed — resolution pending */
+   return 0;
+}
+
+static int test_decay_requeues_on_full_worker(void) {
+   /* Full worker queue at decay time must not strand the terminal: the timer
+    * cb re-arms a short retry, and the decay lands once the queue drains. */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1100); /* arms FAILED decay */
+
+   tab5_worker_stub_set_full(true);
+   host_clock_advance_ms(6000);                        /* timer fires → enqueue fails → re-arm @ +250ms */
+   tab5_worker_pump();                                 /* nothing queued */
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED); /* not decayed yet */
+
+   tab5_worker_stub_set_full(false);
+   host_clock_advance_ms(300); /* > DICT_DECAY_RETRY_MS (250) */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE); /* decayed via the retry */
+   return 0;
+}
+
+static int test_try_begin_offline_atomic_vs_decay(void) {
+   /* SAVED's decay job is enqueued (timer fired) but not yet pumped; the
+    * offline queue claims in the gap; the stale decay job must NOT clobber
+    * the freshly-claimed turn. */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, 1500);
+   voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, 1600); /* arms SAVED decay */
+
+   host_clock_advance_ms(3000); /* timer fires → dict_decay_apply_job enqueued (NOT pumped) */
+
+   bool ok = voice_dictation_try_begin_offline("newturn", 5, 0); /* claim in the gap */
+   CHECK(ok);
+   CHECK_EQ(voice_dictation_get().state, DICT_UPLOADING);
+
+   tab5_worker_pump(); /* run the stale decay job — must no-op */
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_UPLOADING); /* not clobbered to IDLE */
+   CHECK_EQ(e.origin, DICT_ORIGIN_OFFLINE);
+   return 0;
+}
+
+/* ── W1 resolution semantics (turn_id gating + late correction) ── */
+
+static int test_resolve_if_current_drops_stale(void) {
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   char idA[DICT_TURN_ID_LEN];
+   strncpy(idA, tid, sizeof(idA));
+   idA[sizeof(idA) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+
+   /* A summary for a DIFFERENT turn must be dropped. */
+   bool applied = voice_dictation_resolve_if_current("ffffffffffff", DICT_SAVED, DICT_FAIL_NONE, 3000);
+   CHECK(!applied);
+   CHECK_EQ(voice_dictation_get().state, DICT_TRANSCRIBING);
+
+   /* The summary for the live turn applies. */
+   applied = voice_dictation_resolve_if_current(idA, DICT_SAVED, DICT_FAIL_NONE, 3100);
+   CHECK(applied);
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+   return 0;
+}
+
+static int test_missing_turn_id_treated_as_match(void) {
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+   CHECK(voice_dictation_resolve_if_current("", DICT_SAVED, DICT_FAIL_NONE, 3000)); /* "" matches */
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 4000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 4100);
+   CHECK(voice_dictation_resolve_if_current(NULL, DICT_SAVED, DICT_FAIL_NONE, 4200)); /* NULL matches */
+   return 0;
+}
+
+static int test_failed_to_saved_late_correction_ws_only(void) {
+   /* WS turn: a timeout drives FAILED while Dragon's slow summary is still
+    * coming; the late summary corrects FAILED→SAVED, which then self-decays. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   char idA[DICT_TURN_ID_LEN];
+   strncpy(idA, tid, sizeof(idA));
+   idA[sizeof(idA) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* pending=true (WS) */
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 3000);    /* timeout; pending kept */
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED);
+   CHECK(voice_dictation_get().resolution_pending);
+
+   CHECK(voice_dictation_resolve_if_current(idA, DICT_SAVED, DICT_FAIL_NONE, 90000));
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_SAVED);
+   CHECK(!e.resolution_pending); /* cleared on SAVED → now decays */
+
+   host_clock_advance_ms(3000);
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_begin_same_origin_keeps_turn_id(void) {
+   /* W2 F5: a same-origin re-entrant begin returns the SAME id (no re-mint),
+    * so a Dragon summary echoing that id still resolves the live turn. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *t1 = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(t1 != NULL);
+   char id1[DICT_TURN_ID_LEN];
+   strncpy(id1, t1, sizeof(id1));
+   id1[sizeof(id1) - 1] = '\0';
+   const char *t2 = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1100); /* re-entrant */
+   CHECK(t2 != NULL);
+   CHECK(strcmp(id1, t2) == 0); /* same id, not re-minted */
+   CHECK_EQ(voice_dictation_get().state, DICT_RECORDING);
+   CHECK(strcmp(id1, voice_dictation_get().turn_id) == 0);
+   return 0;
+}
+
+static int test_failed_to_saved_cross_turn_dropped(void) {
+   /* W2: even with a pending WS resolution, a SAVED echoing the WRONG turn_id
+    * is dropped by resolve_if_current — turn_id match is the authority now. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   char idA[DICT_TURN_ID_LEN];
+   strncpy(idA, tid, sizeof(idA));
+   idA[sizeof(idA) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* pending */
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 3000);
+   CHECK(!voice_dictation_resolve_if_current("0000deadbeef", DICT_SAVED, DICT_FAIL_NONE, 4000));
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED); /* wrong-turn SAVED dropped */
+   CHECK(voice_dictation_resolve_if_current(idA, DICT_SAVED, DICT_FAIL_NONE, 4100));
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED); /* matching turn corrects it */
+   return 0;
+}
+
+static int test_offline_failed_decays_to_idle(void) {
+   /* An offline (REST) FAILED is definitive — the REST response IS the
+    * resolution — so it clears pending and decays, unlike a WS FAILED which
+    * keeps pending for a possible late correction. */
+   voice_dictation_init();
+   host_test_reset();
+   CHECK(voice_dictation_try_begin_offline("offid", 2, 0)); /* UPLOADING, OFFLINE, pending */
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1000);
+   CHECK(!voice_dictation_get().resolution_pending); /* cleared (offline) */
+   host_clock_advance_ms(6000);
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_stuck_watchdog_resolves_pending_ws(void) {
+   /* W3: a WS turn Dragon never resolves (pending forever) is bounded — after
+    * DICT_STUCK_MS the watchdog clears pending + drives a decaying FAILED, so
+    * the FSM always returns to IDLE (the WS-FAILED-pending-forever observed
+    * live 2026-05-30). */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000); /* pending=true, arms stuck */
+   CHECK(voice_dictation_get().resolution_pending);
+
+   host_clock_advance_ms(30000); /* < 60 s — not yet */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_TRANSCRIBING);
+
+   host_clock_advance_ms(31000); /* total 61 s > DICT_STUCK_MS */
+   tab5_worker_pump();
+   dict_event_t e = voice_dictation_get();
+   CHECK_EQ(e.state, DICT_FAILED);
+   CHECK_EQ(e.fail_reason, DICT_FAIL_NETWORK);
+   CHECK(!e.resolution_pending); /* cleared → now eligible to decay */
+
+   host_clock_advance_ms(6000); /* > DICT_DECAY_FAILED_MS */
+   tab5_worker_pump();
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_stuck_watchdog_disarmed_on_resolution(void) {
+   /* If Dragon DOES resolve in time, the watchdog must not later fire a
+    * spurious FAILED. */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   char id[DICT_TURN_ID_LEN];
+   strncpy(id, tid, sizeof(id));
+   id[sizeof(id) - 1] = '\0';
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+   CHECK(voice_dictation_resolve_if_current(id, DICT_SAVED, DICT_FAIL_NONE, 3000)); /* resolves, disarms stuck */
+   CHECK_EQ(voice_dictation_get().state, DICT_SAVED);
+
+   host_clock_advance_ms(70000); /* well past DICT_STUCK_MS */
+   tab5_worker_pump();
+   /* SAVED self-decayed to IDLE; the watchdog did NOT fire a spurious FAILED. */
+   CHECK_EQ(voice_dictation_get().state, DICT_IDLE);
+   return 0;
+}
+
+static int test_failed_to_saved_refused_when_not_pending(void) {
+   /* No WS resolution pending → a stray SAVED must NOT resurrect a FAILED. */
+   voice_dictation_init();
+   host_test_reset();
+   voice_dictation_set_state(DICT_RECORDING, DICT_FAIL_NONE, 1000);
+   voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, 1100); /* origin NONE, not pending */
+   bool applied = voice_dictation_resolve_if_current("", DICT_SAVED, DICT_FAIL_NONE, 2000);
+   CHECK(!applied); /* guard refuses */
+   CHECK_EQ(voice_dictation_get().state, DICT_FAILED);
+   return 0;
+}
+
+static int test_orb_active_recording_only(void) {
+   /* W4: the orb follows capture ONLY.  RECORDING holds the orb; every other
+    * state (incl. the at-stop TRANSCRIBING/UPLOADING/SAVED) releases it so the
+    * orb snaps back to idle the instant recording stops. */
+   CHECK(voice_dictation_orb_active(DICT_RECORDING));
+   CHECK(!voice_dictation_orb_active(DICT_IDLE));
+   CHECK(!voice_dictation_orb_active(DICT_UPLOADING));
+   CHECK(!voice_dictation_orb_active(DICT_TRANSCRIBING));
+   CHECK(!voice_dictation_orb_active(DICT_SAVED));
+   CHECK(!voice_dictation_orb_active(DICT_FAILED));
+   CHECK(!voice_dictation_orb_active(DICT_CANCELLED));
+   return 0;
+}
+
+static int test_orb_releases_at_stop(void) {
+   /* End-to-end: begin a WS turn (orb active), then drive the at-stop
+    * TRANSCRIBING — orb_active must be false even though the FSM is still
+    * resolving the turn (resolution_pending, turn_id intact). */
+   voice_dictation_init();
+   host_test_reset();
+   const char *tid = voice_dictation_begin(DICT_ORIGIN_WS, NULL, 1000);
+   CHECK(tid != NULL);
+   char id[DICT_TURN_ID_LEN];
+   strncpy(id, tid, sizeof(id));
+   id[sizeof(id) - 1] = '\0';
+   CHECK(voice_dictation_orb_active(voice_dictation_state())); /* RECORDING */
+   voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, 2000);
+   CHECK(!voice_dictation_orb_active(voice_dictation_state())); /* released */
+   dict_event_t e = voice_dictation_get();
+   CHECK(e.resolution_pending);       /* FSM still resolving */
+   CHECK(strcmp(e.turn_id, id) == 0); /* turn_id stable across handoff */
    return 0;
 }
 
@@ -334,13 +717,34 @@ int main(void) {
    if (test_failed_clears_reason_on_idle()) return 1;
    if (test_multiple_subscribers_all_fire()) return 1;
    if (test_unsubscribe_stops_callbacks()) return 1;
-   if (test_subscriber_table_full_returns_minus_one()) return 1;
+   if (test_subscriber_table_grows()) return 1;
    if (test_set_note_slot_rejected_in_idle()) return 1;
    if (test_set_note_slot_accepted_in_recording()) return 1;
    if (test_set_note_slot_accepted_in_uploading()) return 1;
    if (test_set_note_slot_rejected_after_saved()) return 1;
    if (test_subscriber_can_reenter_get()) return 1;
-   if (test_saved_to_recording_allowed()) return 1;
+   if (test_saved_to_recording_now_refused()) return 1;
+   if (test_cancelled_is_terminal_not_failed()) return 1;
+   if (test_begin_ws_mints_turn_id()) return 1;
+   if (test_begin_refused_during_offline_upload()) return 1;
+   if (test_try_begin_offline_refused_when_live()) return 1;
+   if (test_saved_decays_to_idle()) return 1;
+   if (test_failed_decays_to_idle()) return 1;
+   if (test_cancelled_decays_to_idle()) return 1;
+   if (test_decay_suppressed_while_resolution_pending()) return 1;
+   if (test_decay_requeues_on_full_worker()) return 1;
+   if (test_try_begin_offline_atomic_vs_decay()) return 1;
+   if (test_resolve_if_current_drops_stale()) return 1;
+   if (test_missing_turn_id_treated_as_match()) return 1;
+   if (test_failed_to_saved_late_correction_ws_only()) return 1;
+   if (test_begin_same_origin_keeps_turn_id()) return 1;
+   if (test_failed_to_saved_cross_turn_dropped()) return 1;
+   if (test_offline_failed_decays_to_idle()) return 1;
+   if (test_stuck_watchdog_resolves_pending_ws()) return 1;
+   if (test_stuck_watchdog_disarmed_on_resolution()) return 1;
+   if (test_failed_to_saved_refused_when_not_pending()) return 1;
+   if (test_orb_active_recording_only()) return 1;
+   if (test_orb_releases_at_stop()) return 1;
    fprintf(stderr, "ok  %d checks passed\n", g_pass);
    return 0;
 }

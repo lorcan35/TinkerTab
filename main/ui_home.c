@@ -1931,13 +1931,15 @@ esp_err_t ui_home_start_voice_turn(const char *source) {
       return ESP_ERR_INVALID_STATE;
    }
 
-   /* PR 2 polish: starting a fresh Ask turn should always start clean.
-    * If a previous dictation left the pipeline in a transient terminal
-    * state (FAILED/SAVED), reset it to IDLE so the orb's Ask visuals
-    * aren't shadowed by stale "CANCELLED · TAP TO RETRY" text. */
+   /* Starting a fresh Ask turn should always start clean.  If a previous
+    * dictation left the pipeline in a terminal state (FAILED/SAVED/CANCELLED)
+    * that has not yet self-decayed (fast tap), snap it to IDLE so the orb's
+    * Ask visuals aren't shadowed by stale dictation text.  This is the ASK
+    * path's concern (Ask never goes through voice_dictation_begin); terminal
+    * LIVENESS itself is now owned by the FSM's self-decay (W1). */
    dict_event_t pe = voice_dictation_get();
-   if (pe.state == DICT_FAILED || pe.state == DICT_SAVED) {
-      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   if (pe.state == DICT_FAILED || pe.state == DICT_SAVED || pe.state == DICT_CANCELLED) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
 
    ui_voice_show();
@@ -2294,7 +2296,9 @@ static void mode_chip_click_cb(lv_event_t *e) {
 static void dictate_chip_tap_cb(lv_event_t *e) {
    (void)e;
    dict_event_t dp = voice_dictation_get();
-   if (dp.state == DICT_IDLE || dp.state == DICT_FAILED) {
+   /* W1: also start from a self-decaying terminal (SAVED/CANCELLED) so a fast
+    * re-tap inside the ~2s/1.5s decay window isn't dropped — begin() snaps it. */
+   if (dp.state == DICT_IDLE || dp.state == DICT_FAILED || dp.state == DICT_SAVED || dp.state == DICT_CANCELLED) {
       /* #537: arm a SD WAV before starting the pipeline so the mic
        * capture task's ui_notes_write_audio() hook actually has a
        * file to write to.  On dictation_summary the slot is finalised
@@ -2325,11 +2329,17 @@ static void dictate_chip_tap_cb(lv_event_t *e) {
 
 /* PR 2 polish: timer cb that refreshes the chip's M:SS hint every 200 ms
  * while RECORDING is active.  Self-stopping when pipeline leaves RECORDING. */
+/* started_ms is set once at RECORDING entry and never changes during the turn,
+ * so the subscriber caches it at arm time and the 200ms ticker reads the FSM
+ * state LOCK-FREE.  This runs on ui_task every 200ms; voice_dictation_get() took
+ * the FSM mutex each tick, adding ui_task to the dictation-lock contenders right
+ * as the stop transition fires — the contention class behind the TASK_WDT. */
+static uint32_t s_dictate_rec_started_ms = 0;
+
 static void dictate_chip_rec_tick_cb(lv_timer_t *t) {
    (void)t;
    if (!s_dictate_chip_hint) return;
-   dict_event_t e = voice_dictation_get();
-   if (e.state != DICT_RECORDING) {
+   if (voice_dictation_state() != DICT_RECORDING) {
       if (s_dictate_chip_rec_t) {
          lv_timer_del(s_dictate_chip_rec_t);
          s_dictate_chip_rec_t = NULL;
@@ -2337,7 +2347,8 @@ static void dictate_chip_rec_tick_cb(lv_timer_t *t) {
       return;
    }
    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-   uint32_t dur_ms = (e.started_ms && now_ms >= e.started_ms) ? (now_ms - e.started_ms) : 0;
+   uint32_t started = s_dictate_rec_started_ms;
+   uint32_t dur_ms = (started && now_ms >= started) ? (now_ms - started) : 0;
    uint32_t s = dur_ms / 1000;
    char buf[24];
    snprintf(buf, sizeof(buf), "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
@@ -2355,8 +2366,14 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
       return;
    }
 
+   /* W4: the Dictate chip follows CAPTURE only, like the orb.  Once recording
+    * stops, the FSM's background enrichment states (UPLOADING/TRANSCRIBING/…)
+    * are surfaced on the Notes badge, not the home chip — so the chip returns to
+    * its idle "Dictate · TAP TO START" so the user can immediately start another. */
+   dict_state_t ps = voice_dictation_orb_active(event->state) ? DICT_RECORDING : DICT_IDLE;
+
    /* Tear down the chip M:SS ticker if we're leaving RECORDING. */
-   if (event->state != DICT_RECORDING && s_dictate_chip_rec_t) {
+   if (ps != DICT_RECORDING && s_dictate_chip_rec_t) {
       lv_timer_del(s_dictate_chip_rec_t);
       s_dictate_chip_rec_t = NULL;
    }
@@ -2364,7 +2381,7 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
    /* PR 2 polish: pipeline non-IDLE → force chip fully visible even if
     * the chrome fade dimmed it during voice-active.  IDLE → let normal
     * fade rules apply. */
-   if (event->state != DICT_IDLE) {
+   if (ps != DICT_IDLE) {
       lv_anim_delete(s_dictate_chip, chrome_fade_anim_cb);
       lv_obj_set_style_opa(s_dictate_chip, CHROME_FULL_OPA, LV_PART_MAIN);
    } else {
@@ -2384,7 +2401,7 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
    lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0xE74C3C), 0);
 
    char buf[40];
-   switch (event->state) {
+   switch (ps) {
       case DICT_IDLE:
          lv_label_set_text(s_dictate_chip_label, "Dictate");
          lv_label_set_text(s_dictate_chip_hint, "TAP TO START");
@@ -2407,6 +2424,7 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
           * fires on state transitions, so the duration would otherwise
           * stay frozen at the value computed on RECORDING entry. */
          if (!s_dictate_chip_rec_t) {
+            s_dictate_rec_started_ms = event->started_ms; /* cache once — ticker reads it lock-free */
             s_dictate_chip_rec_t = lv_timer_create(dictate_chip_rec_tick_cb, 200, NULL);
          }
          break;
@@ -2442,6 +2460,15 @@ static void dictate_chip_pipeline_cb(const dict_event_t *event, void *user_data)
          lv_obj_set_style_text_color(s_dictate_chip_hint, lv_color_hex(0xE74C3C), 0);
          lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_REFRESH);
          lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0xE74C3C), 0);
+         break;
+
+      case DICT_CANCELLED:
+         /* W1 (S2-7): neutral — an intentional cancel, no retry CTA. */
+         lv_label_set_text(s_dictate_chip_label, "Cancelled");
+         lv_label_set_text(s_dictate_chip_hint, "");
+         lv_label_set_text(s_dictate_chip_icon, LV_SYMBOL_CLOSE);
+         lv_obj_set_style_border_color(s_dictate_chip, lv_color_hex(0x6B7280), 0);
+         lv_obj_set_style_bg_color(s_dictate_chip_dot, lv_color_hex(0x6B7280), 0);
          break;
    }
 }
@@ -2873,8 +2900,43 @@ void ui_home_refresh_mode_badge(void)
     update_mode_ui(m);
 }
 
-void ui_home_show_toast(const char *text) { show_toast_internal(text); }
-void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) { show_toast_internal_tone(text, tone); }
+/* Toasts can be requested from ANY task (voice/mic/websocket/httpd), but
+ * show_toast_internal_tone does raw lv_obj_create / lv_obj_del / lv_timer_create
+ * with no LVGL lock — it is only safe on ui_task.  Calling it directly from
+ * another task raced ui_task's allocator and corrupted the LVGL heap (2026-05-30
+ * stress coredump: httpd in toast_ctx_destroy <- ui_home_show_toast <- offline
+ * dictation finalise "Saved offline ..." at voice.c:2102).  Marshal the request
+ * onto ui_task via tab5_lv_async_call so every cross-task caller is safe; the
+ * in-file callers below already run on ui_task and use show_toast_internal directly. */
+typedef struct {
+   char *text;
+   ui_toast_tone_t tone;
+} toast_req_t;
+
+static void toast_async_cb(void *arg) {
+   toast_req_t *r = (toast_req_t *)arg;
+   if (!r) return;
+   if (r->text) {
+      show_toast_internal_tone(r->text, r->tone);
+      free(r->text);
+   }
+   free(r);
+}
+
+void ui_home_show_toast_ex(const char *text, ui_toast_tone_t tone) {
+   if (!text) return;
+   toast_req_t *r = (toast_req_t *)calloc(1, sizeof(*r));
+   if (!r) return;
+   r->text = strdup(text);
+   r->tone = tone;
+   if (!r->text) {
+      free(r);
+      return;
+   }
+   tab5_lv_async_call(toast_async_cb, r);
+}
+
+void ui_home_show_toast(const char *text) { ui_home_show_toast_ex(text, UI_TOAST_INFO); }
 
 /* ── TT #328 Wave 9 — first-launch mode-chip hint ─────────────── */
 

@@ -299,7 +299,6 @@ static dict_event_t s_pipeline = {
     .note_slot = -1,
 };
 static lv_obj_t *s_orb_caption = NULL;        /* Label below the orb body */
-static lv_timer_t *s_saved_fade_timer = NULL; /* SAVED → IDLE 2s timer */
 static lv_timer_t *s_rec_timer_label = NULL;  /* updates RECORDING caption every 200 ms */
 
 /* ── Circadian palette ───────────────────────────────────────────────── */
@@ -1125,10 +1124,6 @@ void ui_orb_destroy(void) {
    if (s_orb_caption) {
       lv_obj_del(s_orb_caption);
       s_orb_caption = NULL;
-   }
-   if (s_saved_fade_timer) {
-      lv_timer_del(s_saved_fade_timer);
-      s_saved_fade_timer = NULL;
    }
    if (s_rec_timer_label) {
       lv_timer_del(s_rec_timer_label);
@@ -2430,8 +2425,6 @@ static const char *fail_reason_caption(dict_fail_t r) {
          return "NO AUDIO";
       case DICT_FAIL_TOO_LONG:
          return "TOO LONG (5 min cap)";
-      case DICT_FAIL_CANCELLED:
-         return "CANCELLED";
       default:
          return "FAIL";
    }
@@ -2455,12 +2448,8 @@ static void hide_caption(void) {
    if (s_orb_caption) lv_obj_add_flag(s_orb_caption, LV_OBJ_FLAG_HIDDEN);
 }
 
-/* Timer cb for SAVED → IDLE auto-fade. */
-static void saved_fade_to_idle_cb(lv_timer_t *t) {
-   (void)t;
-   s_saved_fade_timer = NULL;
-   voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-}
+/* SAVED→IDLE auto-fade is gone (W1): the dictation FSM now owns terminal
+ * self-decay (voice_dictation.c), so this surface is a pure renderer. */
 
 /* Update the RECORDING caption with live elapsed time.  Stops itself
  * if the pipeline has left RECORDING (defensive — set_pipeline_state
@@ -2503,29 +2492,31 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
    if (!event) return;
    s_pipeline = *event;
 
+   /* W4: the orb follows CAPTURE only.  Once recording stops, the FSM moves to
+    * the background enrichment states (UPLOADING/TRANSCRIBING/SAVED/FAILED/
+    * CANCELLED) which are now surfaced on the Notes badge — NOT the orb.  Paint
+    * those as IDLE so the orb snaps back to ready the instant recording ends;
+    * only DICT_RECORDING holds the orb.  s_pipeline keeps the true state for
+    * other readers (rec_timer_label_cb). */
+   dict_state_t ps = voice_dictation_orb_active(event->state) ? DICT_RECORDING : DICT_IDLE;
+
    /* TT #549: pause always-alive motion while the pipeline owns the
     * body's paint — gradient-stop pan + spec opa breath compete with
-    * paint_pipeline_body's tint.  Resume on DICT_IDLE. */
-   if (event->state != DICT_IDLE) {
+    * paint_pipeline_body's tint.  Resume on idle. */
+   if (ps != DICT_IDLE) {
       alive_stop();
    } else {
       if (s_state == ORB_STATE_IDLE) alive_start();
    }
 
-   /* Tear down the SAVED auto-fade timer when leaving SAVED. */
-   if (event->state != DICT_SAVED && s_saved_fade_timer) {
-      lv_timer_del(s_saved_fade_timer);
-      s_saved_fade_timer = NULL;
-   }
-
    /* Stop the live elapsed-time timer when leaving RECORDING. */
-   if (event->state != DICT_RECORDING && s_rec_timer_label) {
+   if (ps != DICT_RECORDING && s_rec_timer_label) {
       lv_timer_del(s_rec_timer_label);
       s_rec_timer_label = NULL;
    }
 
    char buf[64];
-   switch (event->state) {
+   switch (ps) {
       case DICT_IDLE:
          hide_caption();
          reset_pipeline_halo();
@@ -2595,12 +2586,7 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          paint_pipeline_halo(0x4ADE80); /* mint glow */
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xCFFFE0), 0);
          set_caption_text("SAVED");
-         /* Schedule auto-fade back to IDLE after 2 s.  Idempotent — if
-          * one already exists (rapid SAVED re-entry), don't stack. */
-         if (!s_saved_fade_timer) {
-            s_saved_fade_timer = lv_timer_create(saved_fade_to_idle_cb, 2000, NULL);
-            if (s_saved_fade_timer) lv_timer_set_repeat_count(s_saved_fade_timer, 1);
-         }
+         /* W1: no UI fade timer — the FSM self-decays SAVED→IDLE (~2 s). */
          break;
 
       case DICT_FAILED:
@@ -2616,6 +2602,18 @@ void ui_orb_set_pipeline_state(const dict_event_t *event) {
          lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xFFD2CC), 0);
          set_caption_text(buf);
          break;
+
+      case DICT_CANCELLED:
+         /* W1 (S2-7): an intentional cancel, NOT a failure — render neutral
+          * slate with no "TAP TO RETRY" affordance.  Self-decays to IDLE. */
+         ripple_stop();
+         body_pulse_stop();
+         thinking_arc_stop();
+         paint_pipeline_body(0x6B7280);
+         paint_pipeline_halo(0x9AA3AF);
+         lv_obj_set_style_text_color(s_orb_caption, lv_color_hex(0xD7DBE0), 0);
+         set_caption_text("Cancelled");
+         break;
    }
 }
 
@@ -2624,9 +2622,19 @@ bool ui_orb_pipeline_active(void) {
     * cached s_pipeline.  s_pipeline is updated by the LVGL-async
     * subscriber, which runs AFTER any synchronous caller that resets
     * the pipeline state (e.g., orb_click_cb's pipeline-clear-before-Ask
-    * path).  Reading voice_dictation_get() avoids a window where
+    * path).  Reading the authoritative FSM avoids a window where
     * is-pipeline-active returns stale true and suppresses the Ask
-    * overlay's chrome. */
-   dict_event_t e = voice_dictation_get();
-   return e.state != DICT_IDLE;
+    * overlay's chrome.
+    *
+    * Lock-free read: this runs every LVGL frame (orb paint).  Calling
+    * voice_dictation_get() here took the dictation mutex (portMAX_DELAY)
+    * on every frame and wedged ui_task on the lock during the dictation-
+    * stop contention burst (task-WDT, 2026-05-30 coredump).  We only need
+    * the state enum, so use the lock-free voice_dictation_state().
+    *
+    * W4: the orb follows CAPTURE only — RECORDING holds the orb; at stop the
+    * FSM moves to background note states (TRANSCRIBING/SAVED/…) and the orb
+    * snaps back to idle instantly while enrichment continues in the Notes
+    * badge.  (Was `!= DICT_IDLE`, which pinned the orb through the summary wait.) */
+   return voice_dictation_orb_active(voice_dictation_state());
 }

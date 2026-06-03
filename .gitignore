@@ -50,6 +50,8 @@ node_modules/
 *.bin
 *.elf
 tests/host/build/
+tests/host/build_review/
+tests/host/build*/
 
 # Visual brainstorm session content — local only
 .superpowers/brainstorm/

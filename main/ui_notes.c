@@ -21,11 +21,13 @@
 
 #include "audio.h"
 #include "config.h"
+#include "dictation_notes.h" /* W5: extracted Dragon REST sync engine */
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h" /* s_pending_chip_mutex (pending-chip handoff) */
 #include "freertos/task.h"
 #include "mode_manager.h"
 #include "nvs.h"
@@ -37,8 +39,9 @@
 #include "ui_feedback.h" /* Polish P3 (TT #652) — ui_fb_button transition */
 #include "ui_home.h"
 #include "ui_keyboard.h"
-#include "ui_nav.h"   /* TT #623 — tab5_nav_to */
-#include "ui_theme.h" /* Polish P1: TH_* tokens replace local COL_* */
+#include "ui_nav.h"            /* TT #623 — tab5_nav_to */
+#include "ui_notes_internal.h" /* W5: shared note-store types + extern store/helpers */
+#include "ui_theme.h"          /* Polish P1: TH_* tokens replace local COL_* */
 #include "ui_voice.h"
 #include "voice.h"
 #include "voice_dictation.h"
@@ -78,46 +81,10 @@ static const char *TAG = "ui_notes";
 #define CARD_RAD       24      /* was 16 */
 #define BTN_ROW_H      80      /* Voice/Type button row height (was 160) */
 #define ACTION_BTN_H   56      /* Voice/Type button height (was 120) */
-#define MAX_NOTES      30
-/* TT #572 follow-up: bumped from 512 → 32768 so meeting-length
- * dictations actually fit.  Every code path that copied a transcript
- * into note_t.text used strncpy(.., MAX_NOTE_LEN - 1) which silently
- * truncated 10-min dictations to ~1 paragraph (Dragon held the full
- * 9269-char transcript, Tab5 was discarding 95% of it on store).
- *
- * Memory budget: 30 notes × 32 KB = 960 KB of PSRAM in the note_t
- * array.  Tab5 has 32 MB PSRAM, currently ~15 MB free at idle —
- * comfortable.  When the array gets persisted to /sdcard/notes.bin
- * the on-disk size grows proportionally; SD is 121 GB. */
-#define MAX_NOTE_LEN   32768
+/* MAX_NOTES / MAX_NOTE_LEN moved to ui_notes_internal.h (W5). */
 
-/* ── Note states ────────────────────────────────────────── */
-typedef enum {
-    NOTE_STATE_TEXT,         /* text-only note (typed) */
-    NOTE_STATE_RECORDED,    /* has audio file, not yet transcribed */
-    NOTE_STATE_TRANSCRIBING,/* transcription in progress */
-    NOTE_STATE_TRANSCRIBED, /* has audio file + transcript */
-    NOTE_STATE_FAILED,      /* transcription failed — can retry */
-} note_state_t;
-
-/* Reason a note ended up in NOTE_STATE_FAILED — surfaced as a chip on
- * the list row instead of the old generic "FAIL".  Persist+restore as the
- * "fr" JSON key. */
-typedef enum {
-   NOTE_FAIL_NONE = 0,
-   NOTE_FAIL_AUTH,     /* Dragon returned 401 (no bearer or wrong token) */
-   NOTE_FAIL_NETWORK,  /* HTTP open / write / non-200 (not auth) */
-   NOTE_FAIL_EMPTY,    /* Dragon returned 200 + empty STT text */
-   NOTE_FAIL_NO_AUDIO, /* WAV missing on disk / too small / unreadable */
-   NOTE_FAIL_TOO_LONG, /* hit MAX_NOTE_REC_SECS cap during recording */
-} note_fail_t;
-
-#define MAX_AUDIO_PATH 64
-/* TT #572: bumped from 300 (5 min) to 14400 (4 hr) so the SD recording
- * keeps up with the WS-streaming cap in voice.c.  Safety guard against
- * zombie tasks survives — 4 hr is still bounded.  WAV at 16 kHz mono
- * int16 = 32 KB/s = ~115 MB/hr → ~460 MB for the full 4 hr cap. */
-#define MAX_NOTE_REC_SECS 14400
+/* W5: note_state_t / enrich_state_t / note_fail_t / MAX_AUDIO_PATH /
+ * MAX_NOTE_REC_SECS moved to ui_notes_internal.h. */
 
 /* PR 3 cleanup pass: layout constants hoisted to file scope so the
  * dynamic-relayout helper (notes_relayout_list) can use them outside
@@ -131,75 +98,18 @@ typedef enum {
 #define PROC_H 56
 #define FAB_SZ 64
 
-/* PR 3: classification of the note's content.  Informs the timeline filter
- * pills (All / Voice / Text / Pending) and feeds PR 4's action chips.
- * NOTE_TYPE_AUTO is the legacy compatibility value — when loaded from JSON
- * we leave it as AUTO and the render path falls back to `is_voice` so the
- * timeline behaves identically until a new dictation lands with a concrete
- * type from Dragon.  PR 4 introduces NOTE_TYPE_LIST + NOTE_TYPE_REMINDER. */
-typedef enum {
-   NOTE_TYPE_AUTO = 0,
-   NOTE_TYPE_TEXT,
-   NOTE_TYPE_VOICE,
-   NOTE_TYPE_LIST,
-   NOTE_TYPE_REMINDER,
-} note_type_t;
+/* W5: note_type_t / pending_kind_t / PENDING_* / pending_chip_t / note_entry_t
+ * moved to ui_notes_internal.h (shared with dictation_notes.c). */
 
-/* PR 4: action-chip pending state.  Dragon's classifier proposes a
- * conversion (reminder or list) after dictation_summary; the chip
- * renders below the row body when kind != PENDING_NONE and confidence
- * is at or above PENDING_CONFIDENCE_FLOOR.  Tap ✓ confirms (schedules
- * notification / flips type); tap ✕ clears.  Persisted as JSON object
- * under key "pc". */
-typedef enum {
-   PENDING_NONE = 0,
-   PENDING_REMINDER = 1,
-   PENDING_LIST = 2,
-} pending_kind_t;
+/* Wave 20 (closes #330): s_notes is PSRAM-lazy (ensure_notes_buf on first use).
+ * W5: de-static'd — DEFINED here, declared extern in ui_notes_internal.h so the
+ * dictation engine (dictation_notes.c) reaches the same store. */
+note_entry_t *s_notes = NULL;
+int s_note_count = 0;
+int s_next_slot = 0;
+bool s_loaded = false; /* NVS loaded at least once */
 
-#define PENDING_CONFIDENCE_FLOOR 75 /* 0-100; chip hidden below this */
-#define PENDING_PAYLOAD_LEN 128
-
-typedef struct {
-   uint8_t kind;       /* pending_kind_t */
-   uint8_t confidence; /* 0-100 */
-   char payload[PENDING_PAYLOAD_LEN];
-   /* Reminder payload format: ISO-8601 datetime, e.g. "2026-05-19T18:00".
-    * List payload format: a single comma + delimiter signal like
-    * "delim=comma" — Tab5 splits the transcript itself on confirm. */
-} pending_chip_t;
-
-/* ── Note storage ───────────────────────────────────────── */
-typedef struct {
-    char text[MAX_NOTE_LEN];
-    char audio_path[MAX_AUDIO_PATH]; /* e.g. "/sdcard/rec/0042.wav" or "" */
-    note_state_t state;
-    note_fail_t fail_reason;
-    note_type_t type;       /* PR 3 */
-    pending_chip_t pending; /* PR 3 (reserved for PR 4) */
-    bool is_voice;
-    uint8_t hour;
-    uint8_t minute;
-    uint8_t day;
-    uint8_t month;
-    uint8_t year;     /* year offset from 2000 */
-    bool used;
-    bool needs_sync;  /* S6: true if not yet synced to Dragon */
-} note_entry_t;
-
-/* Wave 20 (closes #330): s_notes was a BSS-static array (~17.7 KB) that
- * eats internal SRAM at boot — same failure class as the recurring
- * vApplicationGetTimerTaskMemory assert hit in Waves 11 / 13 / 15.
- * PSRAM-lazy: allocate on first use via ensure_notes_buf().  Every public
- * entry point (notes_load + the few callers that bypass it) calls the
- * helper before touching the buffer, so the rest of the file's index
- * arithmetic stays unchanged. */
-static note_entry_t *s_notes = NULL;
-static int s_note_count = 0;
-static int s_next_slot = 0;
-static bool s_loaded = false; /* NVS loaded at least once */
-
-static bool ensure_notes_buf(void) {
+bool ensure_notes_buf(void) {
    if (s_notes) return true;
    s_notes = heap_caps_calloc(MAX_NOTES, sizeof(*s_notes), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
    if (!s_notes) {
@@ -219,133 +129,48 @@ static bool ensure_notes_buf(void) {
  */
 #define NOTES_SD_PATH  "/sdcard/notes.js"
 #define NOTES_TMP_PATH "/sdcard/notes.tmp"
-#define REC_DIR        "/sdcard/rec"
+/* REC_DIR now in ui_notes_internal.h (shared with the recording engine). */
 #define NVS_NAMESPACE  "notes"
 #define NVS_KEY_DATA   "data"
 #define NVS_KEY_RECID  "recid"   /* next recording ID counter */
 
-static uint32_t s_next_rec_id = 1;  /* monotonic recording counter */
+/* W5: de-static'd — DEFINED here (persisted by notes_save/notes_load), read +
+ * bumped by the recording engine (dictation_notes.c).  Declared extern in
+ * ui_notes_internal.h. */
+uint32_t s_next_rec_id = 1; /* monotonic recording counter */
 
 #include "sdcard.h"
 #include "cJSON.h"
 
 /* Forward declarations for persistence (defined below) */
-static void notes_load(void);
-static void notes_save(void);
+void notes_load(void);
+void notes_save(void);
 
 /* ── Sync single note to Dragon REST API (fire-and-forget task) ─── */
 
-typedef struct {
-    char title[128];
-    char text[MAX_NOTE_LEN];
-    int  note_idx;  /* S6: index in s_notes for clearing needs_sync */
-} sync_note_args_t;
-
-static void sync_note_to_dragon_task(void *arg)
-{
-    sync_note_args_t *a = (sync_note_args_t *)arg;
-
-    /* Build Dragon URL from settings */
-    char dhost[64];
-    tab5_settings_get_dragon_host(dhost, sizeof(dhost));
-    char url[160];
-    snprintf(url, sizeof(url), "http://%s:%d/api/notes", dhost, 3502);
-
-    /* Build JSON body */
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "title", a->title);
-    cJSON_AddStringToObject(body, "text", a->text);
-    char *json = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-
-    if (!json) { free(a); vTaskSuspend(NULL); return; }
-
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .timeout_ms = 10000,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    esp_http_client_set_header(client, "Content-Type", "application/json");
-    /* Dragon W13 C2: /api/notes is bearer-gated.  Read dragon_tok from NVS
-     * and add the header; without it every sync silently 401s. */
-    char dtok[80];
-    if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
-       char auth_hdr[96];
-       snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
-       esp_http_client_set_header(client, "Authorization", auth_hdr);
-    }
-    esp_http_client_set_post_field(client, json, strlen(json));
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-
-    if (err == ESP_OK && (status == 200 || status == 201)) {
-        ESP_LOGI(TAG, "Note synced to Dragon (status=%d, idx=%d)", status, a->note_idx);
-        /* S6: Clear needs_sync flag on success */
-        if (a->note_idx >= 0 && a->note_idx < MAX_NOTES) {
-            s_notes[a->note_idx].needs_sync = false;
-        }
-    } else {
-        ESP_LOGW(TAG, "Note sync failed: err=%s status=%d",
-                 esp_err_to_name(err), status);
-    }
-
-    esp_http_client_cleanup(client);
-    free(json);
-    free(a);
-    vTaskSuspend(NULL);
-}
+/* W5: sync_note_args_t + sync_note_to_dragon_task moved to dictation_notes.c. */
 
 /* S6: Find note index by text content (for needs_sync tracking) */
-static int find_note_idx_by_text(const char *text)
-{
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && strncmp(s_notes[i].text, text, 64) == 0) return i;
-    }
-    return -1;
+int find_note_idx_by_text(const char *text) {
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && strncmp(s_notes[i].text, text, 64) == 0) return i;
+   }
+   return -1;
 }
 
-static void sync_note_to_dragon(const char *title, const char *text)
-{
-    if (!text || !text[0]) return;
-    int idx = find_note_idx_by_text(text);
-
-    if (!tab5_wifi_connected()) {
-        ESP_LOGW(TAG, "Note sync skipped — WiFi not connected");
-        /* S6: Mark for later sync */
-        if (idx >= 0) s_notes[idx].needs_sync = true;
-        return;
-    }
-
-    sync_note_args_t *args = calloc(1, sizeof(sync_note_args_t));
-    if (!args) return;
-    strncpy(args->title, title ? title : "", sizeof(args->title) - 1);
-    strncpy(args->text, text, sizeof(args->text) - 1);
-    args->note_idx = idx;
-
-    ESP_LOGI(TAG, "Syncing note to Dragon (%zu chars, idx=%d)", strlen(text), idx);
-    xTaskCreatePinnedToCore(sync_note_to_dragon_task, "note_sync", 4096,
-                            args, 3, NULL, 0);
+/* W4: find the note row for a turn_id, or -1.  The reconcile join (note_created
+ * / dictation_summary) keys on turn_id — the W1/W2 identity already echoed both
+ * ways — so a late update for turn A only ever touches A's row, never B's. */
+int find_note_idx_by_turn_id(const char *turn_id) {
+   if (!turn_id || !turn_id[0]) return -1;
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && s_notes[i].turn_id[0] && strcmp(s_notes[i].turn_id, turn_id) == 0) return i;
+   }
+   return -1;
 }
 
-/* S6: Sync all pending notes to Dragon (called on reconnect) */
-void ui_notes_sync_pending(void)
-{
-    notes_load();
-    int synced = 0;
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && s_notes[i].needs_sync && s_notes[i].text[0]) {
-            ESP_LOGI(TAG, "Catch-up sync: note %d", i);
-            sync_note_to_dragon("", s_notes[i].text);
-            synced++;
-            vTaskDelay(pdMS_TO_TICKS(500));  /* stagger to avoid flooding */
-        }
-    }
-    if (synced > 0) {
-        ESP_LOGI(TAG, "Catch-up sync: %d notes queued", synced);
-    }
-}
+/* W5: sync_note_to_dragon + ui_notes_sync_pending moved to dictation_notes.c
+ * (declared in dictation_notes.h, included above). */
 
 /* Forward decls for the fetch path below — the actual statics live
  * further down with the rest of the edit-overlay state. */
@@ -511,276 +336,291 @@ static void fetch_full_transcript_from_dragon(int slot) {
                            5120, a, 3, NULL, 0);
 }
 
-static void notes_save(void)
-{
-    cJSON *arr = cJSON_CreateArray();
-    if (!arr) return;
+void notes_save(void) {
+   cJSON *arr = cJSON_CreateArray();
+   if (!arr) return;
 
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (!s_notes[i].used) continue;
-        const note_entry_t *n = &s_notes[i];
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "t", n->text);
-        cJSON_AddNumberToObject(obj, "v", n->is_voice ? 1 : 0);
-        cJSON_AddNumberToObject(obj, "s", (int)n->state);
-        if (n->audio_path[0]) {
-            cJSON_AddStringToObject(obj, "a", n->audio_path);
-        }
-        cJSON_AddNumberToObject(obj, "h", n->hour);
-        cJSON_AddNumberToObject(obj, "m", n->minute);
-        cJSON_AddNumberToObject(obj, "d", n->day);
-        cJSON_AddNumberToObject(obj, "mo", n->month);
-        cJSON_AddNumberToObject(obj, "y", n->year);
-        cJSON_AddNumberToObject(obj, "i", i);
-        if (n->needs_sync) cJSON_AddNumberToObject(obj, "ns", 1);
-        if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
-           cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
-        }
-        if (n->type != NOTE_TYPE_AUTO) {
-           cJSON_AddNumberToObject(obj, "ty", (int)n->type);
-        }
-        /* PR 4: persist pending_chip when populated. */
-        if (n->pending.kind != PENDING_NONE) {
-           cJSON *pc = cJSON_CreateObject();
-           cJSON_AddNumberToObject(pc, "k", n->pending.kind);
-           cJSON_AddNumberToObject(pc, "c", n->pending.confidence);
-           cJSON_AddStringToObject(pc, "p", n->pending.payload);
-           cJSON_AddItemToObject(obj, "pc", pc);
-        }
-        cJSON_AddItemToArray(arr, obj);
-    }
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (!s_notes[i].used) continue;
+      const note_entry_t *n = &s_notes[i];
+      cJSON *obj = cJSON_CreateObject();
+      cJSON_AddStringToObject(obj, "t", n->text);
+      cJSON_AddNumberToObject(obj, "v", n->is_voice ? 1 : 0);
+      cJSON_AddNumberToObject(obj, "s", (int)n->state);
+      if (n->audio_path[0]) {
+         cJSON_AddStringToObject(obj, "a", n->audio_path);
+      }
+      cJSON_AddNumberToObject(obj, "h", n->hour);
+      cJSON_AddNumberToObject(obj, "m", n->minute);
+      cJSON_AddNumberToObject(obj, "d", n->day);
+      cJSON_AddNumberToObject(obj, "mo", n->month);
+      cJSON_AddNumberToObject(obj, "y", n->year);
+      cJSON_AddNumberToObject(obj, "i", i);
+      if (n->needs_sync) cJSON_AddNumberToObject(obj, "ns", 1);
+      if (n->state == NOTE_STATE_FAILED && n->fail_reason != NOTE_FAIL_NONE) {
+         cJSON_AddNumberToObject(obj, "fr", (int)n->fail_reason);
+      }
+      if (n->type != NOTE_TYPE_AUTO) {
+         cJSON_AddNumberToObject(obj, "ty", (int)n->type);
+      }
+      /* PR 4: persist pending_chip when populated. */
+      if (n->pending.kind != PENDING_NONE) {
+         cJSON *pc = cJSON_CreateObject();
+         cJSON_AddNumberToObject(pc, "k", n->pending.kind);
+         cJSON_AddNumberToObject(pc, "c", n->pending.confidence);
+         cJSON_AddStringToObject(pc, "p", n->pending.payload);
+         cJSON_AddItemToObject(obj, "pc", pc);
+      }
+      /* W4: persist enrichment state + identity so a reboot mid-enrichment
+       * keeps the badge + can still reconcile a late note_created by turn_id. */
+      if (n->enrich != ENRICH_NONE) cJSON_AddNumberToObject(obj, "en", (int)n->enrich);
+      if (n->turn_id[0]) cJSON_AddStringToObject(obj, "tid", n->turn_id);
+      if (n->note_id[0]) cJSON_AddStringToObject(obj, "nid", n->note_id);
+      cJSON_AddItemToArray(arr, obj);
+   }
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "count", s_note_count);
-    cJSON_AddNumberToObject(root, "next", s_next_slot);
-    cJSON_AddNumberToObject(root, "recid", (double)s_next_rec_id);
-    cJSON_AddItemToObject(root, "notes", arr);
+   cJSON *root = cJSON_CreateObject();
+   cJSON_AddNumberToObject(root, "count", s_note_count);
+   cJSON_AddNumberToObject(root, "next", s_next_slot);
+   cJSON_AddNumberToObject(root, "recid", (double)s_next_rec_id);
+   cJSON_AddItemToObject(root, "notes", arr);
 
-    char *json = cJSON_Print(root);
-    cJSON_Delete(root);
-    if (!json) return;
+   char *json = cJSON_Print(root);
+   cJSON_Delete(root);
+   if (!json) return;
 
-    /* Atomic write: .tmp → rename. Prevents corruption on power loss.
-     *
-     * Wave 13 H8: fflush() only pushes libc's buffer into the kernel; the
-     * ESP-IDF FATFS driver still holds dirty sectors in its own cache until
-     * an f_sync() lands. A yank during that window left NOTES_TMP_PATH
-     * readable but with stale content, which rename() then promoted to
-     * NOTES_SD_PATH — a silent data corruption.  Use fsync(fd) on the raw
-     * descriptor, which the ESP-IDF VFS routes to FATFS f_sync(). */
-    if (tab5_sdcard_mounted()) {
-        FILE *f = fopen(NOTES_TMP_PATH, "w");
-        if (f) {
-            int written = fputs(json, f);
-            fflush(f);
-            int fd = fileno(f);
-            if (fd >= 0) {
-                if (fsync(fd) != 0) {
-                    ESP_LOGW(TAG, "fsync of notes.json.tmp failed (errno=%d)", errno);
-                }
+   /* Atomic write: .tmp → rename. Prevents corruption on power loss.
+    *
+    * Wave 13 H8: fflush() only pushes libc's buffer into the kernel; the
+    * ESP-IDF FATFS driver still holds dirty sectors in its own cache until
+    * an f_sync() lands. A yank during that window left NOTES_TMP_PATH
+    * readable but with stale content, which rename() then promoted to
+    * NOTES_SD_PATH — a silent data corruption.  Use fsync(fd) on the raw
+    * descriptor, which the ESP-IDF VFS routes to FATFS f_sync(). */
+   if (tab5_sdcard_mounted()) {
+      FILE *f = fopen(NOTES_TMP_PATH, "w");
+      if (f) {
+         int written = fputs(json, f);
+         fflush(f);
+         int fd = fileno(f);
+         if (fd >= 0) {
+            if (fsync(fd) != 0) {
+               ESP_LOGW(TAG, "fsync of notes.json.tmp failed (errno=%d)", errno);
             }
-            fclose(f);
-            if (written >= 0) {
-                /* Atomic rename — old file replaced only after new is complete */
-                remove(NOTES_SD_PATH);
-                if (rename(NOTES_TMP_PATH, NOTES_SD_PATH) == 0) {
-                    ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
-                    free(json);
-                    return;
-                }
+         }
+         fclose(f);
+         if (written >= 0) {
+            /* Atomic rename — old file replaced only after new is complete */
+            remove(NOTES_SD_PATH);
+            if (rename(NOTES_TMP_PATH, NOTES_SD_PATH) == 0) {
+               ESP_LOGI(TAG, "Notes saved to SD (%d notes)", s_note_count);
+               free(json);
+               return;
             }
-        }
-        ESP_LOGW(TAG, "SD write failed (errno=%d), falling back to NVS", errno);
-    }
+         }
+      }
+      ESP_LOGW(TAG, "SD write failed (errno=%d), falling back to NVS", errno);
+   }
 
-    /* Fallback: NVS */
-    nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_blob(h, NVS_KEY_DATA, json, strlen(json) + 1);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "Notes saved to NVS fallback (%d notes)", s_note_count);
-    }
-    free(json);
+   /* Fallback: NVS */
+   nvs_handle_t h;
+   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_blob(h, NVS_KEY_DATA, json, strlen(json) + 1);
+      nvs_commit(h);
+      nvs_close(h);
+      ESP_LOGI(TAG, "Notes saved to NVS fallback (%d notes)", s_note_count);
+   }
+   free(json);
 
-    /* Persist recording counter in NVS */
-    nvs_handle_t h2;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h2) == ESP_OK) {
-        nvs_set_u32(h2, NVS_KEY_RECID, s_next_rec_id);
-        nvs_commit(h2);
-        nvs_close(h2);
-    }
+   /* Persist recording counter in NVS */
+   nvs_handle_t h2;
+   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h2) == ESP_OK) {
+      nvs_set_u32(h2, NVS_KEY_RECID, s_next_rec_id);
+      nvs_commit(h2);
+      nvs_close(h2);
+   }
 }
 
-static void notes_load(void)
-{
-    if (s_loaded) return;
-    /* Wave 20: ensure the PSRAM buffer exists before any read/write below.
-     * If the alloc fails we still flip s_loaded so we don't loop, but
-     * every subsequent operation will short-circuit via the same guard. */
-    if (!ensure_notes_buf()) {
-       s_loaded = true;
-       return;
-    }
-    s_loaded = true;
+void notes_load(void) {
+   if (s_loaded) return;
+   /* Wave 20: ensure the PSRAM buffer exists before any read/write below.
+    * If the alloc fails we still flip s_loaded so we don't loop, but
+    * every subsequent operation will short-circuit via the same guard. */
+   if (!ensure_notes_buf()) {
+      s_loaded = true;
+      return;
+   }
+   s_loaded = true;
 
-    char *json = NULL;
+   char *json = NULL;
 
-    /* Try SD card first */
-    if (tab5_sdcard_mounted()) {
-        FILE *f = fopen(NOTES_SD_PATH, "r");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            if (sz > 0 && sz < 64 * 1024) {
-                json = malloc(sz + 1);
-                if (json) {
-                    fread(json, 1, sz, f);
-                    json[sz] = '\0';
-                }
-            }
-            fclose(f);
+   /* Try SD card first */
+   if (tab5_sdcard_mounted()) {
+      FILE *f = fopen(NOTES_SD_PATH, "r");
+      if (f) {
+         fseek(f, 0, SEEK_END);
+         long sz = ftell(f);
+         fseek(f, 0, SEEK_SET);
+         if (sz > 0 && sz < 64 * 1024) {
+            json = malloc(sz + 1);
             if (json) {
-                ESP_LOGI(TAG, "Reading notes from SD (%ld bytes)", sz);
+               fread(json, 1, sz, f);
+               json[sz] = '\0';
             }
-        }
-    }
+         }
+         fclose(f);
+         if (json) {
+            ESP_LOGI(TAG, "Reading notes from SD (%ld bytes)", sz);
+         }
+      }
+   }
 
-    /* Fallback: NVS */
-    if (!json) {
-        nvs_handle_t h;
-        if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
-            size_t blob_size = 0;
-            if (nvs_get_blob(h, NVS_KEY_DATA, NULL, &blob_size) == ESP_OK && blob_size > 2) {
-                json = malloc(blob_size);
-                if (json) {
-                    nvs_get_blob(h, NVS_KEY_DATA, json, &blob_size);
-                    ESP_LOGI(TAG, "Reading notes from NVS fallback (%u bytes)",
-                             (unsigned)blob_size);
-                }
+   /* Fallback: NVS */
+   if (!json) {
+      nvs_handle_t h;
+      if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) == ESP_OK) {
+         size_t blob_size = 0;
+         if (nvs_get_blob(h, NVS_KEY_DATA, NULL, &blob_size) == ESP_OK && blob_size > 2) {
+            json = malloc(blob_size);
+            if (json) {
+               nvs_get_blob(h, NVS_KEY_DATA, json, &blob_size);
+               ESP_LOGI(TAG, "Reading notes from NVS fallback (%u bytes)", (unsigned)blob_size);
             }
-            nvs_close(h);
-        }
-    }
+         }
+         nvs_close(h);
+      }
+   }
 
-    if (!json) {
-        ESP_LOGI(TAG, "No saved notes found");
-        return;
-    }
+   if (!json) {
+      ESP_LOGI(TAG, "No saved notes found");
+      return;
+   }
 
-    /* Parse JSON */
-    cJSON *root = cJSON_Parse(json);
-    free(json);
-    if (!root) {
-        ESP_LOGW(TAG, "Notes JSON parse failed");
-        return;
-    }
+   /* Parse JSON */
+   cJSON *root = cJSON_Parse(json);
+   free(json);
+   if (!root) {
+      ESP_LOGW(TAG, "Notes JSON parse failed");
+      return;
+   }
 
-    memset(s_notes, 0, MAX_NOTES * sizeof(*s_notes)); /* Wave 20: pointer */
-    s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
-    s_next_slot  = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
+   memset(s_notes, 0, MAX_NOTES * sizeof(*s_notes)); /* Wave 20: pointer */
+   s_note_count = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "count"));
+   s_next_slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(root, "next"));
 
-    cJSON *jrecid = cJSON_GetObjectItem(root, "recid");
-    if (cJSON_IsNumber(jrecid)) {
-        s_next_rec_id = (uint32_t)jrecid->valuedouble;
-    }
+   cJSON *jrecid = cJSON_GetObjectItem(root, "recid");
+   if (cJSON_IsNumber(jrecid)) {
+      s_next_rec_id = (uint32_t)jrecid->valuedouble;
+   }
 
-    cJSON *arr = cJSON_GetObjectItem(root, "notes");
-    int loaded = 0;
-    cJSON *item;
-    cJSON_ArrayForEach(item, arr) {
-        int slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "i"));
-        if (slot < 0 || slot >= MAX_NOTES) continue;
+   cJSON *arr = cJSON_GetObjectItem(root, "notes");
+   int loaded = 0;
+   cJSON *item;
+   cJSON_ArrayForEach(item, arr) {
+      int slot = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "i"));
+      if (slot < 0 || slot >= MAX_NOTES) continue;
 
-        note_entry_t *n = &s_notes[slot];
-        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(item, "t"));
-        if (text) {
-            strncpy(n->text, text, MAX_NOTE_LEN - 1);
-            n->text[MAX_NOTE_LEN - 1] = '\0';
-        }
-        const char *apath = cJSON_GetStringValue(cJSON_GetObjectItem(item, "a"));
-        if (apath) {
-            strncpy(n->audio_path, apath, MAX_AUDIO_PATH - 1);
-            n->audio_path[MAX_AUDIO_PATH - 1] = '\0';
-        }
-        cJSON *jstate = cJSON_GetObjectItem(item, "s");
-        if (cJSON_IsNumber(jstate)) {
-            n->state = (note_state_t)(int)jstate->valuedouble;
-        } else {
-            /* Legacy notes without state field — infer from content */
-            n->state = NOTE_STATE_TEXT;
-        }
-        /* Fix up: voice notes with placeholder text → RECORDED.
-         * Covers notes saved before schema change or crashed recordings. */
-        if (n->is_voice && strncmp(n->text, "(Recording", 10) == 0) {
-            n->state = NOTE_STATE_RECORDED;
-        }
-        n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
-        n->hour     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
-        n->minute   = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
-        n->day      = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "d"));
-        n->month    = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "mo"));
-        n->year     = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
-        cJSON *jns = cJSON_GetObjectItem(item, "ns");
-        n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
-        cJSON *jfr = cJSON_GetObjectItem(item, "fr");
-        n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
-        cJSON *jty = cJSON_GetObjectItem(item, "ty");
-        n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
-        /* PR 4: load pending_chip; missing keys default to PENDING_NONE. */
-        cJSON *jpc = cJSON_GetObjectItem(item, "pc");
-        memset(&n->pending, 0, sizeof(n->pending));
-        if (cJSON_IsObject(jpc)) {
-           cJSON *jk = cJSON_GetObjectItem(jpc, "k");
-           cJSON *jc = cJSON_GetObjectItem(jpc, "c");
-           cJSON *jp = cJSON_GetObjectItem(jpc, "p");
-           if (cJSON_IsNumber(jk)) n->pending.kind = (uint8_t)jk->valuedouble;
-           if (cJSON_IsNumber(jc)) n->pending.confidence = (uint8_t)jc->valuedouble;
-           if (cJSON_IsString(jp) && jp->valuestring) {
-              strncpy(n->pending.payload, jp->valuestring, PENDING_PAYLOAD_LEN - 1);
-              n->pending.payload[PENDING_PAYLOAD_LEN - 1] = '\0';
-           }
-        }
-        n->used = true;
-        loaded++;
-    }
+      note_entry_t *n = &s_notes[slot];
+      const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(item, "t"));
+      if (text) {
+         strncpy(n->text, text, MAX_NOTE_LEN - 1);
+         n->text[MAX_NOTE_LEN - 1] = '\0';
+      }
+      const char *apath = cJSON_GetStringValue(cJSON_GetObjectItem(item, "a"));
+      if (apath) {
+         strncpy(n->audio_path, apath, MAX_AUDIO_PATH - 1);
+         n->audio_path[MAX_AUDIO_PATH - 1] = '\0';
+      }
+      cJSON *jstate = cJSON_GetObjectItem(item, "s");
+      if (cJSON_IsNumber(jstate)) {
+         n->state = (note_state_t)(int)jstate->valuedouble;
+      } else {
+         /* Legacy notes without state field — infer from content */
+         n->state = NOTE_STATE_TEXT;
+      }
+      /* Fix up: voice notes with placeholder text → RECORDED.
+       * Covers notes saved before schema change or crashed recordings. */
+      if (n->is_voice && strncmp(n->text, "(Recording", 10) == 0) {
+         n->state = NOTE_STATE_RECORDED;
+      }
+      n->is_voice = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "v")) != 0;
+      n->hour = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "h"));
+      n->minute = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "m"));
+      n->day = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "d"));
+      n->month = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "mo"));
+      n->year = (uint8_t)cJSON_GetNumberValue(cJSON_GetObjectItem(item, "y"));
+      cJSON *jns = cJSON_GetObjectItem(item, "ns");
+      n->needs_sync = (cJSON_IsNumber(jns) && (int)jns->valuedouble != 0);
+      cJSON *jfr = cJSON_GetObjectItem(item, "fr");
+      n->fail_reason = (cJSON_IsNumber(jfr)) ? (note_fail_t)(int)jfr->valuedouble : NOTE_FAIL_NONE;
+      cJSON *jty = cJSON_GetObjectItem(item, "ty");
+      n->type = (cJSON_IsNumber(jty)) ? (note_type_t)(int)jty->valuedouble : NOTE_TYPE_AUTO;
+      /* PR 4: load pending_chip; missing keys default to PENDING_NONE. */
+      cJSON *jpc = cJSON_GetObjectItem(item, "pc");
+      memset(&n->pending, 0, sizeof(n->pending));
+      if (cJSON_IsObject(jpc)) {
+         cJSON *jk = cJSON_GetObjectItem(jpc, "k");
+         cJSON *jc = cJSON_GetObjectItem(jpc, "c");
+         cJSON *jp = cJSON_GetObjectItem(jpc, "p");
+         if (cJSON_IsNumber(jk)) n->pending.kind = (uint8_t)jk->valuedouble;
+         if (cJSON_IsNumber(jc)) n->pending.confidence = (uint8_t)jc->valuedouble;
+         if (cJSON_IsString(jp) && jp->valuestring) {
+            strncpy(n->pending.payload, jp->valuestring, PENDING_PAYLOAD_LEN - 1);
+            n->pending.payload[PENDING_PAYLOAD_LEN - 1] = '\0';
+         }
+      }
+      /* W4: restore enrichment state + identity. */
+      cJSON *jen = cJSON_GetObjectItem(item, "en");
+      n->enrich = cJSON_IsNumber(jen) ? (enrich_state_t)(int)jen->valuedouble : ENRICH_NONE;
+      const char *jtid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "tid"));
+      if (jtid) {
+         strncpy(n->turn_id, jtid, DICT_TURN_ID_LEN - 1);
+         n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+      }
+      const char *jnid = cJSON_GetStringValue(cJSON_GetObjectItem(item, "nid"));
+      if (jnid) {
+         strncpy(n->note_id, jnid, DICT_NOTE_ID_LEN - 1);
+         n->note_id[DICT_NOTE_ID_LEN - 1] = '\0';
+      }
+      n->used = true;
+      loaded++;
+   }
 
-    cJSON_Delete(root);
+   cJSON_Delete(root);
 
-    /* Load recording counter from NVS (survives SD card removal) */
-    nvs_handle_t nh;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nh) == ESP_OK) {
-        uint32_t rid = 0;
-        if (nvs_get_u32(nh, NVS_KEY_RECID, &rid) == ESP_OK && rid > s_next_rec_id) {
-            s_next_rec_id = rid;
-        }
-        nvs_close(nh);
-    }
+   /* Load recording counter from NVS (survives SD card removal) */
+   nvs_handle_t nh;
+   if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nh) == ESP_OK) {
+      uint32_t rid = 0;
+      if (nvs_get_u32(nh, NVS_KEY_RECID, &rid) == ESP_OK && rid > s_next_rec_id) {
+         s_next_rec_id = rid;
+      }
+      nvs_close(nh);
+   }
 
-    /* Reset stuck TRANSCRIBING notes back to RECORDED for retry.
-     * This happens when the device reboots mid-transcription. */
-    int reset_count = 0;
-    for (int i = 0; i < MAX_NOTES; i++) {
-        if (s_notes[i].used && s_notes[i].state == NOTE_STATE_TRANSCRIBING) {
-            s_notes[i].state = NOTE_STATE_RECORDED;
-            reset_count++;
-        }
-    }
-    if (reset_count > 0) {
-        ESP_LOGI(TAG, "Reset %d stuck TRANSCRIBING notes to RECORDED", reset_count);
-    }
+   /* Reset stuck TRANSCRIBING notes back to RECORDED for retry.
+    * This happens when the device reboots mid-transcription. */
+   int reset_count = 0;
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && s_notes[i].state == NOTE_STATE_TRANSCRIBING) {
+         s_notes[i].state = NOTE_STATE_RECORDED;
+         reset_count++;
+      }
+   }
+   if (reset_count > 0) {
+      ESP_LOGI(TAG, "Reset %d stuck TRANSCRIBING notes to RECORDED", reset_count);
+   }
 
-    /* Ensure recordings directory exists */
-    if (tab5_sdcard_mounted()) {
-        struct stat st;
-        if (stat(REC_DIR, &st) != 0) {
-            mkdir(REC_DIR, 0755);
-            ESP_LOGI(TAG, "Created recordings directory: %s", REC_DIR);
-        }
-    }
+   /* Ensure recordings directory exists */
+   if (tab5_sdcard_mounted()) {
+      struct stat st;
+      if (stat(REC_DIR, &st) != 0) {
+         mkdir(REC_DIR, 0755);
+         ESP_LOGI(TAG, "Created recordings directory: %s", REC_DIR);
+      }
+   }
 
-    ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
+   ESP_LOGI(TAG, "Loaded %d notes (next_rec_id=%lu)", loaded, (unsigned long)s_next_rec_id);
 }
 
 /* ── PR 3: filter pills + day-section state ─────────────── */
@@ -818,11 +658,7 @@ static lv_obj_t *s_input_area  = NULL;
 static lv_obj_t *s_input_btn   = NULL;
 static lv_obj_t *s_search_ta   = NULL;  /* M2: search bar */
 static char      s_search_text[64] = {0};  /* current search filter */
-static bool s_input_visible    = false;
-static bool s_voice_recording  = false;
-static bool s_pending_dictation = false;  /* waiting for READY to start dictation */
-static volatile bool s_sd_rec_running = false;  /* standalone SD recording active */
-
+static bool s_input_visible = false;
 /* ── Recording indicator ──────────────────────────────── */
 static lv_obj_t *s_rec_indicator = NULL;  /* container for the recording bar */
 static lv_obj_t *s_rec_dot = NULL;        /* red pulsing dot */
@@ -845,7 +681,6 @@ static int       s_edit_idx    = -1;
 
 /* ── Forward decls ─────────────────────────────────────── */
 static void cb_back(lv_event_t *e);
-static void cb_new_voice(lv_event_t *e);
 static void cb_new_text(lv_event_t *e);
 static void cb_input_send(lv_event_t *e);
 static void cb_note_tap(lv_event_t *e);
@@ -854,14 +689,16 @@ static void cb_note_play(lv_event_t *e);
 static void cb_note_retry(lv_event_t *e);
 static void cb_clear_failed(lv_event_t *e);
 static void cb_search_changed(lv_event_t *e);
-static void refresh_list(void);
+void refresh_list(void);
 static void add_note_card(lv_obj_t *parent, const note_entry_t *note, int note_idx);
 static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, int note_idx, day_section_t sec);
 static lv_obj_t *make_topbar(lv_obj_t *parent);
 static void show_input_area(void);
 static void hide_input_area(void);
-static void voice_session_done(void);
-static void show_recording_indicator(void);
+/* The only show-path caller (the retired "+ NEW VOICE NOTE" cb_new_voice) was
+ * deleted; the indicator + its 1 s timer are preserved for the dictation
+ * pipeline but currently have no live show-site, hence the unused attribute. */
+static void __attribute__((unused)) show_recording_indicator(void);
 static void hide_recording_indicator(void);
 
 /* ── Recording indicator timer callback ────────────────── */
@@ -967,43 +804,13 @@ static void hide_recording_indicator(void)
     ESP_LOGI(TAG, "Recording indicator hidden");
 }
 
-/* ── Voice state callback (used by dictation connect flow) ── */
-static void __attribute__((unused)) voice_state_cb(voice_state_t state, const char *detail)
-{
-    /* Auto-start dictation once Dragon connection is READY */
-    if (state == VOICE_STATE_READY && s_pending_dictation) {
-        s_pending_dictation = false;
-        s_voice_recording = true;
-        voice_start_dictation();
-        ESP_LOGI(TAG, "Auto-starting dictation after connect");
-        return;
-    }
-    /* Dictation ends with READY + "dictation_done" detail */
-    if (s_voice_recording && state == VOICE_STATE_READY
-        && voice_get_mode() == VOICE_MODE_DICTATE
-        && detail && strcmp(detail, "dictation_done") == 0) {
-        s_voice_recording = false;
-        hide_recording_indicator();
-        voice_session_done();
-    }
-    /* Ask mode ends with IDLE */
-    if (state == VOICE_STATE_IDLE && s_voice_recording) {
-        s_voice_recording = false;
-        hide_recording_indicator();
-        voice_session_done();
-    }
-}
-
-/* Forward decl — s_rec_note_slot is defined further down with the
- * recording-flow statics but the dictated-async helper below uses it
- * to skip duplicate creation when the local "+ NEW VOICE NOTE" flow
- * already owns a slot.  #537 adds s_pipeline_armed_slot + s_rec_file
- * to distinguish the home Dictate chip's pre-armed WAV path. */
-static int s_rec_note_slot;
-static bool s_pipeline_armed_slot;
-static FILE *s_rec_file;
-static int find_most_recent_used_slot(void);
-static void pending_chip_apply_inline(int idx);
+/* W5: the recording-flow statics (s_rec_note_slot / s_pipeline_armed_slot /
+ * s_rec_file) moved to the engine (dictation_notes.c).  The dictated-async
+ * helper below reaches them through the dictation_* accessors so it can still
+ * skip duplicate creation when a local "+ NEW VOICE NOTE" slot is open, and
+ * finalise the home-Dictate-chip pre-armed WAV path (#537). */
+int find_most_recent_used_slot(void);
+void pending_chip_apply_inline(int idx);
 
 /* PR 3 follow-up: deferred WS-thread → LVGL-thread dictated-note add.
  * The dictation_summary handler in voice_ws_proto.c calls
@@ -1020,17 +827,18 @@ static void notes_add_dictated_async_cb(void *arg) {
     * transcript into the reserved slot, close the WAV, attach audio_path.
     * This is the path that gives Dragon-routed voice notes a playable
     * SD recording. */
-   if (s_pipeline_armed_slot && s_rec_note_slot >= 0 && s_rec_file != NULL) {
-      ESP_LOGI(TAG, "Pipeline-armed slot %d → finalising with transcript", s_rec_note_slot);
-      s_pipeline_armed_slot = false;
+   int armed_slot = dictation_recording_slot();
+   if (dictation_pipeline_armed() && armed_slot >= 0 && dictation_recording_active()) {
+      ESP_LOGI(TAG, "Pipeline-armed slot %d → finalising with transcript", armed_slot);
+      dictation_pipeline_clear_armed();
       /* The arm path hides the slot (used=false) so a placeholder row
        * doesn't render in-flight; flip it back before finalisation so
        * the new transcribed note actually appears on the timeline. */
-      if (s_rec_note_slot < MAX_NOTES && !s_notes[s_rec_note_slot].used) {
-         s_notes[s_rec_note_slot].used = true;
+      if (armed_slot < MAX_NOTES && !s_notes[armed_slot].used) {
+         s_notes[armed_slot].used = true;
          if (s_note_count < MAX_NOTES) s_note_count++;
       }
-      int finalized_slot = s_rec_note_slot;
+      int finalized_slot = armed_slot;
       ui_notes_stop_recording(text[0] ? text : NULL);
       /* PR 4: attach any pending chip from the WS handoff buffer to
        * the slot we just finalised — this same-frame inline path
@@ -1044,8 +852,8 @@ static void notes_add_dictated_async_cb(void *arg) {
     * sets s_rec_note_slot >= 0 until ui_notes_stop_recording
     * finalises it).  Without this guard a single dictation would
     * land twice on the timeline. */
-   if (s_rec_note_slot >= 0) {
-      ESP_LOGI(TAG, "Skipping pipeline-add — local recording slot %d already active", s_rec_note_slot);
+   if (dictation_recording_slot() >= 0) {
+      ESP_LOGI(TAG, "Skipping pipeline-add — local recording slot %d already active", dictation_recording_slot());
       free(text);
       return;
    }
@@ -1076,6 +884,187 @@ void ui_notes_add_dictated_async(const char *transcript) {
    memcpy(copy, transcript, n);
    copy[n] = '\0';
    tab5_lv_async_call(notes_add_dictated_async_cb, copy);
+}
+
+/* ── W4: optimistic save — seed / reconcile / apply, all keyed by turn_id ── */
+
+/* Seed (or tag) an optimistic note row for a live dictation turn at stop time.
+ * Runs on the LVGL thread.  enrich=SUMMARIZING (capture done; only title/summary
+ * pending).  Idempotent per turn_id; if a recording slot is already open for this
+ * turn (home Dictate pipeline-armed slot, or the local FAB slot) we tag THAT slot
+ * rather than minting a second row. */
+static void notes_seed_optimistic_cb(void *arg) {
+   char *turn_id = (char *)arg;
+   if (!turn_id) return;
+   notes_load();
+   if (find_note_idx_by_turn_id(turn_id) >= 0) {
+      free(turn_id);
+      return;
+   } /* already seeded */
+
+   int slot = (dictation_recording_slot() >= 0) ? dictation_recording_slot() : -1;
+   if (slot >= 0 && slot < MAX_NOTES && !s_notes[slot].used) {
+      s_notes[slot].used = true;
+      if (s_note_count < MAX_NOTES) s_note_count++;
+   }
+
+   if (slot < 0) {
+      /* Fresh placeholder row. */
+      tab5_rtc_time_t rtc = {0};
+      tab5_rtc_get_time(&rtc);
+      slot = s_next_slot;
+      note_entry_t *n = &s_notes[slot];
+      memset(n, 0, sizeof(*n));
+      snprintf(n->text, MAX_NOTE_LEN, "Saved - summarizing...");
+      n->state = NOTE_STATE_TRANSCRIBED; /* online: transcript streamed live */
+      n->hour = rtc.hour;
+      n->minute = rtc.minute;
+      n->day = rtc.day;
+      n->month = rtc.month;
+      n->year = rtc.year;
+      n->used = true;
+      s_next_slot = (s_next_slot + 1) % MAX_NOTES;
+      if (s_note_count < MAX_NOTES) s_note_count++;
+   }
+
+   note_entry_t *n = &s_notes[slot];
+   n->type = NOTE_TYPE_VOICE;
+   n->is_voice = true;
+   n->enrich = ENRICH_SUMMARIZING;
+   strncpy(n->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+   n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+   ESP_LOGI(TAG, "Optimistic row seeded: slot %d turn_id=%s", slot, turn_id);
+   notes_save();
+   refresh_list();
+   free(turn_id);
+}
+
+void ui_notes_seed_optimistic(const char *turn_id) {
+   if (!turn_id || !turn_id[0] || strcmp(turn_id, "-") == 0) return;
+   size_t n = strnlen(turn_id, DICT_TURN_ID_LEN - 1);
+   char *copy = (char *)malloc(n + 1);
+   if (!copy) return;
+   memcpy(copy, turn_id, n);
+   copy[n] = '\0';
+   tab5_lv_async_call(notes_seed_optimistic_cb, copy);
+}
+
+/* Reconcile Dragon's authoritative note_created by turn_id: adopt note_id into the
+ * optimistic row (no dup), or create the row if note_created raced ahead of the
+ * seed.  Preserves D-D1 — Dragon stays the sole authoritative owner. */
+typedef struct {
+   char turn_id[DICT_TURN_ID_LEN];
+   char note_id[DICT_NOTE_ID_LEN];
+   char title[128];
+} reconcile_arg_t;
+
+static void notes_reconcile_note_created_cb(void *arg) {
+   reconcile_arg_t *a = (reconcile_arg_t *)arg;
+   if (!a) return;
+   notes_load();
+   int slot = find_note_idx_by_turn_id(a->turn_id);
+   if (slot < 0) {
+      tab5_rtc_time_t rtc = {0};
+      tab5_rtc_get_time(&rtc);
+      slot = s_next_slot;
+      note_entry_t *n = &s_notes[slot];
+      memset(n, 0, sizeof(*n));
+      n->state = NOTE_STATE_TRANSCRIBED;
+      n->is_voice = true;
+      n->type = NOTE_TYPE_VOICE;
+      n->enrich = ENRICH_SUMMARIZING;
+      n->hour = rtc.hour;
+      n->minute = rtc.minute;
+      n->day = rtc.day;
+      n->month = rtc.month;
+      n->year = rtc.year;
+      n->used = true;
+      snprintf(n->turn_id, sizeof(n->turn_id), "%s", a->turn_id);
+      snprintf(n->text, MAX_NOTE_LEN, "%s", a->title[0] ? a->title : "Saved - summarizing...");
+      s_next_slot = (s_next_slot + 1) % MAX_NOTES;
+      if (s_note_count < MAX_NOTES) s_note_count++;
+      ESP_LOGI(TAG, "note_created -> fresh row slot %d (no placeholder), turn_id=%s", slot, a->turn_id);
+   } else {
+      ESP_LOGI(TAG, "note_created -> adopt into slot %d, turn_id=%s", slot, a->turn_id);
+   }
+   note_entry_t *n = &s_notes[slot];
+   snprintf(n->note_id, sizeof(n->note_id), "%s", a->note_id);
+   if (n->enrich == ENRICH_NONE || n->enrich == ENRICH_PENDING || n->enrich == ENRICH_TRANSCRIBING) {
+      n->enrich = ENRICH_SUMMARIZING;
+   }
+   n->needs_sync = false; /* Dragon already owns it */
+   notes_save();
+   refresh_list();
+   free(a);
+}
+
+void ui_notes_reconcile_note_created(const char *turn_id, const char *note_id, const char *title) {
+   if (!note_id || !note_id[0]) return;
+   reconcile_arg_t *a = (reconcile_arg_t *)calloc(1, sizeof(*a));
+   if (!a) return;
+   if (turn_id && strcmp(turn_id, "-") != 0) strncpy(a->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+   strncpy(a->note_id, note_id, DICT_NOTE_ID_LEN - 1);
+   if (title) strncpy(a->title, title, sizeof(a->title) - 1);
+   tab5_lv_async_call(notes_reconcile_note_created_cb, a);
+}
+
+/* Apply dictation_summary as an in-place update of the turn's row (body text),
+ * then flip enrich to DONE so the badge clears.  Falls back to a fresh add if no
+ * row matches turn_id — a dictation is never lost. */
+typedef struct {
+   char turn_id[DICT_TURN_ID_LEN];
+   char title[128];
+   char body[MAX_NOTE_LEN];
+} summary_arg_t;
+
+static void notes_apply_summary_cb(void *arg) {
+   summary_arg_t *a = (summary_arg_t *)arg;
+   if (!a) return;
+   notes_load();
+   int slot = find_note_idx_by_turn_id(a->turn_id);
+   if (slot < 0) {
+      ESP_LOGW(TAG, "apply_summary: no row for turn_id=%s - legacy add", a->turn_id[0] ? a->turn_id : "-");
+      if (a->body[0]) ui_notes_add(a->body, true);
+      free(a);
+      return;
+   }
+   note_entry_t *n = &s_notes[slot];
+   if (a->body[0]) {
+      strncpy(n->text, a->body, MAX_NOTE_LEN - 1);
+      n->text[MAX_NOTE_LEN - 1] = '\0';
+   }
+   n->state = NOTE_STATE_TRANSCRIBED;
+   n->enrich = ENRICH_DONE; /* title+summary present -> badge clears */
+   ESP_LOGI(TAG, "apply_summary -> slot %d DONE, turn_id=%s", slot, a->turn_id);
+   pending_chip_apply_inline(slot);
+   notes_save();
+   refresh_list();
+   free(a);
+}
+
+void ui_notes_apply_summary(const char *turn_id, const char *title, const char *summary) {
+   summary_arg_t *a = (summary_arg_t *)calloc(1, sizeof(*a));
+   if (!a) return;
+   if (turn_id && strcmp(turn_id, "-") != 0) strncpy(a->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+   if (title) strncpy(a->title, title, sizeof(a->title) - 1);
+   if (summary) strncpy(a->body, summary, MAX_NOTE_LEN - 1);
+   tab5_lv_async_call(notes_apply_summary_cb, a);
+}
+
+/* W4: tag the just-finalized SD recording as offline-pending so the badge shows
+ * "Pending" and the transcription queue auto-finishes it on reconnect (reconciled
+ * by turn_id when Dragon's note_created lands). */
+void ui_notes_mark_offline_pending(const char *turn_id) {
+   int idx = find_most_recent_used_slot();
+   if (idx < 0) return;
+   note_entry_t *n = &s_notes[idx];
+   n->enrich = ENRICH_PENDING;
+   if (turn_id && turn_id[0] && strcmp(turn_id, "-") != 0) {
+      strncpy(n->turn_id, turn_id, DICT_TURN_ID_LEN - 1);
+      n->turn_id[DICT_TURN_ID_LEN - 1] = '\0';
+   }
+   notes_save();
+   refresh_list();
 }
 
 /* ── Note storage API ──────────────────────────────────── */
@@ -1218,171 +1207,11 @@ int ui_notes_clear_failed(void)
     return cleared;
 }
 
-/* ── WAV recording ──────────────────────────────────────── */
-/*
- * Records raw PCM 16kHz mono to a WAV file on the SD card.
- * The mic capture task calls ui_notes_write_audio() for each chunk.
- * Thread-safe via s_rec_mutex.
- */
-#include "freertos/semphr.h"
-
-static FILE *s_rec_file = NULL;
-static char s_rec_path[MAX_AUDIO_PATH] = {0};
-static uint32_t s_rec_samples = 0;
-static SemaphoreHandle_t s_rec_mutex = NULL;
-static int s_rec_note_slot = -1;
-
-/* #537: pipeline-armed recording flag.  Distinguishes a slot opened by
- * ui_notes_pipeline_arm_recording (home Dictate chip path) from one
- * opened by ui_notes_start_recording via the FAB.  The FAB owns its own
- * stop-via-tap teardown; the pipeline-armed slot is finalised when
- * dictation_summary arrives or discarded on cancel. */
-static bool s_pipeline_armed_slot = false;
-
-/* WAV header for PCM 16-bit mono */
-static void wav_write_header(FILE *f, uint32_t data_bytes, uint16_t sample_rate)
-{
-    uint32_t file_size = 36 + data_bytes;
-    uint16_t channels = 1;
-    uint16_t bits = 16;
-    uint32_t byte_rate = sample_rate * channels * bits / 8;
-    uint16_t block_align = channels * bits / 8;
-
-    fwrite("RIFF", 1, 4, f);
-    fwrite(&file_size, 4, 1, f);
-    fwrite("WAVE", 1, 4, f);
-    fwrite("fmt ", 1, 4, f);
-    uint32_t fmt_size = 16;
-    fwrite(&fmt_size, 4, 1, f);
-    uint16_t pcm = 1;
-    fwrite(&pcm, 2, 1, f);
-    fwrite(&channels, 2, 1, f);
-    fwrite(&sample_rate, 4, 1, f);
-    fwrite(&byte_rate, 4, 1, f);
-    fwrite(&block_align, 2, 1, f);
-    fwrite(&bits, 2, 1, f);
-    fwrite("data", 1, 4, f);
-    fwrite(&data_bytes, 4, 1, f);
-}
-
-const char *ui_notes_start_recording(void)
-{
-    notes_load();
-
-    if (!tab5_sdcard_mounted()) {
-        ESP_LOGE(TAG, "SD card not mounted — cannot record");
-        return NULL;
-    }
-
-    /* Create mutex on first use */
-    if (!s_rec_mutex) {
-        s_rec_mutex = xSemaphoreCreateMutex();
-    }
-
-    /* Ensure recordings directory exists */
-    struct stat st;
-    if (stat(REC_DIR, &st) != 0) {
-        mkdir(REC_DIR, 0755);
-    }
-
-    /* Generate unique filename */
-    snprintf(s_rec_path, sizeof(s_rec_path), "%s/%04lu.wav",
-             REC_DIR, (unsigned long)s_next_rec_id);
-    s_next_rec_id++;
-
-    /* Open file and write placeholder WAV header (updated on stop) */
-    s_rec_file = fopen(s_rec_path, "wb");
-    if (!s_rec_file) {
-        ESP_LOGE(TAG, "Failed to create recording: %s (errno=%d)", s_rec_path, errno);
-        s_rec_path[0] = '\0';
-        return NULL;
-    }
-
-    wav_write_header(s_rec_file, 0, TAB5_VOICE_SAMPLE_RATE);
-    s_rec_samples = 0;
-
-    /* Reserve a note slot for this recording */
-    tab5_rtc_time_t rtc = {0};
-    tab5_rtc_get_time(&rtc);
-
-    s_rec_note_slot = s_next_slot;
-    note_entry_t *n = &s_notes[s_rec_note_slot];
-    memset(n, 0, sizeof(*n));
-    snprintf(n->audio_path, MAX_AUDIO_PATH, "%s", s_rec_path);
-    n->state = NOTE_STATE_RECORDED;
-    n->is_voice = true;
-    n->hour = rtc.hour;
-    n->minute = rtc.minute;
-    n->day = rtc.day;
-    n->month = rtc.month;
-    n->year = rtc.year;  /* RTC year is already offset from 2000 */
-    n->used = true;
-    snprintf(n->text, MAX_NOTE_LEN, "(Recording...)");
-
-    s_next_slot = (s_next_slot + 1) % MAX_NOTES;
-    if (s_note_count < MAX_NOTES) s_note_count++;
-
-    /* Save immediately so the note exists even if we crash mid-recording.
-     * The WAV header is a placeholder (0 bytes data) — stop_recording updates it. */
-    notes_save();
-
-    ESP_LOGI(TAG, "Recording started: %s (slot %d)", s_rec_path, s_rec_note_slot);
-    return s_rec_path;
-}
-
-/* #537: arm a SD WAV recording for an incoming pipeline-path dictation.
- * The reserved slot is left with `used = false` until dictation_summary
- * arrives — the processing row at the top of Notes (and the home Dictate
- * chip M:SS hint) communicate state during the in-flight phase, so a
- * placeholder row in the list would be redundant + visually noisy with
- * an inert play button. */
-bool ui_notes_pipeline_arm_recording(void) {
-   if (s_rec_file != NULL || s_rec_note_slot >= 0) {
-      ESP_LOGI(TAG, "Pipeline arm rejected — recording already in flight (slot %d)", s_rec_note_slot);
-      return false;
-   }
-   const char *wav = ui_notes_start_recording();
-   if (!wav) return false;
-   s_pipeline_armed_slot = true;
-   if (s_rec_note_slot >= 0 && s_rec_note_slot < MAX_NOTES) {
-      /* Hide the row until summary lands.  notes_add_dictated_async_cb
-       * flips used back to true via ui_notes_stop_recording(transcript). */
-      s_notes[s_rec_note_slot].used = false;
-      if (s_note_count > 0) s_note_count--;
-      s_notes[s_rec_note_slot].text[0] = '\0';
-      s_notes[s_rec_note_slot].type = NOTE_TYPE_VOICE;
-   }
-   refresh_list();
-   return true;
-}
-
-/* #537: cancel a pipeline-armed recording.  Closes the WAV, removes the
- * file, releases the slot. */
-void ui_notes_pipeline_cancel_recording(void) {
-   if (!s_pipeline_armed_slot) return;
-   ESP_LOGI(TAG, "Pipeline-armed slot %d → discarding", s_rec_note_slot);
-   s_pipeline_armed_slot = false;
-
-   if (s_rec_mutex) xSemaphoreTake(s_rec_mutex, portMAX_DELAY);
-   if (s_rec_file) {
-      fclose(s_rec_file);
-      s_rec_file = NULL;
-   }
-   if (s_rec_mutex) xSemaphoreGive(s_rec_mutex);
-
-   if (s_rec_path[0]) {
-      remove(s_rec_path);
-      s_rec_path[0] = '\0';
-   }
-   if (s_rec_note_slot >= 0 && s_rec_note_slot < MAX_NOTES) {
-      s_notes[s_rec_note_slot].used = false;
-      if (s_note_count > 0) s_note_count--;
-   }
-   s_rec_note_slot = -1;
-   s_rec_samples = 0;
-   notes_save();
-   refresh_list();
-}
+/* W5: the WAV recording engine — wav_write_header, ui_notes_start_recording,
+ * ui_notes_pipeline_arm_recording, ui_notes_pipeline_cancel_recording, plus the
+ * s_rec_file / s_rec_path / s_rec_samples / s_rec_mutex / s_rec_note_slot /
+ * s_pipeline_armed_slot statics — moved to dictation_notes.c.  The UI reaches
+ * the in-flight recording state through the dictation_* accessors. */
 
 /* PR 4: pending-chip async attach. */
 typedef struct {
@@ -1391,7 +1220,7 @@ typedef struct {
    char payload[PENDING_PAYLOAD_LEN];
 } pending_chip_msg_t;
 
-static int find_most_recent_used_slot(void) {
+int find_most_recent_used_slot(void) {
    /* Walk back from s_next_slot through the ring, return the most-recent
     * used slot index, or -1 if none. */
    for (int i = 0; i < MAX_NOTES; i++) {
@@ -1414,7 +1243,7 @@ static pending_chip_msg_t s_pending_chip_handoff = {0};
 static bool s_pending_chip_pending = false;
 static SemaphoreHandle_t s_pending_chip_mutex = NULL;
 
-static void pending_chip_apply_inline(int idx) {
+void pending_chip_apply_inline(int idx) {
    if (idx < 0 || idx >= MAX_NOTES) return;
    if (!s_pending_chip_mutex) return;
    xSemaphoreTake(s_pending_chip_mutex, portMAX_DELAY);
@@ -1523,353 +1352,11 @@ static void scheduler_post(const char *when_iso, const char *label) {
    xTaskCreatePinnedToCore(scheduler_post_task, "sched_post", 4096, args, 3, NULL, 0);
 }
 
-void ui_notes_write_audio(const int16_t *samples, size_t count)
-{
-    if (!s_rec_file || !s_rec_mutex) return;
-    if (xSemaphoreTake(s_rec_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
+/* W5: ui_notes_write_audio + ui_notes_stop_recording moved to
+ * dictation_notes.c (they own the s_rec_* statics now). */
 
-    if (s_rec_file) {
-        fwrite(samples, sizeof(int16_t), count, s_rec_file);
-        s_rec_samples += count;
-
-        /* Commit to SD every ~2 seconds: close + reopen to force FAT metadata update.
-         * fflush alone doesn't update directory entry size on FAT. */
-        if (s_rec_samples % (100 * 320) < count) {
-            /* Update WAV header with current size, close, reopen at end */
-            uint32_t data_bytes = s_rec_samples * sizeof(int16_t);
-            fseek(s_rec_file, 0, SEEK_SET);
-            wav_write_header(s_rec_file, data_bytes, TAB5_VOICE_SAMPLE_RATE);
-            fflush(s_rec_file);
-            fclose(s_rec_file);
-            s_rec_file = fopen(s_rec_path, "r+b");
-            if (s_rec_file) {
-                fseek(s_rec_file, 0, SEEK_END);
-            } else {
-                ESP_LOGE(TAG, "Failed to reopen recording file");
-            }
-        }
-    }
-
-    xSemaphoreGive(s_rec_mutex);
-}
-
-void ui_notes_stop_recording(const char *transcript)
-{
-    if (!s_rec_file) return;
-
-    if (s_rec_mutex) xSemaphoreTake(s_rec_mutex, portMAX_DELAY);
-
-    /* Update WAV header with final size */
-    uint32_t data_bytes = s_rec_samples * sizeof(int16_t);
-    fseek(s_rec_file, 0, SEEK_SET);
-    wav_write_header(s_rec_file, data_bytes, TAB5_VOICE_SAMPLE_RATE);
-    fclose(s_rec_file);
-    s_rec_file = NULL;
-
-    if (s_rec_mutex) xSemaphoreGive(s_rec_mutex);
-
-    float duration_s = (float)s_rec_samples / TAB5_VOICE_SAMPLE_RATE;
-    ESP_LOGI(TAG, "Recording stopped: %s (%.1fs, %lu samples)",
-             s_rec_path, duration_s, (unsigned long)s_rec_samples);
-
-    /* Update the note */
-    if (s_rec_note_slot >= 0 && s_rec_note_slot < MAX_NOTES) {
-        note_entry_t *n = &s_notes[s_rec_note_slot];
-        if (transcript && transcript[0]) {
-            strncpy(n->text, transcript, MAX_NOTE_LEN - 1);
-            n->text[MAX_NOTE_LEN - 1] = '\0';
-            n->state = NOTE_STATE_TRANSCRIBED;
-        } else {
-            snprintf(n->text, MAX_NOTE_LEN, "Voice recording (%.0fs)", duration_s);
-            n->state = NOTE_STATE_RECORDED;
-        }
-    }
-
-    s_rec_note_slot = -1;
-    s_rec_samples = 0;
-    notes_save();
-
-    /* Sync transcribed note to Dragon */
-    if (transcript && transcript[0]) {
-        const char *title = voice_get_dictation_title();
-        sync_note_to_dragon(title && title[0] ? title : "", transcript);
-    }
-
-    refresh_list();
-}
-
-/* ── Background transcription queue ─────────────────────── */
-/*
- * Periodically checks for RECORDED notes, reads the WAV from SD,
- * POSTs to Dragon's /api/v1/transcribe, and updates the note.
- */
-#include "esp_http_client.h"
-#include "wifi.h"
-
-static void transcription_queue_task(void *arg)
-{
-    ESP_LOGI(TAG, "Transcription queue started");
-    vTaskDelay(pdMS_TO_TICKS(10000));  /* wait 10s for system to settle */
-
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(15000));  /* check every 15s */
-
-        /* Don't process while recording or voice is active — concurrent
-         * HTTP upload + WS connection exhausts DMA memory */
-        if (s_rec_file || s_sd_rec_running || s_voice_recording) continue;
-        voice_state_t vst = voice_get_state();
-        if (vst != VOICE_STATE_IDLE && vst != VOICE_STATE_READY) continue;
-
-        notes_load();
-        int pending = ui_notes_unprocessed_count();
-        if (pending == 0) continue;
-        ESP_LOGI(TAG, "Transcription queue: %d unprocessed", pending);
-
-        /* Need WiFi to be up — Dragon reachability is tested by the HTTP POST itself */
-        if (!tab5_wifi_connected()) continue;
-
-        /* Find the first note needing transcription (RECORDED or FAILED with audio) */
-        int slot = -1;
-        for (int i = 0; i < MAX_NOTES; i++) {
-            if (!s_notes[i].used) continue;
-            /* Only retry RECORDED notes — FAILED notes already tried and failed.
-             * Retrying FAILED notes with broken audio (e.g. 44-byte header-only WAV)
-             * creates an infinite 15s retry loop that wastes CPU and SDIO bandwidth. */
-            bool needs_work = (s_notes[i].state == NOTE_STATE_RECORDED);
-            if (!needs_work) continue;
-            if (!s_notes[i].audio_path[0]) {
-                s_notes[i].state = NOTE_STATE_FAILED;
-                s_notes[i].fail_reason = NOTE_FAIL_NO_AUDIO;
-                voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, (uint32_t)(esp_timer_get_time() / 1000));
-                snprintf(s_notes[i].text, MAX_NOTE_LEN, "(No audio file)");
-                notes_save();
-                continue;
-            }
-            slot = i;
-            break;
-        }
-        if (slot < 0) continue;
-
-        note_entry_t *n = &s_notes[slot];
-        ESP_LOGI(TAG, "Transcribing note [%d]: %s", slot, n->audio_path);
-        n->state = NOTE_STATE_TRANSCRIBING;
-        notes_save();
-
-        /* PR 1: pipeline UPLOADING — REST POST about to begin. */
-        voice_dictation_set_note_slot(slot);
-        voice_dictation_set_state(DICT_UPLOADING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-
-        /* Read WAV file from SD */
-        FILE *f = fopen(n->audio_path, "rb");
-        if (!f) {
-            ESP_LOGW(TAG, "Cannot open WAV: %s", n->audio_path);
-            n->state = NOTE_STATE_FAILED;
-            n->fail_reason = NOTE_FAIL_NO_AUDIO;
-            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, (uint32_t)(esp_timer_get_time() / 1000));
-            notes_save();
-            continue;
-        }
-
-        fseek(f, 0, SEEK_END);
-        long file_size = ftell(f);
-        fseek(f, 0, SEEK_SET);
-
-        if (file_size < 100 || file_size > 30 * 1024 * 1024) {
-            ESP_LOGW(TAG, "WAV file too small or too large: %ld bytes", file_size);
-            fclose(f);
-            n->state = NOTE_STATE_FAILED;
-            n->fail_reason = NOTE_FAIL_NO_AUDIO;
-            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NO_AUDIO, (uint32_t)(esp_timer_get_time() / 1000));
-            snprintf(n->text, MAX_NOTE_LEN, "(Empty recording)");
-            notes_save();
-            continue;
-        }
-        /* Fix WAV header if it was from a crashed recording (header says 0 data).
-         * Wave 14 W14-M04: check every fread/fwrite return.  A short
-         * read used to leave `hdr_data_size` with stack garbage, which
-         * then got written to disk — silent corruption of the RIFF
-         * size fields on a flaky SD card. */
-        if (file_size > 44) {
-            uint32_t hdr_data_size = 0;
-            if (fseek(f, 40, SEEK_SET) != 0 ||
-                fread(&hdr_data_size, 4, 1, f) != 1) {
-                ESP_LOGW(TAG, "WAV header read failed for %s — skipping repair",
-                         n->audio_path);
-            } else if (hdr_data_size == 0 ||
-                       hdr_data_size > (uint32_t)(file_size - 44)) {
-                /* Fix the header in place */
-                uint32_t actual_data = (uint32_t)(file_size - 44);
-                uint32_t riff_size = actual_data + 36;
-                bool ok =
-                    (fseek(f, 4, SEEK_SET) == 0) &&
-                    (fwrite(&riff_size, 4, 1, f) == 1) &&
-                    (fseek(f, 40, SEEK_SET) == 0) &&
-                    (fwrite(&actual_data, 4, 1, f) == 1);
-                if (ok) {
-                    fflush(f);
-                    ESP_LOGI(TAG, "Fixed WAV header: %lu data bytes",
-                             (unsigned long)actual_data);
-                } else {
-                    ESP_LOGW(TAG, "WAV header repair fwrite failed for %s",
-                             n->audio_path);
-                }
-            }
-            fseek(f, 0, SEEK_SET);
-        }
-
-        /* Build URL: http://<dragon_host>:3502/api/v1/transcribe */
-        char dragon_host[64];
-        tab5_settings_get_dragon_host(dragon_host, sizeof(dragon_host));
-        char url[128];
-        snprintf(url, sizeof(url), "http://%s:%d/api/v1/transcribe",
-                 dragon_host, TAB5_VOICE_PORT);
-
-        /* HTTP POST — stream from file in 4KB chunks (never hold >4KB in RAM) */
-        esp_http_client_config_t http_cfg = {
-            .url = url,
-            .method = HTTP_METHOD_POST,
-            .timeout_ms = 120000,  /* 2min — large files take time to upload+transcribe */
-            .buffer_size = 4096,
-        };
-        esp_http_client_handle_t client = esp_http_client_init(&http_cfg);
-        /* Wave 14 W14-C03: esp_http_client_init can return NULL under
-         * fragmented internal SRAM.  Prior code called set_header on NULL
-         * and crashed the transcribe_q task, which silently dies until the
-         * next reboot. Fail the note cleanly instead. */
-        if (!client) {
-            ESP_LOGE(TAG, "transcribe: esp_http_client_init NULL (heap pressure?)");
-            fclose(f);
-            n->state = NOTE_STATE_FAILED;
-            n->fail_reason = NOTE_FAIL_NETWORK;
-            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
-            notes_save();
-            continue;
-        }
-        esp_http_client_set_header(client, "Content-Type", "audio/wav");
-        /* Dragon W13 C2 middleware gates /api/v1/transcribe behind bearer
-         * auth.  Without this header every upload 401s — was the root
-         * cause of the 100% FAIL rate on the Notes screen. */
-        char dtok[80];
-        if (tab5_settings_get_dragon_api_token(dtok, sizeof(dtok)) == ESP_OK && dtok[0]) {
-           char auth_hdr[96];
-           snprintf(auth_hdr, sizeof(auth_hdr), "Bearer %s", dtok);
-           esp_http_client_set_header(client, "Authorization", auth_hdr);
-        }
-
-        fseek(f, 0, SEEK_SET);
-        esp_err_t err = esp_http_client_open(client, file_size);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
-            esp_http_client_cleanup(client);
-            fclose(f);
-            n->state = NOTE_STATE_FAILED;
-            n->fail_reason = NOTE_FAIL_NETWORK;
-            voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
-            notes_save();
-            continue;
-        }
-
-        /* Stream file to HTTP in 4KB chunks */
-        char chunk[4096];
-        long sent = 0;
-        while (sent < file_size) {
-            size_t to_read = (file_size - sent > (long)sizeof(chunk))
-                             ? sizeof(chunk) : (size_t)(file_size - sent);
-            size_t got = fread(chunk, 1, to_read, f);
-            if (got == 0) break;
-            int written = esp_http_client_write(client, chunk, got);
-            if (written < 0) {
-                ESP_LOGE(TAG, "HTTP write failed at %ld/%ld", sent, file_size);
-                break;
-            }
-            sent += got;
-        }
-        fclose(f);
-        ESP_LOGI(TAG, "Uploaded %ld/%ld bytes", sent, file_size);
-
-        int content_len = esp_http_client_fetch_headers(client);
-        int status = esp_http_client_get_status_code(client);
-
-        /* PR 1: TRANSCRIBING — request fully sent, Dragon now running STT. */
-        voice_dictation_set_state(DICT_TRANSCRIBING, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-
-        if (status == 200 && content_len > 0 && content_len < 8192) {
-            char *resp = malloc(content_len + 1);
-            if (resp) {
-                esp_http_client_read(client, resp, content_len);
-                resp[content_len] = '\0';
-
-                /* Parse JSON response: {"text":"...", "duration_s":..., "stt_ms":...} */
-                cJSON *root = cJSON_Parse(resp);
-                if (root) {
-                    const char *text = cJSON_GetStringValue(
-                        cJSON_GetObjectItem(root, "text"));
-                    if (text && text[0]) {
-                        strncpy(n->text, text, MAX_NOTE_LEN - 1);
-                        n->text[MAX_NOTE_LEN - 1] = '\0';
-                        n->state = NOTE_STATE_TRANSCRIBED;
-                        n->fail_reason = NOTE_FAIL_NONE;
-                        voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-                        ESP_LOGI(TAG, "Transcription done [%d]: %.60s", slot, text);
-                    } else {
-                        snprintf(n->text, MAX_NOTE_LEN, "(Empty transcription)");
-                        n->state = NOTE_STATE_FAILED;
-                        n->fail_reason = NOTE_FAIL_EMPTY;
-                        voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY,
-                                                  (uint32_t)(esp_timer_get_time() / 1000));
-                    }
-                    cJSON_Delete(root);
-                }
-                free(resp);
-            }
-        } else {
-            ESP_LOGW(TAG, "Transcribe HTTP %d (len=%d)", status, content_len);
-            n->state = NOTE_STATE_FAILED;
-            n->fail_reason = (status == 401 || status == 403) ? NOTE_FAIL_AUTH : NOTE_FAIL_NETWORK;
-            voice_dictation_set_state(DICT_FAILED,
-                                      (status == 401 || status == 403) ? DICT_FAIL_AUTH : DICT_FAIL_NETWORK,
-                                      (uint32_t)(esp_timer_get_time() / 1000));
-        }
-
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        notes_save();
-        /* #170: refresh_list touches LVGL objects; this task runs on
-         * Core 1 outside the UI task, so direct calls race with the UI
-         * thread (including concurrent ui_notes_destroy from a nav).
-         * Route via lv_async_call so the refresh happens on the LVGL
-         * timer tick and the s_destroying guard catches it cleanly. */
-        tab5_lv_async_call((lv_async_cb_t)refresh_list, NULL);
-    }
-}
-
-void ui_notes_start_transcription_queue(void)
-{
-    BaseType_t ret = xTaskCreatePinnedToCore(
-        transcription_queue_task, "transcribe_q", 16384,  /* needs room for HTTP client */
-        NULL, 3, NULL, 1);
-    if (ret == pdPASS) {
-        ESP_LOGI(TAG, "Transcription queue task created");
-    } else {
-        ESP_LOGE(TAG, "Failed to create transcription queue task");
-    }
-}
-
-/* ── Voice session complete — save transcript ─────────────── */
-static void voice_session_done(void)
-{
-    const char *text = NULL;
-    if (voice_get_mode() == VOICE_MODE_DICTATE) {
-        text = voice_get_dictation_text();
-    } else {
-        text = voice_get_stt_text();
-    }
-
-    /* Stop SD recording and attach transcript (if we have one) */
-    ui_notes_stop_recording((text && text[0]) ? text : NULL);
-    ESP_LOGI(TAG, "Voice session done: %s",
-             (text && text[0]) ? "transcribed" : "recorded (needs transcription)");
-}
+/* W5: the background transcription queue (transcription_queue_task +
+ * ui_notes_start_transcription_queue) moved to dictation_notes.c. */
 
 /* ── Keyboard layout callback — move input area / edit TA above keyboard ── */
 static void notes_keyboard_layout_cb(bool visible, int kb_height)
@@ -1990,194 +1477,6 @@ static void cb_back(lv_event_t *e)
     /* TT #623 — centralised nav: voice-cancel-then-nav + obs.
      * Notes is an overlay so we still need to leave the user on home. */
     tab5_nav_to(NAV_HOME, NAV_FLAGS_NONE);
-}
-
-/* FreeRTOS task to switch to VOICE mode (connects to Dragon) */
-static void dictation_connect_task(void *arg)
-{
-    tab5_mode_switch(MODE_VOICE);
-    vTaskSuspend(NULL);  /* P4 TLSP crash workaround (#20) */
-}
-
-/* LVGL timer: poll for READY state after Dragon connect, then start dictation */
-static void __attribute__((unused)) pending_dictation_poll_cb(lv_timer_t *t)
-{
-    int *ticks = (int *)lv_timer_get_user_data(t);
-    (*ticks)++;
-
-    if (voice_get_state() == VOICE_STATE_READY && s_pending_dictation) {
-        s_pending_dictation = false;
-        lv_timer_delete(t);
-        free(ticks);
-        s_voice_recording = true;
-        voice_start_dictation();
-        ESP_LOGI(TAG, "Dictation auto-started after Dragon connect");
-        return;
-    }
-    /* Timeout after 15s */
-    if (*ticks > 150) {
-        s_pending_dictation = false;
-        lv_timer_delete(t);
-        free(ticks);
-        ESP_LOGW(TAG, "Dictation connect timeout");
-    }
-}
-
-/* Standalone SD-only recording task — reads mic, writes WAV, no Dragon needed */
-static TaskHandle_t  s_sd_rec_task = NULL;
-
-static void sd_record_task(void *arg)
-{
-    ESP_LOGI(TAG, "SD recording task started (core %d)", xPortGetCoreID());
-
-    /* Allocate buffers in PSRAM */
-    const int tdm_samples = 960 * 4;  /* 20ms @ 48kHz, 4 TDM channels */
-    const int mono_samples = 320;      /* 20ms @ 16kHz */
-    int16_t *tdm_buf = heap_caps_malloc(tdm_samples * sizeof(int16_t),
-                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    int16_t *mono_buf = heap_caps_malloc(mono_samples * sizeof(int16_t),
-                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!tdm_buf || !mono_buf) {
-        ESP_LOGE(TAG, "SD rec: buffer alloc failed");
-        heap_caps_free(tdm_buf);
-        heap_caps_free(mono_buf);
-        s_sd_rec_running = false;
-        s_sd_rec_task = NULL;
-        vTaskSuspend(NULL);
-        return;
-    }
-
-    int frames = 0;
-    /* 4-hr hard cap (TT #572).  Mic chunks are 20 ms (50 frames/s) so
-     * 14400 s = 720000 frames.  Original 5-min cap was a zombie-task
-     * guard (477 s zombie in audit 2026-05-14); bumped to 4 hr so
-     * meetings / podcasts / lectures fit while still preventing
-     * unbounded recording when the user forgets to stop. */
-    const int max_frames = MAX_NOTE_REC_SECS * 50;
-    while (s_sd_rec_running) {
-        esp_err_t err = tab5_mic_read(tdm_buf, tdm_samples, 100);
-        if (err != ESP_OK) {
-            if (frames == 0) {
-                ESP_LOGE(TAG, "SD rec: mic_read failed: %s", esp_err_to_name(err));
-            }
-            vTaskDelay(pdMS_TO_TICKS(5));
-            continue;
-        }
-
-        /* Downsample 48kHz TDM slot 0 → 16kHz mono */
-        int out_idx = 0;
-        for (int i = 0; i + 2 < 960 && out_idx < mono_samples; i += 3) {
-            int32_t sum = tdm_buf[i * 4] + tdm_buf[(i+1) * 4] + tdm_buf[(i+2) * 4];
-            mono_buf[out_idx++] = (int16_t)(sum / 3);
-        }
-
-        ui_notes_write_audio(mono_buf, out_idx);
-        frames++;
-        if (frames == 1) {
-            ESP_LOGI(TAG, "SD rec: first audio chunk written (%d samples)", out_idx);
-        }
-        if (frames % 250 == 0) {  /* every 5 seconds */
-            ESP_LOGI(TAG, "SD rec: %d frames (%.1fs)", frames, frames * 0.02f);
-        }
-        if (frames >= max_frames) {
-           ESP_LOGW(TAG, "SD rec: hit %ds cap — auto-stopping", MAX_NOTE_REC_SECS);
-           s_sd_rec_running = false;
-           /* Marshal the stop onto the LVGL thread same as the manual
-            * stop path in cb_new_voice so we don't race the recording
-            * indicator or s_rec_file teardown. */
-           tab5_lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
-           break;
-        }
-    }
-
-    heap_caps_free(tdm_buf);
-    heap_caps_free(mono_buf);
-    ESP_LOGI(TAG, "SD recording task exiting");
-    s_sd_rec_task = NULL;
-    vTaskSuspend(NULL);
-}
-
-/* Safe toast deletion — timer user_data is the toast lv_obj_t* */
-static void toast_delete_cb(lv_timer_t *t)
-{
-    lv_obj_t *obj = lv_timer_get_user_data(t);
-    if (obj && lv_obj_is_valid(obj)) {
-        lv_obj_delete(obj);
-    }
-}
-
-static void cb_new_voice(lv_event_t *e)
-{
-    (void)e;
-    if (s_sd_rec_running || s_voice_recording) {
-        /* Stop current recording */
-        hide_recording_indicator();
-        s_sd_rec_running = false;  /* signal task to exit */
-        if (voice_get_state() == VOICE_STATE_LISTENING) {
-            voice_stop_listening();
-        }
-        s_voice_recording = false;
-        /* Give mic task time to exit before finalizing WAV.
-         * Use lv_async_call to run on next LVGL cycle. */
-        tab5_lv_async_call((lv_async_cb_t)ui_notes_stop_recording, NULL);
-        ESP_LOGI(TAG, "Recording stopping...");
-        return;
-    }
-
-    voice_state_t st = voice_get_state();
-
-    /* Always start SD recording first */
-    const char *wav = ui_notes_start_recording();
-    if (!wav) {
-        ESP_LOGE(TAG, "Failed to start recording — SD card not mounted?");
-        /* Show toast on the layer_top so it's visible from any screen */
-        lv_obj_t *toast = lv_obj_create(lv_layer_top());
-        lv_obj_set_size(toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_align(toast, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_set_style_bg_color(toast, lv_color_hex(0xFF453A), 0);
-        lv_obj_set_style_bg_opa(toast, LV_OPA_90, 0);
-        lv_obj_set_style_radius(toast, 16, 0);
-        lv_obj_set_style_pad_all(toast, 20, 0);
-        lv_obj_set_style_border_width(toast, 0, 0);
-        lv_obj_t *lbl = lv_label_create(toast);
-        lv_label_set_text(lbl, "SD card not ready");
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0xE8E8EF), 0);
-        lv_obj_set_style_text_font(lbl, FONT_HEADING, 0);
-        lv_timer_t *tmr = lv_timer_create(toast_delete_cb, 2000, toast);
-        lv_timer_set_repeat_count(tmr, 1);
-        return;
-    }
-
-    s_voice_recording = true;
-    show_recording_indicator();
-
-    if (st == VOICE_STATE_READY) {
-        /* Dragon online — dual-write: SD + live dictation via voice module */
-        esp_err_t err = voice_start_dictation();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Dictation start failed, continuing SD-only");
-        } else {
-            ESP_LOGI(TAG, "Dictation started (SD + Dragon): %s", wav);
-        }
-    } else {
-        /* Offline or busy — SD-only recording with standalone mic task.
-         * Wave 14 W14-H07: stack bumped from 4 KB to 8 KB. The task
-         * calls tab5_mic_read (I2S DMA path) then funnels through
-         * FATFS/VFS (~2-4 KB of FATFS sector buffers + libc FILE state)
-         * plus ESP_LOGI with formatted args. 4 KB trapped stack_chk_fail
-         * on long offline recordings (>20 s). 8 KB matches the voice
-         * mic task and gives comfortable headroom in PSRAM. */
-        s_sd_rec_running = true;
-        xTaskCreatePinnedToCore(
-            sd_record_task, "sd_rec", 8192, NULL, 5, &s_sd_rec_task, 1);
-        ESP_LOGI(TAG, "Recording to SD only: %s", wav);
-
-        /* Try to connect Dragon in background for later transcription */
-        if (st == VOICE_STATE_IDLE) {
-            xTaskCreatePinnedToCore(
-                dictation_connect_task, "dict_conn", 8192, NULL, 3, NULL, 1);
-        }
-    }
 }
 
 static void cb_new_text(lv_event_t *e)
@@ -2762,6 +2061,27 @@ static void add_note_card_sectioned(lv_obj_t *parent, const note_entry_t *note, 
          badge_color = 0x8E8E98;
          break;
    }
+   /* W4: the enrichment badge takes precedence while a dictation row is still
+    * filling in (independent of the orb/FSM).  Always shown until ENRICH_DONE.
+    * ASCII glyphs only — FONT_CAPTION has no U+2026. */
+   switch (n->enrich) {
+      case ENRICH_TRANSCRIBING:
+         badge_text = "Transcribing...";
+         badge_color = 0xFCD34D; /* amber */
+         break;
+      case ENRICH_SUMMARIZING:
+         badge_text = "Summarizing...";
+         badge_color = 0xFCD34D; /* amber */
+         break;
+      case ENRICH_PENDING:
+         badge_text = "Pending";
+         badge_color = 0x8E8E98; /* neutral — auto-finishes, not a failure */
+         break;
+      case ENRICH_NONE:
+      case ENRICH_DONE:
+      default:
+         break; /* leave the state-derived badge above untouched */
+   }
    lv_label_set_text(badge, badge_text);
    lv_obj_set_style_text_color(badge, lv_color_hex(badge_color), 0);
    lv_obj_set_style_text_font(badge, FONT_CAPTION, 0);
@@ -3022,12 +2342,14 @@ void ui_notes_paint_filter_pills(void) {
 /* ── PR 3: processing row that subscribes to the dictation pipeline ── */
 
 static lv_timer_t *s_proc_rec_ticker = NULL;
+/* Cached at arm time; the 200ms ui_task ticker reads the FSM state lock-free
+ * (was voice_dictation_get() per tick — a ui_task dictation-mutex contender). */
+static uint32_t s_proc_rec_started_ms = 0;
 
 static void proc_rec_tick_cb(lv_timer_t *t) {
    (void)t;
    if (!s_proc_label) return;
-   dict_event_t e = voice_dictation_get();
-   if (e.state != DICT_RECORDING) {
+   if (voice_dictation_state() != DICT_RECORDING) {
       if (s_proc_rec_ticker) {
          lv_timer_del(s_proc_rec_ticker);
          s_proc_rec_ticker = NULL;
@@ -3035,7 +2357,8 @@ static void proc_rec_tick_cb(lv_timer_t *t) {
       return;
    }
    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-   uint32_t dur_ms = (e.started_ms && now_ms >= e.started_ms) ? (now_ms - e.started_ms) : 0;
+   uint32_t started = s_proc_rec_started_ms;
+   uint32_t dur_ms = (started && now_ms >= started) ? (now_ms - started) : 0;
    uint32_t s = dur_ms / 1000;
    char buf[40];
    snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
@@ -3082,7 +2405,10 @@ static void proc_paint_state(const dict_event_t *e) {
          uint32_t s = dur_ms / 1000;
          snprintf(buf, sizeof(buf), "RECORDING  %lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
          txt = buf;
-         if (!s_proc_rec_ticker) s_proc_rec_ticker = lv_timer_create(proc_rec_tick_cb, 200, NULL);
+         if (!s_proc_rec_ticker) {
+            s_proc_rec_started_ms = e->started_ms; /* cache once — ticker reads it lock-free */
+            s_proc_rec_ticker = lv_timer_create(proc_rec_tick_cb, 200, NULL);
+         }
          break;
       }
       case DICT_UPLOADING:
@@ -3104,6 +2430,12 @@ static void proc_paint_state(const dict_event_t *e) {
          body_hex = 0xE74C3C;
          edge_hex = 0xFF5C50;
          txt = "FAILED  TAP TO RETRY";
+         break;
+      case DICT_CANCELLED:
+         /* W1 (S2-7): neutral — an intentional cancel, not a failure. */
+         body_hex = 0x6B7280;
+         edge_hex = 0x9AA3AF;
+         txt = "Cancelled";
          break;
       default:
          break;
@@ -3128,13 +2460,14 @@ static void cb_proc_close_tap(lv_event_t *e) {
    dict_event_t cur = voice_dictation_get();
    if (cur.state == DICT_RECORDING) {
       voice_cancel();
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* W1 (S2-7): cancel is the CANCELLED terminal (neutral), not FAILED. */
+      voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, voice_dictation_now_ms());
    } else if (cur.state != DICT_IDLE) {
       /* For non-RECORDING non-IDLE (UPLOADING/TRANSCRIBING/SAVED/FAILED),
        * just dismiss the row by snapping back to IDLE.  The dictation
        * itself can't really be cancelled mid-transcribe, but the row
        * shouldn't be sticky in the user's face. */
-      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
 }
 
@@ -3180,110 +2513,108 @@ void cb_filter_pill_tap(lv_event_t *e) {
 }
 
 /* ── Refresh list ───────────────────────────────────────── */
-static void refresh_list(void)
-{
-    /* #170: hard bail if the screen was destroyed between the call being
-     * scheduled (often via lv_async_call from the background transcription
-     * task) and execution.  All s_* pointers below may be dangling. */
-    if (s_destroying || !s_screen) return;
-    /* Count failed entries up-front so we can update both the topbar
-     * meta and the conditional CLEAR FAILED button in one pass. */
-    int failed_count = 0;
-    for (int i = 0; i < MAX_NOTES; i++) {
-       if (s_notes[i].used && s_notes[i].state == NOTE_STATE_FAILED) failed_count++;
-    }
-    /* v5 topbar meta — always shows "N NOTES" in muted gray; the FAIL
-     * count is surfaced by the conditional CLEAR FAILED button so we
-     * don't duplicate the same number twice on the same row. */
-    if (s_topbar_meta) {
-        char buf[40];
-        snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s",
-                 s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
-        lv_label_set_text(s_topbar_meta, buf);
-        lv_obj_set_style_text_color(s_topbar_meta, lv_color_hex(0x6A6A72), 0);
-    }
-    if (s_topbar_clear) {
-       if (failed_count > 0) {
-          /* Reflect the live count on the button label so the user
-           * sees "CLEAR 11 FAILED" instead of a static caption. */
-          lv_obj_t *lbl = lv_obj_get_child(s_topbar_clear, 0);
-          if (lbl) {
-             char b[24];
-             /* Compact badge: warning + count.  Red bg + border on the
-              * chip telegraphs "failed"; the leading exclamation mark
-              * adds urgency without depending on a unicode dot glyph
-              * that the caption font may not carry. */
-             snprintf(b, sizeof(b), "! %d", failed_count);
-             lv_label_set_text(lbl, b);
-          }
-          lv_obj_clear_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
-       } else {
-          lv_obj_add_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
-       }
-    }
-    if (!s_list) return;
-    lv_obj_clean(s_list);
+void refresh_list(void) {
+   /* #170: hard bail if the screen was destroyed between the call being
+    * scheduled (often via lv_async_call from the background transcription
+    * task) and execution.  All s_* pointers below may be dangling. */
+   if (s_destroying || !s_screen) return;
+   /* Count failed entries up-front so we can update both the topbar
+    * meta and the conditional CLEAR FAILED button in one pass. */
+   int failed_count = 0;
+   for (int i = 0; i < MAX_NOTES; i++) {
+      if (s_notes[i].used && s_notes[i].state == NOTE_STATE_FAILED) failed_count++;
+   }
+   /* v5 topbar meta — always shows "N NOTES" in muted gray; the FAIL
+    * count is surfaced by the conditional CLEAR FAILED button so we
+    * don't duplicate the same number twice on the same row. */
+   if (s_topbar_meta) {
+      char buf[40];
+      snprintf(buf, sizeof(buf), "%d \xe2\x80\xa2 %s", s_note_count, s_note_count == 1 ? "NOTE" : "NOTES");
+      lv_label_set_text(s_topbar_meta, buf);
+      lv_obj_set_style_text_color(s_topbar_meta, lv_color_hex(0x6A6A72), 0);
+   }
+   if (s_topbar_clear) {
+      if (failed_count > 0) {
+         /* Reflect the live count on the button label so the user
+          * sees "CLEAR 11 FAILED" instead of a static caption. */
+         lv_obj_t *lbl = lv_obj_get_child(s_topbar_clear, 0);
+         if (lbl) {
+            char b[24];
+            /* Compact badge: warning + count.  Red bg + border on the
+             * chip telegraphs "failed"; the leading exclamation mark
+             * adds urgency without depending on a unicode dot glyph
+             * that the caption font may not carry. */
+            snprintf(b, sizeof(b), "! %d", failed_count);
+            lv_label_set_text(lbl, b);
+         }
+         lv_obj_clear_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
+      } else {
+         lv_obj_add_flag(s_topbar_clear, LV_OBJ_FLAG_HIDDEN);
+      }
+   }
+   if (!s_list) return;
+   lv_obj_clean(s_list);
 
-    int shown = 0;
-    /* PR 3: emit day-section headers as we walk the (already-reverse-
-     * chronological) notes ring.  A header is emitted the first time
-     * we see a row whose classify_note_day() bucket differs from the
-     * previous header.  Tracks the last emitted bucket via cur_section
-     * with -1 as the sentinel for "no header emitted yet". */
-    int cur_section = -1;
-    for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
-        int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
-        if (!s_notes[idx].used) continue;
-        /* M2: Search filter — skip notes that don't match search text */
-        if (s_search_text[0]) {
-            /* N1: Case-insensitive search */
-            if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
-        }
-        /* PR 3: filter pill predicate */
-        if (!note_matches_filter(&s_notes[idx])) continue;
-        /* PR 3: emit a day-section header when entering a new bucket. */
-        day_section_t sec = classify_note_day(&s_notes[idx]);
-        if ((int)sec != cur_section) {
-           add_day_section_header(s_list, sec);
-           cur_section = (int)sec;
-        }
-        add_note_card_sectioned(s_list, &s_notes[idx], idx, sec);
-        shown++;
-    }
-    if (shown == 0) {
-       const char *head = NULL;
-       const char *body = NULL;
-       if (s_search_text[0]) {
-          head = "No matches";
-          body = "Try a different word.";
-       } else {
-          switch (s_filter) {
-             case NOTE_FILTER_VOICE:
-                head = "No voice notes yet";
-                body = "Tap the amber mic to dictate one.";
-                break;
-             case NOTE_FILTER_TEXT:
-                head = "No typed notes yet";
-                body = "Tap the pencil to write one.";
-                break;
-             case NOTE_FILTER_PENDING:
-                head = "Nothing pending";
-                body = "Reminders + lists will gather here.";
-                break;
-             case NOTE_FILTER_ALL:
-             default:
-                head = "No notes yet";
-                body = "Tap the amber mic to dictate,\nor the pencil to type.";
-                break;
-          }
-       }
-       /* Polish P4 (TT #654): adopt shared ui_empty_state helper.
-        * Previously open-coded a flex container with two labels;
-        * now reads from the same design-system atom every other
-        * screen uses for empties.  Visual rhythm matches Sessions /
-        * Files / Memory consistently. */
-       ui_empty_state(s_list, LV_SYMBOL_EDIT, head, body);
-    }
+   int shown = 0;
+   /* PR 3: emit day-section headers as we walk the (already-reverse-
+    * chronological) notes ring.  A header is emitted the first time
+    * we see a row whose classify_note_day() bucket differs from the
+    * previous header.  Tracks the last emitted bucket via cur_section
+    * with -1 as the sentinel for "no header emitted yet". */
+   int cur_section = -1;
+   for (int i = 0; i < MAX_NOTES && shown < s_note_count; i++) {
+      int idx = (s_next_slot - 1 - i + MAX_NOTES) % MAX_NOTES;
+      if (!s_notes[idx].used) continue;
+      /* M2: Search filter — skip notes that don't match search text */
+      if (s_search_text[0]) {
+         /* N1: Case-insensitive search */
+         if (!strcasestr(s_notes[idx].text, s_search_text)) continue;
+      }
+      /* PR 3: filter pill predicate */
+      if (!note_matches_filter(&s_notes[idx])) continue;
+      /* PR 3: emit a day-section header when entering a new bucket. */
+      day_section_t sec = classify_note_day(&s_notes[idx]);
+      if ((int)sec != cur_section) {
+         add_day_section_header(s_list, sec);
+         cur_section = (int)sec;
+      }
+      add_note_card_sectioned(s_list, &s_notes[idx], idx, sec);
+      shown++;
+   }
+   if (shown == 0) {
+      const char *head = NULL;
+      const char *body = NULL;
+      if (s_search_text[0]) {
+         head = "No matches";
+         body = "Try a different word.";
+      } else {
+         switch (s_filter) {
+            case NOTE_FILTER_VOICE:
+               head = "No voice notes yet";
+               body = "Tap the amber mic to dictate one.";
+               break;
+            case NOTE_FILTER_TEXT:
+               head = "No typed notes yet";
+               body = "Tap the pencil to write one.";
+               break;
+            case NOTE_FILTER_PENDING:
+               head = "Nothing pending";
+               body = "Reminders + lists will gather here.";
+               break;
+            case NOTE_FILTER_ALL:
+            default:
+               head = "No notes yet";
+               body = "Tap the amber mic to dictate,\nor the pencil to type.";
+               break;
+         }
+      }
+      /* Polish P4 (TT #654): adopt shared ui_empty_state helper.
+       * Previously open-coded a flex container with two labels;
+       * now reads from the same design-system atom every other
+       * screen uses for empties.  Visual rhythm matches Sessions /
+       * Files / Memory consistently. */
+      ui_empty_state(s_list, LV_SYMBOL_EDIT, head, body);
+   }
 }
 
 /* ── Top bar (v5: typography-forward, amber title, 'HOME' caption back) ─ */
@@ -3645,11 +2976,12 @@ void cb_notes_fab_tap(lv_event_t *e) {
    if (cur.state == DICT_RECORDING) {
       /* Already recording — second tap cancels (matches home chip semantics). */
       voice_cancel();
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
+      /* W1 (S2-7): cancel is the CANCELLED terminal (neutral), not FAILED. */
+      voice_dictation_set_state(DICT_CANCELLED, DICT_FAIL_NONE, voice_dictation_now_ms());
       return;
    }
-   if (cur.state == DICT_FAILED || cur.state == DICT_SAVED) {
-      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
+   if (cur.state == DICT_FAILED || cur.state == DICT_SAVED || cur.state == DICT_CANCELLED) {
+      voice_dictation_set_state(DICT_IDLE, DICT_FAIL_NONE, voice_dictation_now_ms());
    }
    esp_err_t err = voice_start_dictation();
    if (err != ESP_OK) {
@@ -3691,7 +3023,6 @@ void ui_notes_destroy(void)
     s_input_area = NULL;
     s_input_btn = NULL;
     s_input_visible = false;
-    s_voice_recording = false;
 }
 
 void ui_notes_hide(void)
@@ -3704,10 +3035,6 @@ void ui_notes_hide(void)
     if (s_edit_overlay) { lv_obj_del(s_edit_overlay); s_edit_overlay = NULL; s_edit_ta = NULL; }
     ui_keyboard_hide();
     hide_input_area();
-    /* Clear recording state — prevents transcription queue blockage if user
-     * navigates away mid-recording. Without this, s_voice_recording stays
-     * true forever since ui_notes_destroy() is never called. */
-    s_voice_recording = false;
     if (s_screen) {
         lv_obj_add_flag(s_screen, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_CLICKABLE);

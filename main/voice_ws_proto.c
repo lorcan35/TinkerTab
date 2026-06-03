@@ -63,7 +63,7 @@ static void tx_grace_timer_fired(void *arg) {
    dict_event_t e = voice_dictation_get();
    if (e.state == DICT_TRANSCRIBING) {
       ESP_LOGW(TAG, "TRANSCRIBING grace window expired — flipping pipeline to FAILED/NETWORK");
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
    } else {
       ESP_LOGI(TAG, "TRANSCRIBING grace timer fired but pipeline already resolved (state=%s) — no-op",
                voice_dictation_state_name(e.state));
@@ -80,7 +80,7 @@ void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms) {
       };
       if (esp_timer_create(&args, &s_tx_grace_timer) != ESP_OK) {
          ESP_LOGE(TAG, "Failed to create TRANSCRIBING grace timer; falling back to immediate FAIL");
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
          return;
       }
    }
@@ -849,26 +849,56 @@ void voice_ws_proto_handle_text(const char *data, int len) {
          }
       }
    } else if (strcmp(type_str, "dictation_postprocessing") == 0) {
-      /* TinkerBox#94 H4: Dragon spawned the title+summary LLM call after
-       * `stt`.  Pre-fix the user stared at the bare transcript for
-       * 10-20 s with no signal that more was coming.  Show a status
-       * caption so the wait feels intentional. */
+      /* Dragon spawned the title+summary LLM call after `stt`. */
       ESP_LOGI(TAG, "Dictation post-process started");
-      voice_set_state(VOICE_STATE_PROCESSING, "Generating summary...");
+      /* W4: summary generation is BACKGROUND.  The orb already returned to idle
+       * at capture/stop; the "summarizing" status now lives on the Notes badge,
+       * not the orb.  Do NOT pull voice_state into PROCESSING here — that
+       * re-pinned the orb to the amber spinner for the whole 10-90 s LLM wait,
+       * which is exactly the "stuck on Generating summary…" feel W4 removes. */
    } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
-      /* TinkerBox#94 H4: LLM failed or wasn't available.  Note already
-       * saved (the transcript landed via the prior `stt` event); user
-       * just doesn't get an auto-generated title/summary.  Clear the
-       * "Generating summary..." caption and toast the friendly
-       * message. */
+      /* TinkerBox#94 H4: Dragon's STT + auto-note-create completed but
+       * the LLM summary step failed (no_llm_available, generation
+       * error, etc.).  The transcript IS captured — the note already
+       * exists on Dragon and the `stt` event already landed the text —
+       * so the user's intent was saved; only the auto title/summary is
+       * missing.  Clear the "Generating summary..." caption, toast the
+       * friendly message, drive the dictation pipeline to SAVED (NOT
+       * left stuck at TRANSCRIBING), and surface a local Tab5 note from
+       * the transcript.
+       *
+       * Dictation audit 2026-05-29 (S1-2): a SECOND
+       * `dictation_postprocessing_error` branch used to live later in
+       * this if/else chain and owned the FSM→SAVED + local-note work,
+       * but it was unreachable (this branch matched first), so every
+       * Local dictation that hit the summary-error path — the COMMON
+       * path on the llama-server Local backend — left the pipeline
+       * wedged at TRANSCRIBING with no note.  Merged here; the dead
+       * branch was deleted. */
       cJSON *msg = cJSON_GetObjectItem(root, "message");
       const char *m = cJSON_IsString(msg) ? msg->valuestring : "Note saved — summary unavailable";
-      ESP_LOGW(TAG, "Dictation post-process error: %s", m);
+      cJSON *err = cJSON_GetObjectItem(root, "error");
+      const char *err_str = (cJSON_IsString(err) && err->valuestring) ? err->valuestring : "unknown";
+      ESP_LOGW(TAG, "Dictation post-process error: %s (%s) — pipeline → SAVED (note already exists)", m, err_str);
       char buf[160];
       strncpy(buf, m, sizeof(buf) - 1);
       buf[sizeof(buf) - 1] = '\0';
       voice_async_toast(strdup(buf));
-      voice_set_state(VOICE_STATE_READY, "dictation_done");
+      /* W2 (S2-9): turn_id-gate — a stale postprocessing_error for a superseded
+       * turn must not flip voice_state or create a note for the wrong turn. */
+      const char *ppe_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
+      if (voice_dictation_resolve_if_current(ppe_turn, DICT_SAVED, DICT_FAIL_NONE,
+                                             (uint32_t)(esp_timer_get_time() / 1000))) {
+         voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
+         /* Surface the dictation as a local Tab5 note (Path B: FAB / home
+          * Dictate chip — Path A's local "+ NEW VOICE NOTE" slot already
+          * owns its own row; ui_notes_add_dictated_async no-ops if a local
+          * slot is already active so we don't duplicate). */
+         const char *transcript = voice_get_dictation_text();
+         if (transcript && transcript[0]) {
+            ui_notes_add_dictated_async(transcript);
+         }
+      }
    } else if (strcmp(type_str, "dictation_postprocessing_cancelled") == 0) {
       /* TinkerBox#94 H4: a NEW dictation superseded the prior in-flight
        * post-process.  The new dictation will emit its own
@@ -884,11 +914,18 @@ void voice_ws_proto_handle_text(const char *data, int len) {
        * follow-up _postprocessing fires it'll re-set the caption a
        * few ms later anyway, no UI flicker visible. */
       ESP_LOGI(TAG, "Dictation post-process cancelled (superseded or aborted)");
-      voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
-      /* PR 1: pipeline transition for the cancelled path. */
-      voice_dictation_set_state(DICT_FAILED, DICT_FAIL_CANCELLED, (uint32_t)(esp_timer_get_time() / 1000));
-      /* #537: discard the pipeline-armed WAV — no transcript is coming. */
-      tab5_lv_async_call((lv_async_cb_t)ui_notes_pipeline_cancel_recording, NULL);
+      /* W2 (review F2): turn_id-gate like every other dictation terminal.
+       * On a rapid stop+restart Dragon cancels the PRIOR turn's post-process
+       * and stamps this frame with the ABANDONED turn's id — it must NOT drive
+       * the live successor turn to CANCELLED or discard its WAV.  Drop the WAV
+       * only when the cancellation actually applies to the current turn. */
+      const char *ppc_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
+      if (voice_dictation_resolve_if_current(ppc_turn, DICT_CANCELLED, DICT_FAIL_NONE,
+                                             (uint32_t)(esp_timer_get_time() / 1000))) {
+         voice_set_state(VOICE_STATE_READY, "dictation_cancelled");
+         /* #537: discard the pipeline-armed WAV — no transcript is coming. */
+         tab5_lv_async_call((lv_async_cb_t)ui_notes_pipeline_cancel_recording, NULL);
+      }
    } else if (strcmp(type_str, "dictation_summary") == 0) {
       cJSON *title = cJSON_GetObjectItem(root, "title");
       cJSON *summary = cJSON_GetObjectItem(root, "summary");
@@ -901,13 +938,21 @@ void voice_ws_proto_handle_text(const char *data, int len) {
          s_dictation_summary[sizeof(s_dictation_summary) - 1] = '\0';
       }
       ESP_LOGI(TAG, "Dictation summary: \"%s\"", s_dictation_title);
-      voice_set_state(VOICE_STATE_READY, "dictation_summary");
-
-      /* PR 1: pipeline transition.  Non-empty summary → SAVED; empty
-       * both → FAILED(EMPTY). */
+      const char *summ_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
       const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-      if (s_dictation_title[0] || s_dictation_summary[0]) {
-         voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, now);
+      bool summ_non_empty = (s_dictation_title[0] || s_dictation_summary[0]);
+      /* W2 (S2-8/S2-9): turn_id-gate the resolution.  A late summary for a
+       * superseded turn (back-to-back dictation) is DROPPED — it can't flip
+       * voice_state or create a note for the wrong turn.  Non-empty → SAVED;
+       * empty both → FAILED(EMPTY). */
+      bool summ_applied = voice_dictation_resolve_if_current(summ_turn, summ_non_empty ? DICT_SAVED : DICT_FAILED,
+                                                             summ_non_empty ? DICT_FAIL_NONE : DICT_FAIL_EMPTY, now);
+      if (!summ_applied) {
+         ESP_LOGW(TAG, "Dropped stale dictation_summary (turn_id=%s)", summ_turn ? summ_turn : "-");
+      } else {
+         voice_set_state(VOICE_STATE_READY, "dictation_summary");
+      }
+      if (summ_applied && summ_non_empty) {
          /* PR 3 follow-up: surface the dictation as a local Tab5 note
           * so it appears on the Notes timeline.  Path A (local
           * "+ NEW VOICE NOTE" → ui_notes_start_recording) already owns
@@ -915,14 +960,17 @@ void voice_ws_proto_handle_text(const char *data, int len) {
           * Dictate chip via voice_start_dictation with no local slot).
           * The async helper marshals to LVGL thread + no-ops if a
           * local slot is already active so we don't duplicate. */
+         /* W4: apply as an IN-PLACE update of the turn's row (set by the
+          * optimistic seed / note_created reconcile), then clear the badge —
+          * instead of the old add path that gated the dictation's end on this
+          * frame.  Body = streamed transcript when present, else summary/title.
+          * apply_summary falls back to a fresh add if no row matches turn_id, so
+          * a dictation is never lost. */
          const char *transcript = voice_get_dictation_text();
-         if (transcript && transcript[0]) {
-            ui_notes_add_dictated_async(transcript);
-         } else if (s_dictation_summary[0]) {
-            ui_notes_add_dictated_async(s_dictation_summary);
-         } else {
-            ui_notes_add_dictated_async(s_dictation_title);
-         }
+         const char *body = (transcript && transcript[0]) ? transcript
+                            : s_dictation_summary[0]      ? s_dictation_summary
+                                                          : s_dictation_title;
+         ui_notes_apply_summary(summ_turn, s_dictation_title, body);
          /* PR 4: parse Dragon's optional `proposed_action` classifier
           * output + attach it as a pending_chip on the freshly-added
           * slot.  Forward-compat: missing field → no chip rendered.
@@ -960,37 +1008,19 @@ void voice_ws_proto_handle_text(const char *data, int len) {
                ui_notes_attach_pending_chip_async(kind, confidence, payload_buf);
             }
          }
-      } else {
-         voice_dictation_set_state(DICT_FAILED, DICT_FAIL_EMPTY, now);
       }
    } else if (strcmp(type_str, "note_created") == 0) {
       cJSON *nid = cJSON_GetObjectItem(root, "note_id");
       cJSON *ntitle = cJSON_GetObjectItem(root, "title");
-      ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\"", cJSON_IsString(nid) ? nid->valuestring : "?",
-               cJSON_IsString(ntitle) ? ntitle->valuestring : "?");
-   } else if (strcmp(type_str, "dictation_postprocessing_error") == 0) {
-      /* PR 2 polish: Dragon's STT + auto-note-create completed but the
-       * LLM summary step failed (no_llm_available, generation error,
-       * etc.).  The note IS saved on Dragon (it was created from the
-       * STT transcript before the LLM step), so transition the pipeline
-       * to SAVED rather than leaving it stuck at TRANSCRIBING.  We use
-       * SAVED here even though there's no title/summary because the
-       * user's intent was captured — the note exists, just without an
-       * auto-generated heading.  Tab5's Notes screen will pick it up
-       * on next sync with a fallback title from the transcript. */
-      cJSON *err = cJSON_GetObjectItem(root, "error");
-      const char *err_str = (cJSON_IsString(err) && err->valuestring) ? err->valuestring : "unknown";
-      ESP_LOGW(TAG, "Dictation post-processing failed: %s — pipeline → SAVED (note already exists)", err_str);
-      voice_set_state(VOICE_STATE_READY, "dictation_postprocessing_error");
-      voice_dictation_set_state(DICT_SAVED, DICT_FAIL_NONE, (uint32_t)(esp_timer_get_time() / 1000));
-      /* PR 3 follow-up: same local-note creation path as
-       * dictation_summary above.  Dragon auto-created its own note
-       * before the LLM step failed, so the transcript is the user's
-       * captured content even though we don't have a title/summary.
-       * Surface it on Tab5's Notes timeline. */
-      const char *transcript = voice_get_dictation_text();
-      if (transcript && transcript[0]) {
-         ui_notes_add_dictated_async(transcript);
+      const char *nc_turn = cJSON_GetStringValue(cJSON_GetObjectItem(root, "turn_id"));
+      ESP_LOGI(TAG, "Dragon auto-created note: id=%s title=\"%s\" turn_id=%s",
+               cJSON_IsString(nid) ? nid->valuestring : "?", cJSON_IsString(ntitle) ? ntitle->valuestring : "?",
+               nc_turn ? nc_turn : "-");
+      /* W4: reconcile by turn_id — adopt note_id into the optimistic row (no dup
+       * row), or create the row if note_created raced ahead of the seed. */
+      if (cJSON_IsString(nid) && nid->valuestring && nid->valuestring[0]) {
+         ui_notes_reconcile_note_created(nc_turn, nid->valuestring,
+                                         cJSON_IsString(ntitle) ? ntitle->valuestring : NULL);
       }
    } else if (strcmp(type_str, "llm_done") == 0) {
       cJSON *ms = cJSON_GetObjectItem(root, "llm_ms");
@@ -1665,9 +1695,14 @@ void voice_ws_proto_event_handler(void *arg, esp_event_base_t base, int32_t even
           * and the timer's pipeline-state check will skip the FAIL.
           * If the window expires with no resolution, then FAIL. */
          {
-            dict_state_t cur_dict = voice_dictation_get().state;
-            if (cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING) {
-               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, (uint32_t)(esp_timer_get_time() / 1000));
+            dict_event_t cur_de = voice_dictation_get();
+            dict_state_t cur_dict = cur_de.state;
+            /* W2 F3: only fail a WS-origin dictation on a voice-WS disconnect.
+             * An in-flight OFFLINE REST upload is ALSO DICT_UPLOADING but its
+             * transport is the /api/v1/transcribe POST, unaffected by a voice-WS
+             * drop — failing it here would wrongly mark it FAILED. */
+            if ((cur_dict == DICT_RECORDING || cur_dict == DICT_UPLOADING) && cur_de.origin == DICT_ORIGIN_WS) {
+               voice_dictation_set_state(DICT_FAILED, DICT_FAIL_NETWORK, voice_dictation_now_ms());
             } else if (cur_dict == DICT_TRANSCRIBING) {
                extern void voice_ws_arm_transcribe_grace_timer(uint32_t timeout_ms);
                voice_ws_arm_transcribe_grace_timer(45000);
