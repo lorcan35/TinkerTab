@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "chat_msg_store.h" /* TT #711: persistent voice thread reads the shared store */
+#include "chat_msg_view.h"  /* TT #711: reuse the chat bubble renderer in the voice surface */
 #include "config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -136,7 +138,14 @@ static void set_state_icon(const char *glyph, uint32_t color_hex);
 /* Wave-1.8: orb back to upper-third → status text now ends around
  * y=620, so the stop button at y=750 keeps a tight ~80 px pairing
  * with the text without falling to the very bottom of the screen. */
-#define SEND_BTN_Y 750               /* y-center from top */
+#define SEND_BTN_Y 1180 /* TT #711: moved to bottom (was 750, mid-thread) */
+
+/* TT #711 — persistent conversation thread.  Starts below the orb's status
+ * caption (~590) so "Thinking"/"Tap to speak" isn't clipped by the scrim, and
+ * runs down to just above the bottom STOP control.  Renders the shared
+ * chat_msg_store (already holds every voice + typed turn). */
+#define THREAD_Y 600
+#define THREAD_H 510
 #define SEND_ICON_SZ       24        /* inner square "stop" icon */
 
 /* Mic dot pulse animation */
@@ -192,6 +201,7 @@ static void rec_timer_cb(lv_timer_t *t);
 static void set_orb_color(uint32_t ring_hex, uint32_t glow_hex, lv_opa_t ring_opa);
 static void set_orb_size(int32_t sz);
 static void update_mic_button_state(voice_state_t state);
+static void voice_thread_sync(void); /* TT #711 */
 static void show_state_listening(void);
 static void show_state_processing(const char *transcript);
 static void show_state_speaking(void);
@@ -252,6 +262,15 @@ static lv_obj_t  *s_send_btn      = NULL;
  * overlay, positioned absolutely, and shows whatever voice_get_llm_text
  * returned during the turn.  Simple, visible, always on top. */
 static lv_obj_t  *s_response_label = NULL;
+/* TT #711 — persistent conversation thread (reuses the chat bubble renderer
+ * over the shared store).  Created once in build_overlay; refreshed on show
+ * + on each state change; survives hide (store is retained → reopen restores). */
+static chat_msg_view_t *s_thread_view = NULL;
+/* TT #711 — solid scrim behind the thread: the voice overlay is transparent
+ * (orb shows through from home), but a full conversation thread needs an
+ * opaque backing so home chrome (mode pill, status) doesn't bleed through
+ * between bubbles. */
+static lv_obj_t *s_thread_scrim = NULL;
 static bool       s_has_llm_text  = false;  /* whether LLM response has started */
 
 /* Recording duration label + timer */
@@ -564,12 +583,15 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
                 if (len_ms > 15000) len_ms = 15000;
                 hide_ms = len_ms;
             }
-            ESP_LOGI(TAG, "Auto-hide in %lu ms (text len=%u)",
-                     (unsigned long)hide_ms,
-                     (unsigned)(llm_txt ? strlen(llm_txt) : 0));
-            if (s_auto_hide) { lv_timer_delete(s_auto_hide); s_auto_hide = NULL; }
-            s_auto_hide = lv_timer_create(auto_hide_timer_cb, hide_ms, NULL);
-            lv_timer_set_repeat_count(s_auto_hide, 1);
+            /* TT #711 — persistent surface: the reply no longer auto-hides.
+             * It stays in the conversation thread until the user leaves
+             * explicitly (X / home button).  Cancel any stale timer from a
+             * pre-#711 path; hide_ms kept only for the reading-time calc. */
+            (void)hide_ms;
+            if (s_auto_hide) {
+               lv_timer_delete(s_auto_hide);
+               s_auto_hide = NULL;
+            }
         } else {
             lv_label_set_text(s_lbl_status, "Tap to speak.");
         }
@@ -662,6 +684,36 @@ void ui_voice_on_state_change(voice_state_t state, const char *detail)
         show_state_speaking();
         break;
     }
+
+    /* TT #711 — after the per-state visuals, fold the exchange into the
+     * persistent thread (ASK conversation only).  Runs last so it can
+     * retire the lower-band single-line widgets the state handlers just set. */
+    voice_thread_sync();
+}
+
+/* TT #711 — sync the persistent conversation thread.  In ASK conversation
+ * it shows + refreshes the shared-store bubble view (orb stays the focus
+ * above it) and retires the single-line lower-band elements that would
+ * collide with it; during dictation / pipeline capture it hides the thread
+ * (those flows own the surface). */
+static void voice_thread_sync(void) {
+   if (!s_thread_view) return;
+   lv_obj_t *sc = chat_msg_view_get_scroll(s_thread_view);
+   bool dictation = (voice_get_mode() == VOICE_MODE_DICTATE) || ui_orb_pipeline_active();
+   if (dictation) {
+      if (sc) lv_obj_add_flag(sc, LV_OBJ_FLAG_HIDDEN);
+      if (s_thread_scrim) lv_obj_add_flag(s_thread_scrim, LV_OBJ_FLAG_HIDDEN);
+      return;
+   }
+   if (s_thread_scrim) lv_obj_clear_flag(s_thread_scrim, LV_OBJ_FLAG_HIDDEN);
+   if (sc) lv_obj_clear_flag(sc, LV_OBJ_FLAG_HIDDEN);
+   chat_msg_view_refresh(s_thread_view);
+   chat_msg_view_scroll_to_bottom(s_thread_view);
+   /* The thread now shows the exchange (incl. the latest reply), so retire
+    * the lower-band single-line widgets that occupy the same y-band. */
+   if (s_response_label) lv_obj_add_flag(s_response_label, LV_OBJ_FLAG_HIDDEN);
+   if (s_wave_cont) lv_obj_add_flag(s_wave_cont, LV_OBJ_FLAG_HIDDEN);
+   if (s_lbl_dots) lv_obj_add_flag(s_lbl_dots, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ui_voice_show(void)
@@ -695,6 +747,10 @@ void ui_voice_show(void)
      * the overlay is already shown (TT #481 — `ui_voice_show`
      * short-circuits at top) can trigger the repaint manually. */
     ui_voice_refresh_reply_chip();
+
+    /* TT #711 — restore the conversation thread from the shared store so
+     * reopening shows the session so far (it was never cleared on hide). */
+    voice_thread_sync();
 
     /* Child-opacity ramp is driven by fade_overlay_cb from start→end
      * in the old animation; skipping it means child content snaps on
@@ -982,6 +1038,29 @@ static void build_overlay(void)
     lv_obj_set_style_text_align(s_lbl_rec_time, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_lbl_rec_time, LV_ALIGN_CENTER, 0, ORB_SZ_LISTEN / 2 + ORB_Y_OFFSET + 60);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
+
+    /* TT #711 — persistent conversation thread.  Reuses the chat bubble
+     * renderer over the shared chat_msg_store (already populated with every
+     * voice + typed turn via voice_ws_proto → ui_chat_push_message), so the
+     * spoken exchange no longer vanishes: it stays, scrolls back, and is
+     * restored on reopen.  Created hidden-with-overlay; shown only in ASK
+     * conversation (suppressed for dictation — see voice_thread_sync). */
+    /* Scrim FIRST so the thread view (created next) stacks on top of it. */
+    s_thread_scrim = lv_obj_create(s_overlay);
+    if (s_thread_scrim) {
+       lv_obj_remove_style_all(s_thread_scrim);
+       lv_obj_set_pos(s_thread_scrim, 0, THREAD_Y);
+       lv_obj_set_size(s_thread_scrim, SW, THREAD_H);
+       lv_obj_set_style_bg_color(s_thread_scrim, lv_color_hex(0x070707), 0);
+       lv_obj_set_style_bg_opa(s_thread_scrim, LV_OPA_COVER, 0); /* fully opaque: no home-chrome bleed-through */
+       lv_obj_clear_flag(s_thread_scrim, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+       lv_obj_add_flag(s_thread_scrim, LV_OBJ_FLAG_HIDDEN);
+    }
+    s_thread_view = chat_msg_view_create(s_overlay, 0, THREAD_Y, SW, THREAD_H);
+    if (s_thread_view) {
+       lv_obj_t *sc = chat_msg_view_get_scroll(s_thread_view);
+       if (sc) lv_obj_add_flag(sc, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* Start hidden */
     lv_obj_add_flag(s_overlay, LV_OBJ_FLAG_HIDDEN);

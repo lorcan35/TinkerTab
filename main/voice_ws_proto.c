@@ -845,7 +845,19 @@ void voice_ws_proto_handle_text(const char *data, int len) {
             /* Skip system/tool rows — chat UI only renders
              * user/assistant today. */
             if (strcmp(role, "user") != 0 && strcmp(role, "assistant") != 0) continue;
-            ui_chat_push_message(role, content);
+            /* TT #711 — Dragon's stored assistant turns can include raw
+             * tool-call markup (`<tool>…</tool><args>…</args>`).  Live turns
+             * already strip at llm_done, but this rehydration path pushed it
+             * raw — so the restored bubble showed plumbing instead of the
+             * reply.  Strip it here too; skip rows that are nothing but
+             * tool markup (empty after strip). */
+            if (strcmp(role, "assistant") == 0) {
+               char clean[1024];
+               md_strip_tool_markers(content, clean, sizeof(clean));
+               if (clean[0]) ui_chat_push_message(role, clean);
+            } else {
+               ui_chat_push_message(role, content);
+            }
          }
       }
    } else if (strcmp(type_str, "dictation_postprocessing") == 0) {
