@@ -17,7 +17,7 @@
 #include "audio.h" /* tab5_audio_play_raw */
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_system.h" /* esp_restart — watchdog self-reboot escalation (TT #131) */
+#include "esp_system.h" /* esp_system types (watchdog Tab5 self-restart retired in TT #751) */
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h" /* xTaskCreatePinnedToCoreWithCaps for watchdog */
@@ -637,7 +637,14 @@ static volatile int64_t s_watchdog_started_us = 0;
 static volatile int s_watchdog_reset_fail_count = 0;
 static volatile int64_t s_watchdog_last_reboot_us = 0;
 static volatile int64_t s_watchdog_ready_since_us = 0; /* when state first entered READY since last preventive reboot */
-static volatile int s_watchdog_escalate_count = 0; /* consecutive failed sys.reboot escalations → Tab5 self-restart */
+static volatile int s_watchdog_escalate_count = 0;     /* consecutive failed sys.reboot escalations */
+/* TT #751: once recovery is exhausted on a dead/absent K144, the watchdog
+ * goes DORMANT instead of ever rebooting Tab5.  K144/TinkerON is an OPTIONAL
+ * stacked module — it must never take down the face device (modularity rule:
+ * "Tab5 must never depend on either module being present; hot-unplug graceful").
+ * Cleared on a successful recovery or a manual voice_onboard_reset_failover()
+ * (e.g. user replugs the K144 + taps the health chip / POST /m5/reset). */
+static volatile bool s_k144_gave_up = false;
 
 static void onboard_watchdog_task(void *arg) {
    (void)arg;
@@ -676,6 +683,12 @@ static void onboard_watchdog_task(void *arg) {
 
       /* Cooldown after a previous kick. */
       if (now - s_watchdog_last_kick_us < (int64_t)WATCHDOG_COOLDOWN_MS * 1000) continue;
+
+      /* TT #751: gave up on a dead/absent K144 — stay dormant (do NOT keep
+       * hammering sys.reset/sys.reboot, and never esp_restart Tab5).  A
+       * manual voice_onboard_reset_failover() clears s_k144_gave_up and
+       * re-arms this watchdog if the module comes back. */
+      if (s_k144_gave_up) continue;
 
       voice_ext_pcm_stream_stats_t stats;
       voice_ext_pcm_stream_get_stats(&stats);
@@ -811,16 +824,19 @@ static void onboard_watchdog_task(void *arg) {
          }
          s_watchdog_reset_fail_count = 0;
          s_watchdog_escalate_count = 0; /* recovery succeeded — clear escalation counter */
+         s_k144_gave_up = false;        /* TT #751: module is back — re-arm */
       } else {
          s_watchdog_reset_fail_count++;
          ESP_LOGW(TAG, "watchdog: recovery did NOT restore ASR — fail count now %d/%d", s_watchdog_reset_fail_count,
                   WATCHDOG_RESET_FAIL_CAP);
          /* If THIS attempt was the sys.reboot escalation and it still
-          * didn't recover, count it.  After WATCHDOG_SELF_REBOOT_CAP
-          * such cycles, esp_restart() Tab5 — every Tab5-side driver
-          * + WS + LVGL re-inits.  If K144 is the dead party, this
-          * doesn't help (user still has to power-cycle the module),
-          * but it stops Tab5 from holding stale state for hours. */
+          * didn't recover, count it.  TT #751: after WATCHDOG_SELF_REBOOT_CAP
+          * such cycles the K144 is dead or unplugged — GIVE UP and go
+          * dormant.  We must NOT esp_restart() Tab5: K144/TinkerON is an
+          * optional stacked module, and a full self-restart neither revives
+          * a dead module nor preserves the user's working device (it was
+          * looping a perfectly healthy Tab5 — reset_reason=SW, exc_task=
+          * onboard_wd).  Recovery stays available via replug + /m5/reset. */
          if (do_reboot) {
             s_watchdog_escalate_count++;
             ESP_LOGW(TAG, "watchdog: escalate_reboot did NOT recover — count now %d/%d", s_watchdog_escalate_count,
@@ -829,11 +845,12 @@ static void onboard_watchdog_task(void *arg) {
             snprintf(ec, sizeof(ec), "escalate_fail count=%d", s_watchdog_escalate_count);
             tab5_debug_obs_event("watchdog", ec);
             if (s_watchdog_escalate_count >= WATCHDOG_SELF_REBOOT_CAP) {
-               ESP_LOGE(TAG, "watchdog: %d failed sys.reboot escalations → Tab5 self-restart",
+               ESP_LOGE(TAG,
+                        "watchdog: %d failed sys.reboot escalations → giving up on TinkerON "
+                        "(K144 dead/absent).  Tab5 stays up; recover via replug + /m5/reset.",
                         s_watchdog_escalate_count);
-               tab5_debug_obs_event("watchdog", "self_restart");
-               vTaskDelay(pdMS_TO_TICKS(500)); /* let the obs event flush */
-               esp_restart();
+               tab5_debug_obs_event("watchdog", "k144_gave_up");
+               s_k144_gave_up = true;
             }
          }
       }
@@ -996,6 +1013,10 @@ esp_err_t voice_onboard_reset_failover(void) {
       ESP_LOGI(TAG, "reset_failover: already probing — caller can poll state");
       return ESP_ERR_INVALID_STATE;
    }
+   /* TT #751: a deliberate recovery request (UI health-chip tap, POST
+    * /m5/reset, auto-retry) re-arms the watchdog if it had given up on a
+    * previously-dead K144 — the user may have just replugged the module. */
+   s_k144_gave_up = false;
    return tab5_worker_enqueue(onboard_reset_failover_job, NULL, "m5_reset");
 }
 
