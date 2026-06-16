@@ -1393,8 +1393,10 @@ static void show_state_processing(const char *detail)
       /* First time or STT just arrived */
    }
 
-    /* Hide listening-only elements */
-    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+    /* TT #707 — keep the STOP button visible (was hidden here).  It now
+     * cancels the turn in PROCESSING via the state-aware send_click_cb,
+     * so the user always has one obvious way to stop. */
+    if (s_send_btn) lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
 
@@ -1486,8 +1488,10 @@ static void show_state_speaking(void)
      * listening-green and processing-violet glyphs. */
     set_state_icon(LV_SYMBOL_VOLUME_MAX, TH_MODE_CLOUD);
 
-    /* Hide listening-only elements */
-    lv_obj_add_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
+    /* TT #707 — keep the STOP button visible (was hidden here).  It
+     * interrupts TTS in SPEAKING via the state-aware send_click_cb
+     * (same effect as the orb-tap barge-in, but a discoverable target). */
+    if (s_send_btn) lv_obj_clear_flag(s_send_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_rec_time, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_lbl_transcript, LV_OBJ_FLAG_HIDDEN);
     /* G1: queue badge keeps rendering through SPEAKING too. */
@@ -2125,8 +2129,26 @@ static void close_click_cb(lv_event_t *e)
 static void send_click_cb(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "Send/stop button tapped — submitting recording");
-    voice_stop_listening();
+    /* TT #707 — the red button is now a persistent STOP shown through
+     * LISTENING / PROCESSING / SPEAKING (not just LISTENING).  Its
+     * effect is state-aware, mirroring the floating mic button:
+     *   LISTENING  → stop recording + submit
+     *   PROCESSING → cancel the in-flight turn
+     *   SPEAKING   → interrupt TTS (barge-in) */
+    voice_state_t state = voice_get_state();
+    switch (state) {
+    case VOICE_STATE_LISTENING:
+        ESP_LOGI(TAG, "STOP (LISTENING) — submitting recording");
+        voice_stop_listening();
+        break;
+    case VOICE_STATE_PROCESSING:
+    case VOICE_STATE_SPEAKING:
+        ESP_LOGI(TAG, "STOP (state=%d) — cancelling turn", state);
+        voice_cancel();
+        break;
+    default:
+        break;
+    }
 }
 
 static void orb_ready_click_cb(lv_event_t *e)

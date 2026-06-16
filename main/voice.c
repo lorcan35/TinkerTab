@@ -2124,6 +2124,16 @@ esp_err_t voice_cancel(void)
        s_conv_active = false;
     }
 
+    /* TT #710 — flush the single-slot queued text turn.  voice_cancel
+     * transitions to READY below, and the READY handler (voice_set_state)
+     * drains s_queue_pending — so without this a turn the user just
+     * cancelled would immediately re-fire from the queue. */
+    if (s_queue_pending) {
+       ESP_LOGI(TAG, "voice_cancel: dropping queued text turn");
+       s_queued_text[0] = '\0';
+       s_queue_pending = false;
+    }
+
     /* W8 (audit 2026-05-11): confirmatory cancel chirp.  Audit found the
      * device was mute on UI interactions; this closes the cancel branch. */
     ui_audio_cue_play(UI_CUE_CANCEL);

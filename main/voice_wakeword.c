@@ -246,10 +246,24 @@ static int64_t s_post_cancel_until_us = 0;
  * reply context after SPEAKING→READY.  1000 ms expired before the
  * flush completed, letting lingering "thinker" partials re-fire the
  * matcher.  1500 ms covers the median worst case observed in live
- * sessions.  Adaptive (wait for K144 post-SPEAKING silent finish) is
- * the correct fix but more invasive — bump first, revisit if still
- * firing falsely in the soak. */
-#define WAKE_REARM_GRACE_MS 1500
+ * sessions.
+ *
+ * TT #706 — replaced the blind fixed grace with an ADAPTIVE re-arm:
+ * after a turn ends, stay suppressed until K144's ASR actually reports
+ * a silent segment-close (finish=true with empty delta) — the real
+ * signal that the TTS-reply context has flushed and the room is quiet —
+ * bounded by a MIN floor (don't arm instantly on a too-early silence)
+ * and a MAX ceiling (never stay locked if K144 stops sending finishes). */
+#define WAKE_REARM_MIN_MS 800
+#define WAKE_REARM_CEILING_MS 5000
+
+/* TT #706 — re-arm gating state.  s_rearm_pending is set when the turn
+ * goes busy and cleared once the post-turn audio has settled (silent
+ * finish observed, or the ceiling expires).  s_saw_silent_finish is set
+ * by asr_partial_cb on an empty finish and reset on every busy delta, so
+ * it only latches true once state has left the busy set. */
+static bool s_rearm_pending = false;
+static volatile bool s_saw_silent_finish = false;
 
 /* TT #131 watchdog 2026-05-20: timestamp of the most-recent ASR
  * delta we received from K144.  Updated in asr_partial_cb.  The
@@ -273,18 +287,27 @@ static bool wakeword_suppressed_by_voice_state(void) {
    if (st == VOICE_STATE_LISTENING || st == VOICE_STATE_PROCESSING || st == VOICE_STATE_RECONNECTING ||
        st == VOICE_STATE_SPEAKING) {
       s_last_busy_us = esp_timer_get_time();
+      s_rearm_pending = true;
+      s_saw_silent_finish = false; /* reset every busy delta — only latches once state leaves busy */
       return true;
    }
-   /* Post-busy grace: wait WAKE_REARM_GRACE_MS after state returns to
-    * READY before allowing wake to fire again.  Lets K144 ASR's
-    * streaming-zipformer context flush its just-completed-turn frames
-    * so the next match is against fresh post-turn audio only. */
-   if (s_last_busy_us != 0) {
+   /* TT #706 — adaptive post-turn re-arm.  After the turn ends, keep the
+    * matcher suppressed until K144's ASR reports a silent finish (the
+    * TTS-reply context has flushed and the room is quiet), bounded below
+    * by WAKE_REARM_MIN_MS (so a too-early silence doesn't arm into the
+    * TTS tail) and above by WAKE_REARM_CEILING_MS (so we never stay
+    * locked if K144 stops emitting finishes). */
+   if (s_rearm_pending) {
       int64_t since_busy_us = esp_timer_get_time() - s_last_busy_us;
-      if (since_busy_us < (int64_t)WAKE_REARM_GRACE_MS * 1000) {
-         return true;
+      bool min_ok = since_busy_us >= (int64_t)WAKE_REARM_MIN_MS * 1000;
+      bool ceil_hit = since_busy_us >= (int64_t)WAKE_REARM_CEILING_MS * 1000;
+      if (min_ok && (s_saw_silent_finish || ceil_hit)) {
+         s_rearm_pending = false; /* settled — re-armed */
+         s_last_busy_us = 0;
+         tab5_debug_obs_event("wakeword.rearm", ceil_hit ? "ceiling" : "silent_finish");
+      } else {
+         return true; /* still waiting for post-turn audio to settle */
       }
-      s_last_busy_us = 0; /* grace expired — re-armed */
    }
    /* TT #692: explicit post-cancel suppression window.  voice_cancel
     * sets this when the user (or any other cancel-class caller) ends
@@ -355,6 +378,15 @@ static void asr_partial_cb(const char *delta, bool finish, void *user) {
       s_last_delta[sizeof(s_last_delta) - 1] = '\0';
    } else if (finish) {
       s_last_delta[0] = '\0'; /* segment closed — next partial is fresh */
+   }
+
+   /* TT #706 — adaptive re-arm signal.  An empty finish means K144's ASR
+    * closed a segment on silence.  s_saw_silent_finish is reset on every
+    * busy delta (see wakeword_suppressed_by_voice_state), so it only
+    * latches true once state has left the busy set — i.e. a genuine
+    * post-turn settle, not a mid-TTS pause. */
+   if (finish && (delta == NULL || delta[0] == '\0')) {
+      s_saw_silent_finish = true;
    }
 
    /* TT #578: every delta into the debug ring before any state branching. */
